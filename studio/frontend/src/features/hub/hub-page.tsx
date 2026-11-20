@@ -1737,8 +1737,7 @@ export function ModelsPage() {
 
   const { vramInfo } = useHubModelVram(selectedModel, gpu);
 
-  // GGUFs, which most rows here are, can have a GPU the training inventory lacks: Metal on a
-  // GGUF-only Mac, or a separately installed Vulkan llama.cpp.
+  // GGUFs can have a GPU training lacks: Metal on a GGUF-only Mac, a separate Vulkan llama.cpp.
   const headerGpu = gpu.available ? gpu : inferenceGpu;
   const gpuLabel = headerGpu.available
     ? `${Math.round(headerGpu.dedicatedMemoryTotalGb)} GiB`

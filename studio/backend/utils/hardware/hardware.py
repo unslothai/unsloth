@@ -2677,7 +2677,7 @@ def _mlx_device_info(mx: Any) -> Dict[str, Any]:
 
 
 def _metal_recommended_working_set_bytes(*, allow_import: bool = True) -> int:
-    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel. ``allow_import=False`` reads only modules already imported, for polled paths: on a broken MLX stack the import can park, and a cold torch import takes seconds."""
+    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel. ``allow_import=False`` (polled paths) reads only imported modules: a broken MLX import can park."""
     try:
         if allow_import:
             import mlx.core as mx
@@ -7697,14 +7697,12 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     }
 
 
-# Metal's recommendedMaxWorkingSetSize is a device property, kept once read. Unread stays 0, so a
-# later poll picks it up after the warm thread imports MLX or torch.
+# Kept once read; 0 retries on later polls, after the warm thread imports MLX or torch.
 _apple_metal_working_set_bytes: int = 0
 
 
 def _llama_cpp_offloads_to_metal() -> bool:
-    """Whether llama-server would place GGUF layers on Metal here. File reads and hw.model only, as
-    this runs on the polled /api/system."""
+    """Whether llama-server would place GGUF layers on Metal; cheap enough for the polled /api/system."""
     try:
         from core.inference.llama_cpp import (
             LlamaCppBackend,
@@ -7722,11 +7720,8 @@ def _llama_cpp_offloads_to_metal() -> bool:
 
 
 def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
-    """llama.cpp's Metal device on Apple Silicon detected as CPU (a GGUF-only install, or an MLX stack
-    that is missing or being repaired), else None. llama.cpp runs on Metal there anyway
-    (``LlamaCppBackend._apple_metal_memory_budget_bytes`` checks only the platform), so the GGUF fit
-    must see the unified pool. Training detection keeps reporting CPU. None too when llama.cpp will
-    not place layers on Metal: a build without Metal, or a virtualised GPU the loader pins to CPU."""
+    """llama.cpp's Metal device on Apple Silicon detected as CPU (GGUF-only install, MLX missing), else None.
+    The loader offloads to Metal there regardless, so the GGUF fit must see the unified pool."""
     global _apple_metal_working_set_bytes
     if not is_apple_silicon() or get_device() == DeviceType.MLX:
         return None
@@ -7741,7 +7736,6 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
     if total_bytes <= 0:
         return None
     if not _apple_metal_working_set_bytes:
-        # This runs on the polled /api/system path, so it never imports MLX or torch itself.
         try:
             _apple_metal_working_set_bytes = int(
                 _metal_recommended_working_set_bytes(allow_import = False) or 0
@@ -7749,7 +7743,7 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
         except Exception as e:
             logger.debug("Metal working set probe failed: %s", e)
             _apple_metal_working_set_bytes = 0
-    # The loader's own fallback when neither MLX nor torch.mps can report the working set.
+    # Same fallback as the loader.
     working_set_bytes = _apple_metal_working_set_bytes or total_bytes
     total_gb = round(total_bytes / (1024**3), 2)
     device: Dict[str, Any] = {
@@ -7761,8 +7755,7 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
         "shared_memory": True,
         "shared_memory_host_backed_gb": total_gb,
         "metal_working_set_gb": round(working_set_bytes / (1024**3), 2),
-        # No vram_used_gb: AGX "In use system memory" is system-wide, and the model-switch budget
-        # would credit all of it as memory the resident model frees.
+        # No vram_used_gb: AGX in-use is system-wide; the switch budget would credit it all as freed.
     }
     return {
         "available": True,

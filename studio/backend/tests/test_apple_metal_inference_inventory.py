@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An Apple Silicon host detected as CPU (GGUF-only install, or MLX missing) still runs GGUFs on
-Metal, so /api/system's inference inventory must list the unified pool instead of no GPU."""
+"""A CPU-detected Apple Silicon host still runs GGUFs on Metal; /api/system must list the pool."""
 
 import builtins
 import sys
@@ -62,12 +61,10 @@ def test_cpu_classified_mac_lists_one_shared_metal_device():
     assert device["shared_memory"] is True
     assert device["shared_memory_host_backed_gb"] == 16.0
     assert device["metal_working_set_gb"] == pytest.approx(10.67)
-    # AGX in-use is system-wide, not the resident model's share.
     assert "vram_used_gb" not in device
 
 
 def test_no_metal_offload_means_no_metal_inventory():
-    # A -DGGML_METAL=OFF build or a paravirtual GPU: llama.cpp runs on the CPU.
     assert _metal_info(offloads = False) is None
 
 
@@ -122,7 +119,6 @@ def test_an_unread_working_set_is_retried_once_a_module_is_loaded():
     [(False, DeviceType.CPU), (True, DeviceType.MLX), (False, DeviceType.CUDA)],
 )
 def test_other_hosts_keep_their_inventory(apple, device):
-    # MLX already publishes the device through the training inventory; off Apple there is no Metal.
     assert _metal_info(apple = apple, device = device) is None
 
 
@@ -168,15 +164,11 @@ def test_probe_without_import_reads_modules_already_loaded():
         assert hw._metal_recommended_working_set_bytes(allow_import = False) == 9 * GiB
 
 
-# ── Does llama.cpp put layers on Metal? ──────────────────────────────────────
-
-
 def _llama_install(
     tmp_path,
     libs,
     marker_backend = None,
 ):
-    """A llama-server with the given ggml libraries beside it, and optionally a prebuilt marker."""
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
     bin_dir.mkdir(parents = True)
     server = bin_dir / "llama-server"
@@ -194,21 +186,18 @@ def _llama_install(
 @pytest.mark.parametrize(
     "libs, marker, expected",
     [
-        # The prebuilt macOS bundle, as on a real M1.
         (["libggml-base.dylib", "libggml-cpu.dylib", "libggml-metal.dylib"], "metal", True),
-        # setup.sh's -DGGML_METAL=OFF fallback after a failed Metal build: no libggml-metal.
+        # setup.sh's -DGGML_METAL=OFF fallback.
         (["libggml-base.dylib", "libggml-cpu.dylib", "libggml-blas.dylib"], None, False),
-        # The library set wins over a stale marker beside it.
+        # The library set wins over a stale marker.
         (["libggml-base.dylib", "libggml-cpu.dylib"], "metal", False),
-        # Versioned names, as the prebuilt also ships them.
         (["libggml-base.0.dylib", "libggml-metal.0.20.1.dylib"], None, True),
-        # Only a loadable library name counts: dyld never opens a renamed one.
+        # dyld never opens a renamed library.
         (
             ["libggml-base.dylib", "libggml-cpu.dylib", "libggml-metal.dylib.disabled"],
             "metal",
             False,
         ),
-        # A static build: only the marker can tell.
         ([], "metal", True),
         ([], None, False),
     ],
@@ -222,7 +211,6 @@ def test_build_has_metal_reads_the_installed_files(tmp_path, libs, marker, expec
 
 
 def test_build_has_metal_follows_the_installer_wrapper(tmp_path):
-    # ~/.unsloth/llama.cpp/llama-server is a wrapper script; the libraries sit beside the binary it runs.
     from core.inference.llama_cpp import LlamaCppBackend
 
     server = _llama_install(tmp_path, ["libggml-base.dylib", "libggml-metal.dylib"])
@@ -258,7 +246,7 @@ def test_metal_devices_env_follows_ggml_metal_atoi(value, hides):
 
 @pytest.fixture
 def _fresh_paravirtual_caches(monkeypatch):
-    # conftest stubs both probes so a paravirtual macOS runner reads as bare metal; restore them.
+    # conftest stubs both probes; restore the real ones.
     import core.inference.llama_cpp as llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", _REAL_FULL_PROBE)
@@ -294,7 +282,6 @@ def test_polled_paravirtual_check_uses_hw_model_only(
     with patch.dict(sys.modules, modules, clear = True):
         assert llama_cpp._metal_offload_forced_off_for_polling() is expected
         assert "mlx.core" not in sys.modules
-    # sysctl only: system_profiler takes seconds, and it would run on every poll until cached.
     assert calls == ["sysctl"]
 
 
@@ -310,7 +297,6 @@ def test_polled_paravirtual_check_honours_the_override(monkeypatch, _fresh_parav
 def test_polled_paravirtual_check_prefers_the_loaders_full_answer(
     monkeypatch, _fresh_paravirtual_caches
 ):
-    # A VM hidden from hw.model but caught by system_profiler during a load: the badge follows the load.
     llama_cpp = _fresh_paravirtual_caches
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.delenv("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", raising = False)
@@ -331,7 +317,6 @@ def test_polled_paravirtual_check_prefers_the_loaders_full_answer(
         (True, False, None, True),
         (False, False, None, False),
         (True, True, None, False),
-        # llama-server inherits Studio's environment, and ggml-metal then registers no device.
         (True, False, "0", False),
         (True, False, "1", True),
     ],

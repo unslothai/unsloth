@@ -111,7 +111,6 @@ function appleUnifiedLoadBudgetGb(
   devices: readonly GpuDevice[],
   afterUnload = false,
 ): number | null {
-  // "metal": the GGUF inventory of an Apple host whose training detection fell back to CPU.
   const metalInventory = inventoryBackend === "metal";
   if (
     (data?.device_backend !== "mlx" && !metalInventory) ||
@@ -125,7 +124,7 @@ function appleUnifiedLoadBudgetGb(
   let freeGb =
     finiteNonNegative(device.vram_free_gb) ??
     finiteNonNegative(data?.memory?.available_gb);
-  // The Metal inventory has no reading of the resident's share, so a switch keeps the live budget.
+  // The Metal inventory cannot see the resident's share, so a switch keeps the live budget.
   if (afterUnload && !metalInventory) {
     // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
     // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.

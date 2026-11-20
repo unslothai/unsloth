@@ -5801,10 +5801,7 @@ def _metal_device_is_paravirtual() -> bool:
 
 @functools.lru_cache(maxsize = 1)
 def _metal_device_looks_paravirtual_quick() -> bool:
-    """The cheap half of _metal_device_is_paravirtual, for the polled /api/system: the override,
-    hw.model, and the MLX device name only when MLX is already imported. No MLX import (it can park
-    on a broken stack) and no system_profiler (seconds), so a VM that hides itself from hw.model is
-    caught once a load has run the full probe."""
+    """_metal_device_is_paravirtual for the polled /api/system: no MLX import (parks on a broken stack), no system_profiler (seconds)."""
     if sys.platform != "darwin" or _paravirtual_metal_allowed():
         return False
     names = []
@@ -5831,19 +5828,17 @@ def _metal_device_looks_paravirtual_quick() -> bool:
 
 
 def _metal_devices_env_hides_all(env: Optional[Mapping[str, str]] = None) -> bool:
-    """ggml-metal registers atoi(GGML_METAL_DEVICES) devices whenever the variable is set, so a value
-    below 1 (empty and non-numeric read as 0) leaves the llama-server that inherits it on the CPU."""
+    """ggml-metal registers atoi(GGML_METAL_DEVICES) devices when it is set, so below 1 llama-server runs on the CPU."""
     value = (os.environ if env is None else env).get("GGML_METAL_DEVICES")
     if value is None:
         return False
-    # ASCII, as atoi: a full-width digit or a no-break space ends the number there.
+    # re.ASCII: atoi stops at a full-width digit or a no-break space.
     match = re.match(r"\s*([+-]?\d+)", value, re.ASCII)
     return (int(match.group(1)) if match else 0) < 1
 
 
 def _metal_offload_forced_off_for_polling() -> bool:
-    """Whether loads on this Mac pin every GGUF layer to the CPU (the paravirtual guard), without the
-    slow probes: the full probe's answer once a load has computed it, else the quick one."""
+    """The paravirtual CPU pin without slow probes: a load's full answer once cached (catches VMs hidden from hw.model), else the quick one."""
     full = _metal_device_is_paravirtual
     cache_info = getattr(full, "cache_info", None)
     if cache_info is not None and cache_info().currsize:
@@ -11968,16 +11963,13 @@ class LlamaCppBackend:
 
     @staticmethod
     def _build_has_metal(binary: Optional[str] = None) -> bool:
-        """Whether this llama.cpp was built with Metal, from files alone. Builds ship shared libraries
-        (llama.cpp's default), so a ggml library set without a loadable libggml-metal is setup.sh's
-        -DGGML_METAL=OFF fallback; with no ggml libraries beside it, the prebuilt marker decides,
-        and a build with neither reads as no Metal."""
+        """Whether llama.cpp was built with Metal: ggml libraries without libggml-metal are setup.sh's -DGGML_METAL=OFF fallback; a static build defers to the prebuilt marker."""
         from utils.llama_cpp_path_settings import binary_gpu_backends
 
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return False
-        # The executable a wrapper script runs, whose directory holds the libraries it loads.
+        # The libraries sit beside the binary a wrapper script execs.
         backends = binary_gpu_backends(_resolve_llama_binary(binary))
         if backends is not None:
             return "metal" in backends
