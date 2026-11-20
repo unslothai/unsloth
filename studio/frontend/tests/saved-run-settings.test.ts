@@ -234,7 +234,7 @@ test("an NPU model's settings are named after its picker name, not the lemonade 
   );
   assert.match(
     page,
-    /const npuName = useNpuDisplayName\(targetIsNpu \? target\.id : null\);[\s\S]*?const modelName = npuName \?\? modelDisplayName\(configId\);/,
+    /const npuName = useNpuDisplayName\(targetIsNpu \? target\.id : null\);[\s\S]*?const modelName =\s+npuName \?\? \(targetIsNpu \? configId\.replace\(\/\^lemonade:\/, ""\) : modelDisplayName\(configId\)\);/,
   );
   // Remembered settings wait for the NPU list, so the adopted set is not named after the id.
   assert.match(
