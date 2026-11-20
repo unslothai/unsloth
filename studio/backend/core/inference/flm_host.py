@@ -25,6 +25,7 @@ import httpx
 # FastFlowLM modes with no chat endpoint; lemond lists every other model as chat too.
 _NOT_CHAT = frozenset({"embeddings", "transcription", "realtime-transcription"})
 _HIDDEN = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # CREATE_NO_WINDOW
+# Loopback only: never an HTTP_PROXY or the Windows system proxy (urllib getproxies), as LemonadeServer.
 _HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -350,7 +351,9 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
                     return
                 try:
                     if (
-                        httpx.get(f"http://127.0.0.1:{port}/v1/models", timeout = 2.0).status_code
+                        httpx.get(
+                            f"http://127.0.0.1:{port}/v1/models", timeout = 2.0, trust_env = False
+                        ).status_code
                         == 200
                     ):
                         break
@@ -415,7 +418,7 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
             headers = {k: v for k, v in self.headers.items() if k.lower() not in _HOP_HEADERS}
             try:
                 with httpx.stream(method, f"http://127.0.0.1:{port}{self.path}", content = raw or None,
-                                  headers = headers, timeout = httpx.Timeout(600.0, connect = 10.0)) as upstream:  # fmt: skip
+                                  headers = headers, timeout = httpx.Timeout(600.0, connect = 10.0), trust_env = False) as upstream:  # fmt: skip
                     self.send_response(upstream.status_code)
                     for key, value in upstream.headers.items():
                         if key.lower() not in _HOP_HEADERS:

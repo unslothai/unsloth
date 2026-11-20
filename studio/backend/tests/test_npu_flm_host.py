@@ -191,6 +191,18 @@ def test_load_serves_proxies_chat_by_tag_and_unloads(host):
     assert client.post("/v1/chat/completions", json = {"messages": []}).status_code == 503
 
 
+def test_a_configured_proxy_never_sees_the_loopback_calls(host, monkeypatch):
+    client, _, _ = host
+    for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising = False)
+    r = client.post("/v1/load", json = {"model_name": "qwen3-0.6b-FLM", "ctx_size": 4096})
+    assert r.status_code == 200, r.text
+    chat = client.post("/v1/chat/completions", json = {"model": "x", "stream": True, "messages": []})
+    assert chat.status_code == 200 and "qwen3:0.6b" in chat.text
+
+
 def test_a_failed_load_names_flms_reason(host):
     client, _, serving = host
     CATALOG["models"].append({"name": "fail:1b", "label": [], "footprint": 1, "installed": True})
