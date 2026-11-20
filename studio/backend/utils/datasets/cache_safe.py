@@ -136,9 +136,12 @@ def _json_dates_as_written(dataset, args, kwargs):
         return dataset
     if not any(_has_timestamp(field.type) for field in features.arrow_schema):
         return dataset
+    from functools import partial
+
     from utils.datasets.json_rows import json_rows_dataset
 
-    return json_rows_dataset(files, kwargs.get("cache_dir")) or dataset
+    rebuild = partial(json_rows_dataset, files)
+    return _load_with_cache_retries(rebuild, (), {"cache_dir": kwargs.get("cache_dir")}) or dataset
 
 
 def _load_with_cache_retries(load_dataset, args, kwargs):

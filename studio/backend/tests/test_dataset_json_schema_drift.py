@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -196,3 +197,27 @@ def test_dates_next_to_an_int_past_int64_still_load(tmp_path):
     path.write_text('{"date": "1945-05-08", "id": 9223372036854775808}\n', encoding = "utf-8")
 
     assert len(_load(str(path), tmp_path)) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason = "needs POSIX permissions")
+def test_dates_rebuild_falls_back_when_the_shared_cache_is_read_only(tmp_path, monkeypatch):
+    import utils.datasets.cache_safe as cache_safe
+    from datasets import load_dataset
+
+    path = _write_jsonl(tmp_path / "dates.jsonl", [{"q": "hi", "when": "2024-03-04"}])
+    shared = tmp_path / "shared"
+    load_dataset("json", data_files = path, split = "train", cache_dir = str(shared))
+    fallback = tmp_path / "fallback"
+    monkeypatch.setattr(cache_safe, "studio_datasets_cache", lambda: str(fallback))
+    dirs = [root for root, _, _ in os.walk(shared)]
+    for root in dirs:
+        os.chmod(root, 0o555)
+    try:
+        dataset = load_dataset_cache_safe(
+            "json", data_files = path, split = "train", cache_dir = str(shared)
+        )
+    finally:
+        for root in dirs:
+            os.chmod(root, 0o755)
+
+    assert dataset.to_list() == [{"q": "hi", "when": "2024-03-04"}]
