@@ -17572,8 +17572,7 @@ def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
     cap = _tool_result_max_chars()
     if not _request_context_tokens() and _request_result_room() is None:
-        # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
-        # A priced room (a connection that reports its window) bounds the result instead.
+        # No window and no priced room (a hosted provider, a server reporting none): a raised setting is not applied blind.
         cap = min(cap, _MAX_OUTPUT_CHARS)
     return _result_char_budget(cap)
 
