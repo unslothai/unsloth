@@ -293,7 +293,8 @@ def test_traced_layer_has_no_graph_break():
     pe = inner.rotary_emb(x, torch.arange(SEQ).unsqueeze(0))
     compiled = torch.compile(
         lambda h: LlamaDecoderLayer_fast_forward(layer, h, position_embeddings = pe)[0],
-        fullgraph = True,
+        # Before torch 2.11 the fused LoRA functions are dynamo-disabled, so the block splits there anyway.
+        fullgraph = fast_lora.TRACE_LORA_FUNCTIONS,
         backend = "aot_eager",
     )
     with torch.no_grad():
