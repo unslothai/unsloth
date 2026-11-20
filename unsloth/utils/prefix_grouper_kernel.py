@@ -77,9 +77,66 @@ _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
 _BF16_BLOCK_N = int(os.environ.get("PG_FLEX_BF16_BLOCK_N", "64"))
 
 
-def _kernel_options_for_dtype(dtype, one_stage = False):
+# The 16-bit 128 / 64 tile needs 98304 B of shared memory at head_dim 128 (still too much with one
+# stage), so it cannot compile on 64 KB parts: T4 (sm75) and AMD GPUs with 64 KB LDS. Those get
+# smaller forward and backward tiles, picked from the device limit, not the GPU name.
+_SMALL_SMEM_MAX_BYTES = 98304
+# T4 sweep (head_dim 128, fp16): forward 64 / 64 needs 65536 B even with one stage; 32 / 32 is the
+# fastest forward that fits; backward 32 / 32 with 8 warps beats the 16 / 16 default (37 vs 86 ms).
+_SMALL_SMEM_16BIT_OPTIONS = {
+    "fwd_BLOCK_M": 32,
+    "fwd_BLOCK_N": 32,
+    "fwd_num_stages": 1,
+    "fwd_num_warps": 4,
+    "bwd_BLOCK_M1": 32,
+    "bwd_BLOCK_N1": 32,
+    "bwd_BLOCK_M2": 32,
+    "bwd_BLOCK_N2": 32,
+    "bwd_num_stages": 1,
+    "bwd_num_warps": 8,
+}
+_SMEM_LIMIT: Dict[str, Optional[int]] = {}
+
+
+@torch._dynamo.disable
+def _query_smem_limit(device) -> Optional[int]:
+    """Per-block shared memory limit the Triton compiler checks against; None off GPU / unknown."""
+    limit = None
+    if device.type == "cuda":
+        try:
+            import triton
+            props = triton.runtime.driver.active.utils.get_device_properties(device.index or 0)
+            limit = int(props["max_shared_mem"])
+        except Exception:
+            props = torch.cuda.get_device_properties(device)
+            for name in ("shared_memory_per_block_optin", "shared_memory_per_block"):
+                if getattr(props, name, 0):
+                    limit = int(getattr(props, name))
+                    break
+    _SMEM_LIMIT[str(device)] = limit
+    return limit
+
+
+def _small_smem(device) -> bool:
+    if device is None:
+        return False
+    key = str(device)
+    if key not in _SMEM_LIMIT:
+        _query_smem_limit(device)
+    limit = _SMEM_LIMIT[key]
+    return limit is not None and limit <= _SMALL_SMEM_MAX_BYTES
+
+
+def _kernel_options_for_dtype(
+    dtype,
+    one_stage = False,
+    device = None,
+):
     """Pick the numerically-safe flash block sizes for the Q dtype."""
     if dtype == torch.bfloat16 or dtype == torch.float16:
+        if _small_smem(device):
+            # Stages are already pinned per pass, so the one-stage retry has nothing to change.
+            return dict(_SMALL_SMEM_16BIT_OPTIONS)
         options = {"BLOCK_M": _BF16_BLOCK_M, "BLOCK_N": _BF16_BLOCK_N}
     else:
         options = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
@@ -379,7 +436,7 @@ def _run_flex(
             block_mask = block_mask,
             enable_gqa = enable_gqa,
             scale = scale,
-            kernel_options = _kernel_options_for_dtype(qp.dtype, one_stage),
+            kernel_options = _kernel_options_for_dtype(qp.dtype, one_stage, qp.device),
         )
     else:
         out = flex_attention(
