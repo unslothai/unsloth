@@ -150,6 +150,9 @@ def test_models_install_and_options(host):
         "d3-edge-FLM",
         "embed-gemma-300m-FLM",
     ]
+    downloaded = [r["id"] for r in client.get("/v1/models").json()["data"]]
+    assert downloaded == [r["id"] for r in flm.catalog() if r["downloaded"]] != []
+    assert len(downloaded) < len(client.get("/v1/models?show_all=1").json()["data"])
     assert client.get("/v1/models/qwen3-0.6b-FLM/options").json()["effective"]["flm_args"] == ""
     assert client.post("/v1/install", json = {"recipe": "flm"}).status_code == 200
     flm.fail.add("version")

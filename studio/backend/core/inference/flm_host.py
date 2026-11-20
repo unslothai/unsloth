@@ -18,6 +18,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qs
 
 import httpx
 
@@ -219,8 +220,13 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
                         })  # fmt: skip
                 self._json(200, {"status": "ok", "all_models_loaded": loaded})
             elif path == "/v1/models":
+                query = parse_qs(self.path.partition("?")[2])
+                show_all = (query.get("show_all") or [""])[0].lower() in ("true", "1")
                 try:
-                    self._json(200, {"object": "list", "data": flm.catalog()})
+                    rows = flm.catalog()
+                    # Like lemond: downloaded models only unless show_all.
+                    rows = rows if show_all else [r for r in rows if r["downloaded"]]
+                    self._json(200, {"object": "list", "data": rows})
                 except Exception as exc:  # noqa: BLE001 -- reported to Studio
                     self._error(500, str(exc))
             elif path.startswith("/v1/models/") and path.endswith("/options"):
