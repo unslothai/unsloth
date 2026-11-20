@@ -97,12 +97,13 @@ export function OwnerAvatar({
 export function useAvatarImageUrl(
   owner: string,
   repoName?: string,
+  remote = true,
 ): string | null {
   const provider = resolveOwnerProviderLogo(owner, repoName);
   const isUnsloth = isUnslothOwner(owner);
   const remoteUrl = useHfOwnerAvatar(
     owner.trim() || "?",
-    provider == null && !isUnsloth,
+    remote && provider == null && !isUnsloth,
   );
   if (provider) {
     return provider.treatment === "original" ? provider.logoPath : null;
