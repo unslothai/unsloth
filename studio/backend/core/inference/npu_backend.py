@@ -37,6 +37,7 @@ from core.inference.flm_files import (
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable, OutputWindow
 from core.inference.npu_context import DEFAULT_CONTEXT_LENGTH, plan_context
 from core.inference.npu_flm_args import clamp_prefill_chunk, merge_flm_args
+from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
@@ -136,6 +137,26 @@ DRIVER_HELP_URL = {
 
 class NpuError(RuntimeError):
     """An NPU operation failed; the message is safe to show the user."""
+
+
+# STATUS_FAIL_FAST_EXCEPTION: an ordinary crash can exit with it too, so alone it proves no block.
+_FAIL_FAST = code_integrity_block_reason(0xC0000602)
+_FAIL_FAST_TEXT = re.compile(r"0xc0000602\b", re.IGNORECASE)
+
+
+def _lemonade_start_error(binary: Path, exc: Exception) -> str:
+    reason = code_integrity_block_reason(exc)
+    if reason == _FAIL_FAST:
+        reason = code_integrity_block_reason(_FAIL_FAST_TEXT.sub("", str(exc)))
+    if reason is not None and reason != _FAIL_FAST:
+        return code_integrity_user_message(str(binary.parent), reason)
+    if isinstance(exc, OSError):
+        return f"Lemonade could not start ({binary}): {exc}"
+    status = getattr(exc, "returncode", None)
+    if isinstance(status, int) and status != 0:
+        shown = f"0x{status & 0xFFFFFFFF:08X}" if sys.platform == "win32" else str(status)
+        return f"{exc}\nlemond exited with status {shown}."
+    return str(exc)
 
 
 class NpuBusy(NpuError):
@@ -380,6 +401,14 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     if explained == message and log_name:
         explained = f"{message} (Lemonade's output is on the Logs page.)"
     return f"{explained} {advice}".rstrip()
+
+
+def _blocked_message(binary: Path, error: object) -> Optional[str]:
+    """The user message when Windows code integrity refused ``binary`` or its DLLs, else None."""
+    blocked = code_integrity_block_reason(error)
+    if blocked is None or blocked == _FAIL_FAST:
+        return None
+    return code_integrity_user_message(str(binary.parent), blocked)
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -672,9 +701,9 @@ class LemonadeNpuBackend:
             self._server = self._server_for(binary)
             try:
                 self._server.start()
-            except LemonadeUnavailable as exc:
+            except (LemonadeUnavailable, OSError) as exc:
                 self._server = None
-                raise NpuError(str(exc)) from exc
+                raise NpuError(_lemonade_start_error(binary, exc)) from exc
             return self._server
 
     def enable(self) -> dict[str, Any]:
@@ -751,7 +780,8 @@ class LemonadeNpuBackend:
                 )
             )
         except OSError as exc:
-            return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
+            problem = _blocked_message(binary, exc) or f"flm validate could not run: {exc}"
+            return {"ready": False, "problems": [problem]}
         adopt_pid(process.pid)
         self._validate_process = process
         # After adopting: a shutdown sweep that already ran would miss it.
@@ -770,9 +800,13 @@ class LemonadeNpuBackend:
         try:
             report = json.loads(stdout)
         except ValueError:
+            # A refused DLL (flm links every model DLL) exits 0xC0E90002 before printing anything.
+            problem = _blocked_message(binary, process.returncode)
             return {
                 "ready": False,
-                "problems": [f"flm validate returned no report: {stdout[-300:].strip()}"],
+                "problems": [
+                    problem or f"flm validate returned no report: {stdout[-300:].strip()}"
+                ],
             }
         problems = [message for key, message in _VALIDATE_PROBLEMS if report.get(key) is False]
         ready = bool(report.get("ready"))
@@ -801,7 +835,10 @@ class LemonadeNpuBackend:
     def _flm_rows(self) -> list[dict[str, Any]]:
         """Every FastFlowLM model lemond knows, including the ones the catalog cannot chat with."""
         server = self._ensure_running()
-        response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
+        try:
+            response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
+        except LemonadeUnavailable as exc:
+            raise NpuError(f"Listing NPU models failed: {exc}") from exc
         if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         return [

@@ -33,6 +33,13 @@ export function npuPickerRows(
     }));
 }
 
+/** Whether Discover shows the NPU notice: setup before the runtime is ready, or a failed listing after. */
+export function npuNoticeShown(
+  catalog: { ready: boolean; listError: string | null } | null,
+): boolean {
+  return catalog !== null && (!catalog.ready || catalog.listError !== null);
+}
+
 /** Org whose Hugging Face avatar marks an NPU row: its repo's owner, else FastFlowLM. */
 export function npuMarkOwner(row?: {
   kind?: string;
