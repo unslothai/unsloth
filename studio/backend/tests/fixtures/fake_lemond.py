@@ -52,6 +52,13 @@ CATALOG = [
         "size": 0.58,
     },
     {
+        # FastFlowLM 1.0.13 GPU model: runs on the HIP runtime, not the NPU.
+        "id": "qwen3.5-oga-hipep-9b-FLM",
+        "checkpoint": "qwen3.5-oga-hipep:9b",
+        "labels": ["vision", "reasoning", "tool-calling", "chat"],
+        "size": 9.0,
+    },
+    {
         "id": "embed-gemma-300m-FLM",
         "checkpoint": "embed-gemma:300m",
         "labels": ["embeddings"],
