@@ -5,6 +5,7 @@
 
 import builtins
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -46,7 +47,8 @@ def _metal_info(
         patch.object(hw, "_llama_cpp_offloads_to_metal", return_value = offloads),
         patch.object(hw, "_metal_recommended_working_set_bytes", working_set),
         patch.object(hw, "_read_apple_gpu_stats", _agx_must_not_be_read),
-        patch("psutil.virtual_memory", return_value = vm),
+        # Some CI runners ship no psutil.
+        patch.dict(sys.modules, {"psutil": SimpleNamespace(virtual_memory = lambda: vm)}),
     ):
         return hw.get_apple_metal_inference_gpu_info()
 
@@ -218,7 +220,7 @@ def test_build_has_metal_follows_the_installer_wrapper(tmp_path):
     wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
     (tmp_path / "llama.cpp" / "libggml-base.dylib").write_bytes(b"")  # a CPU-only set at the top
     assert LlamaCppBackend._build_has_metal(str(wrapper)) is True
-    assert server.endswith("build/bin/llama-server")
+    assert Path(server).parts[-3:] == ("build", "bin", "llama-server")
 
 
 @pytest.mark.parametrize(
