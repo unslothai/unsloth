@@ -156,7 +156,7 @@ export function CharactersLibrary() {
       ) : null}
 
       {loading && list.length === 0 ? (
-        <div className="mt-6 grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-4">
+        <div className="mt-6 grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-4 max-sm:grid-cols-2 max-sm:gap-3">
           {Array.from({ length: 6 }).map((_, index) => (
             <Skeleton key={index} className="aspect-[2/3] w-full rounded-[22px]" />
           ))}
@@ -168,7 +168,7 @@ export function CharactersLibrary() {
       ) : shown.length === 0 ? (
         <p className="mt-16 text-center text-ui-15 text-muted-foreground">{t("characters.noMatches")}</p>
       ) : (
-        <div className="mt-5 grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-4" data-testid="character-grid">
+        <div className="mt-5 grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-4 max-sm:grid-cols-2 max-sm:gap-3" data-testid="character-grid">
           {shown.map((character) => (
             <CharacterCard
               key={character.id}

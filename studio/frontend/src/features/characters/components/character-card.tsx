@@ -92,7 +92,7 @@ export function CharacterCard({
               "absolute left-2 top-2 flex size-8 cursor-pointer items-center justify-center rounded-full text-white transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80",
               character.favorite
                 ? "opacity-100"
-                : "bg-black/35 opacity-0 backdrop-blur-[2px] group-hover/char:opacity-100",
+                : "bg-black/35 opacity-0 backdrop-blur-[2px] group-hover/char:opacity-100 pointer-coarse:opacity-100",
             )}
           >
             <HugeiconsIcon
@@ -101,7 +101,7 @@ export function CharacterCard({
               className={cn("size-4", character.favorite && "fill-amber-300 text-amber-300 drop-shadow")}
             />
           </button>
-          <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/char:opacity-100 has-[[aria-expanded=true]]:opacity-100">
+          <div className="absolute right-2 top-2 flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/char:opacity-100 has-[[aria-expanded=true]]:opacity-100 pointer-coarse:opacity-100">
             <CharacterActionsMenu
               character={character}
               onEdit={onEdit}
@@ -121,7 +121,9 @@ export function CharacterCard({
             size="sm"
             variant="primary"
             onClick={onChat}
-            className="absolute bottom-3 right-3 rounded-full opacity-0 shadow-md transition-opacity focus-visible:opacity-100 group-hover/char:opacity-100"
+            // Touch has no hover to reveal it, and an invisible button would catch taps meant for the
+            // card; there the profile's own Start button is one tap away.
+            className="absolute bottom-3 right-3 rounded-full opacity-0 shadow-md transition-opacity focus-visible:opacity-100 group-hover/char:opacity-100 pointer-coarse:hidden"
           >
             {t("characters.chatAction")}
           </Button>
