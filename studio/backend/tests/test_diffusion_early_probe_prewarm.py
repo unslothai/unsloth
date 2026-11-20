@@ -181,3 +181,46 @@ def test_joining_never_blocks_inside_tracing_or_capture(monkeypatch):
     gate.set()
     gemm.join_early_probe_prewarm()
     assert gemm._EARLY_PREWARM == {} and len(calls) == 1
+
+
+def test_a_joiner_racing_the_start_waits_for_the_warm_up(monkeypatch):
+    # A joiner that runs between publishing the entry and ``start()`` must still wait for the worker.
+    calls = _record(monkeypatch)
+    base = threading.Thread
+    seen = {}
+
+    def joiner():
+        gemm.join_early_probe_prewarm(0)
+        seen["calls_at_return"] = len(calls)
+
+    class RacingThread(base):
+        def start(self):
+            other = base(target = joiner)
+            other.start()
+            other.join(0.5)  # on the racy order the joiner finishes here, before the worker starts
+            super().start()
+            seen["joiner"] = other
+
+    monkeypatch.setattr(gemm.threading, "Thread", RacingThread)
+    assert gemm.start_early_probe_prewarm(0, rotated = True, producer = True)
+    seen["joiner"].join(10)
+    assert not seen["joiner"].is_alive()
+    assert seen["calls_at_return"] == 1
+    assert 0 not in gemm._EARLY_PREWARM
+
+
+def test_a_failed_thread_start_leaves_no_entry_and_allows_a_retry(monkeypatch):
+    calls = _record(monkeypatch)
+    base = threading.Thread
+
+    class FailingThread(base):
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(gemm.threading, "Thread", FailingThread)
+    assert not gemm.start_early_probe_prewarm(0, rotated = True, producer = True)
+    assert 0 not in gemm._EARLY_PREWARM
+    monkeypatch.setattr(gemm.threading, "Thread", base)
+    assert gemm.start_early_probe_prewarm(0, rotated = True, producer = True)
+    gemm.join_early_probe_prewarm(0)
+    assert len(calls) == 1

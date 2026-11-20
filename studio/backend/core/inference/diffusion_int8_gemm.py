@@ -2457,8 +2457,13 @@ def start_early_probe_prewarm(
                 name = "unsloth-probe-prewarm-early",
                 daemon = True,
             )
+            # Start before releasing the lock: a joiner that sees the entry must find a started thread
+            # (``join()`` on an unstarted one raises and would return before the warm-up ran).
+            try:
+                thread.start()
+            except Exception:  # noqa: BLE001
+                return False
             _EARLY_PREWARM[index] = thread
-        thread.start()
         return True
     except Exception:  # noqa: BLE001
         return False
