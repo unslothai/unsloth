@@ -75,7 +75,7 @@ export function GlassLenses({
       cancelAnimationFrame(frame);
       setHosts([]);
     };
-  }, [workspace, on, menus, preview, clear]);
+  }, [workspace, on, material, menus, preview, clear]);
   if (!wallpaper || !on) return null;
   return hosts.map((host, i) =>
     createPortal(
