@@ -113,7 +113,7 @@ from core.inference.sd_cpp_engine import (
     owning_managed_root,
     runtime_env,
 )
-from core.inference.sd_cpp_server import SdCppServer
+from core.inference.sd_cpp_server import SdCppLatentFormatError, SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
@@ -5259,16 +5259,20 @@ class SdCppDiffusionBackend:
                 and accepts((sd_cpp_torch_vae.SERVER_FEATURE,))
                 and _torch_decoder_ready()
             ):
-                latents = server.img_gen_latents(
-                    payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
-                )
+                latents = None
                 try:
+                    latents = server.img_gen_latents(
+                        payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
+                    )
                     return sd_cpp_torch_vae.decode(
                         latents, state.files.vae, threads = state.threads, cancel_event = cancel
                     )
                 except SdCppCancelled:
                     raise
                 except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
+                    # A failed, timed-out or dead render re-raises; only latents this client cannot use fall back.
+                    if latents is None and not isinstance(exc, SdCppLatentFormatError):
+                        raise
                     torch_vae["on"] = False
                     sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")
                     if cancel.is_set():
