@@ -77,10 +77,13 @@ _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
 _BF16_BLOCK_N = int(os.environ.get("PG_FLEX_BF16_BLOCK_N", "64"))
 
 
-# The 16-bit 128 / 64 tile needs 98304 B of shared memory at head_dim 128 (still too much with one
-# stage), so it cannot compile on 64 KB parts: T4 (sm75) and AMD GPUs with 64 KB LDS. Those get
-# smaller forward and backward tiles, picked from the device limit, not the GPU name.
-_SMALL_SMEM_MAX_BYTES = 98304
+# The 16-bit 128 / 64 tile needs 98304 B of shared memory at head_dim 128 (one stage too), so it
+# cannot compile on 64 KB parts (T4 sm75; AMD parts with 64 KB LDS). Smaller forward and backward
+# tiles compile there, picked from the queried limit. Opt-in: Triton emits no tensor-core MMA for
+# flex on sm75, so on T4 GRPO steps are 40% slower for Qwen3-0.6B and 3% faster for Qwen3-1.7B.
+_SMALL_SMEM_BELOW_BYTES = 98304
+_SMALL_SMEM_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_SMALL_SMEM", "0")
+_SMALL_SMEM_OPT_IN = _SMALL_SMEM_ENV.lower() in ("1", "true", "yes", "on")
 # T4 sweep (head_dim 128, fp16): forward 64 / 64 needs 65536 B even with one stage; 32 / 32 is the
 # fastest forward that fits; backward 32 / 32 with 8 warps beats the 16 / 16 default (37 vs 86 ms).
 _SMALL_SMEM_16BIT_OPTIONS = {
@@ -124,7 +127,7 @@ def _small_smem(device) -> bool:
     if key not in _SMEM_LIMIT:
         _query_smem_limit(device)
     limit = _SMEM_LIMIT[key]
-    return limit is not None and limit <= _SMALL_SMEM_MAX_BYTES
+    return limit is not None and limit < _SMALL_SMEM_BELOW_BYTES
 
 
 def _kernel_options_for_dtype(
@@ -134,7 +137,7 @@ def _kernel_options_for_dtype(
 ):
     """Pick the numerically-safe flash block sizes for the Q dtype."""
     if dtype == torch.bfloat16 or dtype == torch.float16:
-        if _small_smem(device):
+        if _SMALL_SMEM_OPT_IN and _small_smem(device):
             # Stages are already pinned per pass, so the one-stage retry has nothing to change.
             return dict(_SMALL_SMEM_16BIT_OPTIONS)
         options = {"BLOCK_M": _BF16_BLOCK_M, "BLOCK_N": _BF16_BLOCK_N}
@@ -492,10 +495,35 @@ def _keep_saved(tensor):
     return tensor
 
 
+def _record_compile_failure(key, reason):
+    global _COMPILE_FAILURE
+    _COMPILE_CHECKED[key] = False
+    _COMPILE_FAILURE = reason
+    print(
+        f"Unsloth: GRPO PrefixGrouper is off: its flex attention kernel does not compile with "
+        f"torch {torch.__version__} on this GPU ({reason}); using the packed path.",
+        flush = True,
+    )
+
+
+def _small_smem_skip_reason(q) -> Optional[str]:
+    """NVIDIA small-smem GPU, 16-bit, head_dim >= 128, no opt-in: the default tiles cannot fit, so
+    skip the failing compile (about 3 minutes on T4) and keep the packed path."""
+    if _SMALL_SMEM_OPT_IN or torch.version.hip is not None:
+        return None
+    if q.dtype not in (torch.float16, torch.bfloat16) or q.shape[-1] < 128:
+        return None
+    if not _small_smem(q.device):
+        return None
+    return (
+        f"head_dim {q.shape[-1]} tiles do not fit {_SMEM_LIMIT[str(q.device)]} B of shared memory; "
+        "UNSLOTH_GRPO_PREFIX_GROUPER_SMALL_SMEM=1 uses smaller tiles, faster only for larger models"
+    )
+
+
 @torch._dynamo.disable
 def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, key):
     """Real call plus fwd + bwd on detached copies, strict, so later calls reuse those graphs."""
-    global _COMPILE_FAILURE
 
     def strict_calls(one_stage):
         nonlocal block_mask
@@ -511,6 +539,10 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
                 torch.autograd.grad(oc.float().sum(), (qc, kc, vc))
         return out
 
+    reason = _small_smem_skip_reason(q)
+    if reason is not None:
+        _record_compile_failure(key, reason)
+        raise PrefixGrouperCompileError(reason)
     try:
         try:
             out = strict_calls(False)
@@ -528,13 +560,7 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
         if isinstance(root, torch.cuda.OutOfMemoryError):
             raise root from exc
         reason = _compile_failure_reason(root)
-        _COMPILE_CHECKED[key] = False
-        _COMPILE_FAILURE = reason
-        print(
-            f"Unsloth: GRPO PrefixGrouper is off: its flex attention kernel does not compile with "
-            f"torch {torch.__version__} on this GPU ({reason}); using the packed path.",
-            flush = True,
-        )
+        _record_compile_failure(key, reason)
         raise PrefixGrouperCompileError(reason) from None
     _COMPILE_CHECKED[key] = True
     return out
