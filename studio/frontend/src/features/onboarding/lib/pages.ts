@@ -4,7 +4,7 @@
 // Import-free so node:test can load it.
 
 /** Ids are stored per account: a new page needs a new id, and only accounts that never saw it get it. */
-export const ONBOARDING_PAGES = ["welcome", "profile", "look", "done"] as const;
+export const ONBOARDING_PAGES = ["welcome", "look", "done"] as const;
 
 export type OnboardingPageId = (typeof ONBOARDING_PAGES)[number];
 

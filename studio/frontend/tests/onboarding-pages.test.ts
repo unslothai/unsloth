@@ -36,7 +36,7 @@ test("an account that already chatted is adopted, not shown", () => {
 
 test("a run closed midway resumes at the first unseen page", () => {
   const decision = decideOnboarding(
-    record({ saved: true, pages: ["welcome", "profile"] }),
+    record({ saved: true, pages: ["welcome"] }),
   );
   assert.deepEqual(decision, { kind: "show", pages: ["look", "done"] });
 });
@@ -50,12 +50,12 @@ test("a finished account sees nothing, and only pages added since", () => {
   assert.deepEqual(decideOnboarding(all), { kind: "none" });
   const older = record({
     saved: true,
-    pages: ["welcome", "look", "done"],
+    pages: ["welcome", "done"],
     completedAt: 1,
   });
   assert.deepEqual(decideOnboarding(older), {
     kind: "show",
-    pages: ["profile", "done"],
+    pages: ["look", "done"],
   });
 });
 
@@ -63,7 +63,7 @@ test("bookends alone are never shown", () => {
   const decision = decideOnboarding(
     record({
       saved: true,
-      pages: ["profile", "look"],
+      pages: ["look"],
     }),
   );
   assert.deepEqual(decision, { kind: "none" });

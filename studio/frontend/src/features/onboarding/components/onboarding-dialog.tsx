@@ -8,7 +8,6 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
 import { TOUR_OPEN_EVENT, isTourListening } from "@/features/tour";
 import { useT } from "@/i18n";
@@ -27,7 +26,7 @@ import {
 import { useOnboardingStore } from "../store";
 import { useDeviceSummary } from "../use-device-summary";
 import { LookStep } from "./look-steps";
-import { DoneStep, ProfileStep, WelcomeStep } from "./onboarding-steps";
+import { DoneStep, WelcomeStep } from "./onboarding-steps";
 
 const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
@@ -88,7 +87,6 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
   const primaryRef = useRef<HTMLButtonElement>(null);
   const page = pages[index];
   const last = index === pages.length - 1;
-  const hasName = useUserProfileStore((s) => s.displayName.trim() !== "");
 
   const record = useCallback((id: OnboardingPageId, completed = false) => {
     seen.current.add(id);
@@ -143,9 +141,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
 
   const step =
     page === "welcome" ? (
-      <WelcomeStep />
-    ) : page === "profile" ? (
-      <ProfileStep onSubmit={next} />
+      <WelcomeStep onSubmit={next} />
     ) : page === "look" ? (
       <LookStep />
     ) : (
@@ -157,9 +153,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
       ? t("onboarding.getStarted")
       : last
         ? t("onboarding.done.open")
-        : page === "profile" && !hasName
-          ? t("onboarding.skip")
-          : t("onboarding.continue");
+        : t("onboarding.continue");
 
   const current = pages.indexOf(page);
 

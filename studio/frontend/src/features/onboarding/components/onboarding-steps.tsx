@@ -30,14 +30,7 @@ import { motion } from "motion/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { greetingName } from "../lib/pages";
 import type { DeviceSummary } from "../use-device-summary";
-import {
-  ChosenRing,
-  Group,
-  Mascot,
-  Row,
-  StepHeader,
-  Tile,
-} from "./onboarding-ui";
+import { ChosenRing, Group, Mascot, Row, Tile } from "./onboarding-ui";
 
 const WELCOME_POINTS: {
   icon: IconSvgElement;
@@ -60,33 +53,6 @@ const WELCOME_POINTS: {
     body: "onboarding.welcome.trainBody",
   },
 ];
-
-export function WelcomeStep() {
-  const t = useT();
-  return (
-    <div className="my-auto">
-      <Mascot src="Sloth emojis/large sloth wave.png" className="size-28" />
-      <div className="mt-6 mb-9 space-y-2.5 text-center">
-        <h2 className="font-heading text-[2.25rem] leading-[1.1] font-semibold tracking-[-0.025em]">
-          {t("onboarding.welcome.title")}
-        </h2>
-        <p className="text-muted-foreground text-[0.9375rem]">
-          {t("onboarding.welcome.body")}
-        </p>
-      </div>
-      <Group>
-        {WELCOME_POINTS.map((point) => (
-          <Row
-            key={point.title}
-            lead={<Tile icon={point.icon} />}
-            label={t(point.title)}
-            description={t(point.body)}
-          />
-        ))}
-      </Group>
-    </div>
-  );
-}
 
 const AVATARS = [
   "Sloth emojis/large sloth wave.png",
@@ -125,7 +91,7 @@ function AvatarChoice({
   );
 }
 
-export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
+export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
   const t = useT();
   const displayName = useUserProfileStore((s) => s.displayName);
   const setDisplayName = useUserProfileStore((s) => s.setDisplayName);
@@ -152,32 +118,54 @@ export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
   };
   return (
     <div>
-      <StepHeader
-        title={t("onboarding.profile.title")}
-        body={t("onboarding.profile.body")}
-      />
-      <div className="flex flex-col items-center">
+      <div className="flex flex-col items-center text-center">
         <motion.div
-          key={avatar ?? "initials"}
+          key={avatar ?? (displayName.trim() ? "initials" : "mascot")}
           initial={{ scale: 0.9, opacity: 0.6 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ type: "spring", stiffness: 380, damping: 22 }}
         >
-          <UserAvatar
-            name={displayName.trim() || "?"}
-            imageUrl={avatar}
-            size="lg"
-            className="size-20 text-2xl ring-4 ring-background"
-          />
+          {avatar === null && !displayName.trim() ? (
+            <Mascot
+              src="Sloth emojis/large sloth wave.png"
+              className="size-24"
+            />
+          ) : (
+            <UserAvatar
+              name={displayName.trim() || "?"}
+              imageUrl={avatar}
+              size="lg"
+              className="size-20 text-2xl ring-4 ring-background"
+            />
+          )}
         </motion.div>
-        <p className="font-heading mt-3 max-w-full truncate text-lg font-semibold tracking-[-0.01em]">
+        <h2 className="font-heading mt-4 max-w-full truncate text-[2rem] leading-[1.15] font-semibold tracking-[-0.025em]">
           {name
-            ? t("welcome.goodToSeeYouName", { name })
-            : t("welcome.goodToSeeYou")}
+            ? t("onboarding.welcome.titleName", { name })
+            : t("onboarding.welcome.title")}
+        </h2>
+        <p className="text-muted-foreground mt-2 text-[0.9375rem]">
+          {t("onboarding.welcome.body")}
         </p>
+        <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+          {WELCOME_POINTS.map((point) => (
+            <span
+              key={point.title}
+              title={t(point.body)}
+              className="bg-muted/60 text-muted-foreground flex h-7 items-center gap-1.5 rounded-full px-3 text-xs"
+            >
+              <HugeiconsIcon
+                icon={point.icon}
+                className="size-3.5"
+                strokeWidth={1.75}
+              />
+              {t(point.title)}
+            </span>
+          ))}
+        </div>
       </div>
       <form
-        className="mt-5"
+        className="mt-7"
         onSubmit={(e) => {
           e.preventDefault();
           onSubmit();
