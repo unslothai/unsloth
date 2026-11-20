@@ -156,8 +156,14 @@ def _reply(sock: socket.socket, status: str, message: str) -> None:
         pass
 
 
-def _splice(first: socket.socket, second: socket.socket) -> None:
+def _splice(
+    first: socket.socket,
+    second: socket.socket,
+    may_send = None,
+) -> dict[socket.socket, int]:
+    """may_send(n) is asked before each n bytes read from `first` go on; False ends the splice."""
     peers = {first: second, second: first}
+    read = {first: 0, second: 0}
     selector = selectors.DefaultSelector()
     try:
         for sock in peers:
@@ -166,11 +172,14 @@ def _splice(first: socket.socket, second: socket.socket) -> None:
         while selector.get_map():
             events = selector.select(_IDLE_TIMEOUT_SECONDS)
             if not events:
-                return
+                return read
             for key, _ in events:
                 sock = key.fileobj
                 data = sock.recv(65536)
                 if data:
+                    if sock is first and may_send is not None and not may_send(len(data)):
+                        return read
+                    read[sock] += len(data)
                     peers[sock].sendall(data)
                     continue
                 selector.unregister(sock)
@@ -179,15 +188,21 @@ def _splice(first: socket.socket, second: socket.socket) -> None:
                 except OSError:
                     pass
     except (OSError, ValueError):
-        return
+        pass
     finally:
         selector.close()
+    return read
 
 
 class EgressProxy:
     """Listens on a unix socket (bubblewrap) or an ephemeral 127.0.0.1 port (Seatbelt) until close()."""
 
-    def __init__(self, unix_path: str | None = None) -> None:
+    def __init__(
+        self,
+        unix_path: str | None = None,
+        gate = None,
+    ) -> None:
+        self._gate = gate
         family = socket.AF_UNIX if unix_path else socket.AF_INET
         listener = socket.socket(family, socket.SOCK_STREAM)
         try:
@@ -261,6 +276,9 @@ class EgressProxy:
                     forward = "\r\n".join(
                         [f"{method} {path} {version}", *kept, "Connection: close", "", ""]
                     ).encode("latin-1")
+                refusal = self._gate.check(host, port) if self._gate is not None else None
+                if refusal:
+                    raise EgressRefused(refusal)
                 upstream = _dial(host, port)
             except EgressRefused as exc:
                 logger.info("Sandboxed download refused: %s", exc)
@@ -276,13 +294,18 @@ class EgressProxy:
                 return
             client.settimeout(None)
             upstream.settimeout(None)
+            gate = self._gate
+            may_send = None if gate is None else (lambda size: gate.sending(host, port, size))
+            first = (forward or b"") + rest
             if forward is None:
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                if rest:
-                    upstream.sendall(rest)
-            else:
-                upstream.sendall(forward + rest)
-            _splice(client, upstream)
+            if first:
+                if may_send is not None and not may_send(len(first)):
+                    return
+                upstream.sendall(first)
+            read = _splice(client, upstream, may_send)
+            if gate is not None:
+                gate.record(host, port, len(first) + read[client], read[upstream])
         except OSError:
             pass
         finally:
@@ -290,6 +313,8 @@ class EgressProxy:
             self._release(client)
 
     def close(self) -> None:
+        if self._gate is not None:
+            self._gate.close()
         with self._lock:
             self._closed = True
             sockets = list(self._sockets)

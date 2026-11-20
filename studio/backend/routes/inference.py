@@ -3533,6 +3533,7 @@ from models.inference import (
     ToolApprovalStatusRequest,
     ToolConfirmRequest,
     BrowserActionResultRequest,
+    NetworkDecisionRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -22948,6 +22949,36 @@ async def browser_action_result(
         body.action_id, body.result, body.session_id, current_account_id()
     ):
         raise HTTPException(status_code = 404, detail = "No pending browser action")
+    return {"resolved": True}
+
+
+@studio_router.post("/network-decision")
+async def network_decision(
+    body: NetworkDecisionRequest, current_subject: str = Depends(get_current_subject)
+):
+    from state import network_requests
+    from utils import network_firewall
+    from utils.account_context import current_account_id, is_owner_context, via_api_key_context
+
+    account_id = current_account_id()
+    host = network_requests.pending_host(body.request_id, body.session_id, account_id)
+    if host is None:
+        raise HTTPException(status_code = 404, detail = "No pending network request")
+    if body.decision == "always":
+        # Changes the owner's allowed websites for every account, so only the owner's own UI may.
+        if not is_owner_context() or via_api_key_context():
+            raise HTTPException(
+                status_code = 403,
+                detail = "Only the installation owner can always allow a website, in the Unsloth UI.",
+            )
+        try:
+            await asyncio.to_thread(network_firewall.add_site, "allowed_sites", host)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    if not network_requests.resolve_request(
+        body.request_id, body.decision, body.session_id, account_id
+    ):
+        raise HTTPException(status_code = 404, detail = "No pending network request")
     return {"resolved": True}
 
 

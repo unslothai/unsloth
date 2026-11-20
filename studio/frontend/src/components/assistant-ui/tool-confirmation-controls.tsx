@@ -10,10 +10,12 @@ import { useFullAccessAllowed } from "@/features/auth/account-session";
 import { FullAccessConfirmContent } from "@/features/chat/permission-mode-select";
 import { hasChatFullAccess, withChatFullAccess } from "@/features/chat/utils/chat-full-access";
 import {
+  resolveNetworkRequest,
   resolveToolConfirmation,
   ToolApprovalGoneError,
 } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { formatBytes } from "@/features/hub";
 import { alwaysAllowComputerUseApp } from "@/features/computer-use/store";
 import { COMPUTER_USE_TOOL, alwaysAllowableApp } from "@/features/computer-use/summary";
 import { useT } from "@/i18n";
@@ -273,6 +275,65 @@ export function ToolConfirmationControls({
   );
 }
 
+function NetworkRequestControls({ toolCallId }: { toolCallId?: string }) {
+  const t = useT();
+  const request = useChatRuntimeStore((s) =>
+    toolCallId && Object.prototype.hasOwnProperty.call(s.toolNetworkRequests, toolCallId)
+      ? s.toolNetworkRequests[toolCallId]
+      : undefined,
+  );
+  const setToolNetworkRequest = useChatRuntimeStore((s) => s.setToolNetworkRequest);
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  if (!toolCallId || !request) return null;
+
+  const answer = async (decision: "allow" | "always" | "deny") => {
+    setPending(true);
+    setFailed(false);
+    try {
+      if (await resolveNetworkRequest(request.sessionId, request.id, decision)) {
+        setToolNetworkRequest(toolCallId, null, request.id);
+      } else {
+        setFailed(true);
+      }
+    } catch (err) {
+      // Gone: the call was stopped or timed out, so there is nothing left to answer.
+      if (err instanceof ToolApprovalGoneError) setToolNetworkRequest(toolCallId, null, request.id);
+      else setFailed(true);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const tool = request.tool === "terminal" ? "Terminal" : "Python";
+  const host =
+    request.port === 443 || request.port === 80 ? request.host : `${request.host}:${request.port}`;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 pt-1" data-slot="network-request">
+      <p className="w-full text-xs text-muted-foreground">
+        {request.kind === "upload"
+          ? t("networkRequest.upload", { tool, host, size: formatBytes(request.sent) })
+          : request.tool === "web"
+            ? t("networkRequest.page", { host })
+            : t("networkRequest.ask", { tool, host })}
+      </p>
+      <Button size="xs" disabled={pending} onClick={() => void answer("allow")}>
+        {t("networkRequest.allow")}
+      </Button>
+      {request.canAlways ? (
+        <Button size="xs" variant="outline" disabled={pending} onClick={() => void answer("always")}>
+          {t("networkRequest.always")}
+        </Button>
+      ) : null}
+      <Button size="xs" variant="destructive" disabled={pending} onClick={() => void answer("deny")}>
+        {t("networkRequest.deny")}
+      </Button>
+      {failed ? <span className="text-xs text-destructive">{t("networkRequest.failed")}</span> : null}
+    </div>
+  );
+}
+
 export function withToolConfirmation(
   Component: ToolCallMessagePartComponent,
 ): ToolCallMessagePartComponent {
@@ -285,6 +346,7 @@ export function withToolConfirmation(
         result={props.result}
         status={props.status}
       />
+      <NetworkRequestControls toolCallId={props.toolCallId} />
     </>
   );
   return WithToolConfirmation;

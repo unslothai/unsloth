@@ -1368,6 +1368,9 @@ def _web_fetch_host(tool_name: str, arguments: Any) -> str | None:
         return None
     if UNPARSED_ARGUMENTS_KEY in arguments:
         return None
+    # A read the owner's network rules may ask about is not started ahead of its turn.
+    if tools_module.network_firewall.confines_code():
+        return None
     url = arguments.get("url")
     if not isinstance(url, str) or not url.strip():
         return None

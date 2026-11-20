@@ -214,6 +214,11 @@ from utils.current_date_prompt_settings import (
     get_current_date_prompt_enabled,
     set_current_date_prompt_enabled,
 )
+from utils.network_firewall import (
+    add_site as add_network_firewall_site_to,
+    get_network_firewall,
+    set_network_firewall,
+)
 from utils.trusted_tool_folders_settings import (
     MAX_TRUSTED_TOOL_FOLDERS,
     get_trusted_tool_folders,
@@ -4441,6 +4446,43 @@ class TrustedToolFoldersResponse(BaseModel):
     folders: list[str]
 
 
+class NetworkFirewallPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["open", "ask", "allowlist"]
+    allowed_sites: list[StrictStr]
+    blocked_sites: list[StrictStr]
+
+
+class NetworkFirewallSitePayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    kind: Literal["allowed", "blocked"]
+    host: StrictStr = Field(min_length = 1, max_length = 253)
+
+
+class NetworkFirewallResponse(BaseModel):
+    mode: str
+    allowed_sites: list[str]
+    blocked_sites: list[str]
+    level: Literal["locked", "watched"]
+
+
+class NetworkConnection(BaseModel):
+    at: float
+    tool: str
+    host: str
+    port: int
+    verdict: str
+    sent: int
+    received: int
+    count: int
+
+
+class NetworkConnectionsResponse(BaseModel):
+    connections: list[NetworkConnection]
+
+
 class ChatMemoryPayload(BaseModel):
     enabled: Optional[StrictBool] = None
     text: Optional[StrictStr] = None
@@ -4834,6 +4876,95 @@ def update_trusted_tool_folders_setting(
         "settings.trusted_tool_folders_updated subject=%s count=%s", current_subject, len(folders)
     )
     return TrustedToolFoldersResponse(folders = folders)
+
+
+def _network_firewall_response(stored: dict) -> NetworkFirewallResponse:
+    from core.inference import os_sandbox
+    return NetworkFirewallResponse(
+        **stored,
+        level = "locked" if os_sandbox.network_confinement_available() else "watched",
+    )
+
+
+@_owner_settings_router.get("/network-firewall", response_model = NetworkFirewallResponse)
+def get_network_firewall_setting(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> NetworkFirewallResponse:
+    try:
+        stored = get_network_firewall()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the network settings.",
+            event = "settings.network_firewall_read_failed",
+            log = logger,
+        ) from exc
+    return _network_firewall_response(stored)
+
+
+@_owner_settings_router.put("/network-firewall", response_model = NetworkFirewallResponse)
+def update_network_firewall_setting(
+    payload: NetworkFirewallPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> NetworkFirewallResponse:
+    try:
+        stored = set_network_firewall(
+            mode = payload.mode,
+            allowed_sites = payload.allowed_sites,
+            blocked_sites = payload.blocked_sites,
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid network settings."),
+            event = "settings.update_network_firewall_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.network_firewall_updated subject=%s mode=%s allowed=%s blocked=%s",
+        current_subject,
+        stored["mode"],
+        len(stored["allowed_sites"]),
+        len(stored["blocked_sites"]),
+    )
+    return _network_firewall_response(stored)
+
+
+@_owner_settings_router.post("/network-firewall/site", response_model = NetworkFirewallResponse)
+def add_network_firewall_site(
+    payload: NetworkFirewallSitePayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> NetworkFirewallResponse:
+    try:
+        stored = add_network_firewall_site_to(f"{payload.kind}_sites", payload.host)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid website."),
+            event = "settings.add_network_firewall_site_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.network_firewall_site_added subject=%s list=%s", current_subject, payload.kind
+    )
+    return _network_firewall_response(stored)
+
+
+@_owner_settings_router.get(
+    "/network-firewall/connections", response_model = NetworkConnectionsResponse
+)
+def get_network_firewall_connections(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> NetworkConnectionsResponse:
+    from state.network_requests import recent_connections
+    return NetworkConnectionsResponse(connections = recent_connections())
 
 
 def _chat_memory_response() -> ChatMemoryResponse:

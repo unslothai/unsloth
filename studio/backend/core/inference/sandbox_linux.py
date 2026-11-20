@@ -561,7 +561,11 @@ def _private_network_works(bwrap: str, empty_proc: bool) -> bool:
     return _private_network_answers[key]
 
 
-def _start_egress(bwrap: str, empty_proc: bool) -> "tuple[str, sandbox_egress.EgressProxy] | None":
+def _start_egress(
+    bwrap: str,
+    empty_proc: bool,
+    gate = None,
+) -> "tuple[str, sandbox_egress.EgressProxy] | None":
     """None leaves the launch unproxied, which tools.py refuses for the calls that asked."""
     if not _private_network_works(bwrap, empty_proc):
         return None
@@ -570,7 +574,7 @@ def _start_egress(bwrap: str, empty_proc: bool) -> "tuple[str, sandbox_egress.Eg
     try:
         shutil.copyfile(sandbox_egress.RELAY_SCRIPT, os.path.join(directory, "relay.py"))
         sandbox_egress.write_empty_rc_files(directory)
-        return directory, sandbox_egress.EgressProxy(os.path.join(directory, "proxy.sock"))
+        return directory, sandbox_egress.EgressProxy(os.path.join(directory, "proxy.sock"), gate)
     except Exception:
         logger.warning("Could not start the sandbox egress proxy", exc_info = True)
         shutil.rmtree(directory, ignore_errors = True)
@@ -1011,7 +1015,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise
     egress = None
     try:
-        egress = _start_egress(bwrap, empty_proc) if plan.egress_proxy else None
+        egress = _start_egress(bwrap, empty_proc, plan.egress_gate) if plan.egress_proxy else None
         argv: list[str] = [
             bwrap,
             "--die-with-parent",

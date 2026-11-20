@@ -593,6 +593,20 @@ export async function resolveToolConfirmation(
     (!fullAccess || parsed.full_access_granted === true);
 }
 
+export async function resolveNetworkRequest(
+  sessionId: string,
+  requestId: string,
+  decision: "allow" | "always" | "deny",
+): Promise<boolean> {
+  const response = await authFetch("/api/inference/network-decision", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, request_id: requestId, decision }),
+  });
+  if (response.status === 404) throw new ToolApprovalGoneError();
+  return (await parseJsonOrThrow<{ resolved?: boolean }>(response)).resolved === true;
+}
+
 export interface CachedGgufRepo {
   repo_id: string;
   load_id?: string | null;
