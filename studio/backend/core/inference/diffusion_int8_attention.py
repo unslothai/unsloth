@@ -25,7 +25,7 @@ How the values are quantised (ideas from the cited papers, written from scratch 
   calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did; one
   with sinks keeps the path only where it still beats torch's attention on its own inputs (a race at that call).
   A seed renders the same image on the first render of a load as on the next: a plan whose sink-path calls were used
-  in a render keeps that path for the load, and the verdict it raced decides later loads before their first clip.
+  in a render where V clipped keeps that path for the load.
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -187,8 +187,8 @@ _CUDA_FAILED: dict = {}
 STATS = {"int8": 0, "native": 0, "triton": 0}
 _OUT_KIND = {"torch.float16": 0, "torch.bfloat16": 1, "torch.float32": 2}
 _KINDS: dict = {}  # torch dtype -> _OUT_KIND, filled on first use (torch is imported lazily)
-# Card verdicts and long / mid race floors persist per card + toolchain + these sources; sink race verdicts persist
-# per DiT class + checkpoint too (none for a DiT of no known checkpoint). UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+# Card verdicts and long / mid race floors persist per card + toolchain + these sources; sink decisions stay per
+# load. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
 PERSIST_SOURCES = (
     "diffusion_int8_attention.py",
     "diffusion_int8_attention_cuda.py",
@@ -580,12 +580,11 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it races at SINK_DECIDE_AT. A
-# known verdict is taken during the first SINK_LEARN_CALLS calls (_learn_now).
-# Undecided, a plan runs the sink path, which a graph records. A verdict other than the sink path is taken only where
-# no call whose output was used (not a thrown-away graph warm-up) clipped on the sink path: else the plan keeps it for
-# the load, so the first render repeats, and the verdict, kept for the bucket and persisted, decides the next plans
-# and loads at their first clipped call, before its attention runs (_learn_now).
+# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT
+# (the bucket's verdict of this load, else a race). Undecided, a plan runs the sink path, which a graph records. A
+# verdict other than the sink path is taken only where no call whose output was used (not a thrown-away graph
+# warm-up) clipped on the sink path: else the plan keeps it for the load, so the first render repeats. The verdict
+# stays the bucket's for the load; the next load races again.
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
 # A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).
@@ -629,8 +628,6 @@ def _decisions() -> dict:
 
 # Set once a CUDA graph records a sink-route call: no later race or route change, the graph replays what it recorded.
 _GRAPHED = [False]
-# (DiT class, checkpoint) of the sink routes installed last (note_sink_checkpoint): persisted sink verdicts key on it.
-_SINK_DIT: list = [None]
 # (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
 _ROUTES: list = []
 
@@ -985,14 +982,13 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
     n = plan["calls"]
     plan["calls"] = n + 1
     # a CUDA graph's side-stream warm-ups throw their outputs away: those calls pin no route
-    plan["used_prior"] = n - plan.get("discarded", 0)
     if _discarded_call():
         plan["discarded"] = plan.get("discarded", 0) + 1
     if plan["sinks"] is None and n >= SINK_DECIDE_AT:
         # its event waits and the race's are prohibited while another thread records a graph: decide on a later call
         with _outside_capture() as safe:
             if safe:
-                seen = bool(plan.get("seen"))
+                seen = False
                 for check in plan["checks"]:
                     # one wait per plan and load: the last undecided calls' copies may still be in flight
                     check[0].synchronize()
@@ -1003,7 +999,7 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                 plan["checks"] = []
                 # the bucket's verdict for plans that, like this one, had sinks (or none: no race either way)
                 key = plan["decision"] + (seen,) if "decision" in plan else None
-                known = _known_verdict(plan) if seen else None
+                known = _decisions().get(key) if key is not None else None
                 if not seen:
                     plan["sinks"] = (
                         False  # the same bits as the sink path a graph may have recorded
@@ -1012,20 +1008,18 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                     # after a capture: the path the graph recorded for an undecided plan, no race, no route change
                     plan["sinks"] = True
                 else:
-                    # new to this load (raced, or persisted by an earlier load): it moves routes; the bucket keeps it
-                    fresh = key is not None and key not in _decisions()
-                    # never decided: the race checks accuracy on this model's own inputs (_pick_path)
+                    # raced by this plan: it moves routes; the bucket keeps it for the load
+                    fresh = key is not None and known is None
+                    # never persisted: the race checks accuracy on this model's own inputs (_pick_path)
                     verdict = known if known is not None else (True if race is None else race())
                     if fresh:
                         _decisions()[key] = verdict
-                        if known is None and race is not None:
-                            _persist_sink_verdict(plan, verdict)
                     if verdict == "native" and fresh and _routes_used(plan):
                         # moving the routes would put another plan's used INT8 calls on torch's attention next render
                         verdict = True
                     if verdict is not True and plan.get("live_seen"):
                         # a render already used this plan's sink-path outputs where V clipped: keep the path for the
-                        # load (the next render repeats the seed); the verdict decides the next plans and loads
+                        # load (the next render repeats the seed); the bucket keeps the verdict for later plans
                         verdict = True
                     plan["sinks"] = verdict
                     if verdict == "native" and fresh:
@@ -1156,84 +1150,6 @@ def _discarded_call() -> bool:
         return False
 
 
-def _sink_verdict_key(plan: dict) -> str:
-    return "sinks:" + repr((_SINK_DIT[0],) + tuple(plan["decision"][1:]))
-
-
-def _known_verdict(plan: dict) -> Any:
-    """The race verdict of a plan with sinks: its bucket's in this load, else one an earlier load persisted for this
-    checkpoint, card and bucket; None if neither."""
-    if "decision" not in plan:
-        return None
-    known = _decisions().get(plan["decision"] + (True,))
-    if known is None and _SINK_DIT[0] is not None:
-        try:
-            known = persisted().get(card_name(plan["index"]), _sink_verdict_key(plan))
-        except Exception:  # noqa: BLE001
-            known = None
-    return known if known in (True, False, "native") else None
-
-
-def _persist_sink_verdict(plan: dict, verdict: Any) -> None:
-    """A race that ran to the end (an out-of-memory race sets no ``sink_race``) keeps its verdict for later loads."""
-    if "decision" not in plan or verdict not in (True, False, "native") or _SINK_DIT[0] is None:
-        return
-    if "sink_race" not in plan:
-        return
-    try:
-        persisted().put(card_name(plan["index"]), _sink_verdict_key(plan), verdict)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _learn_now(plan: dict, i8: Any, n: Optional[int]) -> Any:
-    """For one of an undecided plan's first SINK_LEARN_CALLS calls, after its sink-path quantisers, where the bucket
-    already has a verdict (an earlier plan of this load, or a persisted one): whether a head clipped V, read now (one
-    wait on this call's quantisers, until the first clip). The first clipped call takes the verdict before its
-    attention runs; the calls before it clipped nothing, so the sink path gave them the bits the kernels without it
-    give. Returns the path this call takes (True: the sink path, as quantised; False: the kernels without it;
-    "native"), or None to leave the call to _check_sinks and the decision at SINK_DECIDE_AT (no verdict yet, or
-    another thread records a CUDA graph)."""
-    import torch
-
-    if n is None or n >= SINK_LEARN_CALLS or plan["sinks"] is not None:
-        return True
-    known = _known_verdict(plan)
-    if known is None or _GRAPHED[0]:
-        return None
-    with _outside_capture() as safe:
-        if not safe:
-            return None
-        at, (BH,) = plan["off"]["rcnt"], plan["layout"]["rcnt"][1]
-        clipped = bool(i8[at : at + 4 * BH].view(torch.int32).any())
-        if not clipped:
-            if n == SINK_LEARN_CALLS - 1 and not plan["checks"]:
-                plan["sinks"] = (
-                    False  # the same bits as the sink path this and the earlier calls took
-                )
-            return True
-        if known == "native" and (
-            plan.get("used_prior", n) or _bucket_ran(plan) or _routes_used(plan)
-        ):
-            # earlier INT8 outputs of this bucket, or of another plan on the routes torch's attention would move, were
-            # used: torch's attention would change them on the next render
-            known = True
-        fresh = plan["decision"] + (True,) not in _decisions()
-        _decisions()[plan["decision"] + (True,)] = known
-        # A verdict another plan published while this one learned: an earlier used call of this plan may already
-        # have clipped on the sink path (its check still pending), and then this plan keeps it for the load.
-        for check in plan["checks"]:
-            check[0].synchronize()
-            if len(check) > 2 and check[2] and bool(check[1].any()):
-                plan["live_seen"] = True
-        plan["checks"] = []
-        path = True if plan.get("live_seen") else known
-        plan["sinks"] = path
-        if path == "native" and fresh:
-            _drop_routes(plan)
-    return path
-
-
 def _used_calls(plan: dict) -> int:
     """Calls whose outputs a render used (not a CUDA graph's thrown-away side-stream warm-ups)."""
     return plan.get("calls", 0) - plan.get("discarded", 0)
@@ -1251,16 +1167,6 @@ def _routes_used(plan: dict) -> bool:
         and other.get("index") == plan.get("index")
         and (other.get("shape") or (None,) * 5)[4] == dim
         and _used_calls(other)
-        for other in _plans().values()
-        if isinstance(other, dict)
-    )
-
-
-def _bucket_ran(plan: dict) -> bool:
-    """Whether another plan of ``plan``'s decision bucket already ran a used call this load."""
-    bucket = plan.get("decision")
-    return any(
-        other is not plan and other.get("decision") == bucket and _used_calls(other)
         for other in _plans().values()
         if isinstance(other, dict)
     )
@@ -1352,15 +1258,7 @@ def _attention_on_device(
     stream = _raw_stream(index)
     _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, path)
     if path:
-        decided = _learn_now(plan, i8, n)
-        if decided is None:
-            _check_sinks(plan, i8, n)
-        elif decided == "native":
-            return native_attention(q, k, v) if scale is None else native_attention(q, k, v, scale)
-        elif decided is False:
-            # this call clipped and the kernels without the sink path won: quantise it again for them
-            _launch_quantisers(plan, q, k, v, i8.data_ptr(), stream, False)
-            path = False
+        _check_sinks(plan, i8, n)
     _launch_attention(plan, i8.data_ptr(), out.data_ptr(), stream, path)
     return out
 
@@ -2056,17 +1954,6 @@ def sink_mode(dit_name: str, forced: bool) -> int:
     return MODE_KERNELS if forced else MODE_RACE
 
 
-def note_sink_checkpoint(dit: Any) -> None:
-    """The sink-family DiT whose routes are installed: persisted sink verdicts key on its class and checkpoint, since
-    a verdict holds for the model whose inputs it raced on (a DiT of no known checkpoint persists none)."""
-    name = type(dit).__name__
-    if name not in SINK_DITS:
-        _SINK_DIT[0] = None  # never the previous load's checkpoint
-        return
-    path = str(getattr(getattr(dit, "config", None), "_name_or_path", "") or "")
-    _SINK_DIT[0] = (name, path) if path else None
-
-
 def install_int8_attention(
     transformer: Any,
     *,
@@ -2124,8 +2011,6 @@ def _install(
     candidates = [
         m for m in int8_processors(transformer) if modules is None or any(m is x for x in modules)
     ]
-    # Every install path (the floor-based auto installs too) keys persisted sink verdicts on this load's checkpoint.
-    note_sink_checkpoint(transformer)
     if not candidates:
         return 0
     env_force = setting == "force" and env_forced(policy)
