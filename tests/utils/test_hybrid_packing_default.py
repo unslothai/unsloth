@@ -551,10 +551,31 @@ def test_default_on_is_cuda_only(monkeypatch, caplog):
     model = FakeHybrid(mixer)
     with caplog.at_level(logging.WARNING, logger = "unsloth.hybrid_packing"):
         assert patch_hybrid_linear_attention_varlen(model) is False
-    assert "only on CUDA" in caplog.text
+    assert "default-on only on CUDA" in caplog.text
     assert _untouched(model, conv_exact, scan_exact)
     monkeypatch.setenv(ENV, "1")
     assert patch_hybrid_linear_attention_varlen(FakeHybrid(FakeGatedDeltaNet())) is True
+
+
+def test_opt_in_records_the_device_outside_the_default_on_set(monkeypatch):
+    monkeypatch.undo()  # the real device check
+    monkeypatch.setenv(ENV, "1")
+    monkeypatch.setattr(torch.version, "hip", None)
+    cpu_model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(cpu_model) is True
+    assert packing_module.hybrid_packing_opt_in_device(cpu_model) == "cpu"
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    rocm_model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(rocm_model) is True
+    assert packing_module.hybrid_packing_opt_in_device(rocm_model) == "ROCm"
+
+
+def test_default_on_device_records_no_opt_in(monkeypatch):
+    monkeypatch.delenv(ENV, raising = False)
+    model = FakeHybrid(FakeGatedDeltaNet())
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert packing_module.hybrid_packing_opt_in_device(model) is None
+    assert packing_module.hybrid_packing_opt_in_device(object()) is None
 
 
 def test_default_on_is_cuda_only_for_kwargs_mixers(monkeypatch, caplog):
@@ -773,3 +794,21 @@ def test_a_failed_probe_restores_the_mirrored_alias_namespace(monkeypatch):
     for n, m in zip(names, (modeling, other, stale)):
         for k, fn in before[n].items():
             assert vars(m)[k] is fn, (n, k)
+
+
+@pytest.mark.parametrize("varlen", [True, False])
+def test_rocm_default_on_follows_the_varlen_self_check(monkeypatch, varlen):
+    """ROCm GPUs pack hybrids by default exactly when hf_packed_attention's flash varlen self-check passes."""
+    from unsloth.utils import hf_packed_attention as hpa
+
+    monkeypatch.undo()
+    mixer = FakeGatedDeltaNet()
+    monkeypatch.setattr(
+        mixer, "parameters", lambda: iter([types.SimpleNamespace(device = torch.device("cuda", 0))])
+    )
+    monkeypatch.setattr(torch.version, "hip", "7.1")
+    monkeypatch.setattr(hpa, "_torch_varlen", lambda device: (lambda *a: None) if varlen else None)
+    assert packing_module._auto_hybrid_device_ok(mixer) is varlen
+    assert packing_module._hybrid_opt_in_device([mixer]) == (None if varlen else "ROCm")
+    monkeypatch.setattr(torch.version, "hip", None)
+    assert packing_module._auto_hybrid_device_ok(mixer)

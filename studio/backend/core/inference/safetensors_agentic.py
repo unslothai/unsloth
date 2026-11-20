@@ -11,6 +11,7 @@ native transformers has no such channel, so this loop parses tool calls from the
 dispatches via ``core.inference.tools``.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import bisect
 import inspect
 import json
@@ -559,7 +560,7 @@ def run_safetensors_tool_loop(
     auto_heal_tool_calls: bool = True,
     deduplicate_tool_calls: bool = True,
     nudge_tool_calls: Optional[bool] = None,
-    max_tool_iterations: int = 25,
+    max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
@@ -582,6 +583,7 @@ def run_safetensors_tool_loop(
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
     tool_choice = None,
     disable_parallel_tool_use: bool = False,
+    mcp_match_exchange: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Yields status, content, tool_start and tool_end event dicts; content is cumulative text per turn."""
     if mcp_image is not None:
@@ -662,6 +664,18 @@ def run_safetensors_tool_loop(
     rag_autoinjected = bool(_auto)
     # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
     forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
+    if (
+        mcp_match_exchange
+        and mcp_match_exchange.get("messages")
+        and tool_choice != "none"
+        and not forced_tool_name(tool_choice)
+        and not (
+            continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+        )
+    ):
+        for _ev in mcp_match_exchange["events"]:
+            yield _ev
+        conversation.extend(mcp_match_exchange["messages"])
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the

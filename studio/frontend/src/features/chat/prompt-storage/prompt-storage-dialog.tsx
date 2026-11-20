@@ -21,6 +21,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { authFetch } from "@/features/auth";
+import {
+  SANDBOX_FILE_TOOLS,
+  isSandboxToolResult,
+  sandboxFilePath,
+} from "@/components/assistant-ui/sandbox-files";
 
 import { cn } from "@/lib/utils";
 import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
@@ -95,7 +101,7 @@ import {
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
-import { COMBINED_CSV_HEADER, csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
+import { COMBINED_CSV_HEADER, csvDocument, csvEscape, CSV_MIME, PROMPT_LISTS_CSV_HEADER } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -198,10 +204,14 @@ function exportListCsv(entry: PromptListEntry): Promise<void> {
 }
 
 function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
+  const numbered = entries.length > 1;
   const rows = entries
-    .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
+    .flatMap((e, n) =>
+      e.items.map((text, i) => `${numbered ? `${n + 1},` : ""}${csvEscape(e.name)},${i + 1},${csvEscape(text)}`),
+    )
     .join("\n");
-  return downloadBlob(csvDocument(["list_name,order,prompt_text", rows]), "prompt-lists.csv", CSV_MIME);
+  const header = numbered ? PROMPT_LISTS_CSV_HEADER : "list_name,order,prompt_text";
+  return downloadBlob(csvDocument([header, rows]), "prompt-lists.csv", CSV_MIME);
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -611,10 +621,10 @@ async function loadConversationForHtml(
       : undefined;
   return {
     title: title ?? (thread?.title?.trim() || "Conversation"),
-    messages: messages.map((msg) => {
+    messages: await Promise.all(messages.map(async (msg) => {
       const images: string[] = [];
       const rest = {
-        content: takeDataImages(msg.content, images),
+        content: takeDataImages(await withSandboxImages(msg.content), images),
         attachments: msg.attachments?.map((attachment) => ({
           content: takeDataImages(attachment?.content, images),
         })),
@@ -628,8 +638,54 @@ async function loadConversationForHtml(
         ),
         images,
       };
-    }),
+    })),
   };
+}
+
+async function withSandboxImages(content: unknown): Promise<unknown> {
+  if (!Array.isArray(content)) return content;
+  const parts = await Promise.all(
+    content.map(async (part) => {
+      const { type, toolName, result } = (part ?? {}) as Record<string, unknown>;
+      if (
+        type !== "tool-call" ||
+        typeof toolName !== "string" ||
+        !SANDBOX_FILE_TOOLS.has(toolName) ||
+        !isSandboxToolResult(result)
+      ) {
+        return [part];
+      }
+      const { sessionId, images } = result as { text: string; sessionId: string; images: unknown[] };
+      const pictures = await Promise.all(
+        images
+          .filter((name): name is string => typeof name === "string" && name.length > 0)
+          .map((name) => sandboxImageMarkdown(sessionId, name)),
+      );
+      return [part, ...pictures.map((text) => ({ type: "text", text }))];
+    }),
+  );
+  return parts.flat();
+}
+
+// marked overflows V8's fixed regexp backtrack stack on a data URL of about 8M characters.
+const MAX_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
+
+async function sandboxImageMarkdown(sessionId: string, name: string): Promise<string> {
+  const alt = name.replace(/[\\[\]]/g, "\\$&");
+  const blob = await authFetch(sandboxFilePath(sessionId, name))
+    .then((response) => (response.ok ? response.blob() : null))
+    .catch(() => null);
+  const src = blob && blob.size <= MAX_INLINE_IMAGE_BYTES ? await blobDataUrl(blob) : "";
+  return isDataImage(src) ? `![${alt}](${src})` : `[image: ${alt}]`;
+}
+
+function blobDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => resolve("");
+    reader.readAsDataURL(blob);
+  });
 }
 
 function takeDataImages(content: unknown, images: string[]): unknown {
@@ -1369,23 +1425,26 @@ async function importListsFromText(text: string, isCsv: boolean): Promise<{ coun
   const lists: PromptListEntry[] = [];
   let skipped = 0;
   if (isCsv) {
-    const rows = parseCsv(text).slice(1);
-    const listMap = new Map<string, Array<{ order: number; text: string }>>();
-    for (const cells of rows) {
+    const [header = [], ...rows] = parseCsv(text);
+    const numbered = header.map((cell) => cell.trim().toLowerCase()).join(",") === PROMPT_LISTS_CSV_HEADER;
+    const listMap = new Map<string, { name: string; items: Array<{ order: number; text: string }> }>();
+    for (const row of rows) {
+      const cells = numbered ? row.slice(1) : row;
       const listName = cells[0]?.trim();
       const promptText = cells[2]?.trim();
       if (listName && promptText) {
         const order = parseInt(cells[1] ?? "0", 10) || 0;
-        if (!listMap.has(listName)) listMap.set(listName, []);
-        listMap.get(listName)!.push({ order, text: promptText });
+        const key = numbered ? row[0] : listName;
+        if (!listMap.has(key)) listMap.set(key, { name: listName, items: [] });
+        listMap.get(key)!.items.push({ order, text: promptText });
       }
     }
-    for (const [listName, items] of listMap.entries()) {
+    for (const { name, items } of listMap.values()) {
       const sorted = items.sort((a, b) => a.order - b.order).map((x) => x.text);
       if (sorted.length > 0) {
         lists.push({
           id: newId(),
-          name: listName,
+          name,
           items: sorted,
           createdAt: now(),
           updatedAt: now(),

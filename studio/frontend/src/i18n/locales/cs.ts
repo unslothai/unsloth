@@ -179,6 +179,7 @@ export const cs = {
       add: "Přidat",
       cancel: "Zrušit",
       removeSite: "Odebrat {site}",
+      hostOnly: "Pouze tento hostitel, ne jeho subdomény",
       permissionsNote:
         "Zobrazují se zde jen weby s vlastními oprávněními. Akce jsou přihlášení, odeslání formulářů a tlačítka, která nakupují, odesílají nebo mažou.",
       siteInvalid: "Zadejte web, například example.com nebo *.example.com.",
@@ -806,6 +807,7 @@ export const cs = {
     failed:
       "Instalace modulu se nezdařila. Zkuste to znovu nebo použijte výchozí modul.",
     details: "Technické podrobnosti",
+    lastAttempt: "Poslední pokus: {time}",
     cancelled: "Instalace byla zrušena. Můžete to zkusit znovu.",
     scope:
       "Textový a obrázkový chat na GPU NVIDIA. První načtení může trvat déle.",
@@ -977,8 +979,8 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
+    addScheduledTask: "Přidat naplánovanou úlohu…",
     compact: "Zkomprimovat konverzaci",
-    compactQueued: "Komprimace byla vyžádána pro další zprávu",
     compactEmpty: "Zatím není co komprimovat",
     compactUnsupported:
       "Komprimace vyžaduje model GGUF nebo MLX s podporou nástrojů",
@@ -1870,6 +1872,12 @@ export const cs = {
       learnMore: "Další informace",
       managedNote:
         "Sandbox operačního systému nastavuje vlastník tohoto serveru Unsloth.",
+      trustedFoldersTitle: "Důvěryhodné složky",
+      trustedFoldersLabel: "Spouštět bez ptaní",
+      trustedFoldersDescription: "Python a Terminál mohou číst a spouštět soubory v těchto složkách bez žádosti o schválení, pouze ve vašich vlastních chatech. Zápis do nich se stále ptá. Jedna složka na řádek.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Důvěryhodné složky se nepodařilo načíst.",
+      trustedFoldersSaveError: "Důvěryhodné složky se nepodařilo uložit.",
     },
     debugging: {
       description: "Čtěte protokoly Unsloth, aniž byste opustili aplikaci.",
@@ -2309,7 +2317,7 @@ export const cs = {
       modelAliases: {
         sectionTitle: "Aliasy modelů (OpenAI API)",
         description:
-          "Stálé názvy pro klienty API, například fast-chat nebo code. Požadavek s aliasem obslouží model, na který alias odkazuje, takže připojené aplikace fungují i po výměně modelů. Zapněte možnost Přepínat model podle požadavku, aby alias mohl načíst svůj model.",
+          "Krátké názvy, které mohou klienti API používat místo celého názvu modelu.",
         namePlaceholder: "fast-chat",
         nameAriaLabel: "Název aliasu",
         modelAriaLabel: "Model, na který alias odkazuje",
@@ -2318,6 +2326,13 @@ export const cs = {
         add: "Přidat alias",
         loadError: "Aliasy modelů se nepodařilo načíst.",
         saveError: "Aliasy modelů se nepodařilo uložit.",
+        contextLength: "Délka kontextu",
+        kvCacheType: "Typ mezipaměti KV",
+        speculativeDecoding: "Spekulativní dekódování",
+        savedSetting: "Uložené nastavení",
+        loadSettings: "Nastavení načtení",
+        loadSettingsHint:
+          "Jen pro modely GGUF. Prázdná pole použijí uložená nastavení modelu.",
       },
       previewSharing: {
         sectionTitle: "Sdílení náhledů",
@@ -2731,6 +2746,54 @@ export const cs = {
     appearance: {
       title: "Vzhled",
       description: "Jak Unsloth vypadá v tomto zařízení.",
+      themeFile: {
+        title: "Soubor motivu",
+        importLabel: "Importovat motiv",
+        import: "Importovat",
+        exportLabel: "Exportovat váš motiv",
+        export: "Exportovat",
+        exportTitle: "Exportovat motiv",
+        exportName: "Název motivu",
+        exportNamePlaceholder: "Můj motiv",
+        exportIncludeLayout: "Zahrnout rozvržení postranního panelu",
+        exportIncludeAssets: "Zahrnout importovaná písma a obrázek na pozadí",
+        exportAction: "Stáhnout",
+        exported: "Motiv uložen jako {name}",
+        exportFailed: "Motiv se nepodařilo exportovat.",
+        exportBackgroundOmitted: "Obrázek pozadí byl pro zahrnutí příliš velký, soubor byl proto uložen bez něj.",
+        importTitle: "Importovat motiv",
+        importApplyLayout: "Použít také rozvržení postranního panelu",
+        importApplyAssets: "Použít také písma a obrázek na pozadí",
+        importApply: "Použít motiv",
+        changesTitle: "Co se změní",
+        noChanges: "Tento motiv odpovídá vašemu aktuálnímu vzhledu.",
+        warningsTitle: "Upozornění",
+        applied: "Motiv „{name}“ byl použit",
+        undo: "Zpět",
+        undone: "Předchozí vzhled byl obnoven",
+        undoneWithoutBackground: "Předchozí vzhled byl obnoven, ale obrázek pozadí se nepodařilo vrátit.",
+        fileTooLarge: "Tento soubor je příliš velký na to, aby byl motivem.",
+        fileInvalid: "Tento soubor není platný motiv Unsloth.",
+        change: {
+          palette: "Barevný motiv",
+          colors: "Barvy a kontrast",
+          typography: "Písma a velikost textu",
+          code: "Zobrazení kódu",
+          chat: "Šířka chatu a editor zpráv",
+          glass: "Sklo",
+          layout: "Rozvržení postranního panelu",
+          fonts: "Importovaná písma",
+          background: "Obrázek na pozadí",
+        },
+        warning: {
+          newerVersion: "Vytvořeno novější verzí Unsloth. Nastavení, která tato verze nezná, byla přeskočena.",
+          unknownPalette: "Neznámý barevný motiv „{palette}“, místo něj se použije Standardní.",
+          unknown: "Přeskočeno neznámé nastavení: {path}",
+          invalid: "Nahrazena neplatná hodnota: {path}",
+          backgroundSkipped: "Obrázek na pozadí v tomto souboru nelze použít.",
+          more: "A dalších {count}",
+        },
+      },
       gpuRendering: {
         sectionTitle: "Vykreslování",
         label: "Vykreslování pomocí GPU",
@@ -3357,6 +3420,7 @@ export const cs = {
       groups: {
         replies: { title: "Odpovědi" },
         thinkingTools: { title: "Přemýšlení a nástroje" },
+        customization: { title: "Přizpůsobení" },
         conversations: {
           title: "Konverzace",
         },
@@ -3408,6 +3472,10 @@ export const cs = {
         fitOnDeviceOnly: "Zobrazovat jen modely, které se vejdou",
         fitOnDeviceOnlyDescription:
           "Ve výběru modelu a v centru modelů skrýt modely, které jsou pro paměť GPU a RAM tohoto zařízení příliš velké. Stažené modely zůstanou viditelné.",
+        pickerExpandLoaded: "Zobrazit celý seznam modelů",
+        pickerExpandLoadedDescription: "Při načteném modelu otevírat výběr modelu na celém seznamu místo jen načteného modelu. Rozbalení nebo sbalení výběru toto nastavení také změní.",
+        pickerMonochromeIcons: "Jednobarevné ikony modelů",
+        pickerMonochromeIconsDescription: "Zobrazovat loga modelů a poskytovatelů ve výběru modelu černě, bíle a šedě.",
       },
       menu: {
         title: "Nabídka chatu",
@@ -5194,6 +5262,8 @@ export const cs = {
   translate: {
     title: "Překlad",
     detectLanguage: "Rozpoznat jazyk",
+    detectedLanguage: "{language} (rozpoznáno)",
+    detectedTab: "{language} - Rozpoznáno",
     sourceLanguage: "Přeložit z",
     targetLanguage: "Přeložit do",
     recentTargets: "Nedávné",
@@ -5204,17 +5274,20 @@ export const cs = {
     translate: "Přeložit",
     stop: "Zastavit",
     sourceLabel: "Text k překladu",
-    sourcePlaceholder:
-      "Napište nebo vložte text, případně sem přetáhněte textový soubor",
+    sourcePlaceholder: "Napište nebo vložte text, nebo přetáhněte dokument či obrázek",
     outputLabel: "Překlad",
     outputEmpty: "Překlad se zobrazí zde.",
     firstRunHint:
       "Při prvním překladu se stáhne {model} ({size}). Poté běží offline na tomto zařízení.",
+    charLimit: "Max. {max} znaků",
+    readingFile: "Načítání {name}…",
+    downloadConfirmTitle: "Stáhnout {model}?",
+    downloadConfirm: "Stáhnout",
     clear: "Vymazat",
     paste: "Vložit",
-    openFile: "Otevřít textový soubor",
-    dropFile: "Přetáhněte sem textový soubor a přeložte ho",
-    fileNotText: "Zde lze otevřít pouze textové soubory.",
+    openFile: "Otevřít dokument nebo obrázek",
+    dropFile: "Přetáhněte soubor a přeložte jeho text",
+    fileNotText: "Tento soubor neobsahuje žádný text k překladu.",
     truncated: "Zachováno bylo pouze prvních {max} znaků.",
     copy: "Kopírovat překlad",
     copied: "Zkopírováno",
@@ -5611,6 +5684,7 @@ export const cs = {
       intervalHours: "Interval (hodiny)",
       hourlyNote: "První spuštění proběhne jeden interval po uložení. Změna intervalu nebo obnovení spustí čekání znovu.",
       createTitle: "Naplánovat úlohu",
+      repliesInChat: "Každé spuštění odpoví v chatu „{title}“.",
       editTitle: "Upravit naplánovanou úlohu",
       name: "Název",
       namePlaceholder: "Název (volitelné)",

@@ -911,8 +911,7 @@ def test_explicit_fallback_warns_once_through_trainer_setup(fake, monkeypatch, c
 
 
 def test_active_impl_read_in_a_graph_retraces_on_impl_change_only(monkeypatch):
-    """Traced code reads the impl name: switching bundled <-> FA4 retraces, a re-activation (new
-    handle, same impl) reuses the graph."""
+    """Traced code reads the impl name: bundled <-> FA4 retraces; re-activating the same impl reuses it."""
     registry = types.SimpleNamespace(_FLASH_ATTENTION_ACTIVE = None)
     monkeypatch.setattr(fi, "_TORCH_FLASH_REGISTRY", registry)
     frames = []
@@ -940,10 +939,7 @@ def test_active_impl_read_in_a_graph_retraces_on_impl_change_only(monkeypatch):
 @needs_fa4
 @pytest.mark.parametrize("window", [None, 37])
 def test_fa4_runs_inside_the_compiled_packed_block(real_fa4, window):
-    """#17883's prepared packed attention under inductor with FA4 active: query-layout (B, H, T, D)
-    inputs used to fail the fallback's stride check (FA4 returns contiguous rows). FA4 runs forward
-    and backward, matches an fp64 per-document reference like bundled flash does, leaks nothing
-    across documents and does not recompile across layouts."""
+    """Prepared packed attention under inductor with FA4 matches fp64 per document, leak-free."""
     from torch._dynamo.testing import CompileCounterWithBackend
 
     from unsloth.utils import attention_dispatch as ad

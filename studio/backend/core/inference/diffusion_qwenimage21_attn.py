@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 cuDNN attention on the processor's strided [B, S, H, D] views, skipping diffusers' contiguous
-Q / K / V copies and the output copy into ``to_out``. Only where Studio pins cuDNN (sm86 / sm90 Auto, a cudnn
-request), on cards where a probe finds it bitwise equal to the contiguous call; masked, causal, scaled, dropout, GQA
-and context-parallel calls keep diffusers' path. UNSLOTH_DIFFUSION_Q21_STRIDED_ATTN=0 disables."""
+"""Strided cuDNN attention for Qwen-Image-2.1 where cuDNN is pinned (sm86/sm90 Auto or cudnn
+request) and a probe finds it bitwise equal to the contiguous call; masked, causal, scaled,
+dropout, GQA, context-parallel calls use diffusers; UNSLOTH_DIFFUSION_Q21_STRIDED_ATTN=0 disables"""
 
 from __future__ import annotations
 
@@ -125,9 +124,7 @@ def plain_qkv(backend: StridedCudnn, args: tuple, kwargs: dict) -> Optional[tupl
 
 
 def strided_cudnn_attention(q: Any, k: Any, v: Any) -> Any:
-    """diffusers' ``_native_cudnn_attention`` (no mask, default scale) without its ``.contiguous()`` copies: cuDNN
-    reads the [B, S, H, D] strides itself and writes its output in the query's layout, so the processor's
-    ``flatten(2, 3)`` is a view."""
+    """cuDNN reads the [B, S, H, D] strides and writes the query's layout, so flatten(2, 3) is a view."""
     import torch.nn.functional as F
     from torch.nn.attention import SDPBackend, sdpa_kernel
 

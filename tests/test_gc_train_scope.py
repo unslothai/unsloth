@@ -135,17 +135,48 @@ def test_wrapper_captured_after_install_freezes_once(scope, monkeypatch):
     assert gc.get_freeze_count() == 0
 
 
-def test_external_freeze_is_left_alone(scope):
+def test_external_freeze_is_left_alone(scope, monkeypatch):
     gc.collect()
     gc.freeze()
-    before = gc.get_freeze_count()
-    assert before > 0
+    assert gc.get_freeze_count() > 0
+    calls = {"collect": 0, "freeze": 0, "unfreeze": 0}
+    for name in calls:
+
+        def spy(
+            *args,
+            _real = getattr(gc, name),
+            _name = name,
+            **kwargs,
+        ):
+            calls[_name] += 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(scope.gc, name, spy)
     Trainer = _make_trainer(scope)
     t = Trainer()
     t.train()
-    # Not ours: still frozen after train(), and train() did not freeze anything on top.
-    assert t.seen == before
-    assert gc.get_freeze_count() == before
+    # Not ours: train() neither froze on top nor unfroze. The count is not compared to its old
+    # value: a frozen object freed by refcount still leaves the permanent generation, lowering it.
+    assert calls == {"collect": 0, "freeze": 0, "unfreeze": 0}
+    assert t.seen > 0
+    assert gc.get_freeze_count() > 0
+
+
+def test_freeze_count_falls_when_a_frozen_object_is_freed():
+    # Why the test above does not pin the count: CPython drops a freed object from the count.
+    was_frozen = gc.get_freeze_count() != 0
+    gc.unfreeze()
+    try:
+        gc.collect()
+        held = [[] for _ in range(8)]
+        gc.freeze()
+        before = gc.get_freeze_count()
+        del held
+        assert gc.get_freeze_count() < before
+    finally:
+        gc.unfreeze()
+        if was_frozen:
+            gc.freeze()
 
 
 def test_gc_enabled_state_preserved(scope):

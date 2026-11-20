@@ -64,6 +64,8 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
 import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
+import { useFullInstallBringsVideo } from "@/hooks/use-full-install-upgrade";
 import {
   applyPin,
   fetchNextPage,
@@ -220,12 +222,22 @@ import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
+  engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedRequestSelectValue,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
+import {
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
 import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
@@ -764,8 +776,8 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
       <BuildRow
         label="Attention"
         value={
-          status.attention_backend
-            ? formatResolvedValue("attention_backend", status.attention_backend)
+          engagedAttentionBackend(status)
+            ? formatResolvedValue("attention_backend", engagedAttentionBackend(status))
             : "Native SDPA"
         }
       />
@@ -1202,6 +1214,7 @@ type VideoLoadAdvanced = Pick<
   | "memory_mode"
   | "speed_mode"
   | "attention_backend"
+  | "int8_attention"
   | "transformer_cache"
   | "transformer_quant"
   | "family_override"
@@ -1227,6 +1240,12 @@ export function VideoPage({
   onInitialReady?: () => void;
 }) {
   const hardware = useHardwareInfo();
+  // Only offered: the generator still gates on the backend's own verdict alone.
+  const fullInstall = useFullInstallBringsVideo();
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
+  const offerFullInstall =
+    fullInstall !== null &&
+    hardware.videoUnsupportedReason === "pytorch_not_installed";
 
   useEffect(() => {
     if (active && hardware.loaded && hardware.videoSupported === false) {
@@ -1252,9 +1271,23 @@ export function VideoPage({
           className="size-7 shrink-0 text-muted-foreground/70"
         />
         <p className="max-w-sm text-balance">
-          {hardware.videoUnsupportedMessage ??
-            "Video generation is not supported on this machine."}
+          {offerFullInstall
+            ? "Video generation was left out of this install (Chat only). Upgrade to the full install to add it."
+            : (hardware.videoUnsupportedMessage ??
+              "Video generation is not supported on this machine.")}
         </p>
+        {offerFullInstall && fullInstall && (
+          <>
+            <Button size="sm" onClick={() => setFullInstallOpen(true)}>
+              Upgrade to full install
+            </Button>
+            <FullInstallDialog
+              open={fullInstallOpen}
+              onOpenChange={setFullInstallOpen}
+              onConfirm={() => void fullInstall.repairInstall()}
+            />
+          </>
+        )}
       </VideoGate>
     );
   }
@@ -1397,6 +1430,7 @@ function VideoGenerator({
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
@@ -2004,13 +2038,15 @@ function VideoGenerator({
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
     if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+    const attention = resolvedRequestSelectValue(record.attention_backend, (v) =>
       // Map the dispatcher's name back to the option.
       (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
         (o) => o === v || `_native_${o}` === v,
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey]);
 
@@ -2939,6 +2975,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2949,6 +2986,7 @@ function VideoGenerator({
     memoryMode,
     speedMode,
     attentionBackend,
+    int8Attention,
     transformerCache,
     transformerQuant,
     familyOverride,
@@ -2963,6 +3001,8 @@ function VideoGenerator({
         speed_mode: controls.speedMode === "auto" ? undefined : controls.speedMode,
         attention_backend:
           controls.attentionBackend === "auto" ? undefined : controls.attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: controls.int8Attention,
         transformer_cache:
           controls.transformerCache === "auto" ? undefined : controls.transformerCache,
         transformer_quant:
@@ -3067,6 +3107,7 @@ function VideoGenerator({
           memory_mode: advanced.memory_mode,
           speed_mode: advanced.speed_mode,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
           family_override: advanced.family_override,
@@ -4113,7 +4154,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -4124,6 +4165,14 @@ function VideoGenerator({
           ["flash3", "FlashAttention 3"],
           ["sage", "SageAttention (INT8)"],
         ]}
+      />
+      <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
       />
       {gpuChoices.length > 0 && (
         <AdvancedSelect

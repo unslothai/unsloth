@@ -160,41 +160,8 @@ def staged_output(out_dir: Path):
         shutil.rmtree(staging, ignore_errors = True)
 
 
-# (layers, hidden, experts) of FastFlowLM's AIE2P catalog (src/xclbins/*-NPU2 config.json):
-# the architecture alone is not enough, the converter applies the 35B-A3B config to any qwen35moe.
-_NPU_SHAPES = {
-    "llama": {
-        (16, 2048, 0): "Llama 3.2 1B",
-        (28, 3072, 0): "Llama 3.2 3B",
-        (32, 2560, 0): "Nanbeige4.1 3B",
-        (32, 4096, 0): "Llama 3.1 8B",
-    },
-    "qwen2": {(36, 2048, 0): "Qwen2.5 3B"},
-    "qwen2vl": {(36, 2048, 0): "Qwen2.5-VL 3B"},
-    "qwen3": {
-        (28, 1024, 0): "Qwen3 0.6B",
-        (28, 2048, 0): "Qwen3 1.7B",
-        (36, 2560, 0): "Qwen3 4B",
-        (36, 4096, 0): "Qwen3 8B",
-    },
-    "qwen3vl": {(36, 2560, 0): "Qwen3-VL 4B"},
-    "qwen35": {
-        (24, 1024, 0): "Qwen3.5 0.8B",
-        (24, 2048, 0): "Qwen3.5 2B",
-        (32, 2560, 0): "Qwen3.5 4B",
-        (32, 4096, 0): "Qwen3.5 9B",
-    },
-    "qwen35moe": {(40, 2048, 256): "Qwen3.5 / 3.6 35B-A3B"},
-    "gemma3": {(26, 1152, 0): "Gemma 3 1B", (34, 2560, 0): "Gemma 3 4B"},
-    "gemma4": {
-        (35, 1536, 0): "Gemma 4 E2B",
-        (42, 2560, 0): "Gemma 4 E4B",
-        (48, 3840, 0): "Gemma 4 12B",
-    },
-    "lfm2": {(16, 2048, 0): "LFM2 1.2B", (30, 2048, 0): "LFM2 2.6B"},
-    "phi3": {(32, 3072, 0): "Phi-4 mini"},
-    "gpt-oss": {(24, 2880, 32): "gpt-oss 20B"},
-}
+# The converter configures these by name alone, so they stay checked when FastFlowLM's table is unknown.
+_FIXED_CONFIG_SHAPES = {"qwen35moe": {(40, 2048, 256): "Qwen3.6-35B-A3B"}}
 _GEOMETRY_KEYS = frozenset(
     {"block_count", "embedding_length", "expert_count", "nextn_predict_layers"}
 )
@@ -206,11 +173,24 @@ def require_npu_geometry(gguf_path: str) -> None:
 
     general = read_gguf_general_metadata(gguf_path) or {}
     arch = (general.get("general.architecture") or "").lower()
-    shapes = _NPU_SHAPES.get(arch)
+    from core.inference.npu_compat import runnable_shapes
+
+    # None until FastFlowLM's table is read. Shapes, not architectures: any qwen35moe gets the 35B-A3B config.
+    runnable = runnable_shapes()
     # Omni is matched by name in the converter and has no published catalog config.
     names = (general.get(k, "").lower() for k in ("general.basename", "general.name"))
-    if shapes is None or (arch == "qwen35" and any("omni" in n for n in names)):
+    if not arch or (arch == "qwen35" and any("omni" in n for n in names)):
         return
+    if runnable is None:
+        if arch not in _FIXED_CONFIG_SHAPES:
+            return
+        runnable = _FIXED_CONFIG_SHAPES
+    shapes = runnable.get(arch)
+    if not shapes:
+        raise RuntimeError(
+            f"This {arch} model cannot be exported for the AMD NPU: the installed FastFlowLM "
+            f"has no NPU kernels for the {arch} architecture."
+        )
     dims = _parse_gguf_arch_uints(gguf_path, _GEOMETRY_KEYS) or {}
     if "block_count" not in dims or "embedding_length" not in dims:
         return

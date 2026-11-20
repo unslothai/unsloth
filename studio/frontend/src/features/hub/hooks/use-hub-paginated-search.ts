@@ -27,7 +27,7 @@ const INITIAL: HfPaginatedState<never> = {
 };
 // listModels returns up to 500 per fetch, so a larger batch just walks the in-memory page.
 const BATCH = 48;
-const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
+export const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
 type BusyKind = "initial" | "more";
 
 /**

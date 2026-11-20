@@ -24,6 +24,7 @@ import {
 import { llamaServerLoadFields } from "../lib/load-request";
 import {
   clearedServerTuningState,
+  committedMlxServerTuningState,
   committedServerTuningState,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
@@ -445,6 +446,8 @@ import {
 import {
   generateAudio,
   GenerationLengthError,
+  createReasoningOnlyLengthCheck,
+  offersKvCacheHint,
   fetchGgufStagedMetadata,
   getChatAgentsMd,
   getInferenceStatus,
@@ -2115,7 +2118,11 @@ export function findLatestUserVideoBase64(
  */
 function boundMcpImageResults(
   messages: RunMessages,
-  { readsImages, localMarkers }: { readsImages: boolean; localMarkers: boolean },
+  {
+    readsImages,
+    localMarkers,
+    uncapped = false,
+  }: { readsImages: boolean; localMarkers: boolean; uncapped?: boolean },
 ): RunMessages {
   type Carrier = { message: number; part: number; images: McpImage[] };
   // One entry per replay exchange, partitioned by the serializer's own rule so they cannot drift.
@@ -2154,7 +2161,11 @@ function boundMcpImageResults(
   const plan = readsImages
     ? planMcpImageBound(
         batches.map((batch) => batch.map((carrier) => carrier.images)),
-        { localMarkers },
+        {
+          localMarkers,
+          exchanges: perExchange.map((batch) => batch.map((carrier) => carrier.images)),
+          uncapped,
+        },
       )
     : batches.map((batch) => batch.map((): McpImage[] => []));
   const edits = new Map<number, Map<number, McpImage[]>>();
@@ -2182,6 +2193,28 @@ function boundMcpImageResults(
     });
     return { ...message, content } as typeof message;
   }) as RunMessages;
+}
+
+/** llama.cpp with auto-compaction keeps every tool picture, as the backend's loop does (#18231). */
+function compactingLlamaCppChat(
+  state: Pick<
+    ChatRuntimeState,
+    | "loadedIsGguf"
+    | "activeGgufVariant"
+    | "activeNativePathToken"
+    | "params"
+    | "autoCompactEnabled"
+  >,
+): boolean {
+  return (
+    state.autoCompactEnabled &&
+    isServedByLlamaCpp({
+      loadedIsGguf: state.loadedIsGguf,
+      activeGgufVariant: state.activeGgufVariant,
+      activeNativePathToken: state.activeNativePathToken,
+      checkpoint: state.params.checkpoint,
+    })
+  );
 }
 
 /** The SELECTED model's vision flag wins (a queued send may target another model); loaded state
@@ -2215,6 +2248,7 @@ export async function buildLocalTokenCountHistory(
   const messages = boundMcpImageResults(rawMessages, {
     readsImages: localTargetReadsImages(runtimeState),
     localMarkers: activeModel?.isGguf === false,
+    uncapped: compactingLlamaCppChat(runtimeState),
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
   // Counted as it would be sent, so a character chat's meter includes the cards.
@@ -2623,6 +2657,8 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
+  /** Shown instead of id when they differ, e.g. a repo id for a snapshot path. */
+  label?: string;
 };
 
 // Same case rules as autoLoadSourceKey: folding a POSIX target would conflate /models/Foo and /models/foo.
@@ -3005,6 +3041,8 @@ type AutoLoadSource = {
   id: string;
   /** Sent to /api/inference/load as model_path. */
   loadId: string;
+  /** Hub repo id of an hf_cache row: in another cache its id and loadId are the snapshot path. */
+  repoId?: string;
   sizeBytes: number;
   maxSeqLength: number;
   /** null when the target is one file already (a local .gguf) or safetensors. */
@@ -3069,6 +3107,8 @@ function buildAutoLoadSources(
       kind: isGguf ? "gguf" : "model",
       id: row.id,
       loadId: row.load_id || row.id,
+      repoId:
+        row.source === "hf_cache" && row.model_id ? row.model_id : undefined,
       sizeBytes: row.size_bytes ?? 0,
       maxSeqLength: isGguf ? 0 : safetensorsMaxSeqLength,
       listVariants: needsVariant
@@ -3084,16 +3124,40 @@ function buildAutoLoadSources(
   return sources;
 }
 
-function isRememberedSource(
+function rememberedMatch(
   source: AutoLoadSource,
   remembered: { id: string; kind: LastLocalModelKind },
-): boolean {
-  if (source.kind !== remembered.kind) return false;
+): "exact" | "repo" | null {
+  if (source.kind !== remembered.kind) return null;
   // Same case rules as the dedupe key.
   const target = normalizeTarget(remembered.id);
-  return (
+  if (
     normalizeTarget(source.id) === target ||
     normalizeTarget(source.loadId) === target
+  ) {
+    return "exact";
+  }
+  return source.repoId !== undefined &&
+    normalizeTarget(source.repoId) === target
+    ? "repo"
+    : null;
+}
+
+/** A snapshot matched only by repo id stands in for a missing exact row, never retries a failed one. */
+function rememberedSources(
+  sources: AutoLoadSource[],
+  remembered: { id: string; kind: LastLocalModelKind } | null,
+): Set<AutoLoadSource> {
+  if (!remembered) return new Set();
+  const exact = sources.filter(
+    (source) => rememberedMatch(source, remembered) === "exact",
+  );
+  return new Set(
+    exact.length > 0
+      ? exact
+      : sources.filter(
+          (source) => rememberedMatch(source, remembered) === "repo",
+        ),
   );
 }
 
@@ -3102,8 +3166,9 @@ function orderAutoLoadSources(
   sources: AutoLoadSource[],
   remembered: { id: string; kind: LastLocalModelKind } | null,
 ): AutoLoadSource[] {
+  const preferred = rememberedSources(sources, remembered);
   const rank = (source: AutoLoadSource): number => {
-    if (remembered && isRememberedSource(source, remembered)) return 0;
+    if (preferred.has(source)) return 0;
     return source.kind === "gguf" ? 1 : 2;
   };
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
@@ -3118,16 +3183,20 @@ async function resolveAutoLoadCandidate(
   source: AutoLoadSource,
   rememberedVariant: string | null,
   isSkipped: (candidate: AutoLoadCandidate) => boolean,
+  // Keys saved settings and the record: the repo id when only that matched the last used model.
+  id: string = source.id,
 ): Promise<AutoLoadCandidate | null> {
+  const label = source.repoId ?? id;
   const build = (ggufVariant: string | null): AutoLoadCandidate => ({
-    id: source.id,
+    id,
     loadId: source.loadId,
     kind: source.kind,
     ggufVariant,
     maxSeqLength: source.maxSeqLength,
     successLabel: ggufVariant
-      ? `Loaded ${source.id} (${ggufVariant})`
-      : `Loaded ${source.id}`,
+      ? `Loaded ${label} (${ggufVariant})`
+      : `Loaded ${label}`,
+    label,
   });
   if (!source.listVariants) {
     const variants =
@@ -3664,9 +3733,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      loadedContextLength: null,
-      currentCheckpoint: currentStore.params.checkpoint,
-      activeGgufVariant: currentStore.activeGgufVariant,
       isMlx: isServedByMlx(
         candidate.kind === "gguf",
         platform.deviceType,
@@ -3674,7 +3740,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ),
       pinnedMaxSeqLength: config.maxSeqLength,
       defaultMaxSeqLength: candidate.maxSeqLength,
-      presetSource: currentStore.activePresetSource,
     });
     // GPU knobs are per-model; the live store holds session defaults during background loads.
     const effectiveGpuMemoryMode =
@@ -3822,7 +3887,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       // Remembered pass-through args: nothing is resident at startup to inherit them from.
       ...llamaServerLoadFields(
         { ...config, llamaExtraArgs: resolvedExtraArgs },
-        { isGguf: candidate.kind === "gguf", isDiffusion },
+        { isGguf: candidate.kind === "gguf", isDiffusion, isMlx: candidateIsMlx },
       ),
       // GGUF-only. A remembered manual DiffusionGemma split (0 especially) must not be refused as a
       // full-GGUF occupant.
@@ -4005,6 +4070,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
       } else {
+        // An MLX load applied the remembered settings, so mirror them; other loads reset.
+        const mlx = candidateIsMlx && !(loadResp.is_diffusion ?? false);
+        const budget = mlx ? (loadResp.reasoning_budget ?? config.reasoningBudget ?? -1) : -1;
+        const budgetMessage = mlx
+          ? (loadResp.reasoning_budget_message ?? config.reasoningBudgetMessage ?? "")
+          : "";
+        const nBatch = mlx ? (config.nBatch ?? null) : null;
+        const nUbatch = mlx ? (config.nUbatch ?? null) : null;
         useChatRuntimeStore.setState({
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
@@ -4020,24 +4093,24 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...mlxRuntimeStateFrom(loadResp),
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
-          reasoningBudget: -1,
-          loadedReasoningBudget: -1,
-          loadedReasoningBudgetRequested: -1,
-          reasoningBudgetMessage: "",
-          loadedReasoningBudgetMessage: "",
-          loadedReasoningBudgetMessageRequested: "",
-          nBatch: null,
-          loadedNBatch: null,
-          nUbatch: null,
-          loadedNUbatch: null,
-          ...clearedServerTuningState(),
+          reasoningBudget: budget,
+          loadedReasoningBudget: budget,
+          loadedReasoningBudgetRequested: budget,
+          reasoningBudgetMessage: budgetMessage,
+          loadedReasoningBudgetMessage: budgetMessage,
+          loadedReasoningBudgetMessageRequested: budgetMessage,
+          nBatch,
+          loadedNBatch: nBatch,
+          nUbatch,
+          loadedNUbatch: nUbatch,
+          ...(mlx ? committedMlxServerTuningState(config) : clearedServerTuningState()),
           // Clear the baseline so a rollback to this model does not resend a GGUF's arguments.
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
           // Safetensors loads have no projector; a stale true would carry to the next model.
-          disableVision: false,
+          disableVision: mlx ? (loadResp.disable_vision ?? false) : false,
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU GGUF load left.
@@ -4129,6 +4202,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     );
 
     // A target can be in several lists; a twin is tried only if the preferred row resolved nothing.
+    const remembered = rememberedSources(sources, lastLoaded);
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (
@@ -4140,9 +4214,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
-      const isRemembered = lastLoaded
-        ? isRememberedSource(source, lastLoaded)
-        : false;
+      const isRemembered = remembered.has(source);
       const isTried = (entry: AutoLoadCandidate): boolean =>
         skippedAutoLoadCandidates.has(
           autoLoadCandidateKey(
@@ -4162,6 +4234,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
+            isRemembered &&
+              lastLoaded &&
+              rememberedMatch(source, lastLoaded) === "repo"
+              ? lastLoaded.id
+              : source.id,
           );
           options?.abortSignal?.throwIfAborted();
           if (!candidate) break;
@@ -5329,6 +5406,7 @@ export function createOpenAIStreamAdapter(
       const messages = boundMcpImageResults(rawMessages, {
         readsImages: targetReadsImages,
         localMarkers: mcpImagesLocalMarkers,
+        uncapped: !isExternalRequest && compactingLlamaCppChat(runtime),
       });
       const replayReasoning = !isExternalRequest || (
         providerSupportsPreserveThinking(externalProvider?.providerType) &&
@@ -5984,6 +6062,8 @@ export function createOpenAIStreamAdapter(
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
       let compactionMarkers: CompactionMarker[] | undefined;
+      // A /compact whose summary failed already got the dropped warning; it stands for the no-op notice.
+      let droppedHistoryWarned = false;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -7010,6 +7090,7 @@ export function createOpenAIStreamAdapter(
                   externalProvider.providerType,
                   externalModelId,
                 )?.contextLength,
+                compactionMode: externalProvider.compactionMode,
                 autoCompactTokens: externalProvider.autoCompactTokens,
                 compactNow,
               }),
@@ -7283,7 +7364,15 @@ export function createOpenAIStreamAdapter(
               }
             }
 
+            const kvCacheHint =
+              !isExternalRequest &&
+              offersKvCacheHint(runtime.loadedIsGguf, runtime.loadedKvCacheDtype);
             const durableStream = async function* () {
+              const lengthCheck = createReasoningOnlyLengthCheck({
+                cap: requestPayload.max_tokens ?? null,
+                contextLength: servedContextLength,
+                kvCacheHint,
+              });
               try {
                 for await (const update of followChatGenerationRun(
                   generationRunId!,
@@ -7305,6 +7394,7 @@ export function createOpenAIStreamAdapter(
                           generationFirstChunkAt ??= update.event.createdAt;
                         }
                       }
+                      lengthCheck.observe(chunk);
                       yield chunk;
                     }
                   }
@@ -7329,6 +7419,9 @@ export function createOpenAIStreamAdapter(
                   "Generation was cancelled.",
                 );
               }
+              if (generationStatus === "completed") {
+                lengthCheck.throwIfReasoningOnlyLength();
+              }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
             const sourceStream =
@@ -7338,6 +7431,7 @@ export function createOpenAIStreamAdapter(
                     requestPayload,
                     runSignal,
                     servedContextLength,
+                    kvCacheHint,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
@@ -7404,42 +7498,26 @@ export function createOpenAIStreamAdapter(
                 // Stay silent when the fit returned the ORIGINAL messages; not `fits`, which is also false for
                 // a shortened prompt.
                 const reallyCompacted = promptWasShortened(chunk.context_truncated);
+                const noticeKind = reallyCompacted
+                  ? compactionNoticeKind(chunk.context_truncated)
+                  : null;
+                // The divider records every compaction; only dropped history also toasts.
                 if (
-                  reallyCompacted &&
+                  (noticeKind === "dropped" || noticeKind === "dropped-after-failed-summary") &&
                   resolvedThreadId &&
                   activeThreadId === resolvedThreadId &&
-                  !rollingContextNoticeThreads.has(resolvedThreadId)
+                  // An explicit /compact always hears what became of it.
+                  (compactNow || !rollingContextNoticeThreads.has(resolvedThreadId)) &&
+                  !droppedHistoryWarned
                 ) {
                   rollingContextNoticeThreads.add(resolvedThreadId);
-                  // Once per thread per page load; the durable record is the notice on the turn that compacted.
-                  const archived = contextTruncation?.archived_messages ?? 0;
-                  const noticeKind = compactionNoticeKind(chunk.context_truncated);
-                  if (noticeKind === "compacted" || noticeKind === "summarized-by-provider") {
-                    toast.info("This conversation was compacted", {
-                      description: archived
-                        ? "It got long, so older turns were removed from the model's " +
-                          "context. They are saved and searchable, and relevant parts are " +
-                          "brought back automatically."
-                        : contextTruncation?.summarized
-                          ? "The full conversation is still visible and saved. " +
-                            "The provider summarized older turns so the chat can continue."
-                          : "The full conversation is still visible and saved. " +
-                            "Unsloth removed complete older turns from this request so the chat can continue.",
-                      duration: 8000,
-                    });
-                  } else {
-                    // A cloud chat: say whether history was summarized or had to be dropped.
-                    const dropped = noticeKind !== "summarized";
-                    (dropped ? toast.warning : toast.info)(
-                      COMPACTION_NOTICE_LABEL[noticeKind],
-                      {
-                        description:
-                          `${COMPACTION_NOTICE_TEXT[noticeKind]} ` +
-                          "The full conversation is still visible and saved.",
-                        duration: 8000,
-                      },
-                    );
-                  }
+                  droppedHistoryWarned = true;
+                  toast.warning(COMPACTION_NOTICE_LABEL[noticeKind], {
+                    description:
+                      `${COMPACTION_NOTICE_TEXT[noticeKind]} ` +
+                      "The full conversation is still visible and saved.",
+                    duration: 8000,
+                  });
                 }
                 continue;
               }
@@ -8990,6 +9068,7 @@ export function createOpenAIStreamAdapter(
 
         if (
           compactNow &&
+          !droppedHistoryWarned &&
           !compactionMarkers?.some(
             (marker) =>
               marker.truncation.manual === true &&
@@ -8997,9 +9076,13 @@ export function createOpenAIStreamAdapter(
           )
         ) {
           toast.info("This chat was not compacted", {
-            description: isCloudForCompaction
-              ? "There was nothing before your latest message to summarize."
-              : "Compaction needs the conversation archive and the default checkpoint policy.",
+            description: !isCloudForCompaction
+              ? "Compaction needs the conversation archive and the default checkpoint policy."
+              : externalProvider?.compactionMode === "rolling"
+                ? "Drop oldest turns only drops turns once the chat is full. Pick Reset to latest turn or Summarize older turns for this connection to compact on demand."
+                : externalProvider?.compactionMode === "checkpoint"
+                  ? "Compaction needs the conversation archive and a model that can use Studio's tools."
+                  : "There was nothing before your latest message to summarize.",
           });
         }
         const finalTiming = withPriorTiming(

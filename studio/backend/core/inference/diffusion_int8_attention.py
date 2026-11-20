@@ -45,6 +45,7 @@ from __future__ import annotations
 import math
 import os
 import threading
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
@@ -55,6 +56,11 @@ _OP = "unsloth_studio::int8_attention_nhd"
 HEAD_DIMS = (64, 128)
 RACE_MARGIN = 0.98
 RACE_TOKENS = (4096, 1024)
+# (large, small) race tokens per DiT class, replacing RACE_TOKENS: H3 video runs 15k-45k tokens and A100 lost at 4096
+# but won at 27k, so a 4096-token race would wrongly reject it.
+FAMILY_RACE_TOKENS: dict = {
+    "MiniMaxH3Transformer3DModel": (16384, 8192),
+}
 # the accuracy every card must reach against fp32 attention on the probe before the kernel may run at all
 MIN_COSINE = 0.999
 MAX_REL_L1 = 0.05
@@ -229,7 +235,7 @@ def _dtype_kinds() -> dict:
     return _KINDS
 
 
-def mode() -> str:
+def _env_mode() -> str:
     """``off`` | ``auto`` | ``force`` from ``UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL``."""
     raw = (os.environ.get(INT8_ATTENTION_ENV) or "auto").strip().lower()
     if raw in ("0", "off", "false", "no"):
@@ -237,6 +243,73 @@ def mode() -> str:
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
     return "auto"
+
+
+INT8_ATTENTION_CHOICES = ("auto", "on", "off")
+
+
+def normalize_int8_attention(value: Any) -> Optional[str]:
+    """Fold a request to ``auto`` / ``on`` / ``off`` (None if unset); ValueError otherwise."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"int8_attention must be one of {INT8_ATTENTION_CHOICES}, got {value!r}")
+    text = value.strip().lower()
+    if not text:
+        return None
+    if text not in INT8_ATTENTION_CHOICES:
+        raise ValueError(f"int8_attention must be one of {INT8_ATTENTION_CHOICES}, got {value!r}")
+    return text
+
+
+@dataclass(frozen = True)
+class Int8Policy:
+    """Resolved once per load so later renders never re-read the env. Precedence: per-load on/off > env switch >
+    family default."""
+
+    request: Optional[str] = None
+    env: str = "auto"
+
+    @property
+    def mode(self) -> str:
+        if self.request == "on":
+            return "force"
+        if self.request == "off":
+            return "off"
+        return self.env
+
+    @property
+    def env_force(self) -> bool:
+        """The env switch ``1`` decided this load (it alone skips the Triton stand-in's race)."""
+        return self.request not in ("on", "off") and self.env == "force"
+
+    @property
+    def source(self) -> str:
+        if self.request in ("on", "off"):
+            return "load"
+        return "env" if self.env != "auto" else "default"
+
+
+def resolve_policy(override: Any = None) -> Int8Policy:
+    """Invalid requests read as none here: the request models and ``begin_load`` already refuse them."""
+    if isinstance(override, Int8Policy):
+        return override
+    try:
+        request = normalize_int8_attention(override)
+    except ValueError:
+        request = None
+    return Int8Policy(request = request, env = _env_mode())
+
+
+def mode(override: Any = None) -> str:
+    """``off`` | ``auto`` | ``force`` from the load's policy, else the env switch."""
+    if override is None:
+        return _env_mode()
+    return resolve_policy(override).mode
+
+
+def env_forced(override: Any = None) -> bool:
+    return resolve_policy(override).env_force
 
 
 def impl_setting() -> str:
@@ -561,23 +634,39 @@ def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
 def _drop_routes(plan: dict) -> None:
     _, Sq, Sk, _, D = plan["shape"]
     floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
+    restored = raised = 0
     for index, head_dim, raise_floor in list(_ROUTES):
         if index == plan["index"] and head_dim == D:
-            raise_floor(floor)
+            if raise_floor(floor):
+                restored += 1
+            else:
+                raised += 1
+    if restored or raised:
+        _log().info(
+            "diffusion.int8_attention: torch attention beat the sink path on cuda:%d at %d tokens: %d attention "
+            "modules back on their stock processor, %d below %d tokens stay on %s",
+            plan["index"],
+            min(Sq, Sk),
+            restored,
+            raised,
+            floor,
+            BACKEND,
+        )
 
 
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
     its calls compile as they did before the install; any other raises its token floor."""
 
-    def raise_floor(tokens: int) -> None:
+    def raise_floor(tokens: int) -> bool:
         stock = getattr(proc, "_unsloth_stock", None)
         if stock is not None and module is not None and getattr(module, "processor", None) is proc:
             module.processor = stock
-            return
+            return True
         proc._unsloth_int8_min_tokens = max(
             int(getattr(proc, "_unsloth_int8_min_tokens", 0)), tokens
         )
+        return False
 
     return raise_floor
 
@@ -872,15 +961,9 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: b
 
 
 def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
-    """(path, call index) for this call of ``plan``: True the attention-sink path, False the kernels without it, or
-    "native" torch's attention. Every call takes the sink path until the plan's SINK_DECIDE_AT-th; from then on a
-    plan none of whose first SINK_LEARN_CALLS calls had a head that clipped V (an attention sink) runs the kernels
-    without the path, instruction for instruction the ones from before it, with no residual launch (a head without
-    sinks gets the same bits either way; one that would still clip takes the full range, as before). A plan with
-    sinks keeps the path where ``race`` (timed on the deciding call's own inputs) finds it still faster than torch's
-    attention by RACE_MARGIN, and runs torch's attention otherwise (no race: it keeps the path). The races and the
-    early calls aside, the same calls in the same order take the same paths. Called on the device of the plan; a CUDA
-    graph capture keeps what the plan has decided."""
+    """Returns (path, call index): sink path until SINK_DECIDE_AT, then dropped if the first
+    SINK_LEARN_CALLS calls never clipped V; race keeps it or falls to torch; native is torch;
+    CUDA graph capture keeps the decision"""
     import torch
 
     forced = getattr(_RACE, "path", None)
@@ -939,11 +1022,8 @@ def _sink_race(
     index: int,
     forced: bool = False,
 ) -> Any:
-    """The path a plan whose first calls clipped takes, timed on this call like the card race (interleaved, median):
-    the faster of the sink path and the kernels without it (only where their error against torch's attention here is
-    within PLAIN_ERROR_SLACK of the sink path's) where it beats torch's attention by RACE_MARGIN, else "native".
-    ``forced`` (a forced request): the INT8 paths only, torch's attention neither timed nor taken. The verdict is
-    logged."""
+    """Timed on this call: faster of sink or plain INT8 if it beats torch by RACE_MARGIN, else
+    native; forced: INT8 paths only, torch's attention neither timed nor taken."""
     import torch
 
     stream = _raw_stream(index)
@@ -1000,13 +1080,8 @@ def _pick_path(
     err: dict,
     forced: bool = False,
 ) -> Any:
-    """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain). The
-    kernels without the sink path (the ones from before it) stay where their error is within PLAIN_ERROR_SLACK of the
-    sink path's and the sink path is not faster by RACE_MARGIN: a near tie keeps the old path's output. The path
-    taken must beat torch's attention by RACE_MARGIN, else torch's attention. A path whose error is not finite (a NaN
-    or inf output) is never taken; the kernels without the sink path then stand alone where theirs is finite.
-    ``forced``: the first of those INT8 paths, never torch's attention (the kernels without the sink path where
-    neither error is finite: the ones a forced request ran before the path)."""
+    """Verdict from median ms and errors: a path must beat torch attention by RACE_MARGIN else
+    torch; a near tie keeps the old path; non-finite errors never win; forced never uses torch"""
     finite = {name: math.isfinite(err[name]) for name in ("sinks", "plain")}
     if not finite["sinks"]:
         order = ["plain"] if finite["plain"] else []
@@ -1836,6 +1911,7 @@ def install_int8_attention(
     force: bool = False,
     logger: Any = None,
     floor: Optional[Callable] = None,
+    policy: Any = None,
 ) -> int:
     """Route strided attention processors to the INT8 kernel. Returns how many now run it.
 
@@ -1845,9 +1921,12 @@ def install_int8_attention(
     more than 2% faster than the incumbent on the timed probe. The Triton stand-in for a CUDA kernel that cannot load
     must be faster also under ``force`` (not under the env switch). ``floor(device, dtype, heads, head_dim, incumbent,
     name)`` -> ``(verdict, token floor or None)`` replaces the card race when not forced (``install_auto``: the
-    dispatch route's races and token floor). Never raises."""
+    dispatch route's races and token floor). ``policy``: the load's ``Int8Policy`` (or ``int8_attention`` request);
+    None reads the env switch. Never raises."""
     try:
-        return _install(transformer, device, dtype, modules, incumbent, force, logger, floor)
+        return _install(
+            transformer, device, dtype, modules, incumbent, force, logger, floor, policy
+        )
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors stay as they were
         if logger is not None:
             logger.info("diffusion.int8_attention: skipped (%s)", exc)
@@ -1863,10 +1942,11 @@ def _install(
     force: bool,
     logger: Any,
     floor: Optional[Callable] = None,
+    policy: Any = None,
 ) -> int:
     import torch
 
-    setting = mode()
+    setting = mode(policy)
     if transformer is None or setting == "off":
         return 0
     dev = torch.device(device)
@@ -1880,8 +1960,9 @@ def _install(
     ]
     if not candidates:
         return 0
-    env_force = setting == "force"
-    force = force or env_force
+    env_force = setting == "force" and env_forced(policy)
+    # a per-load "on" forces like a request by name: the Triton stand-in still races
+    force = force or setting == "force"
     int8_attention_op()
     engaged = 0
     report: dict = {}
@@ -1989,13 +2070,15 @@ def install_requested(
     request: Any,
     target: Any,
     logger: Any = None,
+    policy: Any = None,
 ) -> int:
     """For ``apply_attention_backend``: engage on the pipeline's DiT when the load asked for ``unsloth_int8`` by name
     or the env switch forces it (no race either way: the accuracy check still gates it; the Triton stand-in for a CUDA
-    kernel that cannot load still races when only the name asked for it). Returns the count."""
+    kernel that cannot load still races when only the name asked for it). ``policy``: the load's ``Int8Policy``, whose
+    ``on`` forces it like the name. Returns the count."""
     import torch
 
-    setting = mode()
+    setting = mode(policy)
     if setting == "off" or not (setting == "force" or requested(request)):
         return 0
     transformer = getattr(pipe, "transformer", None)
@@ -2017,7 +2100,7 @@ def install_requested(
     except Exception:  # noqa: BLE001 -- other families bring their own strided processors
         pass
     return install_int8_attention(
-        transformer, device = device, dtype = dtype, force = True, logger = logger
+        transformer, device = device, dtype = dtype, force = True, logger = logger, policy = policy
     )
 
 
@@ -2027,6 +2110,7 @@ def install_auto(
     logger: Any = None,
     speed_active: bool = True,
     speed_unset_only: bool = False,
+    policy: Any = None,
 ) -> int:
     """For ``apply_attention_backend`` with the switch unset: the strided processors of a DiT in the dispatch route's
     ``AUTO_DITS`` race their incumbent the way that route does (accuracy check, card race, the 2048 / long races,
@@ -2034,7 +2118,7 @@ def install_auto(
     (bit-identical) and off CUDA. Returns the count."""
     import torch
 
-    if mode() != "auto" or not speed_active:
+    if mode(policy) != "auto" or not speed_active:
         return 0
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
@@ -2084,10 +2168,168 @@ def install_auto(
         return found, minimum
 
     engaged = install_int8_attention(
-        transformer, device = device, dtype = dtype, logger = logger, floor = floor
+        transformer, device = device, dtype = dtype, logger = logger, floor = floor, policy = policy
     )
     _give_back_unengaged(transformer)
     return engaged
+
+
+def family_race_tokens(transformer: Any) -> Optional[tuple]:
+    """``FAMILY_RACE_TOKENS`` of this DiT's class, or None (the family does not race automatically that way)."""
+    tokens = FAMILY_RACE_TOKENS.get(type(transformer).__name__)
+    return tuple(int(t) for t in tokens) if tokens else None
+
+
+def install_family_auto(
+    transformer: Any,
+    *,
+    device: Any,
+    dtype: Any,
+    policy: Any = None,
+    logger: Any = None,
+) -> int:
+    """Policy ``auto``: race a ``FAMILY_RACE_TOKENS`` DiT's strided processors at its own sizes (CUDA kernel only:
+    accuracy was measured on it); the token floor keeps short calls on the incumbent. Never raises."""
+    if transformer is None or mode(policy) != "auto":
+        return 0
+    tokens = family_race_tokens(transformer)
+    if tokens is None:
+        return 0
+    try:
+        import torch
+
+        from . import diffusion_int8_attention_dispatch as dispatch
+        if _is_rocm():
+            return 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+    def floor(dev: Any, dt: Any, heads: int, head_dim: int, fn: Any, name: str) -> tuple:
+        if implementation(_device_index(dev), head_dim) != "cuda":
+            return {
+                "ok": False,
+                "impl": implementation(_device_index(dev), head_dim),
+                "error": "CUDA kernel only",
+            }, None
+        # the accuracy check alone: the family's own race below replaces the RACE_TOKENS one
+        found = verdict(dev, dt, heads, head_dim, fn, name, timed = False)
+        if not found.get("ok"):
+            return found, None
+        if found.get("impl") != "cuda":
+            return {**found, "ok": False, "error": "CUDA kernel only"}, None
+        minimum = dispatch.long_verdict(dev, dt, heads, head_dim, fn, name, tokens = tokens)
+        found = {**found, "long_min_tokens": minimum}
+        if minimum is None:
+            return found, None
+        return found, max(int(minimum), int(dispatch.MIN_TOKENS))
+
+    with torch.no_grad():
+        return install_int8_attention(
+            transformer,
+            device = device,
+            dtype = dtype,
+            logger = logger,
+            floor = floor,
+            policy = policy,
+        )
+
+
+def _pipe_dits(pipe: Any) -> list:
+    pipes = list(pipe) if isinstance(pipe, (list, tuple)) else [pipe]
+    out: list = []
+    for p in pipes:
+        try:
+            from . import diffusion_int8_attention_dispatch as dispatch
+            dits = dispatch._dits(p)
+        except Exception:  # noqa: BLE001
+            dits = []
+        if not dits and getattr(p, "transformer", None) is not None:
+            dits = [p.transformer]
+        out.extend(
+            d
+            for d in dits
+            if callable(getattr(d, "modules", None)) and not any(d is x for x in out)
+        )
+    return out
+
+
+def _routed(dit: Any) -> list:
+    try:
+        from .diffusion_int8_attention_dispatch import Int8Route
+    except Exception:  # noqa: BLE001
+        return []
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return []
+    return [
+        b
+        for m in modules()
+        if isinstance(
+            b := getattr(getattr(m, "processor", None), "_attention_backend", None), Int8Route
+        )
+    ]
+
+
+def engaged_count(pipe: Any) -> int:
+    """Census of attention modules running the kernel (strided + dispatch); never raises."""
+    try:
+        return sum(int8_attention_count(d) + len(_routed(d)) for d in _pipe_dits(pipe))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def resolved_entry(
+    policy: Any,
+    pipe: Any,
+    *,
+    reason: Optional[str] = None,
+    supported: bool = True,
+) -> tuple:
+    """(explicit, engaged, reason, status) for ``build_resolved_record``; ``supported=False`` for sd.cpp, MLX, CPU."""
+    p = resolve_policy(policy)
+    count = engaged_count(pipe) if pipe is not None else 0
+    engaged = "on" if count else "off"
+    explicit = p.request
+    if reason is None:
+        if count:
+            reason = f"{BACKEND} ({'/'.join(sorted(_pipe_impls(pipe))) or 'cuda'}) on {count} attention modules"
+        elif not supported:
+            reason = "this engine has no INT8 attention kernel"
+        elif p.mode == "off":
+            reason = "off for this load" if p.request == "off" else f"off by {INT8_ATTENTION_ENV}=0"
+        elif p.mode == "force":
+            reason = "requested, but the kernel did not pass its accuracy check on this card or cannot run here"
+        else:
+            reason = "not measured faster and accurate for this model and GPU; the selected attention runs"
+    status_value = None
+    if explicit == "on" and not count:
+        status_value = "unsupported" if not supported else "fell_back"
+    return (
+        (explicit, engaged, reason, status_value) if status_value else (explicit, engaged, reason)
+    )
+
+
+def _pipe_impls(pipe: Any) -> set:
+    impls: set = set()
+    try:
+        for dit in _pipe_dits(pipe):
+            impls |= engaged_implementations(dit)
+            impls |= {str(r.impl) for r in _routed(dit) if r.impl}
+    except Exception:  # noqa: BLE001 - a census only
+        pass
+    return impls
+
+
+def annotate_resolved(resolved: Any, policy: Any, pipe: Any) -> Any:
+    entry = resolved.get("int8_attention") if isinstance(resolved, dict) else None
+    if not isinstance(entry, dict):
+        return resolved
+    count = engaged_count(pipe) if pipe is not None else 0
+    entry["engaged"] = bool(count)
+    entry["modules"] = int(count)
+    entry["impl"] = ("/".join(sorted(_pipe_impls(pipe))) or None) if count else None
+    entry["mode"] = resolve_policy(policy).mode
+    return resolved
 
 
 def _give_back_unengaged(transformer: Any) -> None:
@@ -2129,6 +2371,26 @@ def int8_attention_count(transformer: Any) -> int:
     )
 
 
+# The backend a strided install raced (None: native), kept on the pipeline: the status names it once no module routes.
+INCUMBENT_ATTR = "_unsloth_int8_incumbent"
+
+
+def live_backend(pipe: Any, engaged: Any) -> Any:
+    """``engaged`` while any module still routes to the kernel, else the incumbent after a sink race dropped them."""
+    if engaged != BACKEND or pipe is None or not hasattr(pipe, INCUMBENT_ATTR):
+        return engaged
+    dits = [getattr(pipe, name, None) for name in ("transformer", "transformer_2")]
+    if any(int8_attention_count(t) for t in dits if t is not None):
+        return engaged
+    try:
+        from .diffusion_int8_attention_dispatch import routed_count
+        if routed_count(pipe):
+            return engaged
+    except Exception:  # noqa: BLE001 - no dispatch route: the strided census decides
+        pass
+    return getattr(pipe, INCUMBENT_ATTR)
+
+
 def engaged_implementations(transformer: Any) -> set:
     """The implementations (``cuda`` / ``triton``) the routed processors run."""
     if transformer is None:
@@ -2140,11 +2402,14 @@ def engaged_implementations(transformer: Any) -> set:
     }
 
 
-def status(transformer: Any = None) -> dict:
-    """What the status panel and the logs report."""
+def status(transformer: Any = None, policy: Any = None) -> dict:
+    """What the status panel and the logs report (``policy``: the loaded pipeline's ``Int8Policy``)."""
+    p = resolve_policy(policy)
     return {
         "backend": BACKEND,
-        "mode": mode(),
+        "mode": p.mode,
+        "requested": p.request,
+        "source": p.source,
         "impl_setting": impl_setting(),
         "modules": int8_attention_count(transformer),
         "impl": sorted(engaged_implementations(transformer)),

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Radix writes pointer-events: none on <body> for each modal layer. Rules keyed on that inline
-// style (body[style*=...] X) made WebKit walk every element under <body>, the whole thread
-// included, on each open and close. These pin that the modal rules key on attributes that never
-// sit above a thread root, and that the watcher marks the page so the rules keep their meaning.
+// Modal rules key on attributes that never sit above a thread root, not on body style selectors,
+// which made WebKit walk the whole thread; the watcher marks the page so the rules keep their
+// meaning.
 
 import assert from "node:assert/strict";
 import test from "node:test";

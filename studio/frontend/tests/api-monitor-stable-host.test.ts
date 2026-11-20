@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// __root.tsx renders ApiMonitorOverlay before the sidebar, so a panel mounted straight into #root is
-// inserted as its first child. Under Reduce motion in Glass, Chromium then restyles the whole app root
-// on every open and close (about 1,700 elements against about 50). The panel mounts inside a host that
-// is always there, so #root's children never change when it opens.
+// Panel mounts in a stable host: under Reduce motion in Glass, a direct child of the root restyled
+// the whole app root on each open and close (about 1,700 vs 50 elements)
 
 import assert from "node:assert/strict";
 import test from "node:test";

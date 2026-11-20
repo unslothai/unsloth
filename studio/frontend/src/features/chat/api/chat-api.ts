@@ -30,6 +30,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import { takeSseFrame } from "@/lib/sse-framing";
 import type { AgentsMdRecord } from "../utils/agents-md";
 import { showLoadWarning } from "../utils/load-warning-toast";
 import { readAdvertisedPatchGuards } from "../utils/openapi-support";
@@ -84,6 +85,51 @@ export type ChatHistoryUpdatedDetail = {
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
 
+export type OwnChatHistoryWrite = {
+  threadId: string;
+  thread: readonly [before: number, after: number];
+  history: readonly [before: number, after: number];
+};
+
+const CHAT_REVISION_HEADER = "X-Unsloth-Chat-Revision";
+const ownChatHistoryWriteListeners = new Set<
+  (write: OwnChatHistoryWrite) => void
+>();
+
+export function subscribeOwnChatHistoryWrites(
+  listener: (write: OwnChatHistoryWrite) => void,
+): () => void {
+  ownChatHistoryWriteListeners.add(listener);
+  return () => {
+    ownChatHistoryWriteListeners.delete(listener);
+  };
+}
+
+function publishOwnChatHistoryWrite(
+  response: Response,
+  affected: readonly string[] | null,
+): void {
+  const header = response.ok
+    ? response.headers?.get(CHAT_REVISION_HEADER)
+    : null;
+  if (!header || affected?.length !== 1) return;
+  const values = header.split(",").map(Number);
+  if (values.length !== 4 || !values.every(Number.isSafeInteger)) return;
+  const [threadBefore, threadAfter, historyBefore, historyAfter] = values;
+  const write: OwnChatHistoryWrite = {
+    threadId: affected[0],
+    thread: [threadBefore, threadAfter],
+    history: [historyBefore, historyAfter],
+  };
+  for (const listener of ownChatHistoryWriteListeners) {
+    try {
+      listener(write);
+    } catch {
+      // A listener failing must not fail the write that already landed.
+    }
+  }
+}
+
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
@@ -93,7 +139,12 @@ async function threadWriteFetch(
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
   if (caller === undefined) {
     try {
-      return await authFetch(input, { ...init, signal: timeout.signal });
+      const response = await authFetch(input, {
+        ...init,
+        signal: timeout.signal,
+      });
+      publishOwnChatHistoryWrite(response, affected);
+      return response;
     } finally {
       timeout.dispose();
       forgetThreadReads(affected);
@@ -106,7 +157,12 @@ async function threadWriteFetch(
   caller.addEventListener("abort", abort);
   timeout.signal.addEventListener("abort", abort);
   try {
-    return await authFetch(input, { ...init, signal: controller.signal });
+    const response = await authFetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+    publishOwnChatHistoryWrite(response, affected);
+    return response;
   } finally {
     caller.removeEventListener("abort", abort);
     timeout.dispose();
@@ -144,12 +200,27 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "Max Tokens, disable thinking, or start a new chat.",
 };
 
+const KV_CACHE_HINT =
+  " A q8_0 KV Cache Dtype in Model settings fits more context in the same memory.";
+const FULL_PRECISION_KV = new Set(["f16", "bf16", "f32"]);
+
+/** FastFlowLM and providers have no KV cache setting; an already quantized cache gains nothing. */
+export function offersKvCacheHint(
+  loadedIsGguf: boolean | null,
+  loadedKvCacheDtype: string | null,
+): boolean {
+  return loadedIsGguf === true && FULL_PRECISION_KV.has(loadedKvCacheDtype ?? "f16");
+}
+
 /** A reasoning model spent its output budget before emitting any standard content. */
 export class GenerationLengthError extends Error {
   readonly stopCause: LengthStopCause;
 
-  constructor(stopCause: LengthStopCause) {
-    super(LENGTH_STOP_ADVICE[stopCause]);
+  constructor(stopCause: LengthStopCause, kvCacheHint = false) {
+    super(
+      LENGTH_STOP_ADVICE[stopCause] +
+        (kvCacheHint && stopCause === "context_length" ? KV_CACHE_HINT : ""),
+    );
     this.name = "GenerationLengthError";
     this.stopCause = stopCause;
   }
@@ -1983,11 +2054,95 @@ function classifyStructuredDeltaContent(content: unknown): {
   return { hasAssistantContent, hasReasoningContent };
 }
 
+/** Detects a reasoning-only length stop; shared by the direct stream and durable chat runs. */
+export function createReasoningOnlyLengthCheck({
+  cap,
+  contextLength,
+  kvCacheHint = false,
+}: {
+  cap: number | null;
+  contextLength: number | null;
+  kvCacheHint?: boolean;
+}) {
+  let terminalFinishReason: string | null = null;
+  let sawAssistantContent = false;
+  let sawReasoningContent = false;
+  // Needed to tell the walls apart: a Max Tokens below context did not necessarily stop it.
+  let promptTokens: number | null = null;
+  let windowCount: number | null = null;
+  // Anthropic's explicit model_context_window_exceeded signal.
+  let providerReportedWindow = false;
+
+  return {
+    observe(chunk: unknown) {
+      if (!chunk || typeof chunk !== "object") return;
+      const {
+        usage: parsedUsage,
+        timings: parsedTimings,
+        _toolEvent: parsedToolEvent,
+        choices: parsedChoices,
+      } = chunk as {
+        usage?: { prompt_tokens?: number };
+        timings?: { predicted_n?: number };
+        _toolEvent?: { type?: string };
+        choices?: Array<{
+          delta?: Record<string, unknown>;
+          finish_reason?: string | null;
+        }>;
+      };
+      if (typeof parsedUsage?.prompt_tokens === "number") {
+        promptTokens = parsedUsage.prompt_tokens;
+      }
+      windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
+      if (parsedToolEvent?.type === "context_window_exceeded") {
+        providerReportedWindow = true;
+      }
+      for (const choice of parsedChoices ?? []) {
+        const delta = choice.delta;
+        if (delta) {
+          const contentState = classifyStructuredDeltaContent(delta.content);
+          sawAssistantContent ||= contentState.hasAssistantContent;
+          sawReasoningContent ||= contentState.hasReasoningContent;
+          const reasoning =
+            delta.reasoning_content ??
+            delta.reasoning ??
+            delta.reasoning_details;
+          sawReasoningContent ||= hasNonWhitespaceText(reasoning);
+        }
+        if (choice.finish_reason) {
+          terminalFinishReason = choice.finish_reason;
+        }
+      }
+    },
+    throwIfReasoningOnlyLength() {
+      if (
+        terminalFinishReason === "length" &&
+        sawReasoningContent &&
+        !sawAssistantContent
+      ) {
+        // Backend substitutes the context length for Max Tokens "Max", so equal means unset.
+        throw new GenerationLengthError(
+          providerReportedWindow
+            ? "context_window"
+            : lengthStopCause({
+                cap,
+                contextLength,
+                promptTokens,
+                completionTokens: windowCount,
+              }),
+          kvCacheHint,
+        );
+      }
+    },
+  };
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
   /** Served context window for length-stop attribution; null or omitted when unknown. */
   loadedContextLength?: number | null,
+  kvCacheHint = false,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -2015,34 +2170,11 @@ export async function* streamChatCompletions(
   let completed = false;
   // EOF without `[DONE]` or a finish_reason chunk means the stream was cut mid-generation.
   let sawTerminalSignal = false;
-  let terminalFinishReason: string | null = null;
-  let sawAssistantContent = false;
-  let sawReasoningContent = false;
-  // Needed to tell the walls apart: a Max Tokens below context did not necessarily stop it.
-  let promptTokens: number | null = null;
-  let windowCount: number | null = null;
-  // Anthropic's explicit model_context_window_exceeded signal.
-  let providerReportedWindow = false;
-
-  const throwIfReasoningOnlyLength = () => {
-    if (
-      terminalFinishReason === "length" &&
-      sawReasoningContent &&
-      !sawAssistantContent
-    ) {
-      // Backend substitutes the context length for Max Tokens "Max", so equal means unset.
-      throw new GenerationLengthError(
-        providerReportedWindow
-          ? "context_window"
-          : lengthStopCause({
-              cap: payload.max_tokens ?? null,
-              contextLength: loadedContextLength ?? null,
-              promptTokens,
-              completionTokens: windowCount,
-            }),
-      );
-    }
-  };
+  const lengthCheck = createReasoningOnlyLengthCheck({
+    cap: payload.max_tokens ?? null,
+    contextLength: loadedContextLength ?? null,
+    kvCacheHint,
+  });
 
   try {
     while (true) {
@@ -2062,21 +2194,22 @@ export async function* streamChatCompletions(
         if (!sawTerminalSignal) {
           throw new StreamInterruptedError();
         }
-        throwIfReasoningOnlyLength();
+        lengthCheck.throwIfReasoningOnlyLength();
         break;
       }
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      for (
+        let frame = takeSseFrame(buffer);
+        frame;
+        frame = takeSseFrame(buffer)
+      ) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         const dataLines = parseSseEvent(rawEvent);
         if (dataLines.length === 0) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
 
@@ -2084,7 +2217,7 @@ export async function* streamChatCompletions(
         if (dataText === "[DONE]") {
           completed = true;
           sawTerminalSignal = true;
-          throwIfReasoningOnlyLength();
+          lengthCheck.throwIfReasoningOnlyLength();
           return;
         }
 
@@ -2096,21 +2229,18 @@ export async function* streamChatCompletions(
         }
         if ("type" in parsed && parsed.type === "skill_load") {
           yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "tool_status") {
           yield {
             _toolStatus: parsed.content ?? "",
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "diffusion_frame") {
           yield {
             _diffusionFrame: parsed,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -2123,7 +2253,6 @@ export async function* streamChatCompletions(
             parsed.type === "tool_approved")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if (
@@ -2136,67 +2265,26 @@ export async function* streamChatCompletions(
             _reasoningDurationMs: (parsed as { duration_ms?: number })
               .duration_ms,
           } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         // A tool loop's context as it hands off to a tool, so the meter moves mid-turn.
         if ("type" in parsed && parsed.type === "context_usage") {
           yield { _contextUsage: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
         if ("type" in parsed && parsed.type === "generation_progress") {
           yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        const {
-          usage: parsedUsage,
-          timings: parsedTimings,
-          _toolEvent: parsedToolEvent,
-        } = parsed as {
-          usage?: { prompt_tokens?: number };
-          timings?: { predicted_n?: number };
-          _toolEvent?: { type?: string };
-        };
-        if (typeof parsedUsage?.prompt_tokens === "number") {
-          promptTokens = parsedUsage.prompt_tokens;
-        }
-        windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
-        if (parsedToolEvent?.type === "context_window_exceeded") {
-          providerReportedWindow = true;
-        }
+        lengthCheck.observe(parsed);
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
-        const parsedChoices = (
-          parsed as {
-            choices?: Array<{
-              delta?: Record<string, unknown>;
-              finish_reason?: string | null;
-            }>;
-          }
-        ).choices;
-        for (const choice of parsedChoices ?? []) {
-          const delta = choice.delta;
-          if (delta) {
-            const contentState = classifyStructuredDeltaContent(delta.content);
-            sawAssistantContent ||= contentState.hasAssistantContent;
-            sawReasoningContent ||= contentState.hasReasoningContent;
-            const reasoning =
-              delta.reasoning_content ??
-              delta.reasoning ??
-              delta.reasoning_details;
-            sawReasoningContent ||= hasNonWhitespaceText(reasoning);
-          }
-          if (choice.finish_reason) {
-            terminalFinishReason = choice.finish_reason;
-          }
-        }
-        const finishReason = parsedChoices?.[0]?.finish_reason;
+        const finishReason = (
+          parsed as { choices?: Array<{ finish_reason?: string | null }> }
+        ).choices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
         }
         yield parsed as OpenAIChatChunk;
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
     }
   } finally {

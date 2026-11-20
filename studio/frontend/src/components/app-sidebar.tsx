@@ -363,6 +363,9 @@ const CharacterChatMark = lazy(() =>
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
+const NAV_TAG =
+  "shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent";
+
 const SETTINGS_TAB_MENU_ITEMS: Record<
   "profile" | "appearance" | "resources" | "chat" | "connections",
   { icon: typeof ZapIcon; labelKey: TranslationKey }
@@ -721,9 +724,7 @@ function NavItem({
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
         <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
         {badge && (
-          <Badge variant="accent" className="group-data-[collapsible=icon]:hidden">
-            {badge}
-          </Badge>
+          <span className={cn(NAV_TAG, "group-data-[collapsible=icon]:hidden")}>{badge}</span>
         )}
         {waiting ? (
           <>
@@ -1037,8 +1038,7 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {/* -my-0.5: a 20px badge would make the row 36px. */}
-      {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
+      {badge && <span className={NAV_TAG}>{badge}</span>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
       {newAction && (
         <button
@@ -1113,7 +1113,7 @@ function MediaMoreSubmenu<Id extends string>({
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <Badge variant="accent" className="-my-0.5">{badge}</Badge>}
+        {badge && <span className={NAV_TAG}>{badge}</span>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
@@ -3535,7 +3535,7 @@ export function AppSidebar() {
     translate: {
       icon: AiTranslateIcon,
       label: t("shell.navigation.translate"),
-      badge: t("shell.beta"),
+      badge: t("shell.navigation.newBadge"),
       active: pathname === "/translate",
       onClick: () => {
         navigateFromRow({ to: "/translate" });

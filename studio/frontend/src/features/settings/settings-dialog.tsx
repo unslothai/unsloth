@@ -486,8 +486,7 @@ const SettingsPanelPane = memo(function SettingsPanelPane({
     return null;
   }
   return (
-    // Only a panel's first view waits, so the fallback is delayed and a
-    // promptly arriving panel never flashes it.
+    // Only a panel's first view waits, so a promptly arriving panel never flashes the fallback.
     <SettingsPanelBoundary
       tab={panelTab}
       message={t("settings.dialog.panelFailed")}
@@ -921,9 +920,8 @@ export function SettingsDialog() {
                 ref={railRef}
                 onScroll={onRailScroll}
                 className={cn(
-                  // A short window leaves the list taller than the clipped sidebar, so scroll it.
-                  // Full width, so the scroll bar sits at the panel edge; the right padding gives back
-                  // what the bar takes, and a bar wider than the inset widens the left to match.
+                  // Scroll bar at the panel edge: right padding gives back --rail-scrollbar, left
+                  // widens to match.
                   "hover-scrollbar settings-rail-fade -mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-[max(calc(var(--spacing)*3),var(--rail-scrollbar,0px))] pr-[max(0px,calc(var(--spacing)*3-var(--rail-scrollbar,0px)))]",
                   railFadeClass,
                   "group-data-stacked/settings:mx-0 group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:px-1 group-data-stacked/settings:py-0",

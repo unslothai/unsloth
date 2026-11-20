@@ -3068,7 +3068,7 @@ def run(
                 return _direct_urlopen(request, timeout = timeout)
 
             try:
-                prepare_npu_model(
+                model = prepare_npu_model(
                     _npu_request,
                     model,
                     (lambda _line: None) if silent else typer.echo,

@@ -41,7 +41,9 @@ from unsloth.utils import (
     enable_sample_packing,
 )
 from unsloth.utils.packing import (
+    _HYBRID_PACKING_ENV_VAR,
     _stateful_mixer_kind,
+    hybrid_packing_opt_in_device,
     packing_boundary_blocker,
     patch_hybrid_linear_attention_varlen,
 )
@@ -78,7 +80,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check")
+    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check", "_mm_rope_index")
 
     def __init__(
         self,
@@ -89,9 +91,12 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
         self._padding_free = bool(padding_free)
+        self._mm_rope_index = None
         if self._padding_free:
             from unsloth.utils.mm_packing import prepare_packed_multimodal_model
-            prepare_packed_multimodal_model(args[0] if args else kwargs.get("model"))
+            self._mm_rope_index = prepare_packed_multimodal_model(
+                args[0] if args else kwargs.get("model")
+            )
 
     @property
     def padding_free(self):
@@ -111,7 +116,11 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
                 _UnslothVisionDataCollatorBase, "_check_supervised"
             ):
                 self._check_supervised(*_stack_rows(docs))
-            return pack_multimodal_documents(docs, ignore_index = self.ignore_index)
+            return pack_multimodal_documents(
+                docs,
+                ignore_index = self.ignore_index,
+                rope_index = getattr(self, "_mm_rope_index", None),
+            )
         return self._collate_unpacked(examples)
 
     def _check_supervised(
@@ -2077,6 +2086,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         is_hybrid = False
         is_encoder_decoder = False
         hybrid_varlen_active = False
+        hybrid_opt_in_device = None
         if model is not None:
             model_config = getattr(model, "config", None)
             if model_config is None and isinstance(model, str):
@@ -2106,6 +2116,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     hybrid_varlen_active = patch_hybrid_linear_attention_varlen(model)
                 except Exception:
                     hybrid_varlen_active = False
+                if hybrid_varlen_active:
+                    hybrid_opt_in_device = hybrid_packing_opt_in_device(model)
 
         processing_class = (
             args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
@@ -2159,9 +2171,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
             is_ring_context_parallel = cp_backend == "ring"
-            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
-            # automatic padding-free choice would fail the first CP step.
-            # A deferred (string) model is classified by its resolved config's model types.
+            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses refuse packed batches (auto
+            # padding-free would fail); string models are classified by their config's model types.
             if cp_backend == "ulysses":
                 from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
                 ulysses_packing_blocker = _ulysses_packing_blocker(
@@ -2440,7 +2451,14 @@ def _patch_sft_trainer_auto_packing(trl_module):
             _install_text_prepended_position_ids(self.model)
         if not blocked and trainer_packing and (packing_active or _should_pack(trainer_args)):
             enable_sample_packing(self.model, self)
-            if default_packing:
+            if is_hybrid and hybrid_opt_in_device is not None:
+                print(
+                    f"🦥 Unsloth: Packing enabled on {hybrid_opt_in_device} through "
+                    f"{_HYBRID_PACKING_ENV_VAR}=1 (not on by default on this device). The speedup "
+                    "depends on this device's attention kernels, so compare seconds per step "
+                    "against packing = False."
+                )
+            elif default_packing:
                 print(_DEFAULT_PACKING_NOTE)
             else:
                 print("🦥 Unsloth: Packing enabled - training is >2x faster and uses less VRAM!")
@@ -2470,7 +2488,11 @@ def _patch_sft_trainer_auto_packing(trl_module):
                         _unsloth_reset_stray_compile_cache(self)
                     except Exception:
                         pass
-                    return _orig_train(*train_args, **train_kwargs)
+                    try:
+                        return _orig_train(*train_args, **train_kwargs)
+                    finally:
+                        # Inference / saving after training get the memory the NF4 dequant cache held.
+                        _release_dequant_cache()
 
                 self.train = _train_with_reset
                 self._unsloth_train_reset_wrapped = True
@@ -2479,6 +2501,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
     sft_trainer.__init__ = new_init
     sft_trainer._unsloth_auto_packing_wrapped = True
+
+
+def _release_dequant_cache():
+    import sys
+    module = sys.modules.get("unsloth.kernels.dequant_cache")
+    if module is not None:
+        module.clear_dequant_cache()
 
 
 def _patch_trl_trainer():

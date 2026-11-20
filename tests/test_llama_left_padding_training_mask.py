@@ -170,3 +170,48 @@ def test_padded_labelled_lora_training_matches_unpadded_rows(padding, length):
     torch.testing.assert_close(padded_loss, alone_loss, atol = 1e-5, rtol = 1e-5)
     relative = (padded_grads - alone_grads).norm() / alone_grads.norm()
     assert relative < 1e-3, float(relative)
+
+
+@pytest.mark.parametrize("additive", [False, True])
+def test_pad_queries_attend_only_themselves(additive):
+    pad_queries_attend_self = _lift("_pad_queries_attend_self")
+    mask_2d = torch.tensor([[0, 0, 1, 1, 1], [1, 1, 1, 1, 1], [1, 0, 1, 1, 1]])
+    keep = torch.ones(5, 5, dtype = torch.bool).tril()[None, None] & mask_2d.bool()[:, None, None, :]
+    # transformers' _unmask_unattended: fully masked rows attend every key.
+    keep = keep | ~keep.any(dim = -1, keepdim = True)
+    mask_4d = keep
+    if additive:
+        mask_4d = torch.zeros(keep.shape).masked_fill(~keep, torch.finfo(torch.float32).min)
+    out = pad_queries_attend_self(mask_4d, mask_2d)
+    allowed = out if not additive else out == 0
+    pad = mask_2d == 0
+    eye = torch.eye(5, dtype = torch.bool)
+    for b in range(3):
+        for i in range(5):
+            if pad[b, i]:
+                assert torch.equal(allowed[b, 0, i], eye[i]), (b, i, allowed[b, 0, i])
+            else:
+                assert torch.equal(allowed[b, 0, i], keep[b, 0, i]), (b, i)
+    assert not (allowed & ~torch.ones(5, 5, dtype = torch.bool).tril()).any()
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth fast forward needs a GPU")
+def test_left_padded_pad_query_prediction_does_not_see_later_tokens():
+    # DataCollatorForSeq2Seq with left padding keeps the first real label, so the last pad query predicts it:
+    # that query must stay causal (it was unmasked to every key, so the target was visible).
+    model = _lora_model(torch.float32)
+    torch.manual_seed(0)
+    vocab = model.config.vocab_size
+    input_ids = torch.randint(3, vocab, (2, 10), device = "cuda")
+    attention_mask = torch.ones_like(input_ids)
+    attention_mask[1, :4] = 0
+    input_ids = input_ids.masked_fill(attention_mask == 0, 0)
+    later = input_ids.clone()
+    later[1, 6:] = (later[1, 6:] + 7) % (vocab - 3) + 3
+    with torch.no_grad():
+        # Label-less forwards return logits and take the same kept-mask branch as labelled ones.
+        a = model(input_ids = input_ids, attention_mask = attention_mask).logits
+        b = model(input_ids = later, attention_mask = attention_mask).logits
+    assert torch.isfinite(a).all()
+    # Position 3 is the last pad and predicts token 4; positions 4 and 5 precede the change.
+    torch.testing.assert_close(a[1, :6].float(), b[1, :6].float(), atol = 1e-5, rtol = 1e-5)

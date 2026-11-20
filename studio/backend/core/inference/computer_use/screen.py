@@ -9,9 +9,12 @@ import base64
 import io
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .backends import Backend, Display
+
+if TYPE_CHECKING:
+    from .budget import ImageBudget
 
 # Models that answer in pixels count 28 px cells on the resized image, so it is sent on that grid.
 CELL = 28
@@ -31,7 +34,15 @@ _SETTLE_STEPS = 3
 _SETTLED = 0.002
 
 
-def fit_size(width: float, height: float) -> tuple[int, int]:
+def fit_size(
+    width: float,
+    height: float,
+    budget: "Optional[ImageBudget]" = None,
+    pixels: Optional[tuple[int, int]] = None,
+) -> tuple[int, int]:
+    sized = budget.size(width, height, pixels) if budget is not None else None
+    if sized is not None:
+        return sized
     scale = min(1.0, MAX_EDGE / max(width, height, 1))
 
     def snap(value: float) -> int:
@@ -46,6 +57,7 @@ class Frame:
     width: int
     height: int
     gray: Any = field(repr = False, default = None)
+    windows: Optional[list] = field(repr = False, default = None)
     # Sent because the screen changed under a target: not re-checked, or a video is never clickable.
     lenient: bool = False
 
@@ -82,13 +94,22 @@ class Shot:
     full: Any = field(repr = False)
 
 
-def take(backend: Backend, display: Display) -> Shot:
+def take(
+    backend: Backend,
+    display: Display,
+    budget: "Optional[ImageBudget]" = None,
+) -> Shot:
     from PIL import Image, ImageDraw
 
+    # Listed before the capture: a window opening in between counts as a change, not a miss.
+    try:
+        windows = backend.window_stack()
+    except Exception:  # noqa: BLE001 - the pixels are still compared without it
+        windows = None
     full = backend.capture(display)
-    size = fit_size(display.width, display.height)
+    size = fit_size(display.width, display.height, budget, tuple(full.size))
     image = full.resize(size, Image.Resampling.LANCZOS, reducing_gap = 2.0)
-    frame = Frame(display, size[0], size[1])
+    frame = Frame(display, size[0], size[1], windows = windows)
     # Kept without the pointer: comparing two screens must not see the pointer having moved.
     frame.gray = image.convert("L")
     try:
@@ -121,9 +142,22 @@ def _changed_pixels(
     return sum(diff.histogram()[_LEVEL_STEP:]), max(1, total)
 
 
+def _window_at(windows: list, x: float, y: float) -> Any:
+    for entry in windows:
+        left, top, width, height = entry[1]
+        if left <= x < left + width and top <= y < top + height:
+            return entry
+    return None
+
+
 def target_moved(frame: Frame, now: Frame, x: float, y: float) -> bool:
     if frame.gray is None or now.gray is None or frame.gray.size != now.gray.size:
         return True
+    # A light dialog over a light page changes too few pixels for the check below.
+    if frame.windows is not None and now.windows is not None:
+        desktop = frame.to_desktop(x, y)
+        if _window_at(frame.windows, *desktop) != _window_at(now.windows, *desktop):
+            return True
     width, height = frame.gray.size
     box = (
         int(max(0, x - _PATCH_RADIUS)),
@@ -162,7 +196,11 @@ def settle(shoot: Callable[[], Shot], sleep: Callable[[float], bool]) -> Shot:
     return shot
 
 
-def zoom(shot: Shot, region: tuple[float, float, float, float]) -> Any:
+def zoom(
+    shot: Shot,
+    region: tuple[float, float, float, float],
+    budget: "Optional[ImageBudget]" = None,
+) -> Any:
     from PIL import Image
 
     frame, full = shot.frame, shot.full
@@ -178,7 +216,11 @@ def zoom(shot: Shot, region: tuple[float, float, float, float]) -> Any:
         raise ValueError("region is outside the screenshot.")
     crop = full.crop(box)
     wanted = max(max(crop.size), 2 * max(x1 - x0, y1 - y0))
-    scale = min(MAX_EDGE, wanted) / max(crop.size)
+    # No more image tokens than a screenshot of that shape, at the size that was counted.
+    sized = budget.size(*crop.size) if budget is not None else None
+    if sized and wanted >= max(sized):
+        return crop.resize(sized, Image.Resampling.LANCZOS)
+    scale = (wanted if sized else min(MAX_EDGE, wanted)) / max(crop.size)
     size = (max(1, round(crop.width * scale)), max(1, round(crop.height * scale)))
     return crop.resize(size, Image.Resampling.LANCZOS) if size != crop.size else crop
 

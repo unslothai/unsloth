@@ -709,10 +709,9 @@ def get_run_state(run_id: str) -> dict[str, Any] | None:
 
 
 def get_run_frame(run_id: str) -> tuple[dict[str, Any], str] | None:
-    """get_run_state's fields plus get_run's row as its compact JSON text, without parsing request_json.
-
-    A request_json SQLite does not see as one line of valid JSON (corrupt, hand edited) takes the old
-    parse and re-encode, so the route never splices text the client cannot parse or that splits the frame."""
+    """get_run_state fields plus get_run row as compact JSON text, without parsing request_json; an
+    invalid request_json is re-encoded so the route never splices unparseable or frame-splitting
+    text."""
     conn = _connect()
     try:
         row = _execute_splice(

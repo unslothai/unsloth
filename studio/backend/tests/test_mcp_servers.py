@@ -2217,9 +2217,13 @@ def _search_spec(specs):
     return next(s for s in specs if s["function"]["name"] == "mcp_tool_search")
 
 
-def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, listing_window):
+@pytest.mark.parametrize("search_only", ["0", "1"])
+def test_mcp_listing_stays_full_when_it_fits_the_window(
+    tmp_path, monkeypatch, listing_window, search_only
+):
     from core.inference import tools as tools_mod
 
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", search_only)
     _cache_server_tools(tmp_path, monkeypatch, [_PING, _big_mcp_tool()])
     unsized = tools_mod.cached_mcp_tools()[0]
     assert _names(unsized) == ["mcp__srv1__ping", "mcp__srv1__query"]
@@ -2372,6 +2376,44 @@ def _thread_listing(tools_mod, searching, messages):
     return ctx.run(lambda: tools_mod.cached_mcp_tools()[0])
 
 
+def _thread_turn(
+    tools_mod,
+    searching,
+    messages,
+    thread_id = "thread-1",
+):
+    """(the listing, the search exchange the turn adds after the message, the names the loop accepts)."""
+    import contextvars
+
+    ctx = contextvars.copy_context()
+    ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, thread_id, messages)
+
+    def turn():
+        listing = tools_mod.cached_mcp_tools()[0]
+        exchange = tools_mod.mcp_match_exchange(messages, listing) or {}
+        return listing, exchange.get("messages", []), exchange.get("names", [])
+
+    return ctx.run(turn)
+
+
+def test_search_only_listing_stays_stable_across_queries_and_tool_calls(
+    tmp_path, monkeypatch, searching
+):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", "1")
+    first = _thread_listing(
+        tools_mod, searching, [{"role": "user", "content": "Move my roadmap page."}]
+    )
+    assert _names(first) == ["mcp_tool_search"]
+    name = "mcp__srv1__move-pages"
+    assert _names(tools_mod.mcp_tool_search_specs({"query": name})) == [name]
+    tools_mod.mcp_record_loaded_tools("thread-1", [name])
+    second = _thread_listing(tools_mod, searching, [{"role": "user", "content": "List all users."}])
+    assert second == first
+
+
 def test_mcp_listing_holds_while_the_best_match_stays_listed(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
@@ -2409,8 +2451,8 @@ def test_mcp_listing_lists_a_best_match_that_did_not_fit_before(tmp_path, monkey
 
     first = _thread_listing(tools_mod, searching, [{"role": "user", "content": "first"}])
     assert seen[0] in _names(first) and seen[1] not in _names(first)
-    second = _thread_listing(tools_mod, searching, [{"role": "user", "content": "second"}])
-    assert seen[1] in _names(second)
+    second, _, matched = _thread_turn(tools_mod, searching, [{"role": "user", "content": "second"}])
+    assert second == first and matched == [seen[1]]
 
 
 @pytest.mark.parametrize("how", ["forced", "ran"])
@@ -2451,20 +2493,33 @@ def test_mcp_listing_ranks_the_first_message_when_its_best_match_is_listed(
     assert best in names and other[0] in names
 
 
-def test_mcp_listing_lists_a_tool_a_later_message_needs(tmp_path, monkeypatch, searching):
+def test_mcp_listing_finds_a_tool_a_later_message_needs(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
     _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    move = "mcp__srv1__move-pages"
     chat = [{"role": "user", "content": "hello"}]
-    assert "mcp__srv1__move-pages" not in _names(_thread_listing(tools_mod, searching, chat))
+    first, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert move not in _names(first) and sent == [] and matched == []
     chat += [
         {"role": "assistant", "content": "Hi."},
         {"role": "user", "content": "Move my roadmap page under the Archive page."},
     ]
-    assert "mcp__srv1__move-pages" in _names(_thread_listing(tools_mod, searching, chat))
+    listing, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert listing == first
+    assert move in matched and move not in _names(listing)
+    assert chat[-1]["content"] == "Move my roadmap page under the Archive page."
+    call, result = sent
+    assert call["role"] == "assistant"
+    assert call["tool_calls"][0]["function"]["name"] == "mcp_tool_search"
+    assert result["role"] == "tool" and result["tool_call_id"] == call["tool_calls"][0]["id"]
+    assert result["content"].startswith("Loaded ")
+    assert json.dumps(tools_mod.mcp_tool_spec(move), separators = (",", ":")) in result["content"]
 
 
-def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch, searching):
+def test_message_matches_send_ranked_schemas_and_keep_ran_tools_callable(
+    tmp_path, monkeypatch, searching
+):
     from core.inference import tools as tools_mod
 
     _cache_server_tools(tmp_path, monkeypatch, _NOTES)
@@ -2472,6 +2527,10 @@ def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch,
     real_cost = tools_mod._text_token_cost
 
     def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
         if '"name":"mcp_tool_search"' in text:
             return 0
         for name, size in sizes.items():
@@ -2480,9 +2539,9 @@ def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch,
         return 1000 if text.startswith("{") else real_cost(text, ctx)
 
     monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
-    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 150 / searching)
     held, ran, best = (f"mcp__srv1__{name}" for name in sizes)
-    rankings = {"first": [held], "second": [ran, best]}
+    rankings = {"first": [held], "second": [best]}
 
     def ranked(specs, query):
         names = [spec["function"]["name"] for spec in specs]
@@ -2495,9 +2554,17 @@ def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch,
     )
     tools_mod.mcp_record_loaded_tools("thread-1", [ran])
     chat = [{"role": "user", "content": "second"}]
-    second = _thread_listing(tools_mod, searching, chat)
-    assert _names(second) == ["mcp_tool_search", ran, best]
-    assert _thread_listing(tools_mod, searching, chat) == second
+    second, sent, accepted = _thread_turn(tools_mod, searching, chat)
+    assert _names(second) == ["mcp_tool_search", held]
+    assert accepted == [best, ran]
+    block = sent[-1]["content"]
+    assert f'"name":"{best}"' in block and f'"name":"{ran}"' not in block
+    again = _thread_turn(tools_mod, searching, chat)
+    assert again[2] == accepted and again[1][-1]["content"] == block
+    # The matches have their own share: one too large for it is not sent.
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_MATCH_SHARE", 30 / searching)
+    listing, sent, accepted = _thread_turn(tools_mod, searching, chat)
+    assert listing == second and sent == [] and accepted == [ran]
 
 
 def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypatch, searching):
@@ -2518,7 +2585,8 @@ def test_mcp_listing_keeps_its_order_when_a_listed_tool_runs(tmp_path, monkeypat
         assert _thread_listing(tools_mod, searching, chat) == first
 
     tools_mod.mcp_record_loaded_tools("thread-1", [move])
-    assert _names(_thread_listing(tools_mod, searching, chat)) == [*_names(first), move]
+    listing, _, matched = _thread_turn(tools_mod, searching, chat)
+    assert listing == first and matched == [move]
 
 
 def test_mcp_listing_token_count_leaves_the_held_listing_alone(tmp_path, monkeypatch, searching):
@@ -2548,9 +2616,11 @@ def test_mcp_listing_token_count_leaves_the_held_listing_alone(tmp_path, monkeyp
         return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
 
     chat = [{"role": "user", "content": "ab"}]
+    assert count(chat) == ["mcp_tool_search", a, b]
+    assert tools_mod._MCP_HELD_THREADS == {}
     first = _thread_listing(tools_mod, searching, chat)
     assert _names(first) == ["mcp_tool_search", a, b]
-    assert count([{"role": "user", "content": "cb"}]) == ["mcp_tool_search", b, c]
+    assert count([{"role": "user", "content": "cb"}]) == _names(first)
     assert _thread_listing(tools_mod, searching, chat) == first
 
 
@@ -2584,17 +2654,247 @@ def test_mcp_listing_holds_when_the_best_match_cannot_fit(tmp_path, monkeypatch,
     assert _thread_listing(tools_mod, searching, [{"role": "user", "content": "second"}]) == first
 
 
-def test_mcp_listing_follows_a_change_of_subject(tmp_path, monkeypatch, searching):
+def test_mcp_listing_refits_the_held_tools_to_a_smaller_window(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        return 40 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 100 / searching)
+    ping, create = "mcp__srv1__ping", "mcp__srv1__create-pages"
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    monkeypatch.setattr(
+        tools_mod, "_mcp_ranked", lambda specs, query: ([names.index(ping), names.index(create)], 0)
+    )
+    chat = [{"role": "user", "content": "first"}]
+
+    assert _names(_thread_listing(tools_mod, searching, chat)) == ["mcp_tool_search", ping, create]
+    assert _names(_thread_listing(tools_mod, searching // 2, chat)) == ["mcp_tool_search", ping]
+
+
+def test_mcp_listing_refits_the_held_tools_when_a_schema_grows(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    sizes = {"ping": 40, "create-pages": 40}
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        for name, size in sizes.items():
+            if text.startswith("{") and f'"name":"mcp__srv1__{name}"' in text:
+                return size
+        return 1000 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 100 / searching)
+    ping, create = "mcp__srv1__ping", "mcp__srv1__create-pages"
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    monkeypatch.setattr(
+        tools_mod, "_mcp_ranked", lambda specs, query: ([names.index(ping), names.index(create)], 0)
+    )
+    chat = [{"role": "user", "content": "first"}]
+
+    assert _names(_thread_listing(tools_mod, searching, chat)) == ["mcp_tool_search", ping, create]
+    sizes["ping"] = 90
+    assert _names(_thread_listing(tools_mod, searching, chat)) == ["mcp_tool_search", ping]
+
+
+def test_a_later_topic_gets_a_card_when_the_listing_fills_its_share(
+    tmp_path, monkeypatch, searching
+):
+    """Large schemas in a small window: the first listing spends the preload share, and the matches still fit."""
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
+        if '"name":"mcp_tool_search"' in text:
+            return 30
+        return 35 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 100 / searching)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_MATCH_SHARE", 40 / searching)
+    ping, create, move = (f"mcp__srv1__{name}" for name in ("ping", "create-pages", "move-pages"))
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    rankings = {"first": [ping, create], "second": [move]}
+    monkeypatch.setattr(
+        tools_mod,
+        "_mcp_ranked",
+        lambda specs, query: ([names.index(name) for name in rankings[query]], 0),
+    )
+
+    chat = [{"role": "user", "content": "first"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    assert _names(first) == ["mcp_tool_search", ping, create]
+    chat += [{"role": "assistant", "content": "Done."}, {"role": "user", "content": "second"}]
+    listing, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert listing == first and matched == [move]
+    assert f'"name":"{move}"' in sent[-1]["content"]
+
+
+def test_mcp_listing_follows_a_change_of_subject_with_the_message(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
     _cache_server_tools(tmp_path, monkeypatch, _NOTES)
     chat = [{"role": "user", "content": "Who are the users in the workspace?"}]
-    _thread_listing(tools_mod, searching, chat)
+    first = _thread_listing(tools_mod, searching, chat)
     chat += [
         {"role": "assistant", "content": "Two people."},
         {"role": "user", "content": "Move my roadmap page under the Archive page."},
     ]
-    assert "mcp__srv1__move-pages" in _names(_thread_listing(tools_mod, searching, chat))
+    listing, _, matched = _thread_turn(tools_mod, searching, chat)
+    assert listing == first and "mcp__srv1__move-pages" in matched
+
+
+def test_incidental_wording_keeps_the_tool_block_byte_identical(tmp_path, monkeypatch, searching):
+    """#17015: a follow-up's wording must not change the tool block that heads the prompt."""
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    chat = [{"role": "user", "content": "Who are the users in the workspace?"}]
+    blocks = [json.dumps(_thread_listing(tools_mod, searching, chat))]
+    for text in (
+        "For a page title, what comes after Friday? Answer in one word.",
+        "What is 3+4? Answer with the number only.",
+        "Move my roadmap page under the Archive page.",
+    ):
+        chat += [{"role": "assistant", "content": "Done."}, {"role": "user", "content": text}]
+        listing, _, _ = _thread_turn(tools_mod, searching, chat)
+        blocks.append(json.dumps(listing))
+    assert len(set(blocks)) == 1
+
+
+def test_controller_accepts_the_matched_tools(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    move = "mcp__srv1__move-pages"
+    chat = [{"role": "user", "content": "hello"}]
+    _thread_listing(tools_mod, searching, chat)
+    chat += [
+        {"role": "assistant", "content": "Hi."},
+        {"role": "user", "content": "Move my roadmap page under the Archive page."},
+    ]
+    listing, _, matched = _thread_turn(tools_mod, searching, chat)
+    assert move in matched
+
+    controller = ToolLoopController(tools = listing, thread_id = "thread-1", loaded_mcp_tools = matched)
+    assert _names(controller.active_tools()) == _names(listing)
+    assert set(matched) <= set(_names(controller.active_tools(include_deferred = True)))
+    call = controller.prepare_call({"function": {"name": move, "arguments": "{}"}})
+    assert call.action == "execute"
+    plain = [tool for tool in listing if tool["function"]["name"] != "mcp_tool_search"]
+    controller = ToolLoopController(tools = plain, loaded_mcp_tools = matched)
+    assert move not in _names(controller.active_tools(include_deferred = True))
+
+
+def test_match_exchange_needs_a_thread_and_a_preload(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    move = "mcp__srv1__move-pages"
+    chat = [{"role": "user", "content": "Move my roadmap page under the Archive page."}]
+    listing, sent, matched = _thread_turn(tools_mod, searching, chat, thread_id = None)
+    assert move in _names(listing) and sent == [] and matched == []
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", "1")
+    _thread_listing(tools_mod, searching, [{"role": "user", "content": "hello"}])
+    listing, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert _names(listing) == ["mcp_tool_search"] and sent == [] and matched == []
+    monkeypatch.delenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY")
+    resumed = [*chat, {"role": "assistant", "content": "Moving"}]
+    assert _thread_turn(tools_mod, searching, resumed)[1] == []
+
+
+def test_a_sent_match_stays_callable_after_an_unmatched_reply(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    move = "mcp__srv1__move-pages"
+    chat = [{"role": "user", "content": "hello"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    chat += [
+        {"role": "assistant", "content": "Hi."},
+        {"role": "user", "content": "Move my roadmap page under the Archive page."},
+    ]
+    _, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert sent and move in matched
+    reply = [
+        {"role": "assistant", "content": "Under Archive or Archive/2025?"},
+        {"role": "user", "content": "yes"},
+    ]
+    listing, sent_now, names = _thread_turn(tools_mod, searching, [*chat, *sent, *reply])
+    assert listing == first and sent_now == [] and move in names
+    # Callable because the replayed search gave the model its schema, not because it once ranked.
+    assert move not in _thread_turn(tools_mod, searching, [*chat, *reply])[2]
+
+
+def test_topic_matches_do_not_crowd_out_a_tool_the_thread_ran(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    catalog = [_PING, _big_mcp_tool()]
+    catalog += [{"name": f"tool-{i}", "description": f"Tool number {i}."} for i in range(10)]
+    _cache_server_tools(tmp_path, monkeypatch, catalog)
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    topics = {"a": range(0, 5), "b": range(5, 10)}
+
+    def ranked(specs, query):
+        return [names.index(f"mcp__srv1__tool-{i}") for i in topics.get(query, ())], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+    ping = "mcp__srv1__ping"
+    chat = [{"role": "user", "content": "hello"}]
+    _thread_listing(tools_mod, searching, chat)
+    tools_mod.mcp_record_loaded_tools("thread-1", [ping])
+    for topic in ("a", "b"):
+        chat += [{"role": "assistant", "content": "Done."}, {"role": "user", "content": topic}]
+        _, sent, _ = _thread_turn(tools_mod, searching, chat)
+        assert sent
+        chat += sent
+    chat += [{"role": "assistant", "content": "Done."}, {"role": "user", "content": "ping again"}]
+    assert ping in _thread_turn(tools_mod, searching, chat)[2]
+
+
+def test_a_resumed_reply_keeps_the_matched_and_ran_tools_callable(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    move, ping = "mcp__srv1__move-pages", "mcp__srv1__ping"
+    chat = [{"role": "user", "content": "hello"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    assert move not in _names(first) and ping not in _names(first)
+    tools_mod.mcp_record_loaded_tools("thread-1", [ping])
+    chat += [
+        {"role": "assistant", "content": "Hi."},
+        {"role": "user", "content": "Move my roadmap page under the Archive page."},
+    ]
+    _, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert sent and move in matched and ping in matched
+    resumed = [*chat, {"role": "assistant", "content": "Moving"}]
+    listing, sent, names = _thread_turn(tools_mod, searching, resumed)
+    assert listing == first and sent == [] and names == matched
 
 
 def test_mcp_listing_matches_a_write_verb_to_the_tool_named_with_another(
@@ -2733,22 +3033,23 @@ def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, se
     assert named.action == "execute" and named.arguments == {"n": 3}
     assert "mcp__srv1__ping" not in _names(controller.active_tools())
 
-    # Later turns of the thread list the tools it ran, newest first; a tool only loaded is not relisted.
-    assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
+    # Later turns accept the tools the thread ran without listing them; one only loaded needs its search replayed.
+    def matches_for(thread_id):
+        return _thread_turn(tools_mod, searching, [{"role": "user", "content": "x"}], thread_id)[2]
+
+    assert matches_for("thread-1") == []
     controller.record_result(named, "pong")
     moved = controller.prepare_call(
         {"function": {"name": "mcp__srv1__move-pages", "arguments": "{}"}}
     )
     controller.record_result(moved, "moved")
-    assert _names(listing_for("thread-1")) == [
-        "mcp_tool_search",
-        "mcp__srv1__move-pages",
-        "mcp__srv1__ping",
-    ]
-    assert _names(listing_for("thread-2")) == ["mcp_tool_search"]
-    # Relisted tools share the preload room, so a small window drops them rather than overflow.
-    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 0.0)
     assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
+    assert matches_for("thread-1") == ["mcp__srv1__move-pages", "mcp__srv1__ping"]
+    assert matches_for("thread-2") == []
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 0.0)
+    assert matches_for("thread-1") == ["mcp__srv1__move-pages", "mcp__srv1__ping"]
+    chat = [{"role": "user", "content": "x"}]
+    assert _thread_turn(tools_mod, searching, chat)[1] == []
 
 
 def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
@@ -2798,11 +3099,13 @@ def test_controller_keeps_the_declared_tools_stable_across_searches(tmp_path, mo
     assert controller.active_tools() == before
 
 
-def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching):
+@pytest.mark.parametrize("search_only", ["0", "1"])
+def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching, search_only):
     import contextvars
 
     from core.inference import tools as tools_mod
 
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_SEARCH_ONLY", search_only)
     _cache_server_tools(tmp_path, monkeypatch, _NOTES)
 
     def listing_for(messages, tool_choice = None):

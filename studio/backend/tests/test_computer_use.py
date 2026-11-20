@@ -4,6 +4,8 @@
 """Computer use: call dialects, picture-to-desktop mapping, whole calls on the drawn desktop."""
 
 import asyncio
+import inspect
+import math
 import threading
 import time
 import types
@@ -15,7 +17,9 @@ from core.inference.computer_use import actions as actions_mod
 from core.inference.computer_use import backends, keys, policy, screen
 from core.inference.computer_use.backends import Display, FrontWindow
 from core.inference.computer_use.backends import virtual
-from core.inference.mcp_images import _png_data_url, is_image_tool, split_images
+from core.inference.computer_use.budget import ImageBudget
+from core.inference.mcp_images import content_parts, is_image_tool, promote_history, split_images
+from core.inference.tool_loop_controller import ToolCallCompletion
 from state import computer_use as state
 from state import tool_policy
 from utils import host_policy
@@ -70,6 +74,23 @@ def at(x, y):
 BUTTON = (640, 450)
 FIELD = (400, 320)
 OUTSIDE = (1100, 700)
+
+
+def _mtmd(cell, cap):
+    # Image tokens as llama.cpp counts them: rounded cells, shrunk into the cap, two delimiters.
+    def count(width, height):
+        cols, rows = max(1, round(width / cell)), max(1, round(height / cell))
+        shrink = min(1.0, math.sqrt(cap / (cols * rows)))
+        return int(cols * shrink) * int(rows * shrink) + 2
+
+    return count
+
+
+QWEN, GEMMA = _mtmd(32, 4096), _mtmd(48, 1120)
+
+
+def sized(count = GEMMA, context = 32768):
+    state.set_coordinates(state.session_key(SESSION), "pixels", ImageBudget(count, lambda: context))
 
 
 @pytest.mark.parametrize(
@@ -268,6 +289,163 @@ def test_the_picture_fits_the_vision_grid_and_the_shared_image_cap(size):
     assert abs(width / height - size[0] / size[1]) < 0.06
 
 
+@pytest.mark.parametrize(
+    "count, context, display, tokens",
+    [
+        (QWEN, 8192, (2560, 1440), 1100),
+        (QWEN, 4400, (2560, 1440), 1100),  # a quarter of the context just holds the floor
+        (QWEN, 16384, (1080, 1920), 2048),
+        (QWEN, 131072, (1280, 800), 4096),
+        (_mtmd(28, 1536), 16384, (2560, 1440), 1538),  # a cap that clips the larger probe
+        (GEMMA, 32768, (5120, 1440), 1122),
+        (GEMMA, 32768, (1080, 1920), 1122),
+    ],
+)
+def test_a_screenshot_fills_the_models_image_token_target(count, context, display, tokens):
+    size = screen.fit_size(*display, ImageBudget(count, lambda: context))
+    assert 0.92 * tokens <= count(*size) <= tokens
+    assert abs(size[0] / size[1] / (display[0] / display[1]) - 1) <= 0.05
+
+
+@pytest.mark.parametrize(
+    "count, context",
+    [
+        (QWEN, 4396),
+        (lambda w, h: 258, 32768),
+        (lambda w, h: None, 32768),
+        (lambda w, h: max(1026, QWEN(w, h)), 8192),  # an --image-min-tokens floor
+        (lambda w, h: 900 if (w, h) == (2688, 1536) else QWEN(w, h), 32768),  # counts short
+    ],
+)
+def test_without_room_or_a_size_responsive_encoder_the_default_stays(count, context):
+    default = screen.fit_size(2560, 1440)
+    assert screen.fit_size(2560, 1440, ImageBudget(count, lambda: context)) == default
+
+
+@pytest.mark.parametrize(
+    "pixels, tokens",
+    [((3840, 2160), 4096), ((1920, 1080), 2048), ((1024, 768), 1100), ((3024, 1964), 4096)],
+)
+def test_a_screenshot_is_never_upscaled_past_the_precision_floor(pixels, tokens):
+    budget = ImageBudget(QWEN, lambda: 131072)
+    size = screen.fit_size(*pixels, budget, pixels)
+    assert 0.92 * tokens <= QWEN(*size) <= tokens
+    if tokens > 1100:
+        assert size[0] <= pixels[0] + 32 and size[1] <= pixels[1] + 32
+
+
+def test_the_size_follows_a_context_that_shrank_and_zoom_is_sent_as_counted():
+    from PIL import Image
+
+    context = [32768]
+    budget = ImageBudget(QWEN, lambda: context[0])
+    size = budget.size(2560, 1440)
+    frame = screen.Frame(Display(1, 0, 0, 2560, 1440, True), *size)
+    shot = screen.Shot(frame, None, Image.new("RGB", (2560, 1440)))
+    assert screen.zoom(shot, (0, 0, *size), budget).size == size
+    context[0] = 4096
+    assert budget.size(2560, 1440) is None
+
+
+def test_only_a_local_engine_sizes_the_screenshots(desktop, monkeypatch):
+    from routes import inference as routes
+
+    monkeypatch.setattr(routes, "_enabled_agent_skills", lambda: [])
+    payload = routes.ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
+    payload.enabled_tools, payload.thread_id = ["computer"], SESSION
+    engine = types.SimpleNamespace(context_length = 32768, image_tokens = GEMMA)
+    for local, encoder in ((engine, ""), (None, None)):
+        offer = routes._select_request_tools(
+            payload, tools_on = True, supports_vision = True, engine = local, encoder = encoder,
+            mcp_allowed = False,
+        )  # fmt: skip
+        assert asyncio.run(offer)[0]["function"]["name"] == "computer"
+        session = state.session(state.session_key(SESSION))
+        assert (session.budget and session.budget.size(2560, 1440)) == (local and (2112, 1200))
+        assert session.coordinates == ("grid" if local else "pixels")
+
+
+def test_a_worker_engine_counts_a_screenshot_once_per_load_and_never_waits(monkeypatch):
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch.models, orch.active_model_name = {"m": {"context_length": 8192}}, "m"
+    orch.load_generation = 1
+    orch._gen_lock, orch._mailbox_lock, orch._mailboxes = threading.Lock(), threading.Lock(), {}
+    orch._worker_released, orch._worker_reserved_for = threading.Condition(), None
+    replies, sent = [{"tokens": 1100}, {"error": "busy"}, {}, {"tokens": 900}], []
+    orch._direct_reader = lambda _id: (None, None, lambda: None)
+    orch._send_cmd = sent.append
+    orch._await_reply = lambda *_a: replies.pop(0)
+
+    assert orch.context_length == 8192
+    assert [orch.image_tokens(64, 64), orch.image_tokens(64, 64)] == [1100, 1100]
+    with orch._gen_lock:
+        assert orch.image_tokens(32, 32) is None
+    orch._mailboxes = {"streaming": None}
+    assert orch.image_tokens(32, 32) is None and len(sent) == 1
+    orch._mailboxes = {}
+    assert [orch.image_tokens(32, 32) for _ in range(3)] == [None] * 3
+    orch.load_generation = 2
+    assert orch.image_tokens(64, 64) == 900
+    assert [(c["width"], c["height"]) for c in sent] == [(64, 64), (32, 32), (32, 32), (64, 64)]
+
+
+def test_a_screenshot_count_holds_the_worker_against_dispatched_chats():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch.models, orch.active_model_name = {"m": {"context_length": 8192}}, "m"
+    orch.load_generation = 1
+    orch._gen_lock, orch._mailbox_lock, orch._mailboxes = threading.Lock(), threading.Lock(), {}
+    orch._worker_released, orch._worker_reserved_for = threading.Condition(), None
+    held = []
+    orch._direct_reader = lambda _id: (None, None, lambda: None)
+    orch._send_cmd = lambda _cmd: held.append(orch._worker_reserved_for)
+    orch._await_reply = lambda *_a: {"tokens": 1100}
+
+    assert orch.image_tokens(64, 64) == 1100
+    assert held[0] and orch._worker_reserved_for is None
+    orch._worker_reserved_for = "audio generation is in progress"
+    assert orch.image_tokens(32, 32) is None and len(held) == 1
+
+
+def test_the_encoder_is_read_only_when_computer_use_is_asked_for(desktop, monkeypatch):
+    from routes import inference as routes
+
+    monkeypatch.setattr(routes, "_enabled_agent_skills", lambda: [])
+    reads = []
+    encoder = lambda: reads.append(1) or "qwen2_5_vl"
+    payload = routes.ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
+    payload.thread_id = SESSION
+    for tools, expected in (([], 0), (["computer"], 1)):
+        payload.enabled_tools = tools
+        asyncio.run(routes._select_request_tools(
+            payload, tools_on = True, supports_vision = True, encoder = encoder, mcp_allowed = False,
+        ))  # fmt: skip
+        assert len(reads) == expected
+    assert state.session(state.session_key(SESSION)).coordinates == "pixels"
+
+
+def test_each_capture_takes_its_display_shape_and_zoom_maps_by_desktop(desktop, monkeypatch):
+    portrait = Display(2, 1280, 0, 800, 1280, False)
+    monkeypatch.setattr(desktop, "displays", lambda: [Display(1, 0, 0, 1280, 800, True), portrait])
+    sized()
+    look()
+    seen, asked = state.session(state.session_key(SESSION)).frame, []
+    zoom = lambda shot, region, budget = None: asked.append((shot.frame, region)) or shot.image
+    monkeypatch.setattr(screen, "zoom", zoom)
+    state.set_coordinates(state.session_key(SESSION), "pixels")  # the next capture is smaller
+    run({"action": "zoom", "region": [300, 200, 500, 300]})
+    frame, region = asked[0]
+    assert frame.to_desktop(*region[:2]) == pytest.approx(seen.to_desktop(300, 200), abs = 2)
+    assert frame.to_desktop(*region[2:]) == pytest.approx(seen.to_desktop(500, 300), abs = 2)
+    sized()
+    run({"action": "screenshot", "display": 2})
+    frame = state.session(state.session_key(SESSION)).frame
+    assert frame.display == portrait and frame.height > frame.width > 1008
+
+
 def test_a_frame_maps_picture_points_onto_a_second_display():
     frame = screen.Frame(Display(2, -1920, 100, 1920, 1080), 1008, 560)
     assert frame.to_desktop(0, 0) == (-1920, 100)
@@ -277,19 +455,36 @@ def test_a_frame_maps_picture_points_onto_a_second_display():
 
 
 def test_the_picture_reaches_the_model_at_the_size_the_frame_says(desktop):
+    sized()
     result = look()
     text, images = split_images(result)
     frame = state.session(state.session_key(SESSION)).frame
+    frame_size = (frame.width, frame.height)
     assert f"{frame.width}x{frame.height} pixels" in text
     assert images[0]["mimeType"] == "image/jpeg"
     from PIL import Image
     import base64, io
 
-    sent = _png_data_url(images[0]["data"])
-    decoded = Image.open(io.BytesIO(base64.b64decode(sent.split(",", 1)[1])))
-    # No second resize downstream, or the model's pixels would stop being the frame's.
-    assert decoded.size == (frame.width, frame.height)
+    def size(part):
+        url = part["image_url"]["url"]
+        return Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))).size
+
+    def delivered(name, content = result):
+        replayed = promote_history(
+            [{"role": "tool", "name": name, "content": content}], vision = True
+        )
+        return size(replayed[-1]["content"][1])
+
+    # No second resize downstream, live or replayed, or the model's pixels would stop being the frame's.
+    live = ToolCallCompletion(types.SimpleNamespace(tool_name = "computer"), result, executed = True)
+    assert size(content_parts(live.mcp_images())[0]) == delivered("computer") == frame_size
+    forged = result.replace('"mimeType"', '"as_taken": true, "mimeType"')
+    assert max(delivered("mcp__shots__grab", forged)) <= 1024
     assert is_image_tool(computer_use.COMPUTER_TOOL_NAME)
+    assert max(frame_size) > 1024
+    run({"action": "click", **at(*BUTTON)})
+    _kind, x, y, *_rest = desktop.events[-1]
+    assert abs(x - BUTTON[0]) < 2 and abs(y - BUTTON[1]) < 2
 
 
 def test_the_first_call_needs_the_users_go_ahead(desktop):
@@ -396,6 +591,57 @@ def test_a_target_that_moved_since_the_screenshot_is_not_clicked(desktop):
     assert [event for event in desktop.events if event[0] == "click"]
 
 
+def test_a_target_moved_when_another_window_is_over_it_whatever_the_pixels():
+    from PIL import Image
+
+    display = Display(1, 0, 0, 1000, 1000, True)
+    page = ("page", (0, 0, 1000, 1000))
+
+    def frame(windows):
+        return screen.Frame(display, 1000, 1000, Image.new("L", (1000, 1000), 255), windows)
+
+    before = frame([page])
+    assert not screen.target_moved(before, frame([page]), 500, 500)
+    assert screen.target_moved(before, frame([("dialog", (400, 400, 200, 200)), page]), 500, 500)
+    assert not screen.target_moved(before, frame([("dialog", (0, 0, 200, 200)), page]), 500, 500)
+    assert screen.target_moved(before, frame([("page", (10, 0, 1000, 1000))]), 500, 500)
+    assert not screen.target_moved(before, frame(None), 500, 500)
+
+
+def test_a_light_dialog_over_a_light_target_is_not_clicked(desktop):
+    look()
+    target = at(*FIELD)
+    dialog = (300, 260, 420, 140)
+    original = desktop.capture
+
+    def light_dialog(display):
+        from PIL import ImageDraw
+
+        image = original(display)
+        left, top, width, height = (value * virtual.SCALE for value in dialog)
+        ImageDraw.Draw(image).rectangle(
+            [left, top, left + width, top + height], fill = (246, 245, 244)
+        )
+        return image
+
+    desktop.capture = light_dialog
+    desktop.front = FrontWindow(app = "Notes", title = "Delete?", pid = 1, bounds = dialog)
+    before = state.session(state.session_key(SESSION)).frame
+    now = screen.take(desktop, desktop.displays()[0]).frame
+    ix, iy = before.from_desktop(*FIELD)
+    pixels_only = screen.Frame(before.display, before.width, before.height, before.gray)
+    assert not screen.target_moved(pixels_only, now, ix, iy)
+    text = run({"action": "click", **target})
+    assert text.startswith("Error:") and "changed after the screenshot" in text
+    assert not [event for event in desktop.events if event[0] == "click"]
+
+
+def test_a_window_opening_away_from_the_target_does_not_stop_the_click(desktop):
+    look()
+    desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    assert run({"action": "click", **at(*BUTTON)}).startswith("Done:")
+
+
 def test_a_later_target_in_a_chain_is_checked_after_the_actions_before_it(desktop):
     look()
     original = desktop.capture
@@ -437,11 +683,76 @@ def test_a_macos_security_prompt_floating_over_an_app_is_found_under_a_click():
     prompt = FrontWindow(app = "SecurityAgent", pid = 9, bounds = (100, 100, 300, 200))
     menubar = FrontWindow(app = "Window Server", pid = 1, bounds = (0, 0, 800, 25))
     notes = FrontWindow(app = "Notes", pid = 5, bounds = (0, 0, 800, 600))
-    mac._windows = lambda: [(25, menubar), (2001, prompt), (0, notes)]
+    mac._windows = lambda: [(25, 1, menubar), (2001, 2, prompt), (0, 3, notes)]
     mac._front_app = lambda: ("Notes", "com.apple.Notes", 5)
     assert mac.window_at(150, 150).app == "SecurityAgent"
     assert mac.window_at(10, 10).app == "Notes"
     assert mac.window_at(500, 500).app_id == "com.apple.Notes"
+
+
+def _stack_frame(windows):
+    from PIL import Image
+    display = Display(1, 0, 0, 1000, 1000, True)
+    return screen.Frame(display, 1000, 1000, Image.new("L", (1000, 1000), 255), windows)
+
+
+def test_a_macos_window_of_the_same_app_and_size_coming_forward_is_a_change():
+    from core.inference.computer_use.backends.macos import MacBackend
+
+    mac = object.__new__(MacBackend)
+    first = FrontWindow(app = "Safari", pid = 5, bounds = (0, 0, 1000, 1000))
+    second = FrontWindow(app = "Safari", pid = 5, bounds = (0, 0, 1000, 1000))
+    mac._windows = lambda: [(0, 11, first), (0, 12, second)]
+    before = _stack_frame(mac.window_stack())
+    mac._windows = lambda: [(0, 12, second), (0, 11, first)]
+    assert screen.target_moved(before, _stack_frame(mac.window_stack()), 500, 500)
+
+
+def test_a_macos_floating_panel_counts_and_the_dock_layer_does_not():
+    from core.inference.computer_use.backends.macos import MacBackend
+
+    mac = object.__new__(MacBackend)
+    page = FrontWindow(app = "TextEdit", pid = 5, bounds = (0, 0, 1000, 1000))
+    dock = FrontWindow(app = "Dock", pid = 2, bounds = (0, 0, 1000, 1000))
+    panel = FrontWindow(app = "TextEdit", pid = 5, bounds = (400, 400, 200, 200))
+    mac._windows = lambda: [(20, 1, dock), (0, 11, page)]
+    before = _stack_frame(mac.window_stack())
+    mac._windows = lambda: [(20, 1, dock), (3, 12, panel), (0, 11, page)]
+    assert screen.target_moved(before, _stack_frame(mac.window_stack()), 500, 500)
+    assert not screen.target_moved(before, _stack_frame(mac.window_stack()), 100, 100)
+
+
+def test_a_windows_window_is_skipped_only_when_clicks_pass_through_it():
+    import ctypes
+
+    from core.inference.computer_use.backends import windows as win
+
+    styles = {1: win._WS_EX_TRANSPARENT, 2: win._CLICK_THROUGH, 3: 0}
+    rects = {1: (0, 0, 100, 100), 2: (0, 0, 500, 500), 3: (0, 0, 1000, 1000)}
+
+    class User32:
+        def EnumWindows(self, visit, _data):
+            return all(visit(hwnd, 0) for hwnd in rects)
+
+        def IsWindowVisible(self, hwnd):
+            return True
+
+        def IsIconic(self, hwnd):
+            return False
+
+        def GetWindowLongW(self, hwnd, _index):
+            return styles[hwnd]
+
+        def GetWindowRect(self, hwnd, rect):
+            rect = ctypes.cast(rect, ctypes.POINTER(win.wintypes.RECT)).contents
+            rect.left, rect.top, rect.right, rect.bottom = rects[hwnd]
+            return True
+
+    backend = object.__new__(win.WindowsBackend)
+    backend._user32 = User32()
+    backend._dwmapi = None
+    backend._window_proc = lambda visit: visit
+    assert backend.window_stack() == [(1, (0, 0, 100, 100)), (3, (0, 0, 1000, 1000))]
 
 
 def test_a_windows_app_name_is_looked_up_once_for_its_gate_card_and_run(monkeypatch):
@@ -549,6 +860,36 @@ def test_the_coordinate_rule_follows_the_models_family(model, mode):
     assert ("0 to 1000" in rule) == (mode == "grid")
 
 
+def test_a_local_model_gets_the_grid_unless_its_encoder_answers_in_pixels(desktop):
+    for model, encoder, mode in (
+        ("Nemotron-3.5-Bolt-74B-IQ2_XXS.gguf", "nemotron_v2_vl", "grid"), ("my-finetune", "", "grid"),
+        ("Qwen2.5-VL-7B-Instruct-GGUF", "qwen2.5vl_merger", "pixels"), ("ft", "qwen2_5_vl", "pixels"),
+        ("UI-TARS-7B-SFT", "qwen2_vl", "grid"), ("claude-sonnet-4-5", None, "pixels"),
+    ):  # fmt: skip
+        assert policy.coordinate_mode(model, encoder) == mode
+    desktop.chosen["coordinates"] = "pixels"
+    assert policy.coordinate_mode("my-finetune", "") == "pixels"
+
+
+def test_the_local_encoder_is_the_checkpoint_the_worker_loaded(tmp_path, monkeypatch):
+    from core.inference import worker
+    from core.inference.orchestrator import _mirrored_model_entry
+    from routes.inference import _loaded_model_type
+
+    assert '_loaded_model_type(_entry.get("model"))' in inspect.getsource(worker._handle_load)
+    loaded = types.SimpleNamespace(
+        config = {}, _config = types.SimpleNamespace(model_type = "qwen2_5_vl")
+    )
+    entry = _mirrored_model_entry({"model_type": worker._loaded_model_type(loaded)}, "org/adapter")
+    assert _loaded_model_type("org/adapter", entry) == "qwen2_5_vl"
+    (tmp_path / "config.json").write_text('{"model_type": "qwen2_5_vl"}')
+    assert _loaded_model_type(str(tmp_path)) == "qwen2_5_vl"
+    monkeypatch.setattr(
+        "utils.paths.normalize_path", lambda p: str(tmp_path) if p == "C:\\m" else p
+    )
+    assert _loaded_model_type("C:\\m") == "qwen2_5_vl"
+
+
 def test_zoom_enlarges_without_moving_the_frame(desktop):
     look()
     frame = state.session(state.session_key(SESSION)).frame
@@ -647,8 +988,8 @@ def test_near_misses_of_blocked_keys_are_still_sent_on_linux(desktop, monkeypatc
     ["Unsloth", "Chat - Unsloth", "Unsloth — Mozilla Firefox", "Chat - Unsloth - Google Chrome"],
 )
 def test_unsloths_own_window_is_out_of_reach(desktop, title):
-    look()
     desktop.front = FrontWindow(app = "Firefox", title = title, bounds = (0, 0, 700, 800))
+    look()
     typed = run({"action": "type", "text": "allow"}, approved = True)
     assert typed.startswith("Error:") and "own window" in typed
     inside = run({"action": "click", **at(300, 300)}, approved = True)
@@ -673,10 +1014,10 @@ def test_a_browser_window_with_no_readable_title_is_treated_as_unsloth():
 
 
 def test_unsloth_showing_from_behind_cannot_be_clicked_either(desktop):
-    look()
     desktop.behind = [
         FrontWindow(app = "Firefox", title = "Chat - Unsloth", bounds = (1050, 0, 230, 800))
     ]
+    look()
     refused = run({"action": "click", **at(1150, 400)})
     assert refused.startswith("Error:") and "own window" in refused
     assert not [event for event in desktop.events if event[0] == "click"]
@@ -707,8 +1048,8 @@ def test_a_security_prompt_is_left_to_the_user(desktop):
 
 
 def test_a_security_prompt_showing_from_behind_is_left_alone_too(desktop):
-    look()
     desktop.behind = [FrontWindow(app = "pinentry", title = "Passphrase", bounds = (1050, 0, 230, 800))]
+    look()
     end = at(1150, 400)
     for call in (
         {"action": "click", **end},
@@ -1055,8 +1396,8 @@ def test_apps_that_ask_every_time_cannot_be_always_allowed(desktop, name):
 
 
 def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
-    look()
     desktop.behind = [FrontWindow(app = "Mail", title = "Inbox", bounds = (1050, 0, 230, 800))]
+    look()
     click_mail = {"action": "click", **at(1150, 400), "then": [{"action": "type", "text": "x"}]}
     assert policy.call_asks(click_mail, SESSION)["apps"] == ["Mail"]
     assert _asks("auto", click_mail)
@@ -1064,6 +1405,7 @@ def test_a_click_is_charged_to_the_app_it_lands_in(desktop):
     assert "Mail has not been allowed" in refused
     assert not [event for event in desktop.events if event[0] in ("click", "type")]
     desktop.behind = [FrontWindow(app = "Terminal", title = "zsh", bounds = (1050, 0, 230, 800))]
+    look()
     asks = policy.call_asks({"action": "click", **at(1150, 400)}, SESSION)
     assert asks == {"risks": ["Terminal is a terminal"], "apps": []}
     assert "Terminal has not been allowed" in run({"action": "click", **at(1150, 400)})
@@ -1096,11 +1438,11 @@ def test_a_scroll_without_a_point_asks_about_the_app_under_the_pointer(desktop):
 
 
 def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
-    look()
     shell = FrontWindow(
         app = "Windows Command Processor", app_id = "cmd.exe", title = "x", bounds = (1050, 0, 230, 800)
     )
     desktop.behind = [shell]
+    look()
     click = {"action": "click", **at(1150, 400)}
     scroll = {"action": "scroll", **at(1150, 400), "direction": "down"}
     assert policy.call_asks(click, SESSION) == {
@@ -1110,6 +1452,7 @@ def test_an_app_known_as_sensitive_by_its_id_alone_asks_every_time(desktop):
     assert run(click, approved = True).startswith("Done:")
     desktop.front = FrontWindow(app = "Notes", title = "Untitled", bounds = (0, 0, 1050, 800))
     desktop.behind = [shell]
+    look()
     assert _asks("auto", scroll)
     assert "has not been allowed" in run(scroll)
 
