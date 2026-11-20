@@ -5554,10 +5554,8 @@ def _unsloth_grpo_old_logps_from_new(trainer):
 
 
 def _unsloth_grpo_old_logps_store(trainer):
-    """num_iterations > 1 with each generation starting on an optimizer step and its first pass over every
-    micro-batch inside that step: the first loss forward of a micro-batch scores the rollout policy, so it
-    is pi_old. Skip TRL's old-policy forward; the loss keeps new.detach() in the buffered batch for the
-    later iterations. Not with a stochastic forward (dropout) or a zoo that cannot hand the logps back."""
+    """num_iterations > 1, generation aligned to an optimizer step: the first loss pass of each micro-batch
+    scores the rollout policy (pi_old), so reuse it. Not with dropout or a zoo that cannot return logps."""
     import os
 
     if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
@@ -5921,7 +5919,6 @@ def grpo_trainer_compute_loss(function_name, function):
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
         _old_logps_from_new = inputs.get("unsloth_old_logps_from_new", None) is not None
-        # num_iterations > 1: the first pass over this micro-batch scores pi_old and keeps it in the buffered inputs.
         _old_logps_store = inputs.get("unsloth_old_logps_store", None)
         _store_old_logps = False
         _stored_old_logps = None

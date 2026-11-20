@@ -224,8 +224,6 @@ def test_installed_trl_gets_the_store():
     assert 'output["unsloth_old_logps_store"] = torch.ones(' in patched
 
 
-# ---- compute_loss: the first pass keeps pi_old in the buffered inputs, the later ones reuse it ----
-
 LOSS_HELPERS = (
     "grpo_trainer_compute_loss",
     "_unsloth_grpo_accumulation_steps",
@@ -299,8 +297,6 @@ def _buffered(marked = True):
 
 
 class _Zoo:
-    """Stands in for unsloth_zoo's grpo_accumulated_loss: scores a policy that moves every call."""
-
     def __init__(self, stores = True):
         self.calls = []
         self.stores = stores

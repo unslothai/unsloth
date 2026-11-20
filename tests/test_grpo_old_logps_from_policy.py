@@ -169,7 +169,6 @@ def _run_fake(
         "torch": torch,
         "_unsloth_grpo_rollout_logps_as_old": lambda *args: False,
         "_unsloth_grpo_old_logps_from_new": helpers["_unsloth_grpo_old_logps_from_new"],
-        # The num_iterations > 1 store has its own tests (test_grpo_old_logps_store.py).
         "_unsloth_grpo_old_logps_store": lambda trainer: False,
         "_unsloth_reject_grpo_image_list": lambda *args: None,
     }
