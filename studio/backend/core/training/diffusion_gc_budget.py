@@ -360,6 +360,14 @@ class BudgetedCheckpoint:
         return not self.disabled and (self.probing or bool(self.keep) or self._saving_attention)
 
     @property
+    def records_inputs(self) -> bool:
+        """Record a step's inputs for a rerun: ``can_retry``, or attention saving on before its first kept output (a
+        long attention call in this step can make ``can_retry`` true mid-step, after the inputs went unrecorded)."""
+        return self.can_retry or (
+            not self.disabled and getattr(self.base, "context_fn", None) is not None
+        )
+
+    @property
     def total_blocks(self) -> int:
         return len(self.block_class)
 
@@ -512,7 +520,7 @@ class BudgetedSteps:
         budget = self.budget
         if budget is None:
             return fn(*inputs)
-        if budget.can_retry:
+        if budget.records_inputs:
             self.replay.record(inputs)
         try:
             return fn(*inputs)

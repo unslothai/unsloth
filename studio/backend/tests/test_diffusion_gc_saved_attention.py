@@ -176,3 +176,52 @@ def test_plan_credits_the_attention_a_kept_block_gives_back(monkeypatch):
     assert budget.estimate(1) == int(9.0 * per_elem * x.numel())
     budget.class_attention.clear()
     assert budget.estimate(1) == int(10.0 * per_elem * x.numel())
+
+
+def test_retry_is_armed_before_the_first_kept_attention(monkeypatch):
+    # With attention saving on, a step's inputs are recorded from the first step: a step whose first long attention is
+    # saved mid-forward makes can_retry true, and its rerun must replay inputs that were recorded.
+    monkeypatch.delenv(gb.SAVE_ATTENTION_ENV, raising = False)
+    if not _supported():
+        pytest.skip("this torch has no compile-safe selective checkpointing")
+    budget = gb.BudgetedCheckpoint()
+    budget.probing, budget.planned = False, True
+    _run(
+        budget, tokens = 64
+    )  # short attention only: nothing kept yet, so nothing for a rerun to drop
+    assert budget.base.saved_attention == 0
+    assert not budget.can_retry and budget.records_inputs
+    _run(budget)  # a longer batch keeps outputs: its inputs were already being recorded
+    assert budget.base.saved_attention > 0 and budget.can_retry
+
+
+def test_a_rerun_after_the_first_kept_attention_replays_the_recorded_step(monkeypatch):
+    # BudgetedSteps records while attention saving is on, so an out-of-memory error in the step that first keeps an
+    # attention output reruns that step's own inputs.
+    monkeypatch.delenv(gb.SAVE_ATTENTION_ENV, raising = False)
+    if not _supported():
+        pytest.skip("this torch has no compile-safe selective checkpointing")
+
+    class _Optim:
+        def zero_grad(self, set_to_none = True):
+            pass
+
+    budget = gb.BudgetedCheckpoint()
+    budget.probing, budget.planned = False, True
+    steps = gb.BudgetedSteps(budget, "cpu", _Optim())
+    steps.start_step()
+    seen = []
+
+    def fn(x):
+        seen.append(x)
+        if len(seen) == 1:
+            budget.base._on_save(
+                1
+            )  # this step's first long attention was kept, then the card ran out
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return x
+
+    x = torch.full((2,), 3.0)
+    assert steps.forward_backward(fn, (x,)) is gb.OUT_OF_MEMORY
+    out = steps.rerun(fn)  # replayed from the recorded host copy, not an empty list
+    assert len(out) == 1 and torch.equal(out[0], x)
