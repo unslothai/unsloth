@@ -118,6 +118,15 @@ def _detach_inputs(module, args, kwargs):
     }
 
 
+def _input_leaves(args, kwargs):
+    # Nested too: transformers takes attention_mask as a {layer type: mask} mapping.
+    try:
+        from torch.utils._pytree import tree_leaves
+    except Exception:
+        return (*args, *kwargs.values())
+    return tree_leaves((args, kwargs))
+
+
 def _leaf(hidden):
     return hidden.detach().requires_grad_(True)
 
@@ -169,8 +178,10 @@ def install_frozen_prefix_skip(model):
             or not torch.is_grad_enabled()
         ):
             return None
-        if any(isinstance(x, torch.Tensor) and x.requires_grad for x in (*args, *kwargs.values())):
-            return None  # the caller wants a gradient at an input (inputs_embeds by keyword or position, ...)
+        if any(
+            isinstance(x, torch.Tensor) and x.requires_grad for x in _input_leaves(args, kwargs)
+        ):
+            return None  # the caller wants a gradient at an input (inputs_embeds, a mask in a mapping, ...)
         outer = model_ref()
         if outer is None:
             return None
