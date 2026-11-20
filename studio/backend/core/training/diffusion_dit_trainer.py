@@ -768,6 +768,33 @@ def _pick_auto_precision(
     return "nf4"
 
 
+AUTO_BLOCK_SWAP_ENV = "UNSLOTH_DIT_AUTO_BLOCK_SWAP"
+
+
+def _auto_block_swap_wanted(cfg, base_precision: str, device: str) -> bool:
+    """auto picked int8 (the dense base fits with little headroom): bf16 + block swap instead on a discrete NVIDIA
+    card. L4, 512 px: FLUX.2-klein 9B bf16 1.62 s/step vs int8 2.35; FLUX.1-dev with 21 of 57 blocks swapped 1.83
+    vs int8 2.83, both at bf16 loss. UNSLOTH_DIT_AUTO_BLOCK_SWAP=0 keeps int8."""
+    if (
+        getattr(cfg, "base_precision", "") or ""
+    ).strip().lower() != "auto" or base_precision != "int8":
+        return False
+    if os.environ.get(AUTO_BLOCK_SWAP_ENV, "1").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    if (
+        device != "cuda"
+        or not cfg.gradient_checkpointing
+        or torch_is_rocm()
+        or _device_is_integrated(device)
+    ):
+        return False
+    try:
+        import importlib.util
+        return importlib.util.find_spec("unsloth_zoo.block_swap") is not None
+    except Exception:  # noqa: BLE001 -- zoo missing or refusing to import: keep int8
+        return False
+
+
 def _device_is_integrated(device) -> bool:
     try:
         from core.inference.host_pinning import device_is_integrated
@@ -3678,6 +3705,11 @@ def _train_dit(
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
     base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
+    swap_request = block_swap_request(cfg)
+    # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
+    auto_swap = swap_request is None and _auto_block_swap_wanted(cfg, base_precision, device)
+    if auto_swap:
+        base_precision, swap_request = "bf16", "auto"
     _emit(
         on_event,
         "model_load_started",
@@ -3686,7 +3718,6 @@ def _train_dit(
         else "transformer",
         fetch_repo = training_fetch_repo(cfg),
     )
-    swap_request = block_swap_request(cfg)
     swap_error = block_swap_error(
         swap_request,
         base_precision,
@@ -3720,30 +3751,42 @@ def _train_dit(
     if fp16_amp:
         # After the adapter, so the island wraps the PEFT layer.
         fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
+    swapping = False
+    if swap_request:
+        try:
+            swap_info = install_dit_block_swap(
+                transformer,
+                device,
+                swap_request,
+                tokens = _block_swap_tokens(spec, cfg),
+                batch = cfg.train_batch_size,
+            )
+        except ValueError as exc:
+            if not auto_swap:
+                raise
+            # The host copy is intact, so auto falls back to the int8 it would have picked.
+            base_precision = "int8"
+            _emit(
+                on_event, "warning", message = f"block_swap unavailable, training int8 instead: {exc}"
+            )
+        else:
+            swapping = swap_info["swapped_blocks"] > 0
+            _emit(
+                on_event,
+                "warning",
+                message = (
+                    f"block_swap: {swap_info['swapped_blocks']} of {swap_info['total_blocks']} blocks stream from "
+                    f"{swap_info['host_gib']} GiB of host RAM ({swap_info['pinned_gib']} GiB pinned)."
+                ),
+            )
     gc_budget = None
     if cfg.gradient_checkpointing:
         # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
         # Block swap needs every block checkpointed, so no budget.
-        gc_budget = None if swap_request else enable_budgeted_checkpointing(transformer, device)
+        gc_budget = None if swapping else enable_budgeted_checkpointing(transformer, device)
         if gc_budget is None:
             enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
-    if swap_request:
-        swap_info = install_dit_block_swap(
-            transformer,
-            device,
-            swap_request,
-            tokens = _block_swap_tokens(spec, cfg),
-            batch = cfg.train_batch_size,
-        )
-        _emit(
-            on_event,
-            "warning",
-            message = (
-                f"block_swap: {swap_info['swapped_blocks']} of {swap_info['total_blocks']} blocks stream from "
-                f"{swap_info['host_gib']} GiB of host RAM ({swap_info['pinned_gib']} GiB pinned)."
-            ),
-        )
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
@@ -3778,7 +3821,7 @@ def _train_dit(
             on_event,
             base_precision,
             resume_steps_left(cfg, identity),
-            block_swap = bool(swap_request),
+            block_swap = swapping,
         )
     )
     # Compiled Qwen graphs need one fixed text length across steps.

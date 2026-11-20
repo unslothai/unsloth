@@ -147,3 +147,52 @@ def test_maybe_compile_routes_swap_to_forward_compile(monkeypatch):
 
 def test_block_swap_tokens():
     assert dit._block_swap_tokens(None, _cfg(resolution = 512)) == 32 * 32 + 512
+
+
+def _auto_cfg(**kw):
+    base = dict(base_precision = "auto", gradient_checkpointing = True)
+    base.update(kw)
+    return _cfg(**base)
+
+
+def test_auto_upgrades_only_the_int8_band(monkeypatch):
+    import importlib.util
+
+    monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV, raising = False)
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(dit, "_device_is_integrated", lambda d: False)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda n, *a: object() if n == "unsloth_zoo.block_swap" else real(n, *a),
+    )
+    assert dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
+    # nf4 (the base does not fit), bf16 (it fits) and explicit precisions are unchanged.
+    for picked in ("nf4", "bf16", "fp8"):
+        assert not dit._auto_block_swap_wanted(_auto_cfg(), picked, "cuda")
+    assert not dit._auto_block_swap_wanted(_auto_cfg(base_precision = "int8"), "int8", "cuda")
+    assert not dit._auto_block_swap_wanted(_auto_cfg(gradient_checkpointing = False), "int8", "cuda")
+    assert not dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cpu")
+    monkeypatch.setenv(dit.AUTO_BLOCK_SWAP_ENV, "0")
+    assert not dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
+    monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV)
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
+    assert not dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(dit, "_device_is_integrated", lambda d: True)
+    assert not dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
+
+
+def test_auto_keeps_int8_without_zoo_block_swap(monkeypatch):
+    import importlib.util
+
+    monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV, raising = False)
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(dit, "_device_is_integrated", lambda d: False)
+
+    def missing(n, *a):
+        raise ImportError(n)
+
+    monkeypatch.setattr(importlib.util, "find_spec", missing)
+    assert not dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
