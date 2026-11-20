@@ -283,3 +283,19 @@ def test_a_v1_card_exports_only_v2_data_keys():
         data
     )
     assert data["creator_notes"] == "note"
+
+
+def test_the_export_placeholder_carries_the_apps_initials():
+    from PIL import Image
+
+    from core.characters.placeholder import _initials, placeholder_png
+
+    assert _initials("Inspector Theo Lindqvist") == "TL"
+    assert _initials("Captain Ivo") == "I"
+    assert _initials("Dr.") == "D"
+    assert _initials("   ") == "?"
+    plain = Image.open(io.BytesIO(placeholder_png("山田"))).convert("RGB")
+    lettered = Image.open(io.BytesIO(placeholder_png("Rin Takeda"))).convert("RGB")
+    # White initials over the middle of the gradient; no boxes for scripts the font lacks.
+    assert (255, 255, 255) in {lettered.getpixel((x, 300)) for x in range(120, 280)}
+    assert (255, 255, 255) not in {plain.getpixel((x, 300)) for x in range(0, 400, 4)}
