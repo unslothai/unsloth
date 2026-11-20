@@ -2260,6 +2260,12 @@ def _video_cpu_opt_in() -> bool:
         return False
 
 
+_VIDEO_NO_TORCH_INSTALL_MESSAGE = (
+    "This install was set up without PyTorch (--no-torch), so video generation is disabled. "
+    "Reinstall Unsloth Studio without --no-torch to enable it."
+)
+
+
 def video_capability() -> dict:
     """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch.
 
@@ -2311,7 +2317,9 @@ def _video_capability_verdict() -> dict:
         elif not _has_torch():
             reason = "pytorch_not_installed"
             message = (
-                "PyTorch is not installed. Video generation on Apple Silicon requires PyTorch "
+                _VIDEO_NO_TORCH_INSTALL_MESSAGE
+                if _installed_without_torch()
+                else "PyTorch is not installed. Video generation on Apple Silicon requires PyTorch "
                 "with Metal (MPS) support. Install PyTorch to enable video generation."
             )
         else:
@@ -2337,11 +2345,20 @@ def _video_capability_verdict() -> dict:
         reason = verdict[0]
         message = _gpu_present_but_unusable_message("video generation", verdict)
     elif not _has_torch():
+        # Reason kept for every no-torch host: "no_accelerator" would let the CPU opt-in admit a host without torch.
         reason = "pytorch_not_installed"
-        message = (
-            "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
-            "Intel GPU. Install PyTorch to enable video generation."
-        )
+        if verdict[0] == "no_torch" and trains_on_cpu("no_torch"):
+            message = (
+                "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator "
+                "was found on this host."
+            )
+        elif _installed_without_torch():
+            message = _VIDEO_NO_TORCH_INSTALL_MESSAGE
+        else:
+            message = (
+                "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
+                "Intel GPU. Install PyTorch to enable video generation."
+            )
     else:
         reason = "no_accelerator"
         message = (
