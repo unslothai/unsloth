@@ -1681,6 +1681,16 @@ def _verdict_slot(index: int) -> Optional[tuple]:
         return None
 
 
+def verdict_file_present() -> bool:
+    """A ConvRot verdict file exists (no key check). Never raises."""
+    try:
+        from . import diffusion_probe_cache as pc
+        path = pc._cache_file() if pc.enabled() else None
+        return path is not None and path.with_name(_VERDICT_FILE).is_file()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _verdict_read(path: Any) -> dict:
     import json
     try:
