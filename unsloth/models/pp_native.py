@@ -2853,15 +2853,21 @@ class PipelineParallel:
 
         local = {}
         raw = gather = None
+        back = {}
         if self.composed or self.dp_mesh is not None or self.tp_mesh is not None:
             # FSDP2 / tensor parallel DTensors: gathered whole (collective over the stage's dp / tp ranks, the
             # same keys in the same order on each), fused tp layouts back in their 1-GPU order.
-            raw = self.model.state_dict(keep_vars = True)
-            from .tp_native import _full, _param_layouts
+            from .tp_native import _full, _is_dtensor, _param_layouts
 
+            full = self.model.state_dict(keep_vars = True)
+            # PEFT selects over local shards: PEFT >= 0.22 gathers selected DTensors into new tensors itself,
+            # which would lose the fused tp layout lookup below, so each selection maps back to its DTensor.
+            raw = {k: v.to_local() if _is_dtensor(v) else v for k, v in full.items()}
+            back = {id(raw[k]): v for k, v in full.items()}
             layouts = _param_layouts(self.model)
 
             def gather(v):
+                v = back.get(id(v), v)
                 return _full(v, v, layouts.get(id(v)))
 
         with torch.no_grad():

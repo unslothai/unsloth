@@ -592,6 +592,147 @@ def test_metrics_report_kv_capacity_and_load_in_vllm_format(served):
     assert error.value.code == 404
 
 
+class _Request:
+    def __init__(self, num_preemptions = 0):
+        self.num_preemptions = num_preemptions
+
+
+class _PreemptingScheduler:
+    """vLLM V1 Scheduler subset: `requests`, `Request.num_preemptions`, `_free_blocks`."""
+
+    def __init__(self):
+        self.kv_cache_manager = types.SimpleNamespace(usage = 0.5)
+        self.running = []
+        self.waiting = []
+        self.requests = {}
+        self.freed = 0
+
+    def _free_blocks(self, request):
+        self.freed += 1
+        del self.requests[request.request_id]
+
+
+def _metric(text, name):
+    import re
+    return [float(x) for x in re.findall(rf"^{name}\{{.*\}} (\S+)", text, re.M)]
+
+
+def _scrape(server):
+    with urllib.request.urlopen(server.url + "/metrics", timeout = 10) as response:
+        assert response.status == 200
+        return response.read().decode()
+
+
+def test_metrics_export_a_monotonic_preemption_total_across_finished_requests():
+    llm = _FakeLLM()
+    scheduler = _PreemptingScheduler()
+    llm.llm_engine.engine_core.engine_core.scheduler = scheduler
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    try:
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [0.0]
+        a, b = _Request(2), _Request(1)
+        a.request_id, b.request_id = "a", "b"
+        scheduler.requests.update(a = a, b = b)
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [3.0]
+        scheduler._free_blocks(a)
+        assert scheduler.freed == 1 and "a" not in scheduler.requests
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [3.0]
+        b.num_preemptions += 1
+        scheduler._free_blocks(b)
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [4.0]
+        second = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+        try:
+            c = _Request(5)
+            c.request_id = "c"
+            scheduler.requests["c"] = c
+            scheduler._free_blocks(c)
+            assert _metric(_scrape(second), "vllm:num_preemptions_total") == [9.0]
+        finally:
+            second.stop()
+    finally:
+        server.stop()
+
+
+def test_metrics_omit_preemptions_without_a_countable_scheduler(served):
+    # No `_free_blocks`: omit rather than emit a non-monotonic total.
+    server, _ = served
+    text = _scrape(server)
+    assert "num_preemptions_total" not in text
+    assert _metric(text, "vllm:num_requests_running") == [2.0]
+
+
+def test_metrics_export_the_engine_thread_counters(served):
+    server, _ = served
+    for prompt in ([5], [9, 10]):
+        _complete(server, prompt)
+    _post(server, "/pause")
+    _post(server, "/resume")
+    text = _scrape(server)
+    assert _metric(text, "unsloth:async_grpo_requests_finished_total") == [2.0]
+    assert _metric(text, "unsloth:async_grpo_generation_tokens_total") == [4.0]
+    assert _metric(text, "unsloth:async_grpo_syncs_total") == [1.0]
+    assert _metric(text, "unsloth:async_grpo_engine_steps_total")[0] >= 1.0
+    assert _metric(text, "unsloth:async_grpo_engine_step_seconds_total")[0] > 0.0
+    assert _metric(text, "unsloth:async_grpo_engine_max_batch")[0] >= 1.0
+
+
+def test_installed_vllm_scheduler_has_what_the_preemption_count_wraps():
+    pytest.importorskip("vllm")
+    import inspect
+
+    try:
+        from vllm.v1.core.sched.scheduler import Scheduler
+        from vllm.v1.request import Request
+    except Exception:
+        pytest.skip("vLLM without the V1 scheduler")
+    assert "del self.requests[" in inspect.getsource(Scheduler._free_blocks)
+    assert "num_preemptions += 1" in inspect.getsource(Scheduler)
+    assert "self.num_preemptions = 0" in inspect.getsource(Request.__init__)
+
+
+def test_trl_control_loop_reports_preemptions_from_this_server():
+    import asyncio
+
+    loop_class = _trl_rollout_loop()
+    if not hasattr(loop_class, "_control_loop"):
+        pytest.skip("TRL AsyncGRPO without the KV-cap control loop")
+    import aiohttp
+
+    llm = _FakeLLM()
+    scheduler = _PreemptingScheduler()
+    llm.llm_engine.engine_core.engine_core.scheduler = scheduler
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    loop = _rollout_loop(loop_class, server)
+    loop._metrics_poll_s = 0.05
+    loop._concurrency = 0
+    loop._total_rollouts = 0
+    pushed = []
+    stop = []
+
+    def push(values):
+        pushed.append(values)
+        request = _Request(len(pushed))
+        request.request_id = str(len(pushed))
+        scheduler.requests[request.request_id] = request
+        scheduler._free_blocks(request)
+        if len(pushed) >= 3:
+            stop[0].set()
+
+    loop._push_metrics = push
+
+    async def run():
+        stop.append(asyncio.Event())
+        async with aiohttp.ClientSession() as session:
+            loop.session = session
+            await asyncio.wait_for(loop._control_loop(stop[0]), timeout = 30)
+
+    try:
+        asyncio.run(run())
+    finally:
+        server.stop()
+    assert [p["rollout/vllm_preemption_count"] for p in pushed] == [0.0, 1.0, 2.0]
+
+
 def _trl_rollout_loop():
     pytest.importorskip("aiohttp")
     try:

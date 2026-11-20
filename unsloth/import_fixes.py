@@ -1987,6 +1987,72 @@ def fix_transformers_tokenizer_config_vocab_file_override():
         logger.info(f"Unsloth: Failed patching PreTrainedTokenizerBase._from_pretrained ({e})")
 
 
+_MISTRAL_REGEX_HUB_PATCH_FLAG = "_unsloth_mistral_regex_hub_guard"
+
+
+def _raised_in_frame(exc, name):
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name == name:
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def fix_transformers_mistral_regex_hub_error():
+    """Back-port of the 5.6.0 guard: below it every tokenizer with a vocab over 100k loaded by repo id
+    asks the Hub for its tags (an anonymous model_info) to spot a Mistral base, and a 429 or outage
+    there fails the load even with the files cached. Treat that failure as not Mistral, as 5.6 does."""
+    try:
+        import transformers  # noqa: F401
+    except Exception:
+        return
+    owners = []
+    for module_name, class_name in (
+        ("transformers.tokenization_utils_base", "PreTrainedTokenizerBase"),
+        ("transformers.tokenization_utils_tokenizers", "TokenizersBackend"),
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            owner = getattr(module, class_name)
+            current = owner.__dict__.get("_patch_mistral_regex")
+            if not isinstance(current, classmethod):
+                continue
+            original = current.__func__
+            if getattr(original, _MISTRAL_REGEX_HUB_PATCH_FLAG, False):
+                continue
+            source = inspect.getsource(original)
+            start = source.find("def is_base_mistral")
+            if start < 0 or "try:" in source[start : start + 120]:
+                continue
+            owners.append((owner, original))
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping the Mistral regex Hub guard for {class_name} ({e})")
+
+    for owner, original in owners:
+
+        def _patch_mistral_regex(
+            cls,
+            tokenizer,
+            *args,
+            _unsloth_original = original,
+            **kwargs,
+        ):
+            try:
+                return _unsloth_original(cls, tokenizer, *args, **kwargs)
+            except Exception as exc:
+                if not _raised_in_frame(exc, "is_base_mistral"):
+                    raise
+                return tokenizer
+
+        functools.update_wrapper(_patch_mistral_regex, original)
+        setattr(_patch_mistral_regex, _MISTRAL_REGEX_HUB_PATCH_FLAG, True)
+        try:
+            owner._patch_mistral_regex = classmethod(_patch_mistral_regex)
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching {owner.__name__}._patch_mistral_regex ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
@@ -10690,6 +10756,35 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
     return restore
 
 
+def _narrow_regex_leaf_targets(model, before, peft_config):
+    """PEFT >= 0.22 converts a regex target_modules to the bare leaf names it resolves to, so a regex scoped
+    to one layer's projections puts LoRA on every layer's namesakes. A leaf that names only Linears, some of
+    which the regex did not match, goes back to exactly the modules the regex matched."""
+    after = peft_config.target_modules
+    if not isinstance(before, str) or before.lower() == "all-linear":
+        return
+    if after is None or isinstance(after, str):
+        return
+    modules = list(model.named_modules())
+    matched = {name for name, _ in modules if re.fullmatch(before, name)}
+    narrowed = set()
+    for target in after:
+        if not isinstance(target, str) or "." in target:
+            narrowed.add(target)
+            continue
+        hits = [(name, module) for name, module in modules if name.rpartition(".")[-1] == target]
+        if not hits or not all(_is_lora_linear_target(module) for _, module in hits):
+            narrowed.add(target)  # a parameter / non-Linear namesake: PEFT's own scoping applies
+            continue
+        names = {name for name, _ in hits}
+        if names <= matched:
+            narrowed.add(target)
+        else:
+            narrowed.update(names & matched)
+    if narrowed:
+        peft_config.target_modules = narrowed
+
+
 def _patch_peft_moe_keep_linear_targets(twc):
     original_convert = getattr(twc, "convert_peft_config_for_transformers", None)
     if original_convert is None or getattr(
@@ -10704,6 +10799,10 @@ def _patch_peft_moe_keep_linear_targets(twc):
         result = original_convert(peft_config, model, *args, **kwargs)
         if before is None or not hasattr(model, "named_modules"):
             return result
+        try:
+            _narrow_regex_leaf_targets(model, before, peft_config)
+        except Exception as exc:
+            logger.warning("Unsloth: could not keep a regex LoRA target to its matches: %s", exc)
         try:
             restore = _moe_linear_targets_to_restore(twc, model, before, peft_config)
         except Exception as exc:

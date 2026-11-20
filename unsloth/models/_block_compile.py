@@ -273,11 +273,46 @@ def _grad_side_inputs(args, kwargs):
     return False
 
 
+# Bumped on every module / parameter registration (PEFT add_adapter), so cached block parameter
+# lists are rebuilt; None until the global hooks are installed, False if this torch has none.
+_PARAMS_GEN = [None]
+
+
+def _bump_params_gen(*args):
+    _PARAMS_GEN[0] += 1
+
+
+def _watch_registrations():
+    if _PARAMS_GEN[0] is not None:
+        return
+    from torch.nn.modules import module as nn_module
+
+    names = (
+        "register_module_module_registration_hook",
+        "register_module_parameter_registration_hook",
+    )
+    registers = [getattr(nn_module, name, None) for name in names]
+    if any(register is None for register in registers):
+        _PARAMS_GEN[0] = False
+        return
+    _PARAMS_GEN[0] = 0
+    for register in registers:
+        register(_bump_params_gen)
+
+
+def _block_params(layer):
+    d = layer.__dict__
+    params = d.get("_unsloth_block_params")
+    _watch_registrations()
+    gen = _PARAMS_GEN[0]
+    if params is None or (gen is not False and d.get("_unsloth_block_params_gen") != gen):
+        params = d["_unsloth_block_params"] = list(layer.parameters())
+        d["_unsloth_block_params_gen"] = gen
+    return params
+
+
 def _trainable(layer):
-    params = layer.__dict__.get("_unsloth_block_params")
-    if params is None:
-        params = layer.__dict__["_unsloth_block_params"] = list(layer.parameters())
-    return any(p.requires_grad for p in params)
+    return any(p.requires_grad for p in _block_params(layer))
 
 
 # The grad-mode trial before a checkpointed block's first no-grad call stands in for the recompute.
@@ -439,26 +474,34 @@ def _clone_outputs(out):
     return pytree.tree_map(lambda x: x.clone() if torch.is_tensor(x) else x, out)
 
 
+def _pool_grad_hook(param):
+    ref = weakref.ref(param)
+
+    def hook(grad):
+        p = ref()
+        if p is None or p.grad is not None:
+            return None
+        return grad.clone()
+
+    return hook
+
+
 def _param_grads_out_of_pool(layer):
-    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it."""
-    if layer.__dict__.get("_unsloth_block_grad_hooks", False):
-        return
-    layer.__dict__["_unsloth_block_grad_hooks"] = True
-
-    def hook_for(param):
-        ref = weakref.ref(param)
-
-        def hook(grad):
-            p = ref()
-            if p is None or p.grad is not None:
-                return None
-            return grad.clone()
-
-        return hook
-
-    for param in layer.parameters():
+    """A first .grad from a replayed backward is graph pool memory the next replay overwrites: copy it.
+    Hooks follow requires_grad at each grad-mode call, not the first call: PEFT's set_adapter /
+    disable_adapter flip it, and the first graphed call can be a reference forward (TRL DPO's "ref"
+    adapter, disable_adapter) with the trained adapter frozen."""
+    if not torch.is_grad_enabled():
+        return  # this call makes no parameter gradient
+    hooked = layer.__dict__.get("_unsloth_block_grad_hooks")
+    if not isinstance(hooked, dict):
+        hooked = layer.__dict__["_unsloth_block_grad_hooks"] = {}
+    for param in _block_params(layer):
         if param.requires_grad:
-            param.register_hook(hook_for(param))
+            seen = hooked.get(id(param))
+            if seen is None or seen() is not param:
+                param.register_hook(_pool_grad_hook(param))
+                hooked[id(param)] = weakref.ref(param)
 
 
 def _in_nonreentrant_checkpoint():
@@ -1687,6 +1730,10 @@ def _sdpa_alignment_without_guard():
     The memory-efficient backward keeps torch's guard where it needs it (_efficient_backward_keeps_guard).
     UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
     if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
+        if _efficient_backward_keeps_guard():
+            # Stock lowering, but the same cache key as a run without the guard before the tag existed:
+            # tag it too, or that run's faulting efficient backward is served again.
+            _tag_efficient_backward_cache()
         return False
     try:
         import torch._inductor.lowering as lowering
@@ -1897,6 +1944,25 @@ def _checkpointing(forward):
     return forward_with_checkpointing
 
 
+def _fast_lora():
+    from ..kernels import fast_lora
+    return fast_lora
+
+
+def _skip_down_eligible(layer, original):
+    try:
+        return _fast_lora().block_skip_down_eligible(layer, original)
+    except Exception:
+        return False
+
+
+def _replays(layer):
+    try:
+        return _fast_lora()._replay_module() is layer
+    except Exception:
+        return False
+
+
 def _wrap(
     cls,
     compile_options,
@@ -1976,9 +2042,26 @@ def _wrap(
 
     graph_shapes = set()
 
-    def run(self, hidden_states, args, kwargs, mode):
+    def run(
+        self,
+        hidden_states,
+        args,
+        kwargs,
+        mode,
+        skip_down = False,
+    ):
         kwargs, shared = _shared_kv_scratch(self, kwargs)
-        out = _run(self, hidden_states, args, kwargs, mode)
+        if skip_down:
+            # A guarded global the traced LoRA_MLP reads: the replay graph drops the down projection.
+            previous = _fast_lora().set_block_skip_down(True)
+            try:
+                out = _run(self, hidden_states, args, kwargs, mode)
+            finally:
+                _fast_lora().set_block_skip_down(previous)
+            if _IN_TRIAL[0] is not True:
+                _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
+        else:
+            out = _run(self, hidden_states, args, kwargs, mode)
         if shared is not None:
             shared[0].update(shared[1])
         return out
@@ -2084,7 +2167,7 @@ def _wrap(
             or _forced_float32(self)
             or _zero3_partitioned(self)
             # PrefixGrouper's int segment table would recompile at every new GRPO length.
-            or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
+            or kwargs.get("prefix_seg_info") is not None
         )
         if not stock and unsloth_forward and kwargs.get("packed_seq_lengths") is not None:
             # Packed lengths -> device cu_seqlens; no traceable varlen kernel keeps the stock forward.
@@ -2132,12 +2215,21 @@ def _wrap(
             _mark_packed_dynamic(kwargs)
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
             _settle_mask_flags(self, kwargs)
-        bit = 2 if torch.is_grad_enabled() else 1
+        # Grad-mode graphs: bit 2 runs every op, bit 4 skips the MLP down projection (a gradient checkpoint
+        # replay of exactly this layer, whose output value its backward never reads). A no-grad call (the
+        # checkpointed forward) of an eligible layer trials the graph its replay will use.
+        skip_down = _skip_down_eligible(self, original)
+        if torch.is_grad_enabled():
+            skip_down = skip_down and (_IN_TRIAL[0] is True or _replays(self))
+            bit = 4 if skip_down else 2
+        else:
+            bit = 1
+        trial_bit = 4 if bit == 1 and skip_down else 2
         checked = self.__dict__.get("_unsloth_block_checked", 0)
         nonreentrant = (
             bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
         )
-        if (bit == 1 or nonreentrant) and not checked & 2:
+        if (bit == 1 or nonreentrant) and not checked & trial_bit:
             # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
             # this call. Non-reentrant: identity saved-tensor hooks keep a failed trial graph out
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
@@ -2161,12 +2253,13 @@ def _wrap(
             if mode == _OFF:
                 return original(self, hidden_states, *args, **kwargs)
             checked = self.__dict__.get("_unsloth_block_checked", 0)
+        skip_down = bit == 4
         if checked & bit:
-            return run(self, hidden_states, args, kwargs, mode)
+            return run(self, hidden_states, args, kwargs, mode, skip_down)
         while True:
             try:
                 with _strict_dynamo():
-                    out = run(self, hidden_states, args, kwargs, mode)
+                    out = run(self, hidden_states, args, kwargs, mode, skip_down)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out
             except torch.OutOfMemoryError:

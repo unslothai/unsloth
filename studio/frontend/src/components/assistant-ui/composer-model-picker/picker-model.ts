@@ -28,6 +28,7 @@ export const DEVICE_SECTIONS = [
   "unsloth",
   "other",
   "npu",
+  "exported",
   "fineTuned",
   "custom",
   "lmstudio",
@@ -40,6 +41,7 @@ export const SECTION_LABEL: Record<ListSection, string> = {
   unsloth: "Unsloth",
   other: "Other models",
   npu: "NPU",
+  exported: "Exported",
   fineTuned: "Trained",
   custom: "Custom folders",
   lmstudio: "LM Studio",
@@ -55,7 +57,10 @@ export function localSection(
   source: string | undefined,
   baseModel: string | undefined,
 ): DeviceSection {
-  if (source === "training" || source === "exported") {
+  if (source === "exported") {
+    return "exported";
+  }
+  if (source === "training") {
     return "fineTuned";
   }
   if (baseModel === "LM Studio") {
@@ -470,22 +475,16 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** In on-screen px, so zoom does not flip the 400/420 choice. */
+/** From the window, never a tab's row count, in on-screen px. */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,
   zoomOut: number,
 ): number {
-  const shortLandscape =
-    innerWidth > innerHeight && innerHeight / zoomOut <= 900;
-  return shortLandscape ? 400 : 420;
-}
-
-export function pickerRoomBelow(
-  triggerBottom: number,
-  viewportHeight: number,
-): number {
-  return Math.max(0, viewportHeight - triggerBottom - PICKER_GAP - PICKER_EDGE);
+  const screenHeight = innerHeight / zoomOut;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 420;
+  const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
+  return Math.round(440 + 100 * t);
 }
 
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
@@ -556,6 +555,36 @@ export function discoverUsesFallback(
   hubResultCount: number,
 ): boolean {
   return hubQuery === "" || hubResultCount === 0;
+}
+
+/** Discover rows that need a file listing for their size: the listing's dtype counts already size a
+ * plain checkpoint, not packed MLX weights. */
+export function hubSizeIds<
+  T extends { id: string; isGguf: boolean; estimatedSizeBytes?: number },
+>(
+  results: readonly T[],
+  recommended: readonly { id: string }[],
+  isMlx: (result: T) => boolean = () => true,
+): string[] {
+  const rows = new Set(recommended.map((m) => m.id.toLowerCase()));
+  return results.flatMap((r) =>
+    !r.isGguf &&
+    rows.has(r.id.toLowerCase()) &&
+    (!r.estimatedSizeBytes || isMlx(r))
+      ? [r.id]
+      : [],
+  );
+}
+
+/** Discover lists plain safetensors on a Mac, and under the Safetensors filter on any host that runs
+ * them; a chat-only host runs GGUF only. */
+export function discoverListsCheckpoints(
+  isMac: boolean,
+  formatFilter: string,
+  chatOnly: boolean,
+  isMlx: boolean,
+): boolean {
+  return isMac || (formatFilter === "safetensors" && !chatOnly && !isMlx);
 }
 
 /** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */

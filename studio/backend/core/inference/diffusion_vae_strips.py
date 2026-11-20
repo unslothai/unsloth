@@ -158,6 +158,9 @@ def _residual_kernel() -> Any:
     import triton
     import triton.language as tl
 
+    # Triton 3.3 resolves a kernel's names in its module globals only (a closure ``tl`` fails to lower), as in fused._kernels.
+    globals().update(triton = triton, tl = tl)
+
     @triton.jit(do_not_specialize = ("P", "W"))
     def _rows_residual(
         o_ptr, r_ptr, y_ptr, b_ptr, P, C, W, osh, osw, osc, rsh, rsw, rsc, ysh, ysw, ysc, inv_scale,

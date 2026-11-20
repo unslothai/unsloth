@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from core.inference.diffusion_device import resolve_diffusion_device_target
+from core.inference.diffusion_device import diffusion_target_is_cpu, resolve_diffusion_device_target
 from core.inference.diffusion_families import (
     DiffusionFamily,
     family_mlx_supported,
@@ -33,7 +33,13 @@ from core.inference.sd_cpp_backend import (
     _managed_tree_in_use,
     _pin_moved,
     _server_binary_runnable,
+    NATIVE_FAILURE_DLL,
+    NATIVE_FAILURE_INSTALL,
+    NATIVE_FAILURE_EXEC,
+    clear_native_start_failure,
     ensure_sd_cpp_binary,
+    last_native_start_failure,
+    note_native_start_failure,
     ensure_sd_server_binary,
     note_unlaunchable_accelerator_build,
     off_torch_build_mismatch,
@@ -867,9 +873,11 @@ def select_and_activate_engine(
     if use_mlx:
         return _activate(ENGINE_MLX, None)
     if model_kind and model_kind != "gguf":
+        refuse_cpu_dense_image_pick(fam, model_kind)
         return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
 
     forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
+    _refuse_cpu_gguf_off_native(fam, model_kind, forced, sd_cpp_pref)
 
     if forced == ENGINE_DIFFUSERS:
         return _activate(
@@ -908,6 +916,7 @@ def select_and_activate_engine(
     binary = None
     server_binary = None
     incapable_build = False
+    clear_native_start_failure()
     if policy_eligible and fam_ok:
         # Once, so server and CLI cannot disagree.
         selected_card = _selected_card(gpu_ordinal)
@@ -932,7 +941,13 @@ def select_and_activate_engine(
                     off_torch.accelerator,
                 )
                 return None
-            return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
+            usable = usable_or_recorded_failure(candidate, install_accelerator, selected_card)
+            if candidate and not usable:
+                note_native_start_failure(
+                    NATIVE_FAILURE_EXEC,
+                    f"{os.path.basename(str(candidate))} is a build this device already recorded as unable to run",
+                )
+            return usable
 
         # A CPU torch has nothing else on the card: a GPU build that cannot start steps down now.
         for _rung in range(2):
@@ -960,6 +975,8 @@ def select_and_activate_engine(
             unlaunchable_cli: Optional[str] = None
             if binary and SdCppEngine(binary = binary).version() is None:
                 logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
+                # Records the failure reason for the refusal.
+                _server_binary_runnable(binary)
                 unlaunchable_cli = binary
                 binary = None
             if (
@@ -1007,8 +1024,8 @@ def select_and_activate_engine(
     choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
-    lora_guard(choice)
     if choice == ENGINE_SD_CPP:
+        lora_guard(choice)
         return _activate(ENGINE_SD_CPP, None)
 
     # Explain the diffusers choice for status/telemetry.
@@ -1025,6 +1042,10 @@ def select_and_activate_engine(
     if off_torch is not None:
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
+    if cpu_gguf_native_only(fam, model_kind, backend):
+        # Before lora_guard, so a CPU-only GGUF gets the actionable reason.
+        raise ValueError(cpu_gguf_refusal(reason))
+    lora_guard(choice)
     if requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind):
         # Refuse before anything unloads rather than silently fall back to diffusers.
         raise ValueError(f"The native sd.cpp engine cannot load this model here: {reason}.")
@@ -1036,6 +1057,113 @@ def select_and_activate_engine(
 def native_gguf_only(fam: Optional[DiffusionFamily], model_kind: Optional[str]) -> bool:
     """A GGUF of a family whose transformer-only files load natively only (``native_transformer_files_only``)."""
     return model_kind == "gguf" and bool(getattr(fam, "native_transformer_files_only", False))
+
+
+# "1" lifts the CPU-only GGUF rule (restores the diffusers route).
+CPU_GGUF_DIFFUSERS_FALLBACK_ENV = "UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK"
+
+_CPU_GGUF_DIFFUSERS_PICKED = "diffusers picked"
+_CPU_GGUF_DIFFUSERS_PINNED = "diffusers pinned"
+_CPU_GGUF_NATIVE_DISABLED = "native disabled"
+
+_VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+
+
+def cpu_gguf_rule_enabled() -> bool:
+    return os.environ.get(CPU_GGUF_DIFFUSERS_FALLBACK_ENV, "").strip().lower() not in _ENABLE_TOKENS
+
+
+def cpu_gguf_native_only(
+    fam: Optional[DiffusionFamily], model_kind: Optional[str], backend: Optional[str]
+) -> bool:
+    """CPU-only torch GGUF of an sd.cpp family runs on sd.cpp only: diffusers would fetch the dense bf16 encoder."""
+    if model_kind != "gguf" or backend != "cpu" or fam is None or not cpu_gguf_rule_enabled():
+        return False
+    return family_sd_cpp_supported(fam)
+
+
+def host_runs_gguf_native_only() -> bool:
+    """Host-level form for the Images page (no family check). Never raises; probe-free, as a status poll asks it."""
+    if not cpu_gguf_rule_enabled():
+        return False
+    return diffusion_target_is_cpu()
+
+
+def _refuse_cpu_gguf_diffusers(
+    fam: Optional[DiffusionFamily], model_kind: Optional[str], why: str
+) -> None:
+    if model_kind != "gguf" or fam is None or not cpu_gguf_rule_enabled():
+        return
+    if cpu_gguf_native_only(fam, model_kind, resolve_diffusion_device_target().backend):
+        raise ValueError(cpu_gguf_refusal(why))
+
+
+def refuse_cpu_dense_image_pick(fam: Optional[DiffusionFamily], model_kind: Optional[str]) -> None:
+    """CPU-only torch: refuse dense picks of an sd.cpp family, matching the picker (host-artifact-policy ``cpu-only``)."""
+    if fam is None or model_kind in (None, "", "gguf") or not cpu_gguf_rule_enabled():
+        return
+    if not family_sd_cpp_supported(fam):
+        return
+    if resolve_diffusion_device_target().backend != "cpu":
+        return
+    raise ValueError(
+        "This device has no GPU PyTorch can use, so "
+        f"{getattr(fam, 'label', None) or fam.name} runs only as a GGUF on the native engine (sd.cpp). "
+        "Pick one of its GGUF files instead of the full-precision or FP8 / INT8 checkpoint."
+    )
+
+
+def _refuse_cpu_gguf_off_native(
+    fam: Optional[DiffusionFamily], model_kind: Optional[str], forced: str, sd_cpp_pref: str
+) -> None:
+    if forced == ENGINE_DIFFUSERS:
+        _refuse_cpu_gguf_diffusers(fam, model_kind, _CPU_GGUF_DIFFUSERS_PINNED)
+    elif sd_cpp_pref in _DISABLE_TOKENS and forced != ENGINE_SD_CPP:
+        _refuse_cpu_gguf_diffusers(fam, model_kind, _CPU_GGUF_NATIVE_DISABLED)
+
+
+def cpu_gguf_refusal(reason: str) -> str:
+    lead = "This device has no GPU PyTorch can use, so GGUF image models run only on the native engine (sd.cpp)."
+    if reason == _CPU_GGUF_DIFFUSERS_PICKED:
+        return f"{lead} The Diffusers engine is not available for them here; choose Auto or Native (sd.cpp)."
+    if reason == _CPU_GGUF_DIFFUSERS_PINNED:
+        return f"{lead} The server pins UNSLOTH_DIFFUSION_ENGINE=diffusers; unset it to load this model."
+    if reason == _CPU_GGUF_NATIVE_DISABLED:
+        return f"{lead} The native engine is disabled on this server (UNSLOTH_DIFFUSION_SD_CPP=0); unset it to load this model."
+    if "predates" in reason:
+        return (
+            f"{lead} The native engine could not start: {reason}. Delete Studio's stable-diffusion.cpp folder so the "
+            "current build installs on the next load (or point SD_CLI_PATH at a newer build), then load again."
+        )
+    failure = last_native_start_failure()
+    if failure is not None and failure[0] == NATIVE_FAILURE_DLL:
+        fix = (
+            "Its DLLs are the ones beside it in Studio's stable-diffusion.cpp folder plus the Microsoft Visual C++ "
+            "runtime (MSVCP140.dll, VCRUNTIME140.dll, VCOMP140.dll): delete that folder so it reinstalls, and if the "
+            f"error repeats, repair the Visual C++ Redistributable (x64) from {_VC_REDIST_URL}, then load again."
+            if sys.platform == "win32"
+            else "A library the engine needs is missing or the wrong build; reinstall it and load again."
+        )
+        return f"{lead} The native engine could not start: {failure[1]}, a DLL it imports could not be loaded. {fix}"
+    if failure is not None and failure[0] == NATIVE_FAILURE_INSTALL:
+        return (
+            f"{lead} The native engine could not be installed: {failure[1]}. Check that this device can reach "
+            "github.com (Studio downloads the engine from its GitHub releases), then load again."
+        )
+    if failure is not None:
+        return (
+            f"{lead} The native engine could not start: {failure[1]}. Delete Studio's stable-diffusion.cpp folder "
+            "so it reinstalls on the next load, then load again."
+        )
+    if not _install_allowed():
+        return (
+            f"{lead} No native engine is installed and automatic install is off (UNSLOTH_DIFFUSION_SD_CPP_INSTALL=0); "
+            "unset it or point SD_CLI_PATH at a stable-diffusion.cpp build, then load again."
+        )
+    return (
+        f"{lead} The native engine could not start: {reason}, and no start or install failure was recorded for it. "
+        "The Studio log lines for sd-cli / sd-server name the cause; load again once it is fixed."
+    )
 
 
 def refuse_engine_pick(
@@ -1062,6 +1190,7 @@ def refuse_engine_pick(
             raise ValueError(
                 f"Diffusers cannot load a {fam.name} GGUF; use the Auto or native engine, or the pipeline repo."
             )
+        _refuse_cpu_gguf_diffusers(fam, model_kind, _CPU_GGUF_DIFFUSERS_PICKED)
         if fam is not None and not family_pipeline_available(fam):
             raise ValueError(
                 f"Diffusers cannot build the {fam.name} model family with the installed version; "
@@ -1152,9 +1281,11 @@ def predict_engine(
     )[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
+        refuse_cpu_dense_image_pick(fam, model_kind)
         return ENGINE_DIFFUSERS
 
     forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
+    _refuse_cpu_gguf_off_native(fam, model_kind, forced, sd_cpp_pref)
     if forced == ENGINE_DIFFUSERS:
         return ENGINE_DIFFUSERS
     lora_guard = functools.partial(
@@ -1186,6 +1317,7 @@ def predict_engine(
     # build that cannot run this family is never upgraded away, and predicting native for it would
     # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident (or
     # a moved pin) the install lands on the pinned prebuilt, which is current by definition.
+    clear_native_start_failure()
     native_available = native_binary_installed(gpu_ordinal = gpu_ordinal, fam = fam) or (
         _install_allowed()
         and (
@@ -1196,6 +1328,16 @@ def predict_engine(
     choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
+    if choice != ENGINE_SD_CPP and cpu_gguf_native_only(fam, model_kind, backend):
+        # Same refusal as selection, so the plan never stages the dense diffusers set.
+        installed = native_binary_installed(gpu_ordinal = gpu_ordinal)
+        raise ValueError(
+            cpu_gguf_refusal(
+                f"the installed sd.cpp build predates '{fam.name}' support"
+                if installed
+                else "native sd.cpp binary unavailable"
+            )
+        )
     if (
         requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind)
     ) and choice != ENGINE_SD_CPP:
@@ -1321,6 +1463,7 @@ def engine_choice_status(status: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "engine_forced": env_forced_engine(),
         "native_engine_eligible": native_eligible,
+        "gguf_diffusers_allowed": not host_runs_gguf_native_only(),
         "lora_via_native": lora_via_native,
     }
     if status.get("loaded") and status.get("engine"):

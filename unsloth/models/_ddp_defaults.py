@@ -43,7 +43,8 @@ _SKIPPABLE_NAME_MARKERS = (
     "lm_head",
     "embed",
 )
-_CLASSIFIER_HEADS = ("score", "classifier")
+# PEFT's SEQ_CLS modules_to_save default; PEFT >= 0.22 adds DistilBERT's pre_classifier, which also runs every forward.
+_CLASSIFIER_HEADS = ("score", "classifier", "pre_classifier")
 _SUBMODEL_CONFIG_KEYS = ("vision_config", "audio_config", "vision_tower", "speech_config")
 _MOE_CONFIG_KEYS = (
     "num_experts",

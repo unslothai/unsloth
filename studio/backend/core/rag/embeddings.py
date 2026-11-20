@@ -899,12 +899,37 @@ def _resolve_auto() -> str:
     """Auto picks sentence-transformers on a CUDA/ROCm GPU, else llama-server; GPU detection uses smi."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
-    if LlamaCppBackend._get_gpu_free_memory():
+    global _gpu_found_key
+    key = _gpu_probe_key(LlamaCppBackend)
+    if key == _gpu_found_key:
         return "sentence-transformers"
-    if LlamaCppBackend._find_llama_server_binary():
-        return "llama-server"
-    return "sentence-transformers"
+    binary = key[1]
+    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
+    if LlamaCppBackend._get_gpu_free_memory(binary = binary):
+        # Kept only if no key input moved while the probe ran (another thread changing a mask).
+        if _gpu_probe_key(LlamaCppBackend) == key:
+            _gpu_found_key = key
+        return "sentence-transformers"
+    return "llama-server" if binary else "sentence-transformers"
+
+
+# Key of the last probe that found a GPU (each probe spawns nvidia-smi / amd-smi); misses are never cached.
+_gpu_found_key: tuple | None = None
+
+
+def _gpu_probe_key(llama_cpp_backend) -> tuple:
+    binary = llama_cpp_backend._find_llama_server_binary()
+    try:
+        st = os.stat(binary) if binary else None
+        binary_id = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) if st else None
+    except OSError:
+        binary_id = None
+    return (
+        llama_cpp_backend._get_gpu_free_memory,
+        binary,
+        binary_id,
+        frozenset(os.environ.items()),
+    )
 
 
 # Cached: the auto GPU probe is a subprocess (#10390).
@@ -1288,12 +1313,13 @@ def _get_backend(model_name: str | None = None):
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key, _resident_hardware
+    global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
         _forced_backends.clear()
         _backend = None
         _backend_key = None
         _resident_hardware = None
+        _gpu_found_key = None
 
 
 def backend_is_loaded(model_name: str | None = None) -> bool:
@@ -1328,13 +1354,14 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
 
 def release_backend() -> bool:
     """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
-    global _backend, _backend_key, _resident_hardware
+    global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
         # model picks its backend again.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None
+        _gpu_found_key = None
     if backend is None:
         # Live servers keep spawn-time pooling; a stopped backend re-reads the file, so dedup must match.
         return _release_st_model()

@@ -629,10 +629,19 @@ def fp8_linear_class():
             codes = self.weight_q.view(torch.float8_e4m3fn).to(torch.float32)
             return (codes * self.weight_scale.view(torch.float32)).to(dtype)
 
-        def _quantize_static(self, x2: Any) -> Any:
+        def _quantize_static(
+            self,
+            x2: Any,
+            fast: bool = False,
+        ) -> Any:
             """e4m3 codes of ``x / input_scale``, rounded once from float32, in row chunks so the float32 copy stays
-            small next to the activation."""
+            small next to the activation. ``fast``: one fused pass, same codes (diffusion_fp8_act_quant)."""
             scale = self.input_scale.view(torch.float32)
+            if fast:
+                from .diffusion_fp8_act_quant import quantize_static
+                codes = quantize_static(x2, scale)
+                if codes is not None:
+                    return codes
             out = torch.empty(x2.shape, dtype = torch.float8_e4m3fn, device = x2.device)
             step = max(1, _QUANT_CHUNK_ELEMENTS // max(1, self.in_features))
             for start in range(0, x2.shape[0], step):
@@ -658,6 +667,11 @@ def fp8_linear_class():
                 return False
             probe = _GEMM_PROBE.get(x2.device.index)
             if probe is None and not torch.compiler.is_compiling():
+                from .diffusion_fp8_act_quant import capturing
+
+                if capturing(x2.device):
+                    # The probe GEMM reads its answer on the host: never first inside a capture, nothing recorded
+                    return False
                 fp8_gemm_runs(device = x2.device, act = self.act)
                 probe = _GEMM_PROBE.get(x2.device.index)
             return bool((probe or {}).get(self.act))
@@ -684,11 +698,12 @@ def fp8_linear_class():
                 )
                 return out.reshape(*shape[:-1], self.out_features)
             s_w = self.weight_scale.view(torch.float32)
+            gemm = self._gemm(x2)
             if self.act == ACT_DYNAMIC:
                 xq, s_x = self._quantize_dynamic(x2)
             else:
-                xq, s_x = self._quantize_static(x2), self.input_scale.view(torch.float32)
-            if self._gemm(x2):
+                xq, s_x = self._quantize_static(x2, fast = gemm), self.input_scale.view(torch.float32)
+            if gemm:
                 if not torch.compiler.is_compiling():
                     self.gemm_calls += 1
                 rowwise = self.act == ACT_DYNAMIC
