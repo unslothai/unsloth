@@ -11984,7 +11984,6 @@ class LlamaCppBackend:
         try:
             from utils.llama_cpp_freshness import read_install_marker
             from utils.prebuilt.llama_backend import marker_backend
-
             return marker_backend(read_install_marker(binary)) == "metal"
         except Exception:
             return False

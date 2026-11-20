@@ -171,7 +171,11 @@ def test_probe_without_import_reads_modules_already_loaded():
 # ── Does llama.cpp put layers on Metal? ──────────────────────────────────────
 
 
-def _llama_install(tmp_path, libs, marker_backend = None):
+def _llama_install(
+    tmp_path,
+    libs,
+    marker_backend = None,
+):
     """A llama-server with the given ggml libraries beside it, and optionally a prebuilt marker."""
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin"
     bin_dir.mkdir(parents = True)
@@ -181,7 +185,6 @@ def _llama_install(tmp_path, libs, marker_backend = None):
         (bin_dir / lib).write_bytes(b"")
     if marker_backend is not None:
         import json
-
         (tmp_path / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json").write_text(
             json.dumps({"backend": marker_backend, "tag": "b0"})
         )
@@ -200,7 +203,11 @@ def _llama_install(tmp_path, libs, marker_backend = None):
         # Versioned names, as the prebuilt also ships them.
         (["libggml-base.0.dylib", "libggml-metal.0.20.1.dylib"], None, True),
         # Only a loadable library name counts: dyld never opens a renamed one.
-        (["libggml-base.dylib", "libggml-cpu.dylib", "libggml-metal.dylib.disabled"], "metal", False),
+        (
+            ["libggml-base.dylib", "libggml-cpu.dylib", "libggml-metal.dylib.disabled"],
+            "metal",
+            False,
+        ),
         # A static build: only the marker can tell.
         ([], "metal", True),
         ([], None, False),
@@ -245,7 +252,6 @@ def test_build_has_metal_follows_the_installer_wrapper(tmp_path):
 )
 def test_metal_devices_env_follows_ggml_metal_atoi(value, hides):
     from core.inference.llama_cpp import _metal_devices_env_hides_all
-
     env = {} if value is None else {"GGML_METAL_DEVICES": value}
     assert _metal_devices_env_hides_all(env) is hides
 
@@ -334,7 +340,6 @@ def test_offload_needs_a_metal_build_on_a_real_gpu(
     monkeypatch, has_metal, paravirtual, metal_devices, expected
 ):
     import core.inference.llama_cpp as llama_cpp
-
     if metal_devices is None:
         monkeypatch.delenv("GGML_METAL_DEVICES", raising = False)
     else:

@@ -7711,7 +7711,6 @@ def _llama_cpp_offloads_to_metal() -> bool:
             _metal_devices_env_hides_all,
             _metal_offload_forced_off_for_polling,
         )
-
         return (
             not _metal_devices_env_hides_all()
             and LlamaCppBackend._build_has_metal()
@@ -7735,7 +7734,6 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
         return None
     try:
         import psutil
-
         total_bytes = int(psutil.virtual_memory().total)
     except Exception as e:
         logger.debug("Apple Metal inventory could not read total memory: %s", e)
