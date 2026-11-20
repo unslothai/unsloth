@@ -64,7 +64,7 @@ class _NoFloat64(TorchFunctionMode):
 def test_float32_rank_path_has_no_float64_and_stays_accurate(monkeypatch, w_dtype, cancel):
     mod = _load()
     # Run the CPU tensors through the path a device without float64 takes.
-    monkeypatch.setattr(mod, "_rank_dtype", lambda device: torch.float32)
+    monkeypatch.setattr(mod, "_rank_dtype", lambda device, rank = 0: torch.float32)
     torch.manual_seed(0)
     d_out, d_in, r, s = 256, 512, 16, 2.0
     if cancel:
@@ -79,3 +79,38 @@ def test_float32_rank_path_has_no_float64_and_stays_accurate(monkeypatch, w_dtyp
     rel = ((norm.double() - ref).abs() / ref).max().item()
     # Well inside one 16-bit ulp of the output (bf16 2**-8, fp16 2**-11).
     assert rel < (1e-3 if cancel else 1e-5), rel
+
+
+@pytest.mark.parametrize(
+    "device_type, rank, expected",
+    [
+        ("cuda", 16, torch.float64),
+        ("cuda", 32, torch.float64),
+        ("cuda", 64, torch.float32),
+        ("cuda", 256, torch.float32),
+        ("cpu", 256, torch.float64),
+        ("xpu", 16, torch.float32),
+    ],
+)
+def test_rank_dtype_per_rank(device_type, rank, expected):
+    # float64 runs at 1/64 rate on T4 / L4 / RTX: 4 r^2 (d_in + d_out) float64 FLOPs per call made a rank-256 DoRA
+    # step 2.7x slower on an RTX 3090. High ranks use float32 on GPUs.
+    mod = _load()
+    assert mod._rank_dtype(torch.device(device_type), rank) == expected
+
+
+@pytest.mark.parametrize("rank", [64, 256])
+def test_float32_rank_terms_at_high_rank_stay_accurate(rank):
+    mod = _load()
+    torch.manual_seed(0)
+    d_out, d_in, s = 256, 512, 2.0
+    W = (torch.randn(d_out, d_in) * 0.02).to(torch.bfloat16)
+    A, B = torch.randn(rank, d_in) / d_in**0.5, torch.randn(d_out, rank) * 1e-3
+    mod_rank = mod._rank_dtype
+    try:
+        mod._rank_dtype = lambda device, r = 0: torch.float32
+        norm = mod.factored_dora_weight_norm(W, A, B, s, torch.float32)
+    finally:
+        mod._rank_dtype = mod_rank
+    ref = torch.linalg.vector_norm(W.double() + s * (B.double() @ A.double()), dim = 1)
+    assert ((norm.double() - ref).abs() / ref).max().item() < 1e-5
