@@ -3009,31 +3009,6 @@ class TestAnAutoContextIsMarkedShrinkable:
         floor = ri._gguf_memory_breakdown(config, wide, n_ctx = floor_ctx, **request_fields)
         shorter = ri._gguf_memory_breakdown(config, wide, n_ctx = 256, **request_fields)
         assert shorter.gpu_bytes < resp.gpu_floor_bytes == floor.gpu_bytes < resp.gpu_bytes
-        assert resp.gpu_floor_ctx == floor_ctx
-        assert resp.floor_total_bytes == floor.total_bytes < resp.total_bytes
-        doublings = [floor_ctx * 2**k for k in range(1, 20) if floor_ctx * 2**k < 262144]
-        assert [ctx for ctx, _, _ in resp.fit_curve] == doublings
-        mid = ri._gguf_memory_breakdown(config, wide, n_ctx = doublings[0], **request_fields)
-        assert resp.fit_curve[0] == [doublings[0], mid.gpu_bytes, mid.total_bytes]
-
-    def test_a_compact_swa_cache_bends_the_fit_curve(self, wide, tmp_path, monkeypatch):
-        """The SWA cache saturates part-way, so interpolating floor to native overstates Auto."""
-        swa = _write_gguf(
-            tmp_path,
-            "gemma3",
-            {**_GQA_FIELDS, "attention.sliding_window": 4096, "context_length": 262144},
-            name = "swa.gguf",
-        )
-        config = SimpleNamespace(**{**vars(ri._cached_estimate_config()), "gguf_file": swa})
-        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
-        resp = _estimate(model_path = swa, n_parallel = 4)
-        curve = [
-            (resp.gpu_floor_ctx, resp.gpu_floor_bytes),
-            *[(c, g) for c, g, _ in resp.fit_curve],
-        ]
-        curve.append((resp.n_ctx, resp.gpu_bytes))
-        slopes = [(g1 - g0) / (c1 - c0) for (c0, g0), (c1, g1) in zip(curve, curve[1:])]
-        assert slopes[0] > 2 * slopes[-1], slopes
 
     def test_a_native_context_under_the_fit_floor_has_nothing_to_shrink(
         self, tmp_path, monkeypatch
@@ -3046,8 +3021,6 @@ class TestAnAutoContextIsMarkedShrinkable:
         resp = _estimate(model_path = gguf)
         assert resp.context_is_pinned is False
         assert resp.gpu_floor_bytes == resp.gpu_bytes
-        assert resp.gpu_floor_ctx == resp.n_ctx == 4096
-        assert resp.fit_curve == []
 
     @pytest.mark.parametrize(
         ("request_fields", "env_ctx", "fit_ctx_supported"),
@@ -3075,9 +3048,6 @@ class TestAnAutoContextIsMarkedShrinkable:
         assert resp.available is True
         assert resp.context_is_pinned is True, (request_fields, env_ctx)
         assert resp.gpu_floor_bytes is None
-        assert resp.gpu_floor_ctx is None
-        assert resp.floor_total_bytes is None
-        assert resp.fit_curve is None
 
     @pytest.mark.parametrize(("fit_ctx_supported", "floor_ctx"), [(True, 8192), (False, 4096)])
     def test_manual_ignores_the_fit_variables_its_launch_clears(

@@ -64,12 +64,6 @@ export interface MemoryFitEstimate {
   /** False when the loader will shrink the priced context to fit. Absent reads as pinned. */
   contextIsPinned?: boolean;
   gpuFloorBytes?: number | null;
-  /** The context `gpuFloorBytes` is priced at. */
-  gpuFloorCtx?: number | null;
-  /** `totalBytes` at that context: on one pool, host terms such as checkpoints shrink with it. */
-  floorTotalBytes?: number | null;
-  /** [context, gpuBytes, totalBytes] at each doubling of the floor below native. */
-  fitCurve?: [number, number, number][] | null;
   floorCanOffload?: boolean;
   nCtx?: number;
 }
@@ -324,104 +318,6 @@ export function resolveMemoryFit(
       contextShrinks,
     }),
   };
-}
-
-const AUTO_CONTEXT_STEP = 256;
-// Metal Auto (llama_cpp.py): capped at _APPLE_AUTO_CTX; min(_FIT_MIN_CTX, native) when nothing fits.
-const APPLE_AUTO_CONTEXT_CAP = 65536;
-const APPLE_NOTHING_FITS_CONTEXT = 8192;
-
-/** Not from a stale estimate, nor when an Auto resident with the same settings already answered. */
-export function previewsAutoFit(state: {
-  isGguf: boolean;
-  estimateAvailable: boolean;
-  estimateStale: boolean;
-  isActiveModel: boolean;
-  /** Another local model holds memory the load frees first, by an amount not priced here. */
-  otherModelResident: boolean;
-  /** The loader takes the fewest cards that hold the model, which pooled free VRAM cannot see. */
-  multiGpu: boolean;
-  residentKnown: boolean;
-  residentLoadedAuto: boolean;
-  pendingMatchesResident: boolean;
-}): boolean {
-  if (!state.isGguf || !state.estimateAvailable || state.estimateStale || state.multiGpu) {
-    return false;
-  }
-  if (!state.isActiveModel) return !state.otherModelResident;
-  return (
-    state.residentKnown && !(state.residentLoadedAuto && state.pendingMatchesResident)
-  );
-}
-
-/** Linear between adjacent prices on the floor-to-native curve: a compact SWA cache saturates
- *  part-way, so one line from floor to native would overstate the window. */
-export function resolveAutoFittedContext(
-  estimate: MemoryFitEstimate,
-  capacity: MemoryFitCapacity,
-  {
-    appleUnifiedMemory = false,
-    loadBudgetCeilingGb = null,
-  }: {
-    appleUnifiedMemory?: boolean;
-    /** Metal's own after-unload budget, min(working set, free) times its fraction. */
-    loadBudgetCeilingGb?: number | null;
-  } = {},
-): number | null {
-  const nativeCtx = estimate.nCtx ?? 0;
-  const floorCtx = estimate.gpuFloorCtx ?? 0;
-  if (
-    !hasContextFloor(estimate) ||
-    !estimate.kvEstimable ||
-    !(floorCtx > 0) ||
-    !Number.isFinite(nativeCtx) ||
-    !Number.isFinite(estimate.gpuBytes) ||
-    !Number.isFinite(estimate.totalBytes) ||
-    (!capacity.singleMemoryPool && estimate.gpuBytes === 0)
-  ) {
-    return null;
-  }
-  if (nativeCtx <= floorCtx) return nativeCtx;
-  const { freeGpuCapacityGb: availableGb, freeGpuCapacityKnown: known } = capacity;
-  if (!Number.isFinite(availableGb) || availableGb < 0 || (availableGb === 0 && !known)) {
-    return null;
-  }
-  const reclaimableTotal = reclaimableBytes(capacity.reclaimableTotalBytes);
-  const reclaimed = capacity.singleMemoryPool
-    ? reclaimableTotal
-    : Math.min(reclaimableBytes(capacity.reclaimableGpuBytes), reclaimableTotal);
-  const credited =
-    availableGb +
-    Math.max(0, reclaimed / 1024 ** 3 - reclaimableBytes(capacity.freeGpuReserveDeficitGb));
-  const poolGb = capacity.singleMemoryPool ? capacity.totalCapacityGb : capacity.gpuCapacityGb;
-  const ceilings = [poolGb, loadBudgetCeilingGb ?? 0].filter((gb) => gb > 0);
-  const budget = Math.min(credited, ...ceilings) * 1024 ** 3;
-  const nativeBytes = capacity.singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes;
-  // Two pools fit the GPU share; host terms stay at native.
-  const priced = (gpuBytes: number, totalBytes: number | null | undefined) =>
-    capacity.singleMemoryPool && Number.isFinite(totalBytes)
-      ? (totalBytes as number)
-      : nativeBytes - Math.max(0, estimate.gpuBytes - gpuBytes);
-  const curve: [number, number][] = [
-    [floorCtx, priced(estimate.gpuFloorBytes as number, estimate.floorTotalBytes)],
-    ...(estimate.fitCurve ?? [])
-      .filter(([ctx]) => ctx > floorCtx && ctx < nativeCtx)
-      .map(([ctx, gpu, total]): [number, number] => [ctx, priced(gpu, total)]),
-    [nativeCtx, nativeBytes],
-  ];
-  const ceiling = appleUnifiedMemory ? Math.min(nativeCtx, APPLE_AUTO_CONTEXT_CAP) : nativeCtx;
-  if (nativeBytes <= budget) return ceiling;
-  if (curve[0][1] >= budget) {
-    return appleUnifiedMemory ? Math.min(nativeCtx, APPLE_NOTHING_FITS_CONTEXT) : floorCtx;
-  }
-  let i = 0;
-  while (curve[i + 1][1] <= budget) i += 1;
-  const [[loCtx, loBytes], [hiCtx, hiBytes]] = [curve[i], curve[i + 1]];
-  const fitted = loCtx + ((budget - loBytes) / (hiBytes - loBytes)) * (hiCtx - loCtx);
-  return Math.max(
-    floorCtx,
-    Math.min(ceiling, Math.floor(fitted / AUTO_CONTEXT_STEP) * AUTO_CONTEXT_STEP),
-  );
 }
 
 interface AdvisoryVerdicts {

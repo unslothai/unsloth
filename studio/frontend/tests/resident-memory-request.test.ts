@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import {
-  autoFitSettings,
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
 } from "../src/features/model-picker/model-config/resident-memory-request.ts";
@@ -185,24 +184,4 @@ test("an MLX resident is credited without the llama.cpp settings it never record
     page,
     /targetIsMlx && isActiveModel \? loadedContextLength : activeLoadedContext/,
   );
-});
-
-test("Auto's fit settings ignore Manual-only placement and an empty extras list", () => {
-  const pending = {
-    modelPath: "org/model-GGUF",
-    nCtx: 0,
-    cacheTypeKv: "f16",
-    gpuMemoryMode: "auto" as const,
-    gpuLayers: null,
-    nCpuMoe: 0,
-    llamaExtraArgs: [],
-  };
-  const resident = { ...pending, nCtx: 82176, nCpuMoe: null, llamaExtraArgs: null };
-  assert.deepEqual(autoFitSettings(pending), autoFitSettings(resident));
-  assert.notDeepEqual(
-    autoFitSettings({ ...pending, cacheTypeKv: "q8_0" }),
-    autoFitSettings(resident),
-  );
-  const manual = { ...pending, gpuMemoryMode: "manual" as const, gpuLayers: 20 };
-  assert.notDeepEqual(autoFitSettings(manual), autoFitSettings({ ...manual, nCpuMoe: 4 }));
 });

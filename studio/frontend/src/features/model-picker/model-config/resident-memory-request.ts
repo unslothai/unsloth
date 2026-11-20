@@ -102,16 +102,3 @@ export function resolveResidentEstimateRequest(
       : {}),
   };
 }
-
-/** The request as Auto's fit sees it: no context, Manual-only placement dropped outside Manual
- *  (an Auto resident reports nCpuMoe null while the panel sends 0), and no extras as none. */
-export function autoFitSettings(request: MemoryEstimateRequest): MemoryEstimateRequest {
-  const manual = request.gpuMemoryMode === "manual";
-  return {
-    ...request,
-    nCtx: null,
-    gpuLayers: manual ? request.gpuLayers : null,
-    nCpuMoe: manual ? request.nCpuMoe : null,
-    llamaExtraArgs: request.llamaExtraArgs?.length ? request.llamaExtraArgs : null,
-  };
-}

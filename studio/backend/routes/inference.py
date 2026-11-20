@@ -22502,13 +22502,13 @@ async def estimate_memory(
             request.gpu_layers,
             breakdown,
         )
-
-        def price_fit(n_ctx: int):
-            fit = price(n_ctx = n_ctx)
+        floor = None
+        if context_floor is not None and breakdown.n_ctx > context_floor.ctx:
+            floor = price(n_ctx = context_floor.ctx)
             # Tensor launch can fall back to layer split, replicating compute buffers: take the larger.
-            if fit is not None and tensor_split:
+            if floor is not None and tensor_split:
                 layer = price(
-                    n_ctx = n_ctx,
+                    n_ctx = context_floor.ctx,
                     tensor_parallel = False,
                     # As tensor_fallback.py relaunches.
                     llama_extra_args = [
@@ -22518,34 +22518,10 @@ async def estimate_memory(
                     ],
                     n_devices = device_count,
                 )
-                if layer is not None and layer.gpu_bytes > fit.gpu_bytes:
-                    fit = layer
-            return fit
-
-        floor = None
-        fit_curve: Optional[list[list[int]]] = None
-        if context_floor is not None and breakdown.n_ctx > context_floor.ctx:
-            floor = price_fit(context_floor.ctx)
-            fit_curve = []
-            ctx = context_floor.ctx * 2
-            while floor is not None and fit_curve is not None and ctx < breakdown.n_ctx:
-                point = price_fit(ctx)
-                fit_curve = (
-                    None
-                    if point is None
-                    else [
-                        *fit_curve,
-                        [
-                            ctx,
-                            min(int(point.gpu_bytes), int(breakdown.gpu_bytes)),
-                            min(int(point.total_bytes), int(breakdown.total_bytes)),
-                        ],
-                    ]
-                )
-                ctx *= 2
+                if layer is not None and layer.gpu_bytes > floor.gpu_bytes:
+                    floor = layer
         elif context_floor is not None:
             floor = breakdown
-            fit_curve = []
         # Shaped via canonical MemoryEstimate (core/inference/memory_contract.py) to stay in sync; weights_bytes here means every resident file, not the quant alone.
         estimate = build_memory_estimate(
             breakdown,
@@ -22554,11 +22530,6 @@ async def estimate_memory(
             gpu_floor_bytes = (
                 None if floor is None else min(int(floor.gpu_bytes), int(breakdown.gpu_bytes))
             ),
-            gpu_floor_ctx = None if floor is None else int(getattr(floor, "n_ctx", 0) or 0),
-            floor_total_bytes = (
-                None if floor is None else min(int(floor.total_bytes), int(breakdown.total_bytes))
-            ),
-            fit_curve = fit_curve,
             floor_can_offload = context_floor is not None and context_floor.can_offload,
             context_is_pinned = context_floor is None,
             moe_offload_unmodelled = bool(

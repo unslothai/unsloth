@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { modelConfigInstanceKey } from "../src/features/model-picker/model-config/config-signature.ts";
+import {
+  loadedAutoContext,
+  modelConfigInstanceKey,
+} from "../src/features/model-picker/model-config/config-signature.ts";
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
 
 const MODEL = "unsloth/Qwen3-8B-GGUF";
@@ -149,4 +152,21 @@ test("the arguments the model is running with key the editor", () => {
     modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, llamaExtraArgs: [...running.llamaExtraArgs] }),
     base,
   );
+});
+
+test("the loaded window stands for Auto only while the settings match the Auto load", () => {
+  const loaded: PerModelConfig = { ...LIVE, customContextLength: null };
+  assert.equal(loadedAutoContext({ ...loaded }, loaded, 82176), 82176);
+  assert.equal(
+    loadedAutoContext({ ...loaded, kvCacheDtype: "f16" }, loaded, 82176),
+    null,
+    "a KV cache change fits again on load",
+  );
+  assert.equal(loadedAutoContext({ ...loaded, nParallel: 2 }, loaded, 82176), null);
+  assert.equal(
+    loadedAutoContext(loaded, { ...loaded, customContextLength: 16384 }, 16384),
+    null,
+    "a pinned load says nothing about Auto",
+  );
+  assert.equal(loadedAutoContext(loaded, null, null), null);
 });

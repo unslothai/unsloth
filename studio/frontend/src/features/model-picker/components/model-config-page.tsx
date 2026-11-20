@@ -64,7 +64,6 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   gpuLayersPatch,
-  isExternalModelId,
   moeCpuOffloadApplies,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
@@ -149,16 +148,13 @@ import {
   mlxOffloadFromSlider,
   mlxOffloadModePatch,
   mlxOffloadSliderValue,
-  previewsAutoFit,
-  resolveAutoFittedContext,
   resolveReclaimableMemoryCredit,
 } from "../model-config/memory-fit";
 import {
-  autoFitSettings,
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
-import { estimateKey, useMemoryEstimate } from "../hooks/use-memory-estimate";
+import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import { usePrefillOptionAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
@@ -200,7 +196,10 @@ import {
   setModelConfigDraftSavedRemember,
   subscribeModelConfigDraft,
 } from "../model-config/model-config-draft";
-import { loadedConfigSignature } from "../model-config/config-signature";
+import {
+  loadedAutoContext,
+  loadedConfigSignature,
+} from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
@@ -582,7 +581,7 @@ function GgufContextLengthSetting({
   max,
   nativeContextLength,
   activeLoadedContext,
-  autoFitted = null,
+  refitsLoadedContext = null,
   inputRef,
   onChange,
   renderWarning,
@@ -590,12 +589,12 @@ function GgufContextLengthSetting({
 }: {
   value: number;
   autoValue: number;
-  /** Auto's window for the pending settings, when it differs from what is loaded. */
-  autoFitted?: number | null;
   min: number;
   max: number;
   nativeContextLength: number | null;
   activeLoadedContext: number | null;
+  /** The loaded window when it was fitted to other settings, so the next load fits again. */
+  refitsLoadedContext?: number | null;
   inputRef?: Ref<NumericValueInputHandle>;
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
@@ -643,8 +642,8 @@ function GgufContextLengthSetting({
           {isAuto && activeLoadedContext != null
             ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
             : ""}
-          {isAuto && autoFitted != null && autoFitted !== activeLoadedContext
-            ? ` With these settings and the memory free now, Auto would select about ${autoFitted.toLocaleString()} tokens.`
+          {isAuto && refitsLoadedContext != null
+            ? ` The loaded ${refitsLoadedContext.toLocaleString()} tokens were fitted to other settings; Auto fits again on load.`
             : ""}
           {nativeContextLength != null
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
@@ -672,11 +671,9 @@ function GgufContextLengthSetting({
         thumbValueText={(v) =>
           !(isMaxPosition(v) && value === 0)
             ? `${(isMaxPosition(v) ? max : v).toLocaleString()} tokens`
-            : autoFitted != null
-              ? `Auto, about ${autoValue.toLocaleString()} tokens`
-              : activeLoadedContext != null
-                ? `Auto, currently ${autoValue.toLocaleString()} tokens`
-                : "Auto"
+            : activeLoadedContext != null
+              ? `Auto, currently ${autoValue.toLocaleString()} tokens`
+              : "Auto"
         }
       />
     ) : null;
@@ -2849,9 +2846,6 @@ export function ModelConfigPage({
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
   const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
-  const localModelResident = useChatRuntimeStore(
-    (s) => Boolean(s.params.checkpoint) && !isExternalModelId(s.params.checkpoint),
-  );
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
   );
@@ -3527,6 +3521,11 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
+  const autoLoadedContext = loadedAutoContext(
+    config,
+    loadedConfig && reconcileConfigGpuSelection(loadedConfig, resolvedIsDiffusion, gpuDevices),
+    activeLoadedContext,
+  );
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
@@ -3737,30 +3736,24 @@ export function ModelConfigPage({
     !residentEstimate.stale
       ? residentEstimate.estimate
       : null;
-  const reclaimableCreditFor = (gpuPlacementKnown: boolean) =>
-    resolveReclaimableMemoryCredit(
-      reclaimableEstimate,
-      { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
-      {
-        ids: runtimeConfig.selectedGpuIds ?? null,
-        indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
-      },
-      {
-        cpuFallback: loadedCpuFallback,
-        devices: gpuDevices,
-        gpuPlacementKnown,
-        appleUnifiedMemory: isAppleUnifiedMemory,
-      },
-    );
-  const reclaimableCredit = reclaimableCreditFor(
-    residentEstimateRequest?.gpuMemoryMode === "manual" &&
-      residentEstimateRequest.gpuLayers != null &&
-      residentEstimateRequest.gpuLayers >= 0 &&
-      !loadedLlamaExtraArgs?.length,
+  const reclaimableCredit = resolveReclaimableMemoryCredit(
+    reclaimableEstimate,
+    { ids: loadedGpuIds, indexKind: loadedGpuIndexKind },
+    {
+      ids: runtimeConfig.selectedGpuIds ?? null,
+      indexKind: runtimeConfig.selectedGpuIndexKind ?? null,
+    },
+    {
+      cpuFallback: loadedCpuFallback,
+      devices: gpuDevices,
+      gpuPlacementKnown:
+        residentEstimateRequest?.gpuMemoryMode === "manual" &&
+        residentEstimateRequest.gpuLayers != null &&
+        residentEstimateRequest.gpuLayers >= 0 &&
+        !loadedLlamaExtraArgs?.length,
+      appleUnifiedMemory: isAppleUnifiedMemory,
+    },
   );
-  // The fit warning withholds an Auto resident's VRAM, but the reload frees it before fitting;
-  // resolveAutoFittedContext caps the credited budget at the card.
-  const autoFitReclaimableCredit = reclaimableCreditFor(true);
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
   // A pin can only use the cards it names, so judge the fit against those.
@@ -3776,10 +3769,6 @@ export function ModelConfigPage({
     if (governing.length === 0) return false;
     return governing.every((device) => device.unifiedMemory === true);
   }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
-  const governingGpuCount =
-    pinnedGpuIds && pinnedGpuIds.length > 0
-      ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index)).length
-      : gpuDevices.length;
   // The budget slider caps per-GPU use; seeded with VRAM_FRACTION_DEFAULT, which loads apply
   // until the async read lands (or on an older backend).
   const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] =
@@ -3867,47 +3856,6 @@ export function ModelConfigPage({
       // A ROCm APU's memory_total_gb is a BIOS window onto RAM, not the pool size.
       unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
-  const autoFittedContext =
-    memoryEstimate.estimate &&
-    previewsAutoFit({
-      isGguf: Boolean(target.isGguf),
-      estimateAvailable: memoryEstimate.estimate.available,
-      estimateStale: memoryEstimate.stale,
-      isActiveModel,
-      otherModelResident: localModelResident,
-      multiGpu: !singleMemoryPool && governingGpuCount > 1,
-      residentKnown: reclaimableEstimate != null,
-      residentLoadedAuto: (loadedConfig?.customContextLength ?? null) == null,
-      pendingMatchesResident:
-        residentEstimateRequest != null &&
-        memoryEstimateRequest != null &&
-        estimateKey(autoFitSettings(memoryEstimateRequest)) ===
-          estimateKey(autoFitSettings(residentEstimateRequest)),
-    })
-      ? resolveAutoFittedContext(
-          memoryEstimate.estimate,
-          {
-            gpuCapacityGb: memoryGpuCapacityGb,
-            totalCapacityGb: memoryTotalCapacityGb,
-            systemRamCapacityGb: inferenceGpu.systemRamTotalGb,
-            freeGpuCapacityGb: memoryFreeGpuCapacityGb,
-            freeGpuCapacityKnown: memoryFreeGpuCapacityKnown,
-            freeGpuReserveDeficitGb: memoryFreeGpuReserveDeficitGb,
-            usableSystemRamGb: memoryUsableSystemRamGb,
-            usableSystemRamKnown: inferenceGpu.systemRamAvailableKnown,
-            systemRamReserveDeficitGb: memorySystemRamReserveDeficitGb,
-            singleMemoryPool,
-            reclaimableTotalBytes: autoFitReclaimableCredit.totalBytes,
-            reclaimableGpuBytes: autoFitReclaimableCredit.gpuBytes,
-          },
-          {
-            appleUnifiedMemory: isAppleUnifiedMemory,
-            loadBudgetCeilingGb: isAppleUnifiedMemory
-              ? inferenceGpu.unifiedLoadCeilingGb
-              : null,
-          },
-        )
-      : null;
 
   const storedRecord = useStoredPerModelConfig(configId, target.ggufVariant);
   const matchesStored =
@@ -4622,16 +4570,16 @@ export function ModelConfigPage({
               value={contextIsAuto ? 0 : contextValue}
               autoValue={Math.min(
                 Math.max(
-                  autoFittedContext ?? activeLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
+                  autoLoadedContext ?? AUTO_OFFLOAD_CONTEXT_LENGTH,
                   minContext,
                 ),
                 maxContext,
               )}
-              autoFitted={autoFittedContext}
               min={minContext}
               max={maxContext}
               nativeContextLength={nativeContextLength}
-              activeLoadedContext={activeLoadedContext}
+              activeLoadedContext={autoLoadedContext}
+              refitsLoadedContext={autoLoadedContext == null ? activeLoadedContext : null}
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               stacked={variant === "sidebar"}
