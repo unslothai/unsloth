@@ -9,12 +9,12 @@ export function npuVersionTag(
   return version ? `v${version.replace(/^v/, "")}` : null;
 }
 
-/** Both runtime versions, or null unless an AMD NPU is detected and FastFlowLM and Lemonade are both installed. */
+/** The NPU runtime versions, or null unless an AMD NPU is detected and FastFlowLM is installed. Lemonade is null when Studio runs FastFlowLM directly. */
 export function npuEngineVersions(
   status: Pick<NpuStatus, "hardware" | "versions"> | null | undefined,
-): { fastflowlm: string; lemonade: string } | null {
+): { fastflowlm: string; lemonade: string | null } | null {
   if (!status?.hardware?.present) return null;
   const fastflowlm = npuVersionTag(status.versions?.fastflowlm);
   const lemonade = npuVersionTag(status.versions?.lemonade);
-  return fastflowlm && lemonade ? { fastflowlm, lemonade } : null;
+  return fastflowlm ? { fastflowlm, lemonade } : null;
 }

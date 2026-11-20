@@ -702,20 +702,27 @@ class _FreezeNewTorchForCoreUpdate:
     every with-deps unsloth install. Scoped to Linux and native Windows x64 with torch >= 2.13,
     the releases past that ceiling, so every other install resolves exactly as before; a native
     Windows on ARM interpreter keeps its own UV_OVERRIDE (_woa_overrides_are_load_bearing), an
-    emulated x64 one there is frozen like any x64 install.
+    emulated x64 one there is frozen like any x64 install. Apple Silicon is frozen on every
+    release: only a new install or UNSLOTH_TORCH_UPGRADE=1 through install.sh picks its torch,
+    and an update moving it either way (2.13 back under a cap, 2.11 up under a floor) is never
+    wanted there. Intel macOS has no torch past 2.2.2 to move to and resolves as before.
     """
 
     def __enter__(self):
         self._path = None
         self._previous = os.environ.get("UV_OVERRIDE")
         release = _resident_torch_release()
+        if release is None:
+            return self
         if not (
             (
-                sys.platform.startswith("linux")
-                or (sys.platform == "win32" and not _is_win_arm64_interpreter())
+                (
+                    sys.platform.startswith("linux")
+                    or (sys.platform == "win32" and not _is_win_arm64_interpreter())
+                )
+                and int(release.split(".")[1]) >= 13
             )
-            and release is not None
-            and int(release.split(".")[1]) >= 13
+            or (sys.platform == "darwin" and platform.machine() == "arm64")
         ):
             return self
         pins = _resident_torch_trio_pins()
@@ -10210,7 +10217,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.8.0"
+_MLX_VLM_SPEC = "mlx-vlm>=0.6.4,<=0.8.0"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (

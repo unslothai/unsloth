@@ -3446,9 +3446,7 @@ _GENERATION_STREAM_MODULES = (
 def _drain_generation_streams(mx):
     """Best effort: a stream raises when synchronized off its creating thread, so the drain is skipped."""
 
-    synchronize = getattr(mx, "synchronize", None)
-    if not callable(synchronize):
-        return
+    synchronize = mx.synchronize
     drained = []
     for name in _GENERATION_STREAM_MODULES:
         try:

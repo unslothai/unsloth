@@ -294,6 +294,19 @@ def _forget_hub_unreachable_verdict():
 
 
 @pytest.fixture(autouse = True)
+def _forget_hub_gguf_listings():
+    def _forget():
+        gguf = sys.modules.get("hub.utils.gguf")
+        if gguf is not None:
+            gguf._hub_listings.clear()
+            gguf._hub_rate_limited.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_mcp_discovery_state():
     # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
     # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
