@@ -2677,7 +2677,7 @@ def _mlx_device_info(mx: Any) -> Dict[str, Any]:
 
 
 def _metal_recommended_working_set_bytes(*, allow_import: bool = True) -> int:
-    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel. ``allow_import=False`` (polled paths) reads only imported modules: a broken MLX import can park."""
+    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel; Metal.framework covers neither. ``allow_import=False`` (polled paths) reads only imported modules: a broken MLX import can park."""
     try:
         if allow_import:
             import mlx.core as mx
@@ -2698,7 +2698,37 @@ def _metal_recommended_working_set_bytes(*, allow_import: bool = True) -> int:
             return max(0, int(torch.mps.recommended_max_memory()))
     except Exception:
         pass
-    return 0
+    return _metal_framework_working_set_bytes()
+
+
+_metal_framework_working_set: Optional[int] = None
+
+
+def _metal_framework_working_set_bytes() -> int:
+    """recommendedMaxWorkingSetSize straight from Metal.framework, for a GGUF-only install with neither MLX nor torch; cached like MLX's device_info."""
+    global _metal_framework_working_set
+    if _metal_framework_working_set is not None:
+        return _metal_framework_working_set
+    rec = 0
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+
+            metal = ctypes.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
+            objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+            metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            send = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p)(
+                ("objc_msgSend", objc)
+            )
+            device = metal.MTLCreateSystemDefaultDevice()
+            if device:
+                rec = int(send(device, objc.sel_registerName(b"recommendedMaxWorkingSetSize")))
+        except Exception as e:
+            logger.debug("Metal.framework working set read failed: %s", e)
+    _metal_framework_working_set = rec
+    return rec
 
 
 def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
@@ -7697,10 +7727,6 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     }
 
 
-# Kept once read; 0 retries on later polls, after the warm thread imports MLX or torch.
-_apple_metal_working_set_bytes: int = 0
-
-
 def _llama_cpp_offloads_to_metal() -> bool:
     """Whether llama-server would place GGUF layers on Metal; cheap enough for the polled /api/system."""
     try:
@@ -7722,7 +7748,6 @@ def _llama_cpp_offloads_to_metal() -> bool:
 def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
     """llama.cpp's Metal device on Apple Silicon detected as CPU (GGUF-only install, MLX missing), else None.
     The loader offloads to Metal there regardless, so the GGUF fit must see the unified pool."""
-    global _apple_metal_working_set_bytes
     if not is_apple_silicon() or get_device() == DeviceType.MLX:
         return None
     if not _llama_cpp_offloads_to_metal():
@@ -7735,16 +7760,13 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
         return None
     if total_bytes <= 0:
         return None
-    if not _apple_metal_working_set_bytes:
-        try:
-            _apple_metal_working_set_bytes = int(
-                _metal_recommended_working_set_bytes(allow_import = False) or 0
-            )
-        except Exception as e:
-            logger.debug("Metal working set probe failed: %s", e)
-            _apple_metal_working_set_bytes = 0
+    try:
+        working_set_bytes = int(_metal_recommended_working_set_bytes(allow_import = False) or 0)
+    except Exception as e:
+        logger.debug("Metal working set probe failed: %s", e)
+        working_set_bytes = 0
     # Same fallback as the loader.
-    working_set_bytes = _apple_metal_working_set_bytes or total_bytes
+    working_set_bytes = working_set_bytes or total_bytes
     total_gb = round(total_bytes / (1024**3), 2)
     device: Dict[str, Any] = {
         "index": 0,

@@ -21,13 +21,6 @@ from utils.hardware import hardware as hw
 GiB = 1024**3
 
 
-@pytest.fixture(autouse = True)
-def _fresh_working_set_cache():
-    hw._apple_metal_working_set_bytes = 0
-    yield
-    hw._apple_metal_working_set_bytes = 0
-
-
 def _agx_must_not_be_read():
     raise AssertionError("system-wide AGX usage must not reach the model-switch budget")
 
@@ -95,27 +88,6 @@ def test_working_set_probe_failure_falls_back_to_total_ram():
     assert device["metal_working_set_gb"] == 16.0
 
 
-def test_a_read_working_set_is_kept():
-    calls = []
-
-    def probe(**_):
-        calls.append(1)
-        return int(10.67 * GiB)
-
-    _metal_info(working_set = probe)
-    _metal_info(working_set = probe)
-    assert len(calls) == 1
-
-
-def test_an_unread_working_set_is_retried_once_a_module_is_loaded():
-    readings = iter([0, int(10.67 * GiB)])
-    probe = lambda **_: next(readings)  # noqa: E731
-    (first,) = _metal_info(working_set = probe)["devices"]
-    (second,) = _metal_info(working_set = probe)["devices"]
-    assert first["metal_working_set_gb"] == 16.0
-    assert second["metal_working_set_gb"] == pytest.approx(10.67)
-
-
 @pytest.mark.parametrize(
     "apple, device",
     [(False, DeviceType.CPU), (True, DeviceType.MLX), (False, DeviceType.CUDA)],
@@ -154,8 +126,12 @@ def test_probe_without_import_never_imports_mlx_or_torch():
         return real_import(name, *args, **kwargs)
 
     modules = {k: v for k, v in sys.modules.items() if k.split(".")[0] not in {"mlx", "torch"}}
-    with patch.dict(sys.modules, modules, clear = True), patch.object(builtins, "__import__", guard):
-        assert hw._metal_recommended_working_set_bytes(allow_import = False) == 0
+    with (
+        patch.dict(sys.modules, modules, clear = True),
+        patch.object(builtins, "__import__", guard),
+        patch.object(hw, "_metal_framework_working_set_bytes", return_value = 7 * GiB),
+    ):
+        assert hw._metal_recommended_working_set_bytes(allow_import = False) == 7 * GiB
     assert imported == []
 
 
@@ -306,8 +282,8 @@ def test_polled_paravirtual_check_prefers_the_loaders_full_answer(
     monkeypatch.setattr(
         llama_cpp.subprocess, "run", lambda cmd, *a, **k: SimpleNamespace(stdout = outputs[cmd[0]])
     )
-    modules = {k: v for k, v in sys.modules.items() if k.split(".")[0] != "mlx"}
-    with patch.dict(sys.modules, modules, clear = True):
+    # Blocked, not dropped: re-importing an already loaded mlx.core aborts the process.
+    with patch.dict(sys.modules, {"mlx": None, "mlx.core": None}):
         assert llama_cpp._metal_offload_forced_off_for_polling() is False
         assert llama_cpp._metal_device_is_paravirtual() is True
         assert llama_cpp._metal_offload_forced_off_for_polling() is True

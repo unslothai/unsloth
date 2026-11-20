@@ -974,6 +974,10 @@ def _assume_bare_metal(monkeypatch):
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
     monkeypatch.setattr(llama_cpp, "_metal_device_looks_paravirtual_quick", lambda: False)
+    # A test that hides MLX and torch must not reach the host's real Metal device instead.
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "_metal_framework_working_set_bytes", lambda: 0)
     # The route rebinds the detector as a module global, so patching llama_cpp alone is not enough.
     try:
         from routes import inference as routes_inference
