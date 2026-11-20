@@ -233,11 +233,15 @@ def group_turns(messages: list[dict]) -> list[list[dict]]:
 class _CompactedToolMessage(dict):
     def __init__(self, message: dict, calls: list[dict]):
         super().__init__(message, tool_calls = calls)
-        self.source = message.source if isinstance(message, _CompactedToolMessage) else message
+        self.source = message_source(message)
+
+
+def message_source(message: dict) -> dict:
+    return message.source if isinstance(message, _CompactedToolMessage) else message
 
 
 def message_source_id(message: dict) -> int:
-    return id(message.source if isinstance(message, _CompactedToolMessage) else message)
+    return id(message_source(message))
 
 
 def evicted_messages(before: list[dict], after: list[dict]) -> list[dict]:

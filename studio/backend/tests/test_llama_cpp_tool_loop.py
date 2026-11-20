@@ -6697,6 +6697,9 @@ def _two_edits_in_one_turn():
 def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeypatch):
     """Compaction rebuilds the messages, so a call after it must not append to a stale message dict."""
 
+    from core.inference.context_window import message_source
+
+    source_messages = []
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -6718,6 +6721,9 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
             messages = [{"role": "user", "content": "Write the game"}],
             tools = [{"type": "function", "function": {"name": "edit_file"}}],
             max_tool_iterations = 4,
+            on_conversation_grew = lambda messages: source_messages.extend(
+                message_source(m) for m in messages if m.get("tool_calls")
+            ),
         )
     )
 
@@ -6733,6 +6739,8 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
     assert answered, "no tool result reached the model at all"
     assert answered <= announced, f"results with no visible call: {answered - announced}"
     assert _BIG_BODY not in json.dumps(sent)
+    assert [c["id"] for c in source_messages[-1]["tool_calls"]] == ["call_big", "call_small"]
+    assert _BIG_BODY in json.dumps(source_messages[-1])
 
 
 def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):

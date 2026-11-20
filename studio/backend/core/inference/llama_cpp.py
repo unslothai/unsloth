@@ -78,6 +78,7 @@ from core.inference.context_window import (
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
+    message_source,
     message_source_id,
     fit_rolling_context,
     image_dimensions,
@@ -2272,7 +2273,9 @@ def _archive_and_recall(
         if not conversation_archive.enabled():
             return result
 
-        gone = evicted_messages(before, conversation)
+        before = [message_source(m) for m in before]
+        archive_live = [message_source(m) for m in conversation]
+        gone = evicted_messages(before, archive_live)
         if background:
             # llama.cpp only: its streams gate the idle-gap worker (`inference_running`).
             conversation_archive.note_branch(thread_id, before, cancel_check)
@@ -2283,8 +2286,8 @@ def _archive_and_recall(
             conversation_archive.archive_turns(
                 thread_id,
                 gone,
-                live = conversation,
-                branch = branch_messages or conversation,
+                live = archive_live,
+                branch = branch_messages or archive_live,
                 cancel_check = cancel_check,
             )
             if gone
@@ -38936,7 +38939,8 @@ class LlamaCppBackend:
         _live_branch_ids: set[int] = {id(message) for message in conversation}
 
         def _extend_live_branch(current: list[dict]) -> list[dict]:
-            for message in current:
+            for replay in current:
+                message = message_source(replay)
                 if id(message) not in _live_branch_ids:
                     _live_branch_ids.add(id(message))
                     _live_branch.append(message)
@@ -41272,9 +41276,11 @@ class LlamaCppBackend:
                         assistant_msg = conversation[-1]
                         assistant_appended = True
                     else:
-                        assistant_msg.setdefault("tool_calls", []).append(
-                            decision.as_assistant_tool_call()
-                        )
+                        call = decision.as_assistant_tool_call()
+                        assistant_msg["tool_calls"].append(call)
+                        source = message_source(assistant_msg)
+                        if source is not assistant_msg:
+                            source["tool_calls"].append(call)
 
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls; "off"
