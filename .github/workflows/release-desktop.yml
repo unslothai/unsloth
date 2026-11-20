@@ -32,8 +32,10 @@ env:
     **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
     **Linux x64**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
     **Linux ARM64**: Download `Unsloth-Desktop-Ubuntu-ARM64.deb` for Ubuntu 24.04 or newer on aarch64, such as a DGX Spark. `Unsloth-Desktop-ARM64.app.tar.gz` is macOS-only.
+    **Fedora/RPM x64**: Download `Unsloth-Desktop-Fedora.rpm`. **Fedora/RPM ARM64**: Download `Unsloth-Desktop-Fedora-ARM64.rpm`.
 
     > Linux in-app updates cover `.deb` and AppImage installs. A `.deb` installed before in-app updates shipped needs one manual update first.
+    > RPM installs use the release page for updates; install the RPM with `sudo dnf install ./Unsloth-Desktop-Fedora.rpm`.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
     > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
@@ -575,14 +577,15 @@ jobs:
           }
 
           const targets = config.bundle?.targets;
-          if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'rpm')) {
-            throw new Error('Desktop release must not target RPM packages');
-          }
           if (!Array.isArray(targets) || !targets.some((target) => String(target).toLowerCase() === 'appimage')) {
             throw new Error('Desktop release must build the complete Tauri AppImage target');
           }
-          if (config.bundle?.linux?.rpm) {
-            throw new Error('bundle.linux.rpm must not be configured');
+          if (!targets.some((target) => String(target).toLowerCase() === 'rpm')) {
+            throw new Error('Desktop release must build the Fedora RPM target');
+          }
+          const rpm = config.bundle?.linux?.rpm;
+          if (!rpm || !Array.isArray(rpm.depends) || !rpm.depends.includes('webkit2gtk4.1')) {
+            throw new Error('bundle.linux.rpm must declare the Fedora WebKitGTK runtime');
           }
           // The media plugins must match the bundled GStreamer core.
           if (config.bundle?.linux?.appimage?.bundleMediaFramework !== true) {
@@ -635,8 +638,8 @@ jobs:
           }
           const releaseBody = process.env.DESKTOP_RELEASE_NOTES;
           if (!releaseBody) throw new Error('DESKTOP_RELEASE_NOTES must not be empty');
-          if (/\brpm\b|\.rpm/i.test(releaseBody)) {
-            throw new Error('Desktop release body must not advertise RPM packages');
+          if (!/Fedora\/RPM.*\.rpm/i.test(releaseBody)) {
+            throw new Error('Desktop release body must advertise the Fedora RPM packages');
           }
           if (/AppImage.*universal|universal.*AppImage/i.test(releaseBody)) {
             throw new Error('Desktop release body must not advertise AppImage as universal');
@@ -858,7 +861,7 @@ jobs:
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          args: -v --bundles deb,appimage
+          args: -v --bundles deb,appimage,rpm
 
       - name: Build Linux ARM64 package
         id: build_linux_arm64
@@ -870,7 +873,27 @@ jobs:
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          args: -v --bundles deb
+          args: -v --bundles deb,rpm
+
+      - name: Verify Fedora RPM bundle
+        if: startsWith(matrix.artifact, 'linux-')
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_linux_arm64.outputs.artifactPaths }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          paths = [pathlib.Path(path) for path in json.loads(os.environ['ARTIFACT_PATHS'])]
+          matches = [path for path in paths if path.suffix == '.rpm' and path.is_file()]
+          if len(matches) != 1:
+              sys.exit(f'Expected exactly one Fedora RPM artifact, got {matches}')
+          print(matches[0])
+          PY
 
       - name: Verify complete Linux AppImage
         if: matrix.platform == 'ubuntu-22.04'
@@ -1462,6 +1485,11 @@ jobs:
               if os.environ.get('MATRIX_ARTIFACT') == 'linux-arm64'
               else f'{base_name}-Ubuntu'
           )
+          rpm_base = (
+              f'{base_name}-Fedora-ARM64'
+              if os.environ.get('MATRIX_ARTIFACT') == 'linux-arm64'
+              else f'{base_name}-Fedora'
+          )
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
@@ -1472,6 +1500,7 @@ jobs:
               ('.dmg', f'{base_name}-MacOS.dmg'),
               ('.deb.sig', f'{deb_base}.deb.sig'),
               ('.deb', f'{deb_base}.deb'),
+              ('.rpm', f'{rpm_base}.rpm'),
           )
           staged = []
           for raw_path in artifact_paths:
@@ -1631,6 +1660,8 @@ jobs:
               f'{base_name}-Ubuntu.deb.sig',
               f'{base_name}-Ubuntu-ARM64.deb',
               f'{base_name}-Ubuntu-ARM64.deb.sig',
+              f'{base_name}-Fedora.rpm',
+              f'{base_name}-Fedora-ARM64.rpm',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
               f'{base_name}-Windows-ARM64.exe',
@@ -1993,6 +2024,8 @@ jobs:
               'Unsloth-Desktop-Linux.AppImage',
               'Unsloth-Desktop-Ubuntu.deb',
               'Unsloth-Desktop-Ubuntu-ARM64.deb',
+              'Unsloth-Desktop-Fedora.rpm',
+              'Unsloth-Desktop-Fedora-ARM64.rpm',
               'Unsloth-Desktop-Windows.exe',
               'Unsloth-Desktop-Windows-ARM64.exe',
           }

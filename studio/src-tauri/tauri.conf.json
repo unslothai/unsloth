@@ -57,7 +57,7 @@
     "homepage": "https://unsloth.ai/",
     "copyright": "© 2026 Unsloth AI. All rights reserved.",
     "license": "AGPL-3.0-only",
-    "targets": ["app", "appimage", "deb", "dmg", "nsis"],
+    "targets": ["app", "appimage", "deb", "dmg", "nsis", "rpm"],
     "icon": [
       "icons/icon.png",
       "icons/32x32.png",
@@ -99,6 +99,13 @@
         "conflicts": ["unsloth-studio-desktop"],
         "replaces": ["unsloth-studio-desktop"],
         "postRemoveScript": "./linux/postremove.sh"
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "libappindicator-gtk3"],
+        "recommends": ["gstreamer1-plugins-bad-free"],
+        "desktopTemplate": "./linux/unsloth.desktop",
+        "provides": ["unsloth-studio-desktop"],
+        "obsoletes": ["unsloth-studio-desktop"]
       }
     }
   }
