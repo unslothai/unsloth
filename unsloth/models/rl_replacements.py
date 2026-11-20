@@ -3263,7 +3263,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             + f"{_indent})\n"
             # Aligned generation under vLLM IS: pi_old is the policy the loss scores, so skip that forward.
             + f"{_indent}_unsloth_old_from_new = (not _unsloth_rollout_old) and _unsloth_grpo_old_logps_from_new(self)\n"
-            + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new:\n"
+            # num_iterations > 1, aligned: the first loss pass scores pi_old and keeps it for the later ones.
+            + f"{_indent}_unsloth_old_store = (not _unsloth_rollout_old) and (not _unsloth_old_from_new) and _unsloth_grpo_old_logps_store(self)\n"
+            + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new or _unsloth_old_store:\n"
             + f"{_indent}    old_per_token_logps = None\n"
             + f"{_indent}el"
             + function[_old_logps_if.start() + 1 + len(_indent) :]
@@ -3278,6 +3280,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             '            output["sampling_per_token_logps"] = _unsloth_rollout_logps\n'
             "        if _unsloth_old_from_new:\n"
             '            output["unsloth_old_logps_from_new"] = torch.ones(\n'
+            "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
+            "            )\n"
+            "        if _unsloth_old_store:\n"
+            '            output["unsloth_old_logps_store"] = torch.ones(\n'
             "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
             "            )\n",
         )
@@ -5547,6 +5553,45 @@ def _unsloth_grpo_old_logps_from_new(trainer):
     return supported
 
 
+def _unsloth_grpo_old_logps_store(trainer):
+    """num_iterations > 1 with each generation starting on an optimizer step and its first pass over every
+    micro-batch inside that step: the first loss forward of a micro-batch scores the rollout policy, so it
+    is pi_old. Skip TRL's old-policy forward; the loss keeps new.detach() in the buffered batch for the
+    later iterations. Not with a stochastic forward (dropout) or a zoo that cannot hand the logps back."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
+        return False
+    try:
+        accumulation = int(trainer.args.gradient_accumulation_steps)
+        steps_per_generation = int(trainer.args.steps_per_generation)
+        generate_every = steps_per_generation * int(trainer.num_iterations)
+        if (
+            int(trainer.num_iterations) <= 1
+            or accumulation <= 0
+            or steps_per_generation > accumulation
+            or generate_every % accumulation != 0
+            or accumulation % generate_every == 0
+        ):
+            return False
+    except Exception:
+        return False
+    supported = getattr(trainer, "_unsloth_old_logps_store_ok", None)
+    if supported is None:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_old_logps_store  # noqa: F401
+            from unsloth_zoo.rl_replacements import grpo_policy_is_stochastic
+            supported = not grpo_policy_is_stochastic(getattr(trainer, "model", None))
+        except Exception:
+            supported = False
+        trainer._unsloth_old_logps_store_ok = supported
+    if supported:
+        trainer._unsloth_old_logps_store_batches = (
+            getattr(trainer, "_unsloth_old_logps_store_batches", 0) + 1
+        )
+    return supported
+
+
 def _unsloth_grpo_sample_weight_mode():
     import os
 
@@ -5765,6 +5810,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_defer_metric
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_from_new))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_store))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
@@ -5875,6 +5921,17 @@ def grpo_trainer_compute_loss(function_name, function):
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
         _old_logps_from_new = inputs.get("unsloth_old_logps_from_new", None) is not None
+        # num_iterations > 1: the first pass over this micro-batch scores pi_old and keeps it in the buffered inputs.
+        _old_logps_store = inputs.get("unsloth_old_logps_store", None)
+        _store_old_logps = False
+        _stored_old_logps = None
+        if _old_logps_store is not None and inputs.get("old_per_token_logps", None) is None:
+            if not bool(_old_logps_store.any()):
+                raise RuntimeError(
+                    "Unsloth: GRPO lost the old-policy logprobs kept from the first pass over this "
+                    "batch. Set UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 to score them separately."
+                )
+            _store_old_logps = True
         # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _unsloth_grpo_refuse_rank_local_forwards(self, model)
@@ -5975,8 +6032,10 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             if _rollout_logps_as_old:
                 old_logps, sampling_per_token_logps = sampling_per_token_logps, None
-            elif _old_logps_from_new and old_logps is None:
+            elif (_old_logps_from_new or _store_old_logps) and old_logps is None:
                 old_logps = per_token_logps.detach()
+                if _store_old_logps:
+                    _stored_old_logps = old_logps
             (
                 loss,
                 completion_length,
@@ -6102,6 +6161,10 @@ def grpo_trainer_compute_loss(function_name, function):
                 _grpo_accumulated_loss_kwargs["rollout_logps_as_old"] = True
             if _old_logps_from_new:
                 _grpo_accumulated_loss_kwargs["old_logps_from_new"] = True
+            if _store_old_logps:
+                _grpo_accumulated_loss_kwargs["old_logps_from_new"] = True
+                _grpo_accumulated_loss_kwargs["store_old_logps"] = True
+                self.__dict__.pop("_unsloth_grpo_stored_old_logps", None)
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -6158,6 +6221,17 @@ def grpo_trainer_compute_loss(function_name, function):
                     **_vision_inputs,
                     **_grpo_accumulated_loss_kwargs,
                 )
+        if _store_old_logps:
+            if _stored_old_logps is None:
+                _stored_old_logps = self.__dict__.pop("_unsloth_grpo_stored_old_logps", None)
+            if _stored_old_logps is None:
+                raise RuntimeError(
+                    "Unsloth: unsloth_zoo did not return the old-policy logprobs for the later GRPO "
+                    "iterations. Set UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 or upgrade unsloth_zoo."
+                )
+            inputs["old_per_token_logps"] = _stored_old_logps
+            _old_logps_store.zero_()
+            self._unsloth_old_logps_stored = getattr(self, "_unsloth_old_logps_stored", 0) + 1
         if "train" in self._metrics:
             # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
             mode = "train" if self.model.training else "eval"

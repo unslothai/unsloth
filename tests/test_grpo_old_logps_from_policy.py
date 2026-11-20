@@ -169,6 +169,8 @@ def _run_fake(
         "torch": torch,
         "_unsloth_grpo_rollout_logps_as_old": lambda *args: False,
         "_unsloth_grpo_old_logps_from_new": helpers["_unsloth_grpo_old_logps_from_new"],
+        # The num_iterations > 1 store has its own tests (test_grpo_old_logps_store.py).
+        "_unsloth_grpo_old_logps_store": lambda trainer: False,
         "_unsloth_reject_grpo_image_list": lambda *args: None,
     }
     exec(textwrap.dedent(patched), ns)
@@ -227,7 +229,8 @@ def test_installed_trl_gets_the_skip():
     ast.parse(textwrap.dedent(patched))
     skip = re.search(
         r"\n([ \t]*)_unsloth_old_from_new = \(not _unsloth_rollout_old\) and _unsloth_grpo_old_logps_from_new\(self\)\n"
-        r"\1if _unsloth_rollout_old or _unsloth_old_from_new:\n\1    old_per_token_logps = None\n"
+        r"(?:\1#[^\n]*\n)*\1_unsloth_old_store = [^\n]*\n"
+        r"\1if _unsloth_rollout_old or _unsloth_old_from_new or _unsloth_old_store:\n\1    old_per_token_logps = None\n"
         r"\1elif self\.args\.gradient_accumulation_steps % generate_every != 0",
         patched,
     )
