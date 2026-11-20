@@ -15790,7 +15790,8 @@ class LlamaCppBackend:
         # The fitter fills each device up to its free reading less the --fit-target margin (#18001).
         fit_margin = None
         if shared_gpu_ids and not every_layer and self._fit_may_place_every_layer(argv, env):
-            fit_margin = _single_device_fit_margin(argv, env)
+            # Largest entry: one margin is charged to every iGPU credited below.
+            fit_margin = fit_target_margin_in(argv, env)
             if fit_margin is None:
                 fit_margin = _LLAMA_FIT_TARGET_DEFAULT_MIB
         if (

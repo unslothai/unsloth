@@ -3187,6 +3187,22 @@ def test_the_fitter_owns_igpu_placement_only_without_a_layer_cap(argv, env, expe
     assert backend._fit_may_place_every_layer(argv, env) is expected
 
 
+def test_a_per_device_fit_target_charges_the_igpu_its_largest_margin(monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_igpu_backed_usable_mib", staticmethod(lambda f: f))
+    backend = LlamaCppBackend()
+    backend._n_layers = 48
+    rows = [(0, 8000), (1, 22137)]
+    argv = ["--fit", "on", "--device", "Vulkan0,Vulkan1", "--fit-target", "512,23000"]
+    pool, _bytes = backend._shared_heap_budget(rows, {1}, 10 * _GiB, argv, {})
+    assert pool == max(0, 22137 + 1024 - 23000)
+    pool, _bytes = backend._shared_heap_budget(rows, {1}, 10 * _GiB, ["--fit", "on"], {})
+    assert pool == 0
+    pool, _bytes = backend._shared_heap_budget(
+        [(1, 22137)], {1}, 10 * _GiB, ["--fit", "on", "--fit-target", "512"], {}
+    )
+    assert pool == 22137
+
+
 def test_the_igpu_dedicated_usage_is_read_for_the_carve_out_adapter(monkeypatch):
     import utils.hardware.hardware as hw
 
