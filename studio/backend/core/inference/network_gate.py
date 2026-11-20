@@ -81,6 +81,8 @@ class NetworkGate:
                 return declined
             if not self._question("website", host, port):
                 return declined
+            if network_firewall.decide(host) == "deny":
+                return _refusal(host)
             network_requests.grant(self.account_id, self.chat, host)
             return None
 

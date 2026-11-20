@@ -416,6 +416,18 @@ def test_a_question_ends_when_the_call_is_stopped(asking):
     )
 
 
+def test_a_website_blocked_while_its_question_is_open_stays_refused(asking):
+    class BlockThenAllow(_Chat):
+        def __call__(self, event):
+            if isinstance(event, dict) and not event["network_request"].get("done"):
+                firewall.set_network_firewall(blocked_sites = ["cn", "example.org"])
+            super().__call__(event)
+
+    gate = _gate(BlockThenAllow("allow"))
+    assert "blocked website" in gate.check("example.org", 443)
+    assert not network_requests.granted(OWNER.account_id, "thread-1", "example.org")
+
+
 def test_another_account_cannot_answer_the_question(asking):
     request_id, slot = network_requests.begin_request("session-1", OWNER.account_id, "example.org")
     assert network_requests.resolve_request(request_id, "allow", "session-1", "b" * 32) is False
