@@ -1881,8 +1881,8 @@ def test_the_no_flash_retry_re_places_at_both_respawns():
     for label in ('label = "-noflash"', 'label = "-noflash-mtp"'):
         arm = src[: src.index(label)]
         arm = arm[arm.rindex("self._with_flash_attn_off(") :]
-        assert "_enable_managed_fit_for_no_flash(_fa_cmd)" in arm
-    assert src.count("_enable_managed_fit_for_no_flash(_fa_cmd)") == 2
+        assert "_refit_for_no_flash(_fa_cmd)" in arm
+    assert src.count("_refit_for_no_flash(_fa_cmd)") == 2
 
 
 def test_a_fixed_layer_count_keeps_the_no_flash_retry_on_its_placement():
