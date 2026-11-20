@@ -1817,6 +1817,7 @@ export const cs = {
       memoryLabel: "Limit paměti",
       memoryDescription:
         "Maximum paměti, které si může vyhradit jedno volání nástroje Python nebo Terminál v sandboxu. Platí od dalšího volání. Výchozí hodnota je {defaultSize} GB.",
+      memoryAuto: "Automaticky",
       memoryLocked: "Nastaveno proměnnou UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Zadejte celé číslo od {min} do {max}.",
       restored: "Přístup byl odebrán ze složek (počet: {count}).",

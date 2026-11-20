@@ -1804,6 +1804,7 @@ export const fa = {
       memoryLabel: "محدودیت حافظه",
       memoryDescription:
         "بیشترین حافظه‌ای که یک فراخوانی Python یا Terminal در سندباکس می‌تواند رزرو کند. از فراخوانی بعدی اعمال می‌شود. پیش‌فرض {defaultSize} GB است.",
+      memoryAuto: "خودکار",
       memoryLocked: "تنظیم‌شده با UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "یک عدد صحیح از {min} تا {max} وارد کنید.",
       restored: "دسترسی از {count} پوشه برداشته شد.",

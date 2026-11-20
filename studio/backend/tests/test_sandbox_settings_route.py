@@ -410,6 +410,7 @@ def memory(monkeypatch):
 
     stored = {}
     monkeypatch.delenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, raising = False)
+    monkeypatch.setattr(sandbox_memory_limit, "default_memory_limit_gb", lambda: 8)
     monkeypatch.setattr(
         sandbox_memory_limit,
         "saved_memory_limit_gb",
@@ -417,6 +418,10 @@ def memory(monkeypatch):
     )
     monkeypatch.setattr(
         sandbox_memory_limit, "set_memory_limit_gb", lambda v: stored.__setitem__("gb", v)
+    )
+    monkeypatch.setattr(sandbox_memory_limit, "is_auto", lambda: "gb" not in stored)
+    monkeypatch.setattr(
+        sandbox_memory_limit, "use_auto_memory_limit", lambda: stored.pop("gb", None)
     )
     return stored
 
@@ -428,6 +433,7 @@ def test_posix_status_carries_the_memory_limit(host, posix, memory):
         "limit_gb": 8,
         "saved_gb": 8,
         "default_gb": 8,
+        "auto": True,
         "min_gb": 1,
         "max_gb": 4096,
         "locked_by_environment": False,
@@ -446,6 +452,26 @@ def test_saving_the_memory_limit_shows_at_once_and_repeats_cleanly(host, posix, 
     assert memory == {"gb": 32}
     # Memory-only saves never touch the Windows MXC state.
     assert calls["invalidate"] == 0 and calls["revoke"] == 0
+
+
+def test_auto_clears_a_saved_memory_limit(host, posix, memory):
+    with _client(OWNER) as client:
+        client.put("/sandbox", json = {"memory_limit_gb": 32})
+        assert client.get("/sandbox").json()["memory"]["auto"] is False
+        for _ in range(2):
+            body = client.put("/sandbox", json = {"memory_limit_auto": True}).json()["memory"]
+            assert body["auto"] is True and body["limit_gb"] == 8
+    assert memory == {}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"memory_limit_auto": False}, {"memory_limit_auto": True, "memory_limit_gb": 32}],
+)
+def test_a_bad_auto_save_is_refused(host, posix, memory, payload):
+    with _client(OWNER) as client:
+        assert client.put("/sandbox", json = payload).status_code == 422
+    assert memory == {}
 
 
 def test_the_memory_limit_env_var_wins_and_refuses_a_save(host, posix, memory, monkeypatch):
@@ -475,11 +501,21 @@ def test_the_memory_limit_is_owner_and_ui_session_only(host, posix, memory):
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
-def test_only_linux_has_the_memory_limit(host, memory, monkeypatch, platform):
+def test_windows_and_macos_have_the_memory_limit_too(host, memory, monkeypatch, platform):
     monkeypatch.setattr(sys, "platform", platform)
     with _client(OWNER) as client:
-        assert client.get("/sandbox").json()["memory"] is None
-        assert client.put("/sandbox", json = {"memory_limit_gb": 32}).status_code == 409
+        assert client.get("/sandbox").json()["memory"]["auto"] is True
+        response = client.put("/sandbox", json = {"memory_limit_gb": 32})
+        assert response.status_code == 200, response.text
+        assert response.json()["memory"]["limit_gb"] == 32
+        assert client.put("/sandbox", json = {"memory_limit_auto": True}).status_code == 200
+    assert memory == {}
+
+
+def test_the_memory_limit_is_saved_on_its_own(host, windows, memory):
+    with _client(OWNER) as client:
+        response = client.put("/sandbox", json = {"memory_limit_gb": 32, "allow_dacl_fallback": True})
+        assert response.status_code == 422
     assert memory == {}
 
 

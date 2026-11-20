@@ -1668,6 +1668,7 @@ export const ptBR = {
       lockedGrants: "Definido por UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
       memoryLabel: "Limite de memória",
       memoryDescription: "Memória máxima que uma chamada de Python ou Terminal no sandbox pode reservar. Vale a partir da próxima chamada. O padrão é {defaultSize} GB.",
+      memoryAuto: "Automático",
       memoryLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Digite um número inteiro de {min} a {max}.",
       restored: "Acesso removido de {count} pastas.",

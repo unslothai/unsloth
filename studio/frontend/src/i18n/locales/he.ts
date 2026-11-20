@@ -1725,6 +1725,7 @@ export const he = {
       lockedGrants: "הוגדר על ידי UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
       memoryLabel: "מגבלת זיכרון",
       memoryDescription: "הזיכרון המרבי שקריאת Python או Terminal אחת בארגז החול יכולה לשריין. חל מהקריאה הבאה. ברירת המחדל היא {defaultSize} GB.",
+      memoryAuto: "אוטומטי",
       memoryLocked: "הוגדר על ידי UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "יש להזין מספר שלם מ-{min} עד {max}.",
       restored: "הגישה הוסרה מ-{count} תיקיות.",

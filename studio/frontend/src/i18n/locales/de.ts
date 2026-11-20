@@ -1670,6 +1670,7 @@ export const de = {
       lockedGrants: "Festgelegt durch UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
       memoryLabel: "Speicherlimit",
       memoryDescription: "Maximaler Speicher, den ein Python- oder Terminal-Aufruf in der Sandbox reservieren kann. Gilt ab dem nächsten Aufruf. Standard ist {defaultSize} GB.",
+      memoryAuto: "Automatisch",
       memoryLocked: "Festgelegt durch UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Gib eine ganze Zahl von {min} bis {max} ein.",
       restored: "Zugriff auf {count} Ordner entfernt.",

@@ -1549,6 +1549,7 @@ export const it = {
       lockedGrants: "Impostato da UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
       memoryLabel: "Limite di memoria",
       memoryDescription: "Memoria massima che una chiamata Python o Terminale nella sandbox può riservare. Si applica dalla prossima chiamata. Il valore predefinito è {defaultSize} GB.",
+      memoryAuto: "Automatico",
       memoryLocked: "Impostato da UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Inserisci un numero intero da {min} a {max}.",
       restored: "Accesso rimosso da {count} cartelle.",

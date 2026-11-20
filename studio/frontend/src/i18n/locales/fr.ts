@@ -1670,6 +1670,7 @@ export const fr = {
       lockedGrants: "Défini par UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
       memoryLabel: "Limite de mémoire",
       memoryDescription: "Mémoire maximale qu'un appel Python ou Terminal dans le sandbox peut réserver. S'applique dès le prochain appel. La valeur par défaut est {defaultSize} Go.",
+      memoryAuto: "Auto",
       memoryLocked: "Défini par UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Saisissez un nombre entier de {min} à {max}.",
       restored: "Accès retiré pour {count} dossiers.",

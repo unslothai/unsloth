@@ -1668,6 +1668,7 @@ export const ru = {
       lockedGrants: "Задано через UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
       memoryLabel: "Лимит памяти",
       memoryDescription: "Максимальный объём памяти, который может зарезервировать один вызов Python или Terminal в песочнице. Действует со следующего вызова. По умолчанию {defaultSize} ГБ.",
+      memoryAuto: "Авто",
       memoryLocked: "Задано через UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Введите целое число от {min} до {max}.",
       restored: "Доступ удалён для папок: {count}.",

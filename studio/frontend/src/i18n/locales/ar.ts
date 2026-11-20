@@ -1665,6 +1665,7 @@ export const ar = {
       lockedGrants: "مضبوط بواسطة UNSLOTH_MXC_PERSISTENT_READ_GRANTS",
       memoryLabel: "حد الذاكرة",
       memoryDescription: "أقصى قدر من الذاكرة يمكن لاستدعاء Python أو Terminal واحد داخل وضع الحماية حجزه. يسري من الاستدعاء التالي. القيمة الافتراضية {defaultSize} GB.",
+      memoryAuto: "تلقائي",
       memoryLocked: "مضبوط بواسطة UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "أدخل عددًا صحيحًا من {min} إلى {max}.",
       restored: "تمت إزالة الوصول من المجلدات: {count}.",
