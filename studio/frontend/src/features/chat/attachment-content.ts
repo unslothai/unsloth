@@ -1798,14 +1798,18 @@ function pdfFormFieldLines(
   return [...fields.values()];
 }
 
+// The server's OCR_MIN_CHARS: a page number or Bates stamp does not make a scanned page readable.
+const SCANNED_PAGE_MAX_CHARS = 16;
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
-  const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
+  const [{ extractText, getDocumentProxy, getResolvedPDFJS }, buffer] = await Promise.all([
     import("unpdf"),
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
   ]);
   const pdf = await getDocumentProxy(buffer);
   let pages: string[];
+  let hasScannedPage = false;
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
@@ -1823,10 +1827,30 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
         return [pageText, ...fields].filter(Boolean).join("\n");
       }),
     );
+    const short = [...text.keys()].filter(
+      (index) => text[index]!.trim().length < SCANNED_PAGE_MAX_CHARS,
+    );
+    if (short.length) {
+      const { OPS } = await getResolvedPDFJS();
+      const imageOps = new Set<number>([
+        OPS.paintImageXObject,
+        OPS.paintInlineImageXObject,
+        OPS.paintImageXObjectRepeat,
+        OPS.paintImageMaskXObject,
+      ]);
+      // Sequential, stopping at the first: listing a page's operators decodes its images.
+      for (const index of short) {
+        hasScannedPage = await pdf
+          .getPage(index + 1)
+          .then((page) => page.getOperatorList())
+          .then(({ fnArray }) => fnArray.some((fn) => imageOps.has(fn)), () => false);
+        if (hasScannedPage) break;
+      }
+    }
   } finally {
     await pdf.destroy();
   }
-  if (pages.some((page) => !page.trim())) {
+  if (hasScannedPage) {
     const scanned = await import("./server-document")
       .then((m) => m.extractServerDocumentText(file))
       .catch(() => null);

@@ -41,9 +41,9 @@ const typedPage = (words: string, font: number) => ({
   content: `BT /F1 12 Tf 20 100 Td (${words}) Tj ET`,
   resources: `<< /Font << /F1 ${font} 0 R >> >>`,
 });
-const scannedPage = (image: number) => ({
-  content: "q 200 0 0 200 0 0 cm /Im1 Do Q",
-  resources: `<< /XObject << /Im1 ${image} 0 R >> >>`,
+const scannedPage = (image: number, stamp?: { words: string; font: number }) => ({
+  content: `q 200 0 0 200 0 0 cm /Im1 Do Q${stamp ? ` BT /F1 8 Tf 90 5 Td (${stamp.words}) Tj ET` : ""}`,
+  resources: `<< /XObject << /Im1 ${image} 0 R >>${stamp ? ` /Font << /F1 ${stamp.font} 0 R >>` : ""} >>`,
 });
 const FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
 const IMAGE = `<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 4 >>\nstream\n${"\x80".repeat(4)}\nendstream`;
@@ -93,11 +93,33 @@ test("a scanned page that cannot be read is named in a warning", async () => {
 test("a typed pdf is read in the browser without a server round trip", async () => {
   const requests = serve({ text: "unused", truncated: false });
   const typed = new File(
-    [pdf([typedPage("page one", 5), typedPage("page two", 5)], [FONT])],
+    [pdf([typedPage("page one", 7), typedPage("page two", 7)], [FONT])],
     "typed.pdf",
     { type: "application/pdf" },
   );
   assert.equal(await extractPdfAttachmentText(typed), "page one\n\npage two");
+  assert.deepEqual(requests, []);
+});
+
+test("a scanned page carrying a page number stamp is still read by the server", async () => {
+  const requests = serve({ filename: "stamped.pdf", text: "Contract terms\n\nANNEX B", truncated: false });
+  const stamped = new File(
+    [pdf([typedPage("Contract terms", 7), scannedPage(8, { words: "Page 2", font: 7 })], [FONT, IMAGE])],
+    "stamped.pdf",
+    { type: "application/pdf" },
+  );
+  assert.equal(await extractPdfAttachmentText(stamped), "Contract terms\n\nANNEX B");
+  assert.equal(requests.length, 1);
+});
+
+test("a blank page with no image stays in the browser", async () => {
+  const requests = serve({ text: "unused", truncated: false });
+  const blank = new File(
+    [pdf([typedPage("page one", 7), { content: "", resources: "<< >>" }], [FONT])],
+    "blank.pdf",
+    { type: "application/pdf" },
+  );
+  assert.equal(await extractPdfAttachmentText(blank), "page one");
   assert.deepEqual(requests, []);
 });
 
