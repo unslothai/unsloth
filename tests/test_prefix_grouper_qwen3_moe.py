@@ -291,6 +291,37 @@ def test_grads_match_per_row(monkeypatch):
     assert worst <= GRAD_TOL
 
 
+def _vllm_rebuilt(model):
+    # Mimics unsloth_zoo copy_attributes: per-module config deepcopy.
+    from copy import deepcopy
+    from transformers.configuration_utils import PretrainedConfig
+
+    for module in model.modules():
+        config = module.__dict__.get("config", None)
+        if isinstance(config, PretrainedConfig):
+            module.config = deepcopy(config)
+    model.config.unsloth_version = "test"  # the loader edits the root copy afterwards
+    return model
+
+
+def test_fast_inference_rebuilt_model_is_covered():
+    model = _vllm_rebuilt(_model(_config()))
+    attn = model.model.layers[0].self_attn
+    assert attn.config is not model.config
+    assert pg.prefix_seg_info_applied(model) is True
+    assert getattr(model, pghf.MOE_OK_ATTR, False) is True
+    worst = _max_diff(model, _groups(seed = 11))
+    print(f"[pg-moe] vLLM-rebuilt max |PG - per-row| = {worst:.3e} nats")
+    assert worst <= TOL
+
+
+def test_rebuilt_model_with_a_different_layer_config_stays_off():
+    model = _vllm_rebuilt(_model(_config()))
+    model.model.layers[1].self_attn.config.sliding_window = 4
+    assert pg.prefix_seg_info_applied(model) is False
+    assert not getattr(model, pghf.MOE_OK_ATTR, False)
+
+
 def test_moe_needs_opt_in(monkeypatch):
     monkeypatch.setenv(pghf.MOE_ENV, "0")
     model = _model(_config())

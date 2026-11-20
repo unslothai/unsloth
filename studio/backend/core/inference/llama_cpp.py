@@ -8832,6 +8832,9 @@ class LlamaCppBackend:
         self._n_kv_heads: Optional[int] = None
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
+        # head_count array; _n_heads stays unset so other estimates keep their fallbacks.
+        self._n_heads_by_layer: Optional[list[int]] = None
+        self._attn_res_block_size: Optional[int] = None
         self._embedding_length: Optional[int] = None
         # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
         self._pooling_type: Optional[int] = None
@@ -18703,6 +18706,10 @@ class LlamaCppBackend:
     _INKLING_CTX_COMPUTE_BYTES_PER_TOK = 8192  # per token at ub=512
     # Dense relative-bias fallback (quantized KV disables the banded path): ~402 KiB/tok measured.
     _INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK = 402470  # per token at ub=512
+    # Inkling 2 (llama.cpp models/inkling2.cpp) has no banded path: a dense f32 [n_kv, ub, n_head]
+    # relative bias plus its permuted copy, and an i32 [n_kv, ub] index. Bytes per cell per ub token.
+    _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
+    _INKLING2_REL_INDEX_BYTES = 4
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -18734,7 +18741,13 @@ class LlamaCppBackend:
             conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
             widths.append(4 * conv_in)
         per_layer_input = dim("_embedding_length_per_layer_input") * dim("_n_layers")
-        return max(widths) + per_layer_input
+        # Attention residuals keep every block output live; a depth mix holds 3 (blocks + 1) copies.
+        res_blocks = 0
+        block_size = dim("_attn_res_block_size")
+        if block_size > 0 and dim("_n_layers") > 0:
+            res_blocks = -(-dim("_n_layers") // block_size)
+            widths.append(3 * (res_blocks + 1) * n_embd)
+        return max(widths) + per_layer_input + res_blocks * n_embd
 
     def _estimate_compute_buffer_bytes(
         self,
@@ -18787,6 +18800,14 @@ class LlamaCppBackend:
             return window if any(pattern) else 0
         context = getattr(self, "_context_length", None) or 0
         return window if not context or window < context else 0
+
+    def _inkling2_bias_heads(self) -> int:
+        """Query heads of the widest full-attention layer, the layers whose bias spans the context."""
+        by_layer = getattr(self, "_n_heads_by_layer", None) or []
+        pattern = getattr(self, "_sliding_window_pattern", None) or []
+        full = [h for i, h in enumerate(by_layer) if not (i < len(pattern) and pattern[i])]
+        heads = max(full or by_layer or [0]) or getattr(self, "_n_heads", None)
+        return heads or max(1, (self._embedding_length or 0) // 64)
 
     def _attention_dequant_width(self) -> int:
         """K+V elements per cell copied to f16 from a quantized cache, from the widest global layer (SWA does not scale with context); MLA has K only."""
@@ -18872,6 +18893,18 @@ class LlamaCppBackend:
                 rate = self._INKLING_CTX_COMPUTE_BYTES_PER_TOK
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
+        if getattr(self, "_architecture", None) == "inkling2":
+            # Sliding layers' smaller bias reuses this allocation; q8_0 measures as f16 (no dequant).
+            n_head = self._inkling2_bias_heads()
+            per_tok = (
+                mask_rate
+                + split_extra
+                + ub
+                * (self._INKLING2_REL_BIAS_BYTES_PER_HEAD * n_head + self._INKLING2_REL_INDEX_BYTES)
+            )
+            if not flash_attn:
+                per_tok += ub * n_head * 4
+            return int(per_tok * n_ctx)
         per_tok = mask_rate
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
             # Quantized cache: the f16 K/V copy, independent of the micro-batch.
@@ -19767,6 +19800,8 @@ class LlamaCppBackend:
         self._n_kv_heads = None
         self._n_kv_heads_by_layer = None
         self._n_heads = None
+        self._n_heads_by_layer = None
+        self._attn_res_block_size = None
         self._embedding_length = None
         self._pooling_type = None
         self._gguf_path = gguf_path
@@ -19924,6 +19959,7 @@ class LlamaCppBackend:
                                         f"{arch}.ssm.conv_kernel": "ssm_conv_kernel",
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
+                                        f"{arch}.attn_res.block_size": "attn_res_block_size",
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -19964,6 +20000,8 @@ class LlamaCppBackend:
                                     self._n_kv_heads_by_layer = [int(x) for x in val_a]
                                     if self._n_kv_heads is None and self._n_kv_heads_by_layer:
                                         self._n_kv_heads = max(self._n_kv_heads_by_layer)
+                                elif attr == "n_heads" and val_a:
+                                    self._n_heads_by_layer = [int(x) for x in val_a]
                                 elif attr == "sliding_window_pattern" and val_a is not None:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
@@ -35351,6 +35389,8 @@ class LlamaCppBackend:
             self._n_kv_heads = None
             self._n_kv_heads_by_layer = None
             self._n_heads = None
+            self._n_heads_by_layer = None
+            self._attn_res_block_size = None
             self._embedding_length = None
             self._pooling_type = None
             self._kv_key_length = None
