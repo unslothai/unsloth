@@ -100,16 +100,20 @@ class Flm:
         timeout: float = 600.0,
         stdin: str = "",
     ) -> tuple[int, str]:
-        done = subprocess.run(
-            [str(self.binary), *args],
-            input = stdin,
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = timeout,
-            **_HIDDEN,
-        )
+        try:
+            done = subprocess.run(
+                [str(self.binary), *args],
+                input = stdin,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = timeout,
+                **_HIDDEN,
+            )
+        except OSError as exc:
+            # Windows refusing flm.exe (Smart App Control) is a failed run with its reason.
+            return 1, f"[ERROR] {exc}"
         output = (done.stdout or "") + (done.stderr or "")
         # flm exits 0 after printing [ERROR], so the text decides.
         return (done.returncode or (1 if "[ERROR]" in output else 0)), output
@@ -317,18 +321,26 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
                 cmd += shlex.split(extra, posix = sys.platform != "win32")
             serving.stop()
             log(f"Starting: {' '.join(cmd)}")
-            process = subprocess.Popen(
-                cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, stdin = subprocess.DEVNULL,
-                text = True, encoding = "utf-8", errors = "replace", **_HIDDEN,
-            )  # fmt: skip
+            try:
+                process = subprocess.Popen(
+                    cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, stdin = subprocess.DEVNULL,
+                    text = True, encoding = "utf-8", errors = "replace", **_HIDDEN,
+                )  # fmt: skip
+            except OSError as exc:
+                self._error(
+                    500, f"Failed to load model '{row['id']}': FastFlowLM failed to start: {exc}"
+                )
+                return
             tail: list[str] = []
             threading.Thread(target = _relay, args = (process, tail), daemon = True).start()
             deadline = time.monotonic() + 600
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     time.sleep(0.2)
+                    code = process.returncode
                     reason = next(
-                        (l for l in reversed(tail) if l.strip()), f"exit code {process.returncode}"
+                        (l for l in reversed(tail) if l.strip()),
+                        f"exit code {code} (0x{code & 0xFFFFFFFF:08X})",
                     )
                     self._error(
                         500,

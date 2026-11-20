@@ -201,6 +201,20 @@ def test_a_failed_load_names_flms_reason(host):
     )
 
 
+def test_a_refused_flm_exe_answers_with_the_windows_error(host, monkeypatch):
+    client, flm, _ = host
+
+    def refuse(*args, **kwargs):
+        raise OSError(4551, "An Application Control policy has blocked this file")
+
+    monkeypatch.setattr(fh.subprocess, "Popen", refuse)
+    r = client.post("/v1/load", json = {"model_name": "qwen3-0.6b-FLM"})
+    assert r.status_code == 500 and "Application Control policy" in r.text, r.text
+    monkeypatch.setattr(fh.subprocess, "run", refuse)
+    code, output = fh.Flm.run(flm, "pull", "qwen3:0.6b")
+    assert code == 1 and "Application Control policy" in output
+
+
 def test_delete_stops_a_serving_model_then_removes(host):
     client, flm, serving = host
     client.post("/v1/load", json = {"model_name": "qwen3-0.6b-FLM"})
