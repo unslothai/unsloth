@@ -151,12 +151,26 @@ test("an NPU row is marked by its repo's Hugging Face org, not a letter", () => 
   assert.equal(npuMarkOwner({ kind: "hub", id: "unsloth/Qwen3-4B-GGUF" }), null);
 });
 
-test("Discover keeps the NPU notice when a ready runtime fails to list its models", () => {
+test("Discover keeps the NPU notice while a ready runtime lists its models or when listing fails", () => {
   assert.equal(npuNoticeShown(null), false);
-  assert.equal(npuNoticeShown({ ready: false, listError: null }), true);
-  assert.equal(npuNoticeShown({ ready: true, listError: null }), false);
   assert.equal(
-    npuNoticeShown({ ready: true, listError: "Listing NPU models failed" }),
+    npuNoticeShown({ ready: false, listError: null, models: null }),
+    true,
+  );
+  assert.equal(
+    npuNoticeShown({ ready: true, listError: null, models: null }),
+    true,
+  );
+  assert.equal(
+    npuNoticeShown({ ready: true, listError: null, models: [] }),
+    false,
+  );
+  assert.equal(
+    npuNoticeShown({
+      ready: true,
+      listError: "Listing NPU models failed",
+      models: null,
+    }),
     true,
   );
 });

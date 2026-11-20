@@ -33,11 +33,19 @@ export function npuPickerRows(
     }));
 }
 
-/** Whether Discover shows the NPU notice: setup before the runtime is ready, or a failed listing after. */
+/** Whether Discover shows the NPU notice: setup before the runtime is ready, its spinner while the
+ * first listing loads (else the section vanishes right after Enable), or a failed listing. */
 export function npuNoticeShown(
-  catalog: { ready: boolean; listError: string | null } | null,
+  catalog: {
+    ready: boolean;
+    listError: string | null;
+    models: readonly unknown[] | null;
+  } | null,
 ): boolean {
-  return catalog !== null && (!catalog.ready || catalog.listError !== null);
+  return (
+    catalog !== null &&
+    (!catalog.ready || catalog.listError !== null || catalog.models === null)
+  );
 }
 
 /** Org whose Hugging Face avatar marks an NPU row: its repo's owner, else FastFlowLM. */
