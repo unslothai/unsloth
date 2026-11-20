@@ -113,3 +113,26 @@ def test_every_image_commit_site_publishes_through_the_helper():
     # The helper is the one place that assigns a loaded pipeline; both load paths go through it.
     assert src.count("self._state = state") == 1
     assert src.count("self._publish_state_locked(state)") >= 2
+
+
+def test_a_stop_during_the_tail_wait_cancels_the_run(client, monkeypatch):
+    """A Stop sent while the run waits for the load's tail never reaches the engine (no generation ticket yet), so
+    the wait itself must notice it: the run is cancelled instead of rendering once the load finishes."""
+    import routes.inference as inference_routes
+
+    monkeypatch.setattr(inference_routes, "_IMAGE_LOAD_TAIL_POLL_S", 0.0)
+    calls = _arm(monkeypatch, tail = True, polls_until_ready = 4)
+    real_tail_only = inference_routes._image_load_tail_only
+    seen = []
+
+    def _tail_only_then_stop():
+        seen.append(1)
+        if len(seen) == 2:
+            inference_routes._direct_stops += 1  # what /images/generate/cancel does
+        return real_tail_only()
+
+    monkeypatch.setattr(inference_routes, "_image_load_tail_only", _tail_only_then_stop)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 409, resp.text
+    assert "cancel" in resp.json()["detail"].lower()
+    assert calls == []

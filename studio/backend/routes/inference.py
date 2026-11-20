@@ -52358,12 +52358,19 @@ async def generate_diffusion_image(
         return await _external_image_generation(request, http_request)
     # A run admitted mid-switch renders the old model with the new pick's settings, or is cancelled by the swap.
     # A load that already published its pipeline only finishes its tail (encoder pins): wait that out instead.
-    if await asyncio.to_thread(_image_load_in_flight) and not await _wait_image_load_tail():
-        raise HTTPException(
-            status_code = 409,
-            detail = IMAGE_LOAD_IN_FLIGHT_MSG,
-            headers = problem_headers("loading", kind = "image"),
-        )
+    if await asyncio.to_thread(_image_load_in_flight):
+        stops_before = _direct_stops
+        waited = await _wait_image_load_tail(lambda: _direct_stops != stops_before)
+        if waited is None:
+            # Stop while waiting: this run never reached the engine, so cancel_generate could not end it.
+            from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+            raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
+        if not waited:
+            raise HTTPException(
+                status_code = 409,
+                detail = IMAGE_LOAD_IN_FLIGHT_MSG,
+                headers = problem_headers("loading", kind = "image"),
+            )
     global _direct_image_runs, _direct_image_last_end
     _direct_image_runs += 1
     headers = http_request.headers if http_request is not None else {}
@@ -53868,14 +53875,19 @@ def _image_load_tail_only() -> bool:
         return False
 
 
-async def _wait_image_load_tail() -> bool:
+async def _wait_image_load_tail(stopped = None) -> Optional[bool]:
     """True once the in-flight image load is over, when all that was left was its tail. False (refuse with 409, as
-    before) for a load or switch that has not published its pipeline yet, or a tail that outlasts the cap."""
+    before) for a load or switch that has not published its pipeline yet, or a tail that outlasts the cap. None when
+    ``stopped()`` turns true (a Stop) during the wait."""
     deadline = time.monotonic() + IMAGE_LOAD_TAIL_WAIT_S
     while await asyncio.to_thread(_image_load_in_flight):
+        if stopped is not None and stopped():
+            return None
         if time.monotonic() >= deadline or not await asyncio.to_thread(_image_load_tail_only):
             return False
         await asyncio.sleep(_IMAGE_LOAD_TAIL_POLL_S)
+    if stopped is not None and stopped():
+        return None
     return True
 
 
