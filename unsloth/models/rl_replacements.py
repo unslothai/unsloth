@@ -1809,6 +1809,60 @@ def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
     return "kill" if diff >= 1.5 else "cap"
 
 
+def _unsloth_seq_packing_moe_noise(model, result, ref, cmask):
+    """True when a packing or PrefixGrouper self-verify that failed its max-abs tolerance on a MoE model looks like
+    top-k routing noise, not a packing bug. bf16 rounding changes with batch composition and flips a few tokens'
+    experts, moving their logprob by ~1 nat; two unpacked forwards of the same rows (batched vs per-row) show the
+    same tail (Qwen3-30B-A3B 4-bit: max 0.92-1.07, mean 0.031-0.034, p99 0.36-0.46). A leak across documents or
+    wrong positions moves most of a document's tokens instead. Noise = mean under 0.1 nats, at most 2% of scored
+    tokens at 0.7 or more, and no row (one document) with half its tokens at 0.25 or more. Dense models and
+    batches under 64 scored tokens keep the max-abs rule; the leak probe runs either way.
+    UNSLOTH_GRPO_PACKING_MOE_NOISE=0 turns this off."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_PACKING_MOE_NOISE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    try:
+        config = getattr(model, "config", None)
+        configs = [config]
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            configs.append(get_text_config())
+        keys = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
+        if not any(
+            isinstance(getattr(c, k, None), int) and getattr(c, k) > 1
+            for c in configs
+            if c is not None
+            for k in keys
+        ):
+            return False
+        live = cmask > 0
+        n = int(live.sum())
+        if n < 64:
+            return False
+        d = (result.detach().float() - ref.detach().float()).abs().masked_fill(~live, 0.0)
+        if not bool(d.isfinite().all()):
+            return False
+        if float(d.sum()) > 0.1 * n or int((d >= 0.7).sum()) * 50 > n:
+            return False
+        row_n = live.sum(dim = -1)
+        row_bad = (d >= 0.25).sum(dim = -1)
+        if bool(((row_n >= 8) & (row_bad * 2 >= row_n)).any()):
+            return False
+    except Exception:
+        return False
+    # Engagement counter for tests and logs.
+    model._unsloth_seq_packing_moe_noise_passes = (
+        int(getattr(model, "_unsloth_seq_packing_moe_noise_passes", 0) or 0) + 1
+    )
+    return True
+
+
 def _unsloth_grpo_packing_leaks(self, unwrapped):
     """True when a packed document's output depends on an earlier document in its row (e.g. OPT's plain causal mask).
 
@@ -4810,8 +4864,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
                                 )
-                            # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
-                            if _pk_diff < 7e-1:
+                            # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4. MoE routing flips leave a sparse ~1 nat tail.
+                            if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
+                                unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                            ):
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                 # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
@@ -4898,7 +4954,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 f"shared-prefix vs full-row-packed max|d|={_pg_diff:.4f}",
                                 flush = True,
                             )
-                        if _pg_diff < _pg_tol_ok():
+                        if _pg_diff < _pg_tol_ok() or _unsloth_seq_packing_moe_noise(
+                            unwrapped_model, _pg_a, _pg_b, _pg_cm
+                        ):
                             _pg_v = getattr(
                                 unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
                             )
@@ -5368,6 +5426,32 @@ def _patch_grpo_accumulated_loss_seq_packing_kill(source):
     )
 
 
+_GRPO_SEQ_PACKING_GRAD_TOL = re.compile(r"\bif\s+_pack_diff\s*<\s*7e-1\s*:")
+_GRPO_PREFIX_GROUPER_GRAD_TOL = re.compile(r"\bif\s+_pg_diff\s*<\s*_pg_tol_ok\(\s*\)\s*:")
+
+
+def _patch_grpo_accumulated_loss_moe_noise(source):
+    """Zoo grad self-verifies (packing, PrefixGrouper): also pass MoE routing noise (_unsloth_seq_packing_moe_noise).
+    Rewrites a check only when its compared tensors exist under the expected names."""
+    if "_unsloth_seq_packing_moe_noise" in source:
+        return source
+    if "_pack_ref" in source and "_pack_cm" in source:
+        source = _GRPO_SEQ_PACKING_GRAD_TOL.sub(
+            "if _pack_diff < 7e-1 or _unsloth_seq_packing_moe_noise("
+            "unwrapped_model, _pack_result, _pack_ref, _pack_cm):",
+            source,
+            count = 1,
+        )
+    if "_pg_a = " in source and "_pg_cm = " in source:
+        source = _GRPO_PREFIX_GROUPER_GRAD_TOL.sub(
+            "if _pg_diff < _pg_tol_ok() or _unsloth_seq_packing_moe_noise("
+            "unwrapped_model, _pg_a, _pg_b, _pg_cm):",
+            source,
+            count = 1,
+        )
+    return source
+
+
 def _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(source):
     """Drop zoo's vLLM skip for gradient PrefixGrouper unless UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0."""
     if "prefix_seg_info" not in source:
@@ -5782,13 +5866,18 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_seq_packing_kill(
-        _patch_grpo_accumulated_loss_prefix_grouper_kill(
-            _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
-                _patch_grpo_accumulated_loss_prefix_grouper_gate(
-                    _patch_grpo_accumulated_loss_head_hooks(
-                        _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_moe_noise(
+        _patch_grpo_accumulated_loss_seq_packing_kill(
+            _patch_grpo_accumulated_loss_prefix_grouper_kill(
+                _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
+                    _patch_grpo_accumulated_loss_prefix_grouper_gate(
+                        _patch_grpo_accumulated_loss_head_hooks(
+                            _patch_grpo_accumulated_loss_hidden_states_dispatch(
+                                grpo_accumulated_loss
+                            )
+                        )
                     )
                 )
             )
