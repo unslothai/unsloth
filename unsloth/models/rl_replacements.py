@@ -3335,6 +3335,38 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
+_TOOL_SUFFIX_EOS_TRIM = re.compile(
+    r"\n(?P<indent>[ \t]+)if eos_positions:\n"
+    r"(?P<body>[ \t]+prefix_ids = prefix_ids\[: ?eos_positions\[-1\] \+ 1\])"
+)
+
+
+def trainer__get_tool_suffix_ids(function_name, function):
+    """Trim TRL's dummy tool-call prefix at its last EOS only when whitespace alone follows it.
+
+    TRL renders a dummy user + assistant tool-call turn, trims it at the last EOS (so Qwen's "<|im_end|>\n" ends
+    at EOS) and slices the tool suffix off the render with the tool results. A tokenizer whose EOS is the
+    end-of-turn token but whose tool-call turn ends with another stop token has no EOS after the tool call, so the
+    last EOS ends the USER turn and every tool suffix starts with the dummy assistant turn (a second tool call with
+    empty arguments) that is then fed back into the rollout. unsloth/gemma-4-* ships EOS = <turn|>, and its tool
+    call ends with <|tool_response>; google/gemma-4-* (EOS <eos>) never trims and is unaffected.
+    """
+    if function_name != "_get_tool_suffix_ids":
+        return function
+    return _TOOL_SUFFIX_EOS_TRIM.sub(
+        lambda m: (
+            f"\n{m.group('indent')}if eos_positions and not self._tokenizer.decode("
+            f"prefix_ids[eos_positions[-1] + 1 :]).strip():\n{m.group('body')}"
+        ),
+        function,
+        count = 1,
+    )
+
+
+RL_FUNCTIONS["grpo_trainer"].append(trainer__get_tool_suffix_ids)
+RL_FUNCTIONS["distillation_trainer"].append(trainer__get_tool_suffix_ids)
+
+
 def _unsloth_vllm_quantized(model):
     # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
     if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
