@@ -109,8 +109,12 @@ def _resolve_get_last_error() -> Any:
         return None
     import os
 
-    # The runtime torch itself links: another package can map a second libcudart (a .so.12 beside torch's
-    # .so.13), and the global namespace may resolve the symbol to that one, clearing nothing torch will see.
+    # The runtime torch itself links: another package (or LD_PRELOAD) can map a second libcudart, a .so.12
+    # beside torch's .so.13, and the global namespace then resolves the symbol to it, clearing nothing torch
+    # sees. A lookup through torch's own extension searches only its dependency tree.
+    fn = getattr(ctypes.CDLL(torch._C.__file__), sym, None)
+    if fn is not None:
+        return fn
     lib = "libamdhip64.so" if hip else "libcudart.so"
     major = ((torch.version.hip if hip else torch.version.cuda) or "").split(".")[0]
     mapped = []

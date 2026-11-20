@@ -86,8 +86,12 @@ def test_the_resolver_opens_the_runtime_torch_links_not_another_mapped_one(
     class _Lib:
         def __init__(self, path):
             opened.append(path)
+            self.path = path
 
         def __getattr__(self, name):
+            # torch's extension does not reach the symbol here (a static runtime): fall back to the maps
+            if self.path == torch._C.__file__:
+                raise AttributeError(name)
             return name
 
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
@@ -96,7 +100,27 @@ def test_the_resolver_opens_the_runtime_torch_links_not_another_mapped_one(
     monkeypatch.setattr(hp, "open", lambda *_a, **_k: io.StringIO(maps), raising = False)
     monkeypatch.setattr(ctypes, "CDLL", _Lib)
     assert hp._resolve_get_last_error() == ("hipGetLastError" if hip else "cudaGetLastError")
-    assert opened == [f"/env/lib/{want}"]
+    assert opened == [torch._C.__file__, f"/env/lib/{want}"]
+
+
+def test_the_resolver_looks_up_through_torch_own_extension_first(monkeypatch):
+    import ctypes
+    import sys
+
+    opened = []
+
+    class _Lib:
+        def __init__(self, path):
+            opened.append(path)
+
+        def __getattr__(self, name):
+            return name
+
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(ctypes, "CDLL", _Lib)
+    assert hp._resolve_get_last_error() == "cudaGetLastError"
+    assert opened == [torch._C.__file__]
 
 
 def test_a_refused_registration_consumes_the_pending_error(monkeypatch):
