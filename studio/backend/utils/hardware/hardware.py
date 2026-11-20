@@ -7702,13 +7702,31 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
 _apple_metal_working_set_bytes: int = 0
 
 
+def _llama_cpp_offloads_to_metal() -> bool:
+    """Whether llama-server would place GGUF layers on Metal here. File reads and hw.model only, as
+    this runs on the polled /api/system."""
+    try:
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _metal_offload_forced_off_for_polling,
+        )
+
+        return LlamaCppBackend._build_has_metal() and not _metal_offload_forced_off_for_polling()
+    except Exception as e:
+        logger.debug("Could not tell whether llama.cpp offloads to Metal: %s", e)
+        return False
+
+
 def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
     """llama.cpp's Metal device on Apple Silicon detected as CPU (a GGUF-only install, or an MLX stack
     that is missing or being repaired), else None. llama.cpp runs on Metal there anyway
     (``LlamaCppBackend._apple_metal_memory_budget_bytes`` checks only the platform), so the GGUF fit
-    must see the unified pool. Training detection keeps reporting CPU."""
+    must see the unified pool. Training detection keeps reporting CPU. None too when llama.cpp will
+    not place layers on Metal: a build without Metal, or a virtualised GPU the loader pins to CPU."""
     global _apple_metal_working_set_bytes
     if not is_apple_silicon() or get_device() == DeviceType.MLX:
+        return None
+    if not _llama_cpp_offloads_to_metal():
         return None
     try:
         import psutil
@@ -7740,10 +7758,9 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
         "shared_memory": True,
         "shared_memory_host_backed_gb": total_gb,
         "metal_working_set_gb": round(working_set_bytes / (1024**3), 2),
+        # No vram_used_gb: AGX "In use system memory" is system-wide, and the model-switch budget
+        # would credit all of it as memory the resident model frees.
     }
-    used_bytes = _read_apple_gpu_stats().get("vram_used_bytes")
-    if used_bytes is not None:
-        device["vram_used_gb"] = round(int(used_bytes) / (1024**3), 2)
     return {
         "available": True,
         "backend": "metal",

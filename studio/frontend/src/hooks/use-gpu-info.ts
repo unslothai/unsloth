@@ -112,16 +112,21 @@ function appleUnifiedLoadBudgetGb(
   afterUnload = false,
 ): number | null {
   // "metal": the GGUF inventory of an Apple host whose training detection fell back to CPU.
-  const appleMetal =
-    data?.device_backend === "mlx" || inventoryBackend === "metal";
-  if (!appleMetal || devices.length !== 1) return null;
+  const metalInventory = inventoryBackend === "metal";
+  if (
+    (data?.device_backend !== "mlx" && !metalInventory) ||
+    devices.length !== 1
+  ) {
+    return null;
+  }
   const device = devices[0];
   const workingSetGb = finitePositive(device.metal_working_set_gb);
   if (device.shared_memory !== true || workingSetGb === null) return null;
   let freeGb =
     finiteNonNegative(device.vram_free_gb) ??
     finiteNonNegative(data?.memory?.available_gb);
-  if (afterUnload) {
+  // The Metal inventory has no reading of the resident's share, so a switch keeps the live budget.
+  if (afterUnload && !metalInventory) {
     // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
     // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.
     const usedGb = finiteNonNegative(device.vram_used_gb);

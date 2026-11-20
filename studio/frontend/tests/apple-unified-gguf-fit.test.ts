@@ -292,3 +292,33 @@ test("the unified budget needs an Apple inventory: a Vulkan one on a CPU host st
   const { inference } = ggufOnlyMac({ ...METAL_INVENTORY, backend: "vulkan" });
   assert.equal(inference.unifiedLoadBudgetGb, null);
 });
+
+test("a model switch on the Metal inventory credits nothing it cannot attribute to the resident", () => {
+  // 4 GiB free and 6 GiB of AGX in use, of which Studio may own any part: keep the live budget.
+  const device = {
+    ...METAL_INVENTORY.devices[0],
+    metal_working_set_gb: 16,
+    vram_used_gb: 6,
+  };
+  snapshot = {
+    status: "ready",
+    device_backend: "cpu",
+    gpu: { available: false, backend: "cpu", devices: [] },
+    inference_gpu: { ...METAL_INVENTORY, devices: [device] },
+    memory: { total_gb: 16, available_gb: 4 },
+  };
+  const inference = hooks.useInferenceGpuInfo();
+  // 4 * 0.85 = 3.4, floored to 0.25 GiB; not (4 + 6) * 0.85 = 8.5.
+  assert.equal(inference.unifiedLoadBudgetGb, 3.25);
+  assert.equal(inference.unifiedLoadCeilingGb, 3.25);
+  const switchFit = classifyGgufFit(bytesRequiring(5), {
+    gpuGb: inference.memoryTotalGb,
+    gpuCount: inference.deviceCount,
+    unifiedLoadBudgetGb: inference.unifiedLoadCeilingGb,
+  });
+  assert.equal(switchFit, "marginal");
+
+  // MLX keeps its AGX credit, unchanged here.
+  const mlx = macInfo({ metal_working_set_gb: 16, vram_free_gb: 4, vram_used_gb: 6 }, 4);
+  assert.equal(mlx.unifiedLoadCeilingGb, 8.5);
+});

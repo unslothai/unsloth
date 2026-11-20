@@ -5744,16 +5744,20 @@ def _extra_args_requests_dflash(
     return "draft-dflash" in _accumulated_spec_types(extra_args, env)
 
 
+def _paravirtual_metal_allowed() -> bool:
+    return os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 @functools.lru_cache(maxsize = 1)
 def _metal_device_is_paravirtual() -> bool:
     """Virtualised Apple GPU can corrupt offload; UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1 overrides. Probe hw.model before SPDisplaysDataType (empty on headless VMs)."""
     if sys.platform != "darwin":
         return False
-    if os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
+    if _paravirtual_metal_allowed():
         logger.info("UNSLOTH_ALLOW_PARAVIRTUAL_METAL set: keeping Metal offload.")
         return False
     name = ""
@@ -5793,6 +5797,47 @@ def _metal_device_is_paravirtual() -> bool:
         )
         return True
     return False
+
+
+@functools.lru_cache(maxsize = 1)
+def _metal_device_looks_paravirtual_quick() -> bool:
+    """The cheap half of _metal_device_is_paravirtual, for the polled /api/system: the override,
+    hw.model, and the MLX device name only when MLX is already imported. No MLX import (it can park
+    on a broken stack) and no system_profiler (seconds), so a VM that hides itself from hw.model is
+    caught once a load has run the full probe."""
+    if sys.platform != "darwin" or _paravirtual_metal_allowed():
+        return False
+    names = []
+    mx = sys.modules.get("mlx.core")
+    if mx is not None:
+        try:
+            names.append(str(mx.device_info().get("device_name") or ""))
+        except Exception:
+            pass
+    try:
+        probe = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            encoding = "utf-8",
+            errors = "replace",
+        )
+        names.append(probe.stdout or "")
+    except Exception:
+        pass
+    low = " ".join(names).lower()
+    return "paravirtual" in low or "virtual" in low or "vmm-" in low
+
+
+def _metal_offload_forced_off_for_polling() -> bool:
+    """Whether loads on this Mac pin every GGUF layer to the CPU (the paravirtual guard), without the
+    slow probes: the full probe's answer once a load has computed it, else the quick one."""
+    full = _metal_device_is_paravirtual
+    cache_info = getattr(full, "cache_info", None)
+    if cache_info is not None and cache_info().currsize:
+        return bool(full())
+    return _metal_device_looks_paravirtual_quick()
 
 
 def _paravirtual_probe_answered(server_caps: Mapping[str, object]) -> bool:
@@ -11909,6 +11954,31 @@ class LlamaCppBackend:
             if any(name == stem or name.startswith(stem + ".") for name in files):
                 backends.add(backend)
         return frozenset(backends)
+
+    @staticmethod
+    def _build_has_metal(binary: Optional[str] = None) -> bool:
+        """Whether this llama.cpp was built with Metal, from files alone. Builds ship shared libraries
+        (llama.cpp's default), so a ggml library set without libggml-metal is setup.sh's
+        -DGGML_METAL=OFF fallback; with no ggml libraries beside it, the prebuilt marker decides,
+        and a build with neither reads as no Metal."""
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        try:
+            names = [path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file()]
+        except OSError:
+            names = []
+        if any(name.startswith("libggml-metal") for name in names):
+            return True
+        if any(name.startswith("libggml") for name in names):
+            return False
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.llama_backend import marker_backend
+
+            return marker_backend(read_install_marker(binary)) == "metal"
+        except Exception:
+            return False
 
     def _record_memory_state(
         self,
