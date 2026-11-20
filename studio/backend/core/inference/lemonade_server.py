@@ -12,6 +12,7 @@ import re
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 import time
 import weakref
@@ -328,8 +329,14 @@ class LemonadeServer:
         env["FLM_DISABLE_UPDATE_CHECK"] = "1"
         if self.flm_config_path is not None:
             env["FLM_CONFIG_PATH"] = str(self.flm_config_path)
+        # flm_host.py stands in for lemond where it would be refused; it runs on Studio's Python.
+        launcher = (
+            [sys.executable, str(self.binary)]
+            if self.binary.suffix == ".py"
+            else [str(self.binary)]
+        )
         cmd = [
-            str(self.binary),
+            *launcher,
             str(self.cache_dir),
             str(self.config_dir),
             "--port",

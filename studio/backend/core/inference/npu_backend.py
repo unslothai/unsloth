@@ -686,6 +686,10 @@ class LemonadeNpuBackend:
             (self.root / _VALIDATED_MARKER).unlink(missing_ok = True)
             try:
                 self._state = "installing"
+                if self._server is not None and self._installed_lemond() is None:
+                    # A running lemond or flm holds the files an upgrade replaces (Windows locks them).
+                    self._server.stop()
+                    self._loaded = None
                 binary = _installer_module().install(self.root, cancel = self._closing)
                 self._state = "starting"
                 server = self._ensure_running()
