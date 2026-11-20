@@ -2496,7 +2496,11 @@ def _copy_module(module: Any, device: Any) -> Any:
         keep.append(buffer)
     from .diffusion_flux_convrot_fused import is_replica_record as f3_qkv_record
     from .diffusion_flux_convrot_fused import rebuild_replica as f3_qkv_rebuild
+    from .diffusion_moss_fused import is_replica_record as moss_qkv_record
+    from .diffusion_moss_fused import rebuild_replica as moss_qkv_rebuild
     from .diffusion_qwenimage21_dense_fused import is_replica_record, rebuild_replica
+    from .diffusion_zimage_fused import is_replica_record as zimage_qkv_record
+    from .diffusion_zimage_fused import rebuild_replica as zimage_qkv_rebuild
 
     for sub in module.modules():
         offload_keys = set(_offload_attr_keys(sub))
@@ -2507,6 +2511,8 @@ def _copy_module(module: Any, device: Any) -> Any:
                 or key in _SOURCE_ONLY_ATTRS
                 or is_replica_record(key, value)
                 or f3_qkv_record(key, value)
+                or moss_qkv_record(key, value)
+                or zimage_qkv_record(key, value)
             ):
                 # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
                 # source-only cache holds source-card tensors
@@ -2560,6 +2566,11 @@ def _copy_module(module: Any, device: Any) -> Any:
         f3_qkv_rebuild(module, replica)
     except Exception:  # noqa: BLE001 - the replica runs three GEMMs
         pass
+    for rebuild in (moss_qkv_rebuild, zimage_qkv_rebuild):
+        try:
+            rebuild(module, replica)
+        except Exception:  # noqa: BLE001 - the replica runs three GEMMs
+            pass
     if isinstance(router, CfgParallelRouter) and router.had_override:
         _rebind_root_forward(router.orig_forward, module, replica)
     # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.
