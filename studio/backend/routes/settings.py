@@ -62,7 +62,6 @@ from core.rag.config import (
 )
 from loggers import get_logger
 from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
-from utils.image_files import read_limited_body
 from utils.device_sync_settings import (
     MAX_BACKGROUND_IMAGE_BYTES,
     background_image_path,
@@ -5522,11 +5521,16 @@ def get_chat_background_image(current_subject: str = Depends(get_current_subject
 async def update_chat_background_image(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> ChatBackgroundResponse:
-    data = await read_limited_body(
-        request, MAX_BACKGROUND_IMAGE_BYTES, "Background image is too large."
-    )
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BACKGROUND_IMAGE_BYTES:
+        raise HTTPException(status_code = 413, detail = "Background image is too large.")
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > MAX_BACKGROUND_IMAGE_BYTES:
+            raise HTTPException(status_code = 413, detail = "Background image is too large.")
     try:
-        stored = await asyncio.to_thread(save_background_image, data)
+        stored = await asyncio.to_thread(save_background_image, bytes(data))
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return _chat_background_response(stored)
