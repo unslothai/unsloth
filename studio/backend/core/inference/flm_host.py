@@ -10,6 +10,7 @@ import argparse
 import hmac
 import json
 import os
+import queue
 import shlex
 import subprocess
 import sys
@@ -79,15 +80,57 @@ def log(message: str, tag: str = "FlmHost") -> None:
         pass
 
 
+def _die_with_spawner() -> None:
+    """Linux: SIGKILL flm serve when its spawning thread's process (flm_host) dies."""
+    import ctypes
+    import signal
+
+    ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+
+
+class _Spawner:
+    """Starts flm serve from one thread that lives as long as flm_host. Linux delivers
+    PDEATHSIG when the spawning thread exits, so a request thread would kill it at once."""
+
+    def __init__(self) -> None:
+        self._jobs: queue.Queue = queue.Queue()
+        threading.Thread(target = self._loop, daemon = True, name = "flm-spawner").start()
+
+    def _loop(self) -> None:
+        while True:
+            fn, box, done = self._jobs.get()
+            try:
+                box.append((True, fn()))
+            except BaseException as exc:  # noqa: BLE001 -- re-raised in the caller
+                box.append((False, exc))
+            done.set()
+
+    def popen(self, cmd: list[str], **kwargs: Any) -> subprocess.Popen:
+        if sys.platform != "linux":
+            return subprocess.Popen(cmd, **kwargs)
+        box: list = []
+        done = threading.Event()
+        self._jobs.put(
+            (lambda: subprocess.Popen(cmd, preexec_fn = _die_with_spawner, **kwargs), box, done)
+        )
+        done.wait()
+        ok, value = box[0]
+        if not ok:
+            raise value
+        return value
+
+
 class Flm:
-    """flm.exe under ``cache_dir``, run with the FLM_* environment Studio set for lemond."""
+    """flm under ``cache_dir``, run with the FLM_* environment Studio set for lemond."""
 
     def __init__(self, cache_dir: Path) -> None:
-        name = "flm.exe" if sys.platform == "win32" else "flm"
-        found = sorted((cache_dir / "bin" / "flm" / "npu").rglob(name))
-        if not found:
+        # Linux ships an `flm` wrapper that puts the bundled XRT libraries on the library path.
+        binary = (
+            cache_dir / "bin" / "flm" / "npu" / ("flm.exe" if sys.platform == "win32" else "flm")
+        )
+        if not binary.is_file():
             raise SystemExit(f"FastFlowLM is not installed under {cache_dir}.")
-        self.binary = found[0]
+        self.binary = binary
         self.models_dir = Path(os.environ.get("FLM_MODEL_PATH") or cache_dir / "flm") / "models"
 
     def run(
@@ -166,7 +209,13 @@ def _relay(process: subprocess.Popen, tail: list[str]) -> None:
         log(line, "Process")
 
 
-def make_handler(flm: Flm, serving: Serving, api_key: str):
+def make_handler(
+    flm: Flm,
+    serving: Serving,
+    api_key: str,
+    spawner: Optional[_Spawner] = None,
+):
+    spawner = spawner or _Spawner()
     # Pooled, not per request: a new client (SSL context, connect) delayed every first token.
     # trust_env off keeps loopback calls away from HTTP_PROXY and the Windows system proxy.
     client = httpx.Client(trust_env = False, timeout = httpx.Timeout(600.0, connect = 10.0))
@@ -328,7 +377,7 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
             serving.stop()
             log(f"Starting: {' '.join(cmd)}")
             try:
-                process = subprocess.Popen(
+                process = spawner.popen(
                     cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, stdin = subprocess.DEVNULL,
                     text = True, encoding = "utf-8", errors = "replace", **_HIDDEN,
                 )  # fmt: skip
@@ -440,7 +489,8 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
 
 
 def exit_with_parent(parent_pid: int, serving: Serving) -> None:
-    """Stop flm serve and exit if Studio dies without stopping us."""
+    """Stop flm serve and exit if Studio dies without stopping us. Linux needs no watcher:
+    Studio's PDEATHSIG kills flm_host, and _Spawner's kills flm serve."""
     if sys.platform != "win32" or parent_pid <= 0:
         return
     import ctypes

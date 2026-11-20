@@ -326,15 +326,18 @@ def test_a_fastflowlm_pin_change_reads_as_not_installed(installer, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "platform, env, expect", [("win32", "", True), ("win32", "1", False), ("linux", "", False)]
-)
-def test_lemonade_stays_off_windows_or_on_request(monkeypatch, platform, env, expect):
+    "platform, env, expect",
+    [("win32", "", True), ("win32", "1", False), ("linux", "", True), ("linux", "1", False),
+     ("darwin", "", False)],
+)  # fmt: skip
+def test_lemonade_runs_only_on_request(monkeypatch, platform, env, expect):
     studio = Path(__file__).resolve().parents[2]
     if str(studio) not in sys.path:
         sys.path.insert(0, str(studio))
     import install_lemonade_prebuilt as inst
 
     monkeypatch.setattr(inst.sys, "platform", platform)
+    monkeypatch.setattr(inst.platform, "machine", lambda: "x86_64")
     monkeypatch.setenv("UNSLOTH_NPU_LEMONADE", env)
     assert inst.direct_flm() is expect
 

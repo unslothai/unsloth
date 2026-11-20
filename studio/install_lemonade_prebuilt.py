@@ -33,7 +33,8 @@ from backend.utils.auth_safe import auth_safe_open  # noqa: E402
 PINS_PATH = Path(_STUDIO_DIR) / "lemonade_prebuilt_pins.json"
 MARKER_NAME = "UNSLOTH_LEMONADE_INFO.json"
 FLM_MARKER_NAME = "UNSLOTH_FLM_INFO.json"
-# Stands in for lemond on Windows: lemond.exe is unsigned (Smart App Control), flm.exe is signed.
+# Stands in for lemond: Studio drives the AMD-signed flm directly (lemond.exe is unsigned, so
+# Smart App Control may refuse it).
 FLM_HOST = Path(_STUDIO_DIR) / "backend" / "core" / "inference" / "flm_host.py"
 _CHUNK = 1 << 20
 _DOWNLOAD_TIMEOUT_S = 60
@@ -83,8 +84,10 @@ def _read_marker(directory: Path) -> Optional[dict]:
 
 
 def direct_flm() -> bool:
-    """Run FastFlowLM without Lemonade (Windows); UNSLOTH_NPU_LEMONADE=1 keeps lemond."""
-    return sys.platform == "win32" and os.environ.get("UNSLOTH_NPU_LEMONADE", "").strip() != "1"
+    """Run FastFlowLM without Lemonade; UNSLOTH_NPU_LEMONADE=1 keeps lemond."""
+    return (
+        host_asset_key() is not None and os.environ.get("UNSLOTH_NPU_LEMONADE", "").strip() != "1"
+    )
 
 
 def flm_dir(root: Path) -> Path:
