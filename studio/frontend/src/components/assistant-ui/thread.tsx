@@ -1884,7 +1884,7 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
 // Gap between last message and floating composer, added to the bottom spacer height.
 const COMPOSER_SCROLL_GAP_PX = 24;
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
-// Viewport rows below the composer's top edge, and the fade beneath that edge: the wallpaper CSS masks the thread there.
+// Wallpaper CSS masks the thread from the composer's top edge (clip) over the fade.
 const THREAD_COMPOSER_CLIP_VAR = "--thread-composer-clip";
 const THREAD_COMPOSER_FADE_VAR = "--thread-composer-fade";
 // After a run start, composer shrinks apply immediately: the run-start pin owns the bottom.
@@ -3363,7 +3363,6 @@ const Composer: FC<{
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
   const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
-  // The new chat composer gives back 6px of its two empty rows' padding.
   const minEditorHeight = Math.round(
     (16 + 24 * (threadEmpty ? COMPOSER_MIN_ROWS : 1) - (threadEmpty ? 6 : 0)) *
       uiSpaceScale,

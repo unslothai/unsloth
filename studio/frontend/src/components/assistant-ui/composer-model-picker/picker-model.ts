@@ -470,9 +470,7 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** The open picker's height, from the window alone so a tab's row count never resizes it. In
- * on-screen px, so zoom does not change it: 420px up to a 1080px-tall window, then rising to 540px
- * only on very large monitors (1380px and taller). */
+/** From the window only, never a tab's row count; on-screen px: 420 up to 1080 tall, 540 from 1380. */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,

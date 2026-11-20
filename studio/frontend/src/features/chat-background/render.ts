@@ -57,8 +57,7 @@ export function acquireRender(
 					);
 					void canvasBlob(canvas).then(resolve, reject);
 				};
-				// The worker can fail to start, e.g. a tab still on the previous build asks for a worker
-				// file the new build replaced (404). Run the same transform here rather than fail.
+				// A worker that fails to start (e.g. a tab on the previous build gets a 404) runs here instead.
 				const onMainThread = () => {
 					worker?.terminate();
 					if (cancelled) return;

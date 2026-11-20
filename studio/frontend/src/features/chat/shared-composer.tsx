@@ -1244,7 +1244,6 @@ export function SharedComposer({
   // The single composer's editor frame (animated height), measured by hand: no autosize here.
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  // One row, like a conversation's composer: Compare is always mid-conversation.
   const minEditorHeight = Math.round((16 + 24) * uiSpaceScale);
   const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const maxRowsRef = useRef(maxRows);
