@@ -6950,6 +6950,18 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
+/* The thread also stops under the composer's top corners (--thread-composer-clip, ThreadComposerDock),
+   so it never shows through the composer or in the gap below it. */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
+  mask-image:
+    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px))),
+    linear-gradient(#000, #000);
+}
+/* The mask also drops the viewport's wash there; the root repaints that strip so no seam shows.
+   Glass outranks this with its full root wash (below). */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
+  background: linear-gradient(color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent), color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent)) bottom / 100% var(--thread-composer-clip, 0px) no-repeat;
+}
 /* Glass: wash the unmasked thread root so the header strip matches the thread. */
 html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
