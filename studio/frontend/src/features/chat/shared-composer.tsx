@@ -230,10 +230,7 @@ import {
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
-import {
-  COMPOSER_MIN_ROWS,
-  useComposerMaxRows,
-} from "@/hooks/use-composer-rows";
+import { useComposerMaxRows } from "@/hooks/use-composer-rows";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
@@ -1247,9 +1244,8 @@ export function SharedComposer({
   // The single composer's editor frame (animated height), measured by hand: no autosize here.
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  const minEditorHeight = Math.round(
-    (16 + 24 * COMPOSER_MIN_ROWS) * uiSpaceScale,
-  );
+  // One row, like a conversation's composer: Compare is always mid-conversation.
+  const minEditorHeight = Math.round((16 + 24) * uiSpaceScale);
   const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const maxRowsRef = useRef(maxRows);
   maxRowsRef.current = maxRows;

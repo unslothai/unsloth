@@ -3363,8 +3363,10 @@ const Composer: FC<{
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
   const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
+  // The new chat composer gives back 6px of its two empty rows' padding.
   const minEditorHeight = Math.round(
-    (16 + 24 * (threadEmpty ? COMPOSER_MIN_ROWS : 1)) * uiSpaceScale,
+    (16 + 24 * (threadEmpty ? COMPOSER_MIN_ROWS : 1) - (threadEmpty ? 6 : 0)) *
+      uiSpaceScale,
   );
   const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const [editorHeight, setEditorHeight] = useState(40);
