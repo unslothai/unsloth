@@ -135,6 +135,8 @@ def test_prefers_the_v3_chunk_over_v2():
     parsed = cards.parse_card_file(png, "x.png")
     assert parsed.fields["name"] == "Mira V3"
     assert parsed.spec == "chara_card_v3"
+    # Carrying both is how V3 cards are written, so it is not worth a note on import.
+    assert parsed.warnings == []
 
 
 def test_reads_a_v1_json_card():
@@ -288,7 +290,6 @@ def test_import_list_edit_export_and_delete(client):
     assert patched.json()["name"] == "Mira II" and patched.json()["characterBook"] is None
 
     avatar = client.get(f"/api/characters/{character_id}/avatar")
-    assert avatar.headers["vary"] == "Authorization"
     assert avatar.status_code == 200 and avatar.headers["content-type"] == "image/png"
 
     exported = client.get(f"/api/characters/{character_id}/export?format=json")

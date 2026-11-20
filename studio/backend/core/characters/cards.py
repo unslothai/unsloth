@@ -579,15 +579,13 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
         raise CardError("The file is too large for a character card.")
     avatar = None
     if data.startswith(PNG_SIGNATURE):
-        card, chunks = read_png_card(data)
+        card, _chunks = read_png_card(data)
         if card is None:
             raise CardError("This PNG has no character card inside it.")
         checked = checked_avatar(data)
         avatar = checked[0] if checked else None
         source_format = "png"
         warnings = [] if checked else ["The picture could not be read, so the character has none."]
-        if chunks == ["ccv3", "chara"]:
-            warnings.append("Read the V3 data; the file also carries V2 data for older apps.")
     elif data[:2] == b"PK" or zipfile.is_zipfile(io.BytesIO(data)):
         # RisuAI writes CHARX with a JPEG cover in front of the zip, which zipfile still opens.
         card, avatar = read_charx(data)
