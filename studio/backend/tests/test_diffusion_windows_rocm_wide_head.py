@@ -169,6 +169,26 @@ def test_windows_rocm_fp32_wide_head_never_reaches_the_stock_kernel(monkeypatch,
     torch.testing.assert_close(out, ref)
 
 
+@pytest.mark.parametrize("budget", [2**30, 16])
+def test_windows_rocm_fp64_wide_head_keeps_fp64_precision(monkeypatch, rocm, budget):
+    # Only half dtypes upcast: fp64 scores of 1e20 operands (~2e41) are finite in fp64 and inf in fp32, so an fp64 call
+    # squeezed through fp32 turns finite stock output into NaN.
+    import torch.nn.functional as F
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        C, "fused_sdpa_available", lambda q, k, v: not C._windows_rocm_untrusted_head(q, torch)
+    )
+    q, k, v = (torch.full((1, 1, 3, 512), 1e20, dtype = torch.float64) for _ in range(3))
+    ref = F.scaled_dot_product_attention(q, k, v)
+    assert torch.isfinite(ref).all()
+    with C.chunked_attention_mode(budget) as mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.chunked == (1 if budget < 2**30 else 0)
+    assert out.dtype == torch.float64
+    torch.testing.assert_close(out, ref)
+
+
 @pytest.mark.parametrize("half_math_env", ["", "0"])
 def test_a_rejected_fp32_head_runs_explicit_math_not_the_default_dispatch(
     monkeypatch, half_math_env

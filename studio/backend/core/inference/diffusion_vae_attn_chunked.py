@@ -54,7 +54,12 @@ def fp32_math_sdpa(
     v: Any,
     scale: Optional[float] = None,
 ) -> Any:
-    """Math SDPA in fp32 (what ROCm's math kernel upcasts a half call to), returned in ``q``'s dtype."""
+    """Math SDPA with half inputs upcast to fp32 (as ROCm's math kernel does), returned in ``q``'s dtype; fp32 and
+    fp64 run in their own precision (fp64 through fp32 overflows where stock SDPA stays finite)."""
+    import torch
+
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        return half_math_sdpa(q, k, v, scale)
     return half_math_sdpa(q.float(), k.float(), v.float(), scale).to(q.dtype)
 
 
