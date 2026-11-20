@@ -154,6 +154,9 @@ class Flm:
             # Windows refusing flm.exe (Smart App Control) is a failed run with its reason.
             return 1, f"[ERROR] {exc}"
         output = (done.stdout or "") + (done.stderr or "")
+        if done.returncode and not output.strip():
+            # A refused DLL (Smart App Control) exits 0xC0E90002 before printing anything.
+            output = f"[ERROR] exit code {done.returncode} (0x{done.returncode & 0xFFFFFFFF:08X})"
         # flm exits 0 after printing [ERROR], so the text decides.
         return (done.returncode or (1 if "[ERROR]" in output else 0)), output
 

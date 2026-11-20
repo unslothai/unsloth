@@ -686,3 +686,12 @@ def test_a_network_failure_keeps_fastflowlm_instead_of_falling_back(backend, mon
     monkeypatch.setattr(npu, "_enable_ryzen", lambda exc: pytest.fail("fell back to RyzenAI"))
     with pytest.raises(nb.NpuError, match = "getaddrinfo"):
         npu.enable()
+
+
+def test_a_silent_dll_refusal_at_install_counts_as_a_code_integrity_refusal():
+    # flm_host's /v1/install answer when flm.exe exits 0xC0E90002 with no output.
+    raw = "Installing FastFlowLM failed: FastFlowLM does not run: [ERROR] exit code 3236495362 (0xC0E90002)"
+    assert nb._code_integrity_refusal(nb.NpuError(raw))
+    friendly = nb._blocked_message(Path("C:/s/cache/bin/flm/npu/flm.exe"), raw)
+    assert friendly and "Smart App Control" in friendly
+    assert nb._code_integrity_refusal(nb.NpuError(friendly))

@@ -239,6 +239,20 @@ def test_delete_stops_a_serving_model_then_removes(host):
     assert client.post("/v1/delete", json = {"model_name": "qwen3-0.6b-FLM"}).status_code == 500
 
 
+def test_a_silent_refused_dll_exit_names_its_status(tmp_path, monkeypatch):
+    npu = tmp_path / "bin" / "flm" / "npu"
+    npu.mkdir(parents = True)
+    (npu / ("flm.exe" if sys.platform == "win32" else "flm")).write_text("")
+    flm = fh.Flm(tmp_path)
+
+    class Done:
+        returncode, stdout, stderr = 0xC0E90002, "", ""
+
+    monkeypatch.setattr(fh.subprocess, "run", lambda *a, **k: Done())
+    code, output = flm.run("version", "--json")
+    assert code and "0xC0E90002" in output
+
+
 def test_flm_errors_printed_with_exit_zero_count_as_failures(tmp_path, monkeypatch):
     npu = tmp_path / "bin" / "flm" / "npu"
     npu.mkdir(parents = True)

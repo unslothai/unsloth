@@ -806,7 +806,12 @@ class LemonadeNpuBackend:
             timeout = 900.0,
         )
         if _failed(response):
-            raise NpuError(f"Installing FastFlowLM failed: {_error_message(response)}")
+            reason = _error_message(response)
+            flm = self._flm_binary()
+            raise NpuError(
+                (_blocked_message(flm, reason) if flm else None)
+                or f"Installing FastFlowLM failed: {reason}"
+            )
         # lemond keeps the old FastFlowLM and answers success when an update download fails.
         expected, actual = _pinned_flm_version(), self._flm_version()
         if expected and actual and actual != expected:
