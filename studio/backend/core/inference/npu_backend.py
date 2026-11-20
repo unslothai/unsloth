@@ -406,7 +406,6 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
 def _blocked_message(binary: Path, error: object) -> Optional[str]:
     """The user message when Windows code integrity refused ``binary`` or its DLLs, else None."""
     blocked = code_integrity_block_reason(error)
-    # A fail-fast status alone is an ordinary crash too (see _lemonade_start_error).
     if blocked is None or blocked == _FAIL_FAST:
         return None
     return code_integrity_user_message(str(binary.parent), blocked)
