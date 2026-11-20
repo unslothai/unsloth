@@ -7691,6 +7691,61 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     }
 
 
+# Metal's recommendedMaxWorkingSetSize is a device property; probing it can import torch, so once.
+_apple_metal_working_set_bytes: Optional[int] = None
+
+
+def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """llama.cpp's Metal device on Apple Silicon detected as CPU (a GGUF-only install, or an MLX stack
+    that is missing or being repaired), else None. llama.cpp runs on Metal there anyway
+    (``LlamaCppBackend._apple_metal_memory_budget_bytes`` checks only the platform), so the GGUF fit
+    must see the unified pool. Training detection keeps reporting CPU."""
+    global _apple_metal_working_set_bytes
+    if not is_apple_silicon() or get_device() == DeviceType.MLX:
+        return None
+    try:
+        import psutil
+
+        total_bytes = int(psutil.virtual_memory().total)
+    except Exception as e:
+        logger.debug("Apple Metal inventory could not read total memory: %s", e)
+        return None
+    if total_bytes <= 0:
+        return None
+    if _apple_metal_working_set_bytes is None:
+        try:
+            _apple_metal_working_set_bytes = int(_metal_recommended_working_set_bytes() or 0)
+        except Exception as e:
+            logger.debug("Metal working set probe failed: %s", e)
+            _apple_metal_working_set_bytes = 0
+    # The loader's own fallback when neither MLX nor torch.mps can report the working set.
+    working_set_bytes = _apple_metal_working_set_bytes or total_bytes
+    total_gb = round(total_bytes / (1024**3), 2)
+    device: Dict[str, Any] = {
+        "index": 0,
+        "index_kind": "relative",
+        "visible_ordinal": 0,
+        "name": "Apple Silicon (Metal)",
+        "memory_total_gb": total_gb,
+        "shared_memory": True,
+        "shared_memory_host_backed_gb": total_gb,
+        "metal_working_set_gb": round(working_set_bytes / (1024**3), 2),
+    }
+    used_bytes = _read_apple_gpu_stats().get("vram_used_bytes")
+    if used_bytes is not None:
+        device["vram_used_gb"] = round(int(used_bytes) / (1024**3), 2)
+    return {
+        "available": True,
+        "backend": "metal",
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": [device],
+        "index_kind": "relative",
+        # llama-server takes no device ids on Metal.
+        "gguf_gpu_ids_supported": False,
+    }
+
+
 def _repair_smi_visible_devices(
     devices: list[Dict[str, Any]], parent_visible_ids: Optional[list[int]]
 ) -> bool:

@@ -82,7 +82,7 @@ export interface GpuInfo {
   /** Whether host available memory was reported, including a real zero. */
   systemRamAvailableKnown?: boolean;
   systemRamTotalGb: number;
-  /** Apple MLX only: what llama.cpp and MLX admit right now, `min(working set, free) * 0.85`
+  /** Apple Silicon only: what llama.cpp (and MLX) admit right now, `min(working set, free) * 0.85`
    *  (`_apple_metal_memory_budget_bytes`). Null on every other host and on older backends. */
   unifiedLoadBudgetGb?: number | null;
   /** `min(working set, free + AGX in use) * 0.85`: the budget once the loader has freed a resident model. */
@@ -107,16 +107,20 @@ function finiteNonNegative(value: number | null | undefined): number | null {
 
 function appleUnifiedLoadBudgetGb(
   data: SystemInfoResponse | null,
+  inventoryBackend: string | null | undefined,
   devices: readonly GpuDevice[],
   afterUnload = false,
 ): number | null {
-  if (data?.device_backend !== "mlx" || devices.length !== 1) return null;
+  // "metal": the GGUF inventory of an Apple host whose training detection fell back to CPU.
+  const appleMetal =
+    data?.device_backend === "mlx" || inventoryBackend === "metal";
+  if (!appleMetal || devices.length !== 1) return null;
   const device = devices[0];
   const workingSetGb = finitePositive(device.metal_working_set_gb);
   if (device.shared_memory !== true || workingSetGb === null) return null;
   let freeGb =
     finiteNonNegative(device.vram_free_gb) ??
-    finiteNonNegative(data.memory?.available_gb);
+    finiteNonNegative(data?.memory?.available_gb);
   if (afterUnload) {
     // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
     // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.
@@ -225,8 +229,17 @@ function toGpuInfo(
       unifiedMemory: loadDevice?.unified_memory === true,
     }),
     deviceCount: devices.length,
-    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(data, devices),
-    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(data, devices, true),
+    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(
+      data,
+      gpuData.backend,
+      devices,
+    ),
+    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(
+      data,
+      gpuData.backend,
+      devices,
+      true,
+    ),
   };
 }
 

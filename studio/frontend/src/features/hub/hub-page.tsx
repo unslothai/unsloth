@@ -1737,12 +1737,15 @@ export function ModelsPage() {
 
   const { vramInfo } = useHubModelVram(selectedModel, gpu);
 
-  const gpuLabel = gpu.available
-    ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
+  // GGUFs, which most rows here are, can have a GPU the training inventory lacks: Metal on a
+  // GGUF-only Mac, or a separately installed Vulkan llama.cpp.
+  const headerGpu = gpu.available ? gpu : inferenceGpu;
+  const gpuLabel = headerGpu.available
+    ? `${Math.round(headerGpu.dedicatedMemoryTotalGb)} GiB`
     : "Unavailable";
   const gpuSharedLabel =
-    gpu.available && gpu.memorySharedGb > 0
-      ? `${Math.round(gpu.memorySharedGb)} GiB`
+    headerGpu.available && headerGpu.memorySharedGb > 0
+      ? `${Math.round(headerGpu.memorySharedGb)} GiB`
       : null;
   const ramLabel =
     gpu.systemRamTotalGb > 0

@@ -231,3 +231,64 @@ test("only audio.cpp GGUFs skip the llama.cpp budget; Mac TTS GGUFs load through
   assert.match(src, /diffusionLoad \|\| loadsOnAudioCpp\(repoId\) \? null : chatLoadBudgetGb/);
   assert.doesNotMatch(src, /unifiedLoadBudgetGb: audioTaskPicker/);
 });
+
+/** A GGUF-only (or MLX-less) Mac: training detection reports CPU, the GGUF inventory is Metal. */
+function ggufOnlyMac(inferenceGpu: Record<string, unknown> | undefined) {
+  snapshot = {
+    status: "ready",
+    device_backend: "cpu",
+    gpu: { available: false, backend: "cpu", devices: [] },
+    inference_gpu: inferenceGpu,
+    memory: { total_gb: 16, available_gb: 6 },
+  };
+  return {
+    training: hooks.useGpuInfo(),
+    inference: hooks.useInferenceGpuInfo(),
+  };
+}
+
+const METAL_INVENTORY = {
+  available: true,
+  backend: "metal",
+  gguf_gpu_ids_supported: false,
+  devices: [
+    {
+      index: 0,
+      index_kind: "relative",
+      name: "Apple Silicon (Metal)",
+      memory_total_gb: 16,
+      shared_memory: true,
+      shared_memory_host_backed_gb: 16,
+      metal_working_set_gb: 10.67,
+    },
+  ],
+};
+
+test("a GGUF-only 16 GiB Mac with 6 GiB free rates a 2.2 GB quant by the Metal budget, not half of RAM", () => {
+  const hubFit = (gpu: ReturnType<typeof hooks.useInferenceGpuInfo>) =>
+    classifyGgufFit(2_200_000_000, {
+      gpuGb: gpu.available ? gpu.memoryTotalGb : undefined,
+      systemRamGb:
+        gpu.systemRamAvailableGb > 0 ? gpu.systemRamAvailableGb : undefined,
+      gpuCount: gpu.deviceCount,
+      unifiedLoadBudgetGb: gpu.unifiedLoadBudgetGb,
+    });
+
+  // No Metal inventory (the old backend): no GPU, half of 6 GiB free, red.
+  const before = ggufOnlyMac(undefined);
+  assert.equal(before.inference.available, false);
+  assert.equal(hubFit(before.inference), "oom");
+
+  const after = ggufOnlyMac(METAL_INVENTORY);
+  assert.equal(after.training.available, false);
+  assert.equal(after.inference.available, true);
+  assert.equal(after.inference.memorySharedGb, 16);
+  // min(10.67 working set, 6 free) * 0.85 = 5.1, floored to 0.25 GiB.
+  assert.equal(after.inference.unifiedLoadBudgetGb, 5);
+  assert.equal(hubFit(after.inference), "fits");
+});
+
+test("the unified budget needs an Apple inventory: a Vulkan one on a CPU host stays null", () => {
+  const { inference } = ggufOnlyMac({ ...METAL_INVENTORY, backend: "vulkan" });
+  assert.equal(inference.unifiedLoadBudgetGb, null);
+});
