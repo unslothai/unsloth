@@ -283,6 +283,7 @@ SDPA_HAS_GQA = "enable_gqa" in (_torch_sdpa.__doc__ or "")
 # Decode paths here and in models importing this name avoid cuDNN on sm90 / sm100.
 from ..utils.attention_dispatch import (
     decode_scaled_dot_product_attention as scaled_dot_product_attention,
+    rocm_gfx1200_requires_expanded_gqa,
 )
 
 from peft.utils.other import ModulesToSaveWrapper
@@ -828,9 +829,11 @@ def LlamaAttention_fast_forward_inference(
         # Decode is more stable with boolean keep masks than additive bf16 masks.
         attention_mask = attention_mask.eq(0)
 
-    # Grouped query attention; bsz == 1 reads the KV heads in place below.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.  gfx1200 ROCm uses
+    # expanded K/V because its fused GQA decode path is not reliable on the current wheels.
+    use_sdpa_gqa = SDPA_HAS_GQA and not rocm_gfx1200_requires_expanded_gqa(Qn.device)
     _, _, cached_len, _ = Knn.shape
-    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
+    if bsz != 1 and (not use_sdpa_gqa) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -852,7 +855,7 @@ def LlamaAttention_fast_forward_inference(
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = _gqa_decode_values(A, Vnn, Qn)
     else:
-        if SDPA_HAS_GQA:
+        if use_sdpa_gqa:
             A = scaled_dot_product_attention(
                 Qn,
                 Knn,
@@ -905,7 +908,7 @@ def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_w
         # Decode is more stable with boolean keep masks than additive bf16 masks.
         attention_mask = attention_mask.eq(0)
 
-    use_sdpa_gqa = SDPA_HAS_GQA
+    use_sdpa_gqa = SDPA_HAS_GQA and not rocm_gfx1200_requires_expanded_gqa(Qn.device)
     if (
         use_sdpa_gqa
         and not sdpa_gqa_with_batch_mask
@@ -976,7 +979,11 @@ def _decode_attention_span(self, Qn, static, bsz, sdpa_gqa_with_batch_mask):
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         return _gqa_decode_values(A, Vnn, Qn)
     # The mask is always batched here: as the eager core, Qwen3 expands K / V instead of SDPA GQA.
-    if SDPA_HAS_GQA and sdpa_gqa_with_batch_mask:
+    if (
+        SDPA_HAS_GQA
+        and sdpa_gqa_with_batch_mask
+        and not rocm_gfx1200_requires_expanded_gqa(Qn.device)
+    ):
         return scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = keep, enable_gqa = True)
     if n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, span, head_dim)

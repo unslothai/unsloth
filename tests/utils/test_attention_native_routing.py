@@ -63,6 +63,44 @@ def test_cpu_tensors_keep_enable_gqa():
     assert ad._sdpa_takes_gqa(q, k, True, False) is ad.SDPA_HAS_GQA
 
 
+def test_gfx1200_rocm_expands_gqa_even_when_torch_probe_allows_it(monkeypatch):
+    """gfx1200's ROCm fused GQA path is opt-out safe while other devices keep the probe result."""
+    monkeypatch.setattr(ad, "DEVICE_TYPE", "hip")
+    monkeypatch.setattr(ad, "_ROCM_GFX1200_DEVICES", frozenset({0}))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(ad, "_sdpa_gqa_state", lambda *args, **kwargs: True)
+    q = torch.zeros(1, 8, 4, 64)
+    k = torch.zeros(1, 2, 4, 64)
+    assert ad.rocm_gfx1200_requires_expanded_gqa(q.device) is True
+    assert ad._sdpa_takes_gqa(q, k, True, False) is False
+    monkeypatch.setenv("UNSLOTH_ALLOW_ROCM_GFX1200_SDPA", "1")
+    assert ad.rocm_gfx1200_requires_expanded_gqa(q.device) is False
+    assert ad._sdpa_takes_gqa(q, k, True, False) is ad.SDPA_HAS_GQA
+
+
+def test_gfx1200_packed_segments_are_contiguous(monkeypatch):
+    """The gfx1200 workaround keeps packed attention without passing strided segment views to SDPA."""
+    monkeypatch.setattr(ad, "DEVICE_TYPE", "hip")
+    monkeypatch.setattr(ad, "_ROCM_GFX1200_DEVICES", frozenset({0}))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    seen = []
+
+    def fake_sdpa(q, k, v, **kwargs):
+        seen.append((q.is_contiguous(), k.is_contiguous(), v.is_contiguous()))
+        return torch.zeros_like(q)
+
+    monkeypatch.setattr(ad, "scaled_dot_product_attention", fake_sdpa)
+    q = torch.randn(1, 4, 9, 16)
+    k = torch.randn(1, 2, 9, 16)
+    out = ad._sdpa_packed_segments(
+        q, k, k, (4, 5), n_groups = 2, is_causal = True, sliding_window = None, sdpa_kwargs = {}
+    )
+    assert out is not None
+    assert seen and all(all(flags) for flags in seen)
+
+
 def _dense(monkeypatch, dtype, mask):
     seen = []
     real = ad.scaled_dot_product_attention
