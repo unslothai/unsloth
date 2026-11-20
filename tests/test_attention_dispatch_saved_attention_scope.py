@@ -67,7 +67,8 @@ def _graph_breaks(fullgraph = False):
     torch._dynamo.reset()
     counters.clear()
     q, k, v = _inputs()
-    out = torch.compile(_block, fullgraph = fullgraph)(q, k, v)
+    # aot_eager: graph breaks and the backward trace, no C++ compiler needed (Windows without MSVC).
+    out = torch.compile(_block, fullgraph = fullgraph, backend = "aot_eager")(q, k, v)
     out.backward()
     torch.testing.assert_close(out, _block(*_inputs()))
     return sum(counters["graph_break"].values())
