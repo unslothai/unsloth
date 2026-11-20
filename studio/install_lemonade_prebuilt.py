@@ -208,7 +208,9 @@ def install(
         )
     root = Path(root)
     if direct_flm():
-        return _install_flm_direct(root, pins, key, progress, cancel)
+        host = _install_flm_direct(root, pins, key, progress, cancel)
+        remove_lemond_installs(root)
+        return host
     target = install_dir(root, pins)
     with core.install_lock(core.install_lock_path(target)):
         existing = installed_lemond(root, pins)
@@ -254,6 +256,33 @@ def install(
     if binary is None:
         raise RuntimeError(f"Lemonade install at {target} did not verify.")
     return binary
+
+
+def remove_lemond_installs(root: Path) -> list[str]:
+    """Delete lemond version folders (those carrying MARKER_NAME) once FastFlowLM runs without them.
+
+    Renamed first: Windows refuses to rename a folder whose lemond.exe still runs, so a live
+    lemond is left whole and retried next time. cache/ (FastFlowLM, models) has no marker.
+    """
+    removed: list[str] = []
+    try:
+        children = sorted(Path(root).iterdir())
+    except OSError:
+        return removed
+    for child in children:
+        doomed = child.name.startswith(".lemond-remove-")
+        if not doomed and not (child.is_dir() and (child / MARKER_NAME).is_file()):
+            continue
+        try:
+            if not doomed:
+                renamed = child.with_name(f".lemond-remove-{child.name}-{os.getpid()}")
+                os.replace(child, renamed)
+                child = renamed
+            shutil.rmtree(child)
+            removed.append(child.name)
+        except OSError:
+            continue
+    return removed
 
 
 def _install_flm_direct(

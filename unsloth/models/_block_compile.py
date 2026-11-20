@@ -1730,6 +1730,10 @@ def _sdpa_alignment_without_guard():
     The memory-efficient backward keeps torch's guard where it needs it (_efficient_backward_keeps_guard).
     UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
     if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
+        if _efficient_backward_keeps_guard():
+            # Stock lowering, but the same cache key as a run without the guard before the tag existed:
+            # tag it too, or that run's faulting efficient backward is served again.
+            _tag_efficient_backward_cache()
         return False
     try:
         import torch._inductor.lowering as lowering
@@ -1940,6 +1944,25 @@ def _checkpointing(forward):
     return forward_with_checkpointing
 
 
+def _fast_lora():
+    from ..kernels import fast_lora
+    return fast_lora
+
+
+def _skip_down_eligible(layer, original):
+    try:
+        return _fast_lora().block_skip_down_eligible(layer, original)
+    except Exception:
+        return False
+
+
+def _replays(layer):
+    try:
+        return _fast_lora()._replay_module() is layer
+    except Exception:
+        return False
+
+
 def _wrap(
     cls,
     compile_options,
@@ -2019,9 +2042,26 @@ def _wrap(
 
     graph_shapes = set()
 
-    def run(self, hidden_states, args, kwargs, mode):
+    def run(
+        self,
+        hidden_states,
+        args,
+        kwargs,
+        mode,
+        skip_down = False,
+    ):
         kwargs, shared = _shared_kv_scratch(self, kwargs)
-        out = _run(self, hidden_states, args, kwargs, mode)
+        if skip_down:
+            # A guarded global the traced LoRA_MLP reads: the replay graph drops the down projection.
+            previous = _fast_lora().set_block_skip_down(True)
+            try:
+                out = _run(self, hidden_states, args, kwargs, mode)
+            finally:
+                _fast_lora().set_block_skip_down(previous)
+            if _IN_TRIAL[0] is not True:
+                _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
+        else:
+            out = _run(self, hidden_states, args, kwargs, mode)
         if shared is not None:
             shared[0].update(shared[1])
         return out
@@ -2175,12 +2215,21 @@ def _wrap(
             _mark_packed_dynamic(kwargs)
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
             _settle_mask_flags(self, kwargs)
-        bit = 2 if torch.is_grad_enabled() else 1
+        # Grad-mode graphs: bit 2 runs every op, bit 4 skips the MLP down projection (a gradient checkpoint
+        # replay of exactly this layer, whose output value its backward never reads). A no-grad call (the
+        # checkpointed forward) of an eligible layer trials the graph its replay will use.
+        skip_down = _skip_down_eligible(self, original)
+        if torch.is_grad_enabled():
+            skip_down = skip_down and (_IN_TRIAL[0] is True or _replays(self))
+            bit = 4 if skip_down else 2
+        else:
+            bit = 1
+        trial_bit = 4 if bit == 1 and skip_down else 2
         checked = self.__dict__.get("_unsloth_block_checked", 0)
         nonreentrant = (
             bit == 2 and not checked & 2 and not _IN_TRIAL[0] and _in_nonreentrant_checkpoint()
         )
-        if (bit == 1 or nonreentrant) and not checked & 2:
+        if (bit == 1 or nonreentrant) and not checked & trial_bit:
             # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
             # this call. Non-reentrant: identity saved-tensor hooks keep a failed trial graph out
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
@@ -2204,12 +2253,13 @@ def _wrap(
             if mode == _OFF:
                 return original(self, hidden_states, *args, **kwargs)
             checked = self.__dict__.get("_unsloth_block_checked", 0)
+        skip_down = bit == 4
         if checked & bit:
-            return run(self, hidden_states, args, kwargs, mode)
+            return run(self, hidden_states, args, kwargs, mode, skip_down)
         while True:
             try:
                 with _strict_dynamo():
-                    out = run(self, hidden_states, args, kwargs, mode)
+                    out = run(self, hidden_states, args, kwargs, mode, skip_down)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
                 return out
             except torch.OutOfMemoryError:

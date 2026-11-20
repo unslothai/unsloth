@@ -243,7 +243,7 @@ def test_trainer_end_to_end_both_reports(monkeypatch, tmp_path, capsys):
 
 
 def _calls_in(path, function):
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == function:
             return [
@@ -264,7 +264,7 @@ def test_wiring():
         ROOT / "unsloth" / "models" / "_utils.py", "_mark_requested_float32"
     )
     for name in ("llama.py", "vision.py"):
-        source = (ROOT / "unsloth" / "models" / name).read_text()
+        source = (ROOT / "unsloth" / "models" / name).read_text(encoding = "utf-8")
         assert 'report_memory("vLLM init", llm)' in source
 
 

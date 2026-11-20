@@ -504,6 +504,11 @@ class LemonadeNpuBackend:
             logger.warning("Could not read the Lemonade install: %s", exc)
             return None
 
+    def _flm_blocked(self, message: str) -> Optional[str]:
+        """The code integrity explanation when FastFlowLM's error is a refused flm or DLL."""
+        binary = self._flm_binary()
+        return _blocked_message(binary, message) if binary is not None else None
+
     def _flm_binary(self) -> Optional[Path]:
         name = "flm.exe" if sys.platform == "win32" else "flm"
         base = self.root / "cache" / "bin" / "flm" / "npu"
@@ -807,11 +812,7 @@ class LemonadeNpuBackend:
         )
         if _failed(response):
             reason = _error_message(response)
-            flm = self._flm_binary()
-            raise NpuError(
-                (_blocked_message(flm, reason) if flm else None)
-                or f"Installing FastFlowLM failed: {reason}"
-            )
+            raise NpuError(self._flm_blocked(reason) or f"Installing FastFlowLM failed: {reason}")
         # lemond keeps the old FastFlowLM and answers success when an update download fails.
         expected, actual = _pinned_flm_version(), self._flm_version()
         if expected and actual and actual != expected:

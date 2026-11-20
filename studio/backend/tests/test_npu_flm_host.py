@@ -297,7 +297,7 @@ def installer(tmp_path, monkeypatch):
     import install_lemonade_prebuilt as inst
 
     blob = _zip()
-    pins = json.loads((studio / "lemonade_prebuilt_pins.json").read_text())
+    pins = json.loads((studio / "lemonade_prebuilt_pins.json").read_text(encoding = "utf-8"))
     key = "windows-x64" if sys.platform == "win32" else "linux-x64"
     pins["fastflowlm"]["assets"][key]["sha256"] = hashlib.sha256(blob).hexdigest()
     pins_path = tmp_path / "pins.json"
@@ -329,6 +329,39 @@ def test_the_direct_install_puts_flm_where_lemond_would_and_is_reused(installer,
         and len(installer.downloads) == 1
     )
     assert not (root / "2026.44.1").exists()  # no Lemonade was installed
+
+
+def test_the_direct_install_removes_old_lemond_and_keeps_models(installer, tmp_path):
+    root = tmp_path / "lemonade"
+    old = root / "2026.44.1"
+    old.mkdir(parents = True)
+    (old / installer.MARKER_NAME).write_text("{}")
+    (old / installer.lemond_name()).write_bytes(b"MZ")
+    model = root / "flm" / "models" / "Qwen3-0.6B-NPU2" / "model.q4nx"
+    model.parent.mkdir(parents = True)
+    model.write_bytes(b"weights")
+    (root / "config").mkdir()
+    (root / ".lemond-remove-2026.40.0-1").mkdir()  # an earlier interrupted removal
+    installer.install(root, pins_path = installer.test_pins)
+    assert not old.exists() and not (root / ".lemond-remove-2026.40.0-1").exists()
+    assert model.read_bytes() == b"weights" and (root / "config").is_dir()
+    assert (installer.flm_dir(root) / installer.FLM_MARKER_NAME).is_file()
+    installer.install(root, pins_path = installer.test_pins)  # again: nothing left to remove
+    assert sorted(p.name for p in root.iterdir()) == ["cache", "config", "flm"]
+
+
+def test_a_lemond_that_cannot_be_moved_is_left_whole(installer, tmp_path, monkeypatch):
+    root = tmp_path / "lemonade"
+    old = root / "2026.44.1"
+    old.mkdir(parents = True)
+    (old / installer.MARKER_NAME).write_text("{}")
+
+    def locked(src, dst):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(installer.os, "replace", locked)
+    assert installer.remove_lemond_installs(root) == []
+    assert (old / installer.MARKER_NAME).is_file()
 
 
 def test_a_fastflowlm_pin_change_reads_as_not_installed(installer, tmp_path):
