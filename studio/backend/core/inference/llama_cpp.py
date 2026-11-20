@@ -32432,6 +32432,11 @@ class LlamaCppBackend:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
+                            if _ctx_halvings:
+                                # A halved context came up: the limits are what it allocated.
+                                effective_ctx = int(run_cmd[run_cmd.index("-c") + 1])
+                                self._effective_context_length = effective_ctx
+                                self._max_context_length = effective_ctx
                             return True
                         if getattr(self, "_health_wait_cancelled", False):
                             return False
@@ -32718,8 +32723,8 @@ class LlamaCppBackend:
                             )
                             run_cmd = list(run_cmd)
                             run_cmd[run_cmd.index("-c") + 1] = str(_half_ctx)
-                            effective_ctx = _half_ctx
-                            self._effective_context_length = self._max_context_length = _half_ctx
+                            # The context limits follow only a launch that comes up (see the
+                            # health check above); a later fallback respawns from its own argv.
                             self._vram_fit_context_length = None
                             self._record_memory_state(run_cmd, env)
                             _ctx_halvings += 1

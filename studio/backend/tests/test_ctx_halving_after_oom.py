@@ -89,3 +89,37 @@ def test_the_helper_needs_a_context_memory_failure_and_stays_above_the_floor():
     assert lc._halved_ctx_after_oom(["-c", "1048576"], "Segmentation fault", is_oom) is None
     # A memory error that is not the context (no context-creation line) is left alone.
     assert lc._halved_ctx_after_oom(["-c", "1048576"], TARGET_OOM[0], is_oom) is None
+
+
+def test_the_context_limits_follow_the_launch_that_came_up(tmp_path):
+    """A drafter whose context never fits: the halvings fail, the no-drafter fallback comes up at
+    its own -c, and the advertised limits are that launch's, not the last halving's."""
+    backend, gguf = h.cuda_backend(tmp_path, memory = [(0, 400_000, 400_000)])
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, **kw: h.GIB
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **kw: n_ctx * 1024
+    backend._context_length = 1048576
+    draft = h.sidecar(tmp_path)
+    drafter_oom = [
+        f"I common_speculative_init_result: loading draft model '{draft}'",
+        "E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000.00 MiB on device 0: cudaMalloc failed: out of memory",
+        f"E cmn  common_init_: failed to create context with model '{draft}'",
+    ]
+    cmds = h.spawns(
+        backend,
+        gguf,
+        healthy = lambda i, cmd: draft not in cmd,
+        crash = lambda i, cmd: 1 if draft in cmd else None,
+        stdout = lambda i, cmd: drafter_oom if draft in cmd else (),
+        n_ctx = 1048576,
+        max_seq_length_auto_derived = True,
+        speculative_type = "dspark",
+        dspark_draft_path = draft,
+    )
+    assert cmds.loaded is True
+    last = cmds[-1]
+    assert draft not in last
+    # Not vacuous: the drafter launches were halved before the fallback.
+    assert min(_ctx(c) for c in cmds if draft in c) < _ctx(cmds[0])
+    assert backend._effective_context_length == _ctx(last)
+    assert backend._max_context_length == _ctx(last)
