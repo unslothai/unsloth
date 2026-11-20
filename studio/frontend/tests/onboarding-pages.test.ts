@@ -40,7 +40,7 @@ test("a run closed midway resumes at the first unseen page", () => {
   );
   assert.deepEqual(decision, {
     kind: "show",
-    pages: ["look", "device", "start", "done"],
+    pages: ["look", "scene", "device", "start", "done"],
   });
 });
 
@@ -53,7 +53,7 @@ test("a finished account sees nothing, and only pages added since", () => {
   assert.deepEqual(decideOnboarding(all), { kind: "none" });
   const older = record({
     saved: true,
-    pages: ["welcome", "profile", "look", "start", "done"],
+    pages: ["welcome", "profile", "look", "scene", "start", "done"],
     completedAt: 1,
   });
   assert.deepEqual(decideOnboarding(older), {
@@ -64,7 +64,10 @@ test("a finished account sees nothing, and only pages added since", () => {
 
 test("bookends alone are never shown", () => {
   const decision = decideOnboarding(
-    record({ saved: true, pages: ["profile", "look", "device", "start"] }),
+    record({
+      saved: true,
+      pages: ["profile", "look", "scene", "device", "start"],
+    }),
   );
   assert.deepEqual(decision, { kind: "none" });
 });

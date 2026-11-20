@@ -8,6 +8,7 @@ export const ONBOARDING_PAGES = [
   "welcome",
   "profile",
   "look",
+  "scene",
   "device",
   "start",
   "done",
