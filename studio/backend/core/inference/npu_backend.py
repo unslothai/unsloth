@@ -60,8 +60,9 @@ _DISPLAY_NAME_SUFFIX = re.compile(r"-npu\d*$", re.IGNORECASE)
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
-# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
-_EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
+# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once;
+# decision models (FastFlowLM 1.0.13 d3:*) refuse plain `flm serve`.
+_EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn", "decision"})
 # Engine limits below checkpoint metadata, from the FastFlowLM v1.0.12 model cards (docs/docs/models)
 # and qwen3_core_backend.hpp; the 27B pair fails above 8192 (ROCm/FastFlowLM#1001). Recheck on pin bumps.
 _FLM_CONTEXT_LIMITS = {

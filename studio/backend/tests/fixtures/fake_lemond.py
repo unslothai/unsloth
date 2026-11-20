@@ -45,6 +45,13 @@ CATALOG = [
         "max_context_window": 262144,
     },
     {
+        # FastFlowLM 1.0.13 decision model: `flm serve` refuses it without --decision.
+        "id": "d3-edge-FLM",
+        "checkpoint": "d3:edge",
+        "labels": ["decision", "chat"],
+        "size": 0.58,
+    },
+    {
         "id": "embed-gemma-300m-FLM",
         "checkpoint": "embed-gemma:300m",
         "labels": ["embeddings"],
