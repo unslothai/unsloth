@@ -131,23 +131,30 @@ def install_frozen_prefix_skip(model):
     model_ref = weakref.ref(model)
 
     def _cut_output(module, args, output):
-        state["cut"] = True
         if isinstance(output, torch.Tensor):
-            return _leaf(output)
-        if isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
-            return type(output)((_leaf(output[0]), *output[1:]))
-        state["cut"] = False
-        return None
+            output = _leaf(output)
+        elif isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
+            output = type(output)((_leaf(output[0]), *output[1:]))
+        else:
+            return None
+        state["cut"] = True
+        # One cut per forward: a stack run again (looped / recurrent-depth models such as Ouro) feeds
+        # the prefix from trainable layers, so later passes keep their graph and checkpointing.
+        _release(state["active"])
+        return output
 
-    def _restore():
-        active = state["active"]
-        state["active"] = None
+    def _release(active):
         if active is None:
             return
         for handle in active["handles"]:
             handle.remove()
         for layer, flag in active["flags"]:
             layer.gradient_checkpointing = flag
+
+    def _restore():
+        active = state["active"]
+        state["active"] = None
+        _release(active)
 
     def _pre(module, args, kwargs):
         _restore()
