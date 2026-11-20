@@ -202,16 +202,22 @@ export function activateLorebook(
   const live = book.entries.filter((entry) => entry.enabled !== false && entry.content?.trim());
   const candidates = new Map<LorebookEntry, "constant" | "keyword">();
   for (const entry of live) if (entry.constant) candidates.set(entry, "constant");
-  let lore = "";
+  // Recursion reads always-on lore too; the first pass reads only the chat, as exclude_recursion expects.
+  let lore = book.recursive_scanning
+    ? live
+        .filter((entry) => entry.constant && !entry.extensions?.prevent_recursion)
+        .map((entry) => `\n${entry.content}`)
+        .join("")
+    : "";
   for (let pass = 0; pass <= (book.recursive_scanning ? MAX_RECURSION : 0); pass += 1) {
-    const text = `${chat}${lore}`.slice(-MAX_SCAN_CHARS);
+    const text = `${chat}${pass > 0 ? lore : ""}`.slice(-MAX_SCAN_CHARS);
     const found = live.filter(
       (entry) =>
         !candidates.has(entry) &&
         !(pass > 0 && entry.extensions?.exclude_recursion) &&
         entryHits(entry, text, budget.regexSteps),
     );
-    if (found.length === 0) break;
+    if (found.length === 0 && (pass > 0 || !lore)) break;
     for (const entry of found) candidates.set(entry, "keyword");
     // A recursive pass also reads the lore that just fired, except entries that opt out.
     lore += found

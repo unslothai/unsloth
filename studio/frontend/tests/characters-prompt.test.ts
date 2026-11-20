@@ -594,6 +594,17 @@ test("SillyTavern exports match as SillyTavern does: regex only in slashes, subs
   assert.equal(fires(st(["/wyrm|drake/i"]), "A DRAKE lands"), true, "a slashed key is still a regex");
 });
 
+test("recursive scanning reads always-on lore, except entries that opt out", () => {
+  const setting = (extensions = {}) => entry({ id: 0, constant: true, content: "The valley is guarded by a dragon.", extensions });
+  const dragon = (extensions = {}) => entry({ id: 1, keys: ["dragon"], content: "The dragon is named Vex.", extensions });
+  const fired = (entries: LorebookEntry[], recursive: boolean) =>
+    activateLorebook(book(entries, { recursive_scanning: recursive }), ["hello"]).fired.map((f) => f.id);
+  assert.deepEqual(fired([setting(), dragon()], true), [0, 1]);
+  assert.deepEqual(fired([setting(), dragon()], false), [0]);
+  assert.deepEqual(fired([setting({ prevent_recursion: true }), dragon()], true), [0]);
+  assert.deepEqual(fired([setting(), dragon({ exclude_recursion: true })], true), [0]);
+});
+
 test("one lore budget covers the whole cast", () => {
   const member = (id: string) =>
     character({ id, name: id, characterBook: book([entry({ constant: true, content: "x".repeat(2000) })], { token_budget: 1024 }) });
