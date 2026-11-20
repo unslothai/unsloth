@@ -8,11 +8,14 @@ import { resolveStartTrainingButtonLabelKey } from "../src/features/studio/wizar
 
 const readyState = {
   stopRequested: false,
+  scheduled: false,
+  scheduling: false,
   startBlocked: false,
   isLoadingModel: false,
   isCheckingDataset: false,
   hasModel: true,
   hasDataset: true,
+  scheduleMode: false,
 };
 
 test("the stop label takes priority over every other start state", () => {
@@ -20,11 +23,33 @@ test("the stop label takes priority over every other start state", () => {
     resolveStartTrainingButtonLabelKey({
       ...readyState,
       stopRequested: true,
+      scheduled: true,
+      scheduling: true,
       startBlocked: true,
       isLoadingModel: true,
       isCheckingDataset: true,
     }),
     "studio.training.stopping",
+  );
+});
+
+test("a waiting schedule and a schedule being saved win over a normal start", () => {
+  assert.equal(
+    resolveStartTrainingButtonLabelKey({
+      ...readyState,
+      scheduled: true,
+      scheduling: true,
+      startBlocked: true,
+    }),
+    "studio.schedule.scheduled",
+  );
+  assert.equal(
+    resolveStartTrainingButtonLabelKey({
+      ...readyState,
+      scheduling: true,
+      startBlocked: true,
+    }),
+    "studio.schedule.scheduling",
   );
 });
 
@@ -43,6 +68,10 @@ test("start button labels cover pending work and incomplete selections", () => {
     [{ ...readyState, hasModel: false }, "studio.training.chooseModel"],
     [{ ...readyState, hasDataset: false }, "studio.training.chooseDataset"],
     [readyState, "studio.training.startTraining"],
+    [
+      { ...readyState, scheduleMode: true },
+      "studio.schedule.scheduleTraining",
+    ],
   ] as const;
 
   for (const [state, expected] of cases) {

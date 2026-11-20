@@ -15,6 +15,9 @@ import {
 import type {
   DrafterCapability,
   TrainingResetResponse,
+  TrainingSchedule,
+  TrainingScheduleInput,
+  TrainingScheduleList,
   TrainingStartRequest,
   TrainingStartRequestStatusResponse,
   TrainingStartResponse,
@@ -412,6 +415,59 @@ export async function streamTrainingProgress(options: {
     signal: options.signal,
     onEvent: options.onEvent,
   });
+}
+
+const TRAINING_SCHEDULES_PATH = "/api/train/schedules";
+
+export async function listTrainingSchedules(): Promise<TrainingScheduleList> {
+  return runRequestWithTimeout(
+    TRAINING_STATUS_TIMEOUT_MS,
+    "Training schedules request timed out",
+    async (signal) => {
+      const response = await authFetch(TRAINING_SCHEDULES_PATH, { signal });
+      return parseJson<TrainingScheduleList>(response);
+    },
+  );
+}
+
+export async function createTrainingSchedule(
+  input: TrainingScheduleInput,
+): Promise<TrainingSchedule> {
+  // Admission runs when the start is scheduled, so this can take as long as a start.
+  return runRequestWithTimeout(
+    TRAINING_START_TIMEOUT_MS,
+    "Training schedule request timed out",
+    async (signal) => {
+      const response = await authFetch(
+        TRAINING_SCHEDULES_PATH,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+          signal,
+        },
+        { retryNetworkErrors: false },
+      );
+      return parseJson<TrainingSchedule>(response);
+    },
+  );
+}
+
+export async function cancelTrainingSchedule(id: string): Promise<void> {
+  await runRequestWithTimeout(
+    TRAINING_STATUS_TIMEOUT_MS,
+    "Training schedule cancellation timed out",
+    async (signal) => {
+      const response = await authFetch(
+        `${TRAINING_SCHEDULES_PATH}/${encodeURIComponent(id)}`,
+        { method: "DELETE", signal },
+        { retryNetworkErrors: false },
+      );
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+    },
+  );
 }
 
 export { isAbortError };
