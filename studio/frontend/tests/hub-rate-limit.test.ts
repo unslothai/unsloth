@@ -9,6 +9,9 @@ import test from "node:test";
 
 register("./bundler-resolver.mjs", import.meta.url);
 
+const { resetHfEndpoints, setHfEndpoints } = await import(
+  "../src/lib/hf-endpoint.ts"
+);
 const { fetchHub, resetHubRateLimits } = await import(
   "../src/lib/hub-fetch.ts"
 );
@@ -104,6 +107,43 @@ test("other failures are not remembered", async () => {
     assert.equal(hub.sent.length, 2);
   } finally {
     hub.restore();
+    resetHubRateLimits();
+  }
+});
+
+test("a new token is not held to the anonymous limit", async () => {
+  resetHubRateLimits();
+  const hub = stubHub(() => 429);
+  try {
+    await fetchHub(API);
+    await fetchHub(API);
+    assert.equal(hub.sent.length, 1);
+    await fetchHub(API, { headers: { Authorization: `Bearer hf_${"a".repeat(34)}` } });
+    assert.equal(hub.sent.length, 2);
+    await fetchHub(API, { headers: { Authorization: `Bearer hf_${"b".repeat(34)}` } });
+    assert.equal(hub.sent.length, 3);
+  } finally {
+    hub.restore();
+    resetHubRateLimits();
+  }
+});
+
+test("the Hub relay and the datasets-server relay keep separate limits", async () => {
+  resetHubRateLimits();
+  const relay = "http://127.0.0.1:8888/api/hub/proxy";
+  const datasets = "http://127.0.0.1:8888/api/hub/datasets-server-proxy";
+  setHfEndpoints(relay, datasets, "huggingface", { endpoint: true, datasetsServer: true });
+  const hub = stubHub((url) => (url.startsWith(relay) ? 429 : 200));
+  try {
+    await fetchHub(`${relay}/api/models?search=qwen`);
+    assert.equal((await fetchHub(`${datasets}/splits?dataset=x`)).status, 200);
+    assert.equal((await fetchHub(`${relay}/unsloth/Qwen3-4B/resolve/main/config.json`)).status, 429);
+    assert.equal(hub.sent.length, 3);
+    await fetchHub(`${relay}/api/models?search=qwen`);
+    assert.equal(hub.sent.length, 3);
+  } finally {
+    hub.restore();
+    resetHfEndpoints();
     resetHubRateLimits();
   }
 });

@@ -163,12 +163,38 @@ const RATE_LIMIT_DEFAULT_MS = 60_000;
 const RATE_LIMIT_MAX_MS = 10 * 60_000;
 const rateLimitedUntil = new Map<string, number>();
 
-function rateLimitBucket(url: string): string | null {
+function credentialMark(token: string | null): string {
+  if (!token) return "anonymous";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < token.length; i++) {
+    hash = Math.imul(hash ^ token.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
+}
+
+/** Per upstream service (a relay counts as its upstream), bucket and credential: a new token is a new limit. */
+function rateLimitBucket(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  url: string,
+): string | null {
   try {
-    const parsed = new URL(url, globalThis.location?.href ?? "http://localhost/");
-    const path = parsed.pathname;
+    const here = globalThis.location?.href ?? "http://localhost/";
+    const parsed = new URL(url, here);
+    let scope = parsed.origin;
+    let path = parsed.pathname;
+    for (const configured of [getHfEndpoint(), getHfDatasetsServerBase()]) {
+      if (!configured) continue;
+      const base = new URL(configured, here);
+      const prefix = base.pathname.replace(/\/+$/, "");
+      if (base.origin === parsed.origin && prefix && (path === prefix || path.startsWith(`${prefix}/`))) {
+        scope = `${base.origin}${prefix}`;
+        path = path.slice(prefix.length) || "/";
+        break;
+      }
+    }
     const kind = path.includes("/resolve/") ? "resolve" : path.startsWith("/api/") ? "api" : "pages";
-    return `${parsed.origin}|${kind}`;
+    return `${scope}|${kind}|${credentialMark(sentHfToken(input, init, url))}`;
   } catch {
     return null;
   }
@@ -197,7 +223,7 @@ export async function fetchHub(
   input: Parameters<typeof fetch>[0],
   init: RequestInit = {},
 ): Promise<Response> {
-  const bucket = rateLimitBucket(requestUrl(input));
+  const bucket = rateLimitBucket(input, init, requestUrl(input));
   const until = bucket === null ? undefined : rateLimitedUntil.get(bucket);
   if (until !== undefined) {
     const left = until - Date.now();
