@@ -37,6 +37,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.training.diffusion_block_swap import (
+    block_swap_error,
+    block_swap_request,
+    compile_swapped_blocks,
+    install_dit_block_swap,
+)
 from core.training.diffusion_gc_budget import (
     StepReplay,
     enable_budgeted_checkpointing,
@@ -760,6 +766,21 @@ def _pick_auto_precision(
     if free_gb > dense_gb * 1.15:
         return "int8" if has_torchao else "nf4"
     return "nf4"
+
+
+def _device_is_integrated(device) -> bool:
+    try:
+        from core.inference.host_pinning import device_is_integrated
+        return device_is_integrated(device)
+    except Exception:  # noqa: BLE001 -- unclassifiable: discrete
+        return False
+
+
+def _block_swap_tokens(spec, cfg) -> int:
+    """Sequence length the block-swap reserve is sized for: 16 px per image token plus a 512-token prompt."""
+    _ = spec
+    side = max(1, int(cfg.resolution) // 16)
+    return side * side + 512
 
 
 def _dense_bf16_gb(spec, base_model: str) -> float:
@@ -3247,6 +3268,7 @@ def _maybe_compile_transformer(
     on_event,
     base_precision = "nf4",
     steps_left = None,
+    block_swap = False,
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
     is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
@@ -3292,6 +3314,9 @@ def _maybe_compile_transformer(
             _install_backports()
         except Exception:  # noqa: BLE001 -- the backport is best-effort
             pass
+        if block_swap:
+            # The swap hooks sit in each block's _call_impl: compile forward so they stay outside the graph.
+            return compile_swapped_blocks(transformer, fullgraph = not base_is_bnb, dynamic = True) > 0
         fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
@@ -3661,8 +3686,21 @@ def _train_dit(
         else "transformer",
         fetch_repo = training_fetch_repo(cfg),
     )
+    swap_request = block_swap_request(cfg)
+    swap_error = block_swap_error(
+        swap_request,
+        base_precision,
+        device,
+        cfg.gradient_checkpointing,
+        integrated = bool(swap_request) and _device_is_integrated(device),
+    )
+    if swap_error:
+        raise ValueError(swap_error)
     with report_model_load_progress(on_event):
-        transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
+        # A swapped bf16 base loads on the host: install_dit_block_swap places everything but the swapped blocks.
+        transformer = spec.load_transformer(
+            fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
+        )
     base_is_bnb = base_precision == "nf4"
     fp16_report = None
     if fp16_amp:
@@ -3685,10 +3723,27 @@ def _train_dit(
     gc_budget = None
     if cfg.gradient_checkpointing:
         # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
-        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        # Block swap needs every block checkpointed, so no budget.
+        gc_budget = None if swap_request else enable_budgeted_checkpointing(transformer, device)
         if gc_budget is None:
             enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
+    if swap_request:
+        swap_info = install_dit_block_swap(
+            transformer,
+            device,
+            swap_request,
+            tokens = _block_swap_tokens(spec, cfg),
+            batch = cfg.train_batch_size,
+        )
+        _emit(
+            on_event,
+            "warning",
+            message = (
+                f"block_swap: {swap_info['swapped_blocks']} of {swap_info['total_blocks']} blocks stream from "
+                f"{swap_info['host_gib']} GiB of host RAM ({swap_info['pinned_gib']} GiB pinned)."
+            ),
+        )
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
@@ -3723,6 +3778,7 @@ def _train_dit(
             on_event,
             base_precision,
             resume_steps_left(cfg, identity),
+            block_swap = bool(swap_request),
         )
     )
     # Compiled Qwen graphs need one fixed text length across steps.
