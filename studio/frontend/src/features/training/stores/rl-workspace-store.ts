@@ -17,6 +17,9 @@ interface RlWorkspaceState {
   libraryLoaded: boolean;
   libraryError: string | null;
   refreshLibrary: () => Promise<void>;
+  // What the loaded dataset lacks for the RL objective (rlStartMissing); null until columns load.
+  startMissing: string[] | null;
+  setStartMissing: (missing: string[] | null) => void;
 }
 
 export const useRlWorkspaceStore = create<RlWorkspaceState>()((set) => ({
@@ -25,6 +28,8 @@ export const useRlWorkspaceStore = create<RlWorkspaceState>()((set) => ({
   library: [],
   libraryLoaded: false,
   libraryError: null,
+  startMissing: null,
+  setStartMissing: (startMissing) => set({ startMissing }),
   refreshLibrary: async () => {
     const epoch = getAuthSessionEpoch();
     try {
@@ -48,6 +53,7 @@ if (typeof window !== "undefined") {
       library: [],
       libraryLoaded: false,
       libraryError: null,
+      startMissing: null,
     }),
   );
 }

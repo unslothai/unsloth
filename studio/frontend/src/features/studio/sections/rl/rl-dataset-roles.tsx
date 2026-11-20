@@ -23,7 +23,8 @@ import {
   RL_ROLES,
   type RlObjective,
   type RlRole,
-  missingRlRoles,
+  isRlRole,
+  rlStartMissing,
   syncRlMapping,
 } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
@@ -117,14 +118,18 @@ export function RlDatasetRoles({
       datasetLocalPath: s.datasetLocalPath,
       mapping: s.rlRoleMapping,
       setMapping: s.setRlRoleMapping,
+      grpoRewards: s.grpoRewards,
     })),
   );
-  const { previewRow, setPreviewRow } = useRlWorkspaceStore(
-    useShallow((s) => ({
-      previewRow: s.previewRow,
-      setPreviewRow: s.setPreviewRow,
-    })),
-  );
+  const { previewRow, setPreviewRow, library, setStartMissing } =
+    useRlWorkspaceStore(
+      useShallow((s) => ({
+        previewRow: s.previewRow,
+        setPreviewRow: s.setPreviewRow,
+        library: s.library,
+        setStartMissing: s.setStartMissing,
+      })),
+    );
   // Columns stay tied to their dataset so a switch never maps roles from the previous one.
   const [loaded, setLoaded] = useState<{ key: string; columns: string[] } | null>(
     null,
@@ -239,9 +244,19 @@ export function RlDatasetRoles({
     config.setMapping(next);
   };
 
+  const selectedRewards = new Set(config.grpoRewards.map((r) => r.name));
+  const compareTo = library
+    .filter((r) => selectedRewards.has(r.name) && !r.shadowed)
+    .map((r) => r.rule?.compare_to)
+    .filter((c): c is string => typeof c === "string");
   const missing = columns
-    ? missingRlRoles(objective, columns, config.mapping)
+    ? rlStartMissing(objective, columns, config.mapping, compareTo)
     : [];
+  const missingKey = columns ? JSON.stringify(missing) : null;
+  useEffect(() => {
+    setStartMissing(missingKey === null ? null : JSON.parse(missingKey));
+  }, [missingKey, setStartMissing]);
+  useEffect(() => () => setStartMissing(null), [setStartMissing]);
   const mappedRoles = new Set(Object.values(config.mapping));
   const required = RL_REQUIRED_ROLES[objective];
   const chipRoles = roles.filter(
@@ -368,7 +383,9 @@ export function RlDatasetRoles({
       {columns && missing.length > 0 && (
         <p className="text-ui-11p5 text-amber-700 dark:text-amber-300">
           {t("rl.dataset.missing", {
-            roles: missing.map((role) => t(ROLE_LABEL[role])).join(", "),
+            roles: missing
+              .map((name) => (isRlRole(name) ? t(ROLE_LABEL[name]) : name))
+              .join(", "),
           })}
         </p>
       )}

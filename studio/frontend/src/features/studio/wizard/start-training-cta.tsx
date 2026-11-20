@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import {
   type StartValidationResult,
+  isRlRole,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingReadiness,
@@ -29,6 +30,7 @@ function resolveStartTrainingError(input: {
   hasDataset: boolean;
   datasetSource: DatasetSource;
   configValidation: StartValidationResult;
+  rlMissing: readonly string[];
 }): string | null {
   const {
     t,
@@ -42,6 +44,7 @@ function resolveStartTrainingError(input: {
     hasDataset,
     datasetSource,
     configValidation,
+    rlMissing,
   } = input;
   if (isIncompatible) {
     return !isAudioModel && isDatasetAudio === true
@@ -59,6 +62,13 @@ function resolveStartTrainingError(input: {
   }
   if (!configValidation.ok) {
     return t(configValidation.errorKey);
+  }
+  if (rlMissing.length > 0) {
+    return t("rl.dataset.missing", {
+      roles: rlMissing
+        .map((name) => (isRlRole(name) ? t(`rl.dataset.role.${name}`) : name))
+        .join(", "),
+    });
   }
   if (startError) {
     return startError;
@@ -94,6 +104,7 @@ export function StartTrainingCta() {
     hasModel,
     hasDataset,
     configValidation,
+    rlMissing,
   } = useTrainingReadiness();
   const { startError, startBlocked, stopRequested, startTrainingRun } =
     useTrainingActions();
@@ -121,9 +132,15 @@ export function StartTrainingCta() {
     hasDataset,
     datasetSource,
     configValidation,
+    rlMissing,
   });
   const isWarning =
-    !(startError || isIncompatible || !configValidation.ok) &&
+    !(
+      startError ||
+      isIncompatible ||
+      !configValidation.ok ||
+      rlMissing.length > 0
+    ) &&
     !!(modelError || datasetUnverified);
   const showsModelWarning =
     !!modelError &&

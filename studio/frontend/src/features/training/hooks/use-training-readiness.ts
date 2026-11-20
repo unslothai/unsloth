@@ -4,12 +4,14 @@
 import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { useMemo } from "react";
+import { effectiveTrainingObjective } from "../lib/rl-roles";
 import {
   type StartValidationResult,
   hasIncompatibleTrainingModalities,
   validateS3Source,
   validateTrainingConfig,
 } from "../lib/validation";
+import { useRlWorkspaceStore } from "../stores/rl-workspace-store";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import type { TrainingConfigState } from "../types/config";
 
@@ -23,12 +25,15 @@ export interface TrainingReadiness {
   datasetUnverified: boolean;
   modelError: string | null;
   configValidation: StartValidationResult;
+  // Roles or reward columns the RL objective needs and the dataset lacks.
+  rlMissing: readonly string[];
 }
 
 export function deriveTrainingReadiness(
   state: TrainingConfigState,
   deviceType: string,
   isOwner: boolean,
+  rlStartMissing: readonly string[] | null = null,
 ): TrainingReadiness {
   const configValidation = validateTrainingConfig(state, deviceType, isOwner);
   const hasModel = !!state.selectedModel;
@@ -54,6 +59,11 @@ export function deriveTrainingReadiness(
     !state.isCheckingDataset &&
     state.datasetCheckFailed &&
     !(hasDatasetModalityMetadata && modelHandlesAllModalities);
+  const rlMissing =
+    effectiveTrainingObjective(state) !== "sft" &&
+    state.trainingMethod !== "cpt"
+      ? (rlStartMissing ?? [])
+      : [];
 
   return {
     isReady:
@@ -63,6 +73,7 @@ export function deriveTrainingReadiness(
       !state.isCheckingDataset &&
       !isIncompatible &&
       !decisionConfigMissing &&
+      rlMissing.length === 0 &&
       configValidation.ok,
     isLoadingModel,
     isCheckingDataset: state.isCheckingDataset,
@@ -72,6 +83,7 @@ export function deriveTrainingReadiness(
     datasetUnverified,
     modelError,
     configValidation,
+    rlMissing,
   };
 }
 
@@ -89,11 +101,16 @@ function readinessEqual(
     current.datasetUnverified === next.datasetUnverified &&
     current.modelError === next.modelError &&
     current.configValidation.ok === next.configValidation.ok &&
-    current.configValidation.errorKey === next.configValidation.errorKey
+    current.configValidation.errorKey === next.configValidation.errorKey &&
+    current.rlMissing.join("\n") === next.rlMissing.join("\n")
   );
 }
 
-function createTrainingReadinessSelector(deviceType: string, isOwner: boolean) {
+function createTrainingReadinessSelector(
+  deviceType: string,
+  isOwner: boolean,
+  rlStartMissing: readonly string[] | null,
+) {
   let cachedReadiness: Readonly<TrainingReadiness> | null = null;
   let cachedState: TrainingConfigState | null = null;
 
@@ -101,7 +118,12 @@ function createTrainingReadinessSelector(deviceType: string, isOwner: boolean) {
     if (state === cachedState && cachedReadiness) {
       return cachedReadiness;
     }
-    const next = deriveTrainingReadiness(state, deviceType, isOwner);
+    const next = deriveTrainingReadiness(
+      state,
+      deviceType,
+      isOwner,
+      rlStartMissing,
+    );
     if (!(cachedReadiness && readinessEqual(cachedReadiness, next))) {
       cachedReadiness = Object.freeze(next);
     }
@@ -113,9 +135,10 @@ function createTrainingReadinessSelector(deviceType: string, isOwner: boolean) {
 export function useTrainingReadiness(): Readonly<TrainingReadiness> {
   const deviceType = usePlatformStore((state) => state.deviceType);
   const isOwner = useIsAccountOwner();
+  const rlStartMissing = useRlWorkspaceStore((state) => state.startMissing);
   const selector = useMemo(
-    () => createTrainingReadinessSelector(deviceType, isOwner),
-    [deviceType, isOwner],
+    () => createTrainingReadinessSelector(deviceType, isOwner, rlStartMissing),
+    [deviceType, isOwner, rlStartMissing],
   );
   return useTrainingConfigStore(selector);
 }

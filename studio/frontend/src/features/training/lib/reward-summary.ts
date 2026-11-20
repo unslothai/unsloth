@@ -19,6 +19,12 @@ export interface RewardSummary {
 
 type Rule = Record<string, unknown>;
 
+/** A typed reward weight within [-10, 10]; null while the field is cleared or not a number. */
+export function parseRewardWeight(raw: string): number | null {
+  const n = raw.trim() === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(n) ? Math.max(-10, Math.min(10, n)) : null;
+}
+
 export function formatScore(n: number): string {
   if (n === 0) {
     return "0";

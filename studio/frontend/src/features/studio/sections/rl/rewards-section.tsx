@@ -34,6 +34,7 @@ import {
   deleteReward,
   exportReward,
   importReward,
+  parseRewardWeight,
   previewCell,
   previewRewards,
   readRewardHead,
@@ -451,9 +452,10 @@ export function RewardsSection(): ReactElement {
                   className="h-7 w-[calc(60px*var(--ui-space-scale,1))] text-right text-xs"
                   value={selection.weight}
                   onChange={(e) => {
-                    const n = Number(e.target.value);
-                    if (Number.isFinite(n)) {
-                      setWeight(selection.name, Math.max(-10, Math.min(10, n)));
+                    // A cleared field keeps the weight: Number("") would switch the reward off.
+                    const n = parseRewardWeight(e.target.value);
+                    if (n !== null) {
+                      setWeight(selection.name, n);
                     }
                   }}
                 />

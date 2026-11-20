@@ -4,6 +4,7 @@
 import { usePlatformStore } from "@/config/env";
 import {
   effectiveTrainingObjective,
+  streamingBlockersClearChoice,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
@@ -78,8 +79,10 @@ export function DatasetAdvancedSettingsSection() {
   });
   const isStreamingSupported = streamingBlockers.length === 0;
 
+  const clearsStreaming = streamingBlockersClearChoice(streamingBlockers);
+
   useEffect(() => {
-    if (!datasetStreaming || isStreamingSupported) {
+    if (!datasetStreaming || !clearsStreaming) {
       return;
     }
     setDatasetStreaming(false);
@@ -89,7 +92,7 @@ export function DatasetAdvancedSettingsSection() {
       );
     }
   }, [
-    isStreamingSupported,
+    clearsStreaming,
     datasetStreaming,
     isDatasetAudio,
     isDatasetImage,
@@ -102,7 +105,7 @@ export function DatasetAdvancedSettingsSection() {
       datasetFormat={datasetFormat}
       datasetSliceEnd={datasetSliceEnd}
       datasetSliceStart={datasetSliceStart}
-      datasetStreaming={datasetStreaming}
+      datasetStreaming={datasetStreaming && isStreamingSupported}
       isDecisionModel={isDecisionModel}
       isStreamingSupported={isStreamingSupported}
       setDatasetFormat={setDatasetFormat}

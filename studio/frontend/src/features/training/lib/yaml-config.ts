@@ -216,7 +216,8 @@ function parseRlSection(rl: unknown): YamlRlSettings {
       ? n
       : undefined;
   };
-  set("rlBeta", inRange(r.beta, 0, 10));
+  // DPO/ORPO refuse beta 0 at Start (TrainingStartRequest); GRPO's KL coefficient may be 0.
+  set("rlBeta", inRange(r.beta, 0, 10, objective !== "grpo"));
   const intInRange = (v: unknown, lo: number, hi: number) => {
     const n = inRange(v, lo, hi);
     return n == null || Number.isInteger(n) ? n : undefined;

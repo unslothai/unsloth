@@ -36,7 +36,12 @@ function harness() {
         new Promise<Reply>((resolve) => pending.set(datasetName, resolve)),
       previewCell: () => "",
       useRlWorkspaceStore: (select: (s: unknown) => unknown) =>
-        select({ previewRow: shared.preview, setPreviewRow: (row: unknown) => (shared.preview = row) }),
+        select({
+          previewRow: shared.preview,
+          setPreviewRow: (row: unknown) => (shared.preview = row),
+          library: [],
+          setStartMissing: () => {},
+        }),
       useTrainingConfigStore: Object.assign(
         (select: (s: unknown) => unknown) =>
           select({
@@ -44,6 +49,7 @@ function harness() {
             dataset: shared.dataset,
             rlRoleMapping: {},
             setRlRoleMapping: () => {},
+            grpoRewards: [],
           }),
         { setState: () => {} },
       ),
@@ -51,7 +57,8 @@ function harness() {
       RL_IGNORE: "__ignore",
       RL_REQUIRED_ROLES: { grpo: [] },
       RL_ROLES: { grpo: [] },
-      missingRlRoles: () => [],
+      isRlRole: () => true,
+      rlStartMissing: () => [],
       syncRlMapping: (_o: unknown, _c: unknown, mapping: unknown) => mapping,
     },
     "@/i18n": { useT: () => (key: string) => key },

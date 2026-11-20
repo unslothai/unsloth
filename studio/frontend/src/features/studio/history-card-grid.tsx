@@ -50,6 +50,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { formatLoss } from "./sections/charts/utils";
 import { formatDuration } from "./sections/progress-section-lib";
 
 type StudioT = ReturnType<typeof useT>;
@@ -583,7 +584,7 @@ export function HistoryCardGrid({
                 >
                   <span>
                     {t("studio.history.loss")}:{" "}
-                    {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}
+                    {run.final_loss != null ? formatLoss(run.final_loss) : "--"}
                   </span>
                   <span>
                     {t("studio.history.steps")}: {run.final_step ?? 0}/

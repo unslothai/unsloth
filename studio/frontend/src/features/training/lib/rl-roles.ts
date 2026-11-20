@@ -37,6 +37,14 @@ export function effectiveTrainingObjective(s: {
     : s.trainingObjective;
 }
 
+/** RL keeps the stored streaming choice for when SFT comes back (the payload drops it); other
+ * streaming blockers clear it. */
+export function streamingBlockersClearChoice(
+  blockers: readonly string[],
+): boolean {
+  return blockers.some((blocker) => blocker !== "rlObjective");
+}
+
 export function isPreferenceObjective(objective: TrainingObjective): boolean {
   return objective === "dpo" || objective === "orpo";
 }
@@ -54,9 +62,18 @@ export const RL_REQUIRED_ROLES: Record<RlObjective, readonly RlRole[]> = {
   orpo: ["chosen", "rejected"],
   grpo: ["prompt"],
 };
-const AUTO_NAMES: Record<RlRole, readonly string[]> = {
+export const RL_ROLE_ALIASES: Record<RlRole, readonly string[]> = {
   prompt: ["prompt", "question", "instruction", "problem", "query", "input"],
-  answer: ["answer", "solution", "final_answer", "target", "label"],
+  answer: [
+    "answer",
+    "solution",
+    "final_answer",
+    "target",
+    "label",
+    "output",
+    "response",
+    "completion",
+  ],
   chosen: ["chosen", "accepted", "preferred"],
   rejected: ["rejected", "dispreferred"],
   system: ["system", "system_prompt"],
@@ -87,7 +104,7 @@ export function resolveRlMapping(
       continue;
     }
     // Aliases in backend priority order: Alpaca `instruction` beats an earlier `input`.
-    const column = AUTO_NAMES[role]
+    const column = RL_ROLE_ALIASES[role]
       .map((alias) =>
         columns.find(
           (c) =>
@@ -127,6 +144,24 @@ export function missingRewardColumns(
   return [...new Set(compareTo)].filter((column) =>
     column === "answer" ? !hasAnswer : !columns.includes(column),
   );
+}
+
+export function isRlRole(name: string): name is RlRole {
+  return name in RL_ROLE_ALIASES;
+}
+
+/** Roles, then GRPO reward compare_to columns, the dataset can't supply; Start stays off for any. */
+export function rlStartMissing(
+  objective: RlObjective,
+  columns: readonly string[],
+  mapping: Record<string, string>,
+  compareTo: readonly string[],
+): string[] {
+  const missing: string[] = missingRlRoles(objective, columns, mapping);
+  if (objective === "grpo" && missing.length === 0) {
+    missing.push(...missingRewardColumns(compareTo, columns, mapping));
+  }
+  return missing;
 }
 
 /** resolveRlMapping, keeping other objectives' roles so switching back restores them. */

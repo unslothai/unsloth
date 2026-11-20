@@ -15,13 +15,18 @@ import { type RlMetricPoint, rlChartKeys } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
 import { type ReactElement, useMemo } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import { useShallow } from "zustand/react/shallow";
+import { useChartPreferencesStore } from "./chart-preferences-store";
 import {
   CHART_CONTAINER_CLASS,
   DEFAULT_CHART_MARGIN,
   DEFAULT_Y_AXIS_WIDTH,
+  REWARD_LOG_KEY,
   formatAxisMetric,
   formatMetric,
   formatStepTick,
+  rewardLogLabel,
+  smoothSeries,
 } from "./utils";
 
 const PALETTE = [
@@ -33,8 +38,6 @@ const PALETTE = [
   "#eab308",
 ];
 
-// New TRL logs rewards/<fn>/mean; older TRL (and the notebook tables) log rewards/<fn>.
-const PER_REWARD_KEY = /^rewards\/(.+?)(\/mean)?$/;
 const PREFERENCE_REWARD_KEYS = new Set([
   "rewards/chosen",
   "rewards/rejected",
@@ -63,12 +66,12 @@ function buildCards(
   const perReward = [...keys]
     .filter(
       (k) =>
-        PER_REWARD_KEY.test(k) &&
+        REWARD_LOG_KEY.test(k) &&
         !k.endsWith("/std") &&
         !PREFERENCE_REWARD_KEYS.has(k),
     )
     .sort()
-    .map((k) => ({ key: k, label: k.replace(PER_REWARD_KEY, "$1") }));
+    .map((k) => ({ key: k, label: rewardLogLabel(k) }));
   const lengthKey = has("completions/mean_length")
     ? "completions/mean_length"
     : "completion_length";
@@ -148,23 +151,44 @@ function RlChartCard({
   data: Record<string, number>[];
 }): ReactElement {
   const t = useT();
-  const config = Object.fromEntries(
-    spec.series.map((s, i) => [
-      `s${i}`,
-      { label: s.label, color: PALETTE[i % PALETTE.length] },
-    ]),
-  ) satisfies ChartConfig;
-  const rows = data.map((row) => {
+  const { smoothing, showSmoothed } = useChartPreferencesStore(
+    useShallow((s) => ({
+      smoothing: s.smoothing,
+      showSmoothed: s.showSmoothed,
+    })),
+  );
+  // One step of a GRPO reward is mostly noise: the EMA is the trend, as on Training Loss.
+  const smoothed = useMemo(
+    () =>
+      showSmoothed ? smoothSeries(data, spec.series[0].key, smoothing) : null,
+    [data, spec.series, smoothing, showSmoothed],
+  );
+  const config = {
+    ...Object.fromEntries(
+      spec.series.map((s, i) => [
+        `s${i}`,
+        { label: s.label, color: PALETTE[i % PALETTE.length] },
+      ]),
+    ),
+    smoothed: { label: t("studio.charts.smoothed"), color: "#f59e0b" },
+  } satisfies ChartConfig;
+  const rows = data.map((row, index) => {
     const out: Record<string, number> = { step: row.step };
     spec.series.forEach((s, i) => {
       if (row[s.key] !== undefined) {
         out[`s${i}`] = row[s.key];
       }
     });
+    const trend = smoothed?.[index];
+    if (trend !== undefined) {
+      out.smoothed = trend;
+    }
     return out;
   });
-  const latest =
-    data.length > 0 ? data[data.length - 1][spec.series[0].key] : undefined;
+  const lastKey = smoothed ? "smoothed" : "s0";
+  const latest = [...rows]
+    .reverse()
+    .find((row) => row[lastKey] !== undefined)?.[lastKey];
 
   return (
     <Card size="sm">
@@ -232,13 +256,25 @@ function RlChartCard({
                 dataKey={`s${i}`}
                 stroke={`var(--color-s${i})`}
                 strokeWidth={i === 0 ? 2 : 1.5}
+                strokeOpacity={i === 0 && smoothed ? 0.35 : 1}
                 strokeDasharray={i === 0 ? undefined : "4 3"}
                 dot={false}
                 connectNulls={true}
                 isAnimationActive={false}
               />
             ))}
-            {spec.series.length > 1 && (
+            {smoothed && (
+              <Line
+                type="monotone"
+                dataKey="smoothed"
+                stroke="var(--color-smoothed)"
+                strokeWidth={2.2}
+                dot={false}
+                connectNulls={true}
+                isAnimationActive={false}
+              />
+            )}
+            {(spec.series.length > 1 || smoothed) && (
               <ChartLegend content={<ChartLegendContent />} />
             )}
           </LineChart>

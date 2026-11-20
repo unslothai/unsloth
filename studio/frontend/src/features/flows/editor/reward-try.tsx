@@ -10,7 +10,12 @@ import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label"
 import { useEffect, useState } from "react";
 import { useDocStore } from "../stores/doc-store";
 import type { FlowNode } from "../types";
-import { ANSWER_NAMES, PROMPT_NAMES, pick, roleColumn } from "./reward-roles";
+import {
+  ANSWER_NAMES,
+  PROMPT_NAMES,
+  pick,
+  rewardTryColumns,
+} from "./reward-roles";
 import { rewardMax } from "./train-status";
 
 interface Picked {
@@ -84,19 +89,23 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
       .then((res) => json<{ preview_samples?: Record<string, unknown>[] }>(res))
       .then((found) => {
         const first = found.preview_samples?.[0];
-        if (!alive || !first) return;
-        const params = node.params;
-        const answer = pick(first, roleColumn(params, "answer"), ANSWER_NAMES);
-        setRow(first);
-        setPrompt(pick(first, roleColumn(params, "prompt"), PROMPT_NAMES));
-        setReference(answer);
-        setCompletion((c) => c || sampleCompletion(answer));
+        if (alive && first) setRow(first);
       })
       .catch(() => undefined);
     return () => {
       alive = false;
     };
-  }, [repo, subset, split, node.params]);
+  }, [repo, subset, split]);
+
+  // Keyed on the role columns, not node.params: a reward or weight edit keeps the typed text.
+  const columns = rewardTryColumns(node.params);
+  useEffect(() => {
+    if (!row) return;
+    const answer = pick(row, columns.answer, ANSWER_NAMES);
+    setPrompt(pick(row, columns.prompt, PROMPT_NAMES));
+    setReference(answer);
+    setCompletion((c) => c || sampleCompletion(answer));
+  }, [row, columns.prompt, columns.answer]);
 
   const run = async () => {
     setBusy(true);

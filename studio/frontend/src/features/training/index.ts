@@ -85,15 +85,20 @@ export {
   RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
+  RL_ROLE_ALIASES,
   effectiveTrainingObjective,
+  isRlRole,
   missingRlRoles,
   rlObjectiveSupported,
+  rlStartMissing,
+  streamingBlockersClearChoice,
   resolveRlMapping,
   syncRlMapping,
 } from "./lib/rl-roles";
 export type { RlObjective, RlRole } from "./lib/rl-roles";
 export {
   formatScore,
+  parseRewardWeight,
   readRewardHead,
   ruleTags,
   summarizeRule,
