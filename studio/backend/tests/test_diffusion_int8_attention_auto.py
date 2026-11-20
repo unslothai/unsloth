@@ -499,9 +499,6 @@ def _fake_plan(mode = None, **extra):
         "sinks": None,
         "checks": [],
         "decision": ("bucket", mode),  # a real decision key carries the mode
-        # the clipped-key counts (rcnt) of its two heads, read by _learn_now: the first 8 bytes of the scratch buffer
-        "off": {"rcnt": 0},
-        "layout": {"rcnt": (0, (2,))},
     }
     if mode is not None:
         plan["mode"] = mode
@@ -509,40 +506,10 @@ def _fake_plan(mode = None, **extra):
     return plan
 
 
-class _FakeStore:
-    """persisted(): an in-memory namespace, so no test reads or writes the host's probe cache."""
-
-    def __init__(self):
-        self.data = {}
-
-    def get(self, card, key):
-        return self.data.get((card, key))
-
-    def put(self, card, key, value):
-        self.data[(card, key)] = value
-        return True
-
-
-def _recording_kernels(
-    monkeypatch,
-    plan,
-    clipped = (),
-):
-    """_cuda_attention on CPU tensors with the launches recorded (their ``sinks`` flag) and no CUDA call. A sink-path
-    quantiser launch of the plan's call ``n`` writes the clipped-key counts _learn_now reads: 1 for n in ``clipped``."""
-    import ctypes
-
+def _recording_kernels(monkeypatch, plan):
+    """_cuda_attention on CPU tensors with the launches recorded (their ``sinks`` flag) and no CUDA call."""
     I.forget_plans()
-    store = _FakeStore()
-    monkeypatch.setattr(I, "persisted", lambda: store)
-    monkeypatch.setattr(I, "_SINK_DIT", [("QwenImage21Transformer2DModel", "Qwen/Qwen-Image-2.1")])
     launched = []
-
-    def quantisers(*a):
-        launched.append(("quant", a[-1]))
-        if a[-1] is True:
-            ctypes.memset(a[4], 0, 8)
-            ctypes.c_int32.from_address(a[4] + 4).value = int(plan["calls"] - 1 in clipped)
 
     def find(
         q,
@@ -561,7 +528,7 @@ def _recording_kernels(
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
     monkeypatch.setattr(I, "_raw_stream", lambda index: 0)
-    monkeypatch.setattr(I, "_launch_quantisers", quantisers)
+    monkeypatch.setattr(I, "_launch_quantisers", lambda *a: launched.append(("quant", a[-1])))
     monkeypatch.setattr(I, "_launch_attention", lambda *a: launched.append(("attn", a[-1])))
     monkeypatch.setattr(I, "_check_sinks", lambda *a: launched.append(("check", None)))
     return launched
@@ -581,8 +548,7 @@ def test_a_route_outside_the_sink_families_runs_mains_kernels(monkeypatch):
 
 
 def test_a_sink_family_route_learns_and_takes_the_sink_path(monkeypatch):
-    """A MODE_RACE route (FLUX.3 Klein, Z-Image, Qwen-Image-2.1) runs the sink path while its plan learns; with no
-    verdict for its bucket yet the call's count is read later (no wait now)."""
+    """A MODE_RACE route (FLUX.3 Klein, Z-Image, Qwen-Image-2.1) runs the sink path while its plan learns."""
     plan = _fake_plan(mode = I.MODE_RACE)
     launched = _recording_kernels(monkeypatch, plan)
     q = torch.zeros(1, 4, 2, 8)
@@ -590,98 +556,94 @@ def test_a_sink_family_route_learns_and_takes_the_sink_path(monkeypatch):
     assert launched == [("quant", True), ("check", None), ("attn", True)] and plan["calls"] == 1
 
 
-def _known(plan, verdict, where):
-    """A verdict for ``plan``'s bucket: from an earlier plan of this load, or persisted by an earlier load."""
-    if where == "load":
-        I._decisions()[plan["decision"] + (True,)] = verdict
-    else:
-        I._persist_sink_verdict(
-            dict(plan, sink_race = {"sinks": 1.0}), verdict
-        )  # a race that ran to the end
-
-
-@pytest.mark.parametrize("where", ["load", "persisted"])
-@pytest.mark.parametrize("verdict", [True, False, "native"])
-def test_a_known_verdict_decides_at_the_first_clip_before_its_attention_runs(
-    monkeypatch, verdict, where
-):
-    """A seed repeats from the first render: where the bucket has a verdict, the plan's first clipped call takes it
-    before its attention runs (the kernels without the sink path quantise it again), with no race; later calls take
-    it with no further read."""
-    plan = _fake_plan(mode = I.MODE_RACE)
-    launched = _recording_kernels(monkeypatch, plan, clipped = (0,))
-    _known(plan, verdict, where)
-    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
-    monkeypatch.setattr(I, "_sink_race", lambda *a, **k: pytest.fail("a known verdict: no race"))
-    sentinel = torch.full((1, 4, 2, 8), 7.0)
-    monkeypatch.setattr(I, "native_attention", lambda *a: sentinel)
-    q = torch.zeros(1, 4, 2, 8)
-    first = I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert plan["sinks"] == verdict and (first is sentinel) is (verdict == "native")
-    expect = {
-        True: [("quant", True), ("attn", True)],
-        False: [("quant", True), ("quant", False), ("attn", False)],
-        "native": [("quant", True)],
-    }[verdict]
-    assert launched == expect
-    launched.clear()
-    second = I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert (second is sentinel) is (verdict == "native")
-    assert launched == ([] if verdict == "native" else [("quant", verdict), ("attn", verdict)])
-
-
-def test_a_known_torch_verdict_after_used_int8_calls_keeps_the_kernels(monkeypatch):
-    """A first clip at call n > 0: the calls before it ran the INT8 kernels, which torch's attention would replace on
-    the next render, so the plan keeps the sink path instead of a known torch verdict, and no route moves."""
-    plan = _fake_plan(mode = I.MODE_RACE)
-    launched = _recording_kernels(monkeypatch, plan, clipped = (3,))
-    _known(plan, "native", "persisted")
-    monkeypatch.setattr(
-        I, "_drop_routes", lambda plan: pytest.fail("no route moves under earlier int8 calls")
-    )
-    q = torch.zeros(1, 4, 2, 8)
-    for _ in range(5):
-        I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert plan["sinks"] is True and launched == [("quant", True), ("attn", True)] * 5
+def _decide_at(plan, race, live):
+    """The SINK_DECIDE_AT-th call of a plan one of whose read calls clipped, used by a render (live) or a thrown-away
+    graph warm-up."""
+    plan["calls"] = I.SINK_DECIDE_AT
+    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), live)]
+    return I._choose_path(plan, race = race)[0]
 
 
 @pytest.mark.parametrize("verdict", [False, "native"])
-def test_a_verdict_published_mid_learning_keeps_a_used_clipped_sink_path(monkeypatch, verdict):
-    """Another plan of the bucket publishes a verdict while this plan learns: an earlier used call of this plan that
-    clipped on the sink path (its check still pending) keeps the path for the load, so the next render repeats."""
+def test_used_sink_path_outputs_keep_the_path_for_the_load(monkeypatch, verdict):
+    """Graphs off, or real-step graph warm-ups: a render used this plan's clipped sink-path calls, so a race verdict
+    other than the sink path is not taken this load (the first render would differ from the next). The bucket keeps
+    the verdict for this load only: the next load races again."""
+    import contextlib
+
+    I.forget_plans()
     plan = _fake_plan(mode = I.MODE_RACE)
-    launched = _recording_kernels(monkeypatch, plan, clipped = (2,))
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: pytest.fail("the load keeps its routes"))
+    races = []
+
+    def race():
+        races.append(1)
+        return verdict
+
+    assert _decide_at(plan, race, live = True) is True
+    assert races == [1] and plan["sinks"] is True
+    assert I._decisions()[plan["decision"] + (True,)] == verdict
+    I.forget_plans()  # the next load
+    assert plan["decision"] + (True,) not in I._decisions()
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+    assert _decide_at(_fake_plan(mode = I.MODE_RACE), race, live = False) == verdict and races == [1, 1]
+    I.forget_plans()
+
+
+@pytest.mark.parametrize("verdict", [False, "native"])
+def test_a_bucket_verdict_of_this_load_keeps_a_used_clipped_sink_path(monkeypatch, verdict):
+    """Another plan of the bucket raced earlier in the load: a plan whose used calls clipped on the sink path keeps it
+    for the load instead of that verdict, with no race of its own; the bucket keeps the verdict."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
     monkeypatch.setattr(
         I, "_drop_routes", lambda plan: pytest.fail("the kept sink path moves no route")
     )
-    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), True)]
-    plan["calls"] = 2
+    plan = _fake_plan(mode = I.MODE_RACE)
     I._decisions()[plan["decision"] + (True,)] = verdict
-    q = torch.zeros(1, 4, 2, 8)
-    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert plan["sinks"] is True and plan["checks"] == []
-    assert launched == [("quant", True), ("attn", True)]
-    # the bucket keeps the verdict for the next plans (torch's attention after used INT8 calls becomes the kernels)
-    assert I._decisions()[plan["decision"] + (True,)] == (True if verdict == "native" else verdict)
+    assert _decide_at(plan, lambda: pytest.fail("a known verdict: no race"), live = True) is True
+    assert plan["checks"] == [] and I._decisions()[plan["decision"] + (True,)] == verdict
+    I.forget_plans()
+
+
+def test_a_bucket_verdict_after_thrown_away_clips_is_taken_as_before(monkeypatch):
+    """A clip only in thrown-away graph warm-ups is not a used output: the bucket's verdict is taken as on main."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    plan = _fake_plan(mode = I.MODE_RACE)
+    I._decisions()[plan["decision"] + (True,)] = False
+    assert _decide_at(plan, lambda: pytest.fail("a known verdict: no race"), live = False) is False
+    I.forget_plans()
 
 
 def test_a_native_verdict_never_moves_routes_another_used_plan_runs_on(monkeypatch):
-    """Graphs off, two resolutions in one load: a persisted torch verdict for the second plan's bucket would raise
-    the shared floor (or restore the stock processor) under the first plan's used INT8 calls, so it keeps the kernels."""
-    plan = _fake_plan(mode = I.MODE_RACE, shape = (1, 8192, 8192, 2, 8))
-    launched = _recording_kernels(monkeypatch, plan, clipped = (0,))
-    earlier = _fake_plan(mode = I.MODE_RACE, shape = (1, 4096, 4096, 2, 8), calls = 40, sinks = True)
-    earlier["decision"] = ("other bucket", I.MODE_RACE)
-    I._plans()["earlier"] = earlier
-    _known(plan, "native", "persisted")
+    """Graphs off, two resolutions in one load: a torch verdict raced for the second plan's bucket would raise the
+    shared floor (or restore the stock processor) under the first plan's used INT8 calls, so it keeps the kernels."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
     monkeypatch.setattr(
         I,
         "_drop_routes",
         lambda plan: pytest.fail("no route moves under another plan's used calls"),
     )
-    q = torch.zeros(1, 4, 2, 8)
-    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert plan["sinks"] is True and launched == [("quant", True), ("attn", True)]
+    plan = _fake_plan(mode = I.MODE_RACE, shape = (1, 8192, 8192, 2, 8))
+    earlier = _fake_plan(mode = I.MODE_RACE, shape = (1, 4096, 4096, 2, 8), calls = 40, sinks = True)
+    earlier["decision"] = ("other bucket", I.MODE_RACE)
+    I._plans()["plan"], I._plans()["earlier"] = plan, earlier
+    # the clip was in a thrown-away warm-up: only the other plan's used calls keep the kernels
+    assert _decide_at(plan, lambda: "native", live = False) is True
+    I.forget_plans()
 
 
 @pytest.mark.parametrize("discarded, moves", [(3, True), (2, False)])
@@ -703,80 +665,30 @@ def test_thrown_away_graph_warmups_of_another_plan_do_not_pin_its_routes(
     )
     other["decision"] = ("other bucket", I.MODE_RACE)
     I._plans()["plan"], I._plans()["other"] = plan, other
-    plan["calls"] = I.SINK_DECIDE_AT
-    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), False)]
-    path = I._choose_path(plan, race = lambda: "native")[0]
+    path = _decide_at(plan, lambda: "native", live = False)
     assert (path == "native" and dropped == [plan]) if moves else (path is True and not dropped)
-
-
-def test_a_pending_thrown_away_clip_does_not_keep_the_sink_path(monkeypatch):
-    """A pending clip from a thrown-away graph warm-up is not a used output: the published verdict is taken."""
-    plan = _fake_plan(mode = I.MODE_RACE)
-    launched = _recording_kernels(monkeypatch, plan, clipped = (2,))
-    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), False)]
-    plan["calls"] = 2
-    I._decisions()[plan["decision"] + (True,)] = False
-    q = torch.zeros(1, 4, 2, 8)
-    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert plan["sinks"] is False
-    assert launched == [("quant", True), ("quant", False), ("attn", False)]
-
-
-def _decide_at(plan, race, live):
-    """The SINK_DECIDE_AT-th call of a plan one of whose read calls clipped, used by a render (live) or a thrown-away
-    graph warm-up."""
-    plan["calls"] = I.SINK_DECIDE_AT
-    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), live)]
-    return I._choose_path(plan, race = race)[0]
-
-
-@pytest.mark.parametrize("verdict", [False, "native"])
-def test_used_sink_path_outputs_keep_the_path_for_the_load_and_teach_the_next(monkeypatch, verdict):
-    """Graphs off, or real-step graph warm-ups: a render used this plan's clipped sink-path calls, so a race verdict
-    other than the sink path is not taken this load (the first render would differ from the next). The verdict is
-    the bucket's and is persisted, so a new plan of the bucket, and the next load, take it at their first clip."""
-    import contextlib
-
-    plan = _fake_plan(mode = I.MODE_RACE)
-    _recording_kernels(monkeypatch, plan)
-    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
-    monkeypatch.setattr(I, "_drop_routes", lambda plan: pytest.fail("the load keeps its routes"))
-    races = []
-
-    def race():
-        races.append(1)
-        plan["sink_race"] = {"incumbent": 1.0, "sinks": 1.2, "plain": 1.1}
-        return verdict
-
-    assert _decide_at(plan, race, live = True) is True
-    assert races == [1] and plan["sinks"] is True
-    assert I._decisions()[plan["decision"] + (True,)] == verdict
-    assert I._known_verdict(_fake_plan(mode = I.MODE_RACE)) == verdict
-    I.forget_plans()  # the next load
-    assert I._known_verdict(_fake_plan(mode = I.MODE_RACE)) == verdict
+    I.forget_plans()
 
 
 def test_thrown_away_warmup_clips_take_the_race_verdict_as_before(monkeypatch):
     """The side-stream warm-ups of a capture are not used: a verdict other than the sink path is taken as on main."""
     import contextlib
 
+    I.forget_plans()
     plan = _fake_plan(mode = I.MODE_RACE)
-    _recording_kernels(monkeypatch, plan)
     monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
     assert _decide_at(plan, lambda: False, live = False) is False and plan["sinks"] is False
+    I.forget_plans()
 
 
-def test_a_learning_call_inside_a_graph_warmup_is_marked_thrown_away(monkeypatch):
-    """_check_sinks records whether the call's output is used: not inside a capture's side-stream warm-ups."""
+def _no_cuda_checks(monkeypatch):
     import contextlib
-
-    from core.inference import diffusion_cuda_graph as cg
 
     class _Event:
         def record(self):
             pass
 
-    plan = _fake_plan(mode = I.MODE_RACE)
     monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
     monkeypatch.setattr(torch.cuda, "Event", _Event)
     real_empty = torch.empty
@@ -785,6 +697,15 @@ def test_a_learning_call_inside_a_graph_warmup_is_marked_thrown_away(monkeypatch
         "empty",
         lambda *a, **k: real_empty(*a, **{x: y for x, y in k.items() if x != "pin_memory"}),
     )
+
+
+def test_a_learning_call_inside_a_graph_warmup_is_marked_thrown_away(monkeypatch):
+    """_check_sinks records whether the call's output is used: not inside a capture's side-stream warm-ups."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    # the clipped-key counts (rcnt) of its two heads: the first 8 bytes of the scratch buffer
+    plan = _fake_plan(mode = I.MODE_RACE, off = {"rcnt": 0}, layout = {"rcnt": (0, (2,))})
+    _no_cuda_checks(monkeypatch)
     i8 = torch.zeros(64, dtype = torch.int8)
     I._check_sinks(plan, i8, 0)
     with cg._recording_step():
@@ -795,45 +716,15 @@ def test_a_learning_call_inside_a_graph_warmup_is_marked_thrown_away(monkeypatch
 def test_every_undecided_call_before_the_decision_is_checked(monkeypatch):
     """Calls between the learning window and the decision still run the sink path a render uses: a first clip there
     must be seen, or a verdict other than the sink path would change the next render of the same seed."""
-    import contextlib
-
-    class _Event:
-        def record(self):
-            pass
-
-    plan = _fake_plan(mode = I.MODE_RACE)
-    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
-    monkeypatch.setattr(torch.cuda, "Event", _Event)
-    real_empty = torch.empty
-    monkeypatch.setattr(
-        torch,
-        "empty",
-        lambda *a, **k: real_empty(*a, **{x: y for x, y in k.items() if x != "pin_memory"}),
-    )
+    # the clipped-key counts (rcnt) of its two heads: the first 8 bytes of the scratch buffer
+    plan = _fake_plan(mode = I.MODE_RACE, off = {"rcnt": 0}, layout = {"rcnt": (0, (2,))})
+    _no_cuda_checks(monkeypatch)
     i8 = torch.zeros(64, dtype = torch.int8)
     for n in (I.SINK_LEARN_CALLS, I.SINK_DECIDE_AT - 1, I.SINK_DECIDE_AT):
         I._check_sinks(plan, i8, n)
     assert (
         len(plan["checks"]) == 2
     ), "the calls before the decision are checked, the deciding one is not"
-
-
-def test_with_a_known_verdict_a_plan_that_never_clips_drops_the_sink_path_after_its_learning_calls(
-    monkeypatch,
-):
-    """A known verdict, yet no clip in the first SINK_LEARN_CALLS calls: the last of them decides the kernels without
-    the sink path (the same bits), with no race and no deferred check."""
-    plan = _fake_plan(mode = I.MODE_RACE)
-    launched = _recording_kernels(monkeypatch, plan)
-    _known(plan, True, "load")
-    monkeypatch.setattr(I, "_sink_race", lambda *a, **k: pytest.fail("no sinks: no race"))
-    q = torch.zeros(1, 4, 2, 8)
-    for _ in range(I.SINK_LEARN_CALLS):
-        I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert plan["sinks"] is False and ("check", None) not in launched
-    launched.clear()
-    I._cuda_attention(q, q, q, {}, None, 0, I.MODE_RACE)
-    assert launched == [("quant", False), ("attn", False)]
 
 
 def _dispatch_card(monkeypatch, card_floor = None):
