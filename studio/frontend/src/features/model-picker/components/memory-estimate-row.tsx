@@ -245,15 +245,23 @@ export function MemoryEstimateRow({
           onExpandedChange={onExpandedChange}
         />
         <div aria-busy="true" className="space-y-3">
-          <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-            <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
-              {singleMemoryPool ? (isUnifiedMemory ? "Unified" : "Shared") : "GPU"}
-            </span>
-            <span
-              data-memory-placeholder=""
-              className="h-8 w-[calc(96px*var(--ui-space-scale,1))] shrink-0 animate-pulse rounded-full bg-[var(--panel-input-surface)] motion-reduce:animate-none"
-            />
-          </div>
+          {(singleMemoryPool
+            ? [isUnifiedMemory ? "Unified" : "Shared"]
+            : ["GPU", "Total"]
+          ).map((label) => (
+            <div
+              key={label}
+              className="flex min-h-8 min-w-0 items-center justify-between gap-3"
+            >
+              <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+                {label}
+              </span>
+              <span
+                data-memory-placeholder=""
+                className="h-8 w-[calc(96px*var(--ui-space-scale,1))] shrink-0 animate-pulse rounded-full bg-[var(--panel-input-surface)] motion-reduce:animate-none"
+              />
+            </div>
+          ))}
         </div>
         <div id={contentId} hidden={!expanded} className="mt-3 space-y-3">
           {PLACEHOLDER_LINES.map((label) => (

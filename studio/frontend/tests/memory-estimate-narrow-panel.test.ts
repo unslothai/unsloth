@@ -241,6 +241,9 @@ test("the first fetch keeps the row's frame instead of rendering nothing", () =>
     assert.match(html, /Estimated Memory Usage/);
     assert.match(html, /data-memory-placeholder=""/);
     assert.match(html, />GPU<\/span>/);
+    // A split pool loads with GPU and Total, so both lines are held.
+    assert.match(html, />Total<\/span>/);
+    assert.equal(html.match(/data-memory-placeholder=""/g)?.length, 2);
     assert.match(html, /Weights[\s\S]*KV cache[\s\S]*Compute buffers/);
     assert.ok(html.includes(`aria-expanded="${expanded}"`));
   }
@@ -248,6 +251,9 @@ test("the first fetch keeps the row's frame instead of rendering nothing", () =>
     render({ estimate: null, loading: true, singleMemoryPool: true, isUnifiedMemory: true }),
     />Unified<\/span>/,
   );
+  const shared = render({ estimate: null, loading: true, singleMemoryPool: true });
+  assert.match(shared, />Shared<\/span>/);
+  assert.equal(shared.match(/data-memory-placeholder=""/g)?.length, 1);
 });
 
 test("no row once the backend has said it cannot size the model", () => {
