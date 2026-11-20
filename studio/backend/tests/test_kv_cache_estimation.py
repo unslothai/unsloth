@@ -185,6 +185,7 @@ class TestGGUFParserNewFields:
             ("_expert_shared_feed_forward_length", "expert_shared_feed_forward_length", 512),
             ("_expert_shared_count", "expert_shared_count", 1),
             ("_embedding_length_per_layer_input", "embedding_length_per_layer_input", 256),
+            ("_attn_res_block_size", "attn_res.block_size", 6),
         ],
     )
     def test_field_parsed(self, field, gguf_key, value):
@@ -237,6 +238,14 @@ class TestGGUFParserNewFields:
             "gemma4", {"block_count": 3, "feed_forward_length": [6144, 12288, 6144]}
         )
         assert b._feed_forward_length == 12288
+
+    def test_per_layer_head_count_kept_without_setting_the_scalar(self):
+        # Inkling 2 stores head_count per layer; the scalar stays unset so other estimates keep
+        # their existing fallbacks.
+        b = _backend_from_gguf("inkling2", {"block_count": 3, "attention.head_count": [24, 24, 32]})
+        assert b._n_heads_by_layer == [24, 24, 32]
+        assert b._n_heads is None
+        assert _backend_from_gguf("testarch", {"block_count": 3})._n_heads_by_layer is None
 
 
 class TestArchSwaPatternDefaults:
