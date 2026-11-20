@@ -80,7 +80,7 @@ function StepperButton({ direction }: { direction: 1 | -1 }) {
           stepNumberInput(input, direction);
         }
       }}
-      className="flex h-1/2 w-full cursor-default items-center justify-center text-foreground/55 hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] active:bg-[rgb(0_0_0_/_calc(0.15*var(--contrast-wash-gain,1)))] dark:text-white/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:active:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]"
+      className="flex h-1/2 w-full cursor-default items-center justify-center text-foreground/55 hover:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] active:bg-[rgb(0_0_0/calc(0.15*var(--contrast-wash-gain,1)))] dark:text-white/70 dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:active:bg-[rgb(255_255_255/calc(0.15*var(--contrast-wash-gain,1)))]"
     >
       <StepperArrow direction={direction} />
     </button>
@@ -122,7 +122,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       {field}
       <span
         aria-hidden="true"
-        className="absolute top-1/2 right-2.5 flex h-[calc(21px*var(--ui-space-scale,1))] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-[rgb(0_0_0_/_calc(0.07*var(--contrast-wash-gain,1)))] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0! dark:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+        className="absolute top-1/2 right-2.5 flex h-[calc(21px*var(--ui-space-scale,1))] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-[rgb(0_0_0/calc(0.07*var(--contrast-wash-gain,1)))] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0! dark:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))]"
       >
         <StepperButton direction={1} />
         <StepperButton direction={-1} />

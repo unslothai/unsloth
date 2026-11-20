@@ -256,7 +256,7 @@ export function AudioApiExamples({
             {t("settings.apiKeys.audioApi.title")}
           </h2>
         )}
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-ui-12/relaxed text-muted-foreground">
           {t("settings.apiKeys.audioApi.description")}
         </p>
       </div>
@@ -296,7 +296,7 @@ export function AudioApiExamples({
         </div>
       </div>
       {placeholder || needsLoad ? (
-        <div className="flex min-w-0 flex-col gap-1 text-ui-11 leading-relaxed text-muted-foreground">
+        <div className="flex min-w-0 flex-col gap-1 text-ui-11/relaxed text-muted-foreground">
           {placeholder ? (
             <p>{t("settings.apiKeys.audioApi.placeholderModel")}</p>
           ) : null}

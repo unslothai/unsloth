@@ -103,7 +103,7 @@ export function LanguageSelect() {
           aria-label={t("settings.appearance.language.label")}
           aria-expanded={open}
           aria-busy={pendingPreference !== null}
-          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-sm outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-sm outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))]"
         >
           <span data-language-label={true} className="min-w-0 truncate">
             {shownLabel}
@@ -158,7 +158,7 @@ export function LanguageSelect() {
               className={cn(
                 "hover-scrollbar max-h-64 overflow-y-auto overscroll-contain",
                 scrolled &&
-                  "[mask-image:linear-gradient(to_bottom,transparent_0,#000_14px)]",
+                  "mask-[linear-gradient(to_bottom,transparent_0,#000_14px)]",
               )}
             >
               {shownLocales.map(([value, metadata]) => (

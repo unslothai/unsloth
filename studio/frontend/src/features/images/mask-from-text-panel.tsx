@@ -266,7 +266,7 @@ export function MaskFromTextPanel({
         <InfoHint>{MASK_FROM_TEXT_HINT}</InfoHint>
       </div>
       {status && !status.supported ? (
-        <p className="text-ui-11 leading-snug text-muted-foreground">
+        <p className="text-ui-11/snug text-muted-foreground">
           {status.reason || "Mask from text is not available on this install."}
         </p>
       ) : null}
@@ -310,9 +310,9 @@ export function MaskFromTextPanel({
         />
         <span className="text-ui-11 text-muted-foreground">Add to current mask</span>
       </div>
-      {error ? <p className="text-ui-11 leading-snug text-destructive">{error}</p> : null}
+      {error ? <p className="text-ui-11/snug text-destructive">{error}</p> : null}
       {summary && !error ? (
-        <p data-testid="mask-from-text-summary" className="text-ui-11 leading-snug text-muted-foreground">
+        <p data-testid="mask-from-text-summary" className="text-ui-11/snug text-muted-foreground">
           {summary}
         </p>
       ) : null}

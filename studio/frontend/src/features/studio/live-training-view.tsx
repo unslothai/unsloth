@@ -177,7 +177,7 @@ export function LiveTrainingView(): ReactElement {
       <div
         className={cn(
           "relative z-10 flex flex-col gap-6 transition-[filter]",
-          showOverlay && "blur",
+          showOverlay && "blur-sm",
         )}
       >
         <div data-tour="studio-training-progress">

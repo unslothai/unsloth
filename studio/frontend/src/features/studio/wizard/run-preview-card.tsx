@@ -77,7 +77,7 @@ function MetaRow({
       <span
         className={cn(
           "min-w-0 text-ui-12p5 text-foreground/90",
-          wrap ? "break-words text-right" : "truncate",
+          wrap ? "wrap-break-word text-right" : "truncate",
           mono && "font-mono text-ui-12",
         )}
         title={title}
@@ -179,21 +179,21 @@ function TransformersUpgradeNotice(): ReactElement | null {
     return null;
   }
   return (
-    <section className="flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2.5">
+    <section className="flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/6 px-3 py-2.5">
       {installVersion ? (
-        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+        <p className="text-ui-10p5/relaxed text-foreground/80">
           {t("studio.preview.noticeTransformersUpgrade", {
             version: installVersion,
           })}
         </p>
       ) : null}
       {fourBitUnavailable ? (
-        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+        <p className="text-ui-10p5/relaxed text-foreground/80">
           {t("studio.preview.noticeSixteenBitOnly")}
         </p>
       ) : null}
       {installSwitchesTo16Bit ? (
-        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+        <p className="text-ui-10p5/relaxed text-foreground/80">
           {t("studio.preview.noticeInstallSwitchesSixteenBit")}
         </p>
       ) : null}
@@ -252,7 +252,7 @@ function PreviewResource({
       <p
         className={cn(
           isModel
-            ? "break-words font-heading text-xl font-semibold leading-[1.2] tracking-[-0.018em]"
+            ? "wrap-break-word font-heading text-xl font-semibold leading-[1.2] tracking-[-0.018em]"
             : "truncate font-mono text-ui-12",
           selected
             ? isModel
@@ -424,7 +424,7 @@ export function RunPreviewCard({
       data-tour="studio-run-preview"
       className={cn(
         "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-[color-mix(in_oklab,var(--foreground)_calc(1.2%*var(--contrast-wash-gain,1)),transparent)] p-6",
-        "dark:bg-[rgb(255_255_255_/_calc(0.018*var(--contrast-wash-gain,1)))]",
+        "dark:bg-[rgb(255_255_255/calc(0.018*var(--contrast-wash-gain,1)))]",
       )}
     >
       <header className="flex items-center justify-between gap-3">
@@ -435,8 +435,8 @@ export function RunPreviewCard({
           className={cn(
             "inline-flex h-5 items-center rounded-full px-2 text-ui-10 font-medium tracking-nav",
             isReady
-              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground/90 dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
-              : "bg-[color-mix(in_oklab,var(--foreground)_calc(3%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground/70 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground/90 dark:bg-[rgb(255_255_255/calc(0.08*var(--contrast-wash-gain,1)))]"
+              : "bg-[color-mix(in_oklab,var(--foreground)_calc(3%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground/70 dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]",
           )}
         >
           {isReady ? t("studio.preview.ready") : t("studio.preview.notReady")}
@@ -538,7 +538,7 @@ export function RunPreviewCard({
 
       <TransformersUpgradeNotice />
 
-      <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]" />
+      <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]" />
 
       <div className="-mt-2">{startCta}</div>
     </aside>

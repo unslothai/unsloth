@@ -200,7 +200,7 @@ export function ClipsCardEmpty({
         {title ? (
           <h2 className="text-sm font-medium text-balance text-foreground">{title}</h2>
         ) : null}
-        <p className="text-ui-13 leading-normal text-pretty">{text}</p>
+        <p className="text-ui-13/normal text-pretty">{text}</p>
       </div>
       {actions ? <div className="mt-1">{actions}</div> : null}
     </div>

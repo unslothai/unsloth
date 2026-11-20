@@ -360,7 +360,7 @@ export function OpenAICodeExecSection({
         <div className="flex min-w-0 items-center gap-1.5">
           <label
             htmlFor="openai-container-ttl"
-            className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg"
+            className="min-w-0 text-ui-13/tight font-medium tracking-nav text-nav-fg"
           >
             Idle timeout
           </label>
@@ -388,7 +388,7 @@ export function OpenAICodeExecSection({
           <Button
             size="sm"
             variant="ghost"
-            className="-mr-1 h-6 w-6 p-0 text-muted-foreground"
+            className="-mr-1 size-6 p-0 text-muted-foreground"
             onClick={() => void refresh()}
             disabled={isLoading || !hasCredential}
             aria-label="Refresh container list"
@@ -479,7 +479,7 @@ export function OpenAICodeExecSection({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-6 w-6 shrink-0 p-0 text-muted-foreground hover:text-destructive"
+                    className="size-6 shrink-0 p-0 text-muted-foreground hover:text-destructive"
                     onClick={(e) => {
                       e.stopPropagation();
                       setPendingDelete(c);

@@ -32,7 +32,7 @@ export function BaseNodeHeader({
     <header
       {...props}
       className={cn(
-        "mx-0 my-0 -mb-1 flex flex-row items-center justify-between gap-2 px-3 py-2",
+        "m-0 -mb-1 flex flex-row items-center justify-between gap-2 px-3 py-2",
         className,
       )}
     />

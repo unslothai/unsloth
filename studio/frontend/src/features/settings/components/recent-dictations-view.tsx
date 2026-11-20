@@ -228,7 +228,7 @@ export function RecentDictationsView({
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
           <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
-            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
+            <p className="whitespace-pre-wrap wrap-break-word text-sm/relaxed text-foreground select-text">
               {selected.text}
             </p>
           </article>
@@ -366,7 +366,7 @@ export function RecentDictationsView({
                     className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">
+                      <span className="line-clamp-3 whitespace-pre-wrap wrap-break-word text-sm text-foreground">
                         {dictation.text}
                       </span>
                       <span className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground sm:hidden">

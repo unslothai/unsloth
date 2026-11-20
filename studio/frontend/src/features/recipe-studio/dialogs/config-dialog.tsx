@@ -81,12 +81,12 @@ export function ConfigDialog({
                 <div className="mb-2 flex items-start corner-squircle justify-between gap-3 rounded-xl border border-border/60 px-3 pt-2 pb-4">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold">Keep out of final dataset</p>
-                    <p className="break-words text-xs text-muted-foreground">
+                    <p className="wrap-break-word text-xs text-muted-foreground">
                       Use this step while generating, but leave it out of exported rows.
                     </p>
                   </div>
                   <Switch
-                    className="mt-[var(--ui-title-cap-inset)]"
+                    className="mt-(--ui-title-cap-inset)"
                     checked={config.drop ?? false}
                     disabled={readOnly}
                     onCheckedChange={(value) => onUpdate(config.id, { drop: value })}

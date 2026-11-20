@@ -369,7 +369,7 @@ export function ProgressSection({
           )}
 
           {data.error && (
-            <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
+            <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-ui-12/relaxed text-red-500">
               {data.error}
             </p>
           )}
@@ -377,7 +377,7 @@ export function ProgressSection({
           {data.warnings.length > 0 && (
             <div
               aria-live="polite"
-              className="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+              className="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-ui-12/relaxed text-amber-700 dark:text-amber-300"
             >
               <HugeiconsIcon
                 icon={Alert02Icon}
@@ -385,7 +385,7 @@ export function ProgressSection({
               />
               <ul className="min-w-0 space-y-1">
                 {data.warnings.map((warning) => (
-                  <li key={warning} className="break-words">
+                  <li key={warning} className="wrap-break-word">
                     {warning}
                   </li>
                 ))}

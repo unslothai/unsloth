@@ -136,7 +136,7 @@ test("an older idle response cannot defer detection after a first-use request wa
 test("the real route guard keeps hover preloads cold and starts detection on navigation", async () => {
   reset();
   const rootSource = readSrc("app/routes/__root.tsx");
-  const match = /beforeLoad: async \(\{ location, preload \}\) => \{([\s\S]*?)\n  \},\n  component: RootLayout/.exec(rootSource);
+  const match = /beforeLoad: async \(\{ location, preload \}\) => \{([\s\S]*?)\n {2}\},\n {2}component: RootLayout/.exec(rootSource);
   assert.ok(match, "root route guard moved");
   const beforeLoad = new Function(
     "fetchDeviceType", "routeNeedsHardware", "usePlatformStore",
@@ -194,7 +194,7 @@ test("a deferred reply names the server platform and is re-read until measured",
 test("a deferred verdict neither redirects nor blocks Train entry points on a guess", async () => {
   reset();
   const rootSource = readSrc("app/routes/__root.tsx");
-  const match = /beforeLoad: async \(\{ location, preload \}\) => \{([\s\S]*?)\n  \},\n  component: RootLayout/.exec(rootSource);
+  const match = /beforeLoad: async \(\{ location, preload \}\) => \{([\s\S]*?)\n {2}\},\n {2}component: RootLayout/.exec(rootSource);
   assert.ok(match, "root route guard moved");
   const beforeLoad = new Function(
     "fetchDeviceType", "routeNeedsHardware", "usePlatformStore",

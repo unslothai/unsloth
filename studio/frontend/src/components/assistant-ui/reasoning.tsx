@@ -314,7 +314,7 @@ function ReasoningText({
       data-slot="reasoning-text"
       data-streaming={streaming ? "" : undefined}
       className={cn(
-        "aui-reasoning-text relative z-0 pt-4 pb-0 text-sm text-trace-foreground leading-relaxed",
+        "aui-reasoning-text relative z-0 pt-4 pb-0 text-sm/relaxed text-trace-foreground",
         "[&_p]:my-0 [&_p+p]:mt-4 [&_ul]:my-4 [&_ol]:my-4 [&_pre]:my-4",
         !virtualized &&
           cn(
@@ -589,7 +589,7 @@ function ReasoningTail({
       className={cn(
         // The mask bleeds into the side padding (keeps list markers); expanded keeps this box so nothing rewraps.
         (capped || expanded) &&
-          "-ml-[calc(1.25rem*var(--ui-space-scale,1))] -mr-[calc(0.5rem*var(--ui-space-scale,1))] mt-2 min-w-0 overflow-x-hidden overflow-y-auto pl-[calc(1.25rem*var(--ui-space-scale,1))] pr-[calc(0.5rem*var(--ui-space-scale,1))] pb-3 [scrollbar-gutter:stable] [&>[data-slot=reasoning-text]]:pt-1",
+          "ml-[calc(-1.25rem*var(--ui-space-scale,1))] mr-[calc(-0.5rem*var(--ui-space-scale,1))] mt-2 min-w-0 overflow-x-hidden overflow-y-auto pl-[calc(1.25rem*var(--ui-space-scale,1))] pr-[calc(0.5rem*var(--ui-space-scale,1))] pb-3 [scrollbar-gutter:stable] *:data-[slot=reasoning-text]:pt-1",
         capped && "max-h-[min(22rem,48vh)]",
       )}
     >

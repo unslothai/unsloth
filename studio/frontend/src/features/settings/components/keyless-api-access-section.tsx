@@ -198,7 +198,7 @@ export function KeylessApiAccessSection({
             <h2 className="settings-heading text-base font-semibold font-heading">
               Keyless API access
             </h2>
-            <p className="text-xs text-muted-foreground leading-relaxed">
+            <p className="text-ui-12/relaxed text-muted-foreground">
               Use Unsloth from other apps without creating an API key. Signing
               in is unchanged; public URLs and Colab always require a key.
             </p>
@@ -207,13 +207,13 @@ export function KeylessApiAccessSection({
       </div>
 
       {settings?.suspendedByAccounts ? (
-        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-muted-foreground">
+        <p className="border-t border-border/60 px-4 py-2.5 text-ui-12/snug text-muted-foreground">
           Off while this install has other accounts: every request needs a key.
         </p>
       ) : null}
 
       {error ? (
-        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-destructive">
+        <p className="border-t border-border/60 px-4 py-2.5 text-ui-12/snug text-destructive">
           {error}
         </p>
       ) : null}

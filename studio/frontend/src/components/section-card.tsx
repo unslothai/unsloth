@@ -60,7 +60,7 @@ export function SectionCard({
       )}
     >
       {featured && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-control-accent/[0.04] to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-linear-to-b from-control-accent/4 to-transparent" />
       )}
       <div className="flex items-center gap-3">
         <div

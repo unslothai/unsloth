@@ -69,7 +69,7 @@ const TokenStream = memo(function TokenStream({
   showIds: boolean;
 }) {
   return (
-    <div className="font-mono text-ui-12p5 leading-6 whitespace-pre-wrap break-words">
+    <div className="font-mono text-ui-12p5/ui-24 whitespace-pre-wrap wrap-break-word">
       {tokens.map(([id, text, trained], index) => (
         <span
           // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional

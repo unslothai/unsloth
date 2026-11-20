@@ -127,5 +127,5 @@ test("a status without the baked set never asks for a reload, and the backend re
   const start = models.indexOf("class DiffusionStatusResponse(BaseModel):");
   const end = models.indexOf("\nclass ", start + 1);
   assert.ok(start >= 0 && end > start);
-  assert.match(models.slice(start, end), /\n    baked_lora_specs: list\[dict\] = Field\(/);
+  assert.match(models.slice(start, end), /\n {4}baked_lora_specs: list\[dict\] = Field\(/);
 });

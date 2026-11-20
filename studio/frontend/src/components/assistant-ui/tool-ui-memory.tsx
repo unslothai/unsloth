@@ -75,7 +75,7 @@ export const MemoryToolUI: ToolCallMessagePartComponent<MemoryArgs> = ({
         <div className="space-y-2 text-sm" aria-live="polite">
           <p className="text-muted-foreground">{feedback.label}</p>
           {!forgetting && value && (
-            <p className="whitespace-pre-wrap break-words">{value}</p>
+            <p className="whitespace-pre-wrap wrap-break-word">{value}</p>
           )}
           {feedback.detail && (
             <p className="text-muted-foreground">{feedback.detail}</p>

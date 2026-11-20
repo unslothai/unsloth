@@ -397,12 +397,12 @@ function LocationsSection() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle className="break-words">
+            <AlertDialogTitle className="wrap-break-word">
               {t("settings.library.locationResetUnavailableTitle", {
                 name: resettingAway ? nameOf(resettingAway) : "",
               })}
             </AlertDialogTitle>
-            <AlertDialogDescription className="break-words">
+            <AlertDialogDescription className="wrap-break-word">
               {t("settings.library.locationResetUnavailableDescription", {
                 path: resettingAway?.path ?? "",
               })}

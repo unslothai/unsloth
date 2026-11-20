@@ -41,7 +41,7 @@ export function ConnectionStatusLine({
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-1.5 text-xs leading-snug",
+        "flex min-w-0 items-center gap-1.5 text-ui-12/snug",
         className,
       )}
       title={

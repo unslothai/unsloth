@@ -95,6 +95,7 @@ function AvatarGroupCount({
     <div
       data-slot="avatar-group-count"
       className={cn(
+        // eslint-disable-next-line better-tailwindcss/enforce-canonical-classes -- nested :has() must search descendants here, so the canonical rewrite would change which elements match
         "bg-muted text-muted-foreground size-8 rounded-full text-sm group-has-data-[size=lg]/avatar-group:size-10 group-has-data-[size=sm]/avatar-group:size-6 [--avatar-count-icon:calc(var(--spacing)*4)] group-has-data-[size=lg]/avatar-group:[--avatar-count-icon:calc(var(--spacing)*5)] group-has-data-[size=sm]/avatar-group:[--avatar-count-icon:calc(var(--spacing)*3)] [&>svg]:size-(--avatar-count-icon) ring-background relative flex shrink-0 items-center justify-center ring-2",
         className,
       )}

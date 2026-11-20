@@ -241,7 +241,7 @@ function DownloadRow({
                 onClick={() => void retryDownload(job)}
                 className={cn(
                   "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
-                  "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+                  "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]",
                 )}
               >
                 <HugeiconsIcon
@@ -269,7 +269,7 @@ function DownloadRow({
               }
               className={cn(
                 "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
-                "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+                "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]",
               )}
             >
               <HugeiconsIcon
@@ -398,7 +398,7 @@ export function DownloadManagerPanel({
               type="button"
               aria-label="Collapse downloads"
               onClick={() => setCollapsed(true)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]"
             >
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
@@ -407,7 +407,7 @@ export function DownloadManagerPanel({
               />
             </button>
           </div>
-          <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
+          <ul className="max-h-[60dvh] divide-y divide-foreground/6 overflow-y-auto [scrollbar-width:thin]">
             {jobKeys.map((jobKey) => (
               <DownloadRow
                 key={jobKey}

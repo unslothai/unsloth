@@ -227,7 +227,7 @@ function CopyText({
           setTimeout(() => setCopied(false), 1800);
         }
       }}
-      className="shrink-0 rounded font-sans text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="shrink-0 rounded-sm font-sans text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
       {copied ? t("settings.apiKeys.copied") : label}
     </button>
@@ -257,10 +257,10 @@ function CodeBlock({
           value={value}
           aria-label={title}
           onChange={(e) => onChange(e.target.value)}
-          className="field-sizing-content min-h-72 w-full resize-none bg-transparent px-3.5 py-3 font-mono text-ui-12 leading-relaxed text-foreground outline-none"
+          className="field-sizing-content min-h-72 w-full resize-none bg-transparent px-3.5 py-3 font-mono text-ui-12/relaxed text-foreground outline-none"
         />
       ) : (
-        <pre className="max-h-128 overflow-auto px-3.5 py-3 font-mono text-ui-12 leading-relaxed text-foreground">
+        <pre className="max-h-128 overflow-auto px-3.5 py-3 font-mono text-ui-12/relaxed text-foreground">
           {value}
         </pre>
       )}
@@ -550,11 +550,11 @@ function AnswerHeading({
       <span className="text-ui-12 text-muted-foreground">
         {t("decisions.answer")}
       </span>
-      <span className="break-words text-ui-34 font-semibold leading-[1.1] tracking-[-0.025em] text-foreground">
+      <span className="wrap-break-word text-ui-34 font-semibold leading-[1.1] tracking-[-0.025em] text-foreground">
         {answer}
       </span>
       {detail ? (
-        <span className="break-words text-ui-15 leading-snug text-muted-foreground">
+        <span className="wrap-break-word text-ui-15/snug text-muted-foreground">
           {detail}
         </span>
       ) : null}
@@ -713,7 +713,7 @@ function ErrorResult({
             ? t("decisions.cantRun")
             : t("decisions.failed", { status })}
         </span>
-        <span className="break-words text-ui-13 text-red-700/80 dark:text-red-300/80">
+        <span className="wrap-break-word text-ui-13 text-red-700/80 dark:text-red-300/80">
           {message}
         </span>
       </div>
@@ -1166,7 +1166,7 @@ export function DecisionTryDialog({
 
               {inputView === "form" ? (
                 <>
-                  <p className="text-ui-15 leading-relaxed text-foreground">
+                  <p className="text-ui-15/relaxed text-foreground">
                     {t(TYPE_ABOUT[type])}
                   </p>
                   <Field
@@ -1179,7 +1179,7 @@ export function DecisionTryDialog({
                       value={draft.state}
                       onChange={(e) => update({ state: e.target.value })}
                       spellCheck={false}
-                      className="min-h-28 font-mono text-ui-13 leading-relaxed"
+                      className="min-h-28 font-mono text-ui-13/relaxed"
                     />
                   </Field>
                   <Field
@@ -1209,7 +1209,7 @@ export function DecisionTryDialog({
                 </>
               ) : (
                 <>
-                  <p className="text-ui-13 leading-relaxed text-muted-foreground">
+                  <p className="text-ui-13/relaxed text-muted-foreground">
                     {t("decisions.jsonHelp")}
                   </p>
                   <CodeBlock

@@ -52,7 +52,7 @@ export function ToolLiveOutputPane({ output }: { output: string }) {
       <pre
         ref={scrollRef}
         onScroll={handleScroll}
-        className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs"
+        className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-xs"
       >
         {visible}
       </pre>

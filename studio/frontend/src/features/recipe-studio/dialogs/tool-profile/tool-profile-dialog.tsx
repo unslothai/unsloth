@@ -122,7 +122,7 @@ function McpServerCard({
   return (
     <Collapsible open={open} onOpenChange={onOpenChange}>
       <div className="rounded-xl border border-border/60 bg-background/80">
-        <div className="flex items-start gap-2 px-4 py-4">
+        <div className="flex items-start gap-2 p-4">
           <CollapsibleTrigger asChild={true}>
             <button
               type="button"
@@ -162,7 +162,7 @@ function McpServerCard({
           </Button>
         </div>
 
-        <CollapsibleContent className="space-y-4 border-t border-border/50 px-4 pt-4 pb-4">
+        <CollapsibleContent className="space-y-4 border-t border-border/50 p-4">
           {error && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               {error}
@@ -666,7 +666,7 @@ export function ToolProfileDialog({
                   </p>
                 </div>
                 <Button
-                  className="mt-[var(--ui-title-cap-inset)]"
+                  className="mt-(--ui-title-cap-inset)"
                   type="button"
                   size="xs"
                   variant="outline"

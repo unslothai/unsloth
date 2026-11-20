@@ -303,7 +303,7 @@ export function FolderBrowser({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="corner-squircle dialog-soft-surface gap-0 p-0 sm:max-w-2xl [&_[data-slot=dialog-close]]:top-4"
+        className="corner-squircle dialog-soft-surface gap-0 p-0 sm:max-w-2xl **:data-[slot=dialog-close]:top-4"
         overlayClassName="bg-black/20 backdrop-blur-none"
         data-testid="folder-browser-dialog"
         onOpenAutoFocus={(event) => {
@@ -496,7 +496,7 @@ export function FolderBrowser({
             )}
 
             <div className="px-4 pb-2">
-              <div className="flex h-9 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+              <div className="flex h-9 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]">
                 <input
                   ref={inputRef}
                   type="text"

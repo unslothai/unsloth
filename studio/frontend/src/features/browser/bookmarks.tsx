@@ -342,7 +342,7 @@ export function BookmarkStar({
               )}
             >
               {/* Optically centred: the star's points weigh it low. */}
-              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-3.75 -translate-y-[0.5px]" />
+              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-3.75 translate-y-[-0.5px]" />
             </button>
           </PopoverAnchor>
         </TooltipTrigger>

@@ -114,7 +114,7 @@ function ImportResultList({ imported, failed }: SkillImportResult): ReactElement
             />
             <span className="truncate">{failure.name}</span>
           </div>
-          <p className="pl-5 text-xs break-words text-muted-foreground">{failure.error}</p>
+          <p className="pl-5 text-xs wrap-break-word text-muted-foreground">{failure.error}</p>
         </li>
       ))}
       {imported.map((skill) => (
@@ -557,7 +557,7 @@ export function ChatSkillsDialog({
                 variant="outline"
                 disabled={importing}
                 // Icon-only below sm, where the icon sets no height: a circle as tall as New skill.
-                className="max-sm:size-[calc(1lh_+_14px*var(--ui-space-scale,1)_+_2px)] max-sm:p-0"
+                className="max-sm:size-[calc(1lh+14px*var(--ui-space-scale,1)+2px)] max-sm:p-0"
                 aria-label={t("skills.import")}
                 title={t("skills.import")}
                 onClick={() => fileInputRef.current?.click()}
@@ -933,7 +933,7 @@ function SkillRow({
   return (
     <div
       className={cn(
-        "group pointer-events-none relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+        "group pointer-events-none relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]",
         skill.shadowed && "opacity-60",
       )}
     >
@@ -982,7 +982,7 @@ function ScrollField({ htmlFor, children }: { htmlFor: string; children: ReactNo
   return (
     <label
       htmlFor={htmlFor}
-      className="block cursor-text overflow-hidden rounded-xl border border-border bg-background py-3 pr-1.5 pl-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+      className="block cursor-text overflow-hidden rounded-xl border border-border bg-background py-3 pr-1.5 pl-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))]"
     >
       {children}
     </label>
@@ -1071,7 +1071,7 @@ function Editor({
       {notice ? (
         <p
           className={cn(
-            "rounded-lg px-4 py-3 text-xs leading-relaxed",
+            "rounded-lg px-4 py-3 text-ui-12/relaxed",
             notice.tone === "error"
               ? "border border-destructive/30 bg-destructive/5 text-destructive"
               : "bg-muted/50 text-muted-foreground",
@@ -1143,7 +1143,7 @@ function Editor({
             onChange={(event) => onInstructions(event.target.value)}
             className={cn(
               SCROLL_FIELD_TEXTAREA,
-              "h-[min(13.5rem,29dvh)] min-h-22 font-mono text-ui-12 leading-relaxed md:text-ui-12",
+              "h-[min(13.5rem,29dvh)] min-h-22 font-mono text-ui-12/relaxed md:text-ui-12",
               readOnly && "text-muted-foreground",
             )}
           />

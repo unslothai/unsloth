@@ -179,7 +179,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
                 setPage(0);
                 setOpen(true);
               }}
-              className="glass-float-surface relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] py-5 pr-3 pl-5 text-left bg-white shadow-[var(--composer-shadow)] dark:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="glass-float-surface relative flex w-full items-center gap-4 overflow-hidden rounded-[calc(22px*var(--ui-space-scale,1))] py-5 pr-3 pl-5 text-left bg-white shadow-(--composer-shadow) dark:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span className="relative flex min-w-0 flex-1 flex-col items-start gap-1">
                 <span className="font-heading font-semibold text-base text-foreground tracking-[-0.01em]">
@@ -205,7 +205,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
               type="button"
               onClick={dismiss}
               aria-label="Dismiss"
-              className="glass-float-surface absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full text-muted-foreground bg-white shadow-[var(--composer-shadow)] dark:bg-card transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="glass-float-surface absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full text-muted-foreground bg-white shadow-(--composer-shadow) dark:bg-card transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={Cancel01Icon}
@@ -233,7 +233,7 @@ export const ModelPickerAnnouncement: FC<{ className?: string }> = ({
             <Button
               variant="ghost"
               size="icon-sm"
-              className="absolute top-3 right-3 z-10 max-sm:fixed max-sm:top-[calc(0.75rem+var(--studio-window-chrome-top,0px))]"
+              className="absolute top-3 right-3 z-10 max-sm:fixed max-sm:top-[calc(0.75rem+var(--studio-window-chrome-top,0))]"
             >
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
               <span className="sr-only">Close</span>
@@ -520,7 +520,7 @@ const DialogHero: FC = () => {
       aria-hidden="true"
       className="relative mx-auto mt-2 h-[calc(240px*var(--ui-space-scale,1))] max-sm:h-[calc(254px*var(--ui-space-scale,1))] w-full max-w-[calc(460px*var(--ui-space-scale,1))]"
     >
-      <div className="absolute inset-x-0 bottom-4 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-[var(--composer-shadow)] dark:bg-card">
+      <div className="absolute inset-x-0 bottom-4 flex flex-col gap-3 rounded-[calc(22px*var(--ui-space-scale,1))] bg-white px-3 pt-3 pb-2.5 shadow-(--composer-shadow) dark:bg-card">
         <span className="px-1.5 text-muted-foreground text-xs">
           Ask anything
         </span>
@@ -544,7 +544,7 @@ const DialogHero: FC = () => {
         </div>
       </div>
 
-      <div className="absolute top-0 right-10 z-10 flex w-[calc(264px*var(--ui-space-scale,1))] max-w-[calc(100%-2.5rem)] flex-col gap-2 rounded-2xl bg-white p-2 shadow-[var(--popup-shadow)] dark:bg-card">
+      <div className="absolute top-0 right-10 z-10 flex w-[calc(264px*var(--ui-space-scale,1))] max-w-[calc(100%-2.5rem)] flex-col gap-2 rounded-2xl bg-white p-2 shadow-(--popup-shadow) dark:bg-card">
         <div className="flex items-center gap-3.5 px-2 pt-1 text-muted-foreground">
           <HugeiconsIcon
             icon={StarIcon}
@@ -633,7 +633,7 @@ const EffortMock: FC = () => (
               left: `calc(4.5px * var(--ui-space-scale, 1) + ${stop} * (100% - 9px * var(--ui-space-scale, 1)))`,
             }}
             className={cn(
-              "absolute top-1/2 size-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full",
+              "absolute top-1/2 size-0.5 -translate-1/2 rounded-full",
               stop < 0.5 ? "composer-effort-dot-on" : "composer-effort-dot-off",
             )}
           />

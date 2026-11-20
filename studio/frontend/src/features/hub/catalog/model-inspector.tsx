@@ -256,12 +256,12 @@ export function BaseModelSearchChip({
           <button
             type="button"
             onClick={() => onSearchHub(searchTerm)}
-            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 transition-colors hover:bg-muted/80 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]"
+            className="inline-flex h-6 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 transition-colors hover:bg-muted/80 dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]"
           >
             {content}
           </button>
         ) : (
-          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
+          <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]">
             {content}
           </span>
         )}
@@ -634,7 +634,7 @@ export const ModelInspector = memo(function ModelInspector({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-ui-25 font-semibold leading-ui-31 tracking-normal text-foreground">
+              <h2 className="truncate text-ui-25/ui-31 font-semibold tracking-normal text-foreground">
                 {model.title}
               </h2>
               {model.hubRepoId && (
@@ -647,7 +647,7 @@ export const ModelInspector = memo(function ModelInspector({
                 </div>
               )}
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-15 leading-ui-24 text-muted-foreground">
+            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-15/ui-24 text-muted-foreground">
               <span className="truncate">{model.owner}</span>
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
@@ -666,7 +666,7 @@ export const ModelInspector = memo(function ModelInspector({
             </span>
           )}
           {!isDataset && (
-            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
+            <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]">
               <HugeiconsIcon
                 icon={
                   model.pipelineTag === "text-to-speech" ||
@@ -793,14 +793,14 @@ export const ModelInspector = memo(function ModelInspector({
         </InspectorDownloadSlot>
       )}
 
-      <div className="pb-5 pt-5">
+      <div className="py-5">
         {selectionHiddenByFilters && (
-          <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-11p5/snug text-muted-foreground">
             Current selection is hidden by the active filters or search.
           </p>
         )}
         {metadataUnavailable && (
-          <p className="mb-3 text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="mb-3 text-ui-11p5/snug text-muted-foreground">
             Couldn't load full details from Hugging Face. Some fields may be
             incomplete.
           </p>
@@ -886,7 +886,7 @@ export const ModelInspector = memo(function ModelInspector({
         />
       </div>
 
-      <div className="max-w-[var(--hub-readme-measure)] space-y-4 pt-4">
+      <div className="max-w-(--hub-readme-measure) space-y-4 pt-4">
         {readmeReady && readmeRepoId && (
           <ModelReadme
             repoId={readmeRepoId}

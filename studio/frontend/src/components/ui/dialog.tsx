@@ -68,7 +68,7 @@ function DialogOverlay({
       data-slot="dialog-overlay"
       data-viewport-backdrop={position === "fixed" ? true : undefined}
       className={cn(
-        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100  inset-0 isolate z-50",
+        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100 inset-0 isolate z-50",
         position === "fixed" ? "fixed" : "absolute",
         className,
       )}
@@ -119,14 +119,14 @@ function DialogContent({
           className={cn(
             // max-h + scroll keeps tall dialogs reachable on short viewports; a call site
             // managing its own height overrides both (twMerge drops the base classes).
-            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto scroll-rounded rounded-3xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
+            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto scroll-rounded rounded-3xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-1/2",
             // Viewport-fixed dialogs center below the desktop titlebar, which paints over them at
             // z-70, and fill the screen at phone width instead of floating on a sliver of backdrop.
             // Both are viewport-sized, so neither applies to a dialog portaled into a container.
             position === "fixed"
               // translate-none, not translate-x-0: any translate makes this the close button's
               // containing block.
-              ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:top-[var(--studio-window-chrome-top,0px)] max-sm:left-0 max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-none max-sm:rounded-none max-sm:ring-0"
+              ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0)/2)] max-sm:top-(--studio-window-chrome-top,0px) max-sm:left-0 max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0))] max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-none max-sm:rounded-none max-sm:ring-0"
               : "absolute",
             className,
           )}
@@ -150,7 +150,7 @@ function DialogContent({
                 className={cn(
                   "absolute top-5 right-5 z-10",
                   position === "fixed" &&
-                    "max-sm:fixed max-sm:top-[calc(1.25rem+var(--studio-window-chrome-top,0px))]",
+                    "max-sm:fixed max-sm:top-[calc(1.25rem+var(--studio-window-chrome-top,0))]",
                 )}
                 size="icon-sm"
               >

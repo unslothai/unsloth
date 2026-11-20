@@ -674,15 +674,15 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             onPointerLeave={hidePreview}
             onFocus={showPreview}
             onBlur={hidePreview}
-            className="group flex h-[var(--rail-row,8px)] w-full shrink-0 cursor-pointer items-center justify-start rounded-sm pl-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="group flex h-(--rail-row,8px) w-full shrink-0 cursor-pointer items-center justify-start rounded-sm pl-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {/* only scale animates: a tint transition restyles the rail every scrolled frame */}
             <span
               className={cn(
-                "h-[var(--rail-line,2px)] w-6 origin-left scale-x-[0.333] rounded-full transition-[scale] duration-150 ease-out group-data-[dist=0]:scale-x-100 group-data-[dist=1]:scale-x-[0.667] group-data-[dist=2]:scale-x-[0.417] motion-reduce:transition-none",
+                "h-(--rail-line,2px) w-6 origin-left scale-x-[0.333] rounded-full transition-[scale] duration-150 ease-out group-data-[dist=0]:scale-x-100 group-data-[dist=1]:scale-x-[0.667] group-data-[dist=2]:scale-x-[0.417] motion-reduce:transition-none",
                 isBookmarked
                   ? "bg-primary"
-                  : "bg-muted-foreground opacity-30 group-data-[in-view]:opacity-100 group-data-[dist=0]:bg-foreground group-data-[dist=0]:opacity-100",
+                  : "bg-muted-foreground opacity-30 group-data-in-view:opacity-100 group-data-[dist=0]:bg-foreground group-data-[dist=0]:opacity-100",
               )}
             />
           </button>
@@ -713,7 +713,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       ref={anchorRef}
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       // Sticky top-1/2 measures below the viewport's top padding; take half back to centre on the page.
-      className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-[calc(50%_-_var(--thread-header-offset,1rem)/2)] z-10 h-0 w-full shrink-0"
+      className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-[calc(50%-var(--thread-header-offset,1rem)/2)] z-10 h-0 w-full shrink-0"
     >
       <div
         style={{
@@ -723,7 +723,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         }}
         className="aui-turn-navigator-gutter @container/turn-gutter absolute top-0 h-0"
       >
-        <div className="absolute top-0 left-[-0.5rem] flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
+        <div className="absolute top-0 -left-2 flex w-9 -translate-y-1/2 flex-col items-start opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100 @min-[2.25rem]/turn-gutter:opacity-100">
           <nav
             aria-label={t("turns.navigator")}
             style={{
@@ -732,7 +732,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             ref={railRef}
             onKeyDown={onRailKeyDown}
             onScroll={onRailScroll}
-            className="aui-turn-navigator pointer-events-auto flex w-9 shrink-0 flex-col overflow-y-hidden py-1 transition-[height] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] [contain:layout_paint] motion-reduce:transition-none"
+            className="aui-turn-navigator pointer-events-auto flex w-9 shrink-0 flex-col overflow-y-hidden py-1 transition-[height] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] contain-[layout_paint] motion-reduce:transition-none"
           >
             {markers}
           </nav>

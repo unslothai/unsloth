@@ -609,7 +609,7 @@ test("Edit and Pin read the same, with the sidebar's icon, in the project menus"
   assert.doesNotMatch(menu, /Edit project|Pin project|Edit03Icon/);
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /icon=\{Settings01Icon\}\s*label=\{t\("library\.chats\.menu\.edit"\)\}/);
-  assert.match(readSrc("i18n/locales/en.ts"), /\n        edit: "Edit",/);
+  assert.match(readSrc("i18n/locales/en.ts"), /\n {8}edit: "Edit",/);
 });
 
 test("Import chats sits in the project and section menus", () => {

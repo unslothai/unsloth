@@ -954,7 +954,7 @@ function GpuMemorySettings({
             {showSplit && splitIsCustom && (
               <button
                 type="button"
-                className="ml-auto shrink-0 rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground"
+                className="ml-auto shrink-0 rounded-sm px-1 text-ui-12 text-muted-foreground hover:text-foreground"
                 onClick={() => update({ tensorSplit: null })}
               >
                 Reset split
@@ -1003,7 +1003,7 @@ function GpuMemorySettings({
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      className="rounded-sm px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} earlier`}
                       disabled={position === 0}
                       onClick={() => moveGpu(d.index, -1)}
@@ -1012,7 +1012,7 @@ function GpuMemorySettings({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      className="rounded-sm px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} later`}
                       disabled={position >= orderedGpuIds.length - 1}
                       onClick={() => moveGpu(d.index, 1)}
@@ -1157,7 +1157,7 @@ function AdvancedSettingsToggle({
   return (
     <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+        <span className="min-w-0 text-ui-13/tight font-medium tracking-nav text-muted-foreground">
           Advanced settings
         </span>
         <InfoHint>
@@ -1613,7 +1613,7 @@ function MlxSpeculativeRows({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Fast Verify</span>
-            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
               Exp
             </span>
             <InfoHint>
@@ -1854,7 +1854,7 @@ function MlxAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Int8 Prefill</span>
-            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
               Exp
             </span>
             <InfoHint>
@@ -1873,7 +1873,7 @@ function MlxAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Neural Engine Prefill</span>
-            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
               Exp
             </span>
             <InfoHint>
@@ -2763,7 +2763,7 @@ function ExtraArgsRow({
             placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
             aria-label="Extra llama-server arguments"
             aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
-            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12/relaxed text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
         {(tokenCount > 0 || diagnostics.length > 0) && (
@@ -4473,7 +4473,7 @@ export function ModelConfigPage({
                 />
               </button>
             )}
-            <div data-config-title="" className="min-w-0 flex-1 truncate text-ui-14 font-semibold leading-tight text-foreground">
+            <div data-config-title="" className="min-w-0 flex-1 truncate text-sm/tight font-semibold text-foreground">
               {npuName ?? target.displayName}
             </div>
           </div>
@@ -4512,7 +4512,7 @@ export function ModelConfigPage({
           </div>
         )}
         {audioRuntimeGguf ? (
-          <p className="text-ui-12 leading-snug text-muted-foreground">
+          <p className="text-ui-12/snug text-muted-foreground">
             This model runs on the audio runtime, so llama.cpp settings do not
             apply. Its generation options are under Advanced on the Audio page
             once it is loaded.
@@ -4719,7 +4719,7 @@ export function ModelConfigPage({
           // Sticky offsets start inside the scroller's 18px padding: -bottom-4.5 reaches the panel edge,
           // and the negative margins cover that padding with the panel's fill.
           variant === "page" &&
-            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-[var(--run-settings-pad-l,calc(var(--spacing)*7))] -mr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] bg-popover pb-4.5 pl-[var(--run-settings-pad-l,calc(var(--spacing)*7))] pr-[var(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2)))] dark:bg-sidebar",
+            "sticky -bottom-4.5 z-10 -mb-4.5 -ml-(--run-settings-pad-l,--spacing(7)) -mr-(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))) bg-popover pb-4.5 pl-(--run-settings-pad-l,--spacing(7)) pr-(--run-settings-pad-r,calc(var(--spacing)*5+min(var(--overlay-scrollbar-gutter,0px),var(--spacing)*2))) dark:bg-sidebar",
         )}
       >
       {/* pt-4.25 plus the 1px rule: 18px above the picker, as below the buttons. */}
@@ -4778,7 +4778,7 @@ export function ModelConfigPage({
             id={saveStatusId}
             aria-live="polite"
             data-state={saveStatus === "Unsaved changes" ? "dirty" : undefined}
-            className="ml-auto min-w-0 truncate text-ui-11 leading-snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
+            className="ml-auto min-w-0 truncate text-ui-11/snug text-muted-foreground data-[state=dirty]:text-amber-600 dark:data-[state=dirty]:text-amber-400"
             title={saveStatus || undefined}
           >
             {saveStatus}

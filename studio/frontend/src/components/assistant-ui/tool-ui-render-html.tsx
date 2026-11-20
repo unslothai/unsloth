@@ -82,7 +82,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
           className="size-5 shrink-0 text-muted-foreground"
         />
         <span className="grid min-w-0 flex-1 gap-1">
-          <span className="truncate text-sm font-medium leading-tight text-foreground">
+          <span className="truncate text-sm/tight font-medium text-foreground">
             {errorText
               ? "HTML preview error"
               : isStaleGeneratingArtifact

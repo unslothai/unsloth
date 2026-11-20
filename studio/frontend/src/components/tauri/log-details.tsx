@@ -80,7 +80,7 @@ export function LogDetails({
       <pre
         ref={logRef}
         onScroll={handleScroll}
-        className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground"
+        className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap wrap-break-word scroll-rounded rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10/relaxed text-muted-foreground"
       >
         {text}
       </pre>

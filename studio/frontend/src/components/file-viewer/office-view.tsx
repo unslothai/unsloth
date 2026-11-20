@@ -158,7 +158,7 @@ function DocxView({ html, truncated, scale }: { html: string; truncated: boolean
       <article
         onClick={onClick}
         style={{ zoom: scale, width: pageWidth }}
-        className="mx-auto min-h-full select-text bg-white px-[clamp(24px,8%,80px)] py-16 text-ui-15 leading-relaxed text-neutral-900 shadow-sm ring-1 ring-black/5 [&_a]:text-blue-700 [&_a]:underline [&_h1]:mb-3 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mt-5 [&_h2]:mb-2 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:mb-2 [&_h3]:text-lg [&_h3]:font-semibold [&_img]:inline-block [&_img]:max-w-full [&_li]:my-1 [&_ol]:mb-3 [&_ol]:list-decimal [&_ol]:pl-7 [&_p]:mb-2.5 [&_table]:my-3 [&_table]:border-collapse [&_td]:border [&_td]:border-neutral-300 [&_td]:px-2 [&_td]:py-1 [&_td]:align-top [&_th]:border [&_th]:border-neutral-300 [&_th]:px-2 [&_th]:py-1 [&_ul]:mb-3 [&_ul]:list-disc [&_ul]:pl-7"
+        className="mx-auto min-h-full select-text bg-white px-[clamp(24px,8%,80px)] py-16 text-ui-15/relaxed text-neutral-900 shadow-sm ring-1 ring-black/5 [&_a]:text-blue-700 [&_a]:underline [&_h1]:mb-3 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mt-5 [&_h2]:mb-2 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:mb-2 [&_h3]:text-lg [&_h3]:font-semibold [&_img]:inline-block [&_img]:max-w-full [&_li]:my-1 [&_ol]:mb-3 [&_ol]:list-decimal [&_ol]:pl-7 [&_p]:mb-2.5 [&_table]:my-3 [&_table]:border-collapse [&_td]:border [&_td]:border-neutral-300 [&_td]:px-2 [&_td]:py-1 [&_td]:align-top [&_th]:border [&_th]:border-neutral-300 [&_th]:px-2 [&_th]:py-1 [&_ul]:mb-3 [&_ul]:list-disc [&_ul]:pl-7"
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {truncated && (
@@ -395,7 +395,7 @@ function SlideText({ box, widthPt }: { box: SlideBox; widthPt: number }) {
       {box.paragraphs?.map((p, index) => (
         <p
           key={index}
-          className={cn("leading-tight whitespace-pre-line", (title || p.bold) && "font-semibold", p.bullet && "pl-[1.1em] -indent-[1.1em]")}
+          className={cn("leading-tight whitespace-pre-line", (title || p.bold) && "font-semibold", p.bullet && "pl-[1.1em] indent-[-1.1em]")}
           style={{
             fontSize: `${((p.size ?? (title ? 36 : 18)) / widthPt) * 100}cqw`,
             textAlign: p.align === "ctr" ? "center" : p.align === "r" ? "right" : undefined,

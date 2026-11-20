@@ -193,7 +193,7 @@ export function ConnectionModelList({
         />
         <span
           data-model-name={true}
-          className="min-w-0 break-all text-sm leading-tight"
+          className="min-w-0 break-all text-sm/tight"
         >
           {row.name}
           {row.name === row.id ? null : (
@@ -278,7 +278,7 @@ export function ConnectionModelList({
             <div
               role="tooltip"
               style={{ left: card.left, top: card.top }}
-              className="tooltip-rich pointer-events-none fixed z-[999999] flex w-[calc(190px*var(--ui-space-scale,1))] flex-col gap-1 rounded-xl px-3 py-2 text-ui-11"
+              className="tooltip-rich pointer-events-none fixed z-999999 flex w-[calc(190px*var(--ui-space-scale,1))] flex-col gap-1 rounded-xl px-3 py-2 text-ui-11"
             >
               <div className="flex min-w-0 items-center gap-3">
                 <span className="shrink-0 text-muted-foreground">Model</span>

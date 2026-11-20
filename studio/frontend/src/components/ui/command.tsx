@@ -137,6 +137,7 @@ function CommandGroup({
     <CommandPrimitive.Group
       data-slot="command-group"
       className={cn(
+        // eslint-disable-next-line better-tailwindcss/enforce-canonical-classes -- nested :has() must search descendants here, so the canonical rewrite would change which elements match
         "text-foreground [&_[cmdk-group-heading]]:text-muted-foreground overflow-hidden p-1 [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-2 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium",
         className,
       )}
@@ -176,6 +177,7 @@ function CommandItem({
       <HugeiconsIcon
         icon={MenuTickIcon}
         strokeWidth={2}
+        // eslint-disable-next-line better-tailwindcss/enforce-canonical-classes -- nested :has() must search descendants here, so the canonical rewrite would change which elements match
         className="ml-auto opacity-0 group-has-[[data-slot=command-shortcut]]/command-item:hidden group-data-[checked=true]/command-item:opacity-100"
       />
     </CommandPrimitive.Item>
@@ -190,6 +192,7 @@ function CommandShortcut({
     <span
       data-slot="command-shortcut"
       className={cn(
+        // eslint-disable-next-line better-tailwindcss/enforce-canonical-classes -- nested :has() must search descendants here, so the canonical rewrite would change which elements match
         "text-muted-foreground group-data-selected/command-item:text-foreground ml-auto -mr-[0.1em] text-xs tracking-widest",
         className,
       )}

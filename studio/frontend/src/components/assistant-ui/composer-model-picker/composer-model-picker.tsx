@@ -724,7 +724,7 @@ function NpuOwnerMark({ owner, name }: { owner: string; name?: string }) {
       <ApiProviderLogo
         providerType={null}
         name={name ?? owner}
-        className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
+        className="m-[calc(-1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
       />
     );
   }
@@ -779,7 +779,7 @@ function RowMark({ row }: { row?: RowMarkRow }) {
     <ApiProviderLogo
       providerType={null}
       name={name}
-      className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
+      className="m-[calc(-1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
     />
   ) : null;
 }
@@ -978,7 +978,7 @@ const DIM_CLASS =
 
 function QuantPill({ quant }: { quant: string }) {
   return (
-    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-[calc(100px*var(--ui-space-scale,1))] shrink-0 items-center truncate rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-[calc(100px*var(--ui-space-scale,1))] shrink-0 items-center truncate rounded-full bg-[rgb(0_0_0/calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
       {quant}
     </span>
   );
@@ -988,7 +988,7 @@ function ParamChip({ label }: { label: string }) {
   return (
     <span
       className={cn(
-        "inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-[rgb(0_0_0_/_0.16)] px-1.5 text-ui-10 dark:border-[rgb(255_255_255_/_0.2)] font-medium text-muted-foreground",
+        "inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-[rgb(0_0_0/0.16)] px-1.5 text-ui-10 dark:border-[rgb(255_255_255/0.2)] font-medium text-muted-foreground",
         label.includes(".") ? "tracking-[-0.02em]" : "tracking-[0.02em]",
       )}
     >
@@ -4344,7 +4344,7 @@ export function ComposerModelPicker({
             ) : null}
             {soleQuant ? <QuantPill quant={soleQuant} /> : null}
             {row.kind === "hub" ? (
-              <span className="-ml-[calc(2.75px*var(--ui-space-scale,1))] flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]">
+              <span className="ml-[calc(-2.75px*var(--ui-space-scale,1))] flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]">
                 {fit ? (
                   <FitBadge
                     status={fit}
@@ -4391,7 +4391,7 @@ export function ComposerModelPicker({
             <span
               role="toolbar"
               aria-label={`${row.label} actions`}
-              className="-ml-[calc(3px*var(--ui-space-scale,1))] flex shrink-0 items-center"
+              className="ml-[calc(-3px*var(--ui-space-scale,1))] flex shrink-0 items-center"
               // Menus portal out but bubble through React: keep their clicks off the row.
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => event.stopPropagation()}
@@ -4785,7 +4785,7 @@ export function ComposerModelPicker({
                 "truncate font-mono text-xs",
                 !onDevice &&
                   fit === "oom" &&
-                  "!text-gray-500 dark:!text-gray-400",
+                  "text-gray-500! dark:text-gray-400!",
               )}
             >
               {ggufVariantPickerLabel(variant)}
@@ -5261,7 +5261,7 @@ export function ComposerModelPicker({
                         }
                       }}
                       className={cn(
-                        "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                        "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
                         // No logo: the eject slot is zero-width until hover (-mr cancels the gap).
                         hasRowMark(chosenMark)
                           ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
@@ -5339,7 +5339,7 @@ export function ComposerModelPicker({
                     }
                   }}
                   className={cn(
-                    "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                    "grid h-[calc(18px*var(--ui-space-scale,1))] shrink-0 cursor-pointer place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
                     hasRowMark(chosenMark)
                       ? "-m-0.5 w-[calc(18px*var(--ui-space-scale,1))]"
                       : "-my-0.5 -mr-1.5 w-0 overflow-hidden group-hover/chip:-mx-0.5 group-hover/chip:w-[calc(18px*var(--ui-space-scale,1))]",
@@ -5408,10 +5408,10 @@ export function ComposerModelPicker({
           openSide !== "bottom" &&
             "[--picker-floor:var(--radix-popover-content-available-height)]",
           configTarget
-            ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
+            ? "h-(--composer-picker-min-h) max-h-(--picker-floor,calc(100dvh-16px))"
             : isExpanded
               ? "h-(--composer-picker-min-h)"
-              : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
+              : "max-h-(--picker-floor,calc(100dvh-16px))",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
         )}
@@ -5429,7 +5429,7 @@ export function ComposerModelPicker({
           <>
             <div
               ref={settingsRef}
-              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto overscroll-none pr-[var(--run-settings-pad-r)] pl-[var(--run-settings-pad-l)] [--run-settings-pad-l:calc(22px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(22px*var(--ui-space-scale,1))]"
+              className="composer-run-settings min-h-0 overflow-x-hidden overflow-y-auto overscroll-none pr-(--run-settings-pad-r) pl-(--run-settings-pad-l) [--run-settings-pad-l:calc(22px*var(--ui-space-scale,1))] [--run-settings-pad-r:calc(22px*var(--ui-space-scale,1))]"
             >
               <ModelConfigPage
                 key={modelConfigInstanceKey(
@@ -5557,7 +5557,7 @@ export function ComposerModelPicker({
                     <HugeiconsIcon
                       icon={ChevronDownStandardIcon}
                       strokeWidth={1.5}
-                      className="size-4 translate-x-[-0.4px] translate-y-[-0.4px] rotate-180"
+                      className="size-4 translate-[-0.4px] rotate-180"
                     />
                   </button>
                 </Hint>
@@ -5610,7 +5610,7 @@ export function ComposerModelPicker({
                         icon={FilterMailIcon}
                         strokeWidth={1.75}
                         // Lifts the glyph's ink 0.5px to centre.
-                        className="size-4 -translate-y-[0.5px]"
+                        className="size-4 translate-y-[-0.5px]"
                       />
                       {formatFilter !== "all" ? (
                         <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
@@ -5643,7 +5643,7 @@ export function ComposerModelPicker({
                               value={key}
                               className={cn(
                                 MENU_ITEM,
-                                "[&_[data-slot=dropdown-menu-radio-item-indicator]]:hidden",
+                                "**:data-[slot=dropdown-menu-radio-item-indicator]:hidden",
                               )}
                               onSelect={(event) => {
                                 if (key === deviceSort) {
@@ -5657,7 +5657,7 @@ export function ComposerModelPicker({
                             >
                               {DEVICE_SORT_LABEL[key]}
                               {key === deviceSort ? (
-                                <span className="absolute right-[calc(5px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]">
+                                <span className="absolute right-[calc(5px*var(--ui-space-scale,1))] grid size-[calc(24px*var(--ui-space-scale,1))] place-items-center rounded-full transition-colors hover:bg-[rgb(0_0_0/calc(0.08*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))]">
                                   <Arrow className="size-3.5" strokeWidth={2} />
                                   <span className="sr-only">
                                     {deviceSortDesc
@@ -5711,7 +5711,7 @@ export function ComposerModelPicker({
                       <HugeiconsIcon
                         icon={FilterMailIcon}
                         strokeWidth={1.75}
-                        className="size-4 -translate-y-[0.5px]"
+                        className="size-4 translate-y-[-0.5px]"
                       />
                       {fitOnDeviceOnly || formatFilter !== "all" ? (
                         <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
@@ -5739,7 +5739,7 @@ export function ComposerModelPicker({
                         className={cn(
                           "grid size-[calc(11px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full border",
                           fitOnDeviceOnly
-                            ? "border-primary bg-primary !text-primary-foreground"
+                            ? "border-primary bg-primary text-primary-foreground!"
                             : "border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)]",
                         )}
                       >
@@ -5748,7 +5748,7 @@ export function ComposerModelPicker({
                             icon={Tick02Icon}
                             strokeWidth={2.5}
                             // !, on every element: the menu item's hover rule recolours each descendant.
-                            className="size-2 !text-primary-foreground [&_*]:!text-primary-foreground"
+                            className="size-2 text-primary-foreground! **:text-primary-foreground!"
                           />
                         ) : null}
                       </span>
@@ -5836,7 +5836,7 @@ export function ComposerModelPicker({
               aria-label={`${chosenName}: show all models`}
               onClick={expand}
               // 1px up, matching the gap above the first control below the line.
-              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pr-3 pb-[calc(2px*var(--ui-space-scale,1))] pl-3 text-left text-ui-14"
+              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch px-3 pb-[calc(2px*var(--ui-space-scale,1))] text-left text-ui-14"
             >
               {pending || modelLoading ? (
                 <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />

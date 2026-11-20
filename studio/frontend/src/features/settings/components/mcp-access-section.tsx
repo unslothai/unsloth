@@ -239,7 +239,7 @@ export function McpAccessSection({
       className="flex min-w-0 flex-col"
     >
       {error ? (
-        <p className="pt-2 text-xs leading-snug text-destructive">{error}</p>
+        <p className="pt-2 text-ui-12/snug text-destructive">{error}</p>
       ) : null}
 
       {settings ? (
@@ -357,14 +357,14 @@ export function McpAccessSection({
                 </div>
 
                 {snippet.configPath ? (
-                  <p className="text-xs leading-snug text-muted-foreground">
+                  <p className="text-ui-12/snug text-muted-foreground">
                     {t("settings.apiKeys.mcp.configFileHint", {
                       path: snippet.configPath,
                     })}
                   </p>
                 ) : null}
                 {snippet.readsKeyEnv ? (
-                  <p className="text-xs leading-snug text-muted-foreground">
+                  <p className="text-ui-12/snug text-muted-foreground">
                     {t("settings.apiKeys.mcp.exportKeyHint", {
                       name: MCP_API_KEY_ENV,
                     })}

@@ -80,7 +80,7 @@ export function MonitorLink({
             <span className="truncate text-sm font-semibold text-foreground">
               {t("settings.resources.liveMonitor.summary")}
             </span>
-            <span className="min-h-[1lh] truncate text-xs text-muted-foreground">
+            <span className="min-h-lh truncate text-xs text-muted-foreground">
               {data == null
                 ? null
                 : t("settings.resources.liveMonitor.status", {

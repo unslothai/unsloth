@@ -489,7 +489,7 @@ export function DocumentsRagSection(): ReactElement {
               className="w-[calc(260px*var(--ui-space-scale,1))] max-w-full max-[360px]:w-full"
             />
             {notLoaded ? (
-              <span className="flex items-center gap-1.5 px-3.5 text-xs leading-snug text-muted-foreground">
+              <span className="flex items-center gap-1.5 px-3.5 text-ui-12/snug text-muted-foreground">
                 <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-muted-foreground" />
                 {t("settings.general.rag.notLoaded")}
                 <StatusHint text={t("settings.general.rag.notLoadedHint")} />
@@ -544,7 +544,7 @@ function StatusHint({ text }: { text: string }): ReactElement {
           <HugeiconsIcon icon={InformationCircleIcon} className="size-[calc(10px*var(--ui-space-scale,1))]" />
         </button>
       </TooltipTrigger>
-      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11/snug">
         {text}
       </TooltipContent>
     </Tooltip>

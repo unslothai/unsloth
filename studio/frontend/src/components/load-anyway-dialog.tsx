@@ -65,11 +65,11 @@ export function useLoadAnywayPrompt(): {
       <AlertDialogContent onOverlayClick={() => setPending(null)}>
         <AlertDialogHeader>
           <AlertDialogTitle>{LOAD_ANYWAY_CONFIRM_TITLE}</AlertDialogTitle>
-          <AlertDialogDescription className="break-words">
+          <AlertDialogDescription className="wrap-break-word">
             {LOAD_ANYWAY_WARNING}
           </AlertDialogDescription>
           {pending ? (
-            <p className="break-words text-xs text-muted-foreground">
+            <p className="wrap-break-word text-xs text-muted-foreground">
               {pending.message}
             </p>
           ) : null}

@@ -138,13 +138,13 @@ function ChatImageThumb({
     return (
       <span
         ref={holderRef}
-        className="flex h-full w-full items-center justify-center"
+        className="flex size-full items-center justify-center"
       >
         <FileIconThumb />
       </span>
     );
   }
-  return <img src={src} alt="" className="h-full w-full object-cover" />;
+  return <img src={src} alt="" className="size-full object-cover" />;
 }
 
 function FileIconThumb() {
@@ -579,7 +579,7 @@ export function UploadedFilesView() {
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
+                      <span className="shrink-0 rounded-full bg-[rgb(0_0_0/calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]">
                         {row.typeLabel}
                       </span>
                     ) : null}
@@ -599,19 +599,19 @@ export function UploadedFilesView() {
                   type="button"
                   onClick={() => goToChat(row)}
                   title={`Go to ${row.location}`}
-                  className="order-3 w-full truncate pl-10 text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:order-none sm:w-36 sm:pl-0"
+                  className="order-3 w-full truncate pl-10 text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:order-0 sm:w-36 sm:pl-0"
                 >
                   {row.location}
                 </button>
               ) : (
                 <span
-                  className="order-3 w-full truncate pl-10 text-muted-foreground sm:order-none sm:w-36 sm:pl-0"
+                  className="order-3 w-full truncate pl-10 text-muted-foreground sm:order-0 sm:w-36 sm:pl-0"
                   title={row.location}
                 >
                   {row.location}
                 </span>
               )}
-              <span className="order-4 w-full pl-10 text-muted-foreground tabular-nums sm:order-none sm:w-24 sm:pl-0">
+              <span className="order-4 w-full pl-10 text-muted-foreground tabular-nums sm:order-0 sm:w-24 sm:pl-0">
                 {formatUploadedAt(row.createdAt)}
               </span>
               <span className="flex w-16 shrink-0 items-center justify-end gap-1">

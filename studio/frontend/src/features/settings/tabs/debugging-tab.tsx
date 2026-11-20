@@ -152,7 +152,7 @@ function NoticeStrip({
     <p
       data-testid={testId}
       className={cn(
-        "flex items-start gap-2 text-xs leading-snug",
+        "flex items-start gap-2 text-ui-12/snug",
         tone === "warning"
           ? "text-amber-600 dark:text-amber-400"
           : "text-muted-foreground",
@@ -812,7 +812,7 @@ export function DebuggingTab() {
             ref={frameRef}
             style={paneHeight === null ? undefined : { height: paneHeight }}
             className={cn(
-              "flex rounded-lg border border-border/60 bg-muted/20 py-1 pr-0 pl-1 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              "flex rounded-lg border border-border/60 bg-muted/20 py-1 pr-0 pl-1 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]",
               paneHeight === null && "h-[min(26rem,45vh)]",
             )}
           >
@@ -825,8 +825,8 @@ export function DebuggingTab() {
               }}
               data-testid="debug-log-pane"
               className={cn(
-                "h-full w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-md py-2 pr-11 pl-2.5 font-mono text-ui-11 leading-[1.55] text-foreground/90",
-                wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+                "size-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-md py-2 pr-11 pl-2.5 font-mono text-ui-11 leading-[1.55] text-foreground/90",
+                wrap ? "whitespace-pre-wrap wrap-break-word" : "whitespace-pre",
                 !shownText && "text-muted-foreground",
               )}
             >
@@ -952,11 +952,11 @@ export function DebuggingTab() {
                   <HugeiconsIcon
                     strokeWidth={1.75}
                     icon={InformationCircleIcon}
-                    className="size-[var(--ui-icon-size-hint)]"
+                    className="size-(--ui-icon-size-hint)"
                   />
                 </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+              <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11/snug">
                 {t("settings.debugging.exportMaskedNote")}
               </TooltipContent>
             </Tooltip>

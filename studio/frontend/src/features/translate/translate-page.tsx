@@ -348,7 +348,7 @@ function LanguagePicker({
               title={label}
               className={cn(
                 TAB,
-                "w-9 justify-center px-0 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))] data-[state=open]:text-foreground",
+                "w-9 justify-center px-0 data-[state=open]:bg-[rgb(0_0_0/calc(0.06*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255/calc(0.08*var(--contrast-wash-gain,1)))] data-[state=open]:text-foreground",
               )}
             >
               <HugeiconsIcon
@@ -365,7 +365,7 @@ function LanguagePicker({
         align="start"
         sideOffset={12}
         collisionPadding={16}
-        className="w-[var(--radix-popper-anchor-width)] max-w-none gap-0 overflow-hidden rounded-xl p-0"
+        className="w-(--radix-popper-anchor-width) max-w-none gap-0 overflow-hidden rounded-xl p-0"
       >
         {/* Filtered here: the labels are in the interface language, the search also takes English. */}
         <Command
@@ -506,7 +506,7 @@ function LanguageTabs({
         <div
           role="tablist"
           aria-label={label}
-          className="-mx-2 -my-2 flex min-w-0 items-center gap-0.5 overflow-hidden px-2 py-2"
+          className="-m-2 flex min-w-0 items-center gap-0.5 overflow-hidden p-2"
         >
           {allowAuto &&
             tab(
@@ -546,7 +546,7 @@ function StyleMenu() {
           className={cn(
             "h-9 min-w-0 shrink cursor-pointer gap-1.5 rounded-full px-3 text-ui-14 font-medium text-muted-foreground hover:text-foreground data-[state=open]:text-foreground @max-[26rem]:ms-auto",
             CONTROL_HOVER,
-            "data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]",
+            "data-[state=open]:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255/calc(0.08*var(--contrast-wash-gain,1)))]",
           )}
         >
           <span className="truncate">
@@ -956,7 +956,7 @@ function ModelMenu({
                   <span className="text-ui-13 font-medium text-foreground">
                     {model.label}
                   </span>
-                  <span className="text-ui-12 leading-normal text-muted-foreground">
+                  <span className="text-ui-12/normal text-muted-foreground">
                     {[
                       t(MODEL_NOTE[model.id]),
                       isLoaded(model.repo, model.variant)
@@ -993,7 +993,7 @@ function ModelMenu({
                   <span className="truncate text-ui-13 font-medium text-foreground">
                     {model.name}
                   </span>
-                  <span className="text-ui-12 leading-normal text-muted-foreground">
+                  <span className="text-ui-12/normal text-muted-foreground">
                     {[
                       customMine === model ? custom?.variant : null,
                       isLoaded(
@@ -1027,7 +1027,7 @@ function ModelMenu({
                     {custom.name}
                   </span>
                   {customNote && (
-                    <span className="text-ui-12 leading-normal text-muted-foreground">
+                    <span className="text-ui-12/normal text-muted-foreground">
                       {customNote}
                     </span>
                   )}
@@ -1525,7 +1525,7 @@ export function TranslatePage() {
       </div>
 
       <div className="grid gap-2">
-        <div className="relative grid grid-cols-1 gap-x-3 gap-y-3 md:grid-cols-2">
+        <div className="relative grid grid-cols-1 gap-3 md:grid-cols-2">
           <IconAction
             icon={ArrowLeftRightIcon}
             label={
@@ -1533,7 +1533,7 @@ export function TranslatePage() {
             }
             disabled={!canSwap || busy}
             onClick={() => swap(detected)}
-            className="absolute start-1/2 top-0 z-10 -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
+            className="absolute inset-s-1/2 top-0 z-10 -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
           />
           <section
             aria-label={t("translate.sourceLabel")}
@@ -1599,7 +1599,7 @@ export function TranslatePage() {
                   icon={Cancel01Icon}
                   label={t("translate.clear")}
                   onClick={clear}
-                  className="absolute end-2 top-2"
+                  className="absolute inset-e-2 top-2"
                 />
               )}
               <div className="flex shrink-0 items-center gap-1 px-2.5 pt-1.5 pb-2.5">
@@ -1756,7 +1756,7 @@ export function TranslatePage() {
                     dir="auto"
                     aria-live="polite"
                     className={cn(
-                      "whitespace-pre-wrap break-words text-base [overflow-wrap:anywhere] md:text-sm",
+                      "whitespace-pre-wrap wrap-break-word text-base [overflow-wrap:anywhere] md:text-sm",
                       stale && "text-muted-foreground",
                     )}
                   >
@@ -1835,13 +1835,13 @@ export function TranslatePage() {
         </div>
 
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-2.5">
-          <div className="min-h-[1lh] text-center text-ui-12 leading-normal">
+          <div className="min-h-lh text-center text-ui-12/normal">
             {busy ? null : error ? (
               <div role="alert" className="grid gap-0.5">
                 <p className="text-ui-13 font-medium text-destructive">
                   {t("translate.errors.title")}
                 </p>
-                <p className="text-muted-foreground [overflow-wrap:anywhere]">
+                <p className="text-muted-foreground wrap-anywhere">
                   {errorMessage}
                 </p>
               </div>

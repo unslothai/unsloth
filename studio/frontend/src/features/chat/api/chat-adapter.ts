@@ -5422,7 +5422,7 @@ export function createOpenAIStreamAdapter(
           ? withSandboxAttachmentPaths(survivingMessages)
           : { messages: survivingMessages, sandboxAttachments: [] };
       // The backend Gemini translator rebuilds functionCall/functionResponse parts from these.
-      let outboundMessages = renderedMessages
+      const outboundMessages = renderedMessages
         .flatMap((message) => {
           const serialized = toOpenAIMessages(
             message,

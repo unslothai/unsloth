@@ -781,7 +781,7 @@ function LibraryView({
     </nav>
   ) : (
     // truncate clips at the padding box, which the y overhangs; the margins give it back.
-    <h1 className="-my-[0.15em] min-w-0 truncate py-[0.15em] pr-[0.08em] text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
+    <h1 className="my-[-0.15em] min-w-0 truncate py-[0.15em] pr-[0.08em] text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
       {t("shell.navigation.library")}
     </h1>
   );
@@ -1104,7 +1104,7 @@ function LibraryView({
             role="toolbar"
             aria-label={t("library.selection.countOfTotal", { count: selectedCount, total: orderedKeys.length })}
             tabIndex={-1}
-            className="fixed bottom-8 left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-ring dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            className="fixed bottom-8 left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden *:shrink-0 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-ring dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
             <span className="mr-4 flex items-center whitespace-nowrap text-sm font-medium">
               <span aria-live="polite">
@@ -1144,7 +1144,7 @@ function LibraryView({
               onClick={bulkDownload}
               className={cn(
                 BAR_PILL,
-                "btn-fill transition-colors ",
+                "btn-fill transition-colors",
               )}
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />

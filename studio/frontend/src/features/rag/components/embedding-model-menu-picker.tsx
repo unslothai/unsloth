@@ -183,7 +183,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
       {/* Header and Eject stay put; only the model rows scroll. */}
       {/* A page header, not a label: the back button returns to the source list, and the title
           names this page, so the arrow never reads as "go back to <title>". */}
-      <div className="flex shrink-0 items-start gap-2 px-2 pt-2 pb-2">
+      <div className="flex shrink-0 items-start gap-2 p-2">
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <DropdownMenuPrimitive.Item
@@ -192,7 +192,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
                 event.preventDefault();
                 onBack();
               }}
-              className="-ml-1 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-hidden transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] data-[highlighted]:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
+              className="-ml-1 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-hidden transition-colors hover:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground data-highlighted:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] data-highlighted:text-foreground dark:hover:bg-[rgb(255_255_255/calc(0.14*var(--contrast-wash-gain,1)))] dark:data-highlighted:bg-[rgb(255_255_255/calc(0.14*var(--contrast-wash-gain,1)))]"
             >
               <HugeiconsIcon
                 icon={ChevronLeftStandardIcon}
@@ -204,10 +204,10 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
           <TooltipContent side="top">{t("settings.general.rag.back")}</TooltipContent>
         </Tooltip>
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-ui-12 font-medium leading-tight text-foreground">
+          <span className="truncate text-ui-12/tight font-medium text-foreground">
             {t("settings.general.rag.embeddingModel")}
           </span>
-          <span className="truncate text-xs leading-snug text-muted-foreground">
+          <span className="truncate text-ui-12/snug text-muted-foreground">
             {t("settings.general.rag.menuSubtitle")}
           </span>
         </div>
@@ -238,7 +238,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
           const pinLabel = t(isPinned ? "settings.general.rag.unpin" : "settings.general.rag.pin");
           return (
             // The pin is its own menu item, so arrow keys reach it; it is laid over the row's spacer.
-            <div key={model} className="menu-row-with-action group/row has-[[data-highlighted]]:[--row-pin-opacity:1] relative">
+            <div key={model} className="menu-row-with-action group/row has-data-highlighted:[--row-pin-opacity:1] relative">
               <DropdownMenuItem
                 disabled={switching !== null && switching !== model}
                 onSelect={(event) => {
@@ -249,8 +249,8 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
                 className={cn("items-start gap-2 py-2", model === current && "font-medium")}
               >
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate text-ui-13 leading-tight">{embeddingModelName(model)}</span>
-                  <span className="truncate text-xs font-normal leading-snug text-muted-foreground">
+                  <span className="truncate text-ui-13/tight">{embeddingModelName(model)}</span>
+                  <span className="truncate text-ui-12/snug font-normal text-muted-foreground">
                     {details}
                   </span>
                 </span>
@@ -288,7 +288,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
                         if (neighbour) requestAnimationFrame(() => neighbour.focus());
                       }}
                       // As on Recents: grey, unpin glyph once pinned. Shown on row hover or focus, always on touch.
-                      className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-[var(--row-pin-opacity,0)] outline-hidden transition-colors group-hover/row:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                      className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-(--row-pin-opacity,0) outline-hidden transition-colors group-hover/row:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[rgb(0_0_0/calc(0.06*var(--contrast-wash-gain,1)))] data-highlighted:bg-[rgb(0_0_0/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:data-highlighted:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
                     >
                       <HugeiconsIcon
                         icon={isPinned ? PinOffIcon : PinIcon}

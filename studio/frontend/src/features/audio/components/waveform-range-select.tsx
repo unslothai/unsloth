@@ -334,7 +334,7 @@ export function WaveformRangeSelect({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+            className="h-auto gap-1 p-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             disabled={!canAdd}
             onClick={() => {
               const next = nextFreeRange(ranges, limits);

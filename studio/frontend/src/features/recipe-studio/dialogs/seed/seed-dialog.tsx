@@ -1362,7 +1362,7 @@ export function SeedDialog({
                         {previewColumns.map((col) => (
                           <TableCell
                             key={`${rowIdx}-${col}`}
-                            className="max-w-[calc(260px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-xs"
+                            className="max-w-[calc(260px*var(--ui-space-scale,1))] whitespace-pre-wrap wrap-break-word text-xs"
                           >
                             {(() => {
                               const imagePreview = resolveImagePreview(

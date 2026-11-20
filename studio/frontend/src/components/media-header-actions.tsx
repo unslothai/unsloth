@@ -82,7 +82,7 @@ export function MediaHeaderActions({
     <div
       ref={slotRef}
       className={cn(
-        "pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end overflow-hidden pl-3 pt-[var(--studio-chat-header-padding-top,11px)] @max-[40rem]:hidden",
+        "pointer-events-none col-start-3 row-start-1 flex min-w-0 items-start justify-end overflow-hidden pl-3 pt-(--studio-chat-header-padding-top,11px) @max-[40rem]:hidden",
         className,
       )}
     >

@@ -154,7 +154,7 @@ function DocsLink({
 function UpdateDocsLinks(): ReactElement {
   const t = useT();
   return (
-    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground leading-relaxed">
+    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-ui-12/relaxed text-muted-foreground">
       {t("settings.about.update.docs")}
       <DocsLink
         href={DOCS_INSTALL_URL}
@@ -299,12 +299,12 @@ export function UpdateStudioInstructions({
         </div>
       </div>
       {loadingInstallSource ? (
-        <p className="text-xs text-muted-foreground leading-relaxed">
+        <p className="text-ui-12/relaxed text-muted-foreground">
           {t("settings.about.update.checkingInstall")}
         </p>
       ) : (
         <>
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             {t("settings.about.update.installIntro")}
           </p>
           <AnimatePresence mode="wait" initial={false}>
@@ -334,12 +334,12 @@ export function UpdateStudioInstructions({
           <p className="text-xs font-semibold text-foreground">
             {t("settings.about.update.localUpdateHeading")}
           </p>
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             {t("settings.about.update.localInstallDetected")}
           </p>
           {checkoutInstallSource ? (
             <>
-              <p className="text-xs text-muted-foreground leading-relaxed">
+              <p className="text-ui-12/relaxed text-muted-foreground">
                 {t("settings.about.update.pullThenUpdate")}
               </p>
               <CopyableCommand
@@ -368,10 +368,10 @@ export function UpdateStudioInstructions({
           ) : null}
           {packagedSourceInstall ? (
             <>
-              <p className="text-xs text-muted-foreground leading-relaxed">
+              <p className="text-ui-12/relaxed text-muted-foreground">
                 {t("settings.about.update.sourceInstallDetected")}
               </p>
-              <p className="text-xs text-muted-foreground leading-relaxed">
+              <p className="text-ui-12/relaxed text-muted-foreground">
                 {t("settings.about.update.repoCheckoutFallback")}
               </p>
               <AnimatePresence mode="wait" initial={false}>
@@ -394,20 +394,20 @@ export function UpdateStudioInstructions({
               </AnimatePresence>
             </>
           ) : null}
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             {t("settings.about.update.restartAfterUpdate")}
           </p>
           <UpdateDocsLinks />
         </>
       ) : unknownInstallSource ? (
         <>
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             {t("settings.about.update.unknownInstall")}
           </p>
           <p className="text-xs font-semibold text-foreground">
             {t("settings.about.update.localUpdateHeading")}
           </p>
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             {t("settings.about.update.localCheckout")}
           </p>
           <AnimatePresence mode="wait" initial={false}>
@@ -428,14 +428,14 @@ export function UpdateStudioInstructions({
               />
             </motion.div>
           </AnimatePresence>
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             {t("settings.about.update.restartAfterUpdate")}
           </p>
           <UpdateDocsLinks />
         </>
       ) : (
         <>
-          <p className="text-xs text-muted-foreground leading-relaxed">
+          <p className="text-ui-12/relaxed text-muted-foreground">
             {t("settings.about.update.restartAfterUpdate")}
           </p>
           <UpdateDocsLinks />

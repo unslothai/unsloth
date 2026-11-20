@@ -1839,7 +1839,7 @@ export function AudioPage({
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
       ref={pageRootRef}
-      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-(--studio-content-top-inset,0px)"
     >
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
@@ -1874,12 +1874,12 @@ export function AudioPage({
             ? "pl-12"
             : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
               !pinned && isTauri
-              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+              ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
+              : "pl-(--studio-media-header-left-inset,1.5rem)",
           )}
         >
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
-          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-(--studio-chat-header-padding-top,11px)">
             <ModelSelector
               triggerDataTour="audio-model"
               models={selectorModels}
@@ -1940,7 +1940,7 @@ export function AudioPage({
                   : undefined
               }
               variant="ghost"
-              className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
+              className="ml-1.5 max-w-full overflow-hidden pl-2.5! pr-1.5! h-(--studio-chat-control-height,34px)!"
               task={HUB_TASKS_BY_MODE[mode]}
               // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
               hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
@@ -1956,7 +1956,7 @@ export function AudioPage({
           </div>
         </div>
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
-          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-(--studio-chat-header-padding-top,11px)">
             <PillTabs
               ariaLabel="Page mode"
               // Always "create": Train navigates away, so the pill never latches.
@@ -1977,7 +1977,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 in-data-media-header-tight:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 {
                   value: "create",
@@ -2002,7 +2002,7 @@ export function AudioPage({
               ]}
             />
           </div>
-          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]">
             {connection || (mode === "transcribe" && transcribeConnection) ? null : (
               <UseViaApiButton
                 workflow={pageWorkflow}
@@ -2027,7 +2027,7 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
+              "hover-scrollbar flex min-h-0 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0))]",
               "flex-1",
               mode === "speak"
                 ? "panel-scroll-fade-action"
@@ -2042,13 +2042,13 @@ export function AudioPage({
                   workflow={pageWorkflow}
                   onSelect={transitionWorkflow}
                 />
-                <p className="text-xs leading-snug text-muted-foreground">
+                <p className="text-ui-12/snug text-muted-foreground">
                   {workflowTab.hint}
                 </p>
                 {capabilityReady || capabilityLine === null ? null : (
                   <p
                     className={cn(
-                      "mt-2 rounded-lg bg-wash-5 px-3 py-2 text-ui-12 leading-normal text-muted-foreground",
+                      "mt-2 rounded-lg bg-wash-5 px-3 py-2 text-ui-12/normal text-muted-foreground",
                       // Side by side, the note under Generate says the same thing in view; stacked, it is a scroll away.
                       generateBlocker?.reason === capabilityLine && "@[50rem]:hidden",
                     )}

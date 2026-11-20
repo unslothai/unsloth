@@ -180,7 +180,7 @@ export function TranslateHistoryList() {
         )}
       </div>
       {shown.length === 0 ? (
-        <p className="mt-3 text-ui-13 leading-normal text-muted-foreground">
+        <p className="mt-3 text-ui-13/normal text-muted-foreground">
           {history.length === 0
             ? t("translate.history.empty")
             : t("translate.history.noMatches")}

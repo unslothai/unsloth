@@ -701,7 +701,7 @@ const ExportLogBox = memo(function ExportLogBox({
           </span>
         </div>
       ) : (
-        <div className="whitespace-pre-wrap break-words">
+        <div className="whitespace-pre-wrap wrap-break-word">
           {groupExportLogLines(logLines, logBase).map((group) => (
             <ExportLogBlock
               key={group.key}

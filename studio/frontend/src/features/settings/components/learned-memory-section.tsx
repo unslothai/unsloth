@@ -320,7 +320,7 @@ function MemoryEditor({
             className="flex flex-wrap items-start gap-2 border-b border-border/60 py-3"
           >
             <div className="min-w-0 flex-1 basis-48">
-              <p className="whitespace-pre-wrap break-words text-sm">
+              <p className="whitespace-pre-wrap wrap-break-word text-sm">
                 {entry.value}
               </p>
             </div>

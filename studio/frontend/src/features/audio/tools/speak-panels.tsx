@@ -86,7 +86,7 @@ const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
           family={ctx.audioFamily}
         />
       ) : (
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           The model's own voice, shaped by a voice description when you give
           one.
         </p>
@@ -103,7 +103,7 @@ const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
     return (
       <div className="grid gap-2">
         <span className="text-ui-13 font-medium text-foreground">Dialogue</span>
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           This model reads a script with one line per speaker, such as “Speaker
           1: Hello.” Plain text is read by Speaker 1.
         </p>
@@ -150,7 +150,7 @@ const supertonicLanguagePanel: AudioToolPanel<string> = {
           ))}
         </SelectContent>
       </Select>
-      <p className="text-ui-12 leading-normal text-muted-foreground">
+      <p className="text-ui-12/normal text-muted-foreground">
         The language of the text, so it is pronounced right.
       </p>
     </div>

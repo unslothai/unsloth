@@ -148,7 +148,7 @@ export function EmbeddingModelPicker({
           data-testid="embedding-model-trigger"
           aria-label={t("settings.general.rag.embeddingModel")}
           disabled={disabled || busy}
-          className={`group/trigger border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-control w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border pr-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${onEject ? "pl-2.5" : "pl-3.5"} ${className ?? ""}`}
+          className={`group/trigger border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-control w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border pr-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${onEject ? "pl-2.5" : "pl-3.5"} ${className ?? ""}`}
         >
           {onEject ? (
             // As on the chat model picker: tick at rest, eject on hover. Keyboard and screen reader
@@ -163,7 +163,7 @@ export function EmbeddingModelPicker({
                     event.stopPropagation();
                     onEject();
                   }}
-                  className="-my-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                  className="-my-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0/calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
                 >
                   <HugeiconsIcon
                     icon={loaded ? CheckmarkCircle02Icon : RemoveCircleIcon}
@@ -225,12 +225,12 @@ export function EmbeddingModelPicker({
           className="max-h-64 overflow-y-auto p-1"
         >
           {isLoading && debouncedQuery ? (
-            <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
               {t("settings.general.rag.searching")}
             </div>
           ) : items.length === 0 ? (
-            <div className="px-3 py-3 text-xs text-muted-foreground">
+            <div className="p-3 text-xs text-muted-foreground">
               {t("settings.general.rag.noResults")}
             </div>
           ) : (
@@ -287,7 +287,7 @@ export function EmbeddingModelPicker({
                             pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin",
                           )}
                           // As on Recents: grey, unpin glyph once pinned. Hover only until then; always shown on touch.
-                          className={`mr-1 ml-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                          className={`mx-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                             pinned ? "" : "opacity-0 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100"
                           }`}
                         >

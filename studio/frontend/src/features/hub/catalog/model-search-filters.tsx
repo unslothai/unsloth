@@ -327,7 +327,7 @@ function RangeStops({
                   key={i}
                   aria-hidden={true}
                   style={{ left: at(i) }}
-                  className="absolute top-1/2 h-3 w-px -translate-x-1/2 -translate-y-1/2 bg-[color-mix(in_oklab,var(--foreground)_calc(28%*var(--contrast-wash-gain,1)),transparent)]"
+                  className="absolute top-1/2 h-3 w-px -translate-1/2 bg-[color-mix(in_oklab,var(--foreground)_calc(28%*var(--contrast-wash-gain,1)),transparent)]"
                 />
               ),
             )}
@@ -662,7 +662,7 @@ export function ModelSearchFiltersControl({
                 icon={FilterMailIcon}
                 strokeWidth={1.75}
                 // Lifts the glyph's ink 0.5px to centre.
-                className="size-5 -translate-y-[0.5px]"
+                className="size-5 translate-y-[-0.5px]"
               />
               {filtered && (
                 <span
@@ -801,7 +801,7 @@ export function ModelSearchFiltersControl({
             variant="ghost"
             size="xs"
             // "Reset all" has no descenders: its ink sits 0.25em inside the text box on each side.
-            className={cn(TEXT_BOX, "-my-[0.25em]")}
+            className={cn(TEXT_BOX, "my-[-0.25em]")}
             disabled={!filtered}
             onClick={onDevice ? onDevice.onReset : onReset}
           >
