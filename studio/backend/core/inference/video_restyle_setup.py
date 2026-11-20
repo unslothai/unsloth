@@ -372,15 +372,16 @@ def _was_cached(repo_id: str, filename: str, revision: Optional[str]) -> bool:
 
 
 def _remove_cached(path: str, repo_dir: Optional[Path] = None) -> None:
-    """Drop a shard this setup downloaded from Studio's Hub cache: the snapshot entry, and its blob unless another
-    snapshot of the repo still links to it. A path outside Studio's cache for this repo is left alone."""
+    """Drop a shard this setup downloaded from Studio's Hub cache: the snapshot entry, and its blob unless any other
+    snapshot link of the repo still resolves to it (blobs are content-addressed, so another revision may hold the same
+    blob under a different file name). A path outside Studio's cache for this repo is left alone."""
     repo_dir = _hub_repo_dir() if repo_dir is None else repo_dir
     if repo_dir is None:
         return
     p = Path(path)
     snapshots = repo_dir / "snapshots"
     try:
-        rel = p.relative_to(snapshots)
+        p.relative_to(snapshots)
     except ValueError:
         logger.info("restyle setup: %s is outside Studio's cache for that repo; kept", path)
         return
@@ -389,9 +390,7 @@ def _remove_cached(path: str, repo_dir: Optional[Path] = None) -> None:
         p.unlink(missing_ok = True)
         if target is None or not target.is_relative_to(repo_dir / "blobs"):
             return
-        inner = Path(*rel.parts[1:])
-        for snap in snapshots.iterdir():
-            other = snap / inner
+        for other in snapshots.rglob("*"):
             if other.is_symlink() and other.resolve() == target:
                 return
         target.unlink(missing_ok = True)
