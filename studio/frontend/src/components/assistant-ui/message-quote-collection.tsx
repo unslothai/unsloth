@@ -33,6 +33,7 @@ import { createPortal } from "react-dom";
 import {
   getPendingQuoteDispatchesForThread,
   releaseQuoteDispatchManually,
+  shouldShowQuoteDispatchInPill,
   subscribeQuoteDispatches,
 } from "./message-quote-dispatch";
 import type { CollectedQuote } from "./message-quote-model";
@@ -264,8 +265,9 @@ const QuotePillRow: FC<{
   readonly quote: CollectedQuote;
   readonly index: number;
   readonly reserved: boolean;
+  readonly reservedByQueuedPrompt: boolean;
   readonly onRemove: (quoteId: string) => void;
-}> = ({ quote, index, reserved, onRemove }) => {
+}> = ({ quote, index, reserved, reservedByQueuedPrompt, onRemove }) => {
   const t = useT();
   const source = quoteSource(quote, (turn) =>
     t("turns.label", { number: turn }),
@@ -292,6 +294,16 @@ const QuotePillRow: FC<{
         type="button"
         data-quote-remove=""
         aria-label={removeLabel}
+        aria-description={
+          reservedByQueuedPrompt
+            ? t("messageSelection.quoteReservedByQueuedPrompt")
+            : undefined
+        }
+        title={
+          reservedByQueuedPrompt
+            ? t("messageSelection.quoteReservedByQueuedPrompt")
+            : undefined
+        }
         aria-disabled={reserved}
         disabled={reserved}
         onClick={() => onRemove(quote.id)}
@@ -316,7 +328,19 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
   const t = useT();
   const dropdownId = useId();
   const quotes = useCollectedQuotes(threadId);
-  const pendingDispatches = usePendingQuoteDispatches(threadId);
+  const allDispatches = usePendingQuoteDispatches(threadId);
+  const pendingDispatches = allDispatches.filter(
+    shouldShowQuoteDispatchInPill,
+  );
+  const queuedReservedQuoteIds = new Set(
+    allDispatches
+      .filter(
+        (dispatch) =>
+          dispatch.origin === "queue" &&
+          dispatch.sendState === "not-started",
+      )
+      .flatMap((dispatch) => dispatch.quoteIds),
+  );
   const reservedQuoteIds = getReservedQuoteIds(threadId);
   const mode = quotePillMode(quotes.length);
   const [expanded, setExpanded] = useState(false);
@@ -589,7 +613,9 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
           <span
             className={cn(
               "min-w-0 truncate text-ui-12 text-foreground",
-              mode === "multiple" ? "font-medium" : "max-w-[190px]",
+              mode === "multiple"
+                ? "font-medium"
+                : "max-w-[calc(190px*var(--ui-space-scale,1))]",
             )}
             title={mode === "single" ? label : undefined}
           >
@@ -729,6 +755,7 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
               quote={quote}
               index={index}
               reserved={reservedQuoteIds.has(quote.id)}
+              reservedByQueuedPrompt={queuedReservedQuoteIds.has(quote.id)}
               onRemove={remove}
             />
           ))}

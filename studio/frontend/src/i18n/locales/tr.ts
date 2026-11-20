@@ -22,6 +22,7 @@ export const tr = {
       "Releasing is available if this takes too long. The message may still finish.",
     quoteSendPendingWarning:
       "If the original message still finishes, releasing now can send these quotes twice.",
+    quoteReservedByQueuedPrompt: "Reserved by a queued message.",
     releaseQuotes: "Release quotes",
     releaseQuotesAnyway: "Release anyway",
     keepWaitingQuotes: "Keep waiting",

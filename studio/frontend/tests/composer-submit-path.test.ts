@@ -51,8 +51,9 @@ const releaseCallback = lift(
 const reservedSendCallback = lift(
   (n) =>
     ts.isArrowFunction(n) &&
-    n.getText(source).startsWith("(...alsoGuard: string[]) =>") &&
-    n.getText(source).includes("reservePreStreamRun"),
+    n.getText(source).startsWith("(options: SendReservedComposerOptions") &&
+    n.getText(source).includes("reservePreStreamRun") &&
+    n.getText(source).includes("const failSend"),
 );
 const steerParkedSendCallback = lift(
   (n) =>

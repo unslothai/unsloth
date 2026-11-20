@@ -299,7 +299,7 @@ test("a delayed first send keeps the creation inputs it was sent under", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(
     thread,
-    /claimThreadCreation\([\s\S]*?\);\s*aui\.composer\(\)\.send\(\);/,
+    /claimThreadCreation\([\s\S]*?\);[\s\S]*?const sendResult = aui\.composer\(\)\.send\(\)/,
     "the stamp has to be taken before send() starts awaiting, not after",
   );
   // The prompt queue never passes the composer, so it stamps from its start-time capture.

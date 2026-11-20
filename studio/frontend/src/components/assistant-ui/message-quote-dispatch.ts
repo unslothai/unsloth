@@ -31,11 +31,16 @@ export type QuoteDispatchHistoryState =
   | "settled"
   | "failed";
 
+export type QuoteDispatchOrigin = "composer" | "queue";
+
+export type QuoteDispatchOutcome = "accepted" | "released";
+
 export type QuoteDispatch = {
   readonly contextId: string;
   readonly threadId: string;
   readonly quoteIds: readonly string[];
   readonly envelope: QuoteContextEnvelope;
+  readonly origin: QuoteDispatchOrigin;
   readonly sendState: QuoteDispatchSendState;
   readonly historyState: QuoteDispatchHistoryState;
 };
@@ -53,7 +58,49 @@ type QuoteMessageShape = {
 const dispatches = new Map<string, QuoteDispatch>();
 const listenersByThread = new Map<string, Set<() => void>>();
 const snapshotsByThread = new Map<string, readonly QuoteDispatch[]>();
+// Item-scoped terminal listeners. Entries exist only while a dispatch is live;
+// the terminal notification removes them, so this is not an outcome ledger.
+const outcomeListenersByContextId = new Map<
+  string,
+  Set<(outcome: QuoteDispatchOutcome) => void>
+>();
 const EMPTY_DISPATCHES: readonly QuoteDispatch[] = Object.freeze([]);
+
+function announceQuoteDispatchOutcome(
+  contextId: string,
+  outcome: QuoteDispatchOutcome,
+): void {
+  const listeners = outcomeListenersByContextId.get(contextId);
+  if (listeners === undefined) {
+    return;
+  }
+  outcomeListenersByContextId.delete(contextId);
+  for (const listener of [...listeners]) {
+    listener(outcome);
+  }
+}
+
+export function subscribeQuoteDispatchOutcome(
+  contextId: string,
+  listener: (outcome: QuoteDispatchOutcome) => void,
+): () => void {
+  let listeners = outcomeListenersByContextId.get(contextId);
+  if (listeners === undefined) {
+    listeners = new Set();
+    outcomeListenersByContextId.set(contextId, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    const current = outcomeListenersByContextId.get(contextId);
+    if (current === undefined) {
+      return;
+    }
+    current.delete(listener);
+    if (current.size === 0) {
+      outcomeListenersByContextId.delete(contextId);
+    }
+  };
+}
 
 function notify(threadId: string): void {
   snapshotsByThread.delete(threadId);
@@ -134,6 +181,7 @@ export function getQuoteDispatch(contextId: string): QuoteDispatch | null {
  */
 export function reserveQuoteDispatch(
   threadId: string,
+  origin: QuoteDispatchOrigin = "composer",
 ): ReserveQuoteDispatchResult {
   const quotes = getUnreservedQuotes(threadId);
   if (quotes.length === 0) {
@@ -152,6 +200,7 @@ export function reserveQuoteDispatch(
     threadId,
     quoteIds: Object.freeze(quoteIds),
     envelope,
+    origin,
     sendState: "not-started",
     historyState: "not-started",
   });
@@ -203,6 +252,43 @@ export function markQuoteDispatchSendFailed(contextId: string): boolean {
   );
 }
 
+/**
+ * Restores a failed append attempt to the queued state for retry. The internal
+ * guard is deliberate: a caller must not make a history-started dispatch look
+ * queued again.
+ */
+export function resetQuoteDispatchForRetry(contextId: string): boolean {
+  return updateDispatch(contextId, (dispatch) =>
+    dispatch.sendState === "failed" && dispatch.historyState === "not-started"
+      ? { ...dispatch, sendState: "not-started" }
+      : null,
+  );
+}
+
+/**
+ * Queue cleanup may release only when no message and no history write can
+ * exist: history never started, and the append either never began or has
+ * already settled as failed. A pending send may still land.
+ */
+export function canReleaseQueuedQuoteDispatch(
+  dispatch: QuoteDispatch | null,
+): boolean {
+  return (
+    dispatch !== null &&
+    dispatch.historyState === "not-started" &&
+    (dispatch.sendState === "not-started" || dispatch.sendState === "failed")
+  );
+}
+
+/** Queue snapshots are not "being sent" until their append actually starts. */
+export function shouldShowQuoteDispatchInPill(
+  dispatch: QuoteDispatch,
+): boolean {
+  return !(
+    dispatch.origin === "queue" && dispatch.sendState === "not-started"
+  );
+}
+
 export function markQuoteDispatchHistoryPending(contextId: string): boolean {
   return updateDispatch(contextId, (dispatch) =>
     dispatch.historyState === "not-started"
@@ -237,6 +323,9 @@ export function acceptQuoteDispatchForMessage(message: unknown): boolean {
     return false;
   }
   const settled = settleQuoteIds(dispatch.threadId, contextId);
+  // Announce before deletion: queue items consume this as the authoritative
+  // accepted/released outcome rather than inferring it from the collection.
+  announceQuoteDispatchOutcome(contextId, "accepted");
   dispatches.delete(contextId);
   notify(dispatch.threadId);
   return settled;
@@ -256,8 +345,10 @@ export function releaseQuoteDispatch(contextId: string): boolean {
   if (dispatch === undefined) {
     return false;
   }
-  dispatches.delete(contextId);
   const released = releaseQuoteIds(dispatch.threadId, contextId);
+  // Announce before deletion; see acceptQuoteDispatchForMessage.
+  announceQuoteDispatchOutcome(contextId, "released");
+  dispatches.delete(contextId);
   notify(dispatch.threadId);
   return released;
 }

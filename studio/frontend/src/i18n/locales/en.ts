@@ -3,7 +3,7 @@
 
 export const en = {
   // i18n follow-up: this quote block is still English in every non-English
-  // overlay (34 keys). Localize it before release; parity only proves presence.
+  // overlay (35 keys). Localize it before release; parity only proves presence.
   messageSelection: {
     toolbar: "Selection actions",
     quote: "Quote",
@@ -21,6 +21,7 @@ export const en = {
       "Releasing is available if this takes too long. The message may still finish.",
     quoteSendPendingWarning:
       "If the original message still finishes, releasing now can send these quotes twice.",
+    quoteReservedByQueuedPrompt: "Reserved by a queued message.",
     releaseQuotes: "Release quotes",
     releaseQuotesAnyway: "Release anyway",
     keepWaitingQuotes: "Keep waiting",

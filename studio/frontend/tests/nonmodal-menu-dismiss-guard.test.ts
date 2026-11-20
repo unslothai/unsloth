@@ -88,11 +88,14 @@ function nonModalMenus(): { id: string; body: string }[] {
   const menus: { id: string; body: string }[] = [];
   for (const file of sources(SRC)) {
     const source = readFileSync(file, "utf8");
-    let at = source.indexOf("modal={false}");
+    // The leading space keeps `aria-modal={false}` from being mistaken for the
+    // Radix modal prop on a role="dialog" element.
+    let at = source.indexOf(" modal={false}");
     while (at !== -1) {
+      at += 1;
       const { tag, body } = element(source, at);
       menus.push({ id: `${relativeId(file)} <${tag}>`, body });
-      at = source.indexOf("modal={false}", at + 1);
+      at = source.indexOf(" modal={false}", at + 1);
     }
   }
   return menus;

@@ -153,6 +153,15 @@ function world() {
       appended.push(item.prompt);
       item.dispatched = true;
     },
+    releaseAndForgetPromptQueueItem: () => "nothing",
+    forgetPromptQueueItemQuotes: () => "nothing",
+    reserveQuoteDispatch: () => ({ kind: "none" }),
+    attachQueuedQuoteDispatch: (item: unknown) => normalizeQueuedPrompt(item as string),
+    getQuoteDispatch: () => null,
+    canReleaseQueuedQuoteDispatch: () => true,
+    releaseQuoteDispatch: () => true,
+    subscribeQuoteDispatchOutcome: () => () => undefined,
+    consumePromptQueueDeepResearch: noop,
   };
   const engine = new Function(
     ...Object.keys(deps),

@@ -11,6 +11,7 @@ import {
   DragDropVerticalIcon,
   Edit03Icon,
   MoreHorizontalIcon,
+  QuoteIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -49,6 +50,7 @@ type PromptQueueListProps = {
   onRemove: (id: string) => boolean;
   onMove: (id: string, targetId: string) => boolean;
   onSteer: (id: string) => boolean;
+  onReleaseQuotes: (id: string) => boolean;
   onResume: () => void;
 };
 
@@ -63,6 +65,7 @@ export function PromptQueueList({
   onRemove,
   onMove,
   onSteer,
+  onReleaseQuotes,
   onResume,
 }: PromptQueueListProps) {
   const t = useT();
@@ -353,6 +356,21 @@ export function PromptQueueList({
                         </span>
                       ) : null}
                     </span>
+                    {item.quoteCount > 0 ? (
+                      <span
+                        title={t("messageSelection.quoteReservedByQueuedPrompt")}
+                        aria-label={`${t("messageSelection.quoteCollection")}: ${item.quoteCount}`}
+                        className="flex h-7 shrink-0 items-center gap-1 px-1 text-xs tabular-nums text-muted-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={QuoteIcon}
+                          strokeWidth={1.75}
+                          aria-hidden={true}
+                          className="size-3.5"
+                        />
+                        {item.quoteCount}
+                      </span>
+                    ) : null}
                     {index === 0 && entry.paused && (
                       <span className="hidden shrink-0 px-1 text-xs text-muted-foreground sm:inline">
                         {t("promptQueue.paused")}
@@ -440,6 +458,19 @@ export function PromptQueueList({
                         inputRef.current?.focus();
                       }}
                     >
+                      {item.quoteCount > 0 && (
+                        <DropdownMenuItem
+                          disabled={!item.canReleaseQuotes}
+                          onSelect={() => {
+                            if (onReleaseQuotes(item.id)) {
+                              setAnnouncement(t("promptQueue.announceUpdated"));
+                            }
+                          }}
+                        >
+                          <HugeiconsIcon icon={QuoteIcon} strokeWidth={1.75} />
+                          {t("messageSelection.releaseQuotes")}
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem
                         disabled={!item.canEdit}
                         onSelect={() => {

@@ -6,6 +6,9 @@ import type {
   CompleteAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
+import type { QuoteDispatch } from "../../../components/assistant-ui/message-quote-dispatch.ts";
+import { getQuoteDispatch } from "../../../components/assistant-ui/message-quote-dispatch.ts";
+import { quoteContextTransport } from "../../../components/assistant-ui/message-quote-context.ts";
 import { cachedTextAttachment } from "../text-attachment-accept.ts";
 import { attachmentContentText, isPastedTextFile } from "./pasted-text.ts";
 
@@ -15,7 +18,48 @@ export type QueuedPrompt = {
   prompt: string;
   attachments?: CompleteAttachment[];
   attachmentFiles?: File[];
+  quoteDispatch?: QuoteDispatch;
 };
+
+/** Returns a normalized copy carrying exactly one queue-owned quote snapshot. */
+export function attachQueuedQuoteDispatch(
+  item: string | QueuedPrompt,
+  dispatch: QuoteDispatch,
+): QueuedPrompt {
+  return { ...normalizeQueuedPrompt(item), quoteDispatch: dispatch };
+}
+
+/** Clears the item handle before ownership transfers to a release/accept path. */
+export function takeQueuedQuoteDispatch(
+  item: QueuedPrompt,
+): QuoteDispatch | undefined {
+  const dispatch = item.quoteDispatch;
+  if (dispatch === undefined) {
+    return undefined;
+  }
+  item.quoteDispatch = undefined;
+  return dispatch;
+}
+
+export function queuedPromptQuoteCount(item: QueuedPrompt): number {
+  return item.quoteDispatch?.envelope.quotes.length ?? 0;
+}
+
+/**
+ * Metadata is emitted only while the live dispatch still exists. A manual
+ * release can land while attachments are being prepared; the message then
+ * sends without quote context instead of carrying a stale envelope.
+ */
+export function queuedPromptQuoteInfo(item: QueuedPrompt) {
+  const dispatch = item.quoteDispatch;
+  if (dispatch === undefined) {
+    return undefined;
+  }
+  if (getQuoteDispatch(dispatch.contextId) === null) {
+    return undefined;
+  }
+  return quoteContextTransport(dispatch.envelope);
+}
 
 export async function prepareQueuedPromptFiles(
   item: QueuedPrompt,
@@ -130,10 +174,12 @@ export function queuedPromptHasContent(item: QueuedPrompt): boolean {
 }
 
 export function queuedPromptMessage(item: QueuedPrompt) {
+  const quote = queuedPromptQuoteInfo(item);
   return {
     role: "user" as const,
     content: item.prompt ? [{ type: "text" as const, text: item.prompt }] : [],
     attachments: item.attachments ?? [],
+    ...(quote === undefined ? {} : { metadata: { custom: { quote } } }),
     createdAt: new Date(),
   };
 }
