@@ -363,12 +363,22 @@ def has_functional_torchao() -> bool:
         return False
 
 
+def mxfp8_training_offered(capability: tuple) -> bool:
+    """Whether the Train tab offers base_precision='mxfp8': datacenter Blackwell (sm100 / sm103) only. On an sm120
+    card (RTX PRO 6000 / RTX 50) torchao's MXFP8 linear does engage, but it re-casts the frozen weight and the
+    activations to MX blocks on every step and keeps bf16 weight storage, so it trails frozen fp8 (offered there) in
+    speed and memory, and bf16 too at 512 px (FLUX.2 klein 4B LoRA: 0.087 s/step vs fp8 0.064, bf16 0.081).
+    An explicit mxfp8 request still runs on sm100+; this only decides what is advertised."""
+    major = int(capability[0]) if capability else 0
+    return major == 10
+
+
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4 always works;
     bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/mxfp8 additionally need a
     FUNCTIONAL torchao (their explicit paths import it with no fallback, and the Windows-ROCm
-    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 needs the Blackwell tensor cores
-    (sm100+) its cuBLAS kernels target. The dense modes all train in bf16 compute, which the DiT
+    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 is offered on datacenter
+    Blackwell only (``mxfp8_training_offered``). The dense modes all train in bf16 compute, which the DiT
     trainer requires, so a non-bf16 CUDA GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise
     /info would advertise a start that evicts resident models and then fails the trainer's bf16
     guard. Never raises."""
@@ -386,7 +396,7 @@ def train_precision_modes() -> tuple[list[str], str]:
             major, minor = torch.cuda.get_device_capability()
             if not rocm and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
-            if torchao_ok and (major, minor) >= (10, 0):
+            if torchao_ok and mxfp8_training_offered((major, minor)):
                 modes.append("mxfp8")
             modes.append("auto")
             recommended = "auto"
