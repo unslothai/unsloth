@@ -3344,12 +3344,8 @@ _TOOL_SUFFIX_EOS_TRIM = re.compile(
 def trainer__get_tool_suffix_ids(function_name, function):
     """Trim TRL's dummy tool-call prefix at its last EOS only when whitespace alone follows it.
 
-    TRL renders a dummy user + assistant tool-call turn, trims it at the last EOS (so Qwen's "<|im_end|>\n" ends
-    at EOS) and slices the tool suffix off the render with the tool results. A tokenizer whose EOS is the
-    end-of-turn token but whose tool-call turn ends with another stop token has no EOS after the tool call, so the
-    last EOS ends the USER turn and every tool suffix starts with the dummy assistant turn (a second tool call with
-    empty arguments) that is then fed back into the rollout. unsloth/gemma-4-* ships EOS = <turn|>, and its tool
-    call ends with <|tool_response>; google/gemma-4-* (EOS <eos>) never trims and is unaffected.
+    unsloth/gemma-4-* (EOS <turn|>) ends tool calls with <|tool_response>, so the last EOS ends the USER turn and
+    every tool suffix would re-inject the dummy assistant tool call into the rollout.
     """
     if function_name != "_get_tool_suffix_ids":
         return function

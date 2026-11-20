@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TRL's tool loop appends `_get_tool_suffix_ids` after the sampled tool call. Its dummy prefix is trimmed at the
-last EOS, which for a tokenizer whose EOS is the end-of-turn token (unsloth/gemma-4-*: <turn|>) but whose tool-call
-turn ends with another stop token (<|tool_response>) is the end of the USER turn, so the suffix carries a second,
-empty-argument dummy tool call. These tests run the TRL function body through Unsloth's source edit."""
+"""TRL `_get_tool_suffix_ids` run through Unsloth's source edit (unsloth/gemma-4 EOS <turn|> dummy tool-call leak)."""
 
 import ast
 import os
