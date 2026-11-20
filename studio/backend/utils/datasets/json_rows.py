@@ -56,6 +56,26 @@ def json_rows_features(files):
     return None if schema is None else Features.from_arrow_schema(schema)
 
 
+def has_timestamp(data_type):
+    """The Arrow JSON reader turns ISO date strings into timestamps, at any depth."""
+    import pyarrow as pa
+
+    if isinstance(data_type, pa.Schema) or pa.types.is_struct(data_type):
+        return any(has_timestamp(field.type) for field in data_type)
+    if hasattr(data_type, "value_type"):
+        return has_timestamp(data_type.value_type)
+    return pa.types.is_timestamp(data_type)
+
+
+def head_rows(path, count):
+    rows = []
+    for chunk in _row_chunks(path):
+        rows.extend(chunk[: count - len(rows)])
+        if len(rows) >= count:
+            break
+    return rows
+
+
 def _rows(files):
     for path, *_ in files:
         for rows in _row_chunks(path):
@@ -63,6 +83,7 @@ def _rows(files):
 
 
 def json_rows_dataset(files, cache_dir = None):
+    """Every row of ``files`` as parsed by ``json``, so strings stay strings; None if no schema fits."""
     from datasets import Dataset
 
     features = json_rows_features(files)

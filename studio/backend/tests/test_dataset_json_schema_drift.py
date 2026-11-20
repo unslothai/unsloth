@@ -221,3 +221,14 @@ def test_dates_rebuild_falls_back_when_the_shared_cache_is_read_only(tmp_path, m
             os.chmod(root, 0o755)
 
     assert dataset.to_list() == [{"q": "hi", "when": "2024-03-04"}]
+
+
+def test_dates_in_rows_that_drift_load_as_written(tmp_path):
+    rows = [{"when": "1945-05-08", **_chat(i)} for i in range(40)]
+    rows.append({"when": "1945-05-09", **_chat(40, weight = 0)})
+    path = _write_jsonl(tmp_path / "chat.jsonl", rows)
+
+    dataset = _load(path, tmp_path, **_SMALL_BLOCKS)
+
+    assert dataset["when"][0] == "1945-05-08"
+    assert dataset[40]["messages"][1]["weight"] == 0

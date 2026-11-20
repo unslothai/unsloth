@@ -170,3 +170,15 @@ def test_a_minified_json_array_is_handed_to_the_loader_unread(tmp_path, monkeypa
     )
     assert local._jsonl_head(path, 10) is None
     assert parsed == []
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".json"])
+def test_dates_preview_as_written(tmp_path, suffix):
+    rows = [{"q": "a", "when": "1945-05-08"}, {"q": "b", "when": "2021-05-03T10:00:00Z"}]
+    path = tmp_path / f"train{suffix}"
+    if suffix == ".json":
+        path.write_text(json.dumps(rows), encoding = "utf-8")
+    else:
+        _write_jsonl(path, rows)
+    dataset, _ = local._stream_file_preview_slice(path, 10)
+    assert dataset.to_list() == rows
