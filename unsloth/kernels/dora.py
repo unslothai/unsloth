@@ -86,7 +86,7 @@ def _cross_term_fp32(weight, lora_A_weight):
         A_2 = torch.cat((A_hi, A_lo))
     else:
         A_2 = A_hi
-    if _MM_OUT_DTYPE and weight.is_cuda:
+    if _MM_OUT_DTYPE and weight.is_cuda and not (lowp == torch.float16 and _fp16_accumulation()):
         WA = torch.mm(A_2, weight.t(), out_dtype = torch.float32)
     else:
         # 16-bit values are exact in float32 (and in TF32); upcast W in bounded row chunks.
@@ -97,6 +97,17 @@ def _cross_term_fp32(weight, lora_A_weight):
             dim = 1,
         )
     return WA[:r] + WA[r:] if split else WA
+
+
+def _fp16_accumulation():
+    # cuBLAS refuses float16 inputs with a float32 output under allow_fp16_accumulation (CUDABlas.cpp,
+    # gemm_internal<at::Half, float>). Reading the flag is a graph break, so a trace takes it as a constant.
+    return bool(getattr(torch.backends.cuda.matmul, "allow_fp16_accumulation", False))
+
+
+_assume_constant = getattr(torch.compiler, "assume_constant_result", None)
+if _assume_constant is not None:
+    _fp16_accumulation = _assume_constant(_fp16_accumulation)
 
 
 @torch.no_grad()
