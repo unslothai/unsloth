@@ -290,10 +290,12 @@ _BUILTIN_NUMBER_FORMATS = {
 }
 _MAX_FORMAT_CHARS = 1024
 _FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
+_FORMAT_COLOR = re.compile(r"black|blue|cyan|green|magenta|red|white|yellow|color\d+", re.I)
+_FORMAT_SYSTEM_DATE = re.compile(r"-(f400|f800|x-sys)", re.I)  # long date and time of the OS
 
 
 def _format_tokens(code: str) -> list[tuple[str, str]] | None:
-    """("lit" | "ph" | "exp" | "sep", text) tokens of a number format, or None if unsupported."""
+    """("lit" | "ph" | "exp" | "sep" | "color" | "fill", text) tokens of a number format, or None if unsupported."""
     tokens, i, separators = [], 0, 0
     while i < len(code):
         ch = code[i]
@@ -309,14 +311,19 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             end = code.find("]", i)
             inner = code[i + 1 : end] if end > 0 else ""
             if inner.startswith("$"):  # currency and locale, such as [$EUR-407]
+                if _FORMAT_SYSTEM_DATE.search(inner):
+                    return None
                 tokens.append(("lit", inner[1:].split("-")[0]))
-            elif not inner.isalnum():  # conditions such as [>100]
+            elif _FORMAT_COLOR.fullmatch(inner):
+                tokens.append(("color", inner))
+            else:  # conditions such as [>100], elapsed time
                 return None
-            i = end + 1  # colours are dropped
+            i = end + 1
         elif ch == "_":  # space the width of the next character
             tokens.append(("lit", " "))
             i += 2
         elif ch == "*":  # fill with the next character
+            tokens.append(("fill", code[i + 1 : i + 2]))
             i += 2
         elif ch in "0#?.,%":
             tokens.append(("ph", ch))
@@ -325,11 +332,15 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             tokens.append(("exp", code[i + 1]))
             i += 2
         elif ch == ";":
-            tokens.append(("sep", ";"))
             separators += 1
             if separators == 3:  # the fourth section formats text, not numbers
                 break
+            tokens.append(("sep", ";"))
             i += 1
+        elif ch == "@":  # a section holding @ formats text too, wherever it sits
+            while tokens and tokens.pop()[0] != "sep":
+                pass
+            break
         elif ch in _FORMAT_LITERALS:
             tokens.append(("lit", ch))
             i += 1
@@ -390,7 +401,12 @@ def _section_plan(tokens: list[tuple[str, str]]):
     )
 
 
+_GENERAL = object()
+
+
 def _apply_section(value: float, plan) -> str | None:
+    if plan is _GENERAL:
+        return _number(value)
     if plan is None or isinstance(plan, str):
         return plan
     (
@@ -444,7 +460,13 @@ def _number_plan(code: str):
             sections.append([])
         else:
             sections[-1].append(token)
-    return [_section_plan(section) for section in sections]
+    # An empty section hides its values; Excel reads a colour-only one as General.
+    return [
+        _GENERAL
+        if section and all(kind == "color" for kind, _ in section)
+        else _section_plan([token for token in section if token[0] in ("lit", "ph", "exp")])
+        for section in sections
+    ]
 
 
 def _apply_number(value: float, plan) -> str | None:
