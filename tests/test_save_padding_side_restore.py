@@ -63,7 +63,11 @@ def _load(*names, **env):
 class _Tokenizer:
     """Records the padding side each write observed; `error` makes the write raise."""
 
-    def __init__(self, padding_side = "right", error = None):
+    def __init__(
+        self,
+        padding_side = "right",
+        error = None,
+    ):
         self.padding_side = padding_side
         self.error = error
         self.observed = []
@@ -105,7 +109,11 @@ class _Processor:
         self._record(self.pushed, args, kwargs)
 
 
-def _tokenizer(padding_side, processor, error = None):
+def _tokenizer(
+    padding_side,
+    processor,
+    error = None,
+):
     source = _Tokenizer(padding_side, error = error)
     return _Processor(source) if processor else source
 
@@ -170,7 +178,11 @@ class _MergeModel:
         self.saved.append((args, kwargs))
 
 
-def _save_model_environment(monkeypatch, tmp_path, preserve_error = None):
+def _save_model_environment(
+    monkeypatch,
+    tmp_path,
+    preserve_error = None,
+):
     """Exec unsloth_save_model with every helper stubbed except the two under test."""
     import huggingface_hub
     import psutil
@@ -318,9 +330,7 @@ def test_left_padding_side_restores(padding_side, processor, error):
 @pytest.mark.parametrize("padding_side", ["right", "left"])
 @pytest.mark.parametrize("processor", [False, True])
 @pytest.mark.parametrize("error", [None, RuntimeError("push failed")])
-def test_lora_push_restores_padding_side(
-    monkeypatch, tmp_path, padding_side, processor, error
-):
+def test_lora_push_restores_padding_side(monkeypatch, tmp_path, padding_side, processor, error):
     """save.py's push_to_hub branch flipped padding_side without a finally."""
     namespace, _ = _save_model_environment(monkeypatch, tmp_path)
     tokenizer = _tokenizer(padding_side, processor, error = error)
@@ -346,9 +356,7 @@ def test_lora_push_restores_padding_side(
 @pytest.mark.parametrize("padding_side", ["right", "left"])
 @pytest.mark.parametrize("processor", [False, True])
 @pytest.mark.parametrize("error", [None, RuntimeError("save failed")])
-def test_lora_save_restores_padding_side(
-    monkeypatch, tmp_path, padding_side, processor, error
-):
+def test_lora_save_restores_padding_side(monkeypatch, tmp_path, padding_side, processor, error):
     """The lora/direct save_pretrained branch had the same unguarded flip."""
     namespace, _ = _save_model_environment(monkeypatch, tmp_path)
     tokenizer = _tokenizer(padding_side, processor, error = error)
@@ -379,15 +387,11 @@ def test_lora_save_restores_padding_side(
         "none",
     ],
 )
-def test_merged_save_restores_padding_side(
-    monkeypatch, tmp_path, padding_side, processor, where
-):
+def test_merged_save_restores_padding_side(monkeypatch, tmp_path, padding_side, processor, where):
     """The merged branch also ran post-save helpers before restoring padding_side."""
     error = RuntimeError("save failed") if where == "save_pretrained" else None
     preserve_error = RuntimeError("preserve failed") if where == "preserve_eos" else None
-    namespace, calls = _save_model_environment(
-        monkeypatch, tmp_path, preserve_error = preserve_error
-    )
+    namespace, calls = _save_model_environment(monkeypatch, tmp_path, preserve_error = preserve_error)
     tokenizer = _tokenizer(padding_side, processor, error = error)
     model = _MergeModel()
     run = lambda: namespace["unsloth_save_model"](
