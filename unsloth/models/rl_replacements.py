@@ -2670,6 +2670,15 @@ def _unsloth_rollout_scope(trainer):
         return contextlib.nullcontext()
     if getattr(trainer, "rollout_func", None) is not None:
         return contextlib.nullcontext()
+    # An async tool runs on TRL's event-loop thread while _generate blocks on its result. The held fold keeps the
+    # merged-rollout lock, so an async tool that calls a vLLM engine would wait on it forever: fold per call instead.
+    import inspect
+
+    async_tools = any(bool(d) for d in (getattr(trainer, "_async_tool_dicts", None) or ())) or any(
+        inspect.iscoroutinefunction(t) for t in (getattr(trainer, "tools", None) or ())
+    )
+    if async_tools:
+        return contextlib.nullcontext()
     llm = getattr(getattr(trainer, "vllm_generation", None), "llm", None)
     if llm is None:
         llm = getattr(trainer, "llm", None)
