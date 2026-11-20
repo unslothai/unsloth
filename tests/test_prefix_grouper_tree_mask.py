@@ -83,14 +83,13 @@ def test_tree_mask_matches_trl_tree_attention(seed):
     torch.manual_seed(seed)
     q, k, v = (torch.randn(1, 4, T, 16, dtype = torch.float64, requires_grad = True) for _ in range(3))
     ref = _trl_reference(q, k, v, offsets, paths)
-    # FlexAttention with the block mask (forward only: flex has no CPU backward).
+    # Forward only: flex has no CPU backward.
     block_mask = kernel.get_block_mask(seg, torch.device("cpu"), compile_mask = False)
     with torch.no_grad():
         got = kernel._run_flex(
             q.float(), k.float(), v.float(), block_mask, False, None, False, T, seg.T_pad
         )
     torch.testing.assert_close(got.double(), ref.detach(), atol = 1e-5, rtol = 1e-5)
-    # Gradients through the same mask_mod as a dense mask.
     idx = torch.arange(T)
     dense = kernel._make_tree_mask_mod(seg.reach_end)(0, 0, idx[:, None], idx[None, :])
     out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask = dense)

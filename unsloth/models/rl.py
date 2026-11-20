@@ -5229,8 +5229,7 @@ def _prefix_grouper_kernel():
 
 
 def _tree_attention_eligible(model, device):
-    # Unsloth's FlexAttention prefix kernel (PrefixGrouper) masks by token labels, so it can run a prefix trie:
-    # needs every decoder layer to apply prefix_seg_info, plain causal softmax attention and per-token MLPs.
+    # Needs every decoder layer to apply prefix_seg_info, plain causal softmax attention and per-token MLPs.
     if os.environ.get("UNSLOTH_ASYNC_GRPO_TREE_ATTENTION", "1").lower() in (
         "0",
         "false",
@@ -5276,7 +5275,6 @@ def _tree_attention_eligible(model, device):
 
 
 def _async_grpo_tree_seg_info(model, f_kwargs):
-    # TreeSegInfo for a prefix-trie row with at least one fork, else None (unroll it instead).
     parents = f_kwargs.get("tree_segment_parents")
     position_ids = f_kwargs.get("position_ids")
     if (
@@ -5332,8 +5330,7 @@ def _forward_tree_attention(head_forward, f_args, f_kwargs, seg):
 
 
 def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
-    # Prefix-trie rows the FlexAttention tree mask cannot run (TRL >= 1.17): unroll each root-to-leaf path into its
-    # own packed sequence and read each trie position back from one copy (exact; shared prefixes forwarded per sample).
+    # Unroll each root-to-leaf path into its own packed sequence; read each trie position back from one copy.
     tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
     position_ids = f_kwargs.get("position_ids")
     parents = tree["tree_segment_parents"]
@@ -5356,7 +5353,6 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
     _ASYNC_GRPO_TREE_COUNTS["unique_tokens"] += length
     if not _ASYNC_GRPO_TREE_WARNED and index.numel() >= 2 * length:
         _ASYNC_GRPO_TREE_WARNED.append(True)
-        # TRL budgets a row by unique tokens; the unrolled forward runs every sample's full path.
         print(
             f"Unsloth: AsyncGRPOTrainer unrolled a prefix-trie row of {length} unique tokens into "
             f"{index.numel()} tokens ({index.numel() / length:.2f}x): this model cannot run tree attention, "
@@ -5397,8 +5393,7 @@ def _unsloth_async_grpo_lm_head(
         head_forward = target.forward
         unroll_tree = False
         if _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
-            # Unsloth attention ignores TRL's tree attention and position_ids resets: prefix-trie rows run through the
-            # FlexAttention tree mask where the model applies prefix_seg_info, else they are unrolled.
+            # Unsloth attention ignores TRL's tree attention and position_ids resets.
             unroll_tree = True
 
             def packed_kwargs(f_kwargs):

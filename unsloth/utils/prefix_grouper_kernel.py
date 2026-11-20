@@ -190,10 +190,7 @@ class TreeSegInfo:
 
 
 def build_tree_seg_info(segment_offsets, segment_parents, device: torch.device) -> TreeSegInfo:
-    """TreeSegInfo from segment boundaries (S + 1) and each segment's parent (S, -1 for a root).
-
-    Raises ValueError unless the segments are in DFS pre-order with every parent before its children.
-    """
+    """Raises ValueError unless segments are in DFS pre-order with every parent before its children."""
     offsets = [int(x) for x in torch.as_tensor(segment_offsets).tolist()]
     parents = [int(x) for x in torch.as_tensor(segment_parents).tolist()]
     n = len(parents)

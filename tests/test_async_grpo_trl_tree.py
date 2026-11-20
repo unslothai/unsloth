@@ -73,7 +73,6 @@ class _Logger:
 
 
 def _pg_kernel():
-    # unsloth/utils/prefix_grouper_kernel.py without importing the package (it only needs torch).
     name = "_pg_kernel_async_grpo_test"
     if name not in sys.modules:
         path = os.path.join(REPO_ROOT, "unsloth", "utils", "prefix_grouper_kernel.py")
