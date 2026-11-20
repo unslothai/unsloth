@@ -25,7 +25,6 @@ import httpx
 # FastFlowLM modes with no chat endpoint; lemond lists every other model as chat too.
 _NOT_CHAT = frozenset({"embeddings", "transcription", "realtime-transcription"})
 _HIDDEN = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # CREATE_NO_WINDOW
-# Loopback only: never an HTTP_PROXY or the Windows system proxy (urllib getproxies), as LemonadeServer.
 _HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -168,6 +167,10 @@ def _relay(process: subprocess.Popen, tail: list[str]) -> None:
 
 
 def make_handler(flm: Flm, serving: Serving, api_key: str):
+    # Pooled, not per request: a new client (SSL context, connect) delayed every first token.
+    # trust_env off keeps loopback calls away from HTTP_PROXY and the Windows system proxy.
+    client = httpx.Client(trust_env = False, timeout = httpx.Timeout(600.0, connect = 10.0))
+
     def find(model_name: str) -> dict[str, Any]:
         for row in flm.catalog():
             if model_name in (row["id"], row["checkpoint"]):
@@ -176,6 +179,7 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        disable_nagle_algorithm = True  # small SSE chunks must not wait on delayed ACKs
 
         def log_message(self, fmt, *args) -> None:
             pass
@@ -351,9 +355,7 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
                     return
                 try:
                     if (
-                        httpx.get(
-                            f"http://127.0.0.1:{port}/v1/models", timeout = 2.0, trust_env = False
-                        ).status_code
+                        client.get(f"http://127.0.0.1:{port}/v1/models", timeout = 2.0).status_code
                         == 200
                     ):
                         break
@@ -417,8 +419,8 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
                     pass
             headers = {k: v for k, v in self.headers.items() if k.lower() not in _HOP_HEADERS}
             try:
-                with httpx.stream(method, f"http://127.0.0.1:{port}{self.path}", content = raw or None,
-                                  headers = headers, timeout = httpx.Timeout(600.0, connect = 10.0), trust_env = False) as upstream:  # fmt: skip
+                with client.stream(method, f"http://127.0.0.1:{port}{self.path}", content = raw or None,
+                                   headers = headers) as upstream:  # fmt: skip
                     self.send_response(upstream.status_code)
                     for key, value in upstream.headers.items():
                         if key.lower() not in _HOP_HEADERS:
