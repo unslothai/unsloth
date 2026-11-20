@@ -128,7 +128,15 @@ def _input_leaves(args, kwargs):
 
 
 def _leaf(hidden):
-    return hidden.detach().requires_grad_(True)
+    """Layer k's input: requires grad (reentrant checkpointing needs one), but is not a leaf, so code
+    between layers may still write into it in place (Qwen3-VL DeepStack on transformers 4.57). Subtracting
+    a zero that requires grad is exact for every value (-0.0 and NaN included) and allocates nothing."""
+    hidden = hidden.detach()
+    zero = torch.zeros((), device = hidden.device, dtype = hidden.dtype, requires_grad = True)
+    try:
+        return hidden.sub_(zero)
+    except RuntimeError:  # overlapping or otherwise unwritable memory
+        return hidden.clone().sub_(zero)
 
 
 def install_frozen_prefix_skip(model):
