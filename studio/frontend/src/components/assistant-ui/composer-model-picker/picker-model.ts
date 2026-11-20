@@ -470,15 +470,18 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** In on-screen px, so zoom does not flip the 400/420 choice. */
+/** The open picker's height, from the window alone so a tab's row count never resizes it. In
+ * on-screen px, so zoom does not change it: 420px up to a 1080px-tall window, then rising to 540px
+ * only on very large monitors (1380px and taller). */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,
   zoomOut: number,
 ): number {
-  const shortLandscape =
-    innerWidth > innerHeight && innerHeight / zoomOut <= 900;
-  return shortLandscape ? 400 : 420;
+  const screenHeight = innerHeight / zoomOut;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 400;
+  const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
+  return Math.round(420 + 120 * t);
 }
 
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
