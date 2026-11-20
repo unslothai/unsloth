@@ -2676,19 +2676,25 @@ def _mlx_device_info(mx: Any) -> Dict[str, Any]:
     return {}
 
 
-def _metal_recommended_working_set_bytes() -> int:
-    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel."""
+def _metal_recommended_working_set_bytes(*, allow_import: bool = True) -> int:
+    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel. ``allow_import=False`` reads only modules already imported, for polled paths: on a broken MLX stack the import can park, and a cold torch import takes seconds."""
     try:
-        import mlx.core as mx
-        if mx.metal.is_available():
+        if allow_import:
+            import mlx.core as mx
+        else:
+            mx = sys.modules.get("mlx.core")
+        if mx is not None and mx.metal.is_available():
             rec = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
             if rec > 0:
                 return rec
     except Exception:
         pass
     try:
-        import torch
-        if torch.backends.mps.is_available():
+        if allow_import:
+            import torch
+        else:
+            torch = sys.modules.get("torch")
+        if torch is not None and torch.backends.mps.is_available():
             return max(0, int(torch.mps.recommended_max_memory()))
     except Exception:
         pass
@@ -7691,8 +7697,9 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     }
 
 
-# Metal's recommendedMaxWorkingSetSize is a device property; probing it can import torch, so once.
-_apple_metal_working_set_bytes: Optional[int] = None
+# Metal's recommendedMaxWorkingSetSize is a device property, kept once read. Unread stays 0, so a
+# later poll picks it up after the warm thread imports MLX or torch.
+_apple_metal_working_set_bytes: int = 0
 
 
 def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
@@ -7712,9 +7719,12 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
         return None
     if total_bytes <= 0:
         return None
-    if _apple_metal_working_set_bytes is None:
+    if not _apple_metal_working_set_bytes:
+        # This runs on the polled /api/system path, so it never imports MLX or torch itself.
         try:
-            _apple_metal_working_set_bytes = int(_metal_recommended_working_set_bytes() or 0)
+            _apple_metal_working_set_bytes = int(
+                _metal_recommended_working_set_bytes(allow_import = False) or 0
+            )
         except Exception as e:
             logger.debug("Metal working set probe failed: %s", e)
             _apple_metal_working_set_bytes = 0
