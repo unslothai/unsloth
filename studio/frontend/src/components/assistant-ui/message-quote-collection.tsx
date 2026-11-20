@@ -7,8 +7,10 @@
 // virtualized message list, so dragging or expanding it never changes the
 // thread's scroll geometry.
 
+import { useAui } from "@assistant-ui/react";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
@@ -36,7 +38,12 @@ import {
   shouldShowQuoteDispatchInPill,
   subscribeQuoteDispatches,
 } from "./message-quote-dispatch";
+import { announceQuoteNavigation } from "./message-quote-highlight";
 import type { CollectedQuote } from "./message-quote-model";
+import {
+  cancelQuoteNavigation,
+  navigateToQuote,
+} from "./message-quote-navigation";
 import {
   type QuotePillPosition,
   type QuotePillSize,
@@ -60,6 +67,7 @@ import {
   subscribeQuotes,
 } from "./message-quote-store";
 import { shortMessageId } from "./message-selection-model";
+import { useDetachThreadFromBottom } from "./use-intent-aware-autoscroll";
 
 const EDGE_INSET = 12;
 const TOP_INSET = 8;
@@ -266,8 +274,16 @@ const QuotePillRow: FC<{
   readonly index: number;
   readonly reserved: boolean;
   readonly reservedByQueuedPrompt: boolean;
+  readonly onNavigate: (quote: CollectedQuote) => void;
   readonly onRemove: (quoteId: string) => void;
-}> = ({ quote, index, reserved, reservedByQueuedPrompt, onRemove }) => {
+}> = ({
+  quote,
+  index,
+  reserved,
+  reservedByQueuedPrompt,
+  onNavigate,
+  onRemove,
+}) => {
   const t = useT();
   const source = quoteSource(quote, (turn) =>
     t("turns.label", { number: turn }),
@@ -277,19 +293,26 @@ const QuotePillRow: FC<{
   return (
     <li
       data-quote-id={quote.id}
-      className="group flex min-w-0 list-none items-start gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-muted/50"
+      className="group flex min-w-0 list-none items-start gap-2 rounded-lg px-1 py-1 transition-colors"
     >
-      <span className="mt-0.5 w-5 shrink-0 text-ui-10 tabular-nums text-muted-foreground">
-        {index + 1}
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="line-clamp-2 break-words text-ui-12 leading-snug text-foreground/85">
-          {quote.anchor.text}
-        </p>
-        <p className="mt-1 truncate text-ui-10 text-muted-foreground">
-          {source}
-        </p>
-      </div>
+      <button
+        type="button"
+        data-quote-navigate=""
+        onClick={() => onNavigate(quote)}
+        className="flex min-w-0 flex-1 items-start gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <span className="mt-0.5 w-5 shrink-0 text-ui-10 tabular-nums text-muted-foreground">
+          {index + 1}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="line-clamp-2 break-words text-ui-12 leading-snug text-foreground/85">
+            {quote.anchor.text}
+          </span>
+          <span className="mt-1 block truncate text-ui-10 text-muted-foreground">
+            {source}
+          </span>
+        </span>
+      </button>
       <button
         type="button"
         data-quote-remove=""
@@ -306,8 +329,11 @@ const QuotePillRow: FC<{
         }
         aria-disabled={reserved}
         disabled={reserved}
-        onClick={() => onRemove(quote.id)}
-        className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-[4px] text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 pointer-coarse:opacity-100"
+        onClick={(event) => {
+          event.stopPropagation();
+          onRemove(quote.id);
+        }}
+        className="mt-1 flex size-5 shrink-0 items-center justify-center rounded-[4px] text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 pointer-coarse:opacity-100"
       >
         <HugeiconsIcon
           icon={Cancel01Icon}
@@ -326,7 +352,10 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
   enabled,
 }) => {
   const t = useT();
+  const aui = useAui();
+  const detachFromBottom = useDetachThreadFromBottom();
   const dropdownId = useId();
+  const highlightedQuoteRef = useRef<string | null>(null);
   const quotes = useCollectedQuotes(threadId);
   const allDispatches = usePendingQuoteDispatches(threadId);
   const pendingDispatches = allDispatches.filter(
@@ -355,6 +384,11 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
   const dragRef = useRef<DragState | null>(null);
   const previousThreadRef = useRef(threadId);
   const previousCountRef = useRef(quotes.length);
+  // Navigations await frames; a Thread switch must invalidate the captured key.
+  const threadRef = useRef(threadId);
+  useLayoutEffect(() => {
+    threadRef.current = threadId;
+  }, [threadId]);
 
   const geometry = useCollectionGeometry(
     viewportEl,
@@ -451,9 +485,67 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
 
   const remove = useCallback(
     (quoteId: string) => {
+      if (highlightedQuoteRef.current === quoteId) {
+        cancelQuoteNavigation(threadId);
+        highlightedQuoteRef.current = null;
+      }
       removeQuote(threadId, quoteId);
     },
     [threadId],
+  );
+
+  useEffect(() => {
+    highlightedQuoteRef.current = null;
+    cancelQuoteNavigation(threadId);
+    return () => cancelQuoteNavigation(threadId);
+  }, [enabled, threadId]);
+
+  useEffect(() => {
+    const highlighted = highlightedQuoteRef.current;
+    if (
+      highlighted !== null &&
+      !quotes.some((quote) => quote.id === highlighted)
+    ) {
+      cancelQuoteNavigation(threadId);
+      highlightedQuoteRef.current = null;
+    }
+  }, [quotes, threadId]);
+
+  const navigate = useCallback(
+    async (quote: CollectedQuote) => {
+      setExpanded(false);
+      detachFromBottom();
+      highlightedQuoteRef.current = quote.id;
+      const result = await navigateToQuote({
+        viewport: viewportEl,
+        threadKey: threadId,
+        anchor: quote.anchor,
+        messages: aui.thread().getState().messages,
+        readThreadKey: () => threadRef.current,
+        isCurrentScope: () => viewportEl?.isConnected === true,
+      });
+      if (result === "highlighted") {
+        announceQuoteNavigation(
+          t("messageSelection.quoteNavigationAnnounce"),
+        );
+        return;
+      }
+      // A newer navigation owns the ref; only clear our own failed attempt.
+      if (result !== "cancelled" && highlightedQuoteRef.current === quote.id) {
+        highlightedQuoteRef.current = null;
+      }
+      if (result === "source-missing") {
+        toast.info(t("messageSelection.quoteSourceMissing"));
+      } else if (result === "passage-missing") {
+        toast.info(t("messageSelection.quotePassageMissing"));
+      }
+      if (result === "source-missing" || result === "passage-missing") {
+        // The activated row was unmounted with the dropdown; leave keyboard
+        // users on the persistent pill rather than dropping focus to <body>.
+        pillRef.current?.focus();
+      }
+    },
+    [aui, detachFromBottom, t, threadId, viewportEl],
   );
 
   if (!enabled || mode === "hidden" || typeof document === "undefined") {
@@ -756,6 +848,7 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
               index={index}
               reserved={reservedQuoteIds.has(quote.id)}
               reservedByQueuedPrompt={queuedReservedQuoteIds.has(quote.id)}
+              onNavigate={navigate}
               onRemove={remove}
             />
           ))}

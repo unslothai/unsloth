@@ -3,7 +3,7 @@
 
 export const en = {
   // i18n follow-up: this quote block is still English in every non-English
-  // overlay (35 keys). Localize it before release; parity only proves presence.
+  // overlay (38 keys). Localize it before release; parity only proves presence.
   messageSelection: {
     toolbar: "Selection actions",
     quote: "Quote",
@@ -22,6 +22,9 @@ export const en = {
     quoteSendPendingWarning:
       "If the original message still finishes, releasing now can send these quotes twice.",
     quoteReservedByQueuedPrompt: "Reserved by a queued message.",
+    quoteSourceMissing: "The quoted message is no longer in this chat.",
+    quotePassageMissing: "That passage is no longer in the source message.",
+    quoteNavigationAnnounce: "Highlighted the quoted passage.",
     releaseQuotes: "Release quotes",
     releaseQuotesAnyway: "Release anyway",
     keepWaitingQuotes: "Keep waiting",

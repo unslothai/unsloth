@@ -69,6 +69,45 @@ export function normalizeQuoteComment(comment: string): string {
   return comment.replace(/\r\n/g, "\n").trim();
 }
 
+/**
+ * The index writes a separator between rendered blocks; a DOM Range's
+ * textContent does not. Prefer the indexed span only when the selection and
+ * span differ exactly by those line breaks, so extra spaces or chrome still
+ * make the captured text win.
+ */
+export function canonicalQuoteText(
+  capturedText: string,
+  indexedSpan: string,
+): string {
+  const captured = normalizeQuoteText(capturedText);
+  const span = normalizeQuoteText(indexedSpan);
+  const withoutBreaks = (text: string) => text.replace(/\n/g, "");
+  if (
+    withoutBreaks(foldText(span)) !== withoutBreaks(foldText(captured))
+  ) {
+    return captured;
+  }
+
+  // Rebuild the indexed separators into the original captured characters so
+  // case is preserved; the index itself is lowercased for matching. Newlines
+  // in the capture are structural and are replaced by the indexed ones.
+  const characters = captured.replace(/\n/g, "");
+  let canonical = "";
+  let at = 0;
+  for (let index = 0; index < span.length; index += 1) {
+    if (span[index] === "\n") {
+      canonical += "\n";
+    } else {
+      if (at >= characters.length) {
+        return captured;
+      }
+      canonical += characters[at];
+      at += 1;
+    }
+  }
+  return at === characters.length ? canonical : captured;
+}
+
 /** Block separators are one code unit, so replacing them keeps every offset. */
 export function quoteSearchIndex(index: FindTextIndex): FindTextIndex {
   return index.text.includes("\u0000")

@@ -59,7 +59,7 @@ test("the layer captures quotes and reuses clipboard utilities", () => {
   assert.match(LAYER, /closest\("\[data-message-id\]"\)/);
 });
 
-test("the floating quote pill uses measured geometry and no navigation yet", () => {
+test("the floating quote pill uses measured geometry and row navigation", () => {
   assert.match(COLLECTION, /createPortal/);
   assert.match(COLLECTION, /fixed/);
   assert.match(COLLECTION, /menu-soft-surface/);
@@ -86,7 +86,8 @@ test("the floating quote pill uses measured geometry and no navigation yet", () 
   assert.doesNotMatch(COLLECTION, /revealProgressiveRow/);
   assert.doesNotMatch(COLLECTION, /scrollIntoView/);
   assert.doesNotMatch(COLLECTION, /CSS\.highlights/);
-  assert.doesNotMatch(COLLECTION, /onNavigate/);
+  assert.match(COLLECTION, /data-quote-navigate/);
+  assert.match(COLLECTION, /onNavigate=\{navigate\}/);
 });
 
 test("the layer never sends a message", () => {
@@ -129,7 +130,6 @@ test("Quote opens an anchored compact panel and only Save appends a quote", () =
 test("pending quote dispatches have a persistent confirmed release path", () => {
   assert.match(DISPATCH, /releaseQuoteDispatchManually/);
   assert.doesNotMatch(DISPATCH, /setTimeout|expiresAt|tombstone/i);
-  assert.doesNotMatch(COLLECTION, /toast\.(warning|error|info)\([^)]*quote/i);
   assert.match(COLLECTION, /data-quote-pending-banner/);
   assert.match(COLLECTION, /releaseQuoteDispatchManually/);
   assert.match(COLLECTION, /quoteSendPendingWarning/);

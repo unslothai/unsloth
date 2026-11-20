@@ -6433,6 +6433,26 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	color: #1a1a1a;
 }
 
+/* Exact quote-source paint. Same fixed amber as find-in-page so it remains legible over code. */
+::highlight(unsloth-quote) {
+	background-color: #ffd84d;
+	color: #1a1a1a;
+}
+
+.message-quote-highlight-layer {
+	position: fixed;
+	inset: 0;
+	z-index: 25;
+	pointer-events: none;
+}
+
+.message-quote-highlight-box {
+	position: fixed;
+	pointer-events: none;
+	border-radius: 2px;
+	background-color: #ffd84d8c;
+}
+
 /* No border: light uses the chatbox's own material; dark sits one step above --card, since it
    floats over --card, with a page-coloured halo shadow. */
 .find-bar-surface {

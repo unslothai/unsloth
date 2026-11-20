@@ -138,6 +138,26 @@ class MessageWindowController {
     });
   };
 
+  /** Restores one parked body synchronously without letting update() park it again. */
+  revealMessage(messageId: string): boolean {
+    let found: Row | undefined;
+    for (const row of this.rows.values()) {
+      if (row.root.getAttribute("data-message-id") === messageId) {
+        found = row;
+        break;
+      }
+    }
+    if (found === undefined || (found.saved === null && found.frozen === null)) {
+      return false;
+    }
+    this.keepAnchor(() => {
+      const restored = this.restore(found, false);
+      const released = this.releaseHeight(found);
+      return restored || released;
+    });
+    return true;
+  }
+
   private held() {
     const selection = document.getSelection();
     return this.printing || document.documentElement.hasAttribute(FIND_FLAG)
@@ -277,6 +297,14 @@ class MessageWindowController {
     this.viewport.removeAttribute("data-windowed-messages");
     controllers.delete(this.viewport);
   }
+}
+
+/** Restores a parked message body before navigation indexes its text. Synchronous. */
+export function restoreMessageWindowBody(
+  viewport: HTMLElement,
+  messageId: string,
+): boolean {
+  return controllers.get(viewport)?.revealMessage(messageId) ?? false;
 }
 
 export function observeMessageWindow(

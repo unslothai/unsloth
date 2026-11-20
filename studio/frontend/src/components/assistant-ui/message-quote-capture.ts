@@ -10,8 +10,10 @@ import {
   type FindTextIndex,
 } from "../../features/find-in-page/lib/find-text-index.ts";
 import {
+  canonicalQuoteText,
   createQuoteAnchor,
   normalizeQuoteText,
+  quoteSearchIndex,
   type QuoteAnchor,
 } from "./message-quote-model";
 import { QUOTE_PRUNE_SELECTOR } from "./message-selection-model";
@@ -106,6 +108,8 @@ export function captureQuoteAnchor(
   }
   const index = buildTextIndex(
     input.content as unknown as FindElementLike,
+    [],
+    QUOTE_PRUNE_SELECTOR,
   );
   const start = indexOffsetAtBoundary(
     index,
@@ -122,10 +126,12 @@ export function captureQuoteAnchor(
   if (start === null || end === null) {
     return null;
   }
+  const captured = quoteTextFromRange(input.range);
+  const spanText = quoteSearchIndex(index).text.slice(start, end);
   return createQuoteAnchor({
     messageId: input.messageId,
     turn: input.turn,
-    text: quoteTextFromRange(input.range),
+    text: canonicalQuoteText(captured, spanText),
     markdown: input.markdown,
     index,
     start,

@@ -101,6 +101,7 @@ export interface FindElementLike {
   readonly tagName: string;
   readonly childNodes: ArrayLike<FindTextNodeLike | FindElementLike>;
   getAttribute(name: string): string | null;
+  matches?(selector: string): boolean;
   checkVisibility?(options?: {
     contentVisibilityAuto?: boolean;
     opacityProperty?: boolean;
@@ -267,6 +268,7 @@ function preservesWhitespace(whiteSpace: string | undefined): boolean {
 export function buildTextIndex(
   root: FindElementLike,
   extraRoots: readonly FindElementLike[] = [],
+  skipSelector?: string,
 ): FindTextIndex {
   const parts: string[] = [];
   const segments: TextSegment[] = [];
@@ -284,6 +286,7 @@ export function buildTextIndex(
   let pendingSeparator = false;
 
   const visit = (element: FindElementLike, inherited: boolean): void => {
+    if (skipSelector !== undefined && element.matches?.(skipSelector)) return;
     if (skipsByMarkup(element)) return;
     const style = computedStyle(element);
     if (skipsSubtree(element, style)) return;

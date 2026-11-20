@@ -23,6 +23,9 @@ export const nl = {
     quoteSendPendingWarning:
       "If the original message still finishes, releasing now can send these quotes twice.",
     quoteReservedByQueuedPrompt: "Reserved by a queued message.",
+    quoteSourceMissing: "The quoted message is no longer in this chat.",
+    quotePassageMissing: "That passage is no longer in the source message.",
+    quoteNavigationAnnounce: "Highlighted the quoted passage.",
     releaseQuotes: "Release quotes",
     releaseQuotesAnyway: "Release anyway",
     keepWaitingQuotes: "Keep waiting",

@@ -53,6 +53,7 @@ class ElementFake extends Events {
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   removeAttribute(name: string) { this.attributes.delete(name); }
   hasAttribute(name: string) { return this.attributes.has(name); }
+  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
 }
 
 function world() {
@@ -69,7 +70,10 @@ function world() {
   let mutation: () => void = () => {};
   let observers = 0, disconnected = 0, frameId = 0;
   const frames = new Map<number, () => void>();
-  const exports: { observeMessageWindow?: (root: ElementFake, holder: ElementFake, content: ElementFake, adjust?: (deltaPx: number) => void) => () => void } = {};
+  const exports: {
+    observeMessageWindow?: (root: ElementFake, holder: ElementFake, content: ElementFake, adjust?: (deltaPx: number) => void) => () => void;
+    restoreMessageWindowBody?: (viewport: ElementFake, messageId: string) => boolean;
+  } = {};
   vm.runInNewContext(outputText, {
     exports, window: win, document: doc,
     requestAnimationFrame: (callback: () => void) => { frames.set(++frameId, callback); return frameId; },
@@ -84,8 +88,9 @@ function world() {
     },
   });
   const flush = () => { while (frames.size) { const pending = [...frames.values()]; frames.clear(); pending.forEach((callback) => callback()); } };
-  const add = (adjust?: (deltaPx: number) => void) => {
+  const add = (adjust?: (deltaPx: number) => void, messageId = "") => {
     const root = new ElementFake(), holder = new ElementFake(), content = new ElementFake(), child = new ElementFake();
+    if (messageId) root.setAttribute("data-message-id", messageId);
     root.viewport = viewport; viewport.append(root); root.append(holder); holder.append(content); content.append(child);
     root.style.setProperty("height", "200px", "important");
     const cleanup = exports.observeMessageWindow!(root, holder, content, adjust);
@@ -93,12 +98,31 @@ function world() {
   };
   return {
     add, viewport, doc, win, html, media, flush,
+    restore: (messageId: string) => exports.restoreMessageWindowBody!(viewport, messageId),
     near: (root: ElementFake, near: boolean, top = near ? 0 : -5000) => { root.top = top; intersections([{ target: root, isIntersecting: near }]); flush(); },
     select: (value: boolean) => { selected = value; doc.fire("selectionchange"); flush(); },
     find: (value: boolean) => { if (value) html.setAttribute("data-find-bar-open", ""); else html.removeAttribute("data-find-bar-open"); mutation(); flush(); },
     observers: () => observers, disconnected: () => disconnected,
   };
 }
+
+test("source navigation reconnects only the requested parked body", () => {
+  const w = world();
+  const first = w.add(undefined, "message-1");
+  const second = w.add(undefined, "message-2");
+  w.near(first.root, false);
+  w.near(second.root, false);
+  assert.equal(first.parked(), true);
+  assert.equal(second.parked(), true);
+  assert.equal(w.restore("message-1"), true);
+  assert.equal(first.parked(), false);
+  assert.equal(first.content.parent, first.holder);
+  assert.equal(second.parked(), true, "an unrelated parked body stays parked");
+  assert.equal(w.restore("message-1"), false, "restoring twice is a no-op");
+  assert.equal(w.restore("missing"), false);
+  first.cleanup();
+  second.cleanup();
+});
 
 test("distant bodies keep their height and reconnect the same nodes and inline styles", () => {
   const w = world(), row = w.add();
