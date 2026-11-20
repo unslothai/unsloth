@@ -13867,6 +13867,9 @@ _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default = True)
+_MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
+    "mcp_project_server_ids", default = None
+)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 # (account, thread) -> (held ranked tools, the last listing's order).
@@ -14642,14 +14645,38 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _mcp_project_server_ids(session_id: str | None) -> frozenset[str] | None:
+    """Read the saved preference for a Studio project session in the current account."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return None
+    from storage.studio_db import get_chat_project
+
+    project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+    selected = project.get("mcpServerIds") if project else None
+    return frozenset(selected) if selected is not None else None
+
+
+async def set_mcp_project_scope(session_id: str | None) -> None:
+    """Capture the project's selection for discovery, cached schemas and lazy search this turn."""
+    selected = (
+        await asyncio.to_thread(_mcp_project_server_ids, session_id)
+        if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
+        else None
+    )
+    _MCP_PROJECT_SERVER_IDS.set(selected)
+
+
 def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
     from core.inference.studio_tools_mcp import keyless_caller
 
     keyless = keyless_caller(current_account())
+    selected = _MCP_PROJECT_SERVER_IDS.get()
     enabled = [
         server
         for server in servers
-        if server.get("is_enabled") and not (keyless and is_studio_tools(server["url"]))
+        if server.get("is_enabled")
+        and (selected is None or server["id"] in selected)
+        and not (keyless and is_studio_tools(server["url"]))
     ]
     if not any(is_studio_decisions(server["url"]) for server in enabled):
         return enabled
@@ -15034,6 +15061,12 @@ def execute_tool(
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
+        selected = _MCP_PROJECT_SERVER_IDS.get()
+        if selected is None:
+            # A caller executing on a worker may not carry the discovery context.
+            selected = _mcp_project_server_ids(session_id)
+        if selected is not None and server_id not in selected:
+            return f"Error: MCP server '{display}' is not enabled for this project"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         mcp_scope = mcp_session_scope(session_id, thread_id)

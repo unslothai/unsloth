@@ -322,6 +322,8 @@ class ChatProject(BaseModel):
     id: str
     name: str
     instructions: str = ""
+    # None inherits account defaults. An empty selection disables MCP servers in this project.
+    mcpServerIds: Optional[list[str]] = None
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
     # Read only: a saved record cannot set the folder.
@@ -408,6 +410,7 @@ class ChatProjectDeleted(ChatProject):
 class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
+    mcpServerIds: Optional[list[str]] = None
     archived: Optional[bool] = None
     createdAt: Optional[SqliteInt] = None
     updatedAt: Optional[SqliteInt] = None
