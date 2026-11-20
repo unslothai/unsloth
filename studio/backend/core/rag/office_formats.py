@@ -1034,6 +1034,8 @@ def _email_parts(part, html_text) -> list[str]:
         return []
     if part.get_content_type() not in ("text/plain", "text/html"):
         return []
+    if part.get_content_subtype() == "html" and part.get_content_charset() is None:
+        return [html_text(part.get_payload(decode = True) or b"")]
     try:
         content = part.get_content()
     except (LookupError, ValueError):
