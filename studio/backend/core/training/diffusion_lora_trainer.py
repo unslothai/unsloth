@@ -323,6 +323,17 @@ def _mps_available() -> bool:
         return False
 
 
+def _unet_lora_metadata_kwargs(save, unet) -> dict:
+    # Without the adapter metadata diffusers' loader assumes lora_alpha == rank.
+    import inspect
+    try:
+        if "unet_lora_adapter_metadata" not in inspect.signature(save).parameters:
+            return {}
+        return {"unet_lora_adapter_metadata": unet.peft_config["default"].to_dict()}
+    except Exception:  # noqa: BLE001 -- metadata is best-effort; the weights still save
+        return {}
+
+
 def run_diffusion_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -898,6 +909,7 @@ def run_diffusion_lora_training(
                 unet_lora_layers = unet_lora,
                 safe_serialization = True,
                 weight_name = DEFAULT_LORA_FILENAME,
+                **_unet_lora_metadata_kwargs(StableDiffusionXLPipeline.save_lora_weights, unet),
             )
             lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
             # Mirror into loras/diffusion for the Images picker (scan skips subdirs); use done, not cfg.train_steps, so a stop at 11/500 does not advertise 500.
