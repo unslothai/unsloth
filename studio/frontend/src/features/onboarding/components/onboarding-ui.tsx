@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 
 export function StepHeader({ title, body }: { title: string; body: string }) {
   return (
-    <div className="mb-8 space-y-2.5 text-center">
+    <div className="mb-7 space-y-2 text-center">
       <h2 className="font-heading text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.02em]">
         {title}
       </h2>

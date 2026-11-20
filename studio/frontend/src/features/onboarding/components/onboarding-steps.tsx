@@ -1,36 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { MascotImg } from "@/components/mascot-img";
+import { publicAssetUrl } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { UserAvatar } from "@/features/profile/components/user-avatar";
 import {
   PROFILE_TEXT_MAX_LENGTH,
   useUserProfileStore,
 } from "@/features/profile/stores/user-profile-store";
+import { initialsFromName } from "@/features/profile/utils/avatar-initials";
 import { type TranslationKey, useT } from "@/i18n";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import {
-  ChipIcon,
-  MessageCircleIcon,
-  TestTubeOutlineIcon,
-} from "@/lib/hugeicons-derived";
+import { ChipIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
-  AiMagicIcon,
-  ChefHatIcon,
   CommandLineIcon,
   CpuIcon,
   CursorInfo02Icon,
-  DashboardCircleIcon,
   SquareLock02Icon,
   WifiDisconnected01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
-import { type StartChoice, greetingName } from "../lib/pages";
+import { motion } from "motion/react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { greetingName } from "../lib/pages";
 import type { DeviceSummary } from "../use-device-summary";
 import {
   ChosenRing,
@@ -90,10 +86,49 @@ export function WelcomeStep() {
   );
 }
 
+const AVATARS = [
+  "Sloth emojis/large sloth wave.png",
+  "Sloth emojis/large sloth yay.png",
+  "Sloth emojis/large sloth heart.png",
+  "Sloth emojis/large sloth thumbs.png",
+  "Sloth emojis/large sloth glasses.png",
+  "Sloth emojis/large sloth cheeky.png",
+  "Sloth emojis/sloth headphones.png",
+  "Sloth emojis/UnSloth Sparkling large.png",
+];
+
+function AvatarChoice({
+  active,
+  label,
+  onPick,
+  children,
+}: {
+  active: boolean;
+  label: string;
+  onPick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      aria-label={label}
+      title={label}
+      onClick={onPick}
+      className="bg-background relative flex aspect-square items-center justify-center overflow-hidden rounded-full ring-1 ring-border outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {children}
+      <ChosenRing on={active} className="ring-foreground ring-inset" />
+    </button>
+  );
+}
+
 export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
   const t = useT();
   const displayName = useUserProfileStore((s) => s.displayName);
   const setDisplayName = useUserProfileStore((s) => s.setDisplayName);
+  const avatar = useUserProfileStore((s) => s.avatarDataUrl);
+  const setAvatar = useUserProfileStore((s) => s.setAvatarDataUrl);
   const name = greetingName(displayName);
   return (
     <div>
@@ -101,7 +136,28 @@ export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
         title={t("onboarding.profile.title")}
         body={t("onboarding.profile.body")}
       />
+      <div className="flex flex-col items-center">
+        <motion.div
+          key={avatar ?? "initials"}
+          initial={{ scale: 0.9, opacity: 0.6 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: "spring", stiffness: 380, damping: 22 }}
+        >
+          <UserAvatar
+            name={displayName.trim() || "?"}
+            imageUrl={avatar}
+            size="lg"
+            className="size-20 text-2xl ring-4 ring-background"
+          />
+        </motion.div>
+        <p className="font-heading mt-3 max-w-full truncate text-lg font-semibold tracking-[-0.01em]">
+          {name
+            ? t("welcome.goodToSeeYouName", { name })
+            : t("welcome.goodToSeeYou")}
+        </p>
+      </div>
       <form
+        className="mt-5"
         onSubmit={(e) => {
           e.preventDefault();
           onSubmit();
@@ -119,20 +175,43 @@ export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
           className="h-12 px-5 text-center text-base"
         />
       </form>
-      <div className="bg-muted/60 mt-6 flex flex-col items-center gap-3 rounded-2xl px-6 py-9">
-        <MascotImg
-          src="Sloth emojis/large sloth wave.png"
-          className="size-14 object-contain"
+      <Group className="mt-5">
+        <Row
+          label={t("onboarding.profile.avatar")}
+          description={t("onboarding.profile.avatarBody")}
+          below={
+            <div className="grid grid-cols-9 gap-2">
+              <AvatarChoice
+                active={avatar === null}
+                label={t("onboarding.profile.initials")}
+                onPick={() => setAvatar(null)}
+              >
+                <span className="text-muted-foreground text-xs font-semibold">
+                  {initialsFromName(displayName.trim() || "?")}
+                </span>
+              </AvatarChoice>
+              {AVATARS.map((path) => {
+                const url = publicAssetUrl(path);
+                return (
+                  <AvatarChoice
+                    key={path}
+                    active={avatar === url}
+                    label={t("onboarding.profile.sloth")}
+                    onPick={() => setAvatar(url)}
+                  >
+                    <img
+                      alt=""
+                      src={url}
+                      draggable={false}
+                      className="size-full object-cover"
+                    />
+                  </AvatarChoice>
+                );
+              })}
+            </div>
+          }
         />
-        <span className="font-heading max-w-full truncate text-[1.375rem] font-semibold tracking-[-0.01em]">
-          {name
-            ? t("welcome.goodToSeeYouName", { name })
-            : t("welcome.goodToSeeYou")}
-        </span>
-        <span className="text-muted-foreground text-xs">
-          {t("onboarding.profile.preview")}
-        </span>
-      </div>
+      </Group>
     </div>
   );
 }
@@ -141,20 +220,6 @@ function formatGb(value: number): string {
   return value >= 10
     ? Math.round(value).toString()
     : value.toFixed(1).replace(/\.0$/, "");
-}
-
-function Status({ ready }: { ready: boolean }) {
-  const t = useT();
-  return ready ? (
-    <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-500">
-      <HugeiconsIcon icon={Tick02Icon} className="size-3.5" strokeWidth={2.5} />
-      {t("onboarding.device.ready")}
-    </span>
-  ) : (
-    <span className="text-muted-foreground text-xs">
-      {t("onboarding.device.unavailable")}
-    </span>
-  );
 }
 
 type ReadySummary = Extract<DeviceSummary, { status: "ready" }>;
@@ -227,164 +292,45 @@ function AcceleratorRow({ summary }: { summary: DeviceSummary }) {
         </>
       }
       description={memoryLine(summary, t) || undefined}
+      below={<Capabilities summary={summary} />}
     />
   );
 }
 
-export function DeviceStep({ summary }: { summary: DeviceSummary }) {
-  const t = useT();
-  const ready = summary.status === "ready" ? summary : null;
-  return (
-    <div>
-      <StepHeader
-        title={t("onboarding.device.title")}
-        body={t("onboarding.device.body")}
-      />
-      <Group>
-        <div aria-live="polite">
-          <AcceleratorRow summary={summary} />
-        </div>
-        {ready ? (
-          <>
-            <Row
-              lead={<Tile icon={MessageCircleIcon} />}
-              label={t("onboarding.device.chat")}
-              trailing={<Status ready={true} />}
-            />
-            <Row
-              lead={<Tile icon={TestTubeOutlineIcon} />}
-              label={t("onboarding.device.train")}
-              muted={!ready.train}
-              trailing={<Status ready={ready.train} />}
-            />
-            <Row
-              lead={<Tile icon={AiMagicIcon} />}
-              label={t("onboarding.device.media")}
-              muted={!ready.media}
-              trailing={<Status ready={ready.media} />}
-            />
-          </>
-        ) : null}
-      </Group>
-      {ready && !(ready.train && ready.media) ? (
-        <p className="text-muted-foreground mt-4 text-center text-xs">
-          {t("onboarding.device.unavailableHint")}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-const START_OPTIONS: {
-  value: StartChoice;
-  icon: IconSvgElement;
-  title: TranslationKey;
-  body: TranslationKey;
+const CAPABILITIES: {
+  key: "chat" | "train" | "media";
+  label: TranslationKey;
 }[] = [
-  {
-    value: "chat",
-    icon: MessageCircleIcon,
-    title: "onboarding.start.chatTitle",
-    body: "onboarding.start.chatBody",
-  },
-  {
-    value: "train",
-    icon: TestTubeOutlineIcon,
-    title: "onboarding.start.trainTitle",
-    body: "onboarding.start.trainBody",
-  },
-  {
-    value: "recipes",
-    icon: ChefHatIcon,
-    title: "onboarding.start.recipesTitle",
-    body: "onboarding.start.recipesBody",
-  },
-  {
-    value: "hub",
-    icon: DashboardCircleIcon,
-    title: "onboarding.start.hubTitle",
-    body: "onboarding.start.hubBody",
-  },
+  { key: "chat", label: "onboarding.device.chat" },
+  { key: "train", label: "onboarding.device.train" },
+  { key: "media", label: "onboarding.device.media" },
 ];
 
-function StartCard({
-  option,
-  active,
-  disabled,
-  onPick,
-}: {
-  option: (typeof START_OPTIONS)[number];
-  active: boolean;
-  disabled: boolean;
-  onPick: () => void;
-}) {
+function Capabilities({ summary }: { summary: ReadySummary }) {
   const t = useT();
+  const ready = { chat: true, train: summary.train, media: summary.media };
   return (
-    <button
-      type="button"
-      aria-pressed={active}
-      disabled={disabled}
-      onClick={onPick}
-      className={cn(
-        "bg-card relative flex flex-col items-start gap-4 rounded-2xl p-5 text-left ring-1 ring-border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        disabled ? "cursor-not-allowed opacity-50" : "hover:bg-muted/60",
-      )}
-    >
-      <span className="flex w-full items-start justify-between">
-        <Tile icon={option.icon} tone={active ? "accent" : "plain"} />
+    <div className="flex flex-wrap gap-1.5">
+      {CAPABILITIES.map((c) => (
         <span
-          aria-hidden="true"
+          key={c.key}
           className={cn(
-            "flex size-4.5 items-center justify-center rounded-full border-[1.5px] transition-colors",
-            active ? "border-control-accent" : "border-border",
+            "bg-background flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs shadow-xs",
+            ready[c.key]
+              ? "text-foreground"
+              : "text-muted-foreground opacity-70",
           )}
         >
-          <span
-            className={cn(
-              "bg-control-accent size-2 rounded-full transition-transform",
-              active ? "scale-100" : "scale-0",
-            )}
-          />
+          {ready[c.key] ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              className="size-3 text-emerald-600 dark:text-emerald-500"
+              strokeWidth={2.5}
+            />
+          ) : null}
+          {t(c.label)}
         </span>
-      </span>
-      <span className="min-w-0">
-        <span className="block text-sm font-semibold">{t(option.title)}</span>
-        <span className="text-muted-foreground mt-1 block text-xs leading-relaxed">
-          {disabled ? t("onboarding.start.trainUnavailable") : t(option.body)}
-        </span>
-      </span>
-      <ChosenRing on={active} />
-    </button>
-  );
-}
-
-export function StartStep({
-  value,
-  onChange,
-  trainAvailable,
-}: {
-  value: StartChoice;
-  onChange: (next: StartChoice) => void;
-  trainAvailable: boolean;
-}) {
-  const t = useT();
-  return (
-    <div>
-      <StepHeader
-        title={t("onboarding.start.title")}
-        body={t("onboarding.start.body")}
-      />
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {START_OPTIONS.map((option) => (
-          <StartCard
-            key={option.value}
-            option={option}
-            active={value === option.value}
-            disabled={option.value === "train" && !trainAvailable}
-            onPick={() => onChange(option.value)}
-          />
-        ))}
-      </div>
+      ))}
     </div>
   );
 }
@@ -429,13 +375,11 @@ function CopyCommand() {
 }
 
 export function DoneStep({
-  start,
-  place,
+  device,
   tour,
   onTourChange,
 }: {
-  start: StartChoice;
-  place: string;
+  device: DeviceSummary;
   tour: boolean;
   onTourChange: (next: boolean) => void;
 }) {
@@ -444,26 +388,27 @@ export function DoneStep({
   const name = greetingName(displayName);
   return (
     <div className="my-auto">
-      <Mascot src="Sloth emojis/large sloth yay.png" className="size-20" />
-      <div className="mt-5 mb-8 space-y-2 text-center">
+      <Mascot src="Sloth emojis/large sloth yay.png" className="size-18" />
+      <div className="mt-4 mb-7 space-y-2 text-center">
         <h2 className="font-heading text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.02em]">
           {name
             ? t("onboarding.done.titleName", { name })
             : t("onboarding.done.title")}
         </h2>
         <p className="text-muted-foreground text-[0.9375rem]">
-          {start === "chat"
-            ? t("onboarding.done.startChat")
-            : t("onboarding.done.startOther", { place })}
+          {t("onboarding.done.startChat")}
         </p>
       </div>
       <Group>
+        <div aria-live="polite">
+          <AcceleratorRow summary={device} />
+        </div>
         <Row
           lead={<Tile icon={CursorInfo02Icon} />}
           label={
             <span id="onboarding-tour-label">{t("onboarding.done.tour")}</span>
           }
-          description={t("onboarding.done.tourBody", { place })}
+          description={t("onboarding.done.tourBody")}
           trailing={
             <Switch
               aria-labelledby="onboarding-tour-label"

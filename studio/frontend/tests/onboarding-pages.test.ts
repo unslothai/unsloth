@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  CHAT_TOUR,
   ONBOARDING_PAGES,
-  START_TOURS,
   decideOnboarding,
   greetingName,
 } from "../src/features/onboarding/lib/pages.ts";
@@ -38,10 +38,7 @@ test("a run closed midway resumes at the first unseen page", () => {
   const decision = decideOnboarding(
     record({ saved: true, pages: ["welcome", "profile"] }),
   );
-  assert.deepEqual(decision, {
-    kind: "show",
-    pages: ["look", "scene", "device", "start", "done"],
-  });
+  assert.deepEqual(decision, { kind: "show", pages: ["look", "done"] });
 });
 
 test("a finished account sees nothing, and only pages added since", () => {
@@ -53,12 +50,12 @@ test("a finished account sees nothing, and only pages added since", () => {
   assert.deepEqual(decideOnboarding(all), { kind: "none" });
   const older = record({
     saved: true,
-    pages: ["welcome", "profile", "look", "scene", "start", "done"],
+    pages: ["welcome", "look", "done"],
     completedAt: 1,
   });
   assert.deepEqual(decideOnboarding(older), {
     kind: "show",
-    pages: ["device", "done"],
+    pages: ["profile", "done"],
   });
 });
 
@@ -66,7 +63,7 @@ test("bookends alone are never shown", () => {
   const decision = decideOnboarding(
     record({
       saved: true,
-      pages: ["profile", "look", "scene", "device", "start"],
+      pages: ["profile", "look"],
     }),
   );
   assert.deepEqual(decision, { kind: "none" });
@@ -77,14 +74,12 @@ test("greetings use the first word of the name", () => {
   assert.equal(greetingName("   "), "");
 });
 
-test("every start tour id is a registered tour route", () => {
+test("the finish tour is a registered tour route", () => {
   const routes = readFileSync(
     new URL("../src/features/tour/lib/tour-routes.ts", import.meta.url),
     "utf8",
   );
-  for (const id of Object.values(START_TOURS)) {
-    assert.match(routes, new RegExp(`id: "${id}"`));
-  }
+  assert.match(routes, new RegExp(`id: "${CHAT_TOUR}"`));
 });
 
 test("page ids fit the backend's pattern", () => {

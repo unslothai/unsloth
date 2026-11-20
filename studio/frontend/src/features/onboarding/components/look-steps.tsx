@@ -27,6 +27,7 @@ import {
   LaptopIcon,
   Moon02Icon,
   Sun03Icon,
+  UnavailableIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -137,7 +138,7 @@ function ModeCard({
       onClick={onPick}
       className="bg-card hover:bg-muted/60 relative flex flex-col rounded-2xl p-1 text-left ring-1 ring-border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span className="block aspect-[16/10] overflow-hidden rounded-[0.8rem]">
+      <span className="block aspect-[16/9] overflow-hidden rounded-[0.8rem]">
         {mode.value === "system" ? (
           <span className="flex h-full">
             <span className="h-full w-1/2 overflow-hidden">
@@ -166,77 +167,6 @@ function ModeCard({
       </span>
       <ChosenRing on={active} />
     </button>
-  );
-}
-
-export function LookStep() {
-  const t = useT();
-  const { theme, resolved, setTheme } = useTheme();
-  const { palette, setPalette } = usePalette();
-  const standard = t("settings.appearance.palette.standard");
-  const more = FLAVOR_THEME_IDS.length + 1 - SWATCHES.length;
-  return (
-    <div>
-      <StepHeader
-        title={t("onboarding.look.title")}
-        body={t("onboarding.look.body")}
-      />
-      <div className="grid grid-cols-3 gap-3">
-        {MODES.map((mode) => (
-          <ModeCard
-            key={mode.value}
-            mode={mode}
-            active={theme === mode.value}
-            onPick={() => setTheme(mode.value)}
-            colors={COLOR_THEMES[palette]}
-          />
-        ))}
-      </div>
-      <Group className="mt-6">
-        <Row
-          label={t("onboarding.look.theme")}
-          description={paletteName(palette, standard)}
-          trailing={
-            <span className="text-muted-foreground text-xs">
-              {t("onboarding.look.moreThemes", { count: more })}
-            </span>
-          }
-          below={
-            <div className="flex flex-wrap items-center gap-2">
-              {SWATCHES.map((id) => {
-                const colors = COLOR_THEMES[id][resolved];
-                const active = palette === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    aria-pressed={active}
-                    aria-label={paletteName(id, standard)}
-                    title={paletteName(id, standard)}
-                    onClick={() => setPalette(id)}
-                    className="relative flex size-8 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <span
-                      className="flex size-6 items-center justify-center rounded-full border border-black/10 dark:border-white/15"
-                      style={{ backgroundColor: colors.background }}
-                    >
-                      <span
-                        className="size-3 rounded-full"
-                        style={{ backgroundColor: colors.accent }}
-                      />
-                    </span>
-                    <ChosenRing
-                      on={active}
-                      className="ring-foreground ring-[1.5px]"
-                    />
-                  </button>
-                );
-              })}
-            </div>
-          }
-        />
-      </Group>
-    </div>
   );
 }
 
@@ -292,7 +222,7 @@ function WallpaperTile({
       aria-label={label}
       title={label}
       onClick={onPick}
-      className="group relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-xl ring-1 ring-border outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-xl ring-1 ring-border outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {children}
       {busy ? (
@@ -305,17 +235,53 @@ function WallpaperTile({
   );
 }
 
-export function SceneStep() {
+function Swatches() {
+  const t = useT();
+  const { resolved } = useTheme();
+  const { palette, setPalette } = usePalette();
+  const standard = t("settings.appearance.palette.standard");
+  return (
+    <div className="flex items-center gap-1">
+      {SWATCHES.map((id) => {
+        const colors = COLOR_THEMES[id][resolved];
+        return (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={palette === id}
+            aria-label={paletteName(id, standard)}
+            title={paletteName(id, standard)}
+            onClick={() => setPalette(id)}
+            className="relative flex size-7 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span
+              className="flex size-5 items-center justify-center rounded-full border border-black/10 dark:border-white/15"
+              style={{ backgroundColor: colors.background }}
+            >
+              <span
+                className="size-2.5 rounded-full"
+                style={{ backgroundColor: colors.accent }}
+              />
+            </span>
+            <ChosenRing
+              on={palette === id}
+              className="ring-foreground ring-[1.5px]"
+            />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Wallpapers() {
   const t = useT();
   const thumbs = useThumbnails();
   const hasImage = useBackgroundStore((s) => s.value !== null);
   const busy = useBackgroundStore((s) => s.busy);
-  const error = useBackgroundStore((s) => s.error);
-  const material = useMaterialStore((s) => s.material);
-  const setEnabled = useMaterialStore((s) => s.setEnabled);
   const [picked, setPicked] = useState<Backdrop>(hasImage ? "upload" : "none");
   const input = useRef<HTMLInputElement>(null);
-  const current: Backdrop = hasImage ? picked : busy ? picked : "none";
+  const current: Backdrop = hasImage || busy ? picked : "none";
 
   const pickPreset = (preset: WallpaperPreset) => {
     setPicked(preset.id);
@@ -324,85 +290,118 @@ export function SceneStep() {
   };
 
   return (
+    <div className="grid grid-cols-8 gap-2">
+      <WallpaperTile
+        active={current === "none"}
+        label={t("onboarding.scene.none")}
+        onPick={() => {
+          setPicked("none");
+          void resetChatBackground();
+        }}
+      >
+        <span className="bg-background absolute inset-0" />
+        <HugeiconsIcon
+          icon={UnavailableIcon}
+          className="text-muted-foreground relative size-4"
+          strokeWidth={1.75}
+        />
+      </WallpaperTile>
+      {WALLPAPER_PRESETS.map((preset) => (
+        <WallpaperTile
+          key={preset.id}
+          active={current === preset.id}
+          label={preset.name}
+          busy={busy && picked === preset.id}
+          onPick={() => pickPreset(preset)}
+        >
+          {thumbs[preset.id] ? (
+            <img
+              alt=""
+              src={thumbs[preset.id]}
+              className="absolute inset-0 size-full object-cover"
+            />
+          ) : (
+            <span
+              className="absolute inset-0"
+              style={{ backgroundColor: preset.base }}
+            />
+          )}
+        </WallpaperTile>
+      ))}
+      <WallpaperTile
+        active={current === "upload"}
+        label={t("onboarding.scene.upload")}
+        busy={busy && picked === "upload"}
+        onPick={() => input.current?.click()}
+      >
+        <span className="bg-background absolute inset-0" />
+        <HugeiconsIcon
+          icon={Upload01Icon}
+          className="text-muted-foreground relative size-4"
+          strokeWidth={1.75}
+        />
+      </WallpaperTile>
+      <input
+        ref={input}
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (!file) return;
+          setPicked("upload");
+          void uploadBackgroundFile(file);
+        }}
+      />
+    </div>
+  );
+}
+
+export function LookStep() {
+  const t = useT();
+  const { theme, setTheme } = useTheme();
+  const { palette } = usePalette();
+  const error = useBackgroundStore((s) => s.error);
+  const material = useMaterialStore((s) => s.material);
+  const setEnabled = useMaterialStore((s) => s.setEnabled);
+  const more = FLAVOR_THEME_IDS.length + 1 - SWATCHES.length;
+  return (
     <div>
       <StepHeader
-        title={t("onboarding.scene.title")}
-        body={t("onboarding.scene.body")}
+        title={t("onboarding.look.title")}
+        body={t("onboarding.look.body")}
       />
-      <div className="grid grid-cols-4 gap-2.5">
-        <WallpaperTile
-          active={current === "none"}
-          label={t("onboarding.scene.none")}
-          onPick={() => {
-            setPicked("none");
-            void resetChatBackground();
-          }}
-        >
-          <span className="bg-background absolute inset-0" />
-          <span className="text-muted-foreground relative text-xs font-medium">
-            {t("onboarding.scene.none")}
-          </span>
-        </WallpaperTile>
-        {WALLPAPER_PRESETS.map((preset) => (
-          <WallpaperTile
-            key={preset.id}
-            active={current === preset.id}
-            label={preset.name}
-            busy={busy && picked === preset.id}
-            onPick={() => pickPreset(preset)}
-          >
-            {thumbs[preset.id] ? (
-              <img
-                alt=""
-                src={thumbs[preset.id]}
-                className="absolute inset-0 size-full object-cover"
-              />
-            ) : (
-              <span
-                className="absolute inset-0"
-                style={{ backgroundColor: preset.base }}
-              />
-            )}
-          </WallpaperTile>
+      <div className="grid grid-cols-3 gap-3">
+        {MODES.map((mode) => (
+          <ModeCard
+            key={mode.value}
+            mode={mode}
+            active={theme === mode.value}
+            onPick={() => setTheme(mode.value)}
+            colors={COLOR_THEMES[palette]}
+          />
         ))}
-        <WallpaperTile
-          active={current === "upload"}
-          label={t("onboarding.scene.upload")}
-          busy={busy && picked === "upload"}
-          onPick={() => input.current?.click()}
-        >
-          <span className="bg-muted/60 absolute inset-0" />
-          <span className="text-muted-foreground relative flex flex-col items-center gap-1 text-xs font-medium">
-            <HugeiconsIcon
-              icon={Upload01Icon}
-              className="size-4"
-              strokeWidth={1.75}
-            />
-            {t("onboarding.scene.upload")}
-          </span>
-        </WallpaperTile>
-        <input
-          ref={input}
-          className="sr-only"
-          tabIndex={-1}
-          aria-hidden="true"
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = "";
-            if (!file) return;
-            setPicked("upload");
-            void uploadBackgroundFile(file);
-          }}
-        />
       </div>
-      {error ? (
-        <p role="alert" className="text-destructive mt-3 text-center text-xs">
-          {t("onboarding.scene.error")}
-        </p>
-      ) : null}
-      <Group className="mt-6">
+      <Group className="mt-5">
+        <Row
+          label={t("onboarding.look.theme")}
+          description={t("onboarding.look.moreThemes", { count: more })}
+          trailing={<Swatches />}
+        />
+        <Row
+          label={t("onboarding.scene.wallpaper")}
+          description={
+            error ? (
+              <span className="text-destructive">
+                {t("onboarding.scene.error")}
+              </span>
+            ) : undefined
+          }
+          below={<Wallpapers />}
+        />
         <Row
           label={t("onboarding.scene.glass")}
           description={t(

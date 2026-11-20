@@ -14,16 +14,6 @@ export type WallpaperPreset = {
 
 export const WALLPAPER_PRESETS: WallpaperPreset[] = [
   {
-    id: "meadow",
-    name: "Meadow",
-    base: "#0d3a2e",
-    glows: [
-      { x: 0.18, y: 0.2, r: 0.7, color: "#17b88b" },
-      { x: 0.86, y: 0.28, r: 0.6, color: "#a7ecd0" },
-      { x: 0.62, y: 0.95, r: 0.75, color: "#0a6b52" },
-    ],
-  },
-  {
     id: "dawn",
     name: "Dawn",
     base: "#f5d9cc",
@@ -61,6 +51,16 @@ export const WALLPAPER_PRESETS: WallpaperPreset[] = [
       { x: 0.25, y: 0.15, r: 0.7, color: "#3a3d46" },
       { x: 0.85, y: 0.85, r: 0.6, color: "#2a2c33" },
       { x: 0.7, y: 0.25, r: 0.4, color: "#4b5160" },
+    ],
+  },
+  {
+    id: "mist",
+    name: "Mist",
+    base: "#dfe5ec",
+    glows: [
+      { x: 0.2, y: 0.2, r: 0.7, color: "#f4f6f9" },
+      { x: 0.85, y: 0.75, r: 0.6, color: "#b9c6d6" },
+      { x: 0.6, y: 0.1, r: 0.45, color: "#d3d9f0" },
     ],
   },
   {

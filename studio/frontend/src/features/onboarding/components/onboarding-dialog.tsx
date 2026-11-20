@@ -3,12 +3,11 @@
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { usePlatformStore } from "@/config/env";
 import { ChatBackground } from "@/features/chat-background";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
 import { TOUR_OPEN_EVENT, isTourListening } from "@/features/tour";
-import { type TranslationKey, useT } from "@/i18n";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -18,30 +17,14 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { useCallback, useRef, useState } from "react";
 import { saveOnboarding } from "../api";
 import {
+  CHAT_TOUR,
   ONBOARDING_PAGES,
   type OnboardingPageId,
-  START_ROUTES,
-  START_TOURS,
-  type StartChoice,
-  isNumberedPage,
 } from "../lib/pages";
 import { useOnboardingStore } from "../store";
 import { useDeviceSummary } from "../use-device-summary";
-import { LookStep, SceneStep } from "./look-steps";
-import {
-  DeviceStep,
-  DoneStep,
-  ProfileStep,
-  StartStep,
-  WelcomeStep,
-} from "./onboarding-steps";
-
-const PLACE_LABELS: Record<StartChoice, TranslationKey> = {
-  chat: "onboarding.start.chatTitle",
-  train: "onboarding.start.trainTitle",
-  recipes: "onboarding.start.recipesTitle",
-  hub: "onboarding.start.hubTitle",
-};
+import { LookStep } from "./look-steps";
+import { DoneStep, ProfileStep, WelcomeStep } from "./onboarding-steps";
 
 const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
@@ -60,17 +43,16 @@ function ProgressDots({
   pages,
   page,
 }: { pages: OnboardingPageId[]; page: OnboardingPageId }) {
-  const numbered = pages.filter(isNumberedPage);
-  const current = numbered.indexOf(page);
+  const current = pages.indexOf(page);
   return (
     <div
       aria-hidden="true"
       className={cn(
         "flex h-1.5 items-center justify-center gap-1.5 transition-opacity duration-300",
-        current < 0 && "opacity-0",
+        pages.length < 2 && "opacity-0",
       )}
     >
-      {numbered.map((p, i) => (
+      {pages.map((p, i) => (
         <span
           key={p}
           className={cn(
@@ -94,21 +76,15 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
   const t = useT();
   const navigate = useNavigate();
   const close = useOnboardingStore((s) => s.close);
-  const trainAvailable = usePlatformStore((s) => !s.isTrainUnavailable());
   const device = useDeviceSummary();
   const [index, setIndex] = useState(0);
   const [direction, setDirection] = useState(1);
-  const [start, setStart] = useState<StartChoice>("chat");
   const [tour, setTour] = useState(false);
   const seen = useRef(new Set<OnboardingPageId>());
   const cardRef = useRef<HTMLDivElement>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
   const page = pages[index];
   const last = index === pages.length - 1;
-  const numbered = pages.filter(isNumberedPage);
-  // A Train pick made before detection settled falls back to Chat once the verdict says no.
-  const choice = start === "train" && !trainAvailable ? "chat" : start;
-  const place = t(PLACE_LABELS[choice]);
   const hasName = useUserProfileStore((s) => s.displayName.trim() !== "");
 
   const record = useCallback((id: OnboardingPageId, completed = false) => {
@@ -126,20 +102,19 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
     for (const p of pages) seen.current.add(p);
     record(page, true);
     close();
-    void navigate({ to: START_ROUTES[choice] });
+    void navigate({ to: "/chat" });
     if (tour) {
-      const id = START_TOURS[choice];
       whenReady(() => {
-        if (!isTourListening(id)) return false;
+        if (!isTourListening(CHAT_TOUR)) return false;
         window.dispatchEvent(
-          new CustomEvent(TOUR_OPEN_EVENT, { detail: { id } }),
+          new CustomEvent(TOUR_OPEN_EVENT, { detail: { id: CHAT_TOUR } }),
         );
         return true;
       });
-    } else if (choice === "chat") {
+    } else {
       whenReady(() => triggerShortcut("openModelPicker"));
     }
-  }, [choice, close, navigate, page, pages, record, tour]);
+  }, [close, navigate, page, pages, record, tour]);
 
   const next = useCallback(() => {
     if (last) {
@@ -170,35 +145,20 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
       <ProfileStep onSubmit={next} />
     ) : page === "look" ? (
       <LookStep />
-    ) : page === "scene" ? (
-      <SceneStep />
-    ) : page === "device" ? (
-      <DeviceStep summary={device} />
-    ) : page === "start" ? (
-      <StartStep
-        value={choice}
-        onChange={setStart}
-        trainAvailable={trainAvailable}
-      />
     ) : (
-      <DoneStep
-        start={choice}
-        place={place}
-        tour={tour}
-        onTourChange={setTour}
-      />
+      <DoneStep device={device} tour={tour} onTourChange={setTour} />
     );
 
   const primaryLabel =
     page === "welcome"
       ? t("onboarding.getStarted")
       : last
-        ? t("onboarding.done.open", { place })
+        ? t("onboarding.done.open")
         : page === "profile" && !hasName
           ? t("onboarding.skip")
           : t("onboarding.continue");
 
-  const current = numbered.indexOf(page);
+  const current = pages.indexOf(page);
 
   return (
     <DialogPrimitive.Root
@@ -218,23 +178,21 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
           <ChatBackground backdrop={true} />
           <Card
             ref={cardRef}
-            className="relative z-10 flex h-full w-full gap-0 rounded-none py-0 ring-0 sm:h-[min(calc(42rem*var(--ui-space-scale,1)),100%)] sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem] sm:ring-1 sm:shadow-[0_24px_64px_-24px_rgba(0,0,0,0.35)] dark:sm:shadow-[var(--composer-shadow)]"
+            className="relative z-10 flex h-full w-full gap-0 rounded-none py-0 ring-0 sm:h-[min(calc(44rem*var(--ui-space-scale,1)),100%)] sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem] sm:ring-1 sm:shadow-[0_24px_64px_-24px_rgba(0,0,0,0.35)] dark:sm:shadow-[var(--composer-shadow)]"
           >
             <DialogPrimitive.Title className="sr-only">
               {t("onboarding.dialogTitle")}
             </DialogPrimitive.Title>
             <DialogPrimitive.Description className="sr-only">
-              {current >= 0
-                ? t("onboarding.progress", {
-                    current: current + 1,
-                    total: numbered.length,
-                  })
-                : t("onboarding.welcome.body")}
+              {t("onboarding.progress", {
+                current: current + 1,
+                total: pages.length,
+              })}
             </DialogPrimitive.Description>
-            <div className="flex h-16 shrink-0 items-end justify-center">
+            <div className="flex h-14 shrink-0 items-end justify-center">
               <ProgressDots pages={pages} page={page} />
             </div>
-            <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-9 pb-6 sm:px-14">
+            <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-7 pb-4 sm:px-14">
               <AnimatePresence
                 mode="wait"
                 initial={false}
@@ -243,7 +201,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
               >
                 <motion.div
                   key={page}
-                  className="mx-auto flex min-h-full w-full max-w-[calc(28rem*var(--ui-space-scale,1))] flex-col"
+                  className="mx-auto flex min-h-full w-full max-w-[calc(30rem*var(--ui-space-scale,1))] flex-col"
                   custom={direction}
                   variants={{
                     enter: (d: number) => ({
