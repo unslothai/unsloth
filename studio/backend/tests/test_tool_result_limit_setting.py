@@ -221,7 +221,6 @@ def test_mcp_results_follow_the_setting(monkeypatch, saved, cut):
 def test_a_priced_room_lets_a_raised_mcp_cap_through_where_the_window_is_unknown(
     monkeypatch, unknown
 ):
-    """The room was priced from a real window, so it bounds the result; the 16,000 clamp is for no room at all."""
     limit.set_max_chars(32000)
     tools._REQUEST_CONTEXT_TOKENS.set(unknown)
     monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
