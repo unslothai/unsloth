@@ -40,6 +40,7 @@ test("Chat defaults keeps scrolling, reply stats and the minor composer rows", (
   ]);
   assert.match(defaults, /<GenerationStatsUpdatesRow \/>/);
   assert.match(defaults, /<ContextWindowUsageRow \/>/);
+  assert.match(defaults, /<RichTextPasteRow \/>\s*$/, "Rich text paste is the last row");
   assert.doesNotMatch(defaults, /isOwner/, "the owner limits sit in Replies");
 });
 
@@ -58,6 +59,8 @@ test("Composer groups behavior, formatting, layout and the picker's icon style i
   ]);
   assert.deepEqual(composerLabels(composerBody("ComposerFormatRows")), [
     "composerSettings.plainText",
+  ]);
+  assert.deepEqual(composerLabels(composerBody("RichTextPasteRow")), [
     "composerSettings.richPaste",
   ]);
   assert.match(

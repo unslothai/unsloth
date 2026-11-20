@@ -70,6 +70,7 @@ import { GenerationStatsUpdatesRow } from "../components/generation-stats-update
 import { SettingsRow } from "../components/settings-row";
 import {
   ComposerFormatRows,
+  RichTextPasteRow,
   ComposerSettings,
   ContextWindowUsageRow,
 } from "../components/composer-settings";
@@ -653,6 +654,7 @@ export function ChatTab() {
         >
           <SentAttachmentsSelect />
         </SettingsRow>
+        <RichTextPasteRow />
       </SettingsSection>
 
       <LazyImportBoundary fallback={null}>

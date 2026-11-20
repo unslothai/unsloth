@@ -10,7 +10,6 @@ import {
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -161,12 +160,6 @@ function GpuRenderingRow() {
 export function AppearanceTab() {
   const t = useT();
   const { pinned, setPinned } = useSidebarPin();
-  const pickerMonochromeIcons = useChatRuntimeStore(
-    (state) => state.pickerMonochromeIcons,
-  );
-  const setPickerMonochromeIcons = useChatRuntimeStore(
-    (state) => state.setPickerMonochromeIcons,
-  );
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const profileMenuSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
@@ -231,19 +224,6 @@ export function AppearanceTab() {
         </SettingsRow>
         <SettingsRow label={t("settings.appearance.custom.contrast.label")}>
           <ContrastSliderRow />
-        </SettingsRow>
-        {/* Same setting as Chat > Model selection. */}
-        <SettingsRow
-          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-          description={t(
-            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-            checked={pickerMonochromeIcons}
-            onCheckedChange={setPickerMonochromeIcons}
-          />
         </SettingsRow>
       </SettingsSection>
 
