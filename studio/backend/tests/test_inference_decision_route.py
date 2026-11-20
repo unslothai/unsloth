@@ -23,7 +23,12 @@ class _FakeResponse:
 
 
 class _FakeBackend:
-    def __init__(self, *, loaded: bool = True, decision: bool = True):
+    def __init__(
+        self,
+        *,
+        loaded: bool = True,
+        decision: bool = True,
+    ):
         self.is_loaded = loaded
         self.is_decision = decision
         self.base_url = "http://127.0.0.1:9999"
@@ -64,9 +69,7 @@ def calls(monkeypatch):
 
 
 def test_the_loaded_decision_model_answers(monkeypatch, calls):
-    monkeypatch.setattr(
-        routes_inference, "get_llama_cpp_backend", lambda: _FakeBackend()
-    )
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeBackend())
     response = routes_inference.asyncio.run(
         routes_inference.run_loaded_decision(_payload(), current_subject = "owner")
     )
@@ -88,9 +91,7 @@ def test_a_chat_model_is_not_served_here(monkeypatch, calls):
     )
     with pytest.raises(routes_inference.HTTPException) as caught:
         routes_inference.asyncio.run(
-            routes_inference.run_loaded_decision(
-                _payload(), current_subject = "owner"
-            )
+            routes_inference.run_loaded_decision(_payload(), current_subject = "owner")
         )
     assert caught.value.status_code == 400
     assert not calls
@@ -110,23 +111,17 @@ def test_llama_server_error_text_reaches_the_user(monkeypatch):
         )
 
     monkeypatch.setattr(routes_inference.httpx, "post", _post)
-    monkeypatch.setattr(
-        routes_inference, "get_llama_cpp_backend", lambda: _FakeBackend()
-    )
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeBackend())
     with pytest.raises(routes_inference.HTTPException) as caught:
         routes_inference.asyncio.run(
-            routes_inference.run_loaded_decision(
-                _payload(), current_subject = "owner"
-            )
+            routes_inference.run_loaded_decision(_payload(), current_subject = "owner")
         )
     assert caught.value.status_code == 500
     assert caught.value.detail == "failed to parse grammar"
 
 
 def test_images_are_forwarded_only_when_sent(monkeypatch, calls):
-    monkeypatch.setattr(
-        routes_inference, "get_llama_cpp_backend", lambda: _FakeBackend()
-    )
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeBackend())
     routes_inference.asyncio.run(
         routes_inference.run_loaded_decision(_payload(), current_subject = "owner")
     )

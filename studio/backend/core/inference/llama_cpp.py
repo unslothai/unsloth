@@ -19832,8 +19832,8 @@ class LlamaCppBackend:
                 self._decision_type = decision_by_arch.get(f"{arch}.decision.type")
                 # Studio serves these from the Decision console (/v1/systemone), so they load instead of being refused.
                 self.is_decision = (
-                    (self._decision_type or "").strip().lower() in _DECISION_ONLY_GGUF_TYPES
-                )
+                    self._decision_type or ""
+                ).strip().lower() in _DECISION_ONLY_GGUF_TYPES
 
             # Decide diffusion routing before the SWA resolver: it can raise on an unknown arch and drop DiffusionGemma to plain llama-server.
             self._is_diffusion = bool(
