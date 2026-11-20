@@ -1816,7 +1816,9 @@ def test_an_rl_alpaca_row_is_benchmarked_with_its_input(monkeypatch, objective):
     assert mapped_question(row, spec) == "Translate to French\n\nThe weather is lovely today."
 
 
-@pytest.mark.parametrize("weight, expected", [("", 1.0), (None, 1.0), ("  ", 1.0), ("2", 2.0), (0, 0.0)])
+@pytest.mark.parametrize(
+    "weight, expected", [("", 1.0), (None, 1.0), ("  ", 1.0), ("2", 2.0), (0, 0.0)]
+)
 def test_a_blank_reward_weight_is_the_default(weight, expected):
     config = {}
     rewards = training.rl_config(

@@ -530,9 +530,7 @@ class _FakeGRPOConfigWithGenBatch(_FakeGRPOConfig):
 @pytest.mark.parametrize(
     "generations, expected, batch", [(3, 36, 4), (5, None, 5), (4, None, 4), (6, None, 6)]
 )
-def test_grpo_generation_batch_holds_whole_prompt_groups(
-    monkeypatch, generations, expected, batch
-):
+def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generations, expected, batch):
     fake = types.SimpleNamespace(
         GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
     )
@@ -2007,7 +2005,10 @@ def test_grpo_batch_below_the_generation_count_trains_a_whole_group_per_step(mon
         },
         settings = {"num_generations": 8},
         reward_specs = [
-            {"name": "l", "rule": {"type": "length", "max_chars": 9, "score": {"over": 0.0, "under": 1.0}}}
+            {
+                "name": "l",
+                "rule": {"type": "length", "max_chars": 9, "score": {"over": 0.0, "under": 1.0}},
+            }
         ],
         on_warning = warnings.append,
     )

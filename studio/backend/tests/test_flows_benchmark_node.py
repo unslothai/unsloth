@@ -1360,7 +1360,13 @@ def test_rows_that_do_not_format_as_the_rl_checkpoint_say_so(monkeypatch):
     logged = []
 
     class _Logging(_Ctx):
-        def log(self, message, level = "info", *a, **k):
+        def log(
+            self,
+            message,
+            level = "info",
+            *a,
+            **k,
+        ):
             logged.append((level, message))
 
     async def loaded(ctx):

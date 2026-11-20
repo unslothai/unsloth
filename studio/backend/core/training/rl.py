@@ -398,7 +398,6 @@ def render_grpo_prompts(
 
 def _row_tools(row: dict):
     from utils.datasets.chat_templates import _row_tools as sft_row_tools
-
     return sft_row_tools(row.get("tools"))
 
 
@@ -843,7 +842,9 @@ def build_rl_trainer(
             world = 1
         device_batch = int(grpo_base.get("per_device_train_batch_size") or 1)
         accumulation = int(grpo_base.get("gradient_accumulation_steps") or 1)
-        if (device_batch * world * accumulation) % num_generations and device_batch < num_generations:
+        if (
+            device_batch * world * accumulation
+        ) % num_generations and device_batch < num_generations:
             # As Unsloth's GRPOConfig does: a step trains whole prompt groups, as the notebooks do.
             device_batch = grpo_base["per_device_train_batch_size"] = num_generations
             if on_warning is not None:

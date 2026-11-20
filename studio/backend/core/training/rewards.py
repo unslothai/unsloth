@@ -105,7 +105,9 @@ class _NoAliasLoader(yaml.SafeLoader):
 
     def compose_node(self, parent, index):
         if self.check_event(yaml.events.AliasEvent):
-            raise RewardError("REWARD.md cannot use YAML aliases (*name), including merge keys built on them.")
+            raise RewardError(
+                "REWARD.md cannot use YAML aliases (*name), including merge keys built on them."
+            )
         return super().compose_node(parent, index)
 
 
