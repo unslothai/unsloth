@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -1368,16 +1371,43 @@ HUB_MODEL_INFO_SINK: contextvars.ContextVar[Optional[list]] = contextvars.Contex
 )
 
 
-def list_gguf_variants(
-    repo_id: str, hf_token: Optional[str] = None
-) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
+# Every picker open re-lists each Discover GGUF repo; one listing per repo and credential per window
+# keeps anonymous users under the Hub's API rate limit. A 429 is not re-asked until its window ends.
+_HUB_LISTING_TTL_S = 120.0
+_HUB_RATE_LIMIT_S = 60.0
+_HUB_LISTING_MAX = 256
+_hub_listings: dict[tuple, tuple[float, object]] = {}
+_hub_rate_limited: dict[tuple, tuple[float, BaseException]] = {}
+_hub_listing_lock = threading.Lock()
+
+
+def _hub_listing_key(repo_id: str, hf_token) -> tuple:
+    token = hashlib.sha256(repr(hf_token).encode()).hexdigest()[:16]
+    return (repo_id.lower(), token, os.environ.get("HF_ENDPOINT", ""))
+
+
+def _retry_after_s(exc: BaseException) -> Optional[float]:
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 429:
+        return None
+    try:
+        return max(1.0, min(float(response.headers.get("Retry-After")), 600.0))
+    except (TypeError, ValueError, AttributeError):
+        return _HUB_RATE_LIMIT_S
+
+
+def _hub_model_info(repo_id: str, hf_token):
     from huggingface_hub import HfApi
 
-    if _env_offline():
-        cached = list_gguf_variants_from_hf_cache(repo_id)
-        if cached is not None:
-            return _ready_cached_variants(cached)
-
+    key = _hub_listing_key(repo_id, hf_token)
+    now = time.monotonic()
+    with _hub_listing_lock:
+        hit = _hub_listings.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        limited = _hub_rate_limited.get(key)
+        if limited is not None and limited[0] > now:
+            raise limited[1]
     try:
         # A refused credential retries once anonymously: a public listing still answers.
         info = call_with_anonymous_retry(
@@ -1388,6 +1418,30 @@ def list_gguf_variants(
             ),
             hf_token,
         )
+    except Exception as exc:
+        wait = _retry_after_s(exc)
+        if wait is not None:
+            with _hub_listing_lock:
+                _hub_rate_limited[key] = (time.monotonic() + wait, exc)
+        raise
+    with _hub_listing_lock:
+        _hub_rate_limited.pop(key, None)
+        _hub_listings[key] = (time.monotonic() + _HUB_LISTING_TTL_S, info)
+        while len(_hub_listings) > _HUB_LISTING_MAX:
+            _hub_listings.pop(next(iter(_hub_listings)))
+    return info
+
+
+def list_gguf_variants(
+    repo_id: str, hf_token: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
+    if _env_offline():
+        cached = list_gguf_variants_from_hf_cache(repo_id)
+        if cached is not None:
+            return _ready_cached_variants(cached)
+
+    try:
+        info = _hub_model_info(repo_id, hf_token)
     except Exception as exc:
         if type(exc).__name__ in (
             "RepositoryNotFoundError",
