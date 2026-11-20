@@ -1861,7 +1861,7 @@ test("the fit-only filter and the row warning share the measured verdict", () =>
   );
   assert.match(
     picker,
-    /hubResults\.flatMap\(\(r\) => \(r\.isGguf \? \[\] : \[r\.id\]\)\)/,
+    /useHubRepoSizes\(\s+useMemo\(\s+\(\) => hubSizeIds\(hubResults, recommended\),/,
   );
   assert.ok(
     picker.indexOf("const hubCheckpointFit = useMemo") <
