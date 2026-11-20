@@ -6078,7 +6078,6 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
-    # Every platform: RLIMIT_AS on Linux, a job memory limit on Windows, a watchdog on macOS (tools._cap_tool_memory).
     return SandboxMemoryStatus(
         limit_gb = sandbox_memory_limit.effective_memory_limit_gb(),
         saved_gb = sandbox_memory_limit.saved_memory_limit_gb(),

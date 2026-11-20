@@ -10112,7 +10112,6 @@ def _memory_watchdog(
     pgid,
     poll_s: float = _MEMORY_WATCHDOG_POLL_S,
 ) -> None:
-    """Stops a tool call whose process tree holds more memory than the limit."""
     try:
         while proc.poll() is None:
             if _tree_memory_bytes(proc.pid) > limit_bytes:
@@ -22325,7 +22324,6 @@ class _WindowsToolJob:
         return bool(self._kernel32.TerminateJobObject(self._handle, 1))
 
     def set_memory_limit(self, limit_bytes: int) -> bool:
-        """Caps the memory the whole tree can commit (JOB_OBJECT_LIMIT_JOB_MEMORY)."""
         if not self._handle:
             return False
         import ctypes

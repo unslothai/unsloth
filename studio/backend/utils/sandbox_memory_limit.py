@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Settings > Sandbox memory limit for sandboxed Python and Terminal runs; a present env var always wins,
-then a saved value, then half of this machine's RAM (never below 8 GiB)."""
+"""Sandbox memory limit: a present env var wins, then the saved value, then half the RAM (at least 8 GiB)."""
 
 from __future__ import annotations
 
