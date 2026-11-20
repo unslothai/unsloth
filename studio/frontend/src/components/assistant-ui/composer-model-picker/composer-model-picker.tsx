@@ -5469,11 +5469,10 @@ export function ComposerModelPicker({
           "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
           openSide !== "bottom" &&
             "[--picker-floor:var(--radix-popover-content-available-height)]",
-          configTarget
+          // Not Radix's available height: below a collapsed panel it would cap the expand short.
+          configTarget || isExpanded
             ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
-            : isExpanded
-              ? "h-(--composer-picker-min-h)"
-              : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
+            : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
         )}
