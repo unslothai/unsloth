@@ -107,10 +107,32 @@ def test_catalog_rows_use_lemonades_ids_and_chat_labels():
     rows = {r["id"]: r for r in (fh.catalog_row(e) for e in CATALOG["models"])}
     assert rows["qwen3-0.6b-FLM"] == {
         "id": "qwen3-0.6b-FLM", "checkpoint": "qwen3:0.6b", "labels": ["reasoning", "chat"], "size": 0.65,
-        "downloaded": True, "recipe": "flm", "max_context_window": 32768,
+        "downloaded": True, "recipe": "flm", "max_context_window": None,
     }  # fmt: skip
     assert rows["d3-edge-FLM"]["labels"] == ["decision", "chat"]
     assert rows["embed-gemma-300m-FLM"]["labels"] == ["embeddings"]
+
+
+def test_context_window_is_the_downloaded_configs_like_lemond(tmp_path):
+    entry = {"name": "qwen3:0.6b", "installed": True, "default_context_length": 32768,
+             "url": "https://huggingface.co/FastFlowLM/Qwen3-0.6B-NPU2"}  # fmt: skip
+    (tmp_path / "Qwen3-0.6B-NPU2").mkdir()
+    (tmp_path / "Qwen3-0.6B-NPU2" / "config.json").write_text('{"max_position_embeddings": 40960}')
+    assert fh.catalog_row(entry, tmp_path)["max_context_window"] == 40960
+    assert fh.catalog_row({**entry, "installed": False}, tmp_path)["max_context_window"] is None
+    assert fh.catalog_row({**entry, "url": "x/Other"}, tmp_path)["max_context_window"] is None
+
+
+def test_flm_output_is_tagged_process_so_studio_drops_prompts_outside_a_load(capsys):
+    from core.inference.lemonade_server import _LEMOND_LINE
+
+    fh.log("prompt text", "Process")
+    fh.log("ready")
+    lines = capsys.readouterr().out.splitlines()
+    assert [_LEMOND_LINE.match(line).groups() for line in lines] == [
+        ("Info", "Process"),
+        ("Info", "FlmHost"),
+    ]
 
 
 def test_the_key_is_required_except_for_live(host):
@@ -128,7 +150,7 @@ def test_models_install_and_options(host):
         "d3-edge-FLM",
         "embed-gemma-300m-FLM",
     ]
-    assert client.get("/v1/models/qwen3-0.6b-FLM/options").json() == {"effective": {}}
+    assert client.get("/v1/models/qwen3-0.6b-FLM/options").json()["effective"]["flm_args"] == ""
     assert client.post("/v1/install", json = {"recipe": "flm"}).status_code == 200
     flm.fail.add("version")
     assert client.post("/v1/install", json = {"recipe": "flm"}).status_code == 500

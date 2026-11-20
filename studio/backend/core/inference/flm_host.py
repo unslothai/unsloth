@@ -43,20 +43,44 @@ def model_id(tag: str) -> str:
     return tag.replace(":", "-") + "-FLM"
 
 
-def catalog_row(entry: dict[str, Any]) -> dict[str, Any]:
+def _context_window(folder: Optional[Path]) -> Optional[int]:
+    # lemond reports the downloaded config's max_position_embeddings, else nothing.
+    try:
+        value = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+        value = value.get("max_position_embeddings")
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def catalog_row(entry: dict[str, Any], models_dir: Optional[Path] = None) -> dict[str, Any]:
     tag = str(entry.get("name") or entry.get("model") or "")
     labels = [str(label) for label in entry.get("label") or []]
     if not _NOT_CHAT.intersection(labels):
         labels.append("chat")
+    folder = str(entry.get("url") or "").rstrip("/").rpartition("/")[2]
+    installed = bool(entry.get("installed"))
     return {
         "id": model_id(tag),
         "checkpoint": tag,
         "labels": labels,
         "size": entry.get("footprint"),
-        "downloaded": bool(entry.get("installed")),
+        "downloaded": installed,
         "recipe": "flm",
-        "max_context_window": entry.get("default_context_length"),
+        "max_context_window": _context_window(models_dir / folder)
+        if installed and folder and models_dir
+        else None,
     }
+
+
+def log(message: str, tag: str = "FlmHost") -> None:
+    """A line in lemond's format. Studio keeps (Process) lines only while a load is open, as
+    flm echoes prompts."""
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
+    try:
+        print(f"{stamp} [Info] ({tag}) {message}", flush = True)
+    except (OSError, ValueError):
+        pass
 
 
 class Flm:
@@ -68,6 +92,7 @@ class Flm:
         if not found:
             raise SystemExit(f"FastFlowLM is not installed under {cache_dir}.")
         self.binary = found[0]
+        self.models_dir = Path(os.environ.get("FLM_MODEL_PATH") or cache_dir / "flm") / "models"
 
     def run(
         self,
@@ -95,7 +120,7 @@ class Flm:
         if code or start < 0:
             raise RuntimeError(f"flm list failed: {output.strip()[-300:]}")
         models = json.loads(output[start:]).get("models") or []
-        return [catalog_row(entry) for entry in models if isinstance(entry, dict)]
+        return [catalog_row(entry, self.models_dir) for entry in models if isinstance(entry, dict)]
 
 
 class Serving:
@@ -138,10 +163,7 @@ def _relay(process: subprocess.Popen, tail: list[str]) -> None:
         line = line.rstrip()
         tail.append(line)
         del tail[:-80]
-        try:
-            print(f"[FLM] {line}", flush = True)
-        except (OSError, ValueError):
-            pass
+        log(line, "Process")
 
 
 def make_handler(flm: Flm, serving: Serving, api_key: str):
@@ -203,7 +225,8 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
                 except Exception as exc:  # noqa: BLE001 -- reported to Studio
                     self._error(500, str(exc))
             elif path.startswith("/v1/models/") and path.endswith("/options"):
-                self._json(200, {"effective": {}})
+                # Studio reads flm_args only; loads never save options.
+                self._json(200, {"effective": {"flm_args": "", "ctx_size": -1}, "saved": {}})
             else:
                 self._proxy("GET")
 
@@ -249,7 +272,7 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
             self.end_headers()
             code, output = flm.run("pull", row["checkpoint"], timeout = 24 * 3600.0)
             for line in output.splitlines()[-20:]:
-                print(f"[FLM] {line}", flush = True)
+                log(line, "Process")
             if code:
                 event = {
                     "error": output.strip().splitlines()[-1]
@@ -293,7 +316,7 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
             if isinstance(extra, str) and extra.strip():
                 cmd += shlex.split(extra, posix = sys.platform != "win32")
             serving.stop()
-            print(f"[FLM] Starting: {' '.join(cmd)}", flush = True)
+            log(f"Starting: {' '.join(cmd)}")
             process = subprocess.Popen(
                 cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, stdin = subprocess.DEVNULL,
                 text = True, encoding = "utf-8", errors = "replace", **_HIDDEN,
@@ -344,7 +367,7 @@ def make_handler(flm: Flm, serving: Serving, api_key: str):
             try:
                 row = find(str(body.get("model_name") or ""))
             except Exception as exc:  # noqa: BLE001
-                self._error(404, str(exc))
+                self._error(422, str(exc))
                 return
             if serving.model_id == row["id"]:
                 serving.stop()
@@ -434,7 +457,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         ("127.0.0.1", args.port), make_handler(flm, serving, os.environ.get("LEMONADE_API_KEY", ""))
     )
     server.daemon_threads = True
-    print(f"FastFlowLM host (no Lemonade) on 127.0.0.1:{args.port} using {flm.binary}", flush = True)
+    log(f"FastFlowLM host (no Lemonade) on 127.0.0.1:{args.port} using {flm.binary}")
     try:
         server.serve_forever()
     finally:
