@@ -10,6 +10,7 @@ import {
   useUserProfileStore,
 } from "@/features/profile/stores/user-profile-store";
 import { initialsFromName } from "@/features/profile/utils/avatar-initials";
+import { resizeImageFileToDataUrl } from "@/features/profile/utils/resize-image-file";
 import { type TranslationKey, useT } from "@/i18n";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -21,6 +22,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   SquareLock02Icon,
+  Upload01Icon,
   WifiDisconnected01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -130,6 +132,24 @@ export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
   const avatar = useUserProfileStore((s) => s.avatarDataUrl);
   const setAvatar = useUserProfileStore((s) => s.setAvatarDataUrl);
   const name = greetingName(displayName);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploadError, setUploadError] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  // Anything that is not one of the sloths here is the user's own picture (or a sloth picked in Settings).
+  const custom =
+    avatar !== null && !AVATARS.some((path) => publicAssetUrl(path) === avatar);
+  const onUpload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploadError(false);
+    setUploading(true);
+    try {
+      setAvatar(await resizeImageFileToDataUrl(file));
+    } catch {
+      setUploadError(true);
+    } finally {
+      setUploading(false);
+    }
+  };
   return (
     <div>
       <StepHeader
@@ -178,9 +198,17 @@ export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
       <Group className="mt-5">
         <Row
           label={t("onboarding.profile.avatar")}
-          description={t("onboarding.profile.avatarBody")}
+          description={
+            uploadError ? (
+              <span className="text-destructive">
+                {t("onboarding.profile.uploadError")}
+              </span>
+            ) : (
+              t("onboarding.profile.avatarBody")
+            )
+          }
           below={
-            <div className="grid grid-cols-9 gap-2">
+            <div className="grid grid-cols-10 gap-2">
               <AvatarChoice
                 active={avatar === null}
                 label={t("onboarding.profile.initials")}
@@ -208,6 +236,40 @@ export function ProfileStep({ onSubmit }: { onSubmit: () => void }) {
                   </AvatarChoice>
                 );
               })}
+              <AvatarChoice
+                active={custom}
+                label={t("onboarding.profile.upload")}
+                onPick={() => fileInput.current?.click()}
+              >
+                {custom && avatar ? (
+                  <img
+                    alt=""
+                    src={avatar}
+                    draggable={false}
+                    className="size-full object-cover"
+                  />
+                ) : uploading ? (
+                  <span className="border-muted-foreground/30 border-t-foreground size-4 animate-spin rounded-full border-2" />
+                ) : (
+                  <HugeiconsIcon
+                    icon={Upload01Icon}
+                    className="text-muted-foreground size-4"
+                    strokeWidth={1.75}
+                  />
+                )}
+              </AvatarChoice>
+              <input
+                ref={fileInput}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                className="sr-only"
+                tabIndex={-1}
+                aria-hidden="true"
+                onChange={(e) => {
+                  void onUpload(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
             </div>
           }
         />

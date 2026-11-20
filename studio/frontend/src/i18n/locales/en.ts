@@ -5833,9 +5833,11 @@ export const en = {
       label: "Your name",
       placeholder: "Your name",
       avatar: "Avatar",
-      avatarBody: "Upload your own photo any time in Settings.",
+      avatarBody: "Pick a sloth or upload your own picture.",
       initials: "Initials",
       sloth: "Sloth",
+      upload: "Upload a picture",
+      uploadError: "That image couldn’t be used. Try a JPEG, PNG, WebP or GIF.",
     },
     look: {
       title: "Make it yours",
