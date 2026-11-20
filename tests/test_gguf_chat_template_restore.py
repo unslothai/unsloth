@@ -91,9 +91,7 @@ def _stub_gguf_internals(monkeypatch):
 @pytest.mark.parametrize("wrap_processor", [False, True])
 def test_imatrix_failure_restores_chat_template(monkeypatch, tmp_path, wrap_processor):
     _stub_gguf_internals(monkeypatch)
-    monkeypatch.setattr(
-        save_mod, "_resolve_imatrix_file", _raise(RuntimeError("imatrix missing"))
-    )
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", _raise(RuntimeError("imatrix missing")))
     tokenizer, inner = _make_tokenizer(wrap_processor)
 
     with pytest.raises(RuntimeError, match = "imatrix missing"):
@@ -117,9 +115,7 @@ def test_peft_merge_failure_restores_chat_template(monkeypatch, tmp_path, wrap_p
 
     monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _FakePeft)
     monkeypatch.setattr(save_mod, "PeftModel", _FakePeft)
-    monkeypatch.setattr(
-        save_mod, "unsloth_generic_save", _raise(OSError("merge exploded"))
-    )
+    monkeypatch.setattr(save_mod, "unsloth_generic_save", _raise(OSError("merge exploded")))
     tokenizer, inner = _make_tokenizer(wrap_processor)
 
     with pytest.raises(RuntimeError, match = "Failed to save/merge model"):

@@ -5335,7 +5335,9 @@ def unsloth_save_pretrained_gguf(
 
         # The flag holds for both branches that write the weights; the middle branch reuses the user's own checkpoint and clears it, whatever the caller asked for.
         if is_peft_model:
-            print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
+            print(
+                f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format..."
+            )
             try:
                 with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
                     unsloth_generic_save(**arguments)
