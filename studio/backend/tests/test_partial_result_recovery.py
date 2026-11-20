@@ -57,7 +57,7 @@ def test_repeated_partial_duplicates_are_bounded_and_report_incomplete():
     last = ledger.record_noop(ledger.prepare_call(call()))
     assert ledger.force_final_answer
     assert "analysis is incomplete" in last.result
-    assert "Provide the final answer now" not in last.result
+    assert "Provide the final answer now without calling more tools" in last.result
 
 
 def test_complete_duplicates_keep_existing_behavior():

@@ -1219,6 +1219,7 @@ def _partial_duplicate_result(
     if final:
         return (
             prefix + "Repeated identical calls have not recovered the missing output. "
+            "Provide the final answer now without calling more tools. "
             "Explain that the analysis is incomplete and what could not be verified. "
             "Do not infer missing entries or claim a complete answer. " + notice
         )

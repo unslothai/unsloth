@@ -3774,7 +3774,7 @@ def test_recall_searches_the_users_question_not_the_loops_own_notices(monkeypatc
     must still search the archive for what the user asked (#16187)."""
     from core.rag import conversation_archive
 
-    rounds = 4
+    rounds = 3
     payloads: list[dict] = []
     streams = [
         [

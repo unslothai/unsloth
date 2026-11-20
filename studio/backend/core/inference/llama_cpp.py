@@ -39253,6 +39253,8 @@ class LlamaCppBackend:
         _forced_tool_call_pending = False
         # Turns cut off mid-thought: continue in a fresh turn with thinking off, the one setting that guarantees visible output; compaction cannot help.
         _length_continuations = 0
+        # Separate from successful tool turns: failed generations must be bounded too.
+        _truncated_tool_retries = 0
         _effective_enable_thinking = enable_thinking
         # An explicit effort wins over enable_thinking, so clear it too.
         _effective_reasoning_effort = reasoning_effort
@@ -41036,6 +41038,50 @@ class LlamaCppBackend:
                                 "result": TRUNCATED_TOOL_TURN_MESSAGE,
                                 "provenance": provisional_tool_provenance(_pname),
                             }
+                    # A context-full generation can be retried from the intact prompt.
+                    # Discard the entire cut turn, including complete siblings: a partial
+                    # edit must never be healed into an executable replacement.
+                    _cut_usage = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
+                    _cut_spent = int(_cut_usage.get("completion_tokens") or 0)
+                    _cut_window = self._effective_context_length or 0
+                    _cut_cap = _loop_budget_left(_cut_spent or int(payload.get("max_tokens") or 0))
+                    if (
+                        _iter_finish_reason == "length"
+                        and _cut_window
+                        and int(_cut_usage.get("prompt_tokens") or 0) + _cut_spent >= _cut_window
+                        and _cut_cap != 0
+                        and _truncated_tool_retries < 2
+                    ):
+                        _retry_note = {
+                            "role": "user",
+                            "content": (
+                                "Your last tool-call generation filled the context window "
+                                "before it finished. NONE of that turn's calls were executed. "
+                                "Retry with one short, complete tool call. Read a smaller page "
+                                "or use concise code to extract the needed fields. For a large "
+                                "file, create a small part and append subsequent parts in "
+                                "separate calls; do not repeat a whole-file rewrite. "
+                                "Keep each call's arguments brief."
+                            ),
+                        }
+                        _retry_messages = list(conversation) + [_retry_note]
+                        if _loop_continuation_fits(_retry_messages, safe_tools, _reasoning_kw):
+                            conversation[:] = _retry_messages
+                            continue_final_message = False
+                            _truncated_tool_retries += 1
+                            _accumulated_completion_tokens += _cut_spent
+                            _cut_timing = _iter_timings or {}
+                            _accumulated_predicted_ms += _cut_timing.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _cut_timing.get("predicted_n", 0)
+                            if _cut_cap is not None:
+                                _continuation_max_tokens = _cut_cap
+                            _continuation_credits += 1
+                            yield {"type": "status", "text": ""}
+                            yield {
+                                "type": "status",
+                                "text": "Retrying with a smaller tool call",
+                            }
+                            continue
                     # Empty status resets the route cursor; send only text not already streamed.
                     display = _strip_tool_markup(cumulative_display, final = True, force = True)
                     notice = display[len(_last_emitted) :] + ("\n\n" if display else "")
@@ -42719,6 +42765,8 @@ class LlamaCppBackend:
 
         # A caller cap yields only its remainder, never a fresh one, so continuations cannot exceed the limit; None when unset or the whole window.
         _final_length_continuations = 0
+        _final_tool_retry = False
+        _final_structured_call = False
         _continue_final = False
         _final_replayed_chars = 0
 
@@ -42866,6 +42914,9 @@ class LlamaCppBackend:
                                     if _fr:
                                         _metadata_finish_reason = _fr
 
+                                    if delta.get("tool_calls"):
+                                        _final_structured_call = True
+
                                     reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
                                         if _final_reasoning_started_at is None:
@@ -42941,7 +42992,86 @@ class LlamaCppBackend:
                             yield {"type": "content", "text": _flushed}
                     # Commit the candidate only once another stream runs, so usage is not double counted; replay only new text, or the fragment is repeated.
                     _shown_this_attempt = _last_emitted[len(_attempt_started_at) :]
-                    if (
+                    # Some templates still emit calls despite tool_choice="none".
+                    # The sanitizer hides those calls; don't report an empty success.
+                    # Streaming snapshots may contain an unfinished marker that the
+                    # route holds back. Judge the completed, sanitized answer instead.
+                    _completed_answer = _strip_tool_markup(answer_text, final = True)
+                    _final_visible_answer = _final_answer_visible(
+                        _completed_answer, _completed_answer, at_end = True
+                    )
+                    _hidden_final_call = (
+                        auto_heal_tool_calls
+                        and not _text_outside_think(_final_visible_answer).strip()
+                        and (
+                            answer_text.strip()
+                            or _final_structured_call
+                            or (_final_tool_retry and _metadata_finish_reason == "stop")
+                        )
+                        and _metadata_finish_reason in ("stop", "tool_calls", "length")
+                    )
+                    if _hidden_final_call:
+                        _answer_note = {
+                            "role": "user",
+                            "content": (
+                                "Tool use has ended. Your last response attempted another "
+                                "tool call and was not executed. Give your final answer now "
+                                "in ordinary text, using only the results already available. "
+                                "Do not emit tool calls or claim unverified work is complete. "
+                                "If information is missing, state exactly what is incomplete."
+                            ),
+                        }
+                        _answer_messages = list(stream_payload["messages"]) + [_answer_note]
+                        _answer_cap = _remaining_output_budget()
+                        if (
+                            not _final_tool_retry
+                            and _answer_cap != 0
+                            and _continuation_would_be_served(_answer_messages, False)
+                        ):
+                            _final_tool_retry = True
+                            stream_payload["messages"] = _answer_messages
+                            _record_refit_tail(_answer_messages, [_answer_note], False)
+                            # Remove the declarations as well as forbidding calls: some
+                            # model templates otherwise keep steering toward execution.
+                            stream_payload.pop("tools", None)
+                            stream_payload.pop("tool_choice", None)
+                            _final_tools = None
+                            stream_payload["continue_final_message"] = False
+                            stream_payload["add_generation_prompt"] = True
+                            if _answer_cap is not None:
+                                stream_payload["max_tokens"] = _answer_cap
+                            _answer_usage = (
+                                _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
+                                or {}
+                            )
+                            _accumulated_completion_tokens += _answer_usage.get(
+                                "completion_tokens", 0
+                            )
+                            _answer_timing = _metadata_timings or {}
+                            _accumulated_predicted_ms += _answer_timing.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _answer_timing.get("predicted_n", 0)
+                            # The route has already hidden the call and shown any
+                            # reasoning. Reset its snapshot cursor for the fresh answer.
+                            cumulative = _last_emitted = answer_text = ""
+                            reasoning_text = ""
+                            _lead_wrap = _prov_entry = None
+                            in_thinking = has_content_tokens = False
+                            _final_structured_call = False
+                            _final_answer_stripper = _StreamingMarkupStripper(
+                                _enabled_names_gate, seg_final = False
+                            )
+                            _stream_done = False
+                            _metadata_usage = _metadata_timings = _metadata_finish_reason = None
+                            _attempt_started_at = _last_emitted
+                            _continue_final = True
+                            yield {"type": "status", "text": ""}
+                            yield {"type": "status", "text": "Preparing the final answer"}
+                        else:
+                            raise RuntimeError(
+                                "The model could not produce a final answer after tool use. "
+                                "Try increasing the context window or narrowing the task."
+                            )
+                    elif (
                         _metadata_finish_reason == "length"
                         and has_content_tokens
                         and _shown_this_attempt.strip()

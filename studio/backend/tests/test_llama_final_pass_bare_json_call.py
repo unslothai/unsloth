@@ -53,6 +53,7 @@ def _final_pass(
     streams = [
         [_tool_call_sse("web_search", {"query": "a"}, "c1"), _finish("tool_calls"), _done()],
         _content_stream(final_text, step),
+        _content_stream("The available results are incomplete."),
     ]
     backend = _make_backend(monkeypatch, streams, payloads)
     _record_tool_calls(monkeypatch, "RESULT_OK")
@@ -62,7 +63,7 @@ def _final_pass(
         tools or [_web_search_tool()],
         max_tool_iterations = 1,
     )
-    assert payloads[-1].get("tool_choice") == "none"
+    assert payloads[1].get("tool_choice") == "none"
     return [e["text"] for e in events if e.get("type") == "content"]
 
 
