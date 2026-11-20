@@ -44,7 +44,6 @@ def _jitter(
 
 
 def _routing_tail(result):
-    # 1% of the scored tokens off by about 1 nat, as on Qwen3-30B-A3B (max 0.9-1.2).
     flat = result.view(-1)
     flat[:: max(1, flat.numel() // 10)] -= 1.1
     return result
@@ -81,7 +80,6 @@ def test_text_config_moe_is_detected():
 def test_real_packing_bugs_still_fail_on_moe(bug):
     result, ref, cm = _jitter()
     if bug == "one_document_leaks":
-        # Contamination of a single document: most of its tokens move, the batch mean stays small.
         result[3, 10:] -= 0.4
         assert float((result - ref).abs().mean()) < 0.1
     elif bug == "every_token_shifted":
@@ -108,8 +106,6 @@ def test_kill_switch(monkeypatch):
     result, ref, cm = _jitter()
     assert noise(_owner(MOE), _routing_tail(result), ref, cm) is False
 
-
-# The real no-grad packed block.
 
 BIG_KEEP = 34
 
@@ -219,9 +215,6 @@ def test_zoo_grad_verify_rewrite():
     assert any("_unsloth_seq_packing_moe_noise(unwrapped_model, _pack_result" in i for i in items)
 
 
-# A real (tiny, random) Qwen3-MoE: a cross-document leak fails, last-layer routing flips pass.
-
-
 def _tiny_qwen3_moe():
     transformers = pytest.importorskip("transformers")
     config = transformers.Qwen3MoeConfig(
@@ -296,16 +289,12 @@ def test_tiny_qwen3_moe_leak_fails_and_routing_flips_pass():
     assert float((leak - ref).abs().max()) >= 0.7
     assert noise(model, leak, ref, cm) is False
 
-    # One routing flip each in two documents' last-layer MoE output (per-row run, same rows).
     flipped = torch.cat(
         [_doc_logprobs(model, [docs[0]], flip = (20,)), _doc_logprobs(model, [docs[1]], flip = (30,))]
     )
     flipped = torch.cat([flipped, ref[2:]])
     assert float((flipped - ref).abs().max()) >= 0.7
     assert noise(model, flipped, ref, cm) is True
-
-
-# Packed forwards on the transformers path get the varlen attention wrapper SFT packing installs.
 
 
 def _boundary_namespace(

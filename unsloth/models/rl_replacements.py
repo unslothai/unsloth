@@ -1810,14 +1810,8 @@ def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
 
 
 def _unsloth_seq_packing_moe_noise(model, result, ref, cmask):
-    """True when a packing or PrefixGrouper self-verify that failed its max-abs tolerance on a MoE model looks like
-    top-k routing noise, not a packing bug. bf16 rounding changes with batch composition and flips a few tokens'
-    experts, moving their logprob by ~1 nat; two unpacked forwards of the same rows (batched vs per-row) show the
-    same tail (Qwen3-30B-A3B 4-bit: max 0.92-1.07, mean 0.031-0.034, p99 0.36-0.46). A leak across documents or
-    wrong positions moves most of a document's tokens instead. Noise = mean under 0.1 nats, at most 2% of scored
-    tokens at 0.7 or more, and no row (one document) with half its tokens at 0.25 or more. Dense models and
-    batches under 64 scored tokens keep the max-abs rule; the leak probe runs either way.
-    UNSLOTH_GRPO_PACKING_MOE_NOISE=0 turns this off."""
+    """True when a failed MoE self-verify looks like top-k routing noise (sparse ~1 nat tail, as two unpacked
+    forwards show on Qwen3-30B-A3B), not a leak, which moves most of a document. UNSLOTH_GRPO_PACKING_MOE_NOISE=0 disables."""
     import os
 
     if os.environ.get("UNSLOTH_GRPO_PACKING_MOE_NOISE", "1").strip().lower() in (
@@ -1856,7 +1850,6 @@ def _unsloth_seq_packing_moe_noise(model, result, ref, cmask):
             return False
     except Exception:
         return False
-    # Engagement counter for tests and logs.
     model._unsloth_seq_packing_moe_noise_passes = (
         int(getattr(model, "_unsloth_seq_packing_moe_noise_passes", 0) or 0) + 1
     )
@@ -1943,10 +1936,7 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
 
 
 def _unsloth_grpo_enable_packed_varlen(self, unwrapped):
-    """Packed GRPO forwards on the transformers modeling path (FastModel, e.g. Qwen3-MoE) otherwise run SDPA
-    over a dense [T, T] block mask. Qwen3-30B-A3B 4-bit, 8 rows of 641 tokens on an A100: no-grad 0.55 s packed
-    vs 0.29 s padded, fwd+bwd 2.59 s vs 1.32 s. The varlen wrapper SFT packing installs runs each document on
-    its own (0.29 s and 1.13 s); calls without packed_seq_lengths are passed through unchanged."""
+    """Install SFT packing's varlen attention wrapper: dense [T, T] block-mask SDPA is ~2x slower than padded."""
     if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() in ("0", "false", "no", "off"):
         return
     try:
@@ -4880,7 +4870,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     f"[Unsloth] GRPO seq-packing (no-grad) verify: T={_pk_T} maxseg={_pk_maxseg} packed-vs-perrow max|d|={_pk_diff:.4f}",
                                     flush = True,
                                 )
-                            # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4. MoE routing flips leave a sparse ~1 nat tail.
+                            # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
                             if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
                                 unwrapped_model, _pk_result, _pk_ref, _pk_cm
                             ):
@@ -5447,8 +5437,7 @@ _GRPO_PREFIX_GROUPER_GRAD_TOL = re.compile(r"\bif\s+_pg_diff\s*<\s*_pg_tol_ok\(\
 
 
 def _patch_grpo_accumulated_loss_moe_noise(source):
-    """Zoo grad self-verifies (packing, PrefixGrouper): also pass MoE routing noise (_unsloth_seq_packing_moe_noise).
-    Rewrites a check only when its compared tensors exist under the expected names."""
+    """Zoo grad self-verifies (packing, PrefixGrouper) also pass MoE routing noise."""
     if "_unsloth_seq_packing_moe_noise" in source:
         return source
     if "_pack_ref" in source and "_pack_cm" in source:
