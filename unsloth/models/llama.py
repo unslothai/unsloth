@@ -2192,7 +2192,12 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         if keep is not None:
             logits = self.lm_head(slice_hidden_to_keep(hidden_states, keep).to(dtype))
-        elif bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
+        elif (
+            bsz == 1
+            and q_len == 1
+            and type(self.lm_head) is torch.nn.Linear
+            and not getattr(self.lm_head, "_unsloth_vocab_parallel", False)
+        ):
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
@@ -2232,23 +2237,37 @@ def CausalLM_fast_forward(fast_forward_inference):
                     kwargs.get("packed_seq_lengths"),
                 )
 
-                # fused_linear_cross_entropy is disabled: T4 raises OutOfResources (needs 98304 shared memory).
-                loss = unsloth_fused_ce_loss(
-                    trainer = None,
-                    hidden_states = hidden_states,
-                    lm_head_weight = lm_head,
-                    lm_head_bias = None,
-                    labels = labels if shift_labels is None else shift_labels,
-                    mask = None,
-                    n_items = n_items,
-                    scaling = getattr(self, "accelerator_scaler", None),
-                    target_gb = None,
-                    torch_compile = True,
-                    logit_softcapping = logit_softcapping,
-                    logit_scale_multiply = logit_scale_multiply,
-                    logit_scale_divide = logit_scale_divide,
-                    shift_labels = shift_labels is None,
-                )
+                if getattr(self.lm_head, "_unsloth_vocab_parallel", False):
+                    # Tensor parallel lm_head sharded by vocab rows (tp_native): never the whole logits.
+                    from .tp_native import vocab_parallel_cross_entropy
+                    loss = vocab_parallel_cross_entropy(
+                        self.lm_head,
+                        hidden_states,
+                        labels if shift_labels is None else shift_labels,
+                        n_items = n_items,
+                        logit_softcapping = logit_softcapping,
+                        logit_scale_multiply = logit_scale_multiply,
+                        logit_scale_divide = logit_scale_divide,
+                        shift = shift_labels is None,
+                    )
+                else:
+                    # fused_linear_cross_entropy is disabled: T4 raises OutOfResources (needs 98304 shared memory).
+                    loss = unsloth_fused_ce_loss(
+                        trainer = None,
+                        hidden_states = hidden_states,
+                        lm_head_weight = lm_head,
+                        lm_head_bias = None,
+                        labels = labels if shift_labels is None else shift_labels,
+                        mask = None,
+                        n_items = n_items,
+                        scaling = getattr(self, "accelerator_scaler", None),
+                        target_gb = None,
+                        torch_compile = True,
+                        logit_softcapping = logit_softcapping,
+                        logit_scale_multiply = logit_scale_multiply,
+                        logit_scale_divide = logit_scale_divide,
+                        shift_labels = shift_labels is None,
+                    )
                 if not return_dict:
                     # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
                     output = (EMPTY_LOGITS,) + outputs[1:]
