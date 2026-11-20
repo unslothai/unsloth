@@ -349,6 +349,7 @@ from .diffusion_speed import (
 )
 from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
+from .diffusion_vae_finite import install_finite_decode, prefers_fp32_decode
 from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_gguf_exact import install_exact_dequant
@@ -11607,11 +11608,18 @@ class DiffusionBackend:
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
-                    vae_fp16 = str(
-                        speed_mode or ""
-                    ).strip().lower() != SPEED_OFF and enable_fp16_vae_decode(
-                        pipe, target, logger = logger
+                    vae_fp16 = (
+                        str(speed_mode or "").strip().lower() != SPEED_OFF
+                        and not prefers_fp32_decode(target)
+                        and enable_fp16_vae_decode(pipe, target, logger = logger)
                     )
+                    # Same slot contract: a later decode compile lands inside the non-finite check.
+                    try:
+                        install_finite_decode(pipe, target, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - the stock decode runs as before
+                        logger.warning(
+                            "diffusion.vae: non-finite decode retry not installed: %s", exc
+                        )
                     # The optimizer's speed layer (diffusion_autoopt): plan, family hooks, the speed primitive below,
                     # the per-step audit.
                     speed_applied = autoopt.run_speed_layer(
