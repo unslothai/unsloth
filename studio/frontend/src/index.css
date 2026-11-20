@@ -6996,13 +6996,6 @@ html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-prev
   --glass-composer-boost: 9%;
   --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1) + 5px + var(--glass-repaint, 0) * .01px);
 }
-/* Bubble: the composer's tint; code: the panes' darker floor. No blur: the viewport mask is a backdrop root. */
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-user-message-content {
-  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
-}
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root [data-streamdown="code-block"] {
-  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-pane-floor)) + 9%) * var(--glass-opacity, 1))), transparent);
-}
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
 html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.unsloth-composer-surface, .unsloth-files-panel),
