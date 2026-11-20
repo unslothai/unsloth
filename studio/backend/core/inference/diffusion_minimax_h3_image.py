@@ -2005,9 +2005,15 @@ class HostParked:
         self._host = kept
 
     def enter(self) -> None:
+        if self.depth == 0:
+            try:
+                self._put(lambda t: t.to(self.device, non_blocking = True))
+            except BaseException:
+                # an upload that fails part way (out of memory) puts every tensor back on the host and does not
+                # count as an entry, so the caller's retry uploads the whole module again
+                self._put(lambda t: t)
+                raise
         self.depth += 1
-        if self.depth == 1:
-            self._put(lambda t: t.to(self.device, non_blocking = True))
 
     def leave(self) -> None:
         if self.depth == 0:
