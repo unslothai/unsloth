@@ -777,6 +777,7 @@ export const th = {
     background: "ติดตั้งในเบื้องหลัง",
     failed: "ติดตั้งเอนจินไม่สำเร็จ ลองอีกครั้งหรือใช้เอนจินเริ่มต้น",
     details: "รายละเอียดทางเทคนิค",
+    lastAttempt: "ลองครั้งล่าสุด: {time}",
     cancelled: "ยกเลิกการติดตั้งแล้ว คุณสามารถลองอีกครั้งได้",
     scope: "แชทข้อความและรูปภาพบน GPU ของ NVIDIA การโหลดครั้งแรกอาจใช้เวลานานขึ้น",
   },
@@ -3224,6 +3225,7 @@ export const th = {
       groups: {
         replies: { title: "คำตอบ" },
         thinkingTools: { title: "การคิดและเครื่องมือ" },
+        customization: { title: "การปรับแต่ง" },
         conversations: {
           title: "การสนทนา",
         },

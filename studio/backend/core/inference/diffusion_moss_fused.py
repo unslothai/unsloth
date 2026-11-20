@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 import threading
 from typing import Any
+
+from .triton_closure_globals import publishes_closure_globals
 
 MOSS_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED"
 MOSS_FUSED_QKV_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED_QKV"
@@ -34,6 +37,42 @@ def moss_fused_disabled() -> bool:
 def _blocks(root: Any) -> list:
     from .diffusion_moss_image import _Block
     return [m for m in root.modules() if type(m) is _Block]
+
+
+def _loaded_moss_image() -> Any:
+    """diffusion_moss_image if it is already imported, else None. Never imports it: that module needs diffusers at
+    import time, and a CFG replica of any other model calls the two hooks below. A MOSS-Image model can only exist
+    once its module was imported, so None means there is nothing to drop or re-fuse."""
+    return sys.modules.get(__name__.rpartition(".")[0] + ".diffusion_moss_image")
+
+
+def is_replica_record(key: str, value: Any) -> bool:
+    """The fused Q/K/V Linear lives outside the module tree: a CFG replica's deep copy would keep it on the source
+    card while the record's q / k / v are the replica's, so the replica would run its GEMM across cards."""
+    moss = _loaded_moss_image()
+    return moss is not None and key == moss.FUSED_QKV_ATTR
+
+
+def rebuild_replica(source: Any, replica: Any) -> int:
+    """Re-fuse on the replica's own card each block the source fused (the copy dropped the records)."""
+    if _loaded_moss_image() is None:
+        return 0
+    from .diffusion_moss_image import FUSED_QKV_ATTR
+    from .diffusion_zimage_fused import _fuse_linears, _share_storage
+
+    n = 0
+    with _LOCK:
+        for src, rep in zip(_blocks(source), _blocks(replica)):
+            rec = src.__dict__.get(FUSED_QKV_ATTR)
+            if rec is None:
+                continue
+            parts = [rep.proj[name] for name in ("q", "k", "v")]
+            fused = _fuse_linears(parts)
+            if fused is None or not _share_storage(fused, parts):
+                continue
+            rep.__dict__[FUSED_QKV_ATTR] = (fused, *parts, rec[4])
+            n += 1
+    return n
 
 
 def _int8_runnable(linear: Any) -> bool:
@@ -231,6 +270,7 @@ _HEADS_PER_PROGRAM = 8
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _qk_rope_kernel() -> Any:
     try:
         import triton

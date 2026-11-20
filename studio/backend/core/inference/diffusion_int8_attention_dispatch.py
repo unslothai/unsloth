@@ -147,10 +147,22 @@ def _backend_name(backend: Any) -> str:
     return str(getattr(backend, "value", backend))
 
 
-def _race_name(incumbent: Any) -> str:
-    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart."""
+def _race_name(
+    incumbent: Any,
+    card: Optional[int] = None,
+    dtype: Any = None,
+) -> str:
+    """Verdict-cache name; a strided cuDNN pin runs a different call, so it is cached apart. With ``card`` / ``dtype``
+    the strided name is kept only where the pin takes the strided call (a probed card, its probed dtype): elsewhere
+    the race times diffusers' call and shares that verdict."""
     name = f"dispatch:{_backend_name(incumbent)}"
-    return name + ":strided" if isinstance(incumbent, _Q21.StridedCudnn) else name
+    if not isinstance(incumbent, _Q21.StridedCudnn):
+        return name
+    if card is not None and int(card) not in incumbent.cards:
+        return name
+    if dtype is not None and incumbent.dtype is not None and dtype != incumbent.dtype:
+        return name
+    return name + ":strided"
 
 
 class Int8Route(str):
@@ -831,7 +843,6 @@ def _install(
         if head_dim is None:
             continue
         incumbent = proc._attention_backend
-        name = _race_name(incumbent)
 
         def run(
             q: Any,
@@ -849,6 +860,7 @@ def _install(
             impl_here = I8.implementation(card, head_dim)
             if impl_here is None or (id(m) in cuda_only and impl_here != "cuda"):
                 continue
+            name = _race_name(incumbent, card, dtype)
             found, minimum = _card_floor(
                 torch.device("cuda", card),
                 dtype,

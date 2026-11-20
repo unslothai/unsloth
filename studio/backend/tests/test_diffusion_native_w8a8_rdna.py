@@ -169,3 +169,62 @@ def test_gemm_tile_follows_rows_and_k():
     assert rdna._tile_overrides('{"mm_large_short_k": [64, 64, 128, 8, 4, 2]}') == {
         "mm_large_short_k": (64, 64, 128, 8, 4, 2)
     }
+
+
+def _fresh_state(monkeypatch, on = None):
+    monkeypatch.setattr(
+        rdna,
+        "_STATE",
+        {"devices": {}, "on": dict(on or {}), "broken": None, "rotq": None, "mm": None},
+    )
+
+
+def test_layer_probes_the_card_its_weight_is_on(monkeypatch):
+    # A layer quantised on cuda:1 must probe cuda:1, not whichever card is current.
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    _fresh_state(monkeypatch)
+    seen = []
+    monkeypatch.setattr(rdna, "prepare", lambda device = None: seen.append(device) or False)
+    with FakeTensorMode(allow_non_fake_inputs = True):
+        lin = torch.nn.Linear(512, 256, device = "cuda:1")
+        nq.native_linear_class()(lin, nq.NATIVE_INT8, act_int8 = True, rot_group = 256)
+    assert seen == [torch.device("cuda", 1)]
+
+
+def _operand(index):
+    return types.SimpleNamespace(
+        is_cuda = True,
+        dtype = torch.bfloat16,
+        requires_grad = False,
+        device = torch.device("cuda", index),
+        numel = lambda: 4096 * 512,
+    )
+
+
+@pytest.mark.parametrize("rocm", [True, False])
+def test_layer_built_off_its_card_follows_the_operand_card(monkeypatch, rocm):
+    # Built while an unsupported card (or the CPU) is current: an operand on a ready RDNA card still takes the kernels.
+    import core.inference.rocm_bf16 as rocm_bf16
+
+    _fresh_state(monkeypatch, on = {1: True} if rocm else {})
+    monkeypatch.setattr(rdna, "prepare", lambda device = None: False)
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda t: rocm)
+    lin = torch.nn.Linear(512, 256, dtype = torch.float32)
+    layer = nq.native_linear_class()(lin, nq.NATIVE_INT8, act_int8 = True, rot_group = 256)
+    assert layer._rdna is False
+    assert layer._rdna_on(_operand(1)) is rocm
+    assert layer._rdna_on(_operand(0)) is False
+
+
+def test_kill_switch_keeps_a_layer_off_the_rdna_kernels_after_a_card_passed(monkeypatch):
+    # A card that passed its probe earlier in the process must not pull a new layer onto RDNA once disabled.
+    import core.inference.rocm_bf16 as rocm_bf16
+
+    _fresh_state(monkeypatch, on = {1: True})
+    monkeypatch.setenv(rdna.RDNA_TRITON_ENV, "0")
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda t: True)
+    lin = torch.nn.Linear(512, 256, dtype = torch.float32)
+    layer = nq.native_linear_class()(lin, nq.NATIVE_INT8, act_int8 = True, rot_group = 256)
+    assert layer._rdna is False and layer._rdna_rocm is False
+    assert layer._rdna_on(_operand(1)) is False

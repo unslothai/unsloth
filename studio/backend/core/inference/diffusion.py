@@ -349,10 +349,12 @@ from .diffusion_speed import (
 )
 from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
+from .diffusion_vae_finite import install_finite_decode, prefers_fp32_decode
 from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_gguf_exact import install_exact_dequant
 from .diffusion_gguf_lowbit import install_lowbit_iq
+from .diffusion_gguf_mmap import install_gguf_mmap
 from .diffusion_attention import (
     annotate_attention_resolved,
     apply_attention_backend,
@@ -4478,6 +4480,30 @@ def _image_cast_candidates(
         return []
 
 
+def _kick_early_probe_prewarm(fam: Any, target: Any) -> bool:
+    """Compile the int8 probe kernels beside the weight reads, not after them. Never raises."""
+    try:
+        if getattr(target, "device", None) != "cuda":
+            return False
+        import torch
+
+        from .diffusion_flux_convrot_fused import flux_convrot_fused_disabled
+        from .diffusion_int8_gemm import start_early_probe_prewarm
+
+        ordinal = getattr(target, "ordinal", None)
+        index = int(ordinal) if ordinal is not None else torch.cuda.current_device()
+        rotated = getattr(getattr(fam, "profile", None), "int8_convrot", None) is not None
+        producer = (
+            rotated
+            and not flux_convrot_fused_disabled()
+            and getattr(fam, "transformer_class", None)
+            in ("Flux2Transformer2DModel", "Flux3Transformer2DModel")
+        )
+        return start_early_probe_prewarm(index, rotated = rotated, producer = producer, logger = logger)
+    except Exception:  # noqa: BLE001 - a warm-up only
+        return False
+
+
 def _image_cast_cached(cands: list, variant: Optional[str]) -> list:
     if not cands or variant is not None:
         return []
@@ -4562,9 +4588,12 @@ class DiffusionBackend:
         return target.torch_device, target.dtype
 
     def _stop_load_prefetch(self) -> None:
-        """End a load's page-cache prefetch (diffusion_fast_load.start_load_prefetch), if one is running."""
+        """End a load's page-cache prefetch and join the early probe warm-up: kernel timing follows, alone."""
         stop_prefetch(getattr(self, "_load_prefetch", None))
         self._load_prefetch = None
+        from .diffusion_int8_gemm import join_early_probe_prewarm
+
+        join_early_probe_prewarm()
 
     def _raise_if_load_cancelled(self, token: int) -> None:
         # Token only: unload() bumps _load_token first; a bare _unload_waiters check would 409 model switches, which must wait instead.
@@ -10016,6 +10045,8 @@ class DiffusionBackend:
                                 )
                                 # Stopped once the pipeline is built.
                                 self._stop_load_prefetch()
+                                if pipeline_seed_scheme == "int8":
+                                    _kick_early_probe_prewarm(fam, target)
                                 self._load_prefetch = start_load_prefetch(
                                     fam,
                                     _base_local_dir or fetch_base,
@@ -10548,6 +10579,7 @@ class DiffusionBackend:
                                 # IQ1 / IQ2 / IQ3 tensors diffusers' table lacks would refuse the file
                                 install_lowbit_iq(logger)
                                 install_exact_dequant(logger)
+                                install_gguf_mmap(logger)
                                 # Dequantise the GGUF transformer on-device at the compute dtype.
                                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                                     compute_dtype = dtype
@@ -11605,11 +11637,18 @@ class DiffusionBackend:
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
-                    vae_fp16 = str(
-                        speed_mode or ""
-                    ).strip().lower() != SPEED_OFF and enable_fp16_vae_decode(
-                        pipe, target, logger = logger
+                    vae_fp16 = (
+                        str(speed_mode or "").strip().lower() != SPEED_OFF
+                        and not prefers_fp32_decode(target)
+                        and enable_fp16_vae_decode(pipe, target, logger = logger)
                     )
+                    # Same slot contract: a later decode compile lands inside the non-finite check.
+                    try:
+                        install_finite_decode(pipe, target, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - the stock decode runs as before
+                        logger.warning(
+                            "diffusion.vae: non-finite decode retry not installed: %s", exc
+                        )
                     # The optimizer's speed layer (diffusion_autoopt): plan, family hooks, the speed primitive below,
                     # the per-step audit.
                     speed_applied = autoopt.run_speed_layer(

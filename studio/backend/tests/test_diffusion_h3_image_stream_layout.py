@@ -301,3 +301,32 @@ def test_a_parked_module_keeps_tensors_its_phase_adds(h3i):
     )
     parked.leave()
     assert parked.bytes == 4 * 4 * 4 + 4 * 4 + 3 * 4
+
+
+def test_a_parked_upload_that_runs_out_of_memory_rolls_back(h3i, monkeypatch):
+    import torch
+
+    lin = torch.nn.Linear(4, 4)
+    parked = h3i.park_on_host(lin, "meta", pin = False)
+    real_to = torch.Tensor.to
+    calls = []
+
+    def to(self, *args, **kwargs):
+        if args and str(args[0]) == "meta":
+            calls.append(1)
+            if len(calls) == 2:
+                raise torch.cuda.OutOfMemoryError("injected: the second tensor does not fit")
+        return real_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", to)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        parked.enter()
+    # nothing is left half on the card, and the failed upload does not count as an entry
+    assert parked.depth == 0
+    assert lin.weight.device.type == "cpu" and lin.bias.device.type == "cpu"
+    parked.enter()  # the retry uploads every tensor again
+    assert parked.depth == 1 and len(calls) == 4
+    assert lin.weight.device.type == "meta" and lin.bias.device.type == "meta"
+    parked.leave()
+    assert parked.depth == 0 and lin.weight.device.type == "cpu" and lin.bias.device.type == "cpu"
+    assert parked.bytes == 4 * 4 * 4 + 4 * 4

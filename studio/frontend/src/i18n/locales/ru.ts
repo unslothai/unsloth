@@ -733,6 +733,7 @@ export const ru = {
     background: "Устанавливается в фоне.",
     failed: "Не удалось установить движок. Повторите попытку или используйте движок по умолчанию.",
     details: "Технические подробности",
+    lastAttempt: "Последняя попытка: {time}",
     cancelled: "Установка отменена. Можно повторить.",
     scope: "Чат с текстом и изображениями на GPU NVIDIA. Первая загрузка может занять больше времени.",
   },
@@ -3136,6 +3137,7 @@ export const ru = {
       groups: {
         replies: { title: "Ответы" },
         thinkingTools: { title: "Размышления и инструменты" },
+        customization: { title: "Настройка вида" },
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },

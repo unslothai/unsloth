@@ -491,6 +491,41 @@ def _te_base_is_official(fam: Any, base: str) -> bool:
     )
 
 
+# Must match model-catalog.ts VIDEO_CATALOG gguf rows (checked by test_cpu_gguf_stays_native).
+CPU_GGUF_ONLY_VIDEO_REPOS = frozenset(
+    {"unsloth/minimax-h3-gguf", "unsloth/ltx-2.5-gguf", "unsloth/ltx-2.3-gguf"}
+)
+
+
+# ltx-2 serves 2.0 and 2.3; only 2.3 has a GGUF row.
+_LTX23_NAME = re.compile(r"ltx[-_.]?2[-_.]?3(?!\d)", re.IGNORECASE)
+
+
+def refuse_cpu_dense_video_pick(
+    fam: Any,
+    kind: Optional[str],
+    names: tuple = (),
+) -> None:
+    """Refuse a non-GGUF pick of such a family on CPU-only torch. ``names``: the pick's repo ids and file name."""
+    repo = str(getattr(fam, "gguf_repo", None) or "").lower()
+    if kind == "gguf" or repo not in CPU_GGUF_ONLY_VIDEO_REPOS:
+        return
+    if repo == "unsloth/ltx-2.3-gguf" and not any(_LTX23_NAME.search(str(n or "")) for n in names):
+        return
+    from .diffusion_engine_router import cpu_gguf_rule_enabled
+
+    if not cpu_gguf_rule_enabled():
+        return
+    from .diffusion_device import resolve_diffusion_device_target
+
+    if resolve_diffusion_device_target().backend != "cpu":
+        return
+    raise ValueError(
+        f"This device has no GPU PyTorch can use, so {fam.name} loads only as a GGUF here. Pick one of the "
+        f"GGUF files from '{fam.gguf_repo}' instead of the full-precision or FP8 / INT8 checkpoint."
+    )
+
+
 def assert_video_precision_available(
     fam: Any,
     *,
@@ -6024,6 +6059,7 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
+        refuse_cpu_dense_video_pick(fam, kind, (repo_id, display_repo_id, gguf_filename))
         # Network-free, so refused before any eviction.
         refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
         if refusal:
@@ -10848,9 +10884,11 @@ class VideoBackend:
             if kind == "gguf":
                 from .diffusion_gguf_exact import install_exact_dequant
                 from .diffusion_gguf_lowbit import install_lowbit_iq
+                from .diffusion_gguf_mmap import install_gguf_mmap
 
                 install_lowbit_iq(logger)
                 install_exact_dequant(logger)
+                install_gguf_mmap(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -12058,8 +12096,10 @@ class VideoBackend:
             if ltx25_client is not None:
                 # The worker loaded the Gemma 4 encoder while the DiT loaded; a failure there fails this load.
                 ltx25_client.wait_ready(self._cancel_event if _load_token is not None else None)
-            from . import diffusion_prompt_cache
+            from . import diffusion_prompt_cache, video_t5_trim
 
+            # Before the prompt cache wraps encode_prompt: Wan's umT5 skips its padded positions on a CPU / MPS encoder.
+            video_t5_trim.install(pipe, logger)
             diffusion_prompt_cache.install(
                 pipe,
                 identity = {

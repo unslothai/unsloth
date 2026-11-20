@@ -774,6 +774,7 @@ export const zhTW = {
     background: "會在背景安裝。",
     failed: "引擎安裝失敗。請重試，或使用預設引擎。",
     details: "技術詳細資料",
+    lastAttempt: "上次嘗試：{time}",
     cancelled: "已取消安裝。您可以重試。",
     scope: "在 NVIDIA GPU 上進行文字和圖片聊天。第一次載入可能需要較長時間。",
   },
@@ -3204,6 +3205,7 @@ export const zhTW = {
       groups: {
         replies: { title: "回覆" },
         thinkingTools: { title: "思考與工具" },
+        customization: { title: "自訂" },
         conversations: {
           title: "對話",
         },
