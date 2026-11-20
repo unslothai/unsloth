@@ -221,6 +221,7 @@ import {
 } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
+  isExternalModelId,
   parseExternalModelId,
   providerModelSupportsVision,
 
@@ -230,10 +231,7 @@ import {
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
-import {
-  COMPOSER_MIN_ROWS,
-  useComposerMaxRows,
-} from "@/hooks/use-composer-rows";
+import { useComposerMaxRows } from "@/hooks/use-composer-rows";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
@@ -1247,9 +1245,7 @@ export function SharedComposer({
   // The single composer's editor frame (animated height), measured by hand: no autosize here.
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
-  const minEditorHeight = Math.round(
-    (16 + 24 * COMPOSER_MIN_ROWS) * uiSpaceScale,
-  );
+  const minEditorHeight = Math.round((16 + 24) * uiSpaceScale);
   const maxRows = useComposerMaxRows(24 * uiSpaceScale);
   const maxRowsRef = useRef(maxRows);
   maxRowsRef.current = maxRows;
@@ -1701,6 +1697,7 @@ export function SharedComposer({
       const compareSignal = run.controller.signal;
       let upgradeUnloadedActive = false;
       const compareSelectionNeedsLoad = (sel: CompareModelSelection) => {
+        if (isExternalModelId(sel.id)) return false;
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
@@ -1718,6 +1715,13 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         throwIfCompareCancelled(compareSignal);
+        // Connected models run at the provider; /load would start the torch loader.
+        const selectedId: string = sel.id;
+        if (isExternalModelId(selectedId)) {
+          const live = useChatRuntimeStore.getState();
+          if (live.params.checkpoint !== selectedId) live.setCheckpoint(selectedId, null);
+          return "connected";
+        }
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
         // Never the other pane's config; no saved config means all-null defaults.

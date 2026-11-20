@@ -8613,9 +8613,8 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
     } elseif ($_rocmPair.Stale) {
         substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
         $_rocmImportedBefore = $_rocmPair.Healthy
-        # Set the install manifest aside until the pair is verified, so a failed replacement is never certified
-        # complete and the next update re-runs the dependency pass. As in the XPU swap: a manifest that cannot be
-        # moved stays valid through the replacement, so nothing is installed then.
+        # Set the manifest aside so an interrupted replacement is never certified complete. As in the XPU swap, a
+        # manifest that cannot be moved stays valid, so nothing is installed then.
         $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
         $_rocmHeld = "$_rocmManifest.triton-pending"
         $_rocmHasHeld = $false
@@ -8655,16 +8654,7 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
             # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version, and a
             # probe that could not read the venv verifies nothing.
             $_rocmAfter = Get-RocmTritonPairing
-            if ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale) {
-                if ($_rocmHasHeld) {
-                    try {
-                        Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop
-                    } catch {
-                        # Without the manifest the next update re-runs the dependency pass; nothing is lost.
-                        substep "[WARN] could not restore the install manifest ($($_.Exception.Message)); the next update re-runs the dependency pass." "Yellow"
-                    }
-                }
-            } else {
+            if (-not ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale)) {
                 $_rocmHave = if (-not $_rocmAfter.Known) { "the venv could not be read" } elseif ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton) installed" } else { "no triton-windows installed" }
                 substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
                 Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
@@ -8674,7 +8664,18 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
                     # Fail, or install.ps1 commits this venv over its rollback copy.
                     $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
                 }
-                if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+            }
+            # A pairing that only warns leaves triton no worse than before, and Test-RocmTritonPairingNeedsPass retries it
+            # next update. Dropping the manifest here left Desktop stuck on studio_install_incomplete after every repair.
+            if ($_rocmHasHeld -and $stackExit -eq 0) {
+                try {
+                    Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop
+                } catch {
+                    Write-StudioLine "[ERROR] could not restore the install manifest: $($_.Exception.Message)" -ForegroundColor Red
+                    $stackExit = 1
+                }
+            } elseif ($_rocmHasHeld) {
+                Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue
             }
         }
     }

@@ -224,7 +224,6 @@ import {
   PICKER_GAP,
   pickerDropOffset,
   pickerMinHeight,
-  pickerRoomBelow,
   pickerWidth,
   pickerZoomOut,
   type PickerRow,
@@ -237,6 +236,7 @@ import {
   ejectTargetId,
   filterRows,
   findChosenRow,
+  hubSizeIds,
   isChatTask,
   isTestFixtureRepo,
   localSection,
@@ -2619,8 +2619,8 @@ export function ComposerModelPicker({
   // Not shownRows: the fit filter reads these, so a hidden row would lose its size.
   const hubSizes = useHubRepoSizes(
     useMemo(
-      () => hubResults.flatMap((r) => (r.isGguf ? [] : [r.id])),
-      [hubResults],
+      () => hubSizeIds(hubResults, recommended),
+      [hubResults, recommended],
     ),
     open && viewed === RECOMMENDED_TAB,
   );
@@ -3442,7 +3442,6 @@ export function ComposerModelPicker({
   const [pickerMinBase, setPickerMinBase] = useState(420);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
-  const [roomBelow, setRoomBelow] = useState<number | null>(null);
   const dropsDown = openSide === "bottom";
   // Layout effect: the first painted frame must already have the measured offset.
   useLayoutEffect(() => {
@@ -3452,7 +3451,6 @@ export function ComposerModelPicker({
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect) {
-        setRoomBelow(pickerRoomBelow(rect.bottom, window.innerHeight));
         setDropOffset(
           pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
         );
@@ -3505,14 +3503,8 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      const nextSide = pickerSide(side, rect, window.innerHeight);
-      setOpenSide(nextSide);
+      setOpenSide(pickerSide(side, rect, window.innerHeight));
       setDropOffset(PICKER_GAP);
-      setRoomBelow(
-        nextSide === "bottom" && rect
-          ? pickerRoomBelow(rect.bottom, window.innerHeight)
-          : null,
-      );
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
@@ -3791,37 +3783,57 @@ export function ComposerModelPicker({
     row: Row,
   ): Promise<ModelSelectorChangeMeta | null> => {
     const target = quantTarget(row);
+    const mlxRepo =
+      (row.kind === "hub" && !row.hub?.isGguf) ||
+      (row.kind === "cached" && row.format === "mlx");
     if (target) {
-      const {
-        quants: list,
-        defaultVariant,
-        mlx,
-        hasVision,
-      } = await rowQuants(
-        // As a pick: a pinned quant is resolved even once it is gone from disk.
-        row.favoriteQuant && row.kind === "gguf"
-          ? { ...target, remote: true, everyQuant: true }
-          : target,
-      );
-      const favorite = row.favoriteQuant?.toLowerCase();
-      const quant =
-        (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
-        chooseQuant(list, [
-          row.loadedQuant,
-          row.id === chosen?.id ? activeVariant : null,
-          defaultVariant,
-        ]);
-      if (quant && (mlx || row.kind !== "cached")) {
-        return ggufMeta(
-          row,
-          quant,
-          target.local || quant.downloaded === true,
-          !mlx,
-          hasVision ?? row.gguf?.has_vision,
-        );
+      const listed = (t: QuantTarget) =>
+        rowQuants(t).catch((err: unknown) => {
+          if (mlxRepo) {
+            return null;
+          }
+          throw err;
+        });
+      // A complete cached snapshot with no precision folder on disk is one checkpoint: skip the Hub listing.
+      let listing =
+        row.kind === "cached" && !row.partial && !row.favoriteQuant
+          ? await listed({ ...target, remote: false, everyQuant: false })
+          : undefined;
+      if (listing === undefined || listing?.mlx) {
+        listing =
+          (await listed(
+            // As a pick: a pinned quant is resolved even once it is gone from disk; Discover lists every precision.
+            (row.favoriteQuant && row.kind === "gguf") ||
+              (row.kind === "hub" && mlxRepo)
+              ? { ...target, remote: true, everyQuant: true }
+              : target,
+          )) ?? listing;
       }
-      if (row.kind !== "cached") {
+      if (listing) {
+        const { quants: list, defaultVariant, mlx, hasVision } = listing;
+        const favorite = row.favoriteQuant?.toLowerCase();
+        const quant =
+          (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
+          chooseQuant(list, [
+            row.loadedQuant,
+            row.id === chosen?.id ? activeVariant : null,
+            defaultVariant,
+          ]);
+        if (quant && (mlx || row.kind !== "cached")) {
+          return ggufMeta(
+            row,
+            quant,
+            target.local || quant.downloaded === true,
+            !mlx,
+            hasVision ?? row.gguf?.has_vision,
+          );
+        }
+      }
+      if (!mlxRepo) {
         return null;
+      }
+      if (row.kind === "hub") {
+        return wholeHubMeta(row);
       }
     }
     if (row.kind === "local" && row.lora) {
@@ -5378,9 +5390,6 @@ export function ComposerModelPicker({
           {
             "--picker-zoom-out": pickerZoomOutState,
             "--picker-min-base": `${pickerMinBase}px`,
-            ...(roomBelow === null
-              ? {}
-              : { "--picker-room": `${roomBelow}px` }),
           } as CSSProperties
         }
         data-tour="chat-model-selector-popover"
@@ -5401,7 +5410,7 @@ export function ComposerModelPicker({
           configTarget
             ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
             : isExpanded
-              ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
+              ? "h-(--composer-picker-min-h)"
               : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",

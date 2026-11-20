@@ -1466,6 +1466,42 @@ def test_streamed_weights_come_back_to_the_host_after_the_race():
     assert all(after[n] is before[n] for n in before)
 
 
+def _fake_linear(in_features, out_features, device):
+    """An nn.Linear whose weights are fake tensors on ``device``, built inside an active FakeTensorMode.
+
+    ``nn.Linear(..., device="cuda:N")`` initialises its weights, and on a CPU-only torch build the fake
+    ``uniform_`` reaches CUDA's generator and raises "PyTorch is not linked with support for cuda devices";
+    moving a fake CUDA tensor that requires grad aborts the process there. Inference weights carry no grad,
+    so these are plain uninitialised fakes and the test runs on any build."""
+    lin = torch.nn.Linear(in_features, out_features, device = "meta")
+    lin.weight = torch.nn.Parameter(
+        torch.empty(out_features, in_features, device = device), requires_grad = False
+    )
+    lin.bias = torch.nn.Parameter(torch.empty(out_features, device = device), requires_grad = False)
+    return lin
+
+
+def test_streamed_weights_on_another_card_are_staged_too(monkeypatch):
+    """A tensor on cuda:0 is staged when the race runs on cuda:1; one already on the stage card stays put."""
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    H = _h3_image()
+    with FakeTensorMode(allow_non_fake_inputs = True):
+        m = _fake_linear(4, 4, "cuda:0")
+        m.register_buffer("scale", torch.ones(4, device = "cuda:1"))
+        scale = m.scale
+        with H._weights_on(m, torch.device("cuda", 1)):
+            assert m.weight.device == torch.device("cuda", 1)
+            assert m.bias.device == torch.device("cuda", 1)
+            assert m.scale is scale
+        assert m.weight.device == torch.device("cuda", 0)
+        # ``cuda`` without an index is the current card (the race enters ``torch.cuda.device`` first).
+        monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+        with H._weights_on(m, torch.device("cuda")):
+            assert m.weight.device == torch.device("cuda", 1)
+            assert m.scale is scale
+
+
 def test_install_races_a_fully_streamed_dit_on_its_device(monkeypatch):
     """``install_checkpoint_attention`` passes the load device so a fully streamed DiT is raced."""
     H = _h3_image()

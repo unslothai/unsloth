@@ -9,8 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import os
 import sys
+import threading
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
@@ -491,6 +493,58 @@ def _may_overwrite_input(X):
     )
 
 
+# Skipping the down projection while a gradient checkpoint replays a decoder layer. The replay only rebuilds the
+# tensors LoRA_MLP saves (X, e, g); backward never reads h or the down output i, and the layer output they feed
+# (residual + i) is the checkpoint's output, whose value its nested backward never reads. A decoder layer arms this
+# (arm_mlp_output_unread) only when it is the whole checkpointed function; UNSLOTH_GC_SKIP_MLP_DOWN=0 disables.
+_SKIP_DOWN_TLS = threading.local()
+MLP_DOWN_SKIP_STATS = collections.Counter()  # skipped: replays that did not run the down projection
+_SKIP_DOWN_ENABLED = os.environ.get("UNSLOTH_GC_SKIP_MLP_DOWN", "1") != "0"
+_SKIPPED_FILL = None  # tests fill the unused output (NaN) to prove nothing reads it
+
+
+def _replay_module():
+    try:
+        from unsloth_zoo.gradient_checkpointing import gradient_checkpoint_replay_module
+    except ImportError:  # unsloth_zoo without the replay root: never skip
+        return None
+    return gradient_checkpoint_replay_module()
+
+
+def _no_forward_hooks(*modules):
+    if torch.nn.modules.module._global_forward_hooks:
+        return False
+    return not any(getattr(m, "_forward_hooks", None) for m in modules)
+
+
+def arm_mlp_output_unread(layer, mlp):
+    """Call before `mlp(x)` in a decoder layer whose output is `residual + mlp(x)` and nothing else reads mlp(x);
+    call disarm_mlp_output_unread() after it when this returned True. While a checkpoint replays exactly this
+    layer, the fused LoRA MLP then skips its down projection. Plain code, no context manager: traced blocks
+    fold _is_compiling() to True and keep no trace of it."""
+    if _is_compiling() or not _SKIP_DOWN_ENABLED:
+        return False
+    if _replay_module() is not layer or not _no_forward_hooks(layer, mlp):
+        return False
+    _SKIP_DOWN_TLS.armed = (layer, mlp)
+    return True
+
+
+def disarm_mlp_output_unread():
+    _SKIP_DOWN_TLS.armed = None
+
+
+def _take_skip_down(mlp):
+    # One shot, and re-checked against the live replay so a token left by an exception never fires elsewhere.
+    if _is_compiling():
+        return False
+    armed = getattr(_SKIP_DOWN_TLS, "armed", None)
+    if armed is None or armed[1] is not mlp:
+        return False
+    _SKIP_DOWN_TLS.armed = None
+    return _replay_module() is armed[0]
+
+
 class LoRA_MLP(torch.autograd.Function):
     """
     ### LoRA weights
@@ -585,10 +639,18 @@ class LoRA_MLP(torch.autograd.Function):
                 X, upW, upW_quant, upA, upB, upS, XA = upXA, fused = fused, fused_checked = checked
             )
             del gateXA, upXA
-            h = _forward_function(e, g)
-            i = matmul_lora(
-                h, downW, downW_quant, downA, downB, downS, fused = fused, fused_checked = checked
-            )
+            if not _is_compiling() and getattr(_SKIP_DOWN_TLS, "active", False):
+                # Checkpoint replay of a layer whose output nothing reads: backward needs only X, e, g.
+                _SKIP_DOWN_TLS.active = False
+                MLP_DOWN_SKIP_STATS["skipped"] += 1
+                i = X.new_empty(X.shape)
+                if _SKIPPED_FILL is not None:
+                    i.fill_(_SKIPPED_FILL)
+            else:
+                h = _forward_function(e, g)
+                i = matmul_lora(
+                    h, downW, downW_quant, downA, downB, downS, fused = fused, fused_checked = checked
+                )
             masks = (None, None, None)
         else:
             fused = False
@@ -859,30 +921,37 @@ def apply_lora_mlp_swiglu(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        swiglu_fg_kernel,
-        swiglu_DWf_DW_dfg_kernel,
-        inplace,
-        dropout_p,
-        *biases,
-    )
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            swiglu_fg_kernel,
+            swiglu_DWf_DW_dfg_kernel,
+            inplace,
+            dropout_p,
+            *biases,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
 
 

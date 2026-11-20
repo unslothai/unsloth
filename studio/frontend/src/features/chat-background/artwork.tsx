@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { ImageSizing } from "./model";
 import { bakeScale, imageBox } from "./artwork-geometry";
+import { loadImage } from "./image";
 
 const BACKGROUND_SIZE: Record<ImageSizing, string> = {
 	cover: "cover",
@@ -28,8 +29,7 @@ async function bake(
 	blur: number,
 ): Promise<Blob | null> {
 	const image = new Image();
-	image.src = url;
-	await image.decode();
+	await loadImage(image, url);
 	const k = bakeScale(blur, window.devicePixelRatio || 1);
 	const cw = Math.max(1, Math.round(box.w * k)),
 		ch = Math.max(1, Math.round(box.h * k));

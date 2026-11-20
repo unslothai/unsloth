@@ -1479,6 +1479,45 @@ def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     assert failure.value.code == "no_model"
 
 
+def test_a_run_on_the_loaded_model_never_answers_with_translates_model(monkeypatch):
+    producer = FakeProducer(completion("Bonjour."))
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "unsloth/Hy-MT2-1.8B-GGUF")
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+    assert failure.value.code == "no_model"
+    assert producer.payload is None
+
+
+def test_translation_only_repos_match_the_frontend():
+    import re
+
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend/src/lib/translation-models.ts"
+    ).read_text(encoding = "utf-8")
+    block = re.search(r"TRANSLATION_ONLY_REPOS = \[(.*?)\]", source, re.S).group(1)
+    assert {repo.lower() for repo in re.findall(r'"([^"]+)"', block)} == (
+        scheduler_module._TRANSLATION_ONLY_REPOS
+    )
+
+
+def test_a_run_skips_translates_model_for_the_text_model_kept_alongside(monkeypatch):
+    from core.inference import model_slots
+
+    def slot(name):
+        return SimpleNamespace(
+            llama = SimpleNamespace(is_loaded = True, model_identifier = name),
+            orchestrator = SimpleNamespace(active_model_name = None),
+        )
+
+    monkeypatch.setattr(
+        model_slots, "visible", lambda: [slot("unsloth/Hy-MT2-7B-GGUF"), slot("text/model")]
+    )
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "unsloth/Hy-MT2-1.8B-GGUF")
+    producer = FakeProducer(completion("Dawn light."))
+    generate(monkeypatch, producer)
+    assert producer.payload.model == "text/model"
+
+
 def test_a_refusal_from_a_loaded_model_keeps_its_reason(monkeypatch):
     producer = FakeProducer(
         error = HTTPException(status_code = 400, detail = {"error": {"message": "Too long."}})

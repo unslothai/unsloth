@@ -54,7 +54,12 @@ def fp32_math_sdpa(
     v: Any,
     scale: Optional[float] = None,
 ) -> Any:
-    """Math SDPA in fp32 (what ROCm's math kernel upcasts a half call to), returned in ``q``'s dtype."""
+    """Math SDPA with half inputs upcast to fp32 (as ROCm's math kernel does), returned in ``q``'s dtype; fp32 and
+    fp64 run in their own precision (fp64 through fp32 overflows where stock SDPA stays finite)."""
+    import torch
+
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        return half_math_sdpa(q, k, v, scale)
     return half_math_sdpa(q.float(), k.float(), v.float(), scale).to(q.dtype)
 
 
@@ -116,6 +121,32 @@ def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
     return (
         len(shape) > 0 and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM and windows_rocm(torch)
     )
+
+
+def _attention_head_dim(module: Any) -> Optional[int]:
+    # diffusers Attention; the single-head blocks (Wan, Qwen-Image, HunyuanImage) carry no ``heads``: unknown.
+    heads, inner = getattr(module, "heads", None), getattr(module, "inner_dim", None)
+    try:
+        return int(inner) // int(heads) if heads and inner else None
+    except (TypeError, ValueError):
+        return None
+
+
+def vae_has_untrusted_head(vae: Any) -> bool:
+    """Whether ``vae`` may run an attention head wider than the Windows ROCm fused kernels compute right; a VAE or
+    attention module it cannot inspect counts as yes."""
+    named = getattr(vae, "named_modules", None)
+    if not callable(named):
+        return True
+    try:
+        for _, module in named():
+            if _is_attention_module(module):
+                head = _attention_head_dim(module)
+                if head is None or head > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM:
+                    return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
 
 
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
@@ -236,11 +267,13 @@ def _mode_class() -> Any:
                 if call is not None:
                     q, k, v, scale = call
                     if not fused_sdpa_available(q, k, v):
+                        # Autocast casts SDPA's inputs before any kernel runs: gate on that dtype, not the caller's (a
+                        # bf16 query under fp16 autocast runs fp16 scores, which overflow).
+                        cast = _autocast_dtype(q.device.type)
+                        if cast is not None:
+                            q, k, v = (t.to(cast) for t in (q, k, v))
                         if _half_math_call(q):
                             self.half += 1
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
                             with torch.autocast(q.device.type, enabled = False):
                                 if _score_bytes(q, k) > self.budget:
                                     self.chunked += 1
@@ -249,9 +282,6 @@ def _mode_class() -> Any:
                         if _windows_rocm_untrusted_head(q, torch):
                             # fp32, or half with UNSLOTH_VAE_ATTN_HALF_MATH=0: the default dispatch would still pick the
                             # fused kernels that miscompute this head, so run the math (fp32, as ROCm's math kernel does).
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
                             with torch.autocast(q.device.type, enabled = False):
                                 if _score_bytes(q, k) > self.budget:
                                     self.chunked += 1

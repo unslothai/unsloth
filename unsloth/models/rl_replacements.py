@@ -3335,6 +3335,34 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
+_TOOL_SUFFIX_EOS_TRIM = re.compile(
+    r"\n(?P<indent>[ \t]+)if eos_positions:\n"
+    r"(?P<body>[ \t]+prefix_ids = prefix_ids\[: ?eos_positions\[-1\] \+ 1\])"
+)
+
+
+def trainer__get_tool_suffix_ids(function_name, function):
+    """Trim TRL's dummy tool-call prefix at its last EOS only when whitespace alone follows it.
+
+    unsloth/gemma-4-* (EOS <turn|>) ends tool calls with <|tool_response>, so the last EOS ends the USER turn and
+    every tool suffix would re-inject the dummy assistant tool call into the rollout.
+    """
+    if function_name != "_get_tool_suffix_ids":
+        return function
+    return _TOOL_SUFFIX_EOS_TRIM.sub(
+        lambda m: (
+            f"\n{m.group('indent')}if eos_positions and not self._tokenizer.decode("
+            f"prefix_ids[eos_positions[-1] + 1 :]).strip():\n{m.group('body')}"
+        ),
+        function,
+        count = 1,
+    )
+
+
+RL_FUNCTIONS["grpo_trainer"].append(trainer__get_tool_suffix_ids)
+RL_FUNCTIONS["distillation_trainer"].append(trainer__get_tool_suffix_ids)
+
+
 def _unsloth_vllm_quantized(model):
     # FSDP2 turns Params4bit into a DTensor, so also read the load flags the model keeps.
     if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
@@ -3746,6 +3774,98 @@ def _unsloth_vllm_adapter_param_ids(model):
 _UNSLOTH_VLLM_MODULES_TO_SAVE = re.compile(r"\.(?:modules_to_save\.[^.]+|original_module)\.")
 
 
+def _unsloth_vllm_bump_weights_epoch(engine):
+    engine._unsloth_vllm_weights_epoch = getattr(engine, "_unsloth_vllm_weights_epoch", 0) + 1
+
+
+def _unsloth_vllm_watch_weight_resets(engine):
+    """Count weight drops: sleep(level >= 2) and collective_rpc("reload_weights")."""
+    if engine is None or getattr(engine, "_unsloth_vllm_weights_epoch", None) is not None:
+        return
+    engine._unsloth_vllm_weights_epoch = 0
+    sleep = getattr(engine, "sleep", None)
+    if callable(sleep):
+
+        def _unsloth_sleep(*args, **kwargs):
+            level = kwargs.get("level", args[0] if args else 1)
+            if not isinstance(level, int) or level >= 2:
+                _unsloth_vllm_bump_weights_epoch(engine)
+            return sleep(*args, **kwargs)
+
+        engine.sleep = _unsloth_sleep
+    collective_rpc = getattr(engine, "collective_rpc", None)
+    if callable(collective_rpc):
+
+        def _unsloth_collective_rpc(method, *args, **kwargs):
+            if method == "reload_weights":
+                _unsloth_vllm_bump_weights_epoch(engine)
+            return collective_rpc(method, *args, **kwargs)
+
+        engine.collective_rpc = _unsloth_collective_rpc
+
+
+class _UnslothVllmFrozenSync:
+    """Send frozen non-adapter weights once per vLLM name (same param, storage, version); resend
+    after a weight drop or receiver change. UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS = 1 disables."""
+
+    def __init__(
+        self,
+        owner,
+        model,
+        target,
+        engine = None,
+        adapted_ids = (),
+    ):
+        self.state = None
+        self.frozen = {}
+        if os.environ.get("UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS", "0") == "1":
+            return
+        _unsloth_vllm_watch_weight_resets(engine)
+        epoch = getattr(engine, "_unsloth_vllm_weights_epoch", 0) if engine is not None else 0
+        state = owner.__dict__.get("_unsloth_vllm_frozen_sync")
+        if state is None or state["target"] is not target or state["epoch"] != epoch:
+            state = {
+                "target": target,
+                "epoch": epoch,
+                "sent": {},
+                "syncs": 0,
+                "skipped": 0,
+                "skipped_bytes": 0,
+                "sent_bytes": 0,
+            }
+            owner._unsloth_vllm_frozen_sync = state
+        state["syncs"] += 1
+        self.state = state
+        adapted = set(adapted_ids) | _unsloth_vllm_adapter_param_ids(model)
+        for param in model.parameters():
+            if param.requires_grad or id(param) in adapted:
+                continue
+            self.frozen[(param.data_ptr(), tuple(param.shape), param.dtype)] = param
+
+    def keep(
+        self,
+        name,
+        tensor,
+        param = None,
+    ):
+        if self.state is None:
+            return True
+        nbytes = tensor.numel() * tensor.element_size()
+        frozen = self.frozen.get((tensor.data_ptr(), tuple(tensor.shape), tensor.dtype))
+        if frozen is None or (param is not None and frozen is not param):
+            self.state["sent"].pop(name, None)
+            self.state["sent_bytes"] += nbytes
+            return True
+        key = (id(frozen), frozen.data_ptr(), frozen._version)
+        if self.state["sent"].get(name) == key:
+            self.state["skipped"] += 1
+            self.state["skipped_bytes"] += nbytes
+            return False
+        self.state["sent"][name] = key
+        self.state["sent_bytes"] += nbytes
+        return True
+
+
 @torch.no_grad()
 def _unsloth_vllm_sync_peft_merged(trainer):
     """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
@@ -3779,6 +3899,13 @@ def _unsloth_vllm_sync_peft_merged(trainer):
     llm_model = None
     if mode == "colocate":
         llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    frozen_sync = _UnslothVllmFrozenSync(
+        trainer,
+        model,
+        llm_model if mode == "colocate" else trainer.vllm_client,
+        engine = trainer.llm if mode == "colocate" else None,
+        adapted_ids = set(lora_of) | set(groups),
+    )
     # TRL < 0.20 sends the names as they are and has no fixer.
     fix_name = getattr(trainer, "_fix_param_name_to_vllm", None) or (lambda name, **_: name)
     for full_name, param in model.named_parameters():
@@ -3799,6 +3926,8 @@ def _unsloth_vllm_sync_peft_merged(trainer):
             tensor = merged_cache.pop(id(param))
         else:
             tensor = param.data
+        if not frozen_sync.keep(name, tensor, param):
+            continue
         if mode == "server":
             if is_main:
                 trainer.vllm_client.update_named_param(name, tensor)
@@ -4291,14 +4420,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and not getattr(_pg_cfg, "attention_dropout", 0)
                         and not any(
                             getattr(_pg_cfg, _pg_a, None) is not None
-                            for _pg_a in (
-                                "mamba_d_ssm",
-                                "mamba_d_state",
-                                "mamba_expand",
-                                "num_experts",
-                                "num_local_experts",
-                                "n_routed_experts",
-                                "moe_intermediate_size",
+                            for _pg_a in ("mamba_d_ssm", "mamba_d_state", "mamba_expand")
+                        )
+                        # MoE only where prefix_grouper_hf verified every layer (opt-in, set by the check above).
+                        and (
+                            getattr(unwrapped_model, "_unsloth_prefix_grouper_moe_ok", False)
+                            or not any(
+                                getattr(_pg_cfg, _pg_a, None) is not None
+                                for _pg_a in (
+                                    "num_experts",
+                                    "num_local_experts",
+                                    "n_routed_experts",
+                                    "moe_intermediate_size",
+                                )
                             )
                         )
                     )
@@ -6305,6 +6439,24 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
     weights = generation._iter_named_params()
     cap = _vllm_weight_sync_bucket_bytes()
     state = getattr(getattr(generation, "accelerator", None), "state", None)
+    sharded = state is not None and (
+        getattr(state, "deepspeed_plugin", None) is not None
+        or getattr(state, "fsdp_plugin", None) is not None
+    )
+    if not sharded:
+        model = generation.model
+        # merge_adapter edits the adapted base weights in place: those are always sent.
+        adapted = ()
+        if getattr(model, "peft_config", None) is not None:
+            adapted = _unsloth_vllm_tuner_groups(model)
+        frozen_sync = _UnslothVllmFrozenSync(
+            generation,
+            model,
+            vllm_model,
+            engine = getattr(generation, "llm", None),
+            adapted_ids = adapted,
+        )
+        weights = ((name, param) for name, param in weights if frozen_sync.keep(name, param))
     # ZeRO-3 / FSDP yield gathered tensors that are only valid until the next step of the
     # iterator, and PEFT unmerges in place once it is exhausted: holding references is wrong there.
     unsafe = (

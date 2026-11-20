@@ -164,6 +164,7 @@ from ..kernels.fused_add_rms_layernorm import (
     fast_add_rms_layernorm_inference_ok,
 )
 from ..kernels import fast_lora as _fast_lora
+from ..kernels.fast_lora import arm_mlp_output_unread, disarm_mlp_output_unread
 from . import _decode_graphs
 from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
@@ -1278,7 +1279,11 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
+        # residual + mlp(x) is this layer's output, so a checkpoint replay of it can skip the down projection.
+        armed = arm_mlp_output_unread(self, self.mlp)
         hidden_states = self.mlp(hidden_states)
+        if armed:
+            disarm_mlp_output_unread()
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
@@ -1708,6 +1713,7 @@ def LlamaModel_fast_forward(
                         **kwargs,
                     )
 
+                custom_forward._unsloth_checkpoint_module = module
                 return custom_forward
 
             layer_outputs = torch.utils.checkpoint.checkpoint(
@@ -4603,6 +4609,9 @@ class FastLlamaModel:
                 pass
 
                 llm = load_vllm(**load_vllm_kwargs)
+                if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+                    from unsloth.utils.run_report import report_memory
+                    report_memory("vLLM init", llm)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,

@@ -1090,12 +1090,10 @@ def render_pdf_pages(
         return {}
     out: dict[int, bytes] = {}
     try:
-        for i, page in enumerate(doc):
-            num = i + 1
-            if num not in wanted:
-                continue
+        # Loads only the wanted pages: Translate renders one page per call.
+        for num in sorted(n for n in wanted if 1 <= n <= doc.page_count):
             try:
-                pix = page.get_pixmap(dpi = dpi)
+                pix = doc[num - 1].get_pixmap(dpi = dpi)
                 out[num] = pix.tobytes("png")
             except Exception:
                 continue

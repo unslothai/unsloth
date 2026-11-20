@@ -470,22 +470,16 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** In on-screen px, so zoom does not flip the 400/420 choice. */
+/** From the window, never a tab's row count, in on-screen px. */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,
   zoomOut: number,
 ): number {
-  const shortLandscape =
-    innerWidth > innerHeight && innerHeight / zoomOut <= 900;
-  return shortLandscape ? 400 : 420;
-}
-
-export function pickerRoomBelow(
-  triggerBottom: number,
-  viewportHeight: number,
-): number {
-  return Math.max(0, viewportHeight - triggerBottom - PICKER_GAP - PICKER_EDGE);
+  const screenHeight = innerHeight / zoomOut;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 400;
+  const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
+  return Math.round(420 + 120 * t);
 }
 
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
@@ -556,6 +550,17 @@ export function discoverUsesFallback(
   hubResultCount: number,
 ): boolean {
   return hubQuery === "" || hubResultCount === 0;
+}
+
+/** Only Discover rows (`recommended`) use a size, so only they cost a file listing. */
+export function hubSizeIds(
+  results: readonly { id: string; isGguf: boolean }[],
+  recommended: readonly { id: string }[],
+): string[] {
+  const rows = new Set(recommended.map((m) => m.id.toLowerCase()));
+  return results.flatMap((r) =>
+    !r.isGguf && rows.has(r.id.toLowerCase()) ? [r.id] : [],
+  );
 }
 
 /** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */
