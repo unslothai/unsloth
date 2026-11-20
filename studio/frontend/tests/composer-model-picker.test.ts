@@ -282,6 +282,16 @@ test("Run settings open inside the composer picker, not the header picker", () =
   );
 });
 
+test("a Q4NX model converted on the Export page is marked Converted, like the header picker", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /\{row\.npu\?\.local \? \(\s+<StatusTag\s+tone="accent"\s+label="Converted"\s+hint=\{npuRowTooltip\(row\.npu\) \?\? undefined\}/,
+  );
+});
+
 test("On Device groups rows like the header picker, NPU and custom folders included", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",

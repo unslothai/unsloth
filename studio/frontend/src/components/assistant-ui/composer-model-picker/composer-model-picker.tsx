@@ -4320,6 +4320,13 @@ export function ComposerModelPicker({
                 hint="Opens on the Audio page"
               />
             ) : null}
+            {row.npu?.local ? (
+              <StatusTag
+                tone="accent"
+                label="Converted"
+                hint={npuRowTooltip(row.npu) ?? undefined}
+              />
+            ) : null}
             {row.partial ? (
               <AmberTag
                 label="Partial"
