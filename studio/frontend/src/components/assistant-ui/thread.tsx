@@ -2725,7 +2725,7 @@ const ThreadComposerDock: FC<{
       root.style.setProperty(THREAD_COMPOSER_CLIP_VAR, `${clip}px`);
       root.style.setProperty(
         THREAD_COMPOSER_FADE_VAR,
-        "calc(24px * var(--ui-space-scale, 1))",
+        "calc(10px * var(--ui-space-scale, 1))",
       );
     };
     const apply = () => {
