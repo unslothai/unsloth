@@ -63,6 +63,8 @@ _VALIDATED_MARKER = "npu_validated.json"
 # Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once;
 # decision models (FastFlowLM 1.0.13 d3:*) refuse plain `flm serve`.
 _EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn", "decision"})
+# FastFlowLM 1.0.13 *-oga-hipep models run on the GPU through a separate HIP runtime, not the NPU.
+_GPU_FAMILY_SUFFIX = "-oga-hipep"
 # Engine limits below checkpoint metadata, from the FastFlowLM v1.0.12 model cards (docs/docs/models)
 # and qwen3_core_backend.hpp; the 27B pair fails above 8192 (ROCm/FastFlowLM#1001). Recheck on pin bumps.
 _FLM_CONTEXT_LIMITS = {
@@ -826,6 +828,8 @@ class LemonadeNpuBackend:
                 continue
             labels = tuple(str(label) for label in row.get("labels") or ())
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
+                continue
+            if str(row.get("checkpoint") or "").partition(":")[0].endswith(_GPU_FAMILY_SUFFIX):
                 continue
             size = row.get("size")
             size_gb = float(size) if isinstance(size, (int, float)) else None
