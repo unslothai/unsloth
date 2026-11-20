@@ -300,8 +300,15 @@ _DEFAULT_COND_CACHE_MAX_GB = 20.0
 COND_CACHE_OFF_VALUES = frozenset({"off", "none", "false", "0", "no", "disabled"})
 # Under the account workspace (beside the other Studio caches), never the outputs root the run listings scan.
 DEFAULT_COND_CACHE_SUBDIR = "cache/diffusion-train-cond"
-# Only files this cache wrote are ever evicted, so a user directory holding other files is safe.
-_CACHE_ENTRY_PREFIXES = ("lat_v", "txt_v", "h3clip_v", "h3img_v")
+# Only files this cache wrote are ever evicted, so a user directory holding other files is safe: a candidate needs a
+# cache key name (kind, then ``_v`` and a version digit) and the cache's own safetensors header metadata.
+_CACHE_ENTRY_NAME = re.compile(r"^(?:lat|txt|h3clip|h3img)_v\d[^/\\]*\.safetensors$")
+# Written into every entry's header; entries from before the marker carry exactly the legacy metadata keys below.
+_CACHE_OWNER_KEY = "unsloth_cond_cache"
+_CACHE_OWNER_VALUE = "1"
+_CACHE_LEGACY_META_KEYS = frozenset({"version", "family", "none_slots", "count"})
+# Our headers list a handful of tensors; a larger header is not one of ours and is never parsed.
+_CACHE_MAX_HEADER_BYTES = 1 << 20
 # A write that would leave less than this free on the cache's disk is skipped (the run then saves its adapter).
 _COND_CACHE_DISK_RESERVE_BYTES = 2 << 30
 
@@ -362,6 +369,41 @@ def compact_cache_namespace(family: str, *parts: str) -> str:
 _MAX_FAMILY_CHARS = 96
 
 
+def _is_cache_entry(path: str) -> bool:
+    """True only for a safetensors file PersistentConditioningCache wrote: its header metadata carries the owner marker,
+    or (entries written before the marker) exactly the cache's own metadata keys over ``t<i>`` tensors. Reads the
+    header alone; anything unreadable or unexpected is not ours, so it is never evicted."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+            if len(head) != 8:
+                return False
+            n = int.from_bytes(head, "little")
+            if n <= 0 or n > _CACHE_MAX_HEADER_BYTES:
+                return False
+            raw = f.read(n)
+        if len(raw) != n:
+            return False
+        header = json.loads(raw.decode("utf-8"))
+        if not isinstance(header, dict):
+            return False
+        meta = header.get("__metadata__")
+        if not isinstance(meta, dict):
+            return False
+        if meta.get(_CACHE_OWNER_KEY) == _CACHE_OWNER_VALUE:
+            return True
+        if set(meta) != _CACHE_LEGACY_META_KEYS:
+            return False
+        count = int(meta["count"])
+        slots = json.loads(meta["none_slots"])
+        names = [k for k in header if k != "__metadata__"]
+        if not isinstance(slots, list) or len(names) + len(slots) != count:
+            return False
+        return all(re.fullmatch(r"t\d+", k) for k in names)
+    except Exception:  # noqa: BLE001 -- not provably ours: keep it
+        return False
+
+
 class PersistentConditioningCache:
     """One safetensors file per cached item under ``cache_dir``.
 
@@ -398,6 +440,8 @@ class PersistentConditioningCache:
         self.max_bytes = cond_cache_max_bytes() if max_bytes is None else int(max_bytes)
         # Running size of the directory, read once here and kept current by put(); None until measured.
         self._bytes: Optional[int] = None
+        # (name, inode, size) of files already confirmed as entries this cache wrote, so a rescan skips the header read.
+        self._owned: set[tuple[str, int, int]] = set()
 
     def _entries(self) -> list[tuple[float, int, Path]]:
         import os  # noqa: PLC0415
@@ -405,13 +449,15 @@ class PersistentConditioningCache:
         out = []
         with os.scandir(self.root) as it:
             for e in it:
-                if (
-                    e.name.endswith(".safetensors")
-                    and e.name.startswith(_CACHE_ENTRY_PREFIXES)
-                    and e.is_file()
-                ):
-                    st = e.stat()
-                    out.append((st.st_mtime, st.st_size, Path(e.path)))
+                if not (_CACHE_ENTRY_NAME.match(e.name) and e.is_file(follow_symlinks = False)):
+                    continue
+                st = e.stat(follow_symlinks = False)
+                ident = (e.name, st.st_ino, st.st_size)
+                if ident not in self._owned:
+                    if not _is_cache_entry(e.path):
+                        continue
+                    self._owned.add(ident)
+                out.append((st.st_mtime, st.st_size, Path(e.path)))
         return out
 
     def _account(self, added: int, keep: Path) -> None:
@@ -499,6 +545,7 @@ class PersistentConditioningCache:
             "family": self.family,
             "none_slots": json.dumps(none_slots),
             "count": str(len(none_slots) + len(named)),
+            _CACHE_OWNER_KEY: _CACHE_OWNER_VALUE,
         }
         final = self.path_for(key)
         tmp = final.with_suffix(".tmp")
