@@ -52,6 +52,22 @@ def endpoint() -> str:
         return ""
 
 
+def offline_mode() -> bool:
+    """HF_HUB_OFFLINE (or TRANSFORMERS_OFFLINE, or a Studio force-offline window) is on: nothing may ask the Hub.
+    A media load then reads only the cache, as a ``local_files_only`` one does. Never raises."""
+    try:
+        from utils.utils import hf_env_offline
+        if hf_env_offline():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from huggingface_hub import constants
+        return bool(constants.HF_HUB_OFFLINE)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def hub_unreachable(at: Optional[str] = None) -> bool:
     key = endpoint() if at is None else at
     with _lock:
