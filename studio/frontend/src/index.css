@@ -6956,16 +6956,12 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
     linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px))),
     linear-gradient(#000, #000);
 }
-/* The mask also drops the viewport's wash there; the root repaints that strip so no seam shows.
-   Glass outranks this with its full root wash (below). */
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
-  background: linear-gradient(color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent), color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent)) bottom / 100% var(--thread-composer-clip, 0px) no-repeat;
-}
-/* Glass: wash the unmasked thread root so the header strip matches the thread. */
-html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
+/* Wash the unmasked thread root, not the masked viewport, so the header strip and the rows under the
+   composer get the same shade as the thread instead of showing the brighter raw wallpaper. */
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
-html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
   background: transparent;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
@@ -7016,6 +7012,10 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   inset: 0 0 auto;
   height: 150px;
   background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
+}
+/* Without glass a conversation's header sits on the thread's own wash; a second darkening sets it apart. */
+html:not([data-glass], [data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):not([data-wallpaper-route="page"]) > .chat-wallpaper::after {
+  content: none;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] [data-side-panel-inset]:not(.chat-header-fade),
 html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] {
