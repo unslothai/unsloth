@@ -1501,6 +1501,42 @@ def _sliding_window(layer):
     return window
 
 
+def _global_interval_mask(layer, hidden_states, kwargs):
+    """Give this compiled call a view with verified bounds; never tag the caller's mutable mask."""
+    mask = kwargs.get("attention_mask")
+    attn = getattr(layer, "self_attn", None)
+    if (
+        mask is None
+        or getattr(mask, _PLAIN_CAUSAL_ATTR, None) is not False
+        or not type(attn).__name__.startswith("Gemma4")
+        or getattr(attn, "head_dim", None) != 512
+        or getattr(attn, "is_sliding", True)
+        or getattr(mask, _MATERIALISED_ATTR, False)
+        or mask.requires_grad
+        or mask.is_inference()
+    ):
+        return kwargs
+    lh = sys.modules.get(_LH_MODULE)
+    if (
+        lh is None
+        or not lh._enabled()
+        or not lh._SELF_CHECK.get((str(hidden_states.device), hidden_states.dtype), False)
+        or lh._is_capturing(hidden_states.device)
+    ):
+        return kwargs
+    batch, length = hidden_states.shape[:2]
+    rows = max(1, min(1024, (1 << 24) // max(1, mask.shape[0] * length)))
+    try:
+        intervals = lh.intervals_from_mask(mask, batch, length, _rows = rows)
+    except torch.cuda.OutOfMemoryError:
+        return kwargs
+    if intervals is None:
+        return kwargs
+    prepared = mask.view_as(mask)
+    prepared._unsloth_block_intervals = intervals
+    return {**kwargs, "attention_mask": prepared}
+
+
 def _precheck_band(
     layer,
     seq_len,
@@ -2209,12 +2245,13 @@ def _wrap(
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
             kwargs = _normalise_mask(self, hidden_states, kwargs)
             hidden_states, args, kwargs = _relax_strict_dynamic((hidden_states, args, kwargs))
+            _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
+            _settle_mask_flags(self, kwargs)
+            kwargs = _global_interval_mask(self, hidden_states, kwargs)
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
             if _DYNAMIC_BATCH and hidden_states.shape[0] > 1:
                 _mark_batch_dynamic(hidden_states.shape[0], (hidden_states, args, kwargs))
             _mark_packed_dynamic(kwargs)
-            _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
-            _settle_mask_flags(self, kwargs)
         # Grad-mode graphs: bit 2 runs every op, bit 4 skips the MLP down projection (a gradient checkpoint
         # replay of exactly this layer, whose output value its backward never reads). A no-grad call (the
         # checkpointed forward) of an eligible layer trials the graph its replay will use.

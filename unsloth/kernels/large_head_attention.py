@@ -1458,6 +1458,12 @@ def _make_router(original):
                 # graph needs no host sync; the masked SDPA it replaces repeats the kv heads.
                 intervals = _dense_intervals(B, S, True, query.device)
             elif (
+                compiling and getattr(attention_mask, "_unsloth_block_intervals", None) is not None
+            ):
+                lo, hi = attention_mask._unsloth_block_intervals
+                if lo.shape == (B, S) and hi.shape == (B, S):
+                    intervals = lo, hi
+            elif (
                 not compiling
                 and not capturing
                 and _SELF_CHECK.get((str(query.device), query.dtype), True)

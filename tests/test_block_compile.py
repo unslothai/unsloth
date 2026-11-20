@@ -997,6 +997,44 @@ def test_gemma4_global_layer_mask_gets_a_causal_verdict(monkeypatch):
     assert plain_causal._unsloth_block_long_band is False
 
 
+def test_global_interval_mask_passes_current_bounds_into_one_graph(monkeypatch):
+    mod = _load()
+
+    class Gemma4TextAttention:
+        head_dim, is_sliding = 512, False
+
+    layer = types.SimpleNamespace(self_attn = Gemma4TextAttention())
+    hidden = torch.zeros(2, 12, 8)
+    mask = torch.ones(2, 1, 12, 12, dtype = torch.bool).tril()
+    setattr(mask, mod._PLAIN_CAUSAL_ATTR, False)
+    kwargs = {"attention_mask": mask}
+    kernel = types.SimpleNamespace(
+        _enabled = lambda: True,
+        _SELF_CHECK = {("cpu", hidden.dtype): True},
+        _is_capturing = lambda device: False,
+        intervals_from_mask = lambda mask, batch, length, _rows: (
+            torch.zeros(batch, length, dtype = torch.int32),
+            mask[:, 0].sum(-1) - 1,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, mod._LH_MODULE, kernel)
+    from torch._dynamo.testing import CompileCounter
+
+    counter = CompileCounter()
+    read_bounds = torch.compile(
+        lambda view: view._unsloth_block_intervals[1] + 1, backend = counter, fullgraph = True
+    )
+    for valid in (10, 7):
+        mask[1, :, :, valid:] = False
+        prepared = mod._global_interval_mask(layer, hidden, kwargs)["attention_mask"]
+        assert prepared.data_ptr() == mask.data_ptr()
+        assert not hasattr(mask, "_unsloth_block_intervals")
+        torch.testing.assert_close(read_bounds(prepared), mask[:, 0].sum(-1))
+    assert counter.frame_count == 1
+    monkeypatch.setattr(kernel, "intervals_from_mask", lambda *args, **kwargs: None)
+    assert mod._global_interval_mask(layer, hidden, kwargs) is kwargs
+
+
 def _sliding_layer(window = 64, head_dim = 256):
     class Gemma4TextAttention(torch.nn.Module):
         is_sliding, sliding_window, is_causal, training = True, window, True, True
