@@ -18,7 +18,6 @@ test("Model Hub separates dedicated VRAM from shared GPU memory", () => {
 });
 
 test("the Hub GPU chip falls back to the GGUF inventory when training sees no GPU", () => {
-  // A GGUF-only Mac runs llama.cpp on Metal; reading only the training inventory showed "Unavailable".
   assert.match(
     hubPage,
     /const headerGpu = gpu\.available \? gpu : inferenceGpu;/,

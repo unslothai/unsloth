@@ -232,7 +232,6 @@ test("only audio.cpp GGUFs skip the llama.cpp budget; Mac TTS GGUFs load through
   assert.doesNotMatch(src, /unifiedLoadBudgetGb: audioTaskPicker/);
 });
 
-/** A GGUF-only (or MLX-less) Mac: training detection reports CPU, the GGUF inventory is Metal. */
 function ggufOnlyMac(inferenceGpu: Record<string, unknown> | undefined) {
   snapshot = {
     status: "ready",
@@ -274,7 +273,6 @@ test("a GGUF-only 16 GiB Mac with 6 GiB free rates a 2.2 GB quant by the Metal b
       unifiedLoadBudgetGb: gpu.unifiedLoadBudgetGb,
     });
 
-  // No Metal inventory (the old backend): no GPU, half of 6 GiB free, red.
   const before = ggufOnlyMac(undefined);
   assert.equal(before.inference.available, false);
   assert.equal(hubFit(before.inference), "oom");
@@ -294,7 +292,6 @@ test("the unified budget needs an Apple inventory: a Vulkan one on a CPU host st
 });
 
 test("a model switch on the Metal inventory credits nothing it cannot attribute to the resident", () => {
-  // 4 GiB free and 6 GiB of AGX in use, of which Studio may own any part: keep the live budget.
   const device = {
     ...METAL_INVENTORY.devices[0],
     metal_working_set_gb: 16,
@@ -318,7 +315,6 @@ test("a model switch on the Metal inventory credits nothing it cannot attribute 
   });
   assert.equal(switchFit, "marginal");
 
-  // MLX keeps its AGX credit, unchanged here.
   const mlx = macInfo({ metal_working_set_gb: 16, vram_free_gb: 4, vram_used_gb: 6 }, 4);
   assert.equal(mlx.unifiedLoadCeilingGb, 8.5);
 });
