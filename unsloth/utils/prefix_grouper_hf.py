@@ -200,7 +200,6 @@ def _text_config_of(config):
     return None
 
 
-# Fields that decide whether PrefixGrouper is valid for a layer and how its span is capped.
 _ATTENTION_CONFIG_FIELDS = (
     "model_type",
     "sliding_window",
@@ -218,11 +217,7 @@ _MISSING = object()
 
 
 def _same_attention_config(config, text_config) -> bool:
-    """True when ``config`` is ``text_config`` or an equal copy of it on the fields above.
-
-    The vLLM rebuild (unsloth_zoo copy_attributes) gives every module its own deepcopy of the config,
-    so identity alone turned PrefixGrouper off for every fast_inference = True model.
-    """
+    # Not identity: the vLLM rebuild (copy_attributes) deepcopies config per module.
     if config is text_config:
         return True
     if config is None or type(config) is not type(text_config):

@@ -292,7 +292,7 @@ def test_grads_match_per_row(monkeypatch):
 
 
 def _vllm_rebuilt(model):
-    """What unsloth_zoo's vLLM rebuild (copy_attributes) leaves: each module owns a config deepcopy."""
+    # Mimics unsloth_zoo copy_attributes: per-module config deepcopy.
     from copy import deepcopy
     from transformers.configuration_utils import PretrainedConfig
 
@@ -305,7 +305,6 @@ def _vllm_rebuilt(model):
 
 
 def test_fast_inference_rebuilt_model_is_covered():
-    """fast_inference = True rebuilds the model from vLLM weights with per-module config copies."""
     model = _vllm_rebuilt(_model(_config()))
     attn = model.model.layers[0].self_attn
     assert attn.config is not model.config
