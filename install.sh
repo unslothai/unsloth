@@ -7025,8 +7025,10 @@ elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform "$TORCH_INDEX_UR
     _PRESERVE_TORCH_CONSTRAINT="${TORCH_CONSTRAINT%%,*},<${_MACOS_TORCH_CEILING}"
     if [ "$(printf '%s' "$PACKAGE_NAME" | tr '[:upper:]' '[:lower:]')" = "unsloth" ] \
        && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+       && [ "${_torch_index_pinned:-false}" = false ] \
        && [ "$(_macos_torch213_host_ok)" = "yes" ] \
        && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
+        # an index set with UNSLOTH_TORCH_INDEX_URL (a mirror or snapshot) may not carry 2.13: only the chosen one moves
         _MACOS_NEW_INSTALL_ROUTE=true
     fi
 fi

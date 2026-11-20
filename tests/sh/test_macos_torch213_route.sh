@@ -133,6 +133,9 @@ assert_eq "--package other than unsloth: fresh home keeps the old default" "torc
 MACOS_MAJOR=13; _run_block false ""; MACOS_MAJOR=15
 assert_eq "macOS 13 fresh home keeps the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
 assert_eq "macOS 13 still preserves a resident release" "torch>=2.6,<2.15.0" "$_PRESERVE_TORCH_CONSTRAINT"
+_torch_index_pinned=true; _run_block false ""; _torch_index_pinned=false
+assert_eq "a UNSLOTH_TORCH_INDEX_URL index (e.g. a /cpu snapshot mirror) keeps the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
+assert_eq "a pinned index still preserves a resident release" "torch>=2.6,<2.15.0" "$_PRESERVE_TORCH_CONSTRAINT"
 SKIP_TORCH=true; _run_block false ""; SKIP_TORCH=false
 assert_eq "--no-torch never takes the route" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
 _stub_python 3.9; _run_block false "" 2.4; _stub_python 3.13
