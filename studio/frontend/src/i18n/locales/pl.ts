@@ -812,6 +812,7 @@ export const pl = {
     failed:
       "Instalacja silnika nie powiodła się. Spróbuj ponownie lub użyj silnika domyślnego.",
     details: "Szczegóły techniczne",
+    lastAttempt: "Ostatnia próba: {time}",
     cancelled: "Anulowano instalację. Możesz spróbować ponownie.",
     scope:
       "Czat tekstowy i z obrazami na procesorach GPU NVIDIA. Pierwsze wczytanie może potrwać dłużej.",

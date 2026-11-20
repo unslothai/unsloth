@@ -768,6 +768,7 @@ export const sv = {
     failed:
       "Installationen av motorn misslyckades. Försök igen eller använd standardmotorn.",
     details: "Tekniska detaljer",
+    lastAttempt: "Senaste försök: {time}",
     cancelled: "Installationen avbröts. Du kan försöka igen.",
     scope:
       "Text- och bildchatt på NVIDIA-GPU:er. Första inläsningen kan ta längre tid.",
