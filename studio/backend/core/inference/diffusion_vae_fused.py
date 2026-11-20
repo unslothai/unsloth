@@ -53,7 +53,7 @@ def _toolchain_ok() -> bool:
 
 # Loop-bound args not specialized (avoids ~70 JIT variants); strides and C stay specialized so channel-contiguous loads vectorize.
 _SHAPE_ARGS = {
-    "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
+    "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache", "n_tail"),
     "_bias_residual": ("P", "T", "HW", "W"),
     "_dup_up_add": ("T_o", "H_o", "W_o", "t_off"),
     "_up_nearest2x": ("T_o", "H", "W"),
@@ -191,11 +191,12 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_rms_act"])
     def _rms_act(
-        x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr,
-        C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale, eps,
+        x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr, tail_ptr,
+        C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, n_tail, scale, eps,
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
         NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,  # NORM apply rms norm, ACT apply silu, HAS_BIAS bias present, HAS_IN_BIAS input bias present
-        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # REPLICATE replicate temporal padding, MEAN_SQ mean-square rms form, BLOCK_P pixels per program, BLOCK_C channels per program
+        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,  # REPLICATE replicate temporal padding, MEAN_SQ mean-square rms form, BLOCK_P pixels per program, BLOCK_C channels per program
+        SPAD: tl.constexpr  # SPAD spatial halo 0 none / 1 replicate / 2 zeros / 3 reflect; n_tail > 0 also stores the last n_tail frames' interior compactly
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -205,18 +206,42 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         pmask = p < Ho * Wo
         ho = p // Wo
         wo = p - ho * Wo
-        if REPLICATE:
+        inside = pmask
+        if SPAD == 1:
             hh = tl.minimum(tl.maximum(ho - ph, 0), H - 1)
             ww = tl.minimum(tl.maximum(wo - pw, 0), W - 1)
+        elif SPAD == 2:
+            hh = ho - ph
+            ww = wo - pw
+            inside = pmask & (hh >= 0) & (hh < H) & (ww >= 0) & (ww < W)
+            hh = tl.minimum(tl.maximum(hh, 0), H - 1)
+            ww = tl.minimum(tl.maximum(ww, 0), W - 1)
+        elif SPAD == 3:
+            hh = ho - ph
+            hh = tl.where(hh < 0, -hh, hh)
+            hh = tl.where(hh >= H, 2 * (H - 1) - hh, hh)
+            ww = wo - pw
+            ww = tl.where(ww < 0, -ww, ww)
+            ww = tl.where(ww >= W, 2 * (W - 1) - ww, ww)
         else:
             hh = ho
             ww = wo
         c = tl.arange(0, BLOCK_C)
         cmask = c < C
         m = pmask[:, None] & cmask[None, :]
+        mi = inside[:, None] & cmask[None, :]
         out_off = ((b.to(tl.int64) * To + t_o) * (Ho * Wo) + p.to(tl.int64))[:, None] * C + c[
             None, :
         ]
+        # runtime tail count (0 = all stores masked): one compiled kernel
+        if not REPLICATE:
+            t_tail = t_o - (To - n_tail)
+            tail_off = ((b.to(tl.int64) * n_tail + t_tail) * (H * W) + (hh * W + ww).to(tl.int64))[
+                :, None
+            ] * C + c[None, :]
+            tail_m = mi & (
+                t_tail >= 0
+            )  # SPAD 0 / 2 only (the causal path): ``mi`` is then the interior
         if (not REPLICATE) and t_o < front:
             tc = t_o - (front - n_cache)
             if tc >= 0:
@@ -227,13 +252,19 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                     + ww.to(tl.int64)[:, None] * cw
                     + c.to(tl.int64)[None, :] * cc
                 )
-                v = tl.load(cache_ptr + coff, mask = m, other = 0.0)
+                v = tl.load(cache_ptr + coff, mask = mi, other = 0.0)
                 tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
+                tl.store(tail_ptr + tail_off, v.to(tail_ptr.dtype.element_ty), mask = tail_m)
             else:
                 tl.store(
                     out_ptr + out_off,
                     tl.zeros([BLOCK_P, BLOCK_C], out_ptr.dtype.element_ty),
                     mask = m,
+                )
+                tl.store(
+                    tail_ptr + tail_off,
+                    tl.zeros([BLOCK_P, BLOCK_C], tail_ptr.dtype.element_ty),
+                    mask = tail_m,
                 )
         else:
             t = tl.minimum(tl.maximum(t_o - front, 0), T - 1)
@@ -244,10 +275,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 + ww.to(tl.int64)[:, None] * sw
                 + c.to(tl.int64)[None, :] * sc
             )
-            v = tl.load(x_ptr + off, mask = m, other = 0.0).to(tl.float32)
+            v = tl.load(x_ptr + off, mask = mi, other = 0.0).to(tl.float32)
             if HAS_IN_BIAS:
                 v = v + tl.load(ib_ptr + c, mask = cmask, other = 0.0).to(tl.float32)[None, :]
-                v = tl.where(m, v, 0.0)
+                v = tl.where(mi, v, 0.0)
             if NORM:
                 ss = tl.sum(v * v, axis = 1)
                 if MEAN_SQ:
@@ -262,7 +293,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                         v = v + tl.load(b_ptr + c, mask = cmask, other = 0.0).to(tl.float32)[None, :]
             if ACT:
                 v = v / (1.0 + tl.exp(-v))
+            if SPAD == 2:
+                v = tl.where(mi, v, 0.0)
             tl.store(out_ptr + out_off, v.to(out_ptr.dtype.element_ty), mask = m)
+            if not REPLICATE:
+                tl.store(tail_ptr + tail_off, v.to(tail_ptr.dtype.element_ty), mask = tail_m)
 
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_bias_residual"])
     def _bias_residual(
@@ -413,8 +448,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_up_nearest2x"])
     def _up_nearest2x(
-        x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
-        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # INTERLEAVE wan time_conv channel interleave, BLOCK_P pixels per program, BLOCK_C channels per program
+        x_ptr, out_ptr, b_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
+        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr, HAS_BIAS: tl.constexpr  # INTERLEAVE wan time_conv channel interleave, BLOCK_P pixels per program, BLOCK_C channels per program, HAS_BIAS the producing conv's deferred bias
     ):  # fmt: skip
         # INTERLEAVE: x is Wan time_conv output (B, 2C, T_o/2, H, W); frame 2t+j takes channels [jC, (j+1)C).
         pid_p = tl.program_id(0)
@@ -438,6 +473,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         x_off = (b.to(tl.int64) * xsb + ti.to(tl.int64) * xst
                  + ((ho // 2).to(tl.int64) * xsh + (wo // 2).to(tl.int64) * xsw)[:, None] + ch.to(tl.int64)[None, :] * xsc)  # fmt: skip
         v = tl.load(x_ptr + x_off, mask = m, other = 0.0)
+        if HAS_BIAS:
+            v = (
+                v.to(tl.float32) + tl.load(b_ptr + ch, mask = cm, other = 0.0).to(tl.float32)[None, :]
+            ).to(out_ptr.dtype.element_ty)
         o_off = (bt.to(tl.int64) * (4 * H * W) + p.to(tl.int64))[:, None] * C + c[None, :]
         tl.store(out_ptr + o_off, v, mask = m)
 
@@ -698,35 +737,53 @@ def rms_norm_act(
     in_bias: Any = None,
     replicate_pad: Optional[tuple] = None,
     back: int = 0,
+    zero_pad: Optional[tuple] = None,
+    reflect_pad: Optional[tuple] = None,
+    tail: int = 0,
 ) -> Any:
     """``cat([cache or zeros] -> front frames, silu?(rms_norm(x + in_bias)))`` along T, one channels-last_3d tensor.
 
     ``replicate_pad=(ph, pw)``: HunyuanVideo-1.5 replicate padding instead (``cache`` must be None); ``back`` repeats the
-    last frame (LTX-2)."""
+    last frame (LTX-2). ``reflect_pad=(ph, pw)``: LTX-2's reflect spatial halo with the replicated frames.
+    ``zero_pad=(ph, pw)``: the conv's zero halo written here (the conv then runs unpadded). ``tail=n``: also return the
+    last ``n`` frames' interior as a compact tensor (the next chunk's causal cache), ``(out, tail)``."""
     x, in_bias = _stock_in(x), _stock_in(in_bias)
     torch = _torch()
-    if replicate_pad is not None and cache is not None:
+    temporal_rep = replicate_pad is not None or reflect_pad is not None
+    if sum(p is not None for p in (replicate_pad, zero_pad, reflect_pad)) > 1:
+        raise ValueError("one spatial padding mode at a time")
+    if temporal_rep and cache is not None:
         raise ValueError("replicate padding takes no cache")
-    if back and replicate_pad is None:
+    if back and not temporal_rep:
         raise ValueError("back frames need replicate padding")
-    if not _rms_fusable(x, norm, cache):
-        y = rms_norm_reference(x, norm, act, in_bias)
-        if replicate_pad is not None:
-            import torch.nn.functional as F
+    if tail and temporal_rep:
+        raise ValueError("a compact tail is for the causal cache path")
+    b, c, t, h, w = x.shape if x.dim() == 5 else (0, 0, 0, 0, 0)
+    if not _rms_fusable(x, norm, cache) or (
+        reflect_pad is not None and (h <= reflect_pad[0] or w <= reflect_pad[1])
+    ):
+        import torch.nn.functional as F
 
-            ph, pw = replicate_pad
+        y = rms_norm_reference(x, norm, act, in_bias)
+        if temporal_rep:
+            ph, pw = replicate_pad if replicate_pad is not None else (0, 0)
             y = F.pad(y.float(), (pw, pw, ph, ph, front, back), mode = "replicate").to(y.dtype)
+            if reflect_pad is not None:
+                rh, rw = reflect_pad
+                y = F.pad(y, (rw, rw, rh, rh, 0, 0), mode = "reflect")
             return y.contiguous(memory_format = torch.channels_last_3d)
         if front:
-            import torch.nn.functional as F
-
             n_cache = 0
             if cache is not None:
                 cache = cache[:, :, -front:].to(y.dtype)
                 n_cache = cache.shape[2]
                 y = torch.cat([cache, y], dim = 2)
             y = F.pad(y, (0, 0, 0, 0, front - n_cache, 0))
-        return y.contiguous(memory_format = torch.channels_last_3d)
+        tail_t = y[:, :, -tail:].clone(memory_format = torch.channels_last_3d) if tail else None
+        if zero_pad is not None:
+            y = F.pad(y, (zero_pad[1], zero_pad[1], zero_pad[0], zero_pad[0], 0, 0))
+        y = y.contiguous(memory_format = torch.channels_last_3d)
+        return (y, tail_t) if tail else y
     k = _kernels()
     mean_sq = norm is not None and _is_pixel_norm(norm)
     if norm is not None and not mean_sq:
@@ -734,26 +791,37 @@ def rms_norm_act(
     else:
         gamma, bias, has_bias, scale = x, x, False, 1.0
     eps = float(getattr(norm, "eps", 0.0) or 0.0) if mean_sq else 0.0
-    b, c, t, h, w = x.shape
-    ph, pw = replicate_pad if replicate_pad is not None else (0, 0)
+    if replicate_pad is not None:
+        (ph, pw), spad = replicate_pad, 1
+    elif zero_pad is not None:
+        (ph, pw), spad = zero_pad, 2
+    elif reflect_pad is not None:
+        (ph, pw), spad = reflect_pad, 3
+    else:
+        (ph, pw), spad = (0, 0), 0
     ho, wo = h + 2 * ph, w + 2 * pw
     to = t + front + back
     n_cache = 0 if cache is None else min(front, cache.shape[2])
     cache_t = x if cache is None else cache[:, :, cache.shape[2] - n_cache :]
     out = torch.empty((b, to, ho, wo, c), dtype = x.dtype, device = x.device)
+    n_tail = min(int(tail), to) if tail else 0
+    tail_buf = torch.empty((b, n_tail, h, w, c), dtype = x.dtype, device = x.device) if n_tail else out
     block_c = _next_pow2(c)
     block_p = max(1, min(128, 8192 // block_c))
     grid = ((ho * wo + block_p - 1) // block_p, b * to)
     with _on_card(x):
         k.rms_act[grid](
-            x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
-            c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale, eps,
+            x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t, tail_buf,
+            c, t, h, w, ho, wo, ph, pw, to, front, n_cache, n_tail, scale, eps,
             *x.stride(), *cache_t.stride(),
             NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
-            REPLICATE = replicate_pad is not None, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
-            num_warps = 4 if block_c * block_p <= 4096 else 8,
+            REPLICATE = temporal_rep, MEAN_SQ = mean_sq, BLOCK_P = block_p, BLOCK_C = block_c,
+            SPAD = spad, num_warps = 4 if block_c * block_p <= 4096 else 8,
         )  # fmt: skip
-    return out.permute(0, 4, 1, 2, 3)
+    out = out.permute(0, 4, 1, 2, 3)
+    if tail:
+        return out, tail_buf.permute(0, 4, 1, 2, 3)
+    return out
 
 
 def _conv_kind(conv: Any) -> Optional[str]:
@@ -779,6 +847,75 @@ def _conv_kind(conv: Any) -> Optional[str]:
     return None
 
 
+# Video causal-conv kill switches, read per call.
+CAUSAL_TAIL_ENV = "UNSLOTH_VAE_FUSED_CAUSAL_TAIL"
+PREPAD_ENV = "UNSLOTH_VAE_FUSED_PREPAD"
+T1_CONV2D_ENV = "UNSLOTH_VAE_FUSED_T1_CONV2D"
+LTX2_REFLECT_ENV = "UNSLOTH_VAE_FUSED_LTX2_REFLECT"
+BIAS_FOLD_ENV = "UNSLOTH_VAE_FUSED_BIAS_FOLD"
+# Decode A/B (RTX PRO 6000 / A100): PREPAD and T1_CONV2D measured inside the A/A spread, so opt-in.
+_LEVER_DEFAULTS = {
+    CAUSAL_TAIL_ENV: True,
+    PREPAD_ENV: False,
+    T1_CONV2D_ENV: False,
+    LTX2_REFLECT_ENV: True,
+    BIAS_FOLD_ENV: True,
+}
+# Per-lever engagement counts (a silent fallback shows as 0).
+ENGAGED: dict = {}
+
+
+def lever_on(env: str) -> bool:
+    raw = os.environ.get(env, "").strip().lower()
+    if not raw:
+        return _LEVER_DEFAULTS.get(env, False)
+    return raw not in _FALSE
+
+
+def _count(name: str) -> None:
+    if not _torch().compiler.is_compiling():
+        ENGAGED[name] = ENGAGED.get(name, 0) + 1
+
+
+def conv_frames(
+    y: Any, weight: Any, bias: Any, stride: tuple, padding: tuple, dilation: tuple
+) -> Any:
+    """A temporal-kernel-1 conv3d as one conv2d over B*T channels-last frames, or None."""
+    import torch.nn.functional as F
+
+    if (
+        y.dim() != 5
+        or weight.dim() != 5
+        or weight.shape[2] != 1
+        or stride[0] != 1
+        or not _cl_contig(y)
+        or not lever_on(T1_CONV2D_ENV)
+    ):
+        return None
+    w4 = weight[:, :, 0]
+    if not w4.is_contiguous(memory_format = _torch().channels_last):
+        return None  # a strided weight view is re-laid-out by cuDNN on every call
+    b, c, t, h, w = y.shape
+    y4 = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    out = F.conv2d(y4, w4, bias, tuple(stride[1:]), tuple(padding[1:]), tuple(dilation[1:]))
+    _count("t1_conv2d")
+    return out.reshape(b, t, *out.shape[1:]).permute(0, 2, 1, 3, 4)
+
+
+def conv3d_t1(
+    conv: Any,
+    x: Any,
+    bias: Any = None,
+) -> Any:
+    """``F.conv3d(x, conv.weight, bias, conv.stride, conv.padding)``, as a frame-batched conv2d where it is one."""
+    import torch.nn.functional as F
+
+    out = conv_frames(x, conv.weight, bias, conv.stride, conv.padding, conv.dilation)
+    if out is None:
+        out = F.conv3d(x, conv.weight, bias, conv.stride, conv.padding, conv.dilation)
+    return out
+
+
 def causal_conv(
     conv: Any,
     x: Any,
@@ -791,19 +928,17 @@ def causal_conv(
 ) -> tuple:
     """Wan-lineage causal conv of ``silu?(rms?(x + in_bias))``; returns (out, new_cache).
 
-    ``new_cache`` is a compact copy so the cache never pins the whole input."""
+    ``new_cache`` is a compact copy so the cache never pins the whole input: with the tail lever the norm pass writes
+    it beside the conv input (no second read of the conv input)."""
     import torch.nn.functional as F
 
     kind = _conv_kind(conv)
     bias = conv.bias if with_bias else None
+    plain = norm is None and not act and in_bias is None
     if kind == "2d":  # Qwen-Image-2.1: the one-frame specialisation, never cached
         if cache is not None:
             raise ValueError("2D causal conv takes no cache")
-        y = (
-            x
-            if (norm is None and not act and in_bias is None)
-            else rms_norm_act(x, norm, act, in_bias = in_bias)
-        )
+        y = x if plain else rms_norm_act(x, norm, act, in_bias = in_bias)
         pw, _, ph, _ = conv._padding
         out = F.conv2d(y[:, :, 0], conv.weight, bias, conv.stride, (ph, pw), conv.dilation)
         return out.unsqueeze(2), None
@@ -813,13 +948,22 @@ def causal_conv(
     kt = conv.kernel_size[0]
     spatial = (0, ph, pw)
     t = x.shape[2]
+    prepad = bool(ph or pw) and lever_on(PREPAD_ENV)
+    zero_pad = (ph, pw) if prepad else None
+    conv_pad = (0, 0, 0) if prepad else spatial
     if front == 0:
-        y = (
-            x
-            if (norm is None and not act and in_bias is None)
-            else rms_norm_act(x, norm, act, in_bias = in_bias)
+        if plain and not prepad:
+            y = x
+        else:
+            y = rms_norm_act(x, norm, act, in_bias = in_bias, zero_pad = zero_pad)
+        out = (
+            conv_frames(y, conv.weight, bias, conv.stride, conv_pad, conv.dilation)
+            if kt == 1
+            else None
         )
-        return F.conv3d(y, conv.weight, bias, conv.stride, spatial, conv.dilation), None
+        if out is None:
+            out = F.conv3d(y, conv.weight, bias, conv.stride, conv_pad, conv.dilation)
+        return out, None
     if (
         cache is None
         and t == 1
@@ -827,13 +971,21 @@ def causal_conv(
         and conv.stride[0] == 1
         and conv.dilation[0] == 1
     ):
-        y = rms_norm_act(x, norm, act, in_bias = in_bias)
-        weight = conv.weight[:, :, -1:]
-        return F.conv3d(y, weight, bias, conv.stride, spatial, conv.dilation), y
-    p = rms_norm_act(x, norm, act, front = front, cache = cache, in_bias = in_bias)
-    out = F.conv3d(p, conv.weight, bias, conv.stride, spatial, conv.dilation)
+        # not conv2d: the strided last-tap slice measured 2.3x slower on Qwen-Image
+        y = rms_norm_act(x, norm, act, in_bias = in_bias)  # also the cache: stays unpadded
+        return F.conv3d(y, conv.weight[:, :, -1:], bias, conv.stride, spatial, conv.dilation), y
+    if lever_on(CAUSAL_TAIL_ENV):
+        p, new_cache = rms_norm_act(
+            x, norm, act, front = front, cache = cache, in_bias = in_bias, zero_pad = zero_pad, tail = 2
+        )
+        _count("causal_tail")
+        return F.conv3d(p, conv.weight, bias, conv.stride, conv_pad, conv.dilation), new_cache
+    p = rms_norm_act(x, norm, act, front = front, cache = cache, in_bias = in_bias, zero_pad = zero_pad)
+    out = F.conv3d(p, conv.weight, bias, conv.stride, conv_pad, conv.dilation)
     new_cache = p[:, :, -2:]
-    return out, (new_cache if p.shape[2] <= 2 else new_cache.clone())
+    if prepad:
+        new_cache = new_cache[:, :, :, ph : p.shape[3] - ph, pw : p.shape[4] - pw]
+    return out, (new_cache if (p.shape[2] <= 2 and not prepad) else new_cache.clone())
 
 
 # Single-head VAE attention: head_dim > 256 has no flash / cuDNN kernel, so two GEMMs + fp32 softmax beat SDPA.
@@ -1118,6 +1270,55 @@ def _fast_resnet2d(block: Any) -> Any:
     return fast
 
 
+# Upsample2D (nearest 2x, then its 3x3 conv) with the 2x map written by the channels-last Triton copy instead of
+# upsample_nearest2d: bit-identical, same peak. ``0`` keeps diffusers' interpolate.
+FUSED_UPSAMPLE_ENV = "UNSLOTH_VAE_FUSED_UPSAMPLE"
+
+
+def fused_upsample_disabled() -> bool:
+    return os.environ.get(FUSED_UPSAMPLE_ENV, "").strip().lower() in _FALSE
+
+
+def _upsample2d_fusable(up: Any) -> bool:
+    torch = _torch()
+    return (
+        type(up).__name__ == "Upsample2D"
+        and getattr(up, "use_conv", False)
+        and not getattr(up, "use_conv_transpose", False)
+        and getattr(up, "interpolate", True)
+        and getattr(up, "norm", None) is None
+        and getattr(up, "name", "conv") == "conv"
+        and isinstance(getattr(up, "conv", None), torch.nn.Conv2d)
+    )
+
+
+def _fast_upsample2d(up: Any) -> Any:
+    def fast(
+        hidden_states: Any,
+        output_size: Any = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        x = hidden_states
+        if (
+            output_size is not None
+            or args
+            or kwargs
+            or fused_upsample_disabled()
+            or not getattr(x, "is_cuda", False)
+            or x.dim() != 4
+            or x.dtype not in (_torch().float16, _torch().bfloat16, _torch().float32)
+            or x.shape[1] != up.channels
+            # interpolate keeps a contiguous map contiguous (fp32 VAEs): only a channels-last one takes the copy
+            or not x.is_contiguous(memory_format = _torch().channels_last)
+        ):
+            return _stock_forward(up)(hidden_states, output_size, *args, **kwargs)
+        y, _ = up_nearest2x(x.unsqueeze(2), False)
+        return up.conv(y)
+
+    return fast
+
+
 def _fast_norm(norm: Any, act: bool) -> Any:
     def fast(x: Any) -> Any:
         return group_norm_act(x, norm, act = act)
@@ -1161,6 +1362,15 @@ def install_group_norm_vae(
             if type(module).__name__ == "ResnetBlock2D" and _resnet2d_fusable(module):
                 _guard(
                     module, _fast_resnet2d(module), _stock_forward(module), "ResnetBlock2D", logger
+                )
+                n += 1
+            elif (
+                part_name == "decoder"
+                and not fused_upsample_disabled()
+                and _upsample2d_fusable(module)
+            ):
+                _guard(
+                    module, _fast_upsample2d(module), _stock_forward(module), "Upsample2D", logger
                 )
                 n += 1
         for module in part.modules():
@@ -1250,12 +1460,16 @@ def _fast_wan_resblock(block: Any) -> Any:
                 x, feat_cache, feat_idx if feat_idx is not None else [0], *args, **kwargs
             )
         sc = block.conv_shortcut
+        h_bias = None
         if isinstance(sc, _torch().nn.Identity):
             h = x
         elif _conv_kind(sc) == "2d":
             h = F.conv2d(x[:, :, 0], sc.weight, sc.bias, sc.stride, 0).unsqueeze(2)
         else:
-            h = F.conv3d(x, sc.weight, sc.bias, sc.stride)
+            if sc.bias is not None and lever_on(BIAS_FOLD_ENV):
+                h_bias = sc.bias
+                _count("bias_fold")
+            h = conv3d_t1(sc, x, None if h_bias is not None else sc.bias)
         if feat_cache is not None:
             idx = feat_idx[0]
             out, new = causal_conv(
@@ -1281,7 +1495,7 @@ def _fast_wan_resblock(block: Any) -> Any:
                 in_bias = block.conv1.bias,
                 with_bias = False,
             )
-        return add_bias_residual(out, block.conv2.bias, h)
+        return add_bias_residual(out, block.conv2.bias, h, h_bias)
 
     return fast
 
@@ -1325,8 +1539,13 @@ def dup_up_add(out: Any, x: Any, dup: Any, first_chunk: bool) -> Any:
     return out
 
 
-def up_nearest2x(x: Any, interleave: bool) -> Any:
-    """Channels-last nearest 2x upsample; ``interleave`` also does Wan's time_conv frame interleave."""
+def up_nearest2x(
+    x: Any,
+    interleave: bool,
+    bias: Any = None,
+) -> Any:
+    """Channels-last nearest 2x upsample; ``interleave`` also does Wan's time_conv frame interleave; ``bias`` (per
+    input channel) is the producing conv's deferred bias."""
     torch = _torch()
     k = _kernels()
     b, c2, t, h, w = x.shape
@@ -1340,6 +1559,7 @@ def up_nearest2x(x: Any, interleave: bool) -> Any:
         k.up_nearest2x[grid](
             x,
             out,
+            bias if bias is not None else x,
             c,
             t_o,
             h,
@@ -1348,6 +1568,7 @@ def up_nearest2x(x: Any, interleave: bool) -> Any:
             INTERLEAVE = interleave,
             BLOCK_P = block_p,
             BLOCK_C = block_c,
+            HAS_BIAS = bias is not None,
             num_warps = 4,
         )
     return out.permute(0, 3, 1, 2), t_o
@@ -1367,6 +1588,7 @@ def _fast_wan_resample(mod: Any) -> Any:
             feat_idx = [0]
         b = x.shape[0]
         interleave = False
+        t_bias = None
         y = x
         if mod.mode == "upsample3d" and feat_cache is not None:
             idx = feat_idx[0]
@@ -1374,11 +1596,15 @@ def _fast_wan_resample(mod: Any) -> Any:
                 feat_cache[idx] = "Rep"
             else:
                 prev = None if isinstance(feat_cache[idx], str) else feat_cache[idx]
-                y, new = causal_conv(mod.time_conv, x, prev)
+                fold = lever_on(BIAS_FOLD_ENV) and mod.time_conv.bias is not None
+                y, new = causal_conv(mod.time_conv, x, prev, with_bias = not fold)
+                if fold:
+                    t_bias = mod.time_conv.bias
+                    _count("bias_fold")
                 feat_cache[idx] = new
                 interleave = True
             feat_idx[0] += 1
-        up, t_o = up_nearest2x(y, interleave)
+        up, t_o = up_nearest2x(y, interleave, t_bias)
         out = F.conv2d(up, conv.weight, conv.bias, conv.stride, conv.padding)
         return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(0, 2, 1, 3, 4)
 
@@ -1599,6 +1825,135 @@ def _accepts_first_chunk(decoder: Any) -> bool:
         return False
 
 
+def _cat_format(t: Any) -> Any:
+    """The memory format ``torch.cat`` gives a result built from tensors laid out like ``t``."""
+    torch = _torch()
+    if (
+        t.dim() == 5
+        and not t.is_contiguous()
+        and t.is_contiguous(memory_format = torch.channels_last_3d)
+    ):
+        return torch.channels_last_3d
+    return torch.contiguous_format
+
+
+class _FrameSink:
+    """``torch.cat(frames, dim = 2)`` without every frame and the result alive at once: from the second chunk on, the
+    output is one buffer sized as the first chunk's frames plus the second's for every later chunk (Wan: 1 + 4 per
+    latent frame), and each chunk is copied in as it arrives. A chunk of another size falls back to the cat."""
+
+    def __init__(self, chunks: int) -> None:
+        self.chunks = chunks
+        self.parts: list = []
+        self.buf = None
+        self.filled = 0
+        self.step = 0
+
+    def add(self, frame: Any) -> None:
+        torch = _torch()
+        if self.buf is None and len(self.parts) == 1 and self.chunks > 2:
+            first = self.parts[0]
+            shape = list(first.shape)
+            if (
+                frame.dim() == first.dim() == 5
+                and frame.dtype == first.dtype
+                and frame.device == first.device
+                and list(frame.shape[:2]) == shape[:2]
+                and list(frame.shape[3:]) == shape[3:]
+            ):
+                self.step = frame.shape[2]
+                shape[2] = first.shape[2] + self.step * (self.chunks - 1)
+                self.buf = torch.empty(
+                    shape, dtype = first.dtype, device = first.device, memory_format = _cat_format(first)
+                )
+                self.buf[:, :, : first.shape[2]].copy_(first)
+                self.filled = first.shape[2]
+                self.parts = []
+        if self.buf is not None and not self.parts:
+            end = self.filled + frame.shape[2]
+            if (
+                frame.shape[2] == self.step
+                and end <= self.buf.shape[2]
+                and frame.dtype == self.buf.dtype
+                and frame.shape[:2] == self.buf.shape[:2]
+                and frame.shape[3:] == self.buf.shape[3:]
+            ):
+                self.buf[:, :, self.filled : end].copy_(frame)
+                self.filled = end
+                return
+            # an unexpected chunk size: the written prefix and the rest are concatenated as before
+            self.parts = [self.buf[:, :, : self.filled]]
+        self.parts.append(frame)
+
+    def result(self) -> Any:
+        torch = _torch()
+        if self.buf is not None and not self.parts:
+            return self.buf if self.filled == self.buf.shape[2] else self.buf[:, :, : self.filled]
+        out = torch.cat(self.parts, dim = 2)
+        self.parts = []
+        self.buf = None
+        return out
+
+
+def _assemble_tiles(
+    rows: list,
+    blend_h: int,
+    blend_w: int,
+    out_sh: int,
+    out_sw: int,
+    sample_height: int,
+    sample_width: int,
+    patch: Optional[int],
+) -> Any:
+    """Stock ``tiled_decode``'s blend + crop + ``torch.cat`` of rows and columns + ``[:sample_height, :sample_width]``
+    (+ ``unpatchify``), written into one preallocated output: each tile is blended exactly as stock (the tile above
+    and the tile to the left, both already blended), its crop is copied to its place (unpatchified on the way), and a
+    row's tiles are dropped once the next row has blended against them. Bit-identical; peak is the output plus the
+    tiles still needed instead of the tiles plus the row cat plus the full cat (plus the unpatchify copy)."""
+    torch = _torch()
+    p = int(patch) if patch is not None else 1
+    first = rows[0][0]
+    # crop extents, as stock's tile[:, :, :, :out_sh, :out_sw]
+    hs = [min(r[0].shape[-2], out_sh) for r in rows]
+    ws = [min(t.shape[-1], out_sw) for t in rows[0]]
+    full_h, full_w = min(sum(hs), sample_height), min(sum(ws), sample_width)
+    b, c, f = first.shape[0], first.shape[1], first.shape[2]
+    if p > 1:
+        shape = (b, c // (p * p), f, full_h * p, full_w * p)
+    else:
+        shape = (b, c, f, full_h, full_w)
+    # stock's unpatchify ends in .contiguous(); without a patch the layout is the cat's
+    fmt = torch.contiguous_format if p > 1 else _cat_format(first)
+    out = torch.empty(shape, dtype = first.dtype, device = first.device, memory_format = fmt)
+    y = 0
+    for ri, row in enumerate(rows):
+        x = 0
+        for ci, tile in enumerate(row):
+            if ri > 0:
+                tile = blend_seam(rows[ri - 1][ci], tile, blend_h, -2)
+            if ci > 0:
+                tile = blend_seam(row[ci - 1], tile, blend_w, -1)
+            row[ci] = tile
+            th = min(hs[ri], full_h - y)
+            tw = min(min(tile.shape[-1], out_sw), full_w - x)
+            if th > 0 and tw > 0:
+                crop = tile[:, :, :, :th, :tw]
+                if p > 1:
+                    from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
+                    out[:, :, :, y * p : (y + th) * p, x * p : (x + tw) * p].copy_(
+                        unpatchify(crop, patch_size = p)
+                    )
+                else:
+                    out[:, :, :, y : y + th, x : x + tw].copy_(crop)
+            x += min(tile.shape[-1], out_sw)
+        if ri > 0:
+            rows[ri - 1] = (
+                None  # its bottom band is no longer read: free it (and its batch, once all views go)
+            )
+        y += hs[ri]
+    return out
+
+
 def _wan_batched_tiled_decode(
     self: Any,
     z: Any,
@@ -1637,15 +1992,14 @@ def _wan_batched_tiled_decode(
     def decode_tiles(chunk: list) -> Any:
         zt = torch.cat([z[:, :, :, i : i + tmh, j : j + tmw] for i, j in chunk], 0)
         self.clear_cache()
-        frames = []
+        frames = _FrameSink(num_frames)
         for k in range(num_frames):
             self._conv_idx = [0]
             tile = self.post_quant_conv(zt[:, :, k : k + 1])
             kw = {"first_chunk": k == 0} if first_chunk else {}
-            frames.append(
-                self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw)
-            )
-        return torch.cat(frames, dim = 2)
+            frames.add(self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw))
+            del tile
+        return frames.result()
 
     for members in groups.values():
         s = 0
@@ -1662,25 +2016,15 @@ def _wan_batched_tiled_decode(
                 continue
             for n, key in enumerate(chunk):
                 tiles[key] = out[n : n + 1]
+            del out
             s += len(chunk)
     self.clear_cache()
-    rows = [[tiles[(i, j)] for j in cols_j] for i in rows_i]
-    result_rows = []
-    for ri, row in enumerate(rows):
-        result_row = []
-        for ci, tile in enumerate(row):
-            if ri > 0:
-                tile = blend_seam(rows[ri - 1][ci], tile, blend_h, -2)
-            if ci > 0:
-                tile = blend_seam(row[ci - 1], tile, blend_w, -1)
-            result_row.append(tile[:, :, :, :out_sh, :out_sw])
-        result_rows.append(torch.cat(result_row, dim = -1))
-    dec = torch.cat(result_rows, dim = 3)[:, :, :, :sample_height, :sample_width]
-    if patch is not None:
-        from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
-        dec = unpatchify(dec, patch_size = patch)
+    rows = [[tiles.pop((i, j)) for j in cols_j] for i in rows_i]
+    dec = _assemble_tiles(
+        rows, blend_h, blend_w, out_sh, out_sw, sample_height, sample_width, patch
+    )
     if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
-        dec = torch.clamp(dec, min = -1.0, max = 1.0)
+        dec.clamp_(min = -1.0, max = 1.0)  # dec is this decode's own buffer: in place, one copy less
     if not return_dict:
         return (dec,)
     return DecoderOutput(sample = dec)
@@ -1803,8 +2147,9 @@ def _fast_hv_resnet(block: Any) -> Any:
             with_bias = False,
         )
         sc = block.conv_shortcut
-        res = x if sc is None else F.conv3d(x, sc.weight, sc.bias, sc.stride, sc.padding)
-        return add_bias_residual(h, block.conv2.conv.bias, res)
+        fold = sc is not None and sc.bias is not None and lever_on(BIAS_FOLD_ENV)
+        res = x if sc is None else conv3d_t1(sc, x, None if fold else sc.bias)
+        return add_bias_residual(h, block.conv2.conv.bias, res, sc.bias if fold else None)
 
     return fast
 
@@ -1943,7 +2288,10 @@ def _ltx_conv_ok(conv: Any) -> bool:
     inner = getattr(conv, "conv", None)
     return (
         isinstance(inner, torch.nn.Conv3d)
-        and inner.padding_mode == "zeros"
+        and (
+            inner.padding_mode == "zeros"
+            or (inner.padding_mode == "reflect" and lever_on(LTX2_REFLECT_ENV))
+        )
         and inner.padding[0] == 0
         and inner.stride[0] == 1
         and inner.dilation[0] == 1
@@ -1968,20 +2316,29 @@ def ltx_conv(
     kt = conv.kernel_size[0]
     front, back = (kt - 1, 0) if causal else ((kt - 1) // 2, (kt - 1) // 2)
     inner = conv.conv
-    if kt == 1 and norm is None and not act and in_bias is None:
+    conv_pad = inner.padding
+    if inner.padding_mode == "reflect":
+        y = rms_norm_act(
+            x, norm, act, front = front, back = back, in_bias = in_bias,
+            reflect_pad = (inner.padding[1], inner.padding[2]),
+        )  # fmt: skip
+        conv_pad = (0, 0, 0)
+        _count("ltx2_reflect")
+    elif kt == 1 and norm is None and not act and in_bias is None:
         y = x
     else:
         y = rms_norm_act(
             x, norm, act, front = front, back = back, in_bias = in_bias, replicate_pad = (0, 0)
         )
-    return F.conv3d(
-        y,
-        inner.weight,
-        inner.bias if with_bias else None,
-        inner.stride,
-        inner.padding,
-        inner.dilation,
+    bias = inner.bias if with_bias else None
+    out = (
+        conv_frames(y, inner.weight, bias, inner.stride, conv_pad, inner.dilation)
+        if kt == 1
+        else None
     )
+    if out is None:
+        out = F.conv3d(y, inner.weight, bias, inner.stride, conv_pad, inner.dilation)
+    return out
 
 
 def _ltx_resnet_ok(block: Any) -> bool:
@@ -2021,10 +2378,13 @@ def _fast_ltx_resnet(block: Any) -> Any:
         res = inputs
         if block.norm3 is not None:
             res = block.norm3(res.movedim(1, -1)).movedim(-1, 1)
+        res_bias = None
         if block.conv_shortcut is not None:
             sc = block.conv_shortcut
-            res = F.conv3d(res, sc.weight, sc.bias, sc.stride, sc.padding)
-        return add_bias_residual(h, block.conv2.conv.bias, res)
+            fold = sc.bias is not None and lever_on(BIAS_FOLD_ENV)
+            res = conv3d_t1(sc, res, None if fold else sc.bias)
+            res_bias = sc.bias if fold else None
+        return add_bias_residual(h, block.conv2.conv.bias, res, res_bias)
 
     return fast
 
@@ -2046,7 +2406,7 @@ def _fast_pixel_norm_act(norm: Any) -> Any:
 
 
 def _ltx2_convs_fusable(vae: Any) -> bool:
-    """LTX-2's reflect-padded decoder fuses no conv: norm_out alone decoded 0.97-0.98x (L4 / A100 / RTX PRO 6000)."""
+    """Reflect-padded LTX-2 fuses only with the reflect halo pass: norm_out alone decoded 0.97-0.98x."""
     decoder = getattr(vae, "decoder", None)
     return decoder is not None and any(
         type(m).__name__ == "LTX2VideoCausalConv3d" and _ltx_conv_ok(m) for m in decoder.modules()

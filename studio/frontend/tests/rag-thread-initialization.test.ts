@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as sourceFolderCopy from "../src/features/rag/components/source-folder-copy.ts";
 import {
   loadWithStubs,
   stubJsxRuntime,
@@ -252,6 +253,7 @@ function harness(
         groupByLinkedFolder: (docs: unknown[]) => ({ loose: docs, folders: [] }),
         useLinkedFolderNames: () => new Map(),
       },
+      "./source-folder-copy": sourceFolderCopy,
       "./document-status-chip": {},
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
       "./source-file": {

@@ -50,13 +50,10 @@ def api(
 
 
 def open_login(page: Page) -> None:
-    """After a log-out the open chat page's requests start failing with 401 and the app sends itself to
-    /login (redirectToAuth), which can abort this navigation with ERR_ABORTED. When that redirect has
-    already loaded /login, use it instead of navigating again; otherwise retry the abort once.
-
-    On CI this navigation has also timed out once in a while after the server answered /login: one of
-    the page's requests never finished, so "load" never fired. Record which requests were still open,
-    then retry once. Aborts and timeouts each get one retry, so an abort cannot use up the timeout's."""
+    """After a log-out the redirect to /login (redirectToAuth) can abort this navigation with
+    ERR_ABORTED: reuse /login if it already loaded, else retry once; a CI timeout (a request
+    never finishes) records the open requests before retrying; aborts and timeouts each get one
+    retry, so neither uses up the other's."""
     url = f"{BASE_URL}/login"
     aborts = timeouts = 0
     while True:

@@ -1327,9 +1327,11 @@ def load_ltx23_transformer(
     if is_gguf:
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()
         install_exact_dequant()
+        install_gguf_mmap()
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
         # Else the meta load copies every tensor back to the host.
@@ -1635,9 +1637,11 @@ def _assemble_ltx23_pipeline(
         if is_gguf:
             from .diffusion_gguf_exact import install_exact_dequant
             from .diffusion_gguf_lowbit import install_lowbit_iq
+            from .diffusion_gguf_mmap import install_gguf_mmap
 
             install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
             install_exact_dequant()
+            install_gguf_mmap()
         state = load_single_file_checkpoint(str(checkpoint_path))
     groups = _split_checkpoint(state)
     del state

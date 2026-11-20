@@ -95,12 +95,12 @@ import {
   type NpuModel,
   type NpuPickerSource,
   NpuSetupNotice,
+  npuDeleteDescription,
   npuDisplayName,
   npuDownloadLabel,
-  npuMemoryTag,
-  npuResumeLabel,
+  npuRowDetails,
   npuRowsFor,
-  npuSizeLabel,
+  npuRowTooltip,
   useNpuCatalog,
 } from "@/features/npu";
 import {
@@ -601,7 +601,7 @@ export function ListLabel({
           tabIndex={-1}
           onClick={onToggle}
           aria-expanded={!collapsed}
-          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground max-md:flex-1 max-md:self-stretch"
         >
           {icon}
           {children}
@@ -613,14 +613,14 @@ export function ListLabel({
         </span>
       )}
       {(action || onToggle) && (
-        <div className="flex items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-0.5">
           {action}
           {onToggle && (
             <button
               type="button"
               onClick={onToggle}
               aria-label={collapsed ? "Expand section" : "Collapse section"}
-              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground max-md:-my-1.5 max-md:p-2.5"
             >
               {collapsed ? (
                 <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
@@ -1152,7 +1152,7 @@ const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 
 // Same box as ModelLoadSettingsAction, so heading and row buttons align.
 const HEADING_ACTION_CLASS =
-  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
+  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] max-md:-my-1.5 max-md:size-8";
 
 function ConnectedGroupHeading({
   icon,
@@ -2281,7 +2281,7 @@ const DownloadedGgufDeviceRow = memo(function DownloadedGgufDeviceRow({
         ) : (
           // No chevron until the probe rules out a sole quant. The gutter is a mouse target (the row
           // has the keyboard); pr-2.5 is the heading chevron's column.
-          <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6")}>
+          <span className={cn(ROW_ACTIONS_PINNED_CLASS, "h-6 max-md:h-auto max-md:self-stretch")}>
             {soleQuantPending ? null : (
               <button
                 type="button"
@@ -2392,7 +2392,8 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
         <span className={ROW_ACTIONS_CLASS}>
           <ModelRowMenu
             ariaLabel={`More options for ${name}`}
-            onReveal={() => revealLocalModel(m.path, m.id)}
+            // The local reveal route lists no hf_cache rows.
+            onReveal={m.source === "hf_cache" ? undefined : () => revealLocalModel(m.path, m.id)}
             del={
               DELETABLE_LOCAL_SOURCES.has(m.source)
                 ? {
@@ -3691,6 +3692,7 @@ function sortLocalModels(
 }
 
 function localModelIsGguf(m: LocalModelInfo): boolean {
+  if (m.source === "hf_cache") return m.model_format === "gguf";
   return (
     m.model_format === "gguf" ||
     isGgufRepo(m.id) ||
@@ -4214,7 +4216,10 @@ export function HubModelPicker({
     [pickerInventory.localModels],
   );
   const localDirModels = useMemo(
-    () => pickerInventory.localModels.filter((m) => m.source === "models_dir"),
+    () =>
+      pickerInventory.localModels.filter(
+        (m) => m.source === "models_dir" || m.source === "hf_cache",
+      ),
     [pickerInventory.localModels],
   );
   // Ollama rows list alongside custom folders: both are user-managed stores outside ./models,
@@ -4639,7 +4644,7 @@ export function HubModelPicker({
       // Downloaded weights keep their row.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
-      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
+      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass, hit.group) : true;
     },
     [catalog, downloadedSet, hostClass],
   );
@@ -7691,12 +7696,8 @@ export function HubModelPicker({
     const reconnecting = model.id in npuCatalog.reconnecting;
     const name = npuDisplayName(model);
     const phase = npuCatalog.phases[model.id];
-    const details = [
-      "NPU",
-      npuSizeLabel(model.size_gb),
-      npuMemoryTag(model),
-      npuResumeLabel(model),
-    ].filter(Boolean);
+    const details = npuRowDetails(model);
+    const problem = model.local?.problem ?? null;
     const meta = {
       source: "local",
       isLora: false,
@@ -7706,6 +7707,7 @@ export function HubModelPicker({
     const row = (
       <ModelRow
         label={name}
+        tooltipText={npuRowTooltip(model) ?? undefined}
         meta={
           downloading
             ? `NPU · ${npuDownloadLabel(progress, reconnecting, phase)}`
@@ -7725,6 +7727,12 @@ export function HubModelPicker({
         optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
         onClick={() => {
           if (downloading) return;
+          if (problem) {
+            toast.error("Can't load this model on the NPU", {
+              description: problem,
+            });
+            return;
+          }
           if (model.downloaded) {
             npuCatalog.warnMemory(model);
             pick();
@@ -7750,7 +7758,7 @@ export function HubModelPicker({
       isVision: model.supports_vision,
     };
     const settings =
-      onConfigure && model.downloaded && !downloading ? (
+      onConfigure && model.downloaded && !downloading && !problem ? (
         <ModelLoadSettingsAction
           ariaLabel={`Inference settings for ${name}`}
           onConfigure={() => onConfigure(model.model_path, configMeta)}
@@ -7770,7 +7778,7 @@ export function HubModelPicker({
             <ModelDeleteAction
               ariaLabel={`Delete ${name}`}
               title={`Delete ${name}?`}
-              description="This removes the model's NPU files from this device."
+              description={npuDeleteDescription(model)}
               successMessage={`Deleted ${name}`}
               disabled={isLoaded}
               onConfirm={() => npuCatalog.remove(model)}
@@ -8240,7 +8248,7 @@ export function HubModelPicker({
                           }
                           title={fineTunedCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setFineTunedCollapsed((v) => !v)}
-                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground max-md:-my-1.5 max-md:p-2.5"
                         >
                           {fineTunedCollapsed ? (
                             <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
@@ -8337,7 +8345,7 @@ export function HubModelPicker({
                           }
                           title={customFoldersCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setCustomFoldersCollapsed((v) => !v)}
-                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground max-md:-my-1.5 max-md:p-2.5"
                         >
                           {customFoldersCollapsed ? (
                             <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
@@ -8501,9 +8509,10 @@ export function HubModelPicker({
                         renderLocalDeviceRow(
                           m,
                           "custom-folder",
-                          // An Ollama manifest names one blob, so it loads directly.
+                          // An Ollama GGUF manifest names one blob, so it loads directly.
                           m.path.toLowerCase().endsWith(".gguf") ||
-                            m.source === "ollama",
+                            (m.source === "ollama" &&
+                              m.model_format !== "safetensors"),
                         ),
                       )}
                     {!customFoldersCollapsed &&

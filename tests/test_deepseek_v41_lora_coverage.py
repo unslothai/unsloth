@@ -131,8 +131,7 @@ def test_deepseek_v41_compiles_only_with_a_compile_safe_checkpoint():
     )
     assert branch
     body = branch.group(1)
-    # torch.compile stays on only when unsloth_zoo can make the non-reentrant recompute match the forward;
-    # an older unsloth_zoo (ImportError) or a torch without specialize_float keeps the old partial disable.
+    # Compile stays on only with a new enough unsloth_zoo and torch specialize_float.
     assert "prepare_compiled_checkpoint" in body and "except ImportError" in body
     assert re.search(
         r'if prepare_compiled_checkpoint is None or not prepare_compiled_checkpoint\(\):\s*\n\s*os\.environ\["UNSLOTH_COMPILE_DISABLE"\] = "partial"',

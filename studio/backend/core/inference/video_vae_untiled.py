@@ -414,7 +414,22 @@ def install_untiled_decode(
 
     untiled_when_fits._unsloth_untiled_decode = True
     untiled_when_fits._unsloth_untiled_stats = stats
+    vae._unsloth_untiled_stats = stats
     vae.decode = untiled_when_fits
     if logger is not None:
         logger.info("video.vae_untiled: resident %s VAE decodes untiled when it fits", family)
     return True
+
+
+def untiled_decode_stats(pipe: Any) -> Optional[dict]:
+    """Copy of decode-route counts since load (``wide`` is a subset of ``tiled``); None if not installed."""
+    stats = getattr(getattr(pipe, "vae", None), "_unsloth_untiled_stats", None)
+    return dict(stats) if isinstance(stats, dict) else None
+
+
+def decode_stats_delta(before: Optional[dict], after: Optional[dict]) -> Optional[dict]:
+    """Per-render counts from two ``untiled_decode_stats`` reads."""
+    if after is None:
+        return None
+    before = before or {}
+    return {k: v - before.get(k, 0) for k, v in after.items()}

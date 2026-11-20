@@ -175,14 +175,20 @@ def _spawn(
 
 def test_kv_heads_below_tp_are_replicated_per_rank():
     # tp 4 over 2 KV heads: ranks 0, 1 compute head 0 and ranks 2, 3 head 1.
-    overrides = {"num_attention_heads": 8, "num_key_value_heads": 2, "intermediate_size": 64}
+    # head_dim is pinned: the tiny Qwen3 repo's own default moved (128 -> 16 in its Nov 2026 re-upload).
+    overrides = {
+        "num_attention_heads": 8,
+        "num_key_value_heads": 2,
+        "intermediate_size": 64,
+        "head_dim": 16,
+    }
     results = _spawn("layout", 4, arch = "qwen3", overrides = overrides)
     for rank, res in enumerate(results):
         assert res["kv_replicated"]
         assert res["styles"]["k_proj"] == res["styles"]["v_proj"] == tpn.KV_REPLICATED
         assert res["styles"]["q_proj"] == tpn.COLWISE and res["styles"]["o_proj"] == tpn.ROWWISE
         assert res["heads"] == (2, 1, 2), res["heads"]  # 8 / 4 query heads over 1 local KV head
-        head_dim = 128
+        head_dim = overrides["head_dim"]
         assert res["rows"] == ((rank // 2) * head_dim, head_dim), res["rows"]
         assert res["k_placements"] == [True]
         assert res["saved_groups"] == 4  # tp_replica restores the 1-GPU grouping

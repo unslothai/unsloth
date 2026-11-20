@@ -101,6 +101,9 @@ if (isTauri && document.documentElement.classList.contains("render-linux")) {
       if (status.cpuPainting) {
         document.documentElement.classList.add("webkit-cpu-paint");
       }
+      if (status.legacyCompositor) {
+        document.documentElement.classList.add("webkit-legacy-compositor");
+      }
     },
     () => undefined,
   );

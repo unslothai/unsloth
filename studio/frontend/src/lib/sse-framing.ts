@@ -6,7 +6,7 @@ export type SseFrame = {
   remainder: string;
 };
 
-const SSE_FRAME_SEPARATOR = /\r?\n\r?\n/;
+const SSE_FRAME_SEPARATOR = /(?:\r\n|\r(?!\n)|\n){2}/;
 
 export function takeSseFrame(buffer: string): SseFrame | null {
   const separator = buffer.match(SSE_FRAME_SEPARATOR);
@@ -15,7 +15,7 @@ export function takeSseFrame(buffer: string): SseFrame | null {
     return null;
   }
   return {
-    event: buffer.slice(0, separatorIndex),
+    event: buffer.slice(0, separatorIndex).replace(/\r(?!\n)/g, "\n"),
     remainder: buffer.slice(separatorIndex + separator[0].length),
   };
 }

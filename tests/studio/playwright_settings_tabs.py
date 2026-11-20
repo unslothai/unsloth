@@ -38,6 +38,7 @@ TABS = [
     "agents",
     "keyboard-shortcuts",
     "browser",
+    "computer-use",
     "debugging",
     "sandbox",
     "about",
@@ -69,7 +70,7 @@ LAN_STATUS = {
     "keyless_scope": "off",
     "keyless_tools": False,
 }
-PANEL = 'div[role="dialog"] main div.hover-scrollbar'
+PANEL = 'div[role="dialog"] main [data-settings-main-scroll]'
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
 # vite appends ?t= or ?v= to module URLs.
@@ -213,7 +214,7 @@ def open_dialog(page, tab: str | None = None) -> None:
 
 ON_SUBPAGE_JS = """() => ({
     subpage: !!document.querySelector('div[role="dialog"] main header button'),
-    elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+    elements: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
@@ -221,7 +222,7 @@ ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
     setTimeout(() => {
-        const panel = document.querySelector('div[role="dialog"] main div.hover-scrollbar');
+        const panel = document.querySelector('div[role="dialog"] main [data-settings-main-scroll]');
         window.__abandonedAt = {
             elements: panel ? panel.querySelectorAll('*').length : null,
             subpage: !!document.querySelector('div[role="dialog"] main header button'),
@@ -301,7 +302,7 @@ def run_chunk_fail(page) -> None:
             nav: document.querySelectorAll('[data-testid^="settings-tab-"]').length,
             harness: !!document.querySelector('[data-testid="harness-root"]'),
             boundary: !!document.querySelector('[data-testid="harness-error-boundary"]'),
-            panelText: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+            panelText: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
                 || {}).innerText || null,
             bodyText: (document.body.innerText || '').trim().length,
         })"""
@@ -843,15 +844,23 @@ def run(page) -> None:
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
 
 
+# (label key, section title key) for each control moved out of Appearance into the Chat tab.
+# test_settings_tabs_composer_search_sections.py checks these against chat-tab.tsx, so a later
+# regrouping fails there in the unit tests instead of only in this browser run.
+COMPOSER_SEARCH_SECTIONS = (
+    ("settings.appearance.custom.chatWidth.label", "settings.chat.groups.customization.title"),
+    ("settings.chat.composerPosition", "settings.chat.groups.customization.title"),
+    ("chatBackground.outline", "settings.chat.groups.customization.title"),
+    ("settings.appearance.custom.sentAttachments.label", "settings.general.chatDefaults"),
+)
+
+
 def run_composer_search(page) -> None:
-    """The moved controls must be reachable through search in Chat's Composer section."""
+    """The controls moved out of Appearance must be reachable through search in the Chat tab section
+    that now holds them (chat-tab.tsx): width, position and outline in Customization, sent-message
+    attachments in Chat defaults."""
     results = []
-    for key in (
-        "settings.appearance.custom.chatWidth.label",
-        "settings.chat.composerPosition",
-        "chatBackground.outline",
-        "settings.appearance.custom.sentAttachments.label",
-    ):
+    for key, section_key in COMPOSER_SEARCH_SECTIONS:
         label = en_string(key)
         close_dialog(page)
         open_dialog(page, "appearance")
@@ -881,7 +890,7 @@ def run_composer_search(page) -> None:
             }"""
         )
         results.append(state)
-        if state != {"tab": "chat", "label": label, "section": en_string("composerSettings.title")}:
+        if state != {"tab": "chat", "label": label, "section": en_string(section_key)}:
             fail(f"composer search: '{label}' reached {state}")
     report["composer_search"] = results
     report["steps"].append("composer-search")

@@ -34,8 +34,7 @@ def test_csv_files_differing_headers_keep_cells_as_written(tmp_path):
     assert rows["State?"]["input"] is None
     assert rows["State?"]["output"] == "NA"
 
-    # A later file adding columns still hits the builder's same-columns rule:
-    # a loud error, never silently mistyped cells.
+    # A later file adding columns hits the same-columns rule: a loud error, not mistyped cells.
     files = [str(narrow), str(wide)]
     with pytest.raises(DatasetGenerationCastError):
         load_dataset("csv", data_files = files, split = "train", **csv_as_text_kwargs(files))

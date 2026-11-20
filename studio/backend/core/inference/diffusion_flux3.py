@@ -599,8 +599,7 @@ def half_storage_disabled() -> bool:
 
 
 def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
-    """bf16 for a CUDA float32/float16 load: keep stored bf16 mmapped and cast per op (exact); a host conversion
-    costs ~20-40 GB for klein. None otherwise."""
+    """bf16 for a CUDA fp32/fp16 load: mmap stored bf16 and cast per op (exact); else None."""
     from .diffusion_manual_cast import manual_cast_disabled
 
     if manual_cast_disabled() or getattr(target, "device", None) != "cuda":
@@ -835,8 +834,12 @@ def load_flux3_pipeline(
     family_name: Optional[str] = None,
     storage_dtype: Any = None,
     transformer_storage: Optional[bool] = None,
+    with_transformer: bool = True,
 ) -> Any:
     """A ready ``Flux3KleinPipeline`` for ``repo_id`` (on CPU; the caller places it).
+
+    ``with_transformer=False`` (the LoRA trainer's conditioning phase): only the text encoder, processor and VAE load,
+    and the block graph comes from the manifest; ``pipe.transformer`` is None.
 
     ``storage_dtype`` (``flux3_storage_dtype``): the text encoder loads at that dtype and casts per op to ``dtype``.
     The transformer does too when ``transformer_storage`` is True (a native quant rebuilds its Linears from the
@@ -882,7 +885,7 @@ def load_flux3_pipeline(
         )
         text_encoder.eval()
         check_cancelled()
-    if transformer is None:
+    if transformer is None and with_transformer:
         transformer_storage_at = transformer_load_storage(
             storage_dtype, dtype, transformer_storage, repo_id, token, local_files_only
         )
@@ -908,7 +911,8 @@ def load_flux3_pipeline(
     if reason is not None:
         raise ValueError(reason)
     # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
-    cond_blocks.prepare(transformer)
+    if transformer is not None:
+        cond_blocks.prepare(transformer)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
     scheduler = flux3_blocks(blocks).init_pipeline().scheduler
     return flux3_pipeline_class()(

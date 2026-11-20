@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { IconSvgElement } from "@hugeicons/react";
-import { BubbleChatIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
+import { BubbleChatIcon, FilterHorizontalIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
 
 // Drop the last 2 paths (interior bubbles).
 export const TestTubeOutlineIcon = TestTube01Icon.slice(
@@ -15,6 +15,11 @@ export const MessageCircleIcon = BubbleChatIcon.slice(
   1,
 ) as typeof BubbleChatIcon;
 
+export const FilterHorizontalCircleIcon: IconSvgElement = [
+  ...FilterHorizontalIcon.slice(0, 4),
+  ["circle", { cx: "9", cy: "7", r: "3", stroke: "currentColor", strokeWidth: "1.5", key: "4" }],
+  ["circle", { cx: "15", cy: "17", r: "3", stroke: "currentColor", strokeWidth: "1.5", key: "5" }],
+];
 
 export const StarPointedIcon: IconSvgElement = [
   [

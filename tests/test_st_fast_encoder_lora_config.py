@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FastSentenceTransformer.get_peft_model must hand every LoRA argument to LoraConfig on the fast encoder path."""
+"""FastSentenceTransformer.get_peft_model must hand every LoRA argument to LoraConfig on the fast encoder path, and refuse aLoRA."""
 
 import math
 
@@ -90,3 +90,34 @@ def test_float16_modules_to_save_copy_trains_in_float32(fast_encoder):
         if ".modules_to_save." in name
     ]
     assert copies and all(p.dtype == torch.float32 and p.requires_grad for p in copies)
+
+
+def test_exclude_modules_and_lora_bias_reach_the_adapter(fast_encoder):
+    model = FastSentenceTransformer.get_peft_model(
+        fast_encoder,
+        r = 4,
+        lora_alpha = 8,
+        target_modules = ["query", "key", "value"],
+        exclude_modules = r".*layer\.0\..*",
+        lora_bias = True,
+        use_gradient_checkpointing = False,
+    )
+    peft_model = model[0].auto_model
+    config = peft_model.peft_config["default"]
+    assert config.task_type == "FEATURE_EXTRACTION"
+    assert config.lora_bias is True
+    names = [name for name, _ in peft_model.named_parameters() if ".lora_A." in name]
+    assert names and all(".layer.1." in name for name in names), names
+
+
+def test_activated_lora_is_refused(fast_encoder):
+    with pytest.raises(NotImplementedError, match = "Activated LoRA"):
+        FastSentenceTransformer.get_peft_model(
+            fast_encoder,
+            r = 4,
+            lora_alpha = 8,
+            target_modules = ["query", "key", "value"],
+            alora_invocation_tokens = [5, 6],
+            use_gradient_checkpointing = False,
+        )
+    assert not hasattr(fast_encoder[0].auto_model, "peft_config")

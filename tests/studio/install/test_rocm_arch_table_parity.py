@@ -289,6 +289,30 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon 880M Graphics": "gfx1150",
     "AMD Radeon 860M Graphics": "gfx1152",
     "AMD Radeon 840M Graphics": "gfx1152",
+    # RDNA 2 by die (pci.ids 73bf / 73df / 73ef / 73ff; LLVM AMDGPUUsage). Windows device packs are per arch.
+    "AMD Radeon RX 6800 XT": "gfx1030",
+    "AMD Radeon RX 6900 XT": "gfx1030",
+    "AMD Radeon RX 6700 XT": "gfx1031",
+    "AMD Radeon RX 6750 XT": "gfx1031",
+    "AMD Radeon RX 6800M": "gfx1031",
+    "AMD Radeon RX 6850M XT": "gfx1031",
+    "AMD Radeon RX 6700S": "gfx1032",
+    "AMD Radeon RX 6800S": "gfx1032",
+    "AMD Radeon RX 6650 XT": "gfx1032",
+    "AMD Radeon RX 6600M": "gfx1032",
+    # One name, two dies: libdrm amdgpu.ids 73DF (Navi 22) vs 73FF (Navi 23).
+    "AMD Radeon RX 6750 GRE 12GB": "gfx1031",
+    "AMD Radeon RX 6750 GRE 10GB": "gfx1032",
+    "AMD Radeon 6550S": "gfx1034",
+    "AMD Radeon Pro V620": "gfx1030",
+    # Navi 33 / 44 / 48 names from libdrm amdgpu.ids (7499, 7590, 7551).
+    "AMD Radeon RX 7400": "gfx1102",
+    "AMD Radeon RX 7300": "gfx1102",
+    "AMD Radeon Pro W7400": "gfx1102",
+    "AMD Radeon RX 9050": "gfx1200",
+    "AMD Radeon AI Pro R9600D": "gfx1201",
+    # amd.com: Zen 5 + RDNA 3.5 with 16 CUs is Strix Point, not Phoenix.
+    "AMD Ryzen Z2 Extreme": "gfx1150",
 }
 
 
@@ -345,11 +369,8 @@ def _spoof_profiles() -> dict[str, str]:
     raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
 
 
-# The spoof fixture maps gfx -> name, an independent witness. RX 6700 XT is a deliberate
-# divergence: AMD documents no gfx1031 and nothing consumes the exact id.
-_SPOOF_DIVERGENCES = {
-    "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
-}
+# The spoof fixture maps gfx -> name, an independent witness.
+_SPOOF_DIVERGENCES: dict[str, str] = {}
 
 
 def _resolve(where: str, rows, gpu_name: str) -> str | None:
@@ -400,6 +421,14 @@ class TestGpuNameArchParity:
                 arch == expected_arch
             ), f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
 
+    @pytest.mark.parametrize("gpu_name", ["AMD Radeon 680M", "AMD Radeon 660M", "AMD Radeon 610M"])
+    def test_rdna2_igpus_stay_unmapped(self, gpu_name):
+        """No copy may route these APUs to ROCm torch by name: RDNA 2 iGPU training is unmeasured
+        and gfx1033 computes wrong answers (studio/ROCM_RDNA2_APU.md)."""
+        for where, rows in _name_tables().items():
+            got = _resolve(where, rows, gpu_name)
+            assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
+
     def test_unknown_name_matches_nothing_anywhere(self):
         """An unrecognised card must fall through to the CPU path in every copy,
         never onto a neighbouring arm."""
@@ -447,6 +476,39 @@ class TestGpuNameArchParity:
                 assert (
                     _resolve(where, rows, gpu_name) is not None
                 ), f"{where}: {gpu_name!r} matches no arm, so this card gets CPU-only torch"
+
+
+# Krackan Point 2 (gfx1153) vs Krackan Point (gfx1152) on the Windows tables, where the gfx1153 row
+# is spelled out as plain alternatives. Linux resolves Krackan 2 partly outside its name table.
+_WINDOWS_KRACKAN_CASES = {
+    "AMD Radeon 820M Graphics": "gfx1153",
+    "AMD Ryzen AI 5 330": "gfx1153",
+    "AMD Ryzen AI 5 PRO 330": "gfx1153",
+    "AMD Krackan Point 2": "gfx1153",
+    "AMD Krackan 2": "gfx1153",
+    "Krackan2": "gfx1153",
+    "KrackanPoint2": "gfx1153",
+    "Krackan Point2": "gfx1153",
+    "KrackanPoint 2": "gfx1153",
+    "AMD Krackan Point": "gfx1152",
+    "AMD Ryzen AI 5 340": "gfx1152",
+    "AMD Radeon 860M Graphics": "gfx1152",
+}
+
+
+class TestWindowsKrackanRows:
+    @pytest.mark.parametrize("gpu_name,expected_arch", sorted(_WINDOWS_KRACKAN_CASES.items()))
+    def test_windows_tables_split_krackan_generations(self, gpu_name, expected_arch):
+        tables = {
+            "install.ps1": _name_table_ps(_INSTALL_PS1),
+            "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
+            "studio/install_python_stack.py": list(stack_mod._WIN_GPU_NAME_ARCH_TABLE),
+        }
+        for where, rows in tables.items():
+            arch = _match_ps(rows, gpu_name)
+            assert (
+                arch == expected_arch
+            ), f"{where}: {gpu_name!r} -> {arch!r}, expected {expected_arch!r}"
 
 
 class TestSpoofFixtureParity:

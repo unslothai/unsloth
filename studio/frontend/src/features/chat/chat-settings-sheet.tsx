@@ -100,6 +100,7 @@ import {
   getOrderedPresets,
   getPresetSaveState,
   getPresetSource,
+  editedSamplingKey,
   isSamePresetConfig,
   MAX_TOKENS_MIN,
   localMaxTokensCeiling,
@@ -113,6 +114,7 @@ import {
 } from "./presets/preset-load-config";
 import {
   type ProviderCapabilities,
+  externalMaxTokensUnboundedAtMax,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   modelCatalogVersion,
@@ -123,6 +125,7 @@ import {
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
+  UNLIMITED_TOOL_CALLS,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -448,9 +451,9 @@ function specFallbackMessage({
       return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
     case "drafter_no_vram":
       // Only the drafter is off: the backend substitutes zero-VRAM ngram-mod where available.
-      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
+      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context window and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
-      return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+      return `${drafter} could not start for this model, so it is running without speculative decoding. Lowering the context length or Parallel Slots can give it room.`;
     case "drafter_unloadable":
       // The file is present but unloadable as a draft, so neither placement nor network is the remedy.
       return "This model's MTP drafter file cannot be loaded as a draft model, so it is running without MTP. The sidecar beside the model is a head-only file that llama.cpp cannot open on its own. Replace it with a self-contained mtp-*.gguf, then reload the model.";
@@ -838,6 +841,13 @@ export function ChatSettingsPanel({
         activeExternalProvider?.maxOutputTokens,
       )
     : localMaxTokensCeiling(baseContext, params.maxSeqLength);
+  const maxTokensUnboundedAtMax =
+    isExternalModel &&
+    externalMaxTokensUnboundedAtMax(
+      externalProviderType,
+      externalSelection?.modelId,
+      activeExternalProvider?.maxOutputTokens,
+    );
   const showOpenAICodeExecSection =
     activeExternalProvider != null &&
     providerSupportsBuiltinCodeExecution(
@@ -868,7 +878,7 @@ export function ChatSettingsPanel({
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
-      setActivePresetSource(nextSource);
+      setActivePresetSource(nextSource, editedSamplingKey(key));
       setParams(nextParams, {
         minPChoiceEdited: key === "minP" || key === "minPMode",
       });
@@ -1183,7 +1193,7 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length is above Unsloth&apos;s free-memory estimate
+                      Context window is above Unsloth&apos;s free-memory estimate
                       ({maxContextLength?.toLocaleString()} tokens). It may
                       still load, but macOS may have to compress or swap other
                       apps and generation may slow down. Lower the context,
@@ -1191,7 +1201,7 @@ export function ChatSettingsPanel({
                     </>
                   ) : (
                     <>
-                      Context length exceeds the estimated VRAM capacity (
+                      Context window exceeds the estimated VRAM capacity (
                       {maxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
                     </>
@@ -1615,7 +1625,10 @@ export function ChatSettingsPanel({
               step={64}
               onChange={set("maxTokens")}
               format={(v) =>
-                !isExternalModel && v >= maxTokensMax ? "Max" : undefined
+                (!isExternalModel || maxTokensUnboundedAtMax) &&
+                v >= maxTokensMax
+                  ? "Max"
+                  : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
@@ -1939,19 +1952,20 @@ function MaxToolCallsSlider() {
     (s) => s.setMaxToolCallsPerMessage,
   );
 
-  // Slider range 0-41; 41 maps to 9999 ("Max")
-  const sliderValue = maxToolCalls >= 9999 ? 41 : Math.min(maxToolCalls, 40);
+  // Slider range 0-51; 51 maps to UNLIMITED_TOOL_CALLS ("Max")
+  const sliderValue =
+    maxToolCalls >= UNLIMITED_TOOL_CALLS ? 51 : Math.min(maxToolCalls, 50);
 
   return (
     <ParamSlider
       label="Max Tool Calls Per Message"
       value={sliderValue}
       min={0}
-      max={41}
+      max={51}
       step={1}
-      onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
-      format={(v) => (v >= 41 ? "Max" : v === 0 ? "Off" : undefined)}
-      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap."
+      onChange={(v) => setMaxToolCalls(v >= 51 ? UNLIMITED_TOOL_CALLS : v)}
+      format={(v) => (v >= 51 ? "Max" : v === 0 ? "Off" : undefined)}
+      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap. Turning on MCP sets it to Max."
     />
   );
 }

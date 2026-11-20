@@ -13,6 +13,7 @@ import hmac
 import itertools
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -32,10 +33,74 @@ _SERVABLE_LORAS = 1 << 20
 _BATCH_WAIT_S = 0.0005
 
 
+def _inplace_lora():
+    # One slot overwritten per sync: with max_loras=1 a new id per sync stalls new requests behind stragglers.
+    return os.environ.get("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "1") != "0"
+
+
+def _pause_on_sync():
+    # Kill switch: 1 stops decoding from TRL's /pause to its /resume, as `vllm serve` does.
+    return os.environ.get("UNSLOTH_ASYNC_GRPO_PAUSE_ON_SYNC", "0") == "1"
+
+
+def _logprob(value):
+    # Clamp -inf like vLLM's OpenAI server (plain JSON).
+    return max(float(getattr(value, "logprob", value)), -9999.0)
+
+
 def _sampled_logprob(logprobs, position, token_id):
+    # vLLM always records the sampled token; any other entry is another token's logprob and would corrupt the
+    # importance ratio TRL builds from these, so refuse instead of substituting it.
     entry = logprobs[position]
-    value = entry[token_id] if token_id in entry else next(iter(entry.values()))
-    return float(getattr(value, "logprob", value))
+    if token_id not in entry:
+        raise ValueError(
+            f"Unsloth: vLLM returned no logprob for sampled token {token_id} at position {position}."
+        )
+    return _logprob(entry[token_id])
+
+
+def _top_logprobs(entry, num_top_logprobs):
+    # Keyed "token_id:<id>" as TRL's `_by_token_id` parses.
+    return {
+        f"token_id:{token_id}": _logprob(value)
+        for i, (token_id, value) in enumerate(entry.items())
+        if i <= num_top_logprobs
+    }
+
+
+def _scheduler(llm_engine):
+    # In-process V1 engine (Unsloth sets VLLM_ENABLE_V1_MULTIPROCESSING=0): LLMEngine -> InprocClient -> EngineCore.
+    core = getattr(llm_engine, "engine_core", None)
+    core = getattr(core, "engine_core", core)
+    return getattr(core, "scheduler", None)
+
+
+def _track_preemptions(scheduler):
+    # vllm:num_preemptions_total needs log_stats (off in-process): bank per-request counts on free so the total
+    # stays monotonic. Once per scheduler, since the engine outlives each server.
+    if scheduler is None or hasattr(scheduler, "_unsloth_preemptions_freed"):
+        return
+    free_blocks = getattr(scheduler, "_free_blocks", None)
+    if free_blocks is None or not isinstance(getattr(scheduler, "requests", None), dict):
+        return
+
+    def _free_blocks(request, *args, **kwargs):
+        result = free_blocks(request, *args, **kwargs)
+        scheduler._unsloth_preemptions_freed += getattr(request, "num_preemptions", 0) or 0
+        return result
+
+    scheduler._unsloth_preemptions_freed = 0
+    scheduler._free_blocks = _free_blocks
+
+
+def _preemptions(scheduler):
+    freed = getattr(scheduler, "_unsloth_preemptions_freed", None)
+    if freed is None:
+        return None
+    live = sum(
+        getattr(request, "num_preemptions", 0) or 0 for request in scheduler.requests.values()
+    )
+    return freed + live
 
 
 class _Engine:
@@ -59,12 +124,29 @@ class _Engine:
         self.commands = []
         self.active = {}
         self.paused = False
+        self.pause_on_sync = _pause_on_sync()
+        self.syncing = False
         self.stopping = False
         self.loras = {}
         self.newest = None
         self.lora_holds = {}
+        self.inplace = _inplace_lora()
+        self.slot_id = None
+        self.slot_version = 0
         self.aborted = None
-        self.stats = {"requests": 0, "tokens": 0, "steps": 0, "step_s": 0.0, "max_batch": 0}
+        self.stats = {
+            "requests": 0,
+            "tokens": 0,
+            "steps": 0,
+            "step_s": 0.0,
+            "max_batch": 0,
+            "syncs": 0,
+            "sync_steps": 0,
+        }
+        try:
+            _track_preemptions(_scheduler(self.engine))
+        except Exception as error:
+            logger.info(f"Unsloth: vLLM preemptions will not be reported: {error}")
         self.thread = threading.Thread(
             target = self._run, name = "unsloth-async-grpo-vllm", daemon = True
         )
@@ -141,6 +223,8 @@ class _Engine:
             stats["steps"] += 1
             stats["step_s"] += time.perf_counter() - started
             stats["max_batch"] = max(stats["max_batch"], batch)
+            if self.syncing:
+                stats["sync_steps"] += 1
             for output in outputs:
                 if output.finished and output.request_id in self.active:
                     future, lora_id = self.active.pop(output.request_id)
@@ -159,11 +243,13 @@ class _Engine:
     def _admit(self, prompt_ids, params, model, future):
         request_id = uuid.uuid4().hex
         lora = self._lora_for(model)
+        prompt = {"prompt_token_ids": prompt_ids}
+        if lora is not None and lora.lora_int_id == self.slot_id:
+            # Prefix cache keys on adapter name; salt by version so old-weight KV is never reused.
+            prompt["cache_salt"] = f"unsloth-lora-{self.slot_id}-v{self.slot_version}"
         try:
             sampling = self.sampling_params(**{**self._default_kwargs(), **params})
-            self.engine.add_request(
-                request_id, {"prompt_token_ids": prompt_ids}, sampling, lora_request = lora
-            )
+            self.engine.add_request(request_id, prompt, sampling, lora_request = lora)
         except BaseException as error:
             future.set_exception(error)
             return
@@ -222,6 +308,8 @@ class _Engine:
 
     # Commands (run on the engine thread through `call`).
     def add_adapter(self, name, path):
+        if self.inplace:
+            return self._overwrite_slot(name, path)
         lora_id = next(_LORA_IDS)
         lora = self.load_lora(path, lora_request_id = lora_id)
         # Load now, while the trainer waits on this sync, not lazily on the first request.
@@ -231,19 +319,90 @@ class _Engine:
         self.lora_holds.setdefault(lora.lora_int_id, [False, 0])
         return lora.lora_int_id
 
+    def _reload_slot(self, lora, previous):
+        # Manager skips held ids, so drop and re-add between engine steps (no step sees it empty).
+        loaded = self.slot_id in self.lora_holds
+        if loaded:
+            self.engine.remove_lora(self.slot_id)
+        try:
+            self.engine.add_lora(lora)
+        except BaseException:
+            if loaded and previous is not None:
+                # Requests in flight still name the slot: put the previous version back.
+                self.engine.add_lora(previous)
+            raise
+        self.slot_version += 1
+
+    def _overwrite_slot(self, name, path):
+        if self.slot_id is None:
+            self.slot_id = next(_LORA_IDS)
+        lora = self.load_lora(path, lora_request_id = self.slot_id)
+        self._reload_slot(lora, self.loras.get(self.newest) if self.newest is not None else None)
+        self.loras[name] = lora
+        self.newest = name
+        self.lora_holds.setdefault(self.slot_id, [False, 0])[0] = False
+        return self.slot_id
+
     def remove_adapter(self, name):
         lora = self.loras.pop(name, None)
         if lora is None:
             return False
-        if self.newest == name:
+        was_newest = self.newest == name
+        if was_newest:
             self.newest = next(reversed(self.loras), None)
+        if lora.lora_int_id == self.slot_id and self.loras:
+            # One slot serves every name; restore the newest remaining version.
+            if was_newest:
+                self._reload_slot(self.loras[self.newest], lora)
+            return True
         state = self.lora_holds.setdefault(lora.lora_int_id, [False, 0])
         state[0] = True
         self._maybe_remove(lora.lora_int_id)
         return True
 
+    def load(self):
+        scheduler = _scheduler(self.engine)
+        waiting = len(self.pending)
+        usage = running = preemptions = None
+        if scheduler is not None:
+            try:
+                usage = float(scheduler.kv_cache_manager.usage)
+                running = len(scheduler.running)
+                waiting += len(scheduler.waiting) + len(getattr(scheduler, "skipped_waiting", ()))
+            except Exception:
+                usage = running = None
+            try:
+                preemptions = _preemptions(scheduler)
+            except Exception:
+                preemptions = None
+        if running is None:
+            running = len(self.active)
+        return {
+            "usage": usage,
+            "running": running,
+            "waiting": waiting,
+            "preemptions": preemptions,
+            "stats": dict(self.stats),
+        }
+
     def set_paused(self, paused):
         self.paused = paused
+        return True
+
+    def begin_sync(self):
+        # TRL pauses before saving the adapter and resumes after loading it. The load is already an engine-thread
+        # command between steps with rollback (`_reload_slot`), so decoding goes on through the save and barrier on
+        # the previous adapter. TRL stamps a group's version at dispatch and bumps it only after the load, so those
+        # tokens carry the version that sampled them.
+        self.syncing = True
+        self.stats["syncs"] += 1
+        if self.pause_on_sync:
+            self.paused = True
+        return True
+
+    def end_sync(self):
+        self.syncing = False
+        self.paused = False
         return True
 
     def abort_all(self):
@@ -288,7 +447,20 @@ class _Handler(BaseHTTPRequestHandler):
         path = self._route()
         if path is None:
             return self._send(404, {"error": "not found"})
+        if path == "/metrics":
+            return self._send_text(*self.server.owner.metrics())
         self._send(*self.server.owner.get(path))
+
+    def _send_text(self, code, text):
+        body = text.encode()
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def do_POST(self):
         owner = self.server.owner
@@ -308,7 +480,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": f"bad JSON: {error}"})
         if path == "/v1/completions":
             try:
-                return self._send(200, owner.finish(owner.start(body).result()))
+                output = owner.start(body).result()
+                return self._send(200, owner.finish(output, body.get("logprobs")))
             except Exception as error:
                 return self._send(400, {"error": f"{type(error).__name__}: {error}"})
         self._send(*owner.post(path, body))
@@ -387,6 +560,50 @@ class UnslothAsyncVLLMServer:
             return 200, {"world_size": 1}
         return 404, {"error": f"unknown path {path}"}
 
+    def kv_cache_size_tokens(self):
+        cache_config = getattr(self.vllm_config, "cache_config", None)
+        tokens = getattr(cache_config, "kv_cache_size_tokens", None)
+        if tokens is None:
+            blocks = getattr(cache_config, "num_gpu_blocks", None)
+            block_size = getattr(cache_config, "block_size", None)
+            if blocks and block_size:
+                tokens = blocks * block_size
+        return tokens
+
+    def metrics(self):
+        # Prometheus lines TRL >= 1.17 parses for its KV cap.
+        try:
+            load = self.engine.call(self.engine.load)
+        except Exception as error:
+            return 503, f"# {type(error).__name__}: {error}\n"
+        name = str(self.model_name).replace("\\", "").replace('"', "")
+        labels = f'engine="0",model_name="{name}"'
+        lines = []
+        tokens = self.kv_cache_size_tokens()
+        if tokens:
+            lines.append(
+                f'vllm:cache_config_info{{{labels},kv_cache_size_tokens="{int(tokens)}"}} 1.0'
+            )
+        if load["usage"] is not None:
+            lines.append(f"vllm:kv_cache_usage_perc{{{labels}}} {load['usage']}")
+        lines.append(f"vllm:num_requests_running{{{labels}}} {float(load['running'])}")
+        lines.append(f"vllm:num_requests_waiting{{{labels}}} {float(load['waiting'])}")
+        if load["preemptions"] is not None:
+            lines.append(f"vllm:num_preemptions_total{{{labels}}} {float(load['preemptions'])}")
+        # Host-side engine counters (no device sync); TRL ignores them.
+        stats = load["stats"]
+        for name, key in (
+            ("requests_finished_total", "requests"),
+            ("generation_tokens_total", "tokens"),
+            ("engine_steps_total", "steps"),
+            ("engine_step_seconds_total", "step_s"),
+            ("engine_max_batch", "max_batch"),
+            ("syncs_total", "syncs"),
+            ("sync_steps_total", "sync_steps"),
+        ):
+            lines.append(f"unsloth:async_grpo_{name}{{{labels}}} {float(stats[key])}")
+        return 200, "\n".join(lines) + "\n"
+
     def post(self, path, body):
         engine = self.engine
         commands = {
@@ -394,8 +611,8 @@ class UnslothAsyncVLLMServer:
                 body["lora_name"], body["lora_path"]
             ),
             "/v1/unload_lora_adapter": lambda: engine.remove_adapter(body.get("lora_name")),
-            "/pause": lambda: engine.set_paused(True),
-            "/resume": lambda: engine.set_paused(False),
+            "/pause": engine.begin_sync,
+            "/resume": engine.end_sync,
         }
         if path not in commands:
             return 404, {"error": f"unknown path {path}"}
@@ -415,10 +632,18 @@ class UnslothAsyncVLLMServer:
                 params[name] = body[name]
         if body.get("logprobs") is not None:
             params["logprobs"] = int(body["logprobs"])
+            self._allow_logprobs(params["logprobs"])
         return self.engine.submit(prompt, params, body.get("model"))
 
+    def _allow_logprobs(self, num_logprobs):
+        # Engine is built with max_logprobs=0; TRL >= 1.17 asks for top-k (checked only at add_request).
+        model_config = getattr(self.vllm_config, "model_config", None)
+        limit = getattr(model_config, "max_logprobs", None)
+        if limit is not None and limit != -1 and num_logprobs > limit:
+            model_config.max_logprobs = num_logprobs
+
     @staticmethod
-    def finish(output):
+    def finish(output, num_top_logprobs = None):
         completion = output.outputs[0]
         token_ids = list(completion.token_ids)
         logprobs = None
@@ -428,6 +653,12 @@ class UnslothAsyncVLLMServer:
                     _sampled_logprob(completion.logprobs, i, t) for i, t in enumerate(token_ids)
                 ]
             }
+            if num_top_logprobs is not None:
+                # TRL >= 1.17 reads them for score centering (`num_sampler_logprobs`).
+                logprobs["top_logprobs"] = [
+                    _top_logprobs(completion.logprobs[i], int(num_top_logprobs))
+                    for i in range(len(token_ids))
+                ]
         choice = {
             "index": 0,
             "text": "",

@@ -4,6 +4,8 @@
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  NPU_CATALOG_TAG,
+  NPU_TAG_TEXT,
   type NpuCatalog,
   type NpuModel,
   NpuSetupNotice,
@@ -94,6 +96,7 @@ function NpuCatalogRow({
   const name = npuDisplayName(model);
   const repo = npuRepoLabel(model);
   const details = [
+    NPU_TAG_TEXT[NPU_CATALOG_TAG],
     repo.includes("/") ? repo.slice(0, repo.indexOf("/")) : null,
     model.checkpoint,
     npuSizeLabel(model.size_gb),
