@@ -6899,6 +6899,36 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
   from { mask-image: none; }
   to { mask-image: linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem)), linear-gradient(#000, #000); }
 }
+/* That fade is back once scrolled, and the inline composer scrolls with it, so it lost its blur again. Where view
+   timelines are, the viewport stays unmasked and each welcome block, the composer's own surface included (its own mask
+   isn't its backdrop root), fades under the header line itself. The mask box overhangs 4rem so rings and the greeting
+   halo aren't clipped; WebKit (data-glass-layers) ignores no-clip, so it keeps the viewport fade. */
+@property --welcome-fade-cut {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+@supports (animation-timeline: view()) and (mask-clip: no-clip) {
+  html[data-glass]:not([data-glass-layers]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
+    animation: none;
+  }
+  html[data-glass]:not([data-glass-layers]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-welcome-center > :is(.aui-thread-welcome-spacer, .aui-thread-welcome-message:only-child),
+  html[data-glass]:not([data-glass-layers]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-welcome-message .unsloth-composer-surface {
+    mask-image: linear-gradient(to bottom, transparent calc(var(--welcome-fade-cut) - 1.5rem), #000 var(--welcome-fade-cut));
+    mask-size: 100% calc(100% + 8rem);
+    mask-position: 0 -4rem;
+    mask-repeat: repeat-x;
+    mask-clip: no-clip;
+    /* 0% to 100% as the overhung box's top to bottom crosses the line where the viewport fade turns opaque. */
+    animation: thread-welcome-block-fade linear both;
+    animation-timeline: view(block calc(var(--thread-header-offset, -1.5rem) + 5.5rem) auto);
+    animation-range: exit-crossing 0% exit-crossing calc(100% + 8rem);
+  }
+}
+@keyframes thread-welcome-block-fade {
+  from { --welcome-fade-cut: 0%; }
+  to { --welcome-fade-cut: 100%; }
+}
 /* Glass: wash the unmasked thread root so the header strip matches the thread. */
 html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
