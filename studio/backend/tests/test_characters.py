@@ -1162,6 +1162,12 @@ def test_a_greeting_is_bounded_after_its_names_are_filled():
     from core.characters.cards import MAX_FIELD_CHARS
     from core.characters.chats import opening_messages
 
-    ada = {"id": "a", "name": "A" * 100, "firstMes": "{{char}}" * 3000, "alternateGreetings": [], "card": None}
+    ada = {
+        "id": "a",
+        "name": "A" * 100,
+        "firstMes": "{{char}}" * 3000,
+        "alternateGreetings": [],
+        "card": None,
+    }
     messages, _, _ = opening_messages("t", [ada], "Me", None, 0)
     assert len(messages[-1]["content"][0]["text"]) == MAX_FIELD_CHARS
