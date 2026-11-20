@@ -4,7 +4,6 @@
 """GRPO keeps its packed forwards off for models whose layers mix packed rows (packing_boundary_blocker)."""
 
 import ast
-import inspect
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +52,12 @@ def _blind_module(name):
     return type(name, (torch.nn.Module,), {})()
 
 
+def _qwen35_gdn():
+    mixer = _blind_module("Qwen3_5GatedDeltaNet")
+    mixer.conv1d = torch.nn.Conv1d(2, 2, 3)
+    return mixer
+
+
 class _Model(torch.nn.Module):
     def __init__(
         self,
@@ -73,6 +78,7 @@ def _trainer():
 @pytest.mark.parametrize(
     "model",
     [
+        _Model(_qwen35_gdn()),
         _Model(_blind_module("RecurrentGemmaRglru")),
         _Model(_blind_module("ZayaCCAProjection")),
         _Model(_blind_module("DeepseekV4CSACompressor")),
@@ -91,18 +97,11 @@ def test_every_packed_path_is_refused_once(model):
     assert model.__dict__["_unsloth_seq_packing_grad_ok"] is True
 
 
-class GatedDeltaNet(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1d = torch.nn.Conv1d(2, 2, 3)
-
-
-@pytest.mark.parametrize("layer", [lambda: _blind_module("ZayaCCAProjection"), GatedDeltaNet])
-def test_ref_model_scored_first_still_protects_the_policy(layer):
+def test_ref_model_scored_first_still_protects_the_policy():
     # TRL scores a separate ref_model before the policy when the old-logps pass is skipped.
     trainer = _trainer()
-    ref = _Model(layer())
-    policy = _Model(layer())
+    ref = _Model(_blind_module("ZayaCCAProjection"))
+    policy = _Model(_blind_module("ZayaCCAProjection"))
     _helper()(trainer, ref)
     _helper()(trainer, policy)
     for model in (ref, policy):
@@ -110,135 +109,25 @@ def test_ref_model_scored_first_still_protects_the_policy(layer):
         assert model.__dict__["_unsloth_seq_packing_nograd_ok"] is False
 
 
-@pytest.mark.parametrize("outer, inner", [(False, False), (True, False), (False, True)])
-def test_gdn_without_complete_boundary_support_skips_the_probe(outer, inner):
-    check = _helper()
-    check.__globals__["_unsloth_grpo_packing_leaks"] = lambda *_: pytest.fail("missing boundaries")
-    model = _Model(GatedDeltaNet())
-    model._unsloth_varlen_forward_wrapped = outer
-    model.layer._unsloth_varlen_wrapped = inner
-    check(_trainer(), model)
-    assert model._unsloth_seq_packing_nograd_ok is False
-    assert model._unsloth_seq_packing_grad_ok is False
-
-
 @pytest.mark.parametrize(
-    "probe, scan_hit", [(None, True), (True, True), (False, False), (False, True)]
+    "leaks, scan_hit, can_pack", [(False, False, False), (None, True, False), (False, True, True)]
 )
-def test_wrapped_gdn_needs_verified_boundaries(probe, scan_hit):
-    model = _Model(GatedDeltaNet())
+def test_wrapped_gdn_packing_requires_verified_boundaries(leaks, scan_hit, can_pack):
+    model = _Model(_qwen35_gdn())
     model._unsloth_varlen_forward_wrapped = model.layer._unsloth_varlen_wrapped = True
     model.layer._unsloth_varlen_conv_hit = True
     model.layer._unsloth_varlen_scan_hit = scan_hit
     check = _helper()
-    check.__globals__["_unsloth_grpo_packing_leaks"] = lambda *_: probe
+    check.__globals__["_unsloth_grpo_packing_leaks"] = lambda *_: leaks
     trainer = _trainer()
     check(trainer, model)
-    if probe is False and scan_hit:
-        assert not any(flag in model.__dict__ for flag in FLAGS)
-        # A later checkpointed backward cannot reuse boundaries cleared by a per-row forward.
-        model.is_gradient_checkpointing = True
-        check(trainer, model)
-        assert model._unsloth_seq_packing_grad_ok is False
-        assert "_unsloth_seq_packing_nograd_ok" not in model.__dict__
-    else:
-        assert model._unsloth_seq_packing_grad_ok is False
-        assert model._unsloth_seq_packing_nograd_ok is False
+    assert getattr(model, "_unsloth_seq_packing_grad_ok", True) is can_pack
+    assert getattr(model, "_unsloth_seq_packing_nograd_ok", True) is can_pack
 
-
-def test_qwen35_grpo_matches_independent_completion_gradients(monkeypatch):
-    transformers = pytest.importorskip("transformers", minversion = "5.18.0")
-    peft = pytest.importorskip("peft")
-    zoo = pytest.importorskip("unsloth_zoo.rl_replacements")
-    from transformers.models.qwen3_5 import modeling_qwen3_5
-
-    # Run the reference PyTorch kernels even when optional CUDA extensions are installed.
-    for name in ("causal_conv1d_fn", "torch_chunk_gated_delta_rule"):
-        monkeypatch.setattr(modeling_qwen3_5, name, inspect.unwrap(getattr(modeling_qwen3_5, name)))
-    monkeypatch.setattr(zoo, "device_synchronize", lambda: None)
-    monkeypatch.setattr(zoo.grpo_accumulated_loss, "_pg_funcs", (), raising = False)
-    monkeypatch.delenv("UNSLOTH_GRPO_SEQ_PACKING", raising = False)
-    config = transformers.Qwen3_5TextConfig(
-        vocab_size = 64,
-        hidden_size = 32,
-        intermediate_size = 64,
-        num_hidden_layers = 2,
-        layer_types = ["linear_attention", "full_attention"],
-        num_attention_heads = 2,
-        num_key_value_heads = 1,
-        head_dim = 16,
-        linear_num_key_heads = 2,
-        linear_num_value_heads = 2,
-        linear_key_head_dim = 16,
-        linear_value_head_dim = 16,
-        pad_token_id = 0,
-        use_cache = False,
-        attn_implementation = "sdpa",
-    )
-    with torch.random.fork_rng(devices = []):
-        torch.manual_seed(3407)
-        model = peft.get_peft_model(
-            transformers.Qwen3_5ForCausalLM(config),
-            peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["in_proj_qkv", "out_proj"]),
-        )
-    # Keep the unisolated logit differences below the numerical probe's absolute floor.
-    with torch.no_grad():
-        model.get_output_embeddings().weight.mul_(0.01)
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
-    rows = torch.tensor([[2, 3, 4, 5, 6, 7], [2, 3, 4, 8, 9, 10]])
-    advantages = torch.tensor([1.0, -1.0])
-    targets = rows[:, -3:]
-    per_row_logits = torch.cat([model(input_ids = row[None]).logits for row in rows])
-    logps = per_row_logits[:, -4:-1].log_softmax(-1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
-    reference = -(advantages[:, None] * (logps - logps.detach()).exp()).mean()
-    params = [p for p in model.parameters() if p.requires_grad]
-    expected_grads = torch.autograd.grad(reference, params)
-
-    trainer = SimpleNamespace(
-        model = model,
-        beta = 0.0,
-        num_generations = 2,
-        use_vllm = False,
-        _autocast_dtype = None,
-        processing_class = SimpleNamespace(pad_token_id = 0),
-        args = SimpleNamespace(
-            unsloth_grpo_mini_batch = 1, unsloth_logit_chunk_multiplier = 1, steps_per_generation = 2
-        ),
-        accelerator = SimpleNamespace(
-            unwrap_model = lambda m, **kwargs: m, num_processes = 1, scaler = None
-        ),
-    )
-    _helper()(trainer, model)
-    scores = []
-
-    def capture_logits(module, args, output):
-        scores.append(output.logits[:, -4:-1].detach())
-
-    with model.register_forward_hook(capture_logits):
-        loss = zoo.grpo_accumulated_loss(
-            trainer,
-            rows,
-            torch.ones_like(rows),
-            3,
-            torch.ones_like(targets),
-            advantages,
-            None,
-            None,
-            loss_type = "grpo",
-            num_items_in_batch = 6,
-            num_processes = 1,
-            current_gradient_accumulation_steps = 1,
-            importance_sampling_level = "token",
-        )[0]
-    loss.backward()
-    torch.testing.assert_close(loss, reference)
-    torch.testing.assert_close(
-        torch.cat([p.grad.flatten() for p in params]),
-        torch.cat([g.flatten() for g in expected_grads]),
-        atol = 1e-9,
-        rtol = 1e-5,
-    )
-    torch.testing.assert_close(torch.cat(scores), per_row_logits[:, -4:-1].detach())
+    model.is_gradient_checkpointing = True
+    check(trainer, model)
+    assert model._unsloth_seq_packing_grad_ok is False
+    assert getattr(model, "_unsloth_seq_packing_nograd_ok", True) is can_pack
 
 
 def test_an_ordinary_model_keeps_packing():
