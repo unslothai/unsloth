@@ -196,10 +196,7 @@ import {
   setModelConfigDraftSavedRemember,
   subscribeModelConfigDraft,
 } from "../model-config/model-config-draft";
-import {
-  loadedAutoContext,
-  loadedConfigSignature,
-} from "../model-config/config-signature";
+import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
@@ -3521,11 +3518,6 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
-  const autoLoadedContext = loadedAutoContext(
-    config,
-    loadedConfig && reconcileConfigGpuSelection(loadedConfig, resolvedIsDiffusion, gpuDevices),
-    activeLoadedContext,
-  );
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
@@ -3608,6 +3600,9 @@ export function ModelConfigPage({
     customContextLength: loadableConfig.customContextLength,
     activeLoadedContext,
   });
+  // The loaded window answers for Auto while nothing changed, or when fixed layers keep it on
+  // reload; any other change fits again at load.
+  const autoLoadedContext = atBaseline ? activeLoadedContext : fixedLayerPin;
   const runtimeConfig =
     fixedLayerPin != null
       ? { ...loadableConfig, customContextLength: fixedLayerPin }

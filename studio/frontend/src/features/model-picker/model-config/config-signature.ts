@@ -87,19 +87,6 @@ export function loadedConfigSignature(
   ].join("|");
 }
 
-/** The loaded window answers for Auto only while the settings are the ones Auto fitted it to. */
-export function loadedAutoContext(
-  config: PerModelConfig,
-  loadedConfig: PerModelConfig | null | undefined,
-  loadedContext: number | null,
-): number | null {
-  if (loadedConfig == null || loadedConfig.customContextLength != null) return null;
-  return loadedConfigSignature({ ...config, customContextLength: null }) ===
-    loadedConfigSignature(loadedConfig)
-    ? loadedContext
-    : null;
-}
-
 export function modelConfigInstanceKey(
   modelId: string,
   ggufVariant: string | null | undefined,
