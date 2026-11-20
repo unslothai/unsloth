@@ -118,6 +118,32 @@ def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
     )
 
 
+def _attention_head_dim(module: Any) -> Optional[int]:
+    # diffusers Attention; the single-head blocks (Wan, Qwen-Image, HunyuanImage) carry no ``heads``: unknown.
+    heads, inner = getattr(module, "heads", None), getattr(module, "inner_dim", None)
+    try:
+        return int(inner) // int(heads) if heads and inner else None
+    except (TypeError, ValueError):
+        return None
+
+
+def vae_has_untrusted_head(vae: Any) -> bool:
+    """Whether ``vae`` may run an attention head wider than the Windows ROCm fused kernels compute right; a VAE or
+    attention module it cannot inspect counts as yes."""
+    named = getattr(vae, "named_modules", None)
+    if not callable(named):
+        return True
+    try:
+        for _, module in named():
+            if _is_attention_module(module):
+                head = _attention_head_dim(module)
+                if head is None or head > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM:
+                    return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
     """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes.
     A Windows ROCm head wider than 256 counts as no: the kernels that take it there compute it wrong."""

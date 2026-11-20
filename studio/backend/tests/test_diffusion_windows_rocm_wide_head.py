@@ -93,6 +93,45 @@ def test_vae_decode_compile_stays_eager_on_windows_rocm(monkeypatch, rocm, platf
     assert S._vae_decode_compile_allowed(pipe, "default") is allowed
 
 
+def _tiny_vae(top_channels, mid_attention = True):
+    diffusers = pytest.importorskip("diffusers")
+    return diffusers.AutoencoderKL(
+        down_block_types = ("DownEncoderBlock2D", "DownEncoderBlock2D"),
+        up_block_types = ("UpDecoderBlock2D", "UpDecoderBlock2D"),
+        block_out_channels = (32, top_channels),
+        norm_num_groups = 8,
+        mid_block_add_attention = mid_attention,
+    )
+
+
+@pytest.mark.parametrize(
+    "top_channels, mid_attention, env, allowed",
+    [
+        (64, True, "", True),  # head 64: fused kernels are right, decode compiles as on Linux
+        (32, False, "", True),  # no attention at all
+        (512, True, "", False),  # head 512: routing must stay eager
+        (512, True, "1", False),  # even when the env forces a compile
+    ],
+)
+def test_windows_rocm_keeps_decode_compile_unless_the_vae_has_a_wide_head(
+    monkeypatch, rocm, top_channels, mid_attention, env, allowed
+):
+    from core.inference import diffusion_speed as S
+
+    # Built before faking win32: diffusers' lazy imports pull in Windows-only torch modules under it.
+    pipe = types.SimpleNamespace(
+        unet = _UNet2DConditionModel(), vae = _tiny_vae(top_channels, mid_attention)
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(S, "_fused_vae_planned", lambda pipe: False)
+    monkeypatch.setattr(S, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}))
+    monkeypatch.setenv(S.COMPILE_VAE_ENV, env)
+    assert S._vae_decode_compile_allowed(pipe, "default") is allowed
+    # A DiT pipe forced on by the env follows the same head rule.
+    monkeypatch.setenv(S.COMPILE_VAE_ENV, "1")
+    assert S._vae_decode_compile_allowed(types.SimpleNamespace(vae = pipe.vae), "default") is allowed
+
+
 @pytest.mark.parametrize("budget", [2**30, 2**16])
 def test_windows_rocm_fp32_wide_head_never_reaches_the_stock_kernel(monkeypatch, rocm, budget):
     # fp32 (every trainer VAE, and fp32 inference VAEs) is no half-math call, and Windows ROCm's stock dispatch still
