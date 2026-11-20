@@ -217,12 +217,13 @@ def test_mcp_results_follow_the_setting(monkeypatch, saved, cut):
         assert f"truncated to {cut} chars for the model; 23098 chars total" in out
 
 
-def test_mcp_results_keep_the_default_where_the_window_is_unknown(monkeypatch):
+@pytest.mark.parametrize("unknown", [None, 0], ids = ["no-probe", "connection"])
+def test_a_priced_room_lets_a_raised_mcp_cap_through_where_the_window_is_unknown(monkeypatch, unknown):
+    """The room was priced from a real window, so it bounds the result; the 16,000 clamp is for no room at all."""
     limit.set_max_chars(32000)
-    tools._REQUEST_CONTEXT_TOKENS.set(None)
+    tools._REQUEST_CONTEXT_TOKENS.set(unknown)
     monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
-    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
-    assert "truncated to 16000 chars for the model" in out
+    assert tools._fit_result_to_room(MCP_23K, "mcp__server__tool") == MCP_23K
 
 
 def test_a_small_window_still_lowers_a_raised_mcp_cap(monkeypatch):
@@ -270,3 +271,48 @@ def test_an_api_model_mcp_result_honours_a_lowered_environment_cap(monkeypatch):
     tools._REQUEST_CONTEXT_TOKENS.set(0)
     out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
     assert "truncated to 4000 chars for the model; 23098 chars total" in out
+
+
+# A connection (llama.cpp, vLLM, Ollama, Custom) runs tools with `context_tokens=0` and the room it priced (#17553).
+MCP_40K = ("w" * 99 + "\n") * 400
+
+
+def _mcp_server(monkeypatch, result):
+    from core.inference import mcp_client
+    from storage import mcp_servers_db
+
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a.example/mcp")
+    mcp_client.cache_tools("srv1", [{"name": "read", "inputSchema": {"type": "object"}}])
+    monkeypatch.setattr(tools, "call_tool_sync", lambda **kwargs: result)
+
+
+def test_a_raised_setting_applies_to_an_mcp_result_on_a_connection(monkeypatch):
+    _mcp_server(monkeypatch, MCP_40K)
+    limit.set_max_chars(64000)
+    out = tools.execute_tool("mcp__srv1__read", {}, context_tokens = 0, result_budget_tokens = 100_000)
+    assert out == MCP_40K
+
+
+def test_an_mcp_result_on_a_connection_is_still_cut_to_the_room(monkeypatch):
+    _mcp_server(monkeypatch, MCP_40K)
+    limit.set_max_chars(64000)
+    out = tools.execute_tool("mcp__srv1__read", {}, context_tokens = 0, result_budget_tokens = 4_000)
+    assert "chars for the model; 40000 chars total" in out
+    # 4,000 tokens, halved because a remote server's tokens cannot be counted: far under the setting and the default.
+    assert len(out) < 8_000
+
+
+def test_a_lowered_setting_still_lowers_an_mcp_result_on_a_connection(monkeypatch):
+    _mcp_server(monkeypatch, MCP_40K)
+    limit.set_max_chars(4000)
+    out = tools.execute_tool("mcp__srv1__read", {}, context_tokens = 0, result_budget_tokens = 100_000)
+    assert "truncated to 4000 chars for the model; 40000 chars total" in out
+
+
+def test_a_raised_setting_applies_to_python_output_on_a_connection(tmp_path):
+    limit.set_max_chars(64000)
+    tools._REQUEST_CONTEXT_TOKENS.set(0)
+    tools._REQUEST_RESULT_BUDGET.set(100_000)
+    assert tools._truncate(MCP_40K, workdir = str(tmp_path)) == MCP_40K
