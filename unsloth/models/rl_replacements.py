@@ -1885,25 +1885,37 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
-    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
-    recurrences mix packed rows (packing_boundary_blocker), or whose attention lets packed documents see each other
-    (_unsloth_grpo_packing_leaks). Their leak (~0.1 nats) passes the 0.7 packed self-verify. Zoo's grad
-    PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    """Check packed document isolation once per model, including a separate reference policy."""
     try:
         unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        wrapped = getattr(unwrapped, "_unsloth_varlen_forward_wrapped", False)
+        if wrapped and getattr(unwrapped, "is_gradient_checkpointing", False):
+            # The per-row verification forward clears the mixer's boundaries before backward replays it.
+            unwrapped._unsloth_seq_packing_grad_ok = False
         if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
             return
-        unwrapped._unsloth_packing_boundary_checked = True
-        from unsloth.utils.packing import packing_boundary_blocker
+        from unsloth.utils.packing import (
+            _hybrid_varlen_dispatched,
+            _iter_stateful_mixers,
+            packing_boundary_blocker,
+        )
 
         config = getattr(unwrapped, "config", None)
         blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+        mixers = _iter_stateful_mixers(unwrapped) if blocker is None else ()
+        if mixers and not (
+            wrapped and all(getattr(m, "_unsloth_varlen_wrapped", False) for m, _ in mixers)
+        ):
+            blocker = "missing_mixer_boundaries"
+        unwrapped._unsloth_packing_boundary_checked = True
     except Exception:
         return
-    if blocker is None and _unsloth_grpo_packing_leaks(self, unwrapped) is True:
-        blocker = "packing_leak_probe"
     if blocker is None:
-        return
+        leaks = _unsloth_grpo_packing_leaks(self, unwrapped)
+        if not mixers and leaks is not True:
+            return
+        if leaks is False and all(_hybrid_varlen_dispatched(m) for m, _ in mixers):
+            return
     unwrapped._unsloth_seq_packing_nograd_ok = False
     unwrapped._unsloth_seq_packing_grad_ok = False
     unwrapped._unsloth_prefix_grouper_nograd_disabled = True
