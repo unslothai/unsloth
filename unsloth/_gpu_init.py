@@ -368,6 +368,7 @@ from .import_fixes import (
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_tokenizer_config_vocab_file_override,
+    fix_transformers_mistral_regex_hub_error,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
@@ -445,6 +446,7 @@ fix_transformers_flex_mask_graph_breaks()
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
 fix_transformers_tokenizer_config_vocab_file_override()
+fix_transformers_mistral_regex_hub_error()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -546,6 +548,7 @@ del fix_transformers_config_commit_hash
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_tokenizer_config_vocab_file_override
+del fix_transformers_mistral_regex_hub_error
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
