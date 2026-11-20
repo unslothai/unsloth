@@ -58,6 +58,49 @@ def _router_logits_requested(trainer, model, inputs):
     return False
 
 
+def _output_head(model):
+    for module in (model, getattr(model, "module", None)):
+        getter = getattr(module, "get_output_embeddings", None)
+        head = None
+        if callable(getter):
+            try:
+                head = getter()
+            except Exception:
+                head = None
+        if head is None:
+            head = getattr(module, "lm_head", None)
+        if isinstance(head, torch.nn.Module):
+            return head
+    return None
+
+
+def _head_not_fusable(model):
+    # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so an
+    # active unmerged adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a
+    # head bias would leave the loss. The stock path calls lm_head(hidden) and keeps both.
+    head = _output_head(model)
+    if head is None:
+        return False
+    if getattr(head, "bias", None) is not None:
+        return True
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer
+    except Exception:
+        return False
+    for module in head.modules():
+        if not isinstance(module, BaseTunerLayer) or getattr(module, "disable_adapters", False):
+            continue
+        merged = set(getattr(module, "merged_adapters", None) or ())
+        held = set()
+        for layer_name in getattr(module, "adapter_layer_names", None) or ():
+            held.update(getattr(module, layer_name, None) or ())
+        if any(
+            n in held and n not in merged for n in (getattr(module, "active_adapters", None) or ())
+        ):
+            return True
+    return False
+
+
 def _skip_reason(trainer, model, inputs, return_outputs):
     """None when the fused path applies, else why not (counted in STATS)."""
     smoother = getattr(trainer, "label_smoother", None)
@@ -84,6 +127,8 @@ def _skip_reason(trainer, model, inputs, return_outputs):
         return "fell_back"
     if _router_logits_requested(trainer, model, inputs):
         return "router_logits"
+    if _head_not_fusable(model):
+        return "head"
     if _override() is None:
         return "zoo"
     return None
