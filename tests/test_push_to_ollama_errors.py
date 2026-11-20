@@ -36,7 +36,12 @@ def _extract(name):
 class _FakePopen:
     """The readline-to-EOF / wait / context-manager surface save.py drives."""
 
-    def __init__(self, args, returncode = 0, out = ""):
+    def __init__(
+        self,
+        args,
+        returncode = 0,
+        out = "",
+    ):
         self.args = list(args)
         self._returncode = returncode
         self.stdout = io.StringIO(out)
@@ -113,9 +118,7 @@ def test_successful_create_and_push_prints_success(tmp_path, monkeypatch, capsys
 
 def test_failed_create_raises_and_never_pushes(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    namespace, calls = _load(
-        popen = lambda args: _FakePopen(args, returncode = 1, out = "boom\n")
-    )
+    namespace, calls = _load(popen = lambda args: _FakePopen(args, returncode = 1, out = "boom\n"))
 
     with pytest.raises(RuntimeError, match = r"ollama create user/my-model:latest"):
         _push(namespace)
@@ -132,9 +135,7 @@ def test_failed_create_raises_and_never_pushes(tmp_path, monkeypatch, capsys):
 def test_failed_push_raises_and_prints_no_success(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     returncodes = iter([0, 1])
-    namespace, calls = _load(
-        popen = lambda args: _FakePopen(args, returncode = next(returncodes))
-    )
+    namespace, calls = _load(popen = lambda args: _FakePopen(args, returncode = next(returncodes)))
 
     with pytest.raises(RuntimeError, match = r"ollama push user/my-model:latest"):
         _push(namespace)
