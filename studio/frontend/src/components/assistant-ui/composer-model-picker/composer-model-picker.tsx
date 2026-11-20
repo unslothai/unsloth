@@ -3493,7 +3493,7 @@ export function ComposerModelPicker({
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
   const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
-  const [pickerMinBase, setPickerMinBase] = useState(420);
+  const [pickerMinBase, setPickerMinBase] = useState(440);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
   const dropsDown = openSide === "bottom";
