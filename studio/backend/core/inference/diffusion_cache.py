@@ -406,6 +406,10 @@ def install_fbcache_length_guard() -> bool:
         return False
     if getattr(original, "_unsloth_length_guard", False):
         return True
+    # A counter already installed stays outermost: guard what it wraps, then count over the guard.
+    counted = getattr(original, "_unsloth_fbc_counter", False)
+    if counted:
+        original = getattr(original, "_unsloth_fbc_inner", original)
     import torch
 
     @torch.compiler.disable
@@ -423,10 +427,9 @@ def install_fbcache_length_guard() -> bool:
         return original(self, hidden_states_residual)
 
     _should_compute_remaining_blocks._unsloth_length_guard = True
-    _should_compute_remaining_blocks._unsloth_fbc_counter = getattr(
-        original, "_unsloth_fbc_counter", False
-    )
     FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    if counted:
+        install_fbcache_counter()
     return True
 
 
@@ -466,6 +469,7 @@ def install_fbcache_counter() -> bool:
     except Exception:  # noqa: BLE001 - counters are diagnostics: never block the cache
         return False
     _should_compute_remaining_blocks._unsloth_fbc_counter = True
+    _should_compute_remaining_blocks._unsloth_fbc_inner = original
     _should_compute_remaining_blocks._unsloth_length_guard = getattr(
         original, "_unsloth_length_guard", False
     )

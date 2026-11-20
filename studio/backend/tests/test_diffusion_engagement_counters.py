@@ -185,3 +185,22 @@ def test_install_untiled_decode_exposes_counters_on_the_vae(monkeypatch):
     assert U.install_untiled_decode(pipe, "wan2.2-ti2v-5b")
     pipe.vae.decode(Z)
     assert pipe.vae._unsloth_untiled_stats["untiled"] == 1
+
+
+@pytest.mark.parametrize("order", ["counter_first", "guard_first"])
+def test_guard_recomputes_are_counted_in_either_install_order(monkeypatch, order):
+    # A shape change makes the length guard return True itself; that evaluation must still be counted, whichever of
+    # the two was installed first in the process.
+    from diffusers.hooks.first_block_cache import FBCHeadBlockHook
+
+    monkeypatch.setattr(FBCHeadBlockHook, "_should_compute_remaining_blocks", lambda self, r: False)
+    steps = [C.install_fbcache_counter, C.install_fbcache_length_guard]
+    for install in steps if order == "counter_first" else steps[::-1]:
+        assert install()
+    fn = FBCHeadBlockHook._should_compute_remaining_blocks
+    assert fn._unsloth_fbc_counter and fn._unsloth_length_guard
+    state = types.SimpleNamespace(head_block_residual = torch.zeros(1, 4), tail_block_residuals = None)
+    hook = types.SimpleNamespace(state_manager = types.SimpleNamespace(get_state = lambda: state))
+    assert fn(hook, torch.zeros(1, 8)) is True  # shape changed: the guard recomputes
+    assert fn(hook, torch.zeros(1, 4)) is False  # same shape: the cache decides (skip)
+    assert hook.__dict__[C._FBC_COUNTS_ATTR] == {"computed": 1, "skipped": 1}
