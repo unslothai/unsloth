@@ -471,10 +471,11 @@ def decide_small_host(
     stored dtype (cast per call) instead of storing it as int8."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
-    if str(device) != "cuda":
-        return SmallHostDecision(False, "not a CUDA load")
     compute = _dtype_name(compute_dtype)
     narrowed = _narrowed_mib(components, compute, skip_narrowed)
+    if str(device) != "cuda":
+        # the narrowed copy is built in host RAM on any device (ROCm targets report "rocm")
+        return _narrowed_only("not a CUDA load", narrowed, host_total_mib, host_available_mib)
     if compute not in ("float16", "float32"):
         return _narrowed_only(
             f"compute dtype {compute} needs no conversion",

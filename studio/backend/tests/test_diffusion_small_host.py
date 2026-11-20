@@ -833,14 +833,22 @@ def test_fp32_dit_narrowed_on_a_host_that_holds_the_copy_loads_dense():
     assert not d.engaged and d.refuse is None and "float32 -> 16-bit" in d.reason
 
 
-def test_narrowing_skips_cast_cached_components_and_wide_or_non_cuda_loads():
+def test_narrowing_skips_cast_cached_components_and_wide_loads():
     tight = dict(total = MINT_TOTAL, available = 10719)
     assert (
         _decide(ZIMAGE, dtype = torch.bfloat16, skip_narrowed = ("transformer",), **tight).refuse
         is None
     )
     assert _decide(ZIMAGE, dtype = torch.float32, **tight).dense_host_mib == int(7690 * 2 * 1.15)
-    assert _decide(ZIMAGE, dtype = torch.bfloat16, device = "mps", **tight).refuse is None
+    assert _decide(ZIMAGE, dtype = torch.bfloat16, total = MINT_TOTAL, available = None).refuse is None
+
+
+def test_narrowing_is_refused_on_rocm_and_other_non_cuda_targets():
+    # a ROCm target reports device "rocm"; the bf16 copy still lands in host RAM (mint, RX 9060 XT, 15 GB)
+    for device in ("rocm", "mps", "cpu"):
+        d = _decide(ZIMAGE, dtype = torch.bfloat16, device = device, total = MINT_TOTAL, available = 10719)
+        assert not d.engaged and d.refuse and "float32" in d.refuse, device
+    assert _decide(ZIMAGE, dtype = torch.bfloat16, device = "rocm", total = 32 * 1024, available = 28000).refuse is None
     assert _decide(ZIMAGE, dtype = torch.bfloat16, total = MINT_TOTAL, available = None).refuse is None
 
 
@@ -875,6 +883,14 @@ def test_the_pipeline_decision_raises_the_narrowing_refusal_and_skips_it_for_var
 
     with pytest.raises(RuntimeError, match = "Not enough system RAM"):
         decide()
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        dif.DiffusionBackend()._small_host_decision(
+            str(tmp_path),
+            {},
+            types.SimpleNamespace(backend = "rocm", device = "cuda:0"),
+            torch.bfloat16,
+            lora_active = False,
+        )
     assert decide(variant = "fp16").refuse is None
     assert decide(cast_cached = ("transformer",)).refuse is None
 
