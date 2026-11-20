@@ -935,3 +935,78 @@ test("an Auto resident's VRAM counts toward the reload's window, capped at the c
     Math.floor((8192 + (8 / 14) * (131072 - 8192)) / 256) * 256,
   );
 });
+
+test("Auto fits along the priced curve, so a saturating SWA cache does not stretch the window", async () => {
+  const { resolveAutoFittedContext } = await import(
+    "../src/features/model-picker/model-config/memory-fit.ts"
+  );
+  // KV grows 4 GB from 8192 to 16384, then the SWA layers stop growing: 1 GB per doubling.
+  const estimate: MemoryFitEstimate = {
+    gpuBytes: 15 * GB,
+    totalBytes: 15 * GB,
+    kvEstimable: true,
+    drafterKvUnsized: false,
+    adaptersUnsized: false,
+    moeOffloadUnmodelled: false,
+    contextIsPinned: false,
+    gpuFloorBytes: 6 * GB,
+    gpuFloorCtx: 8192,
+    nCtx: 131072,
+    fitCurve: [
+      [16384, 10 * GB, 10 * GB],
+      [32768, 11 * GB, 11 * GB],
+      [65536, 12.5 * GB, 12.5 * GB],
+    ],
+  };
+  const capacity: MemoryFitCapacity = {
+    gpuCapacityGb: 16,
+    totalCapacityGb: 64,
+    systemRamCapacityGb: 48,
+    freeGpuCapacityGb: 8,
+    freeGpuCapacityKnown: true,
+    usableSystemRamGb: 40,
+    singleMemoryPool: false,
+  };
+  // Half way up the first segment, not (8 - 6) / (15 - 6) of the way to native.
+  assert.equal(resolveAutoFittedContext(estimate, capacity), 12288);
+  assert.ok(resolveAutoFittedContext({ ...estimate, fitCurve: null }, capacity)! > 12288 * 2);
+  assert.equal(
+    resolveAutoFittedContext(estimate, { ...capacity, freeGpuCapacityGb: 11.75 }),
+    49152,
+  );
+});
+
+test("one pool fits against the whole pool, not a GPU window inside it", async () => {
+  const { resolveAutoFittedContext } = await import(
+    "../src/features/model-picker/model-config/memory-fit.ts"
+  );
+  const estimate: MemoryFitEstimate = {
+    gpuBytes: 40 * GB,
+    totalBytes: 40 * GB,
+    kvEstimable: true,
+    drafterKvUnsized: false,
+    adaptersUnsized: false,
+    moeOffloadUnmodelled: false,
+    contextIsPinned: false,
+    gpuFloorBytes: 20 * GB,
+    gpuFloorCtx: 8192,
+    floorTotalBytes: 20 * GB,
+    nCtx: 131072,
+  };
+  // A 16 GB GPU window on a 128 GB APU with 62 GB usable.
+  const apu: MemoryFitCapacity = {
+    gpuCapacityGb: 15.5,
+    totalCapacityGb: 128,
+    systemRamCapacityGb: 128,
+    freeGpuCapacityGb: 62,
+    freeGpuCapacityKnown: true,
+    usableSystemRamGb: 62,
+    singleMemoryPool: true,
+  };
+  assert.equal(resolveAutoFittedContext(estimate, apu), 131072);
+  // Metal fits against its own budget, min(working set, free) x 0.85, when that is smaller.
+  assert.equal(
+    resolveAutoFittedContext(estimate, apu, { appleUnifiedMemory: true, loadBudgetCeilingGb: 26 }),
+    Math.floor((8192 + 0.3 * (131072 - 8192)) / 256) * 256,
+  );
+});

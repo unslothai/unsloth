@@ -42,6 +42,7 @@ export interface MemoryEstimate {
   /** Absent from older backends. */
   gpuFloorCtx?: number | null;
   floorTotalBytes?: number | null;
+  fitCurve?: [number, number, number][] | null;
   floorCanOffload: boolean;
   cacheTypeKv: string | null;
   nParallel: number;
@@ -113,6 +114,7 @@ const UNAVAILABLE: MemoryEstimate = {
   gpuFloorBytes: null,
   gpuFloorCtx: null,
   floorTotalBytes: null,
+  fitCurve: null,
   floorCanOffload: false,
   cacheTypeKv: null,
   nParallel: 1,
@@ -146,6 +148,7 @@ interface ApiEstimateResponse {
   gpu_floor_bytes?: number | null;
   gpu_floor_ctx?: number | null;
   floor_total_bytes?: number | null;
+  fit_curve?: unknown;
   floor_can_offload?: boolean;
   cache_type_kv: string | null;
   n_parallel: number;
@@ -202,6 +205,16 @@ function finiteCount(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.trunc(value)
     : fallback;
+}
+
+function fitCurve(value: unknown): [number, number, number][] | null {
+  if (!Array.isArray(value)) return null;
+  const points = value.map((point) =>
+    Array.isArray(point) && point.length === 3 ? point.map(nullableCount) : null,
+  );
+  return points.every((point) => point != null && point.every((v) => v != null))
+    ? (points as [number, number, number][])
+    : null;
 }
 
 function nullableCount(value: unknown): number | null {
@@ -270,6 +283,7 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     gpuFloorBytes: nullableCount(body.gpu_floor_bytes),
     gpuFloorCtx: nullableCount(body.gpu_floor_ctx),
     floorTotalBytes: nullableCount(body.floor_total_bytes),
+    fitCurve: fitCurve(body.fit_curve),
     floorCanOffload: flag(body.floor_can_offload, false),
     cacheTypeKv:
       typeof body.cache_type_kv === "string" ? body.cache_type_kv : null,

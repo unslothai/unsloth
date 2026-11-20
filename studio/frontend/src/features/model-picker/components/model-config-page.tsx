@@ -3900,7 +3900,12 @@ export function ModelConfigPage({
             reclaimableTotalBytes: autoFitReclaimableCredit.totalBytes,
             reclaimableGpuBytes: autoFitReclaimableCredit.gpuBytes,
           },
-          { appleUnifiedMemory: isAppleUnifiedMemory },
+          {
+            appleUnifiedMemory: isAppleUnifiedMemory,
+            loadBudgetCeilingGb: isAppleUnifiedMemory
+              ? inferenceGpu.unifiedLoadCeilingGb
+              : null,
+          },
         )
       : null;
 

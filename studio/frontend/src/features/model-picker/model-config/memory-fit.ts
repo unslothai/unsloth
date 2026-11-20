@@ -68,6 +68,8 @@ export interface MemoryFitEstimate {
   gpuFloorCtx?: number | null;
   /** `totalBytes` at that context: on one pool, host terms such as checkpoints shrink with it. */
   floorTotalBytes?: number | null;
+  /** [context, gpuBytes, totalBytes] at each doubling of the floor below native. */
+  fitCurve?: [number, number, number][] | null;
   floorCanOffload?: boolean;
   nCtx?: number;
 }
@@ -352,11 +354,19 @@ export function previewsAutoFit(state: {
   );
 }
 
-/** Linear between the floor and native prices: KV and the context-linear compute grow linearly. */
+/** Linear between adjacent prices on the floor-to-native curve: a compact SWA cache saturates
+ *  part-way, so one line from floor to native would overstate the window. */
 export function resolveAutoFittedContext(
   estimate: MemoryFitEstimate,
   capacity: MemoryFitCapacity,
-  { appleUnifiedMemory = false }: { appleUnifiedMemory?: boolean } = {},
+  {
+    appleUnifiedMemory = false,
+    loadBudgetCeilingGb = null,
+  }: {
+    appleUnifiedMemory?: boolean;
+    /** Metal's own after-unload budget, min(working set, free) times its fraction. */
+    loadBudgetCeilingGb?: number | null;
+  } = {},
 ): number | null {
   const nativeCtx = estimate.nCtx ?? 0;
   const floorCtx = estimate.gpuFloorCtx ?? 0;
@@ -383,22 +393,31 @@ export function resolveAutoFittedContext(
   const credited =
     availableGb +
     Math.max(0, reclaimed / 1024 ** 3 - reclaimableBytes(capacity.freeGpuReserveDeficitGb));
-  const budget =
-    (capacity.gpuCapacityGb > 0 ? Math.min(credited, capacity.gpuCapacityGb) : credited) *
-    1024 ** 3;
+  const poolGb = capacity.singleMemoryPool ? capacity.totalCapacityGb : capacity.gpuCapacityGb;
+  const ceilings = [poolGb, loadBudgetCeilingGb ?? 0].filter((gb) => gb > 0);
+  const budget = Math.min(credited, ...ceilings) * 1024 ** 3;
   const nativeBytes = capacity.singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes;
-  const floorBytes =
-    capacity.singleMemoryPool && Number.isFinite(estimate.floorTotalBytes)
-      ? (estimate.floorTotalBytes as number)
-      : nativeBytes - Math.max(0, estimate.gpuBytes - (estimate.gpuFloorBytes as number));
-  const shrinkable = Math.max(0, nativeBytes - floorBytes);
+  // Two pools fit the GPU share; host terms stay at native.
+  const priced = (gpuBytes: number, totalBytes: number | null | undefined) =>
+    capacity.singleMemoryPool && Number.isFinite(totalBytes)
+      ? (totalBytes as number)
+      : nativeBytes - Math.max(0, estimate.gpuBytes - gpuBytes);
+  const curve: [number, number][] = [
+    [floorCtx, priced(estimate.gpuFloorBytes as number, estimate.floorTotalBytes)],
+    ...(estimate.fitCurve ?? [])
+      .filter(([ctx]) => ctx > floorCtx && ctx < nativeCtx)
+      .map(([ctx, gpu, total]): [number, number] => [ctx, priced(gpu, total)]),
+    [nativeCtx, nativeBytes],
+  ];
   const ceiling = appleUnifiedMemory ? Math.min(nativeCtx, APPLE_AUTO_CONTEXT_CAP) : nativeCtx;
   if (nativeBytes <= budget) return ceiling;
-  if (floorBytes >= budget || shrinkable === 0) {
+  if (curve[0][1] >= budget) {
     return appleUnifiedMemory ? Math.min(nativeCtx, APPLE_NOTHING_FITS_CONTEXT) : floorCtx;
   }
-  const fitted =
-    floorCtx + ((budget - floorBytes) / shrinkable) * (nativeCtx - floorCtx);
+  let i = 0;
+  while (curve[i + 1][1] <= budget) i += 1;
+  const [[loCtx, loBytes], [hiCtx, hiBytes]] = [curve[i], curve[i + 1]];
+  const fitted = loCtx + ((budget - loBytes) / (hiBytes - loBytes)) * (hiCtx - loCtx);
   return Math.max(
     floorCtx,
     Math.min(ceiling, Math.floor(fitted / AUTO_CONTEXT_STEP) * AUTO_CONTEXT_STEP),

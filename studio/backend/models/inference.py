@@ -1464,6 +1464,11 @@ class EstimateMemoryResponse(BaseModel):
     floor_total_bytes: Optional[int] = Field(
         None, description = "total_bytes at that same context; set with gpu_floor_bytes."
     )
+    fit_curve: Optional[List[List[int]]] = Field(
+        None,
+        description = "[n_ctx, gpu_bytes, total_bytes] at each doubling of gpu_floor_ctx below "
+        "n_ctx: a compact SWA cache saturates part-way, so the curve is not one line.",
+    )
     floor_can_offload: bool = Field(
         False,
         description = "Whether a load still over the card at the floor moves layers to the "
@@ -1582,6 +1587,11 @@ class MemoryEstimate(BaseModel):
     )
     floor_total_bytes: Optional[int] = Field(
         None, description = "total_bytes at that same context; set with gpu_floor_bytes."
+    )
+    fit_curve: Optional[List[List[int]]] = Field(
+        None,
+        description = "[n_ctx, gpu_bytes, total_bytes] at each doubling of gpu_floor_ctx below "
+        "n_ctx: a compact SWA cache saturates part-way, so the curve is not one line.",
     )
     floor_can_offload: bool = Field(
         False,
