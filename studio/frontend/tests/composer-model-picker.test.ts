@@ -24,7 +24,6 @@ import {
   pickerAlignOffset,
   pickerDropOffset,
   pickerMinHeight,
-  pickerRoomBelow,
   pickerSide,
   pickerWidth,
   pickerZoomOut,
@@ -679,7 +678,7 @@ test("Discover keeps rows the Hub search matched by maker alias", () => {
   );
 });
 
-test("the open picker is at least 420px and grows only into the room under Select model", () => {
+test("the open picker is a fixed 420px on every tab, whatever each tab lists", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
@@ -691,7 +690,7 @@ test("the open picker is at least 420px and grows only into the room under Selec
   assert.doesNotMatch(pickerCss, /^\s*--picker-floor:/m);
   assert.match(
     picker,
-    /isExpanded\s+\? "min-h-\(--composer-picker-min-h\) max-h-\(--composer-picker-max-h\)"/,
+    /isExpanded\s+\? "h-\(--composer-picker-min-h\)"/,
   );
   assert.match(
     picker,
@@ -702,10 +701,8 @@ test("the open picker is at least 420px and grows only into the room under Selec
     css,
     /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
   );
-  assert.match(
-    css,
-    /--composer-picker-max-h: max\(var\(--composer-picker-min-h\), min\(calc\(540px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-room, var\(--picker-floor, calc\(100dvh - 16px\)\)\)\)\);/,
-  );
+  // #18074 let it grow from 420px to 540px with the tab's row count, so switching tabs resized it.
+  assert.doesNotMatch(css, /--composer-picker-max-h/);
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
   assert.match(
@@ -728,9 +725,7 @@ test("short landscape windows get a 400px floor; phones and tall windows keep 42
   assert.match(picker, /"--picker-min-base": `\$\{pickerMinBase\}px`/);
 });
 
-test("opening down, the room under Select model sets the growth and only the floor rides up", () => {
-  assert.equal(pickerRoomBelow(480, 900), 404);
-  assert.equal(pickerRoomBelow(900, 900), 0);
+test("opening down, a panel short of room rides up over the composer", () => {
   assert.equal(pickerDropOffset(480, 420, 900), -8);
   assert.equal(pickerDropOffset(400, 300, 900), 8);
   // Taller than the window: pinned 8px from its top.
@@ -739,11 +734,7 @@ test("opening down, the room under Select model sets the growth and only the flo
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /sideOffset=\{dropsDown \? dropOffset : PICKER_GAP\}/);
-  assert.match(
-    picker,
-    /setRoomBelow\(pickerRoomBelow\(rect\.bottom, window\.innerHeight\)\)/,
-  );
-  assert.match(picker, /"--picker-room": `\$\{roomBelow\}px`/);
+  assert.doesNotMatch(picker, /--picker-room/);
   assert.match(
     picker,
     /pickerDropOffset\(rect\.bottom, panel\.offsetHeight, window\.innerHeight\)/,

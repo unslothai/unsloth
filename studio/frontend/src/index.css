@@ -3930,7 +3930,6 @@ html[data-chat-font] .aui-root {
 		--composer-picker-w: clamp(calc(360px * var(--ui-space-scale, 1)), 30vw, calc(520px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
 		/* A --picker-floor default here (after Tailwind, same layer) would beat the upward utility. */
 		--composer-picker-min-h: min(calc(var(--picker-min-base, 420px) * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-floor, calc(100dvh - 16px)));
-		--composer-picker-max-h: max(var(--composer-picker-min-h), min(calc(540px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-room, var(--picker-floor, calc(100dvh - 16px)))));
 	}
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {

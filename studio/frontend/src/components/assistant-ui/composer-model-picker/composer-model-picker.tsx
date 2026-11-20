@@ -224,7 +224,6 @@ import {
   PICKER_GAP,
   pickerDropOffset,
   pickerMinHeight,
-  pickerRoomBelow,
   pickerWidth,
   pickerZoomOut,
   type PickerRow,
@@ -3442,7 +3441,6 @@ export function ComposerModelPicker({
   const [pickerMinBase, setPickerMinBase] = useState(420);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
-  const [roomBelow, setRoomBelow] = useState<number | null>(null);
   const dropsDown = openSide === "bottom";
   // Layout effect: the first painted frame must already have the measured offset.
   useLayoutEffect(() => {
@@ -3452,7 +3450,6 @@ export function ComposerModelPicker({
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect) {
-        setRoomBelow(pickerRoomBelow(rect.bottom, window.innerHeight));
         setDropOffset(
           pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
         );
@@ -3505,14 +3502,8 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      const nextSide = pickerSide(side, rect, window.innerHeight);
-      setOpenSide(nextSide);
+      setOpenSide(pickerSide(side, rect, window.innerHeight));
       setDropOffset(PICKER_GAP);
-      setRoomBelow(
-        nextSide === "bottom" && rect
-          ? pickerRoomBelow(rect.bottom, window.innerHeight)
-          : null,
-      );
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
@@ -5378,9 +5369,6 @@ export function ComposerModelPicker({
           {
             "--picker-zoom-out": pickerZoomOutState,
             "--picker-min-base": `${pickerMinBase}px`,
-            ...(roomBelow === null
-              ? {}
-              : { "--picker-room": `${roomBelow}px` }),
           } as CSSProperties
         }
         data-tour="chat-model-selector-popover"
@@ -5401,7 +5389,7 @@ export function ComposerModelPicker({
           configTarget
             ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
             : isExpanded
-              ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
+              ? "h-(--composer-picker-min-h)"
               : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",

@@ -481,13 +481,6 @@ export function pickerMinHeight(
   return shortLandscape ? 400 : 420;
 }
 
-export function pickerRoomBelow(
-  triggerBottom: number,
-  viewportHeight: number,
-): number {
-  return Math.max(0, viewportHeight - triggerBottom - PICKER_GAP - PICKER_EDGE);
-}
-
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,

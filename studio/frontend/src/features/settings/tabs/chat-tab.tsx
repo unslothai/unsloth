@@ -903,6 +903,18 @@ export function ChatTab() {
 
       <SettingsSection title={t("settings.chat.modelSelection.title")}>
         <SettingsRow
+          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+          description={t(
+            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+            checked={pickerMonochromeIcons}
+            onCheckedChange={setPickerMonochromeIcons}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.chat.modelSelection.showMemoryBar")}
           description={t(
             "settings.chat.modelSelection.showMemoryBarDescription",
@@ -954,18 +966,6 @@ export function ChatTab() {
             aria-label={t("settings.chat.modelSelection.pickerExpandLoaded")}
             checked={pickerExpandLoaded}
             onCheckedChange={setPickerExpandLoaded}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-          description={t(
-            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-            checked={pickerMonochromeIcons}
-            onCheckedChange={setPickerMonochromeIcons}
           />
         </SettingsRow>
       </SettingsSection>
