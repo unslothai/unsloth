@@ -10131,9 +10131,11 @@ def _cap_tool_memory(proc, pgid, sandboxed: bool) -> None:
     limit_bytes = sandbox_memory_limit.memory_limit_bytes()
     if limit_bytes is None:
         return
-    if os.name == "nt":
-        if isinstance(pgid, tuple) and pgid[0] == "windows-job":
-            pgid[1].set_memory_limit(limit_bytes)
+    if (
+        isinstance(pgid, tuple)
+        and pgid[0] == "windows-job"
+        and pgid[1].set_memory_limit(limit_bytes)
+    ):
         return
     threading.Thread(target = _memory_watchdog, args = (proc, limit_bytes, pgid), daemon = True).start()
 

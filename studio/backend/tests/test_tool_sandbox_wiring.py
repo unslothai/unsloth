@@ -2627,3 +2627,31 @@ def test_the_memory_watchdog_leaves_a_small_tree_alone():
     tools._memory_watchdog(proc, 1024**3, tools._capture_process_group(proc), 0.05)
     assert proc.wait(timeout = 20) == 0
     assert tools._memory_exceeded_note(proc) == ""
+
+
+@pytest.mark.parametrize("pgid_kind", ["windows-job-refused", "windows-tree"])
+def test_windows_falls_back_to_the_watchdog_without_a_job_memory_limit(monkeypatch, pgid_kind):
+    class _RefusingJob:
+        def set_memory_limit(self, limit_bytes):
+            return False
+
+    started = []
+
+    class _Thread:
+        def __init__(self, target, args, daemon):
+            started.append((target, args))
+
+        def start(self):
+            pass
+
+    pgid = (
+        ("windows-job", _RefusingJob())
+        if pgid_kind == "windows-job-refused"
+        else ("windows-tree", 1, None)
+    )
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools.os, "name", "nt")
+    monkeypatch.setattr(tools.sandbox_memory_limit, "memory_limit_bytes", lambda: 1024**3)
+    monkeypatch.setattr(tools.threading, "Thread", _Thread)
+    tools._cap_tool_memory(object(), pgid, True)
+    assert [target for target, _ in started] == [tools._memory_watchdog]
