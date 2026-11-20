@@ -53,12 +53,16 @@ def endpoint() -> str:
 
 
 def offline_mode() -> bool:
-    """HF_HUB_OFFLINE (or TRANSFORMERS_OFFLINE, or a Studio force-offline window) is on: nothing may ask the Hub.
-    A media load then reads only the cache, as a ``local_files_only`` one does. Never raises."""
+    """The user asked for offline mode (HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE): nothing may ask the Hub, so a media
+    load reads only the cache, as a ``local_files_only`` one does. Another thread's short force_hf_offline window
+    does not count: the load would stay cache-only for its whole run and could not fetch a missing file. Never
+    raises."""
     try:
-        from utils.utils import hf_env_offline
-        if hf_env_offline():
+        from utils.utils import force_hf_offline_active, hf_user_offline
+        if hf_user_offline():
             return True
+        if force_hf_offline_active():
+            return False
     except Exception:  # noqa: BLE001
         pass
     try:

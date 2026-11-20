@@ -113,3 +113,20 @@ def test_online_loads_keep_their_flag(monkeypatch):
     assert hub_reachability.offline_mode() is False
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     assert hub_reachability.offline_mode() is True
+
+
+def test_another_threads_force_offline_window_does_not_make_a_load_cache_only(monkeypatch):
+    """A short force_hf_offline window (an offline-first config resolve, a llama.cpp load) sets HF_HUB_OFFLINE for
+    the whole process; a media load starting inside it must not be cache-only for its whole run."""
+    from core.inference import hub_reachability
+    from utils.utils import force_hf_offline
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    assert hub_reachability.offline_mode() is False
+    with force_hf_offline():
+        assert hub_reachability.offline_mode() is False
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert hub_reachability.offline_mode() is True
+    with force_hf_offline():
+        assert hub_reachability.offline_mode() is True
