@@ -99,6 +99,9 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
             </section>
             {tail.length ? (
               <section className="flex flex-col gap-1.5">
+                {from > 0 ? (
+                  <p className="text-ui-12 text-muted-foreground">{t("characters.panel.earlierMessages", { count: from })}</p>
+                ) : null}
                 {tail.map((message, index) => (
                   <pre
                     key={`${message.id}-${index}`}

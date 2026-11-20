@@ -65,6 +65,10 @@ export function permanentPromptText(draft: CharacterDraft): string {
     draft.systemPrompt,
     draft.postHistoryInstructions,
     draft.depthPrompt?.prompt ?? "",
+    // Always-on lore rides every turn too; keyword entries only when they fire.
+    ...(draft.characterBook?.entries ?? [])
+      .filter((entry) => entry.constant && entry.enabled !== false)
+      .map((entry) => entry.content ?? ""),
   ]
     .map((field) => field.trim())
     .filter(Boolean)

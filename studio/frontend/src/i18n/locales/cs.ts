@@ -5627,6 +5627,7 @@ export const cs = {
       roleUser: "Uživatel",
       roleAssistant: "Asistent",
       stopStrings: "Zastaví se na: {list}",
+      earlierMessages: "Starší zprávy, které se také odesílají, zde nejsou zobrazeny: {count}",
       copyFailed: "Kopírování do schránky se nezdařilo",
     },
     plusMenu: "Chatovat s postavou",

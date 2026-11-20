@@ -5334,6 +5334,7 @@ export const zhTW = {
       roleUser: "使用者",
       roleAssistant: "助理",
       stopStrings: "停止於：{list}",
+      earlierMessages: "此處未顯示但同樣會傳送的較早訊息：{count}",
       copyFailed: "無法複製到剪貼簿",
     },
     plusMenu: "與角色聊天",

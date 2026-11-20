@@ -5605,6 +5605,7 @@ export const id = {
       roleUser: "Pengguna",
       roleAssistant: "Asisten",
       stopStrings: "Berhenti di: {list}",
+      earlierMessages: "Pesan sebelumnya, yang juga dikirim, tidak ditampilkan di sini: {count}",
       copyFailed: "Tidak dapat menyalin ke papan klip",
     },
     plusMenu: "Chat dengan karakter",

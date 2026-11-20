@@ -5290,6 +5290,7 @@ export const ru = {
       roleUser: "Пользователь",
       roleAssistant: "Ассистент",
       stopStrings: "Останавливается на: {list}",
+      earlierMessages: "Более ранние сообщения, которые тоже отправляются, здесь не показаны: {count}",
       copyFailed: "Не удалось скопировать в буфер обмена",
     },
     plusMenu: "Чат с персонажем",

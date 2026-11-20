@@ -5251,6 +5251,7 @@ export const ko = {
       roleUser: "사용자",
       roleAssistant: "어시스턴트",
       stopStrings: "중지 지점: {list}",
+      earlierMessages: "함께 전송되지만 여기에 표시되지 않은 이전 메시지: {count}",
       copyFailed: "클립보드에 복사할 수 없습니다",
     },
     plusMenu: "캐릭터와 채팅",

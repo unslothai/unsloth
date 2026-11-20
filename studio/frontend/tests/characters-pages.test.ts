@@ -19,6 +19,7 @@ import {
   liveSelection,
   sortCharacters,
 } from "../src/features/characters/library-filters.ts";
+import { emptyLorebook, newLorebookEntry } from "../src/features/characters/prompt/lorebook.ts";
 import type { Character } from "../src/features/characters/types.ts";
 
 const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
@@ -66,6 +67,12 @@ test("the save body clears an empty note and book and drops blank alternate gree
 test("the token estimate counts every field sent each turn", () => {
   const draft = { ...blankDraft(), description: "d", postHistoryInstructions: "p", depthPrompt: { prompt: "n", depth: 4, role: "system" as const } };
   assert.equal(permanentPromptText(draft), "d\np\nn");
+  const lore = (content: string, constant: boolean, enabled = true) => ({ ...newLorebookEntry([]), content, constant, enabled });
+  const withBook = {
+    ...draft,
+    characterBook: { ...emptyLorebook(), entries: [lore("always", true), lore("keyed", false), lore("off", true, false)] },
+  };
+  assert.equal(permanentPromptText(withBook), "d\np\nn\nalways", "always-on lore counts; keyed and disabled entries do not");
 });
 
 test("library filters group tags by case and keep only live selections", () => {
@@ -73,8 +80,11 @@ test("library filters group tags by case and keep only live selections", () => {
     character("a", { tags: ["Fantasy"], favorite: true }),
     character("b", { tags: ["fantasy", "Noir"], createdAt: 5 }),
     character("c", { tags: ["fantasy"], creator: "Ann" }),
+    character("d", { description: "A tutor in Tokyo.", creatorNotes: "Practice Spanish." }),
   ];
   assert.deepEqual(groupTags(list)[0], { key: "fantasy", count: 3, label: "fantasy" });
+  assert.deepEqual(filterCharacters(list, { query: "tokyo", favoritesOnly: false, tag: null }).map((c) => c.id), ["d"]);
+  assert.deepEqual(filterCharacters(list, { query: "spanish", favoritesOnly: false, tag: null }).map((c) => c.id), ["d"]);
   assert.deepEqual(filterCharacters(list, { query: "", favoritesOnly: false, tag: "noir" }).map((c) => c.id), ["b"]);
   assert.deepEqual(filterCharacters(list, { query: "ann", favoritesOnly: false, tag: null }).map((c) => c.id), ["c"]);
   assert.deepEqual(filterCharacters(list, { query: "", favoritesOnly: true, tag: null }).map((c) => c.id), ["a"]);

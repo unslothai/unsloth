@@ -5291,6 +5291,7 @@ export const ptBR = {
       roleUser: "Usuário",
       roleAssistant: "Assistente",
       stopStrings: "Para em: {list}",
+      earlierMessages: "Mensagens anteriores, também enviadas, não mostradas aqui: {count}",
       copyFailed: "Não foi possível copiar para a área de transferência",
     },
     plusMenu: "Conversar com um personagem",

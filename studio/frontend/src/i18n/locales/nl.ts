@@ -5652,6 +5652,7 @@ export const nl = {
       roleUser: "Gebruiker",
       roleAssistant: "Assistent",
       stopStrings: "Stopt bij: {list}",
+      earlierMessages: "Eerdere berichten die ook worden verzonden, hier niet getoond: {count}",
       copyFailed: "Kopiëren naar het klembord is mislukt",
     },
     plusMenu: "Chatten met een personage",

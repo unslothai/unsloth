@@ -5643,6 +5643,7 @@ export const uk = {
       roleUser: "Користувач",
       roleAssistant: "Асистент",
       stopStrings: "Зупиняється на: {list}",
+      earlierMessages: "Попередні повідомлення, які теж надсилаються, тут не показані: {count}",
       copyFailed: "Не вдалося скопіювати в буфер обміну",
     },
     plusMenu: "Чат із персонажем",

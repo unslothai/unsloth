@@ -5162,6 +5162,7 @@ export const zhCN = {
       roleUser: "用户",
       roleAssistant: "助手",
       stopStrings: "停止于：{list}",
+      earlierMessages: "此处未显示但同样会发送的更早消息：{count}",
       copyFailed: "无法复制到剪贴板",
     },
     plusMenu: "与角色聊天",

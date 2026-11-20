@@ -178,12 +178,12 @@ function LorebookEntryRow({
               {t("characters.lorebook.keys")}
               <Input
                 defaultValue={entry.keys.join(", ")}
-                title={t("characters.lorebook.keysHint")}
                 onBlur={(event) => {
                   if (event.target.value === entry.keys.join(", ")) return;
                   onUpdate({ keys: parseKeyList(event.target.value) });
                 }}
               />
+              <span className="text-ui-11 text-muted-foreground/80">{t("characters.lorebook.keysHint")}</span>
             </label>
           </div>
           <label className="flex flex-col gap-1 text-ui-12 text-muted-foreground">
