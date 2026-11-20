@@ -320,3 +320,22 @@ def test_embedded_images_do_not_hide_top_level_placeholders(detector):
     result = detector.detect_vlm_dataset_structure([row])
 
     assert result["format"] not in {"vlm_messages", "vlm_messages_llava"}
+
+
+@pytest.mark.parametrize("detector", [dataset_format, format_detection])
+@pytest.mark.parametrize("text_column", ["long_caption", "answer_text", "caption_en"])
+def test_snake_case_text_column_is_detected(detector, text_column):
+    row = {"image": Image.new("RGB", (8, 8), "red"), text_column: "A red square."}
+
+    result = detector.detect_vlm_dataset_structure(Dataset.from_list([row]))
+
+    assert (result["format"], result["text_column"]) == ("simple_image_text", text_column)
+
+
+@pytest.mark.parametrize("detector", [dataset_format, format_detection])
+def test_text_keyword_inside_a_word_is_not_a_text_column(detector):
+    row = {"image": Image.new("RGB", (8, 8), "red"), "context": "A red square."}
+
+    result = detector.detect_vlm_dataset_structure(Dataset.from_list([row]))
+
+    assert result["text_column"] is None

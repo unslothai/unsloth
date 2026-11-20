@@ -13,6 +13,12 @@ def _keyword_in_column(keyword: str, col_name: str) -> bool:
     return re.search(r"\b" + re.escape(keyword) + r"\b", col_name, re.IGNORECASE) is not None
 
 
+def _keyword_in_column_part(keyword: str, col_name: str) -> bool:
+    """Like _keyword_in_column, but an underscore also separates words, so 'long_caption' matches."""
+    pattern = r"(?<![^\W_])" + re.escape(keyword) + r"(?![^\W_])"
+    return re.search(pattern, col_name, re.IGNORECASE) is not None
+
+
 CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
 _CHATML_KEYS = frozenset({"role", "content"})
 _SHAREGPT_KEYS = frozenset({"from", "value"})
@@ -1290,7 +1296,7 @@ def detect_vlm_dataset_structure(dataset):
             if is_metadata_column(col):
                 continue
 
-            if any(_keyword_in_column(keyword, col) for keyword in text_keywords):
+            if any(_keyword_in_column_part(keyword, col) for keyword in text_keywords):
                 sample_value = sample[col]
 
                 if (
