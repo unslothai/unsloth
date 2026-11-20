@@ -31,14 +31,12 @@ const composerBody = (name: string): string => {
 };
 const composerLabels = labels;
 
-test("Chat defaults keeps scrolling, reply stats and the minor composer rows", () => {
+test("Chat defaults holds the minor composer rows, Rich text paste last", () => {
   const defaults = section("settings.general.chatDefaults");
   assert.deepEqual(labels(defaults), [
-    "settings.chat.autoScroll",
     "settings.chat.pastedTextThreshold",
     "settings.appearance.custom.sentAttachments.label",
   ]);
-  assert.match(defaults, /<GenerationStatsUpdatesRow \/>/);
   assert.match(defaults, /<ContextWindowUsageRow \/>/);
   assert.match(defaults, /<RichTextPasteRow \/>\s*$/, "Rich text paste is the last row");
   assert.doesNotMatch(defaults, /isOwner/, "the owner limits sit in Replies");
@@ -47,7 +45,8 @@ test("Chat defaults keeps scrolling, reply stats and the minor composer rows", (
 test("Composer keeps behavior and formatting; Customization holds layout and the picker's icon style", () => {
   const settings = section("composerSettings.title");
   assert.match(settings, /<ComposerSettings embedded=\{true\} \/>/);
-  assert.deepEqual(labels(settings), []);
+  assert.deepEqual(labels(settings), ["settings.chat.autoScroll"]);
+  assert.match(settings, /<GenerationStatsUpdatesRow \/>\s*$/, "scrolling and reply stats sit in Composer");
   assert.deepEqual(labels(section("settings.chat.groups.customization.title")), [
     "settings.appearance.custom.chatWidth.label",
     "settings.chat.composerPosition",

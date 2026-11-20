@@ -546,39 +546,6 @@ export function ChatTab() {
       <SettingsSection title={t("composerSettings.title")}>
         <ComposerSettings embedded={true} />
         <ComposerFormatRows />
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.chat.groups.customization.title")}>
-        <SettingsRow
-          label={t("settings.appearance.custom.chatWidth.label")}
-          description={t("settings.appearance.custom.chatWidth.description")}
-        >
-          <ChatWidthSelect />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.composerPosition")}
-          description={t("settings.chat.composerPositionDescription")}
-        >
-          <ComposerPositionSliderRow />
-        </SettingsRow>
-        <SettingsRow label={t("chatBackground.outline")}>
-          <ComposerOutlineSliderRow />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-          description={t(
-            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
-          )}
-        >
-          <Switch
-            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
-            checked={pickerMonochromeIcons}
-            onCheckedChange={setPickerMonochromeIcons}
-          />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
@@ -614,6 +581,39 @@ export function ChatTab() {
           </div>
         </SettingsRow>
         <GenerationStatsUpdatesRow />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.groups.customization.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerPosition")}
+          description={t("settings.chat.composerPositionDescription")}
+        >
+          <ComposerPositionSliderRow />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+          description={t(
+            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+            checked={pickerMonochromeIcons}
+            onCheckedChange={setPickerMonochromeIcons}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
           description={
