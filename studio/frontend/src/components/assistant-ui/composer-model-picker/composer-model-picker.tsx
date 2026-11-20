@@ -559,17 +559,24 @@ function hubParts(
 
 type Maker = NonNullable<ReturnType<typeof resolveOwnerProviderLogo>>;
 
-function rowMaker(
+function rowHubParts(
   row?: Pick<Row, "kind"> & { id?: string; lora?: LoraModelOption },
-): Maker | null {
+) {
   if (!row || row.kind === "external") {
     return null;
   }
   // A cache snapshot path names its repo, so the logo shows before rows load.
-  const parts =
+  return (
     hubParts(row.id) ??
     hubParts(row.lora?.baseModel) ??
-    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined);
+    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined)
+  );
+}
+
+function rowMaker(
+  row?: Pick<Row, "kind"> & { id?: string; lora?: LoraModelOption },
+): Maker | null {
+  const parts = rowHubParts(row);
   return parts ? resolveOwnerProviderLogo(parts.owner, parts.name) : null;
 }
 
@@ -716,8 +723,18 @@ type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   npu?: Pick<NpuModel, "hf_repo">;
 };
 
-function NpuOwnerMark({ owner, name }: { owner: string; name?: string }) {
-  const src = useAvatarImageUrl(owner);
+function OwnerImageMark({
+  owner,
+  repoName,
+  name,
+  remote = true,
+}: {
+  owner: string;
+  repoName?: string;
+  name?: string;
+  remote?: boolean;
+}) {
+  const src = useAvatarImageUrl(owner, repoName, remote);
   const [failed, setFailed] = useState<string | null>(null);
   if (!src || failed === src) {
     return (
@@ -760,7 +777,7 @@ function RowMark({ row }: { row?: RowMarkRow }) {
   }
   const npuOwner = npuMarkOwner(row);
   if (npuOwner) {
-    return <NpuOwnerMark owner={npuOwner} name={rowMarkName(row)} />;
+    return <OwnerImageMark owner={npuOwner} name={rowMarkName(row)} />;
   }
   if (row?.kind === "external" && row.providerType) {
     return (
@@ -773,7 +790,18 @@ function RowMark({ row }: { row?: RowMarkRow }) {
       </span>
     );
   }
+  const parts = rowHubParts(row);
   const name = row?.kind === "external" ? undefined : rowMarkName(row);
+  if (parts?.owner) {
+    return (
+      <OwnerImageMark
+        owner={parts.owner}
+        repoName={parts.name}
+        name={name ?? parts.name}
+        remote={false}
+      />
+    );
+  }
   // 2px over the slot: a solid disc reads smaller than the logos.
   return name ? (
     <ApiProviderLogo
