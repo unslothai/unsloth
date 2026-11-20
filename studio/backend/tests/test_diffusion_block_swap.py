@@ -40,7 +40,11 @@ def test_request_parsing(raw, want, monkeypatch):
 
 def test_request_env_and_bad_value(monkeypatch):
     monkeypatch.setenv(bs.BLOCK_SWAP_ENV, "auto")
-    assert bs.block_swap_request(_cfg(block_swap = "off")) == "auto"
+    assert bs.block_swap_request(_cfg(block_swap = "")) == "auto"
+    assert bs.block_swap_request(_cfg()) == "auto"
+    # an explicit off (the API's "off" or 0) overrides the server's env
+    for off in ("off", "0", 0):
+        assert bs.block_swap_request(_cfg(block_swap = off)) is None
     monkeypatch.delenv(bs.BLOCK_SWAP_ENV)
     with pytest.raises(ValueError):
         bs.block_swap_request(_cfg(block_swap = "lots"))
@@ -49,7 +53,7 @@ def test_request_env_and_bad_value(monkeypatch):
 def test_default_config_is_off(monkeypatch):
     monkeypatch.delenv(bs.BLOCK_SWAP_ENV, raising = False)
     cfg = DiffusionLoraConfig(base_model = "x", data_dir = "d", output_dir = "o")
-    assert cfg.block_swap == "off"
+    assert cfg.block_swap == ""
     assert bs.block_swap_request(cfg) is None
     assert (
         _config_from_dict(
@@ -250,3 +254,30 @@ def test_swapping_checkpoints_every_block_even_with_partial_mode(monkeypatch):
     common.enable_diffusion_gradient_checkpointing(model, mode = dit._checkpoint_mode(True))
     common.enable_diffusion_gradient_checkpointing(model, mode = dit._checkpoint_mode(False))
     assert seen[0] == 1 and seen[1] >= 2
+
+
+def test_an_explicit_off_from_the_api_overrides_the_env(monkeypatch):
+    """The start route forwards block_swap as a string; "off" or "0" must not fall back to UNSLOTH_DIT_BLOCK_SWAP,
+    while an omitted field (the config default) still does."""
+    monkeypatch.setenv(bs.BLOCK_SWAP_ENV, "auto")
+    base = {"base_model": "x", "data_dir": "d", "output_dir": "o"}
+    for off in ("off", "0"):
+        assert bs.block_swap_request(_config_from_dict({**base, "block_swap": off})) is None
+    assert bs.block_swap_request(_config_from_dict(base)) == "auto"
+
+
+def test_explicit_off_is_told_apart_from_unset():
+    for off in ("off", "0", 0, "none"):
+        assert bs.block_swap_explicit_off(_cfg(block_swap = off))
+    for unset in (None, "", "auto", 4):
+        assert not bs.block_swap_explicit_off(_cfg(block_swap = unset))
+    assert not bs.block_swap_explicit_off(_cfg())
+
+
+def test_trainer_skips_the_auto_band_swap_on_an_explicit_off():
+    import inspect
+
+    import core.training.diffusion_dit_trainer as dt
+
+    src = inspect.getsource(dt)
+    assert "not block_swap_explicit_off(cfg)" in src

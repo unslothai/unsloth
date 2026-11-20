@@ -39,6 +39,7 @@ from typing import Any, Callable, Optional
 
 from core.training.diffusion_block_swap import (
     block_swap_error,
+    block_swap_explicit_off,
     block_swap_request,
     compile_swapped_blocks,
     install_dit_block_swap,
@@ -3739,7 +3740,11 @@ def _train_dit(
     base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
     swap_request = block_swap_request(cfg)
     # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
-    auto_swap = swap_request is None and _auto_block_swap_wanted(cfg, base_precision, device, spec)
+    auto_swap = (
+        swap_request is None
+        and not block_swap_explicit_off(cfg)
+        and _auto_block_swap_wanted(cfg, base_precision, device, spec)
+    )
     if auto_swap:
         base_precision, swap_request = "bf16", "auto"
     _emit(
@@ -3803,6 +3808,14 @@ def _train_dit(
             )
         else:
             swapping = swap_info["swapped_blocks"] > 0
+            _emit(
+                on_event,
+                "block_swap",
+                **{
+                    k: swap_info[k]
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                },
+            )
             _emit(
                 on_event,
                 "warning",
