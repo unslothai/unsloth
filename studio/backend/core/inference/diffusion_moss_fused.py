@@ -11,6 +11,8 @@ import sys
 import threading
 from typing import Any
 
+from .triton_closure_globals import publishes_closure_globals
+
 MOSS_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED"
 MOSS_FUSED_QKV_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED_QKV"
 # q / k / v of a ConvRot int8 checkpoint on one rotation + act quant (the int8 GEMM swap's shared quant)
@@ -268,6 +270,7 @@ _HEADS_PER_PROGRAM = 8
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _qk_rope_kernel() -> Any:
     try:
         import triton

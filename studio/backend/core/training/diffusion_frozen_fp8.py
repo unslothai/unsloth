@@ -62,7 +62,9 @@ def _transpose_kernel():
                 tile = tl.load(src + rm[:, None].to(tl.int64) * N + rn[None, :], mask = mask)
                 tl.store(dst + rn[None, :].to(tl.int64) * M + rm[:, None], tile, mask = mask)
 
-            _TRANSPOSE_KERNEL.append(transpose)
+            from core.inference.triton_closure_globals import publish
+
+            _TRANSPOSE_KERNEL.append(publish(transpose))
         except Exception:  # noqa: BLE001 -- no Triton: aten's copy below
             _TRANSPOSE_KERNEL.append(None)
     return _TRANSPOSE_KERNEL[0]
