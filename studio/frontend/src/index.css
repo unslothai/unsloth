@@ -6960,6 +6960,13 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
     linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), rgb(0 0 0 / .15) calc(100% - var(--thread-composer-clip, 0px) + .3 * var(--thread-composer-fade, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px) + var(--thread-composer-fade, 0px))),
     linear-gradient(#000, #000);
 }
+/* Compare: model bars take the thread's wash; the page-colour pane fade would read as a band. */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .compare-pane-header {
+  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
+}
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .compare-pane-fade {
+  visibility: hidden;
+}
 /* On the root, not the masked viewport, so the header strip gets the same shade. */
 html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
