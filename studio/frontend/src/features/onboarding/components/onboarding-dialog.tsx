@@ -167,7 +167,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
           e.preventDefault();
           primaryRef.current?.focus();
         }}
-        className="flex h-[min(calc(44rem*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem]"
+        className="flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem]"
       >
         <DialogTitle className="sr-only">
           {t("onboarding.dialogTitle")}
@@ -181,7 +181,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
         <div className="flex h-14 shrink-0 items-end justify-center">
           <ProgressDots pages={pages} page={page} />
         </div>
-        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-7 pb-4 sm:px-14">
+        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-7 pb-7 sm:px-14">
           <AnimatePresence
             mode="wait"
             initial={false}
@@ -219,7 +219,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
             </motion.div>
           </AnimatePresence>
         </div>
-        <div className="flex shrink-0 items-center justify-between gap-3 px-6 pt-3 pb-6 sm:px-10 sm:pb-9">
+        <div className="flex shrink-0 items-center justify-between gap-3 px-6 pt-1 pb-6 sm:px-10 sm:pb-8">
           {page === "welcome" ? (
             <Button
               variant="ghost"
