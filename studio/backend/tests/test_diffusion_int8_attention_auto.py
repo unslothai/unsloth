@@ -684,6 +684,31 @@ def test_a_native_verdict_never_moves_routes_another_used_plan_runs_on(monkeypat
     assert plan["sinks"] is True and launched == [("quant", True), ("attn", True)]
 
 
+@pytest.mark.parametrize("discarded, moves", [(3, True), (2, False)])
+def test_thrown_away_graph_warmups_of_another_plan_do_not_pin_its_routes(
+    monkeypatch, discarded, moves
+):
+    """Graphs on: another plan's calls so far were side-stream warm-ups whose outputs a capture throws away, so a
+    torch verdict moves the routes as on main; one used call of that plan keeps them."""
+    import contextlib
+
+    I.forget_plans()
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    dropped = []
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: dropped.append(plan))
+    plan = _fake_plan(mode = I.MODE_RACE, shape = (2, 4096, 4096, 24, 128))
+    other = _fake_plan(
+        mode = I.MODE_RACE, shape = (2, 4352, 4352, 24, 128), calls = 3, discarded = discarded
+    )
+    other["decision"] = ("other bucket", I.MODE_RACE)
+    I._plans()["plan"], I._plans()["other"] = plan, other
+    plan["calls"] = I.SINK_DECIDE_AT
+    plan["checks"] = [(_Seen(), torch.ones(2, dtype = torch.int32), False)]
+    path = I._choose_path(plan, race = lambda: "native")[0]
+    assert (path == "native" and dropped == [plan]) if moves else (path is True and not dropped)
+
+
 def test_a_pending_thrown_away_clip_does_not_keep_the_sink_path(monkeypatch):
     """A pending clip from a thrown-away graph warm-up is not a used output: the published verdict is taken."""
     plan = _fake_plan(mode = I.MODE_RACE)
