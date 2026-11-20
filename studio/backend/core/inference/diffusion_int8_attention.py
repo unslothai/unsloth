@@ -24,6 +24,8 @@ How the values are quantised (ideas from the cited papers, written from scratch 
   resolution (CUDA kernel; the Triton kernel keeps the range over every key). A launch plan none of whose first
   calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did; one
   with sinks keeps the path only where it still beats torch's attention on its own inputs (a race at that call).
+  A seed renders the same image on the first render of a load as on the next: a plan whose sink-path calls were used
+  in a render where V clipped keeps that path for the load.
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -578,8 +580,11 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# A plan's first SINK_LEARN_CALLS calls learn whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT.
-# Both must precede CUDA graph capture (3 eager warm-ups): an undecided plan keeps the sink path in the graph.
+# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT
+# (the bucket's verdict of this load, else a race). Undecided, a plan runs the sink path, which a graph records. A
+# verdict other than the sink path is taken only where no call whose output was used (not a thrown-away graph
+# warm-up) clipped on the sink path: else the plan keeps it for the load, so the first render repeats. The verdict
+# stays the bucket's for the load; the next load races again.
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
 # A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).
@@ -618,6 +623,14 @@ def _decisions() -> dict:
     found = _LOADED.get("decisions")
     if found is None:
         found = _LOADED["decisions"] = {}
+    return found
+
+
+def _sink_unsafe() -> set:
+    """``plan["decision"]`` keys whose race rejected the sink path on accuracy (a non-finite error): never pinned."""
+    found = _LOADED.get("sink_unsafe")
+    if found is None:
+        found = _LOADED["sink_unsafe"] = set()
     return found
 
 
@@ -873,6 +886,7 @@ def forget_plans() -> None:
     """Drop launch plans, sink decisions and routes: a new pipeline decides again."""
     _plans().clear()
     _decisions().clear()
+    _sink_unsafe().clear()
     _ROUTES.clear()
     _GRAPHED[0] = False
 
@@ -976,14 +990,21 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
         return (True if plan["sinks"] is None else plan["sinks"]), None
     n = plan["calls"]
     plan["calls"] = n + 1
+    # a CUDA graph's side-stream warm-ups throw their outputs away: those calls pin no route
+    if _discarded_call():
+        plan["discarded"] = plan.get("discarded", 0) + 1
     if plan["sinks"] is None and n >= SINK_DECIDE_AT:
         # its event waits and the race's are prohibited while another thread records a graph: decide on a later call
         with _outside_capture() as safe:
             if safe:
                 seen = False
-                for event, host in plan["checks"]:
-                    event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
-                    seen = seen or bool(host.any())
+                for check in plan["checks"]:
+                    # one wait per plan and load: the last undecided calls' copies may still be in flight
+                    check[0].synchronize()
+                    if bool(check[1].any()):
+                        seen = True
+                        if len(check) > 2 and check[2]:
+                            plan["live_seen"] = True
                 plan["checks"] = []
                 # the bucket's verdict for plans that, like this one, had sinks (or none: no race either way)
                 key = plan["decision"] + (seen,) if "decision" in plan else None
@@ -995,15 +1016,26 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                 elif _GRAPHED[0]:
                     # after a capture: the path the graph recorded for an undecided plan, no race, no route change
                     plan["sinks"] = True
-                elif known is not None:
-                    plan["sinks"] = known
                 else:
+                    # raced by this plan: it moves routes; the bucket keeps it for the load
+                    fresh = key is not None and known is None
                     # never persisted: the race checks accuracy on this model's own inputs (_pick_path)
-                    plan["sinks"] = True if race is None else race()
-                    if key is not None:
-                        _decisions()[key] = plan["sinks"]
-                        if plan["sinks"] == "native":
-                            _drop_routes(plan)
+                    verdict = known if known is not None else (True if race is None else race())
+                    if fresh:
+                        _decisions()[key] = verdict
+                        if not math.isfinite((plan.get("sink_error") or {}).get("sinks", 0.0)):
+                            _sink_unsafe().add(key)
+                    if verdict == "native" and fresh and _routes_used(plan):
+                        # moving the routes would put another plan's used INT8 calls on torch's attention next render
+                        verdict = True
+                    if verdict is not True and plan.get("live_seen") and key not in _sink_unsafe():
+                        # a render already used this plan's sink-path outputs where V clipped: keep the path for the
+                        # load (the next render repeats the seed); the bucket keeps the verdict for later plans. Not
+                        # where the race rejected the sink path on accuracy: numerical safety wins over repeating
+                        verdict = True
+                    plan["sinks"] = verdict
+                    if verdict == "native" and fresh:
+                        _drop_routes(plan)
     return (True if plan["sinks"] is None else plan["sinks"]), n
 
 
@@ -1101,11 +1133,12 @@ def _pick_path(
 
 
 def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
-    """For one of the plan's first SINK_LEARN_CALLS calls: its clipped-key counts (rcnt) copied to pinned host memory
-    behind the quantisers, read when the plan decides (_choose_path); no wait here."""
+    """For each undecided call before SINK_DECIDE_AT (every one runs the sink path, and a render may use it): its
+    clipped-key counts (rcnt) copied to pinned host memory behind the quantisers, read when the plan decides
+    (_choose_path); no wait here."""
     import torch
 
-    if n is None or n >= SINK_LEARN_CALLS or plan["sinks"] is not None:
+    if n is None or n >= SINK_DECIDE_AT or plan["sinks"] is not None:
         return
     # an event record is prohibited while another thread records a graph: that call goes unread
     with _outside_capture() as safe:
@@ -1116,7 +1149,39 @@ def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
         host.copy_(i8[at : at + 4 * BH].view(torch.int32), non_blocking = True)
         event = torch.cuda.Event()
         event.record()
-        plan["checks"].append((event, host))
+        # live: the call's output is used (not a thrown-away side-stream warm-up of a CUDA graph capture)
+        plan["checks"].append((event, host, not _discarded_call()))
+
+
+def _discarded_call() -> bool:
+    """Whether this call runs in the side-stream warm-ups of a CUDA graph capture, whose outputs are thrown away."""
+    try:
+        from .diffusion_cuda_graph import step_recording
+        return bool(step_recording())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _used_calls(plan: dict) -> int:
+    """Calls whose outputs a render used (not a CUDA graph's thrown-away side-stream warm-ups)."""
+    return plan.get("calls", 0) - plan.get("discarded", 0)
+
+
+def _routes_used(plan: dict) -> bool:
+    """Whether another plan on the routes ``_drop_routes(plan)`` would move (same card, same head dim) already ran a
+    used call this load: raising their floor or restoring the stock processor would change those outputs."""
+    try:
+        dim = plan["shape"][4]
+    except Exception:  # noqa: BLE001 - a plan without its shape moves no route
+        return False
+    return any(
+        other is not plan
+        and other.get("index") == plan.get("index")
+        and (other.get("shape") or (None,) * 5)[4] == dim
+        and _used_calls(other)
+        for other in _plans().values()
+        if isinstance(other, dict)
+    )
 
 
 def _quantise_on_device(plan: dict, q: Any, k: Any, v: Any, i8: Any) -> bool:
