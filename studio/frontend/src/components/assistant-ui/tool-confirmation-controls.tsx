@@ -297,7 +297,6 @@ function NetworkRequestControls({ toolCallId }: { toolCallId?: string }) {
         setFailed(true);
       }
     } catch (err) {
-      // Gone: the call was stopped or timed out, so there is nothing left to answer.
       if (err instanceof ToolApprovalGoneError) setToolNetworkRequest(toolCallId, null, request.id);
       else setFailed(true);
     } finally {
