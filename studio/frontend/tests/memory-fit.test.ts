@@ -824,3 +824,62 @@ test("on separate pools Auto fits the GPU share to free VRAM", async () => {
   // (13 - 6) / (20 - 6) of the way from 8192 to 131072, on the 256 grid.
   assert.equal(fitted, Math.floor((8192 + 0.5 * (131072 - 8192)) / 256) * 256);
 });
+
+test("on one pool the floor's own total is used, so host terms that shrink with context count", async () => {
+  const { resolveAutoFittedContext } = await import(
+    "../src/features/model-picker/model-config/memory-fit.ts"
+  );
+  const estimate: MemoryFitEstimate = {
+    gpuBytes: 15.5 * GB,
+    // 2.5 GB of checkpoints at native: host RAM, outside gpuBytes, still the same pool.
+    totalBytes: 18 * GB,
+    kvEstimable: true,
+    drafterKvUnsized: false,
+    adaptersUnsized: false,
+    moeOffloadUnmodelled: false,
+    contextIsPinned: false,
+    gpuFloorBytes: 7.5 * GB,
+    gpuFloorCtx: 256,
+    floorTotalBytes: 7.5 * GB,
+    nCtx: 262144,
+  };
+  const capacity: MemoryFitCapacity = {
+    gpuCapacityGb: 21,
+    totalCapacityGb: 21,
+    systemRamCapacityGb: 32,
+    freeGpuCapacityGb: 9,
+    freeGpuCapacityKnown: true,
+    usableSystemRamGb: 9,
+    singleMemoryPool: true,
+  };
+  // Subtracting only the GPU delta left 10 GB at the floor, over the 9 GB free, so Auto read as the floor.
+  assert.equal(resolveAutoFittedContext({ ...estimate, floorTotalBytes: null }, capacity), 256);
+  const fitted = resolveAutoFittedContext(estimate, capacity);
+  assert.equal(fitted, Math.floor((256 + (1.5 / 10.5) * (262144 - 256)) / 256) * 256);
+});
+
+test("the Context field previews Auto only from a current estimate that the resident has not answered", async () => {
+  const { previewsAutoFit } = await import(
+    "../src/features/model-picker/model-config/memory-fit.ts"
+  );
+  const base = {
+    isGguf: true,
+    estimateAvailable: true,
+    estimateStale: false,
+    isActiveModel: true,
+    residentKnown: true,
+    residentLoadedAuto: true,
+    pendingMatchesResident: false,
+  };
+  assert.equal(previewsAutoFit(base), true, "a KV dtype change on the resident");
+  assert.equal(previewsAutoFit({ ...base, pendingMatchesResident: true }), false, "unchanged Auto resident");
+  assert.equal(
+    previewsAutoFit({ ...base, pendingMatchesResident: true, residentLoadedAuto: false }),
+    true,
+    "a resident pinned to a context says nothing about what Auto would pick",
+  );
+  assert.equal(previewsAutoFit({ ...base, estimateStale: true }), false, "estimate priced the old settings");
+  assert.equal(previewsAutoFit({ ...base, residentKnown: false }), false);
+  assert.equal(previewsAutoFit({ ...base, isActiveModel: false, residentKnown: false }), true);
+  assert.equal(previewsAutoFit({ ...base, isGguf: false }), false);
+});

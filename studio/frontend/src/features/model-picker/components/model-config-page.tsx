@@ -142,6 +142,7 @@ import {
   mlxOffloadFromSlider,
   mlxOffloadModePatch,
   mlxOffloadSliderValue,
+  previewsAutoFit,
   resolveAutoFittedContext,
   resolveReclaimableMemoryCredit,
 } from "../model-config/memory-fit";
@@ -3839,17 +3840,21 @@ export function ModelConfigPage({
       // A ROCm APU's memory_total_gb is a BIOS window onto RAM, not the pool size.
       unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
-  // What Auto would fit to with the pending settings. A resident loaded with these same settings
-  // already answered that, so its own window stands until something that moves the fit changes.
-  const pendingFitMatchesResident =
-    residentEstimateRequest != null &&
-    memoryEstimateRequest != null &&
-    estimateKey({ ...memoryEstimateRequest, nCtx: null }) ===
-      estimateKey({ ...residentEstimateRequest, nCtx: null });
   const autoFittedContext =
-    target.isGguf &&
-    memoryEstimate.estimate?.available &&
-    !(isActiveModel && (pendingFitMatchesResident || residentEstimateRequest == null))
+    memoryEstimate.estimate &&
+    previewsAutoFit({
+      isGguf: Boolean(target.isGguf),
+      estimateAvailable: memoryEstimate.estimate.available,
+      estimateStale: memoryEstimate.stale,
+      isActiveModel,
+      residentKnown: residentEstimateRequest != null,
+      residentLoadedAuto: (loadedConfig?.customContextLength ?? null) == null,
+      pendingMatchesResident:
+        residentEstimateRequest != null &&
+        memoryEstimateRequest != null &&
+        estimateKey({ ...memoryEstimateRequest, nCtx: null }) ===
+          estimateKey({ ...residentEstimateRequest, nCtx: null }),
+    })
       ? resolveAutoFittedContext(memoryEstimate.estimate, {
           gpuCapacityGb: memoryGpuCapacityGb,
           totalCapacityGb: memoryTotalCapacityGb,

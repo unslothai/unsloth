@@ -41,6 +41,7 @@ export interface MemoryEstimate {
   gpuFloorBytes: number | null;
   /** Absent from older backends. */
   gpuFloorCtx?: number | null;
+  floorTotalBytes?: number | null;
   floorCanOffload: boolean;
   cacheTypeKv: string | null;
   nParallel: number;
@@ -111,6 +112,7 @@ const UNAVAILABLE: MemoryEstimate = {
   contextIsPinned: true,
   gpuFloorBytes: null,
   gpuFloorCtx: null,
+  floorTotalBytes: null,
   floorCanOffload: false,
   cacheTypeKv: null,
   nParallel: 1,
@@ -143,6 +145,7 @@ interface ApiEstimateResponse {
   context_is_pinned?: boolean;
   gpu_floor_bytes?: number | null;
   gpu_floor_ctx?: number | null;
+  floor_total_bytes?: number | null;
   floor_can_offload?: boolean;
   cache_type_kv: string | null;
   n_parallel: number;
@@ -266,6 +269,7 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     contextIsPinned: flag(body.context_is_pinned, true),
     gpuFloorBytes: nullableCount(body.gpu_floor_bytes),
     gpuFloorCtx: nullableCount(body.gpu_floor_ctx),
+    floorTotalBytes: nullableCount(body.floor_total_bytes),
     floorCanOffload: flag(body.floor_can_offload, false),
     cacheTypeKv:
       typeof body.cache_type_kv === "string" ? body.cache_type_kv : null,

@@ -66,6 +66,8 @@ export interface MemoryFitEstimate {
   gpuFloorBytes?: number | null;
   /** The context `gpuFloorBytes` is priced at. */
   gpuFloorCtx?: number | null;
+  /** `totalBytes` at that context: on one pool, host terms such as checkpoints shrink with it. */
+  floorTotalBytes?: number | null;
   floorCanOffload?: boolean;
   nCtx?: number;
 }
@@ -324,6 +326,26 @@ export function resolveMemoryFit(
 
 const AUTO_CONTEXT_STEP = 256;
 
+/** Whether the Context field previews Auto's fit, rather than the resident's window or a default.
+ *  A resident Auto load with the same fit-moving settings already answered; a stale estimate
+ *  priced the previous settings. */
+export function previewsAutoFit(state: {
+  isGguf: boolean;
+  estimateAvailable: boolean;
+  estimateStale: boolean;
+  isActiveModel: boolean;
+  /** The resident's own settings are known, so they can be compared at all. */
+  residentKnown: boolean;
+  residentLoadedAuto: boolean;
+  pendingMatchesResident: boolean;
+}): boolean {
+  if (!state.isGguf || !state.estimateAvailable || state.estimateStale) return false;
+  if (!state.isActiveModel) return true;
+  return (
+    state.residentKnown && !(state.residentLoadedAuto && state.pendingMatchesResident)
+  );
+}
+
 /** The window Auto would fit to with these settings and the memory free now, or null when the
  *  estimate cannot say. Interpolated between the floor and native prices: both are the loader's
  *  own sizing, and KV and the context-linear compute share grow linearly between them. */
@@ -357,9 +379,12 @@ export function resolveAutoFittedContext(
     (availableGb +
       Math.max(0, reclaimed / 1024 ** 3 - reclaimableBytes(capacity.freeGpuReserveDeficitGb))) *
     1024 ** 3;
-  const shrinkable = Math.max(0, estimate.gpuBytes - (estimate.gpuFloorBytes as number));
   const nativeBytes = capacity.singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes;
-  const floorBytes = nativeBytes - shrinkable;
+  const floorBytes =
+    capacity.singleMemoryPool && Number.isFinite(estimate.floorTotalBytes)
+      ? (estimate.floorTotalBytes as number)
+      : nativeBytes - Math.max(0, estimate.gpuBytes - (estimate.gpuFloorBytes as number));
+  const shrinkable = Math.max(0, nativeBytes - floorBytes);
   if (nativeBytes <= budget) return nativeCtx;
   if (floorBytes >= budget || shrinkable === 0) return floorCtx;
   const fitted =

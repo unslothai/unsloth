@@ -1461,6 +1461,9 @@ class EstimateMemoryResponse(BaseModel):
     gpu_floor_ctx: Optional[int] = Field(
         None, description = "The context gpu_floor_bytes is priced at; set with it."
     )
+    floor_total_bytes: Optional[int] = Field(
+        None, description = "total_bytes at that same context; set with gpu_floor_bytes."
+    )
     floor_can_offload: bool = Field(
         False,
         description = "Whether a load still over the card at the floor moves layers to the "
@@ -1576,6 +1579,9 @@ class MemoryEstimate(BaseModel):
     )
     gpu_floor_ctx: Optional[int] = Field(
         None, description = "The context gpu_floor_bytes is priced at; set with it."
+    )
+    floor_total_bytes: Optional[int] = Field(
+        None, description = "total_bytes at that same context; set with gpu_floor_bytes."
     )
     floor_can_offload: bool = Field(
         False,

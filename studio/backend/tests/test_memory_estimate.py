@@ -3011,6 +3011,7 @@ class TestAnAutoContextIsMarkedShrinkable:
         assert shorter.gpu_bytes < resp.gpu_floor_bytes == floor.gpu_bytes < resp.gpu_bytes
         # The client interpolates Auto's window between the two prices, so it needs both contexts.
         assert resp.gpu_floor_ctx == floor_ctx
+        assert resp.floor_total_bytes == floor.total_bytes < resp.total_bytes
 
     def test_a_native_context_under_the_fit_floor_has_nothing_to_shrink(
         self, tmp_path, monkeypatch
@@ -3052,6 +3053,7 @@ class TestAnAutoContextIsMarkedShrinkable:
         assert resp.context_is_pinned is True, (request_fields, env_ctx)
         assert resp.gpu_floor_bytes is None
         assert resp.gpu_floor_ctx is None
+        assert resp.floor_total_bytes is None
 
     @pytest.mark.parametrize(("fit_ctx_supported", "floor_ctx"), [(True, 8192), (False, 4096)])
     def test_manual_ignores_the_fit_variables_its_launch_clears(
