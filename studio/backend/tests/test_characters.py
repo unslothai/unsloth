@@ -1145,3 +1145,11 @@ def test_group_openings_use_v3_group_only_greetings(client):
 
     assert "Hello, Wren and friends." not in texts(solo["threadId"])
     assert "Hello, Wren and friends." in texts(group["threadId"])
+
+
+def test_a_long_group_only_greeting_is_bounded_like_the_others():
+    from core.characters.cards import MAX_FIELD_CHARS
+    from core.characters.chats import _group_only_greetings
+
+    card = {"spec": "chara_card_v3", "data": {"name": "Ada", "group_only_greetings": ["x" * (MAX_FIELD_CHARS + 50), 7]}}
+    assert _group_only_greetings({"card": card}) == ["x" * MAX_FIELD_CHARS]

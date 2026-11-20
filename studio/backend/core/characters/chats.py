@@ -9,7 +9,7 @@ import re
 import uuid
 from typing import Optional
 
-from core.characters.cards import MAX_GREETINGS, card_data
+from core.characters.cards import MAX_FIELD_CHARS, MAX_GREETINGS, card_data
 from storage import characters_db as db
 from storage.studio_db import now_ms
 
@@ -55,7 +55,8 @@ def _group_only_greetings(character: dict) -> list[str]:
     greetings = card_data(card)[0].get("group_only_greetings")
     if not isinstance(greetings, list):
         return []
-    return [g for g in greetings if isinstance(g, str)][:MAX_GREETINGS]
+    # Not normalized at import like the other greetings, so bounded the same way here.
+    return [g[:MAX_FIELD_CHARS] for g in greetings if isinstance(g, str)][:MAX_GREETINGS]
 
 
 def opening_messages(
