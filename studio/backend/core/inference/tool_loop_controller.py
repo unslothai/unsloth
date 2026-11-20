@@ -1281,7 +1281,7 @@ class ToolLoopController:
         if self._mcp_search:
             # Matched, searched or run MCP tools stay callable unlisted.
             self._allowed_tool_names.update(
-                name for name in loaded_mcp_tools if _mcp_tool_spec(name) is not None
+                _mcp_tool_specs(loaded_mcp_tools) if loaded_mcp_tools else ()
             )
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
