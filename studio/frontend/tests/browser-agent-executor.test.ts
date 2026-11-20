@@ -113,7 +113,7 @@ test("a page that navigates away during the read is not read again", async () =>
 
 test("the installation's blocked sites survive a chat that blocks 100 sites", () => {
   const chat = Array.from({ length: 100 }, (_, i) => `chat${i}.example`);
-  const owner = Array.from({ length: 100 }, (_, i) => `owner${i}.example`);
+  const owner = Array.from({ length: 200 }, (_, i) => `owner${i}.example`);
   const action = parseBrowserAction({ id: "a1", op: "click", allowed_domains: [], blocked_domains: [...chat, ...owner] });
   assert.deepEqual(action?.policy.blockedDomains, [...chat, ...owner]);
 });
