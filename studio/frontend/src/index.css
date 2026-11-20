@@ -8082,6 +8082,10 @@ html:not(.dark) .glass-lens-rim .glass-lens-copy {
 .dark .glass-lens::after {
   box-shadow: inset 0 1px 1px -.5px rgb(255 255 255 / .112), inset 0 4px 4px -4px rgb(255 255 255 / .064), inset 0 -3px 4px -3px rgb(0 0 0 / .35);
 }
+/* Other hosts keep their own 1px edge, and a rim inside it reads as a second, grey outline. */
+[data-glass-lens-host]:not(.unsloth-composer-surface, .wallpaper-preview-composer) > .glass-lens .glass-lens-rim {
+  display: none;
+}
 /* The lens paints at z-index -1, so each host is its own stacking context. */
 [data-glass-lens-host] {
   isolation: isolate;

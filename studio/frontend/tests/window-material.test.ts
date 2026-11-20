@@ -655,3 +655,10 @@ test("a lens copy drops its blur while its host is moving, instead of falling ba
 	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR\] \}\);/);
 	assert.match(lens, /motion\.disconnect\(\);/);
 });
+
+test("only the composer draws a lens rim; other glass hosts keep their own edge instead of a doubled outline", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const rule = css.match(/\[data-glass-lens-host\]:not\(([^)]+)\) > \.glass-lens \.glass-lens-rim \{\s*display: none;\s*\}/);
+	assert.ok(rule, "lens rim is hidden on non-composer hosts");
+	assert.deepEqual(rule[1].split(",").map((s) => s.trim()).sort(), LENS_CLEAR_HOSTS.split(",").map((s) => s.trim()).sort());
+});
