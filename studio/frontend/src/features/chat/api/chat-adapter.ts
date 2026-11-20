@@ -7348,10 +7348,12 @@ export function createOpenAIStreamAdapter(
               }
             }
 
+            const kvCacheHint = !isExternalRequest && runtime.loadedIsGguf === true;
             const durableStream = async function* () {
               const lengthCheck = createReasoningOnlyLengthCheck({
                 cap: requestPayload.max_tokens ?? null,
                 contextLength: servedContextLength,
+                kvCacheHint,
               });
               try {
                 for await (const update of followChatGenerationRun(
@@ -7411,6 +7413,7 @@ export function createOpenAIStreamAdapter(
                     requestPayload,
                     runSignal,
                     servedContextLength,
+                    kvCacheHint,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();

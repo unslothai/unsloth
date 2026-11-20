@@ -41,6 +41,7 @@ const { createReasoningOnlyLengthCheck, GenerationLengthError } = loadWithStubs<
   createReasoningOnlyLengthCheck: (window: {
     cap: number | null;
     contextLength: number | null;
+    kvCacheHint?: boolean;
   }) => LengthCheck;
   GenerationLengthError: new (cause: string) => Error & { stopCause: string };
 }>(new URL("../src/features/chat/api/chat-api.ts", import.meta.url), {
@@ -69,8 +70,15 @@ const { createReasoningOnlyLengthCheck, GenerationLengthError } = loadWithStubs<
 });
 
 // The Strix Halo repro: Qwen3-0.6B, Context 1024, a 43-token prompt, Max Tokens 512.
-function reasoningOnlyRun(finish: string, answer?: string): LengthCheck {
-  const check = createReasoningOnlyLengthCheck({ cap: 512, contextLength: 1024 });
+function reasoningOnlyRun(
+  finish: string,
+  answer?: string,
+  window: { cap: number | null; contextLength: number | null; kvCacheHint?: boolean } = {
+    cap: 512,
+    contextLength: 1024,
+  },
+): LengthCheck {
+  const check = createReasoningOnlyLengthCheck(window);
   check.observe({ usage: { prompt_tokens: 43 } });
   check.observe({ choices: [{ delta: { reasoning_content: "Primes below" } }] });
   check.observe({ choices: [{ delta: { reasoning_content: " 5000..." } }] });
@@ -120,4 +128,43 @@ test("server-side chat runs apply the same reasoning-only length check", () => {
   assert.match(durable[0], DURABLE_TRACKER);
   assert.match(durable[0], DURABLE_OBSERVE);
   assert.match(durable[0], DURABLE_THROW);
+});
+
+// Max Tokens unset: the backend sends the context length, and llama.cpp counts the thinking.
+function windowFilled(kvCacheHint: boolean): Error & { stopCause: string } {
+  const check = reasoningOnlyRun("length", undefined, {
+    cap: 1024,
+    contextLength: 1024,
+    kvCacheHint,
+  });
+  check.observe({ timings: { predicted_n: 981 } });
+  try {
+    check.throwIfReasoningOnlyLength();
+  } catch (err) {
+    return err as Error & { stopCause: string };
+  }
+  throw new Error("no length error");
+}
+
+test("a llama.cpp model that fills its window is also pointed at a q8_0 KV cache", () => {
+  const gguf = windowFilled(true);
+  assert.equal(gguf.stopCause, "context_length");
+  assert.match(gguf.message, /increase the Context in Model settings, or disable thinking/);
+  assert.match(gguf.message, /q8_0 KV Cache in Model settings fits more context/);
+  // NPU and provider models have no KV cache setting.
+  assert.doesNotMatch(windowFilled(false).message, /KV Cache/);
+  // Max Tokens advice never mentions it.
+  assert.throws(
+    () =>
+      reasoningOnlyRun("length", undefined, {
+        cap: 512,
+        contextLength: 1024,
+        kvCacheHint: true,
+      }).throwIfReasoningOnlyLength(),
+    (err: unknown) => err instanceof Error && !/KV Cache/.test(err.message),
+  );
+  assert.match(
+    source,
+    /const kvCacheHint = !isExternalRequest && runtime\.loadedIsGguf === true;/,
+  );
 });

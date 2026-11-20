@@ -145,12 +145,19 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "Max Tokens, disable thinking, or start a new chat.",
 };
 
+// Only llama.cpp has the setting; FastFlowLM and providers do not.
+const KV_CACHE_HINT =
+  " A q8_0 KV Cache in Model settings fits more context in the same memory.";
+
 /** A reasoning model spent its output budget before emitting any standard content. */
 export class GenerationLengthError extends Error {
   readonly stopCause: LengthStopCause;
 
-  constructor(stopCause: LengthStopCause) {
-    super(LENGTH_STOP_ADVICE[stopCause]);
+  constructor(stopCause: LengthStopCause, kvCacheHint = false) {
+    super(
+      LENGTH_STOP_ADVICE[stopCause] +
+        (kvCacheHint && stopCause === "context_length" ? KV_CACHE_HINT : ""),
+    );
     this.name = "GenerationLengthError";
     this.stopCause = stopCause;
   }
@@ -1988,9 +1995,11 @@ function classifyStructuredDeltaContent(content: unknown): {
 export function createReasoningOnlyLengthCheck({
   cap,
   contextLength,
+  kvCacheHint = false,
 }: {
   cap: number | null;
   contextLength: number | null;
+  kvCacheHint?: boolean;
 }) {
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
@@ -2058,6 +2067,7 @@ export function createReasoningOnlyLengthCheck({
                 promptTokens,
                 completionTokens: windowCount,
               }),
+          kvCacheHint,
         );
       }
     },
@@ -2069,6 +2079,7 @@ export async function* streamChatCompletions(
   signal: AbortSignal,
   /** Served context window for length-stop attribution; null or omitted when unknown. */
   loadedContextLength?: number | null,
+  kvCacheHint = false,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -2099,6 +2110,7 @@ export async function* streamChatCompletions(
   const lengthCheck = createReasoningOnlyLengthCheck({
     cap: payload.max_tokens ?? null,
     contextLength: loadedContextLength ?? null,
+    kvCacheHint,
   });
 
   try {
