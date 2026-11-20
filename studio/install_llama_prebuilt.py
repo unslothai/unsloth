@@ -8626,7 +8626,7 @@ def _diffusion_visual_server_missing_for_marker(
     ):
         if candidate.is_file():
             return False
-    return True
+    return not _visual_server_absence_recorded(marker, marker.get("asset"))
 
 
 def _marker_backend_fits_host(marker: "dict[str, Any]", host: HostInfo) -> bool:
@@ -10477,7 +10477,42 @@ def diffusion_visual_server_backfill_needed(
     ):
         if cand.is_file():
             return False
-    return True
+    return not _visual_server_absence_recorded(load_prebuilt_metadata(install_dir), choice.name)
+
+
+# The bundle asset whose extraction left no visual-server. A release can ship a bundle
+# without it (b12540's macOS bundles do), and re-extracting that same bundle can never
+# backfill it, so every update would re-download and re-validate an install that is
+# already complete. Keyed on the asset name: a later bundle that carries it backfills.
+MARKER_VISUAL_SERVER_ABSENT = "diffusion_visual_server_absent_from"
+
+
+def _visual_server_absence_recorded(marker: "dict[str, Any] | None", asset: "str | None") -> bool:
+    """Whether the marker says the installed bundle ``asset`` was extracted without it."""
+    if not isinstance(marker, dict) or not asset:
+        return False
+    return marker.get("asset") == asset and marker.get(MARKER_VISUAL_SERVER_ABSENT) == asset
+
+
+def record_visual_server_absence(install_dir: Path, host: HostInfo, choice: AssetChoice) -> None:
+    """After activation, note a bundle that shipped without the visual-server.
+
+    Only when the backfill check would otherwise keep firing for this exact bundle, so a
+    complete install or an upstream bundle leaves the marker untouched. Best-effort: the
+    install is already valid, and a missed write only costs one more re-extract.
+    """
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker = load_prebuilt_metadata(install_dir)
+    if not isinstance(marker, dict) or marker.get("asset") != choice.name:
+        return
+    if not diffusion_visual_server_backfill_needed(install_dir, host, choice):
+        return
+    marker[MARKER_VISUAL_SERVER_ABSENT] = choice.name
+    if _write_marker(marker_path, marker):
+        log(
+            f"{choice.name} ships no DiffusionGemma visual-server; recorded so later "
+            "updates reuse this install instead of re-extracting it"
+        )
 
 
 def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
@@ -11135,6 +11170,10 @@ def install_prebuilt(
                             "diffusion visual server step skipped; install remains valid "
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
+                    try:
+                        record_visual_server_absence(install_dir, host, choice)
+                    except Exception:  # noqa: BLE001
+                        pass
                     return
                 if last_failure is not None:
                     raise last_failure

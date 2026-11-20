@@ -7338,3 +7338,137 @@ def test_a_reused_marker_takes_the_walk_back_this_run_made():
     assert not set(patch(marker, None)) & {"walked_back_from", "walked_back_on_macos"}
     retired = patch(recorded, None)
     assert retired["walked_back_from"] is None and retired["walked_back_on_macos"] is None
+
+
+# A published bundle can ship without the DiffusionGemma visual-server (b12540's macOS
+# bundles do). Re-extracting that same bundle never backfills it, so without a record
+# every update re-downloaded and re-validated a complete install.
+_NO_VS_MAC = "llama-b12540-mix-c4017f9-bin-macos-arm64.tar.gz"
+
+
+def _published_mac_choice(name: str = _NO_VS_MAC) -> AssetChoice:
+    return asset_choice(name = name, install_kind = "macos-arm64", source_label = "published")
+
+
+def _write_published_marker(install_dir: Path, asset: str, **extra) -> Path:
+    M = INSTALL_LLAMA_PREBUILT
+    install_dir.mkdir(parents = True, exist_ok = True)
+    marker = {
+        "asset": asset,
+        "source": "published",
+        "backend": M.backend_for_install_kind("macos-arm64"),
+        **extra,
+    }
+    path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    path.write_text(json.dumps(marker), encoding = "utf-8")
+    return path
+
+
+def test_a_bundle_without_the_visual_server_is_recorded_and_stops_the_backfill(
+    tmp_path: Path,
+) -> None:
+    M = INSTALL_LLAMA_PREBUILT
+    host = macos_host()
+    choice = _published_mac_choice()
+    install_dir = tmp_path / "llama.cpp"
+    marker_path = _write_published_marker(install_dir, choice.name)
+
+    # No record yet: an install that predates the copy allowlist still gets its one backfill.
+    assert M.diffusion_visual_server_backfill_needed(install_dir, host, choice) is True
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert M._diffusion_visual_server_missing_for_marker(install_dir, host, marker) is True
+
+    M.record_visual_server_absence(install_dir, host, choice)
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker[M.MARKER_VISUAL_SERVER_ABSENT] == choice.name
+    assert M.diffusion_visual_server_backfill_needed(install_dir, host, choice) is False
+    assert M._diffusion_visual_server_missing_for_marker(install_dir, host, marker) is False
+
+    # A later bundle is a different asset, so the record does not hide its backfill.
+    newer = _published_mac_choice("llama-b12600-mix-0000000-bin-macos-arm64.tar.gz")
+    assert M.diffusion_visual_server_backfill_needed(install_dir, host, newer) is True
+    marker["asset"] = newer.name
+    assert M._diffusion_visual_server_missing_for_marker(install_dir, host, marker) is True
+
+
+def test_a_complete_install_is_never_marked_as_missing_the_visual_server(tmp_path: Path) -> None:
+    M = INSTALL_LLAMA_PREBUILT
+    host = macos_host()
+    choice = _published_mac_choice()
+    install_dir = tmp_path / "llama.cpp"
+    marker_path = _write_published_marker(install_dir, choice.name)
+    binary = install_dir / "build" / "bin" / "llama-diffusion-gemma-visual-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_bytes(b"bin\n")
+    before = marker_path.read_bytes()
+
+    M.record_visual_server_absence(install_dir, host, choice)
+    # A marker naming another asset is not this bundle's record either.
+    M.record_visual_server_absence(install_dir, host, _published_mac_choice("other.tar.gz"))
+
+    assert marker_path.read_bytes() == before
+
+
+def test_a_second_update_on_a_bundle_without_the_visual_server_downloads_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The first install records the absence after activation, so the second update takes
+    the already-matches skip instead of re-extracting the same bundle."""
+    M = INSTALL_LLAMA_PREBUILT
+    host = macos_host()
+    choice = _published_mac_choice()
+    install_dir = tmp_path / "llama.cpp"
+    release_plan = M.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b12540",
+        release_tag = "b12540-mix-c4017f9",
+        attempts = [choice],
+        approved_checksums = release_checksums((choice.name, choice.expected_sha256, PREBUILT)),
+    )
+    route = types.SimpleNamespace(
+        host = host, backend = "auto", published_repo = "unslothai/llama.cpp", published_release_tag = ""
+    )
+    monkeypatch.setattr(M, "route_backend_request", lambda **_k: route)
+    monkeypatch.setattr(M, "existing_install_current_without_plan", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        M,
+        "select_backend_install",
+        lambda **_k: M.BackendSelection(
+            backend = "auto",
+            host = host,
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            requested_tag = "latest",
+            release_plans = [release_plan],
+            persist_llama_backend = None,
+            persist_rocm_gfx = None,
+        ),
+    )
+    monkeypatch.setattr(M, "existing_install_matches_plan", lambda d, *_a, **_k: d.is_dir())
+    monkeypatch.setattr(M, "existing_install_matches_choice", lambda *_a, **_k: False)
+    monkeypatch.setattr(M, "sync_marker_selection", lambda *_a, **_k: None)
+    monkeypatch.setattr(M, "ensure_fit_params_executable", lambda *_a, **_k: None)
+    monkeypatch.setattr(M, "resolve_validation_model", lambda probe: probe)
+    monkeypatch.setattr(M, "ensure_converter_scripts", lambda *_a, **_k: None)
+    monkeypatch.setattr(M, "ensure_diffusion_visual_server", lambda *_a, **_k: None)
+    installs: list[str] = []
+
+    def fake_validate(attempts, _host, _install_dir, work_dir, *_a, **_k):
+        installs.append(attempts[0].name)
+        staging = work_dir / "staged"
+        _write_published_marker(staging, attempts[0].name)
+        return attempts[0], staging, False
+
+    monkeypatch.setattr(M, "validate_prebuilt_attempts", fake_validate)
+    monkeypatch.setattr(
+        M,
+        "activate_install_tree",
+        lambda staging, target, _h: shutil.move(str(staging), str(target)),
+    )
+
+    M.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    assert installs == [choice.name]
+    M.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    assert installs == [
+        choice.name
+    ], "the second update re-extracted a bundle that has no visual-server"
