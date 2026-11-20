@@ -2067,6 +2067,11 @@ def _decode_logits(self, hidden_states):
     return apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
 
+def _vocab_parallel_active(head):
+    from .tp_native import vocab_parallel_active
+    return vocab_parallel_active(head)
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -2237,7 +2242,9 @@ def CausalLM_fast_forward(fast_forward_inference):
                     kwargs.get("packed_seq_lengths"),
                 )
 
-                if getattr(self.lm_head, "_unsloth_vocab_parallel", False):
+                if getattr(
+                    self.lm_head, "_unsloth_vocab_parallel", False
+                ) and _vocab_parallel_active(self.lm_head):
                     # Tensor parallel lm_head sharded by vocab rows (tp_native): never the whole logits.
                     from .tp_native import vocab_parallel_cross_entropy
                     loss = vocab_parallel_cross_entropy(

@@ -2991,6 +2991,11 @@ def _vocab_ce_chunk(head, x, labels, softcap, scale, group, lo, width):
     return torch.where(valid, lse - target, 0.0).sum()
 
 
+def vocab_parallel_active(head) -> bool:
+    """A vocab-parallel lm_head that still holds its shard (tp_replica may have swapped in the whole weight)."""
+    return bool(getattr(head, "_unsloth_vocab_parallel", False)) and _is_dtensor(_weight(head)[0])
+
+
 def vocab_parallel_cross_entropy(
     head,
     hidden_states,

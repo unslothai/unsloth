@@ -303,3 +303,30 @@ def test_vocab_parallel_head_refuses_a_forward_reading_the_whole_weight():
         source = f.read()
     assert "lm_head.weight" in source and "_unsloth_vocab_parallel" in source
     assert "vocab_parallel_cross_entropy(" in source
+
+
+def test_vocab_parallel_loss_only_while_the_head_is_sharded(monkeypatch):
+    # tp_for_inference swaps the whole weight in but keeps the flag: the loss must take the one-GPU path.
+    head = torch.nn.Linear(4, 8, bias = False)
+    head._unsloth_vocab_parallel = True
+    assert tpn.vocab_parallel_active(head) is False
+    monkeypatch.setattr(tpn, "_is_dtensor", lambda weight: True)
+    assert tpn.vocab_parallel_active(head) is True
+    head._unsloth_vocab_parallel = False
+    assert tpn.vocab_parallel_active(head) is False
+
+
+def test_llama_loss_checks_the_head_is_still_sharded():
+    import ast
+    import pathlib
+
+    source = pathlib.Path(tpn.__file__).with_name("llama.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    guarded = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and "vocab_parallel_cross_entropy" in ast.unparse(node)
+        and "_vocab_parallel_active" in ast.unparse(node.test)
+    ]
+    assert guarded, "the vocab-parallel loss branch must require a still-sharded head"
