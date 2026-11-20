@@ -132,7 +132,7 @@ def batch_report_size():
     value = os.environ.get(_BATCH_ENV, "").strip().lower()
     if value in ("", "0", "false", "no", "off"):
         return 0
-    if value in ("true", "yes", "on"):
+    if value in ("1", "true", "yes", "on"):
         return _DEFAULT_BATCHES
     try:
         return max(int(value), 0)
@@ -144,8 +144,9 @@ def batch_token_counts(inputs):
     """[slots, real, supervised, rows, longest_row] as int64 tensors on the batch device, or None.
 
     real: attention_mask when present, else the packed sequence lengths, else every slot (a packed
-    or padding-free row without either has no padding Unsloth can see). supervised: labels != -100,
-    else completion_mask, else real."""
+    or padding-free row without either has no padding Unsloth can see). supervised: the shifted
+    causal targets labels[..., 1:] != -100 (the loss never sees a row's first label; packed rows
+    already mask document starts), else completion_mask[..., 1:], else real."""
     if not hasattr(inputs, "get"):
         return None
     input_ids = inputs.get("input_ids")
@@ -167,9 +168,9 @@ def batch_token_counts(inputs):
     labels = inputs.get("labels")
     completion_mask = inputs.get("completion_mask")
     if torch.is_tensor(labels) and labels.numel() > 0:
-        supervised = (labels != -100).sum().to(torch.int64)
-    elif torch.is_tensor(completion_mask):
-        supervised = (completion_mask != 0).sum().to(torch.int64)
+        supervised = (labels[..., 1:] != -100).sum().to(torch.int64)
+    elif torch.is_tensor(completion_mask) and completion_mask.numel() > 0:
+        supervised = (completion_mask[..., 1:] != 0).sum().to(torch.int64)
     else:
         supervised = real
     return torch.stack(

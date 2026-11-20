@@ -35,6 +35,21 @@ def test_padded_rows_count_attention_mask_and_labels():
     assert rr.batch_token_counts(batch).tolist() == [8, 6, 4, 2, 4]
 
 
+def test_supervised_counts_only_shifted_causal_targets():
+    # The causal loss shifts labels by one, so a row's first label never reaches the loss.
+    batch = {
+        "input_ids": torch.ones(2, 4, dtype = torch.long),
+        "attention_mask": torch.tensor([[1, 1, 1, 1], [1, 1, 0, 0]]),
+        "labels": torch.tensor([[5, 5, 5, 5], [5, 5, -100, -100]]),
+    }
+    assert rr.batch_token_counts(batch).tolist() == [8, 6, 4, 2, 4]
+
+
+def test_batch_report_one_means_default_window(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_BATCH_REPORT", "1")
+    assert rr.batch_report_size() == rr._DEFAULT_BATCHES
+
+
 def test_packed_row_counts_packed_seq_lengths():
     batch = {
         "input_ids": torch.ones(1, 16, dtype = torch.long),
