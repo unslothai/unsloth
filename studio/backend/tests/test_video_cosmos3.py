@@ -56,6 +56,7 @@ from test_video_backend import (  # noqa: E402,F401
 )
 
 NANO, EDGE = "nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge"
+NANO_FP8, EDGE_FP8 = "nvidia/Cosmos3-Nano-FP8", "nvidia/Cosmos3-Edge-FP8"
 SUPER, EDGE_POLICY = "nvidia/Cosmos3-Super", "nvidia/Cosmos3-Edge-Policy-DROID"
 _FAMILY = {NANO: "cosmos3-nano", EDGE: "cosmos3-edge"}
 # The cards' scheduler rebuilds: Nano README.md:887, Edge README.md:759-761.
@@ -65,7 +66,7 @@ _CARD_SCHEDULER = {
 }
 _OPT_OUT_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 _REASONER = "Cosmos3 Reasoner checkpoint"
-_CONDITIONED = "Policy, Sim, Transfer or FP8 build"
+_CONDITIONED = "Policy, Sim or Transfer build"
 _PIPELINE_ONLY = "loads only as its full Diffusers pipeline"
 _CHECKPOINTS = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "cosmos3_checkpoints.json").read_text(
@@ -146,12 +147,21 @@ def _hub_cache(monkeypatch, answer):
     return lookups
 
 
+@pytest.fixture(autouse = True)
+def _no_guardrail_access_check(monkeypatch):
+    """The guardrail access check is a Hub request; test_cosmos3_guardrail_preflight.py covers it."""
+    monkeypatch.setattr(vc3, "guardrail_access_preflight", lambda *args, **kwargs: None)
+
+
 def _set_guardrail(monkeypatch, state):
-    """ "opted out" (env 0, no package), "installed" (package, no env) or "absent" (neither)."""
+    """The safety checker is off by default. "default" (no env, no package), "opted out" (env 0, no package),
+    "installed" (turned on with env 1, package present) or "absent" (turned on, package missing)."""
     if state == "opted out":
         monkeypatch.setenv(_OPT_OUT_ENV, "0")
-    else:
+    elif state == "default":
         monkeypatch.delenv(_OPT_OUT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_OPT_OUT_ENV, "1")
     module = None
     if state == "installed":
         module = types.ModuleType("cosmos_guardrail")
@@ -187,7 +197,11 @@ class _Log:
         ("/data/models/Cosmos3", None, None),
         ("nvidia/Cosmos3-Nano-Reasoner", None, None),
         (EDGE_POLICY, None, None),
-        ("/models/cosmos3_edge_fp8/", None, None),
+        ("/models/cosmos3_edge_fp8/", None, "cosmos3-edge"),
+        (NANO_FP8, None, "cosmos3-nano"),
+        (EDGE_FP8, None, "cosmos3-edge"),
+        ("/data/COSMOS3.NANO.FP8", None, "cosmos3-nano"),
+        ("nvidia/Cosmos3-Super-FP8", None, None),
         ("x", " COSMOS3.EDGE ", "cosmos3-edge"),
         # A bare token would claim Super, the Reasoners and Cosmos-Predict2's "cosmos" GGUF arch alike.
         ("x", "cosmos", None),
@@ -207,7 +221,8 @@ def test_detection(identifier, override, expected):
     [
         ("/models/Cosmos3-Nano-Reasoner/", {}, _REASONER),
         ("nvidia/Cosmos3-Nano-Policy-DROID", {}, _CONDITIONED),
-        ("/data/COSMOS3.NANO.FP8", {"model_kind": "pipeline"}, _CONDITIONED),
+        ("/data/COSMOS3.NANO.SIM", {"model_kind": "pipeline"}, _CONDITIONED),
+        ("nvidia/Cosmos3-Nano-Policy-DROID-FP8", {}, _CONDITIONED),
         ("nvidia/Cosmos3-Nano-Reasoner", {"family_override": "cosmos3-nano"}, _REASONER),
         (EDGE_POLICY, {"family_override": "wan2.2-ti2v-5b"}, _CONDITIONED),
         (EDGE, {"display_repo_id": "nvidia/Cosmos3-Edge-Reasoner"}, _REASONER),
@@ -319,16 +334,17 @@ def test_no_text_encoder_is_a_zero_text_term(table, expected):
 
 
 @pytest.mark.parametrize(
-    "value, opted_out",
-    [(v, True) for v in ("0", "FALSE", "no", " Off\n")]
-    + [(v, False) for v in (None, "", "1", "true", "disabled")],
+    "value, requested",
+    [(v, True) for v in ("1", "TRUE", "yes", " On\n")]
+    + [(v, False) for v in (None, "", "0", "false", "disabled")],
 )
-def test_the_opt_out_takes_only_explicit_off_values(monkeypatch, value, opted_out):
+def test_the_safety_checker_runs_only_on_request(monkeypatch, value, requested):
+    # Off by default (user decision; OpenMDW 1.1 has no guardrail clause): only an explicit on value turns it on.
     if value is None:
         monkeypatch.delenv(_OPT_OUT_ENV, raising = False)
     else:
         monkeypatch.setenv(_OPT_OUT_ENV, value)
-    assert vc3.safety_checker_opted_out() is opted_out
+    assert vc3.safety_checker_requested() is requested
 
 
 @pytest.mark.parametrize(
@@ -393,32 +409,40 @@ def test_the_checkpoints_index_decides_the_safety_checker(
     assert lookups == ([(repo, "model_index.json")] if source == "cache" else [])
 
 
-@pytest.mark.parametrize("guardrail", ["opted out", "installed", "absent"])
+@pytest.mark.parametrize("guardrail", ["default", "opted out", "installed", "absent"])
 @pytest.mark.parametrize("repo", [NANO, EDGE])
 def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     _hub_cache(monkeypatch, None)
     _set_guardrail(monkeypatch, guardrail)
+    from core.inference import cosmos_guardrail_install
+
+    monkeypatch.setattr(cosmos_guardrail_install, "_uv", lambda: "/opt/uv/bin/uv")
     log = _Log()
     monkeypatch.setattr(vc3, "logger", log)
     refusal = vc3.guardrail_refusal(repo)
-    if repo == NANO and guardrail == "absent":
+    if guardrail == "absent":
+        # Turned on, every Cosmos3 checkpoint needs the package.
         for part in (
-            f"'{NANO}'",
-            "pip install cosmos-guardrail",
+            f"'{repo}'",
+            f"pip install --python {sys.executable} cosmos-guardrail",
             f"https://huggingface.co/{_GUARDRAIL_REPO}",
             "token in Settings",
-            f"{_OPT_OUT_ENV}=0",
+            f"{_OPT_OUT_ENV}=1",
+            "off by default",
         ):
             assert part in refusal, part
-        assert vc3.guardrail_refusal(NANO, index = _ckpt(EDGE)["model_index"]) is None
     else:
         assert refusal is None
-    opted_out = guardrail == "opted out"
-    expected = {"sound_tokenizer": None, **({"enable_safety_checker": False} if opted_out else {})}
-    assert vc3.pipeline_kwargs(repo) == expected
-    warned = [line for level, line in log.lines if level == "warning"]
-    assert len(warned) == (repo == NANO and opted_out)
-    assert all(_OPT_OUT_ENV in line and repo in line for line in warned)
+    on = guardrail in ("installed", "absent")
+    assert vc3.pipeline_kwargs(repo) == {"sound_tokenizer": None, "enable_safety_checker": on}
+    (line,) = [line for level, line in log.lines if level == "info" and "safety checker" in line]
+    assert repo in line and _OPT_OUT_ENV in line
+    if on:
+        assert "is on" in line
+    else:
+        # Says it is off and how to turn it on; Nano's card runs it, so the line says so.
+        assert "is off" in line and f"{_OPT_OUT_ENV}=1" in line
+        assert ("model card runs it" in line) is (repo == NANO)
 
 
 def _listing(repo, *extra):
@@ -639,7 +663,11 @@ class _FakeCosmos3Pipeline:
     @classmethod
     def from_pretrained(cls, source, **kwargs):
         cls.loads.append({"source": source, **kwargs})
-        return cls(_ckpt(EDGE if str(source).lower() == EDGE.lower() else NANO)["scheduler_config"])
+        pipe = cls(_ckpt(EDGE if str(source).lower() == EDGE.lower() else NANO)["scheduler_config"])
+        if kwargs.get("transformer") is not None:
+            # as diffusers does: a passed component replaces the one the folder names
+            pipe.transformer = kwargs["transformer"]
+        return pipe
 
     def to(self, device):
         return self
@@ -715,7 +743,7 @@ def cosmos3_runtime(fake_runtime, monkeypatch):
     diffusers = sys.modules["diffusers"]
     monkeypatch.setattr(diffusers, "Cosmos3OmniPipeline", _FakeCosmos3Pipeline, raising = False)
     _FakeCosmos3Pipeline.loads = []
-    _set_guardrail(monkeypatch, "opted out")
+    _set_guardrail(monkeypatch, "default")
     encoded = []
 
     def _encode(frames, fps, audio, pipe):
@@ -734,10 +762,11 @@ def _loaded(repo):
 @pytest.mark.parametrize(
     "repo, guardrail, safety",
     [
+        (NANO, "default", {"enable_safety_checker": False}),
+        (EDGE, "default", {"enable_safety_checker": False}),
         (NANO, "opted out", {"enable_safety_checker": False}),
-        (EDGE, "opted out", {"enable_safety_checker": False}),
-        (NANO, "installed", {}),
-        (EDGE, "absent", {}),
+        (NANO, "installed", {"enable_safety_checker": True}),
+        (EDGE, "installed", {"enable_safety_checker": True}),
     ],
 )
 def test_load(cosmos3_runtime, monkeypatch, repo, guardrail, safety):
@@ -805,7 +834,8 @@ def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_run
         f"'{NANO}'",
         f"https://huggingface.co/{_GUARDRAIL_REPO}",
         "token in Settings",
-        f"{_OPT_OUT_ENV}=0",
+        f"{_OPT_OUT_ENV}=1",
+        "off by default",
     ):
         assert part in message, part
     assert "401 Client Error" not in message and "pip install" not in message
@@ -891,15 +921,30 @@ def test_overlapping_guardrail_loads_keep_their_own_tokens(monkeypatch):
     assert seen == ["hf_a", "hf_b", "ambient"]
 
 
+def test_nano_loads_by_default_without_the_guardrail(cosmos3_runtime, monkeypatch):
+    """Off by default: no package, no access check, no refusal; the pipeline is built with the checker off."""
+    _set_guardrail(monkeypatch, "default")
+    checked = []
+    monkeypatch.setattr(vc3, "guardrail_access_preflight", lambda *a, **k: checked.append(a))
+    started = []
+    monkeypatch.setattr(VideoBackend, "_run_load", lambda self, **kwargs: started.append(kwargs))
+    VideoBackend().begin_load(NANO, model_kind = "pipeline")
+    assert len(started) == 1
+    _FakeCosmos3Pipeline.loads = []
+    _loaded(NANO)
+    ((load,),) = [_FakeCosmos3Pipeline.loads]
+    assert load["enable_safety_checker"] is False
+
+
 def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):
     _set_guardrail(monkeypatch, "absent")
     started = []
     monkeypatch.setattr(VideoBackend, "_run_load", lambda self, **kwargs: started.append(kwargs))
     backend = VideoBackend()
-    with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=0"):
+    with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=1"):
         backend.begin_load(NANO, model_kind = "pipeline")
     assert started == [] and backend.loading_repo_ids() == ()
-    with pytest.raises(ValueError, match = "pip install cosmos-guardrail"):
+    with pytest.raises(ValueError, match = "Install guardrail on the Video page"):
         backend.load_pipeline(NANO, model_kind = "pipeline")
     assert _FakeCosmos3Pipeline.loads == []
     with pytest.raises(ValueError, match = "limited to"):
@@ -915,7 +960,7 @@ def test_a_local_pipeline_folder_validates(
     root = _write_planned_tree(tmp_path_factory.mktemp("m") / names.get(folder, "my-model"), repo)
     if folder == "export":
         (root / "config.json").unlink()
-    _set_guardrail(monkeypatch, "absent" if repo == EDGE else "opted out")
+    _set_guardrail(monkeypatch, "default")
     assert VideoBackend().validate_load_request(str(root)).name == _FAMILY[repo]
 
 
@@ -1246,8 +1291,9 @@ def test_the_local_listing_offers_only_generator_pipelines_as_video(tmp_path):
     assert cc._local_model_task(row(reasoner, "nvidia/Cosmos3-Nano-Reasoner")) is None
     assert cc._local_is_diffusers(row(reasoner)) is False
     assert cc._local_model_task(row(shards(tmp_path / "Cosmos3-Nano-finetune"))) is None
-    fp8 = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE)
-    assert cc._local_model_task(row(fp8)) is None
+    for repo in (NANO_FP8, EDGE_FP8):
+        fp8 = _write_planned_tree(tmp_path / repo.partition("/")[2], repo)
+        assert cc._local_model_task(row(fp8)) == video, repo
 
 
 def test_no_cosmos3_gguf_or_loose_file_is_offered_as_video(tmp_path):
@@ -1359,6 +1405,16 @@ def test_preset_tiers_match_the_pipelines_resolution_bins():
     tier = lambda key: {(w, h) for h, w in _ACTION_RESOLUTION_BINS[key].values()}  # noqa: E731
     assert set(_256P) == tier("256") and set(_480P) == tier("480")
     assert set(_fam("cosmos3-nano").resolution_presets[:5]) == tier("720")
+
+
+@pytest.mark.parametrize("name", ["cosmos3-edge", "cosmos3-nano"])
+def test_the_video_page_starts_at_the_480p_tier(name):
+    # Without a first-render size the page kept its 768x512 fallback, which no Cosmos3 tier trains at.
+    fam = _fam(name)
+    assert video_mod._ui_default_resolution(fam) == [832, 480]
+    assert (768, 512) not in fam.resolution_presets
+    # A request without a size still takes resolution_presets[0].
+    assert fam.resolution_presets[0] == ((1280, 720) if name == "cosmos3-nano" else (832, 480))
 
 
 @pytest.mark.parametrize("name", ["cosmos3-edge", "cosmos3-nano"])
@@ -1798,3 +1854,152 @@ def test_the_request_model_keeps_continuation_apart_from_keyframes_and_reference
     ):
         with pytest.raises(ValidationError, match = fragment):
             VideoGenerateRequest(prompt = "p", **extra)
+
+
+# --- NVIDIA ModelOpt FP8 builds (nvidia/Cosmos3-Nano-FP8, nvidia/Cosmos3-Edge-FP8) ------------------------------
+
+
+@pytest.mark.parametrize("repo, family", [(NANO_FP8, "cosmos3-nano"), (EDGE_FP8, "cosmos3-edge")])
+def test_the_fp8_builds_validate_as_their_family(cosmos3_runtime, monkeypatch, repo, family):
+    _set_guardrail(monkeypatch, "default")
+    assert VideoBackend().validate_load_request(repo, model_kind = "pipeline").name == family
+
+
+@pytest.mark.parametrize("repo", [NANO_FP8, EDGE_FP8])
+def test_the_fp8_builds_share_their_familys_pipeline_and_scheduler(repo):
+    sibling = {NANO_FP8: NANO, EDGE_FP8: EDGE}[repo]
+    assert _ckpt(repo)["scheduler_config"] == _ckpt(sibling)["scheduler_config"]
+    assert _ckpt(repo)["model_index"]["transformer"] == _ckpt(sibling)["model_index"]["transformer"]
+    arch = dict(_ckpt(repo)["transformer_config"])
+    assert arch.pop("quantization_config")["quant_algo"] == "FP8"
+    base = {k: v for k, v in _ckpt(sibling)["transformer_config"].items() if not k.startswith("_")}
+    assert base and {k: arch.get(k) for k in base} == base
+    files = _planned_files(repo)
+    assert any(n.startswith("transformer/") and n.endswith(".safetensors") for n in files)
+    assert not any(n.endswith(".pth") for n in files)
+
+
+def _modelopt_fake(monkeypatch, runtime):
+    from core.inference import diffusion_modelopt_fp8 as mo
+
+    calls: list = []
+    scan = mo.ModelOptFp8Scan(
+        folder = "x", layers = {"layers.0.self_attn.to_q": (64, 64)}, fp8_bytes = 10**9, dense_bytes = 10**8
+    )
+
+    def _load(transformer_cls, path, **kwargs):
+        calls.append({"path": str(path), **kwargs})
+        dit = _FakeWanDiT()
+        kept = 0 if kwargs["runtime"] == mo.RUNTIME_DEQUANT else 504
+        setattr(
+            dit,
+            mo.MODELOPT_ATTR,
+            {"runtime": kwargs["runtime"], "fp8": kept, "dequantized": 504 - kept, "layers": 504},
+        )
+        return dit
+
+    def _scan(path):
+        scan.folder = str(Path(str(path)) / "transformer")
+        return scan
+
+    monkeypatch.setattr(mo, "scan_modelopt_fp8", _scan)
+    monkeypatch.setattr(mo, "load_modelopt_fp8_transformer", _load)
+    monkeypatch.setattr(
+        mo,
+        "modelopt_runtime",
+        lambda target, **kw: runtime if kw.get("keep", True) else mo.RUNTIME_DEQUANT,
+    )
+    return calls
+
+
+@pytest.mark.parametrize("runtime, kept", [("static", True), ("stored", True), ("dequant", False)])
+@pytest.mark.parametrize("repo", [NANO_FP8, EDGE_FP8])
+def test_an_fp8_build_loads_its_transformer_through_the_modelopt_loader(
+    cosmos3_runtime, monkeypatch, tmp_path, repo, runtime, kept
+):
+    calls = _modelopt_fake(monkeypatch, runtime)
+    root = _write_planned_tree(tmp_path / repo.partition("/")[2], repo)
+    backend = VideoBackend()
+    status = backend.load_pipeline(str(root), model_kind = "pipeline")
+    (call,) = calls
+    assert call["path"] == str(root / "transformer") and call["runtime"] == runtime
+    (load,) = _FakeCosmos3Pipeline.loads
+    # the pipeline gets the ModelOpt-built transformer; its other components are the repo's own
+    assert load["transformer"] is backend._state.pipe.transformer
+    assert load["source"] == str(root) and load["sound_tokenizer"] is None
+    assert status["family"] == {NANO_FP8: "cosmos3-nano", EDGE_FP8: "cosmos3-edge"}[repo]
+    resolved = status["resolved"]["transformer_quant"]
+    if kept:
+        assert resolved["value"] == "fp8", resolved
+        assert "NVIDIA ModelOpt FP8 checkpoint" in str(resolved), resolved
+    else:
+        assert resolved["value"] != "fp8", resolved
+
+
+@pytest.mark.parametrize("runtime", ["static", "stored", "dequant"])
+def test_a_lora_load_of_an_fp8_build_dequantizes_and_prices_the_bf16_dit(
+    cosmos3_runtime, monkeypatch, tmp_path, runtime
+):
+    """Adapters bake into dense float weights, so whatever fp8 runtime the card would run, a LoRA load builds (and
+    the planner prices) the dequantized bf16 DiT and the bake gets it."""
+    from core.inference import video_lora
+
+    calls = _modelopt_fake(monkeypatch, runtime)
+    priced: list = []
+    planned = video_mod._modelopt_planned_gb
+    monkeypatch.setattr(
+        video_mod,
+        "_modelopt_planned_gb",
+        lambda *a, **k: priced.append(k["keep"]) or planned(*a, **k),
+    )
+    monkeypatch.setattr(
+        video_lora,
+        "resolve",
+        lambda specs, **k: tuple((i, f"/x/{i}.safetensors", w) for i, w in specs),
+    )
+    baked: list = []
+
+    def _bake(pipe, specs, lora_specs, **k):
+        baked.append((pipe.transformer, specs))
+        return 1
+
+    monkeypatch.setattr(VideoBackend, "_bake_video_loras", staticmethod(_bake))
+    root = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE_FP8)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(root), model_kind = "pipeline", loras = [{"id": "my/lora", "weight": 1.0}]
+    )
+    assert [c["runtime"] for c in calls] == ["dequant"] and priced == [False]
+    ((dit, specs),) = baked
+    assert dit is backend._state.pipe.transformer and [s[0] for s in specs] == ["my/lora"]
+
+
+def test_a_pinned_bf16_dit_dequantizes_the_fp8_build(cosmos3_runtime, monkeypatch, tmp_path):
+    calls = _modelopt_fake(monkeypatch, "static")
+    root = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE_FP8)
+    VideoBackend().load_pipeline(str(root), model_kind = "pipeline", transformer_quant = "off")
+    assert [c["runtime"] for c in calls] == ["dequant"]
+
+
+def test_the_bf16_siblings_never_reach_the_modelopt_loader(cosmos3_runtime, monkeypatch, tmp_path):
+    from core.inference import diffusion_modelopt_fp8 as mo
+
+    loads: list = []
+    monkeypatch.setattr(mo, "load_modelopt_fp8_transformer", lambda *a, **k: loads.append(k))
+    for repo in (NANO, EDGE):
+        root = _write_planned_tree(tmp_path / repo.partition("/")[2], repo)
+        VideoBackend().load_pipeline(str(root), model_kind = "pipeline")
+    assert loads == []
+    assert all("transformer" not in load for load in _FakeCosmos3Pipeline.loads)
+
+
+def test_the_planner_prices_the_fp8_dit_at_the_bytes_the_runtime_keeps(monkeypatch):
+    from core.inference import diffusion_modelopt_fp8 as mo
+
+    scan = mo.ModelOptFp8Scan(folder = "x", fp8_bytes = 13_892_000_000, dense_bytes = 2_564_000_000)
+    fam = vf.detect_video_family(NANO_FP8)
+    for runtime, gb in (("static", 16.456), ("stored", 16.456), ("dequant", 30.348)):
+        monkeypatch.setattr(mo, "modelopt_runtime", lambda target, _r = runtime, **kw: _r)
+        assert video_mod._modelopt_planned_gb(
+            scan, fam, NANO_FP8, None, keep = True
+        ) == pytest.approx(gb)

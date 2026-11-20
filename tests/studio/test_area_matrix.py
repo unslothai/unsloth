@@ -135,10 +135,9 @@ def test_appearance_check(base, mode, fails, monkeypatch):
     assert [v["fail"] for v in rows] == [fails]
 
 
-# Highest readings on the GitHub runners the gate runs on (identical code spans about 1.35x
-# between runs; 25 runs, 2026-11-07).
-# Scrolls pause the Glass blur (glass-motion.ts), so their worst readings dropped from 8.3x (thread)
-# and 14.0x (Settings) to at most 4.9x (local and runner runs of that change).
+# Highest readings on the GitHub runners the gate uses: identical code spans about 1.35x across 25
+# runs; scrolls pause the Glass blur (glass-motion.ts), so worst readings fell from 8.3x (thread)
+# and 14.0x (Settings) to at most 4.9x in local and runner runs.
 RUNNER_READINGS = [
     ("blurred", "thread_scroll", 4.9),
     (am.GLASS, "reasoning_toggle", 7.8),
@@ -256,7 +255,7 @@ def test_owner_token_shows_every_settings_tab():
         and claims["role"] == "owner"
         and claims["exp"] > 4_000_000_000
     )
-    assert len(am.settings_tabs()) == 18
+    assert len(am.settings_tabs()) == 19
 
 
 class _FakePage:
@@ -274,10 +273,10 @@ class _FakePage:
 @pytest.mark.parametrize(
     "got, ok, words",
     [
-        ({"count": 18, "missing": [], "failed": []}, True, ""),
-        ({"count": 13, "missing": [], "failed": []}, False, "only 13 of 18"),
-        ({"count": 18, "missing": ["agents"], "failed": []}, False, "never committed"),
-        ({"count": 18, "missing": [], "failed": ["data"]}, False, "error boundary"),
+        ({"count": 19, "missing": [], "failed": []}, True, ""),
+        ({"count": 13, "missing": [], "failed": []}, False, "only 13 of 19"),
+        ({"count": 19, "missing": ["agents"], "failed": []}, False, "never committed"),
+        ({"count": 19, "missing": [], "failed": ["data"]}, False, "error boundary"),
     ],
 )
 def test_settings_tabs_area_fails_when_a_panel_is_not_measured(got, ok, words):
@@ -345,9 +344,8 @@ def test_missing_default_page_fails_coverage(monkeypatch):
 def test_a_length_failure_that_appears_after_a_recheck_is_measured_again(
     monkeypatch, length_blocking
 ):
-    # CI (message_menu, Liquid 3D): a 506 ms first short reading failed the appearance check, so only
-    # the short page was measured again (99, 90 ms). That made the length check fail for the first
-    # time, on a long reading (354 ms) nobody had measured again.
+    # CI (message_menu, Liquid 3D): a failed appearance check rechecked only the short page, which
+    # then exposed a length failure on a long reading nobody had measured again.
     cell = lambda cpu, main: {
         "elements": 10,
         "layout_objects": 0,
@@ -391,10 +389,9 @@ def test_a_length_failure_that_appears_after_a_recheck_is_measured_again(
 
 
 def test_an_appearance_failure_that_appears_after_a_recheck_is_measured_again(monkeypatch):
-    # CI, main, Liquid 3D typing at 200 turns: one sweep of the 200-turn pages caught a background-
-    # thread burst in every look (default 1,266 ms CPU, Liquid 3D 1,005). Another mode's failure got
-    # the default page measured again (154 ms); Liquid 3D was then judged 1,005 / 154 = 6.5x against
-    # 6x on its never-rechecked first reading. Its own recheck reads 1.6x.
+    # CI, main, Liquid 3D at 200 turns: a background-thread burst hit every look of the sweep;
+    # another mode's failure rechecked only the default page, so Liquid 3D was judged 6.5x against
+    # 6x, though its own recheck reads 1.6x.
     cell = (
         lambda cpu: {
             "elements": 70,
@@ -723,8 +720,7 @@ def test_length_time_checks_can_report_only(monkeypatch):
         ("paint_ms", True, False),
         ("main_ms", True, False),
     ]
-    # Even report-only, the reading is measured again at both lengths: a single first reading at LONG
-    # turns carries work spilled over from the areas before it.
+    # Even report-only, rechecked at both lengths: a first LONG reading carries spilled work.
     assert am.recheck_keys(verdicts) == [(am.SHORT, "default", "a"), (am.LONG, "default", "a")]
     text = "\n".join(am.table(result, verdicts))
     assert "would fail (report-only, not failing the gate): default/a paint 15->104 ms" in text

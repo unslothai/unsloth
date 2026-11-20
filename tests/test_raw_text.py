@@ -853,6 +853,74 @@ def test_add_structure_tokens_leaves_code_blocks_alone():
     )
 
 
+def test_add_structure_tokens_reads_any_fence_info_string():
+    text = (
+        "```c++\n// main\nint main() {}\n```\n\n"
+        "```shell-session\n# install deps\n$ pip install unsloth\n```\n\n"
+        '``` python title="train.py"\n# load the model\nimport unsloth\n```\n\n'
+        "# Title\n"
+    )
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code|c++|>// main\nint main() {}<|/code|>\n\n"
+        "<|code|shell-session|># install deps\n$ pip install unsloth<|/code|>\n\n"
+        "<|code|python|># load the model\nimport unsloth<|/code|>\n\n"
+        "<|chapter|>Title<|/chapter|>\n"
+    )
+
+
+def test_add_structure_tokens_inline_triple_backticks_do_not_open_a_fence():
+    block = "# Setup\n```python\n# load the model\nimport unsloth\n```\n"
+    tagged = (
+        "<|chapter|>Setup<|/chapter|>\n<|code|python|># load the model\nimport unsloth<|/code|>\n"
+    )
+    for line in (
+        "Run ```pip install unsloth``` first.\n",
+        "Run ```nvidia-smi```to check the GPU first\n",
+        "Run ```nvidia-smi```\n",
+    ):
+        assert TextPreprocessor().add_structure_tokens(line + block) == line + tagged
+
+
+def test_empty_fence_ends_before_the_next_heading_and_code_block():
+    text = "```python\n```\n# Setup\n```\n# shell comment\n```"
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code|python|><|/code|>\n<|chapter|>Setup<|/chapter|>\n"
+        "<|code||># shell comment<|/code|>"
+    )
+    text = "```python\n```\n```bash\necho\n```"
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "<|code|python|><|/code|>\n<|code|bash|>echo<|/code|>"
+    )
+
+
+def test_add_structure_tokens_closer_fills_its_line():
+    text = (
+        "1. Install\n\n   ```bash\n   # deps\n   pip install unsloth\n   ```\n\n"
+        "````markdown\n# Title\n````\n\n"
+        "Run ```nvidia-smi``` first.\n```\n# GPU\n```nvidia-smi``` lists it\n```\n"
+        "```bash\npip install unsloth\n## Usage\n```python\n# load\n```\n"
+    )
+    assert TextPreprocessor().add_structure_tokens(text) == (
+        "1. Install\n\n   <|code|bash|>   # deps\n   pip install unsloth<|/code|>\n\n"
+        "<|code|markdown|># Title<|/code|>\n\n"
+        "Run ```nvidia-smi``` first.\n<|code||># GPU\n```nvidia-smi``` lists it<|/code|>\n"
+        "```bash\npip install unsloth\n<|section|>Usage<|/section|>\n<|code|python|># load<|/code|>\n"
+    )
+
+
+def test_add_structure_tokens_unclosed_long_fence_line_is_linear():
+    import time
+    for text in (
+        "```" + "a" * 200_000 + " b`",
+        "```" + " " * 200_000 + "`",
+        "```" + " " * 100_000 + "a" * 100_000 + "`",
+        "```python\nx = 1\n" * 20_000,
+    ):
+        start = time.perf_counter()
+        assert TextPreprocessor().add_structure_tokens(text) == text
+        assert time.perf_counter() - start < 1.0
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     test_clean_text_keeps_text_in_any_script()
@@ -873,4 +941,9 @@ if __name__ == "__main__":
     test_text_chunks_reserve_space_for_the_final_eos()
     test_chunk_size_one_keeps_the_final_eos_overflow()
     test_add_structure_tokens_leaves_code_blocks_alone()
+    test_add_structure_tokens_reads_any_fence_info_string()
+    test_add_structure_tokens_inline_triple_backticks_do_not_open_a_fence()
+    test_add_structure_tokens_closer_fills_its_line()
+    test_add_structure_tokens_unclosed_long_fence_line_is_linear()
+    test_empty_fence_ends_before_the_next_heading_and_code_block()
     sys.exit(0 if success else 1)

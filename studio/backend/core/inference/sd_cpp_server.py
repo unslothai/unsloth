@@ -149,6 +149,10 @@ class SdCppServerUnsupported(RuntimeError):
     """The sd-server has no route / mode for this job kind; nothing ran, so the caller can fall back to sd-cli."""
 
 
+class SdCppLatentFormatError(RuntimeError):
+    """A completed ``output_latent`` job whose latents this client cannot use; the render can be redone as PNG."""
+
+
 def _route_unsupported(status_code: int, text: str, kind: str) -> bool:
     # 404: no route in this build; 400 "does not support": the loaded model lacks the mode (runtime.cpp).
     if status_code == 404:
@@ -186,6 +190,7 @@ class SdCppServer:
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
         self._vid_gen_features: Optional[dict] = None
+        self._img_gen_features: dict = {}
         self._vid_gen_output_formats: tuple[str, ...] = ()
         self._stopped = False
         atexit.register(self.stop)
@@ -209,6 +214,14 @@ class SdCppServer:
             return False
         return all(caps[0].get(key) is True for key in features)
 
+    def img_gen_accepts(self, features: tuple[str, ...]) -> bool:
+        """``vid_gen_accepts`` for img_gen features (same once-per-server read); older builds get False."""
+        if not features:
+            return True
+        if self._vid_gen_capabilities() is None:
+            return False
+        return all(self._img_gen_features.get(key) is True for key in features)
+
     def vid_gen_output_formats(self) -> tuple[str, ...]:
         """The vid_gen ``output_format`` values this server writes (same once-per-server read); () when unknown."""
         caps = self._vid_gen_capabilities()
@@ -225,6 +238,8 @@ class SdCppServer:
             data = data if isinstance(data, dict) else {}
             modes = data.get("features_by_mode")
             caps = modes.get("vid_gen") if isinstance(modes, dict) else None
+            img_caps = modes.get("img_gen") if isinstance(modes, dict) else None
+            self._img_gen_features = img_caps if isinstance(img_caps, dict) else {}
             formats = data.get("output_formats_by_mode")
             formats = formats.get("vid_gen") if isinstance(formats, dict) else None
             self._vid_gen_features = caps if isinstance(caps, dict) else {}
@@ -253,6 +268,7 @@ class SdCppServer:
         env: Optional[dict[str, str]] = None,
         startup_timeout: float = 600.0,
         extra_args: Optional[list[str]] = None,
+        rng: Optional[str] = None,
     ) -> None:
         """Spawns the server and blocks until ready under the lifecycle lock; extra_args go last so they win, which pins the CPU-backend restart off the GPU."""
         with self._lifecycle_lock:
@@ -276,8 +292,12 @@ class SdCppServer:
                 verbose = True,  # sd-server prints the per-step sampling lines we parse
                 extra_args = list(extra_args or []),
                 accelerator = binary_accelerator(self.binary),
+                rng = rng,
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
+            if files.clip_l:
+                # FLUX.1 CLIP-L leaves a null encoder param; sd.cpp's LoRA cond-cache check segfaults on it.
+                run_env.setdefault("SD_COND_CACHE_STRICT", "1")
             if env:
                 run_env.update(env)
             if _verbose_native_logs():
@@ -605,6 +625,30 @@ class SdCppServer:
             total_timeout = total_timeout,
         )
 
+    def img_gen_latents(
+        self,
+        payload: dict[str, Any],
+        *,
+        on_step: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        poll_interval: float = 0.4,
+        submit_timeout: float = 60.0,
+        total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
+    ) -> list[tuple[tuple[int, ...], bytes]]:
+        """``img_gen`` with ``output_latent``: the server skips its VAE decode and returns each final latent as
+        ``(shape, float32 bytes)``; only for a server whose capabilities list ``output_latent``."""
+        return self._run_job(
+            "img_gen",
+            _IMG_GEN_PATH,
+            {**payload, "output_latent": True},
+            self._decode_latents,
+            on_step = on_step,
+            cancel_event = cancel_event,
+            poll_interval = poll_interval,
+            submit_timeout = submit_timeout,
+            total_timeout = total_timeout,
+        )
+
     def vid_gen(
         self,
         payload: dict[str, Any],
@@ -804,6 +848,41 @@ class SdCppServer:
                 raise RuntimeError(f"sd-server returned an undecodable image: {exc}") from exc
         if not out:
             raise RuntimeError("sd-server completed the job but returned no images.")
+        return out
+
+    @staticmethod
+    def _decode_latents(job: dict[str, Any]) -> list[tuple[tuple[int, ...], bytes]]:
+        result = job.get("result") if isinstance(job, dict) else None
+        images = result.get("images") if isinstance(result, dict) else None
+        items = [it for it in images if isinstance(it, dict)] if isinstance(images, list) else []
+        out: list[tuple[tuple[int, ...], bytes]] = []
+        for item in sorted(items, key = lambda d: d.get("index", 0)):
+            latent = item.get("latent")
+            if not isinstance(latent, dict) or latent.get("dtype") != "float32":
+                raise SdCppLatentFormatError(
+                    "sd-server returned an image item without a float32 latent."
+                )
+            shape = latent.get("shape")
+            if not isinstance(shape, list) or not all(isinstance(n, int) and n > 0 for n in shape):
+                raise SdCppLatentFormatError(
+                    f"sd-server returned a latent with an invalid shape: {shape!r}"
+                )
+            try:
+                data = base64.b64decode(latent.get("b64") or "")
+            except Exception as exc:  # noqa: BLE001
+                raise SdCppLatentFormatError(
+                    f"sd-server returned an undecodable latent: {exc}"
+                ) from exc
+            count = 1
+            for n in shape:
+                count *= n
+            if len(data) != count * 4:
+                raise SdCppLatentFormatError(
+                    f"sd-server returned {len(data)} latent bytes for shape {shape}, expected {count * 4}."
+                )
+            out.append((tuple(shape), data))
+        if not out:
+            raise SdCppLatentFormatError("sd-server completed the job but returned no latents.")
         return out
 
     def _died_message(self, where: str, exc: Optional[Exception]) -> str:

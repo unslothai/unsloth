@@ -336,6 +336,14 @@ def resolve_speed_mode(
     return normalize_speed_mode(value)
 
 
+def int8_attention_speed_active(
+    speed_mode: Optional[str], effective_speed: str, deferred: bool
+) -> bool:
+    """Auto INT8 attention races at load when speed is active, or unset with no deferred profile;
+    speed off stays bit-identical."""
+    return effective_speed != SPEED_OFF or (speed_mode is None and not deferred)
+
+
 @lru_cache(maxsize = 1)
 def torch_compile_runtime_available() -> bool:
     """Triton has no Windows wheel; TORCHDYNAMO_DISABLE is honored on every platform."""
@@ -481,6 +489,34 @@ def _fp16_compile_capable(target: Any) -> bool:
         )
         return tuple(cap)[:2] >= _FP16_COMPILE_MIN_CAPABILITY
     except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's eager path
+        return False
+
+
+# 1 keeps the step graph over an eager denoiser whose native int8 W8A8 linears run compiled outside a capture.
+STEP_GRAPH_NATIVE_W8A8_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8"
+STEP_GRAPH_EAGER_W8A8_REASON = (
+    "the uncompiled denoiser's native int8 linears run as compiled functions, which a captured step would replace "
+    "with their slower eager kernels"
+)
+
+
+def step_graph_bakes_eager_w8a8(pipe: Any) -> bool:
+    """Whether a step CUDA graph over this (uncompiled) denoiser would capture its native int8 W8A8 linears as eager
+    kernels: the compiled W8A8 function never runs inside a capture (diffusion_native_quant._forward_fused). On a T4,
+    FLUX.3 Klein int8 at Speed default rendered 42.5 s per image with the graph and 34 s without (speed off, same
+    pixels): the step is compute-bound there, so the unfused rotate / quantise kernels cost more than graph replay
+    saves. ``UNSLOTH_DIFFUSION_STEP_GRAPH_NATIVE_W8A8=1`` keeps the graph. Never raises."""
+    if (os.environ.get(STEP_GRAPH_NATIVE_W8A8_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+    try:
+        from .diffusion_native_quant import fused_w8a8_serves  # noqa: PLC0415 - heavy import, load time only
+        return any(fused_w8a8_serves(dit) for dit in _denoiser_dits(pipe))
+    except Exception:  # noqa: BLE001 - unknown keeps the graph
         return False
 
 
@@ -690,6 +726,14 @@ def apply_speed_optims(
                 logger = logger,
                 offloaded = after_placement,
             )
+            # fp16 cards only: measured there (T4, and the sm120 fp16 path); bf16 loads keep the graph unchanged.
+            if (
+                ok
+                and not applied["compiled"]
+                and _is_float16(getattr(target, "dtype", None))
+                and step_graph_bakes_eager_w8a8(pipe)
+            ):
+                ok, reason = False, STEP_GRAPH_EAGER_W8A8_REASON
             if ok and after_placement:
                 # The slot and the recorded copies depend on the hooks placement installs: arm_graphs_after_placement.
                 ok, reason = False, "armed after placement"
@@ -1849,8 +1893,13 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only in max mode or when the env forces it; never with the fused eager VAE."""
+    """U-Nets always; DiTs only in max mode or when the env forces it; never for a VAE with an attention head wider
+    than 256 on Windows ROCm, where compiled decode skips the routing that keeps it off the broken fused kernels."""
     if _fused_vae_planned(pipe):
+        return False
+    from .diffusion_vae_attn_chunked import vae_has_untrusted_head, windows_rocm
+
+    if windows_rocm() and vae_has_untrusted_head(getattr(pipe, "vae", None)):
         return False
     if _denoiser_unet(pipe) is not None:
         return True

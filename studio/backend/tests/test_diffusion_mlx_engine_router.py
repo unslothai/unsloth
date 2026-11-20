@@ -45,6 +45,8 @@ def _clean(monkeypatch):
     )
     # No sd.cpp binary anywhere and no install: today's MPS / CPU choice is then diffusers, never a real exec.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
+    # The MLX choice is under test, not the CPU GGUF refusal (test_cpu_gguf_stays_native), so keep diffusers here.
+    monkeypatch.setenv(r.CPU_GGUF_DIFFUSERS_FALLBACK_ENV, "1")
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: False)

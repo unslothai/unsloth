@@ -919,12 +919,18 @@ def test_status_passthrough(client, monkeypatch):
         "artifact": None,
         "replaced": None,
         "steps": None,
+        "engaged": None,
+        "modules": None,
+        "routed": None,
     }
     assert body["resolved"]["text_encoder_quant"] == {
         **resolved["text_encoder_quant"],
         "artifact": None,
         "replaced": None,
         "steps": None,
+        "engaged": None,
+        "modules": None,
+        "routed": None,
     }
     assert body["resolved"]["speed_mode"]["requested"] is None
     assert body["resolved"]["speed_mode"]["status"] == "applied"
@@ -2116,3 +2122,105 @@ def test_status_builds_the_backend_off_the_event_loop(client, monkeypatch):
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is False
     assert on_loop == [False]
+
+
+def _lora_catalog(monkeypatch, tmp_path, **families):
+    from safetensors.torch import save_file
+    import torch
+
+    from core.inference import diffusion_lora
+
+    root = tmp_path / "loras" / "diffusion"
+    root.mkdir(parents = True)
+    monkeypatch.setattr(diffusion_lora, "loras_dir", lambda: root)
+    for stem, family in families.items():
+        path = root / f"{stem}.safetensors"
+        save_file({"transformer.blocks.0.attn1.to_q.lora_A.weight": torch.zeros(4, 16)}, str(path))
+        path.with_suffix(".json").write_text(
+            json.dumps({"families": [family], "source": "studio-trained"}), encoding = "utf-8"
+        )
+
+
+def _real_family_validation(monkeypatch, family: str):
+    from core.inference.video_families import detect_video_family
+
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend, "validate_load_request", lambda *a, **k: detect_video_family("", override = family)
+    )
+    monkeypatch.setattr(
+        gpu_arbiter, "acquire_for", lambda role, register = None, admit = None: register()
+    )
+    return backend
+
+
+def test_load_forwards_loras_for_the_loaded_family(client, monkeypatch, tmp_path):
+    _lora_catalog(monkeypatch, tmp_path, my_ltx = "ltx-2")
+    backend = _real_family_validation(monkeypatch, "ltx-2")
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2", "loras": [{"id": "my_ltx", "weight": 1}]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert [(s.id, s.weight) for s in backend.last_load_kwargs["loras"]] == [("my_ltx", 1.0)]
+
+
+def test_load_without_loras_passes_no_loras(client, monkeypatch):
+    backend = _real_family_validation(monkeypatch, "ltx-2")
+    resp = client.post("/api/inference/video/load", json = {"model_path": "Lightricks/LTX-2"})
+    assert resp.status_code == 200, resp.text
+    assert "loras" not in backend.last_load_kwargs
+
+
+def test_load_refuses_a_lora_of_another_family(client, monkeypatch, tmp_path):
+    _lora_catalog(monkeypatch, tmp_path, my_wan = "wan2.2-ti2v-5b")
+    backend = _real_family_validation(monkeypatch, "ltx-2")
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "Lightricks/LTX-2", "loras": [{"id": "my_wan", "weight": 1}]},
+    )
+    assert resp.status_code == 400
+    assert "wan2.2-ti2v-5b" in resp.json()["detail"]
+    assert backend.last_load_kwargs == {}
+    assert gpu_arbiter._owner is None
+
+
+def test_load_refuses_loras_on_a_gguf_pick(client, monkeypatch, tmp_path):
+    _lora_catalog(monkeypatch, tmp_path, my_ltx = "ltx-2")
+    backend = _real_family_validation(monkeypatch, "ltx-2")
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "ltx-2.3-distilled-Q4_K_M.gguf",
+            "loras": [{"id": "my_ltx", "weight": 1}],
+        },
+    )
+    assert resp.status_code == 400
+    assert "GGUF" in resp.json()["detail"]
+    assert backend.last_load_kwargs == {}
+
+
+def test_video_download_plan_forwards_the_lora_selection(client, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "loras": [{"id": "my-ltx", "weight": 1}],
+        },
+    )
+    assert resp.status_code == 200
+    assert [dict(s) if isinstance(s, dict) else s.model_dump() for s in seen["loras"]] == [
+        {"id": "my-ltx", "weight": 1.0}
+    ]

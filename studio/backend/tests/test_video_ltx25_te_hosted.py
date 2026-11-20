@@ -345,7 +345,8 @@ def test_a_rejected_hosted_file_refuses_the_dense_fallback_without_room(tmp_path
             "base": BASE,
         },
     }
-    with pytest.raises(RuntimeError, match = "needs about 24 GB"):
+    # One decimal on both sides (#17948), so the need can never read as no more than what is free.
+    with pytest.raises(RuntimeError, match = r"needs about 23\.9 GB of free memory \(8\.0 GB free\)"):
         worker._load(config)
     monkeypatch.setattr(worker, "_available_host_bytes", lambda: 64 * 1000**3)
     worker._load(config)
@@ -365,7 +366,10 @@ def test_the_dense_fallback_room_check_prices_the_load_dtype(dtype, free_gb, ref
     monkeypatch.setattr(worker, "_available_host_bytes", lambda: free_gb * 1000**3)
     config = {"dtype": dtype, "dense_te_gb": v25.LTX25_TE_BF16_GB}
     if refused:
-        with pytest.raises(RuntimeError, match = "needs about 48 GB"):
+        # A float32 load needs twice the bf16 encoder; both figures print to one decimal (#17948).
+        need = 2 * v25.LTX25_TE_BF16_GB
+        message = rf"needs about {need:.1f} GB of free memory \({free_gb:.1f} GB free\)"
+        with pytest.raises(RuntimeError, match = message):
             worker._require_room_for_dense(config, OSError("hosted file absent"))
     else:
         worker._require_room_for_dense(config, OSError("hosted file absent"))
@@ -493,3 +497,83 @@ def test_builder_builds_on_the_cpu_when_the_card_is_absent(tmp_path, monkeypatch
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     builder.build("unused", tmp_path / "hosted.safetensors", base = BASE, device = "cuda:0")
     assert seen["device"] == "cpu" and seen["resident"] is False
+
+
+def _offline_tokenizer_transformers(monkeypatch, folder: Path) -> list:
+    """Fake transformers 5.13: a Hub id with local_files_only raises even on a warm cache; a local folder loads."""
+    _fake_transformers(monkeypatch, folder)
+    calls = []
+
+    def _from_pretrained(
+        path,
+        subfolder = None,
+        local_files_only = False,
+        **_kw,
+    ):
+        calls.append((str(path), subfolder, local_files_only))
+        if Path(path).is_dir():
+            return SimpleNamespace(source = str(path))
+        if local_files_only:
+            raise OSError(
+                "We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the "
+                "cached files."
+            )
+        return SimpleNamespace(source = f"{path}/{subfolder}")
+
+    sys.modules["transformers"].AutoTokenizer = SimpleNamespace(from_pretrained = _from_pretrained)
+    return calls
+
+
+def test_offline_load_reads_the_tokenizer_from_the_warm_cache(tmp_path, monkeypatch):
+    _write_tiny_encoder(tmp_path / "hub")
+    calls = _offline_tokenizer_transformers(monkeypatch, tmp_path / "hub")
+    cache = tmp_path / "hf_cache"
+    for name in ("tokenizer_config.json", "tokenizer.json", "chat_template.jinja"):
+        target = (
+            cache
+            / "models--Lightricks--LTX-2.5-Diffusers"
+            / "snapshots"
+            / ("0" * 40)
+            / "tokenizer"
+            / name
+        )
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_text("{}")
+    (cache / "models--Lightricks--LTX-2.5-Diffusers" / "refs").mkdir()
+    (cache / "models--Lightricks--LTX-2.5-Diffusers" / "refs" / "main").write_text("0" * 40)
+    config = {
+        "repo": BASE,
+        "hub_repo": str(tmp_path / "hub"),
+        "cache_dir": str(cache),
+        "device": "cpu",
+        "dtype": "bfloat16",
+        "te_quant": None,
+        "local_files_only": True,
+    }
+    tok, _model = worker._load(config)
+    assert tok.source == str(target.parent)
+    assert calls == [(str(target.parent), None, False)]
+
+
+@pytest.mark.parametrize("local_files_only", [True, False])
+def test_tokenizer_keeps_the_hub_call_when_nothing_is_cached_or_online(
+    tmp_path, monkeypatch, local_files_only
+):
+    _write_tiny_encoder(tmp_path / "hub")
+    calls = _offline_tokenizer_transformers(monkeypatch, tmp_path / "hub")
+    config = {
+        "repo": BASE,
+        "hub_repo": str(tmp_path / "hub"),
+        "cache_dir": str(tmp_path / "empty_cache"),
+        "device": "cpu",
+        "dtype": "bfloat16",
+        "te_quant": None,
+        "local_files_only": local_files_only,
+    }
+    if local_files_only:
+        with pytest.raises(OSError, match = "couldn't find them in the cached files"):
+            worker._load(config)
+    else:
+        tok, _model = worker._load(config)
+        assert tok.source == f"{BASE}/tokenizer"
+    assert calls == [(BASE, "tokenizer", local_files_only)]

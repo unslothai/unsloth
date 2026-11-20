@@ -522,8 +522,7 @@ def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) 
 
 @functools.lru_cache(maxsize = None)
 def _h3_sized_reference_setup_class(base: type) -> type:
-    """Ref2VA setup step that takes the request's references as Studio prepared them: images and video frames at
-    their size, soundtracks at their full length."""
+    """Ref2VA setup: request images and frames keep Studio's size, soundtracks full length."""
 
     class StudioSizedRef2VASetupStep(base):
         def __call__(self, components: Any, state: Any) -> Any:
@@ -641,9 +640,9 @@ _H3_RGB24_FORMATS = ("yuvj420p", "yuvj422p", "yuvj444p", "rgb24", "rgba", "pal8"
 
 
 def h3_float_rgb_to_uint8(pixels: Any) -> Any:
-    """Float RGB in [0, 1] to uint8, rounded (the reference truncates here, which darkens by half a step)."""
+    """Float RGB in [0, 1] to uint8 truncated, as the reference's LANCZOS helper quantises (``astype(uint8)``)."""
     import numpy as np
-    return np.clip(np.rint(pixels * 255.0), 0, 255).astype(np.uint8)
+    return np.clip(255.0 * pixels, 0, 255).astype(np.uint8)
 
 
 def h3_video_frame_rgb(frame: Any) -> Any:
@@ -708,6 +707,49 @@ H3_AUDIO_HOP = 800
 H3_AUDIO_CHANNELS = 2
 
 
+# The dense kernel is [new, 1, 2 * width + orig] after reducing the rates by their gcd. Common rates stay tiny
+# (44.1 kHz -> 32 kHz is 147k elements), but a rate sharing almost nothing with 32 kHz (44,099 Hz) needs
+# 1.4G elements per intermediate. Past this size only the taps inside the filter window are built.
+_H3_RESAMPLE_DENSE_MAX_ELEMENTS = 1 << 22
+_H3_RESAMPLE_TAPS_CHUNK = 1 << 16
+
+
+def _resample_h3_audio_taps(
+    waveform: Any, orig: int, new: int, base_freq: float, width: int, lowpass_filter_width: int
+) -> Any:
+    """Same filter as the dense path in ``resample_h3_audio``, evaluated only on the ``2 * width + 1`` taps around
+    each output sample. Every other tap is clamped to the window edge, where the dense kernel is below 1e-20, so
+    the result matches the dense path to float rounding while memory scales with the output length."""
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    dtype, device = waveform.dtype, waveform.device
+    shape = waveform.shape
+    length = shape[-1]
+    flat = F.pad(waveform.reshape(-1, length), (width, width + orig))
+    target_length = math.ceil(np.float32(new * length / orig))
+    taps = torch.arange(2 * width + 1, device = device)
+    out = flat.new_empty((flat.shape[0], target_length))
+    for begin in range(0, target_length, _H3_RESAMPLE_TAPS_CHUNK):
+        n = torch.arange(begin, min(begin + _H3_RESAMPLE_TAPS_CHUNK, target_length), device = device)
+        frame, phase = n // new, n % new
+        # first padded input index the filter can reach for this output sample
+        start = (phase * orig) // new
+        offset = (
+            start[:, None] + taps[None]
+        ) - width  # tap position relative to the frame, as in the dense ``idx``
+        t = (-phase.to(dtype) / new)[:, None] + offset.to(dtype) / orig
+        t = (t * base_freq).clamp_(-lowpass_filter_width, lowpass_filter_width)
+        window = torch.cos(t * math.pi / lowpass_filter_width / 2) ** 2
+        t *= math.pi
+        kernel = torch.where(t == 0, 1.0, t.sin() / t)
+        kernel *= window * (base_freq / orig)
+        index = (frame * orig + start)[:, None] + taps[None]
+        out[:, begin : begin + n.shape[0]] = (flat[:, index] * kernel).sum(-1)
+    return out.reshape(*shape[:-1], -1)
+
+
 def resample_h3_audio(waveform: Any, orig_freq: int, new_freq: int) -> Any:
     """Bandlimited sinc resampling along the last axis: torchaudio's default kernel (hann window, width 6, rolloff
     0.99), computed in the waveform's dtype like ``torchaudio.functional.resample``, without needing torchaudio."""
@@ -724,6 +766,8 @@ def resample_h3_audio(waveform: Any, orig_freq: int, new_freq: int) -> Any:
     base_freq = min(orig, new) * rolloff
     width = math.ceil(lowpass_filter_width * orig / base_freq)
     dtype, device = waveform.dtype, waveform.device
+    if new * (2 * width + orig) > _H3_RESAMPLE_DENSE_MAX_ELEMENTS:
+        return _resample_h3_audio_taps(waveform, orig, new, base_freq, width, lowpass_filter_width)
     idx = torch.arange(-width, width + orig, dtype = dtype, device = device)[None, None] / orig
     t = torch.arange(0, -new, -1, dtype = dtype, device = device)[:, None, None] / new + idx
     t = (t * base_freq).clamp_(-lowpass_filter_width, lowpass_filter_width)
@@ -1674,8 +1718,15 @@ def amdgpu_vram_free_bytes(
     pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
 ) -> Optional[int]:
     """Free VRAM of the amdgpu card at pci_slot, or the sole one; None without both readings."""
+    return amdgpu_vram_reading(pci_slot, sysfs_root)[0]
+
+
+def amdgpu_vram_reading(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> "tuple[Optional[int], Optional[int]]":
+    """(free, total) VRAM bytes of the amdgpu card at pci_slot, or the sole one; (None, None) without both."""
     want = pci_slot.lower() if pci_slot else None
-    found: list[int] = []
+    found: list[tuple[int, int]] = []
     for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_vram_total"):
         device = total_path.parent
         if _sysfs_int(device / "vendor") != 0x1002:
@@ -1687,9 +1738,9 @@ def amdgpu_vram_free_bytes(
         total = _sysfs_int(total_path)
         used = _sysfs_int(device / "mem_info_vram_used")
         if total is None or used is None:
-            return None
-        found.append(max(total - used, 0))
-    return found[0] if len(found) == 1 else None
+            return None, None
+        found.append((max(total - used, 0), total))
+    return found[0] if len(found) == 1 else (None, None)
 
 
 def amdgpu_gtt_free_bytes(

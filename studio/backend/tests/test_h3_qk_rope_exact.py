@@ -28,7 +28,7 @@ cuda = pytest.mark.skipif(
 @pytest.fixture(autouse = True)
 def _fresh(monkeypatch):
     monkeypatch.setattr(Q, "_VERDICTS", {})
-    monkeypatch.setattr(Q, "STATS", {"fused": 0, "rope": 0, "stock": 0})
+    monkeypatch.setattr(Q, "STATS", dict.fromkeys(Q.STATS, 0))
     monkeypatch.delenv(Q.QK_ROPE_MODE_ENV, raising = False)
 
 
@@ -59,7 +59,7 @@ def test_off_cuda_is_the_stock_math():
     assert torch.equal(
         Q.qk_norm_rope_impl(x, w, cos, sin, 1e-5), Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
     )
-    assert Q.STATS == {"fused": 0, "rope": 0, "stock": 1}
+    assert {k: v for k, v in Q.STATS.items() if v} == {"stock": 1}
 
 
 @pytest.mark.parametrize("value, want", [(None, ("fused", "rope")), ("auto", ("fused", "rope")), ("rope", ("rope",)),
@@ -118,7 +118,7 @@ def test_form_selection(monkeypatch, passed, env, aligned, want):
     if env:
         monkeypatch.setenv(Q.QK_ROPE_MODE_ENV, env)
     monkeypatch.setattr(Q, "_triton_ok", lambda x: True)
-    monkeypatch.setattr(Q, "verdict", lambda x, rot: passed)
+    monkeypatch.setattr(Q, "verdict", lambda x, rot, *_rounding: passed)
     monkeypatch.setattr(Q, "_fused_row_path", lambda x, w: aligned)
     x, w, cos, _sin = _inputs()
     assert Q._mode(x, w, cos) == want
@@ -127,7 +127,9 @@ def test_form_selection(monkeypatch, passed, env, aligned, want):
 def test_check_runs_once_per_key_and_never_during_capture(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        Q, "_check", lambda dev, dt, d, r: calls.append((dt, d, r)) or {"fused": True, "rope": True}
+        Q,
+        "_check",
+        lambda dev, dt, d, r, *_rounding: calls.append((dt, d, r)) or {"fused": True, "rope": True},
     )
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "device", lambda d: __import__("contextlib").nullcontext())
@@ -146,7 +148,7 @@ def test_check_runs_once_per_key_and_never_during_capture(monkeypatch):
 
 
 def test_a_failed_launch_falls_back_to_the_stock_math(monkeypatch):
-    monkeypatch.setattr(Q, "_mode", lambda x, w, c: "fused")
+    monkeypatch.setattr(Q, "_mode", lambda x, w, c, *_rounding: "fused")
 
     def boom(*a, **k):
         raise RuntimeError("no kernel")
@@ -286,3 +288,108 @@ def test_probe_inputs_stay_finite_in_the_target_dtype(dtype_name):
             assert torch.isfinite(x).all() and torch.isfinite(w).all()
             ref = Q.reference_qk_norm_rope(x.float(), w.float(), cos, sin, 1e-6)
             assert torch.isfinite(ref).all()
+
+
+# ------------------------------------------------------------------------------------- once (reference) rounding
+
+
+def _exact_rotation(x, w, cos, sin, eps):
+    """float64 rotation of normed bf16/fp16 values: the kernel's float32 fma rounds once."""
+    import torch.nn.functional as F
+
+    n = F.rms_norm(x, (x.shape[-1],), w, eps)
+    rot = cos.shape[-1]
+    c = cos.to(x.dtype).double()[None, :, None, :]
+    s = sin.to(x.dtype).double()[None, :, None, :]
+    xr = n[..., :rot].double()
+    x1, x2 = xr.chunk(2, dim = -1)
+    out = xr * c + torch.cat((-x2, x1), dim = -1) * s
+    return torch.cat((out.to(x.dtype), n[..., rot:]), dim = -1)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_once_rounding_is_the_correctly_rounded_rotation_and_eager_is_not(dtype):
+    x, w, cos, sin = _inputs(dtype = dtype, seq = 300, heads = 4)
+    exact = _exact_rotation(x, w, cos, sin, 1e-5)
+    once = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE, exact = True)
+    fast = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE)
+    eager = Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5)
+    assert torch.equal(once, exact)
+    # the float32 fallback differs from the fma only where a last float32 bit decides the rounding
+    assert int((fast != exact).sum()) <= once.numel() // 10000
+    assert int((eager != exact).sum()) > once.numel() // 20
+    # the pass-through dims are the normed values either way
+    assert torch.equal(once[..., 96:], eager[..., 96:])
+
+
+def test_video_rounding_defaults_to_the_reference_kernel(monkeypatch):
+    monkeypatch.delenv(Q.QK_ROPE_ROUNDING_ENV, raising = False)
+    assert Q.video_qk_rope_rounding() == Q.ROUNDING_ONCE
+    monkeypatch.setenv(Q.QK_ROPE_ROUNDING_ENV, "eager")
+    assert Q.video_qk_rope_rounding() == Q.ROUNDING_EAGER
+    monkeypatch.setenv(Q.QK_ROPE_ROUNDING_ENV, "bogus")
+    assert Q.video_qk_rope_rounding() == Q.ROUNDING_ONCE
+
+
+def test_once_op_off_cuda_is_the_unfused_once_math():
+    x, w, cos, sin = _inputs()
+    Q.qk_norm_rope_op()
+    got = torch.ops.unsloth_h3.qk_norm_rope_once(x, w, cos, sin, 1e-5)
+    assert torch.equal(got, Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE))
+    assert Q.STATS["once_stock"] == 1 and Q.STATS["stock"] == 0
+
+
+def test_rounding_reaches_the_check_and_the_cache_key(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        Q,
+        "_check",
+        lambda dev, dt, d, r, rounding = Q.ROUNDING_EAGER: seen.append(rounding) or {"rope": True},
+    )
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "device", lambda d: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    x, _w, _c, _s = _inputs()
+    Q.verdict(x, 96)
+    Q.verdict(x, 96, Q.ROUNDING_ONCE)
+    Q.verdict(x, 96, Q.ROUNDING_ONCE)
+    assert seen == [Q.ROUNDING_EAGER, Q.ROUNDING_ONCE]
+
+
+@cuda
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("dim, rot", [(128, 96), (64, 32), (128, 128)])
+@pytest.mark.parametrize("strided", [False, True])
+def test_once_forms_are_bit_identical_to_the_unfused_once_math(dtype, dim, rot, strided):
+    import torch.nn.functional as F
+    for seed in range(6):
+        x, w, cos, sin = _inputs(
+            "cuda", dtype, seq = 331, heads = 7, dim = dim, rot = rot, strided = strided, seed = seed
+        )
+        x = x * (10.0 ** (seed - 3))
+        eps = 1e-6 if seed % 2 else 1e-5
+        ref = Q.reference_qk_norm_rope(x, w, cos, sin, eps, Q.ROUNDING_ONCE, exact = True)
+        got = Q._launch(
+            F.rms_norm(x, (x.shape[-1],), w, eps),
+            w,
+            cos,
+            sin,
+            eps,
+            norm = False,
+            rounding = Q.ROUNDING_ONCE,
+        )
+        assert torch.equal(got, ref), ("rope", seed, int((got != ref).sum()))
+        if Q.torch_fused_rms_norm_on_cuda() and Q._fused_row_path(x, w):
+            got = Q._launch(x, w, cos, sin, eps, rounding = Q.ROUNDING_ONCE)
+            assert torch.equal(got, ref), ("fused", seed, int((got != ref).sum()))
+
+
+@cuda
+def test_once_device_check_passes_and_engages():
+    x, w, cos, sin = _inputs("cuda", torch.bfloat16, strided = True)
+    passed = Q.verdict(x, 96, Q.ROUNDING_ONCE)
+    assert passed["rope"], passed
+    got = Q.qk_norm_rope_impl(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE)
+    assert torch.equal(
+        got, Q.reference_qk_norm_rope(x, w, cos, sin, 1e-5, Q.ROUNDING_ONCE, exact = True)
+    )

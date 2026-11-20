@@ -96,11 +96,9 @@ def plan_stage(
     others_mib: int = 0,
     source_castable: Optional[Iterable] = None,
 ) -> StagePlan:
-    """``misses``: component -> loaded MiB. Stage largest first until the rest fits host RAM; ``others_mib`` is what
-    the same load converts in host RAM besides them (it cannot be staged, so it is priced, not moved). A miss larger
-    than the card is staged split: the card holds what fits, host RAM the rest (when that rest fits). Only a
-    component in ``source_castable`` (None = every one) can be split, since its cast is written from the source
-    shards; any other one too big for the card is skipped and the planner moves on."""
+    """Stage largest misses first until the rest fits host RAM; a miss over the card is split
+    card-then-host (when the rest fits) only if in source_castable (None = all), else skipped;
+    others_mib is priced, never moved."""
     if disabled:
         return StagePlan(False, f"{SMALL_HOST_ENV}=0")
     sizes = {k: int(v) for k, v in misses.items() if v is not None}
@@ -250,9 +248,8 @@ def converted_others_mib(
     revision: Optional[str] = None,
     skip: Any = (),
 ) -> int:
-    """MiB the pipeline load converts in host RAM outside the cast cache: half-precision shards of a component that
-    is not a cast candidate but loads at the other half dtype (bf16 -> fp16 on a float16 card), which become anonymous
-    memory beside the cast-cache misses. 0 when unreadable."""
+    """Host RAM MiB the load converts outside the cast cache: non-candidate components loading at
+    the other half dtype (bf16 to fp16 on a float16 card); 0 if unreadable."""
     try:
         import torch
 

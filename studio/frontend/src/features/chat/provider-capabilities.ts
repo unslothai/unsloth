@@ -224,6 +224,52 @@ export function getExternalMaxOutputTokens(
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
+// Unset, these stop at their window; Ollama context-shifts past it, a Custom gateway may default low.
+const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set(["llama_cpp", "vllm"]);
+
+/** Max Tokens at the top of its range sends no limit here, as "Max" does on a local model. */
+export function externalMaxTokensUnboundedAtMax(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens?: number | null,
+): boolean {
+  return (
+    providerType != null &&
+    SERVER_WINDOW_BOUNDED_PROVIDERS.has(providerType) &&
+    normalizeProviderMaxOutputTokens(connectionMaxOutputTokens) == null &&
+    _documentedMaxOutputTokens(providerType, modelId) == null
+  );
+}
+
+/** Null means send no max_tokens. */
+export function externalRequestMaxTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  connectionMaxOutputTokens: number | null | undefined,
+  maxTokens: number,
+): number | null {
+  const cap = getExternalMaxOutputTokens(
+    providerType,
+    modelId,
+    connectionMaxOutputTokens,
+  );
+  if (
+    maxTokens >= cap &&
+    externalMaxTokensUnboundedAtMax(
+      providerType,
+      modelId,
+      connectionMaxOutputTokens,
+    )
+  ) {
+    return null;
+  }
+  // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
+  return Math.min(
+    Math.max(maxTokens, getExternalMinOutputTokens(providerType)),
+    cap,
+  );
+}
+
 /**
  * Null unless a published cap or user override grounds it; guesses are unsafe as a budget.
  */
@@ -1103,8 +1149,8 @@ export function effectiveExternalReasoningProviderType(
 // Thinking off sends "none".
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle; a catalogued effort
-// ladder still applies, since the template is the model's own. Ollama errors a thinking request at a
+// vLLM has no per-model reasoning signal on OpenAI-compat: known models resolve by name, and the
+// connection's toggle opts in one the catalog misses. Ollama errors a thinking request at a
 // model without the /api/tags "thinking" capability, so gate on it (#9649).
 function resolveProviderReasoning(
   normalizedProvider: string,
@@ -1112,8 +1158,9 @@ function resolveProviderReasoning(
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    // A known model keeps its own rules (R1 cannot turn thinking off).
     const catalog = modelId ? catalogCapabilities("vllm", modelId.toLowerCase(), true) : null;
-    if (catalog && externalReasoningTakesEffort(catalog)) return catalog;
+    if (catalog?.supportsReasoning) return catalog;
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,

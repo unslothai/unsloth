@@ -10,13 +10,14 @@
 
 Runs on today's pinned diffusers: the transformer and VAE classes come from diffusers when it ships them, else from
 the vendored PR copy. The released checkpoint is in MiniMax's native layout, so the DiT and VAE are converted while
-they stream off the safetensors shards, never as a second full copy. The 6-step PDD grid is fixed, so every block's
-AdaLN projection (13B of the 33B parameters) collapses to a lookup table over the 7 timesteps a render can ask for
-(6 steps + the 0.999 reference level), computed from the dense weights at load: exact to the dense bf16 math and
-20B parameters left to quantize."""
+they stream off the safetensors shards, never as a second full copy. The sampler's timesteps are known at load, so every block's
+AdaLN projection (13B of the 33B parameters) collapses to a lookup table over the timesteps a render can ask for
+(the reference sampler's steps for 1 to 6 steps + the 0.999 reference level), interpolated from dense rows on a
+uniform knot grid at load, so 20B parameters are left to quantize."""
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import gc
 import hashlib
@@ -59,7 +60,13 @@ H3_IMAGE_SIGMAS: tuple[float, ...] = (
     0.23200887441635132,
     0.0,
 )
-# Smaller requests are generated on a canvas of this area at the same aspect and resized back (LANCZOS).
+# Each step uses the dt-weighted mean of the heads its sigma interval spans.
+H3_IMAGE_MAX_STEPS = H3_IMAGE_STEPS
+# Reference sampler: sigma linear in the grid index over 1000 timesteps, "simple" pick, t = 1 - timestep / 1000.
+H3_IMAGE_SAMPLING_TIMESTEPS = 1000
+H3_IMAGE_TIMESTEP_MULTIPLIER = 1000.0
+H3_IMAGE_ADALN_KNOTS = 1025
+# Opt-in floor (min_generation_area=): a smaller request renders on this area, then resizes back.
 H3_IMAGE_MIN_GENERATION_AREA = 2048 * 2048
 H3_IMAGE_MIN_GENERATION_AREA_RANGE = (1024, 4096 * 4096)
 # Kept for callers that pass max_sequence_length; the prompt is not truncated (the reference implementation has no cap).
@@ -140,6 +147,12 @@ PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
 REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
 # "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
 TRIM_AFTER_LOAD_ENV = "UNSLOTH_H3_IMAGE_TRIM_AFTER_LOAD"
+# Stream tier layout: "auto" (priced), "1" park once-per-phase pieces on the host, "0" keep them on the card.
+PARK_ENV = "UNSLOTH_H3_IMAGE_PARK"
+# Overrides the measured host-to-device GiB/s.
+H2D_ENV = "UNSLOTH_H3_IMAGE_H2D_GIBS"
+# "0": old stream pricing (activation_gb + 1.5 GB margin, no per-render fit)
+MEASURED_WORKING_SET_ENV = "UNSLOTH_H3_IMAGE_MEASURED_WORKING_SET"
 # Posteriors kept per pipeline (a 2720x1536 reference is about 3 MB of mean / log-variance on the device)
 REF_CACHE_ENTRIES = 8
 
@@ -448,6 +461,141 @@ def grid_timesteps(sigmas: Sequence[float] = H3_IMAGE_SIGMAS) -> list[float]:
     return out
 
 
+def sampling_sigma_table(grid: Sequence[float] = H3_IMAGE_SIGMAS) -> Any:
+    """The reference model sampling's 1000 sigmas: ``sigma(timestep)`` is linear in the grid index, float32."""
+    import torch
+
+    g = torch.tensor(list(grid), dtype = torch.float32).flip(0)
+    n = g.shape[0] - 1
+    ts = (
+        torch.arange(1, H3_IMAGE_SAMPLING_TIMESTEPS + 1, 1) / H3_IMAGE_SAMPLING_TIMESTEPS
+    ) * H3_IMAGE_TIMESTEP_MULTIPLIER
+    pos = (ts / H3_IMAGE_TIMESTEP_MULTIPLIER).clamp(0.0, 1.0) * n
+    i = pos.floor().long().clamp(max = n - 1)
+    return torch.lerp(g[i], g[i + 1], pos - i)
+
+
+def reference_sigmas(steps: int = H3_IMAGE_STEPS, grid: Sequence[float] = H3_IMAGE_SIGMAS) -> Any:
+    """The reference "simple" scheduler over ``sampling_sigma_table``: ``steps + 1`` float32 sigmas ending at 0. At 6
+    steps they sit up to 9e-4 off the distilled grid, as in the reference."""
+    import torch
+
+    table = sampling_sigma_table(grid)
+    ss = len(table) / int(steps)
+    sigs = [float(table[-(1 + int(x * ss))]) for x in range(int(steps))]
+    return torch.FloatTensor(sigs + [0.0])
+
+
+def model_sigma(sigma: Any) -> float:
+    """The sigma the DiT sees for one sampler sigma, as the reference derives it: ``timestep = sigma * 1000`` in
+    float32, read back as ``timestep / 1000`` in double."""
+    import torch
+
+    s = torch.as_tensor(sigma, dtype = torch.float32).reshape(1)
+    timestep = (s * H3_IMAGE_TIMESTEP_MULTIPLIER).float()
+    return float(timestep.flatten()[0]) / H3_IMAGE_TIMESTEP_MULTIPLIER
+
+
+def model_timestep(sigma: Any) -> float:
+    """The DiT's ``t = 1 - sigma`` for one sampler sigma (double; float32 when it reaches the model)."""
+    return 1.0 - model_sigma(sigma)
+
+
+def model_io(tensor: Any, dtype: Any) -> Any:
+    """The DiT's input latent and its output velocity in the compute dtype, as the reference casts them."""
+    return tensor.to(dtype)
+
+
+def reference_row_timestep(t: float) -> float:
+    """Reference picture rows sit at ``max(t, 0.999)``."""
+    return max(float(t), H3_IMAGE_REFERENCE_NOISE_AUG)
+
+
+def table_timesteps(max_steps: int = H3_IMAGE_MAX_STEPS) -> list[float]:
+    """Every float32 timestep a render can ask the DiT for at 1 to ``max_steps`` steps, reference rows included."""
+    import torch
+
+    seen: list[float] = []
+    for steps in range(1, int(max_steps) + 1):
+        for sigma in reference_sigmas(steps)[:-1]:
+            t = model_timestep(sigma)
+            for value in (t, reference_row_timestep(t)):
+                v = float(torch.tensor(value, dtype = torch.float32))
+                if v not in seen:
+                    seen.append(v)
+    return sorted(seen)
+
+
+PDD_BANK_ATTR = "_unsloth_pdd_bank"
+
+
+def install_pdd_head_bank(transformer: Any) -> bool:
+    """Turn the release's fused per-step heads into the reference's head bank: head 0 is a full head and the others
+    are offsets from it (``fused_k - fused_0``, float32). The bank is kept on the transformer for other step counts,
+    and each ``pdd_proj_out[k]`` becomes the head the reference runs for step ``k`` of 6 (``head_0 + offset_k``, which
+    is not bit for bit ``fused_k``), so the stock call matches it too."""
+    import torch
+
+    heads = getattr(transformer, "pdd_proj_out", None)
+    if heads is None or len(heads) < 1:
+        return False
+    if getattr(transformer, PDD_BANK_ATTR, None) is not None:
+        return True
+    with torch.no_grad():
+        w0 = heads[0].weight.detach().to(torch.float32).clone()
+        b0 = heads[0].bias.detach().to(torch.float32).clone()
+        offsets_w = [heads[k].weight.detach().to(torch.float32) - w0 for k in range(1, len(heads))]
+        offsets_b = [heads[k].bias.detach().to(torch.float32) - b0 for k in range(1, len(heads))]
+        rows_w = torch.stack([w0] + offsets_w)
+        rows_b = torch.stack([b0] + offsets_b)
+        for k in range(1, len(heads)):
+            heads[k].weight.data.copy_(w0 + rows_w[k])
+            heads[k].bias.data.copy_(b0 + rows_b[k])
+    object.__setattr__(transformer, PDD_BANK_ATTR, (rows_w.cpu(), rows_b.cpu()))
+    return True
+
+
+def pdd_head_span(
+    sigma: float,
+    sample_sigmas: Any,
+    grid: Sequence[float] = H3_IMAGE_SIGMAS,
+) -> tuple:
+    """``(start, stop)``: the grid intervals a step from ``sigma`` to the next sampler sigma spans, as the reference
+    final layer picks them (nearest grid points, at least one interval)."""
+    import torch
+
+    n = len(grid) - 1
+    sample_sigmas = torch.as_tensor(sample_sigmas)
+    i = int((sample_sigmas - sigma).abs().argmin())
+    sigma_next = sample_sigmas[min(i + 1, sample_sigmas.shape[0] - 1)]
+    start, stop = (
+        min(range(n + 1), key = lambda k: abs(grid[k] - float(s))) for s in (sigma, sigma_next)
+    )
+    start = min(start, n - 1)
+    return start, max(stop, start + 1)
+
+
+def pdd_head_weights(
+    bank: tuple,
+    sigma: float,
+    sample_sigmas: Any,
+    grid: Sequence[float] = H3_IMAGE_SIGMAS,
+) -> tuple:
+    """The (weight, bias) of the output head for one step, as the reference's PDD head bank computes it: head 0 plus
+    the dt-weighted mean of the offsets of the grid intervals the step spans (``install_pdd_head_bank``)."""
+    import torch
+
+    rows, brows = bank
+    start, stop = pdd_head_span(sigma, sample_sigmas, grid)
+    dt = [grid[k] - grid[k + 1] for k in range(start, stop)]
+    w = torch.tensor(dt, dtype = rows.dtype, device = rows.device) / sum(dt)
+    first = max(start, 1)
+    return (
+        rows[0] + torch.einsum("n,noi->oi", w[first - start :], rows[first:stop]),
+        brows[0] + torch.einsum("n,no->o", w[first - start :], brows[first:stop]),
+    )
+
+
 def adaln_table_enabled() -> bool:
     return not _env_off(ADALN_TABLE_ENV)
 
@@ -473,8 +621,8 @@ def _grid_embedder_class() -> Any:
             # A timestep off the grid has no table row: refuse rather than return a neighbour's modulation.
             if not torch.compiler.is_compiling() and bool((best > 1e-6).any()):
                 raise ValueError(
-                    "MiniMax-H3-Image samples on its fixed 6-step grid (the AdaLN table holds only those timesteps); "
-                    f"got timesteps {timestep.tolist()}"
+                    "MiniMax-H3-Image's AdaLN table holds only the reference sampler's timesteps for 1 to "
+                    f"{H3_IMAGE_MAX_STEPS} steps; got timesteps {timestep.tolist()}"
                 )
             return torch.nn.functional.one_hot(index, grid.numel()).to(torch.float32)
 
@@ -561,24 +709,74 @@ def grid_temb(transformer_dense_time: Any, grid: Sequence[float]) -> Any:
         return time_embedder(time_proj(t).to(torch.float32)).to(torch.float32)
 
 
+def adaln_curve_plan(timesteps: Sequence[float], knots: int = H3_IMAGE_ADALN_KNOTS) -> tuple:
+    """``(knot timesteps, lower, upper, fraction)``: the AdaLN rows of each timestep are read as the reference reads
+    its curve table, ``pos = clamp(t, 0, 1) * (knots - 1)`` and a linear blend of the two knots around it. Only the
+    knots some timestep needs are listed (``lower`` / ``upper`` index into them)."""
+    import torch
+
+    t = torch.tensor([float(v) for v in timesteps], dtype = torch.float32)
+    pos = t.clamp(0.0, 1.0) * (knots - 1)
+    i0 = pos.floor().long().clamp(max = knots - 2)
+    frac = pos - i0
+    needed = sorted(set(i0.tolist()) | set((i0 + 1).tolist()))
+    where = {k: j for j, k in enumerate(needed)}
+    knot_t = torch.tensor(needed, dtype = torch.float32) / (knots - 1)
+    lower = torch.tensor([where[k] for k in i0.tolist()], dtype = torch.long)
+    upper = torch.tensor([where[k + 1] for k in i0.tolist()], dtype = torch.long)
+    return knot_t.tolist(), lower, upper, frac
+
+
+ADALN_ROW_CHUNK = 16384
+
+
+def curve_adaln_rows(
+    knot_temb: Any,
+    weight: Any,
+    bias: Any,
+    plan: tuple,
+    dtype: Any,
+    device: Any = None,
+) -> Any:
+    """Rows per timestep: the dense projection ``linear(silu(temb))`` at the knots in float32, blended linearly per
+    ``plan``, then cast to ``dtype`` (the reference also projects in float32 and casts at use). Computed on ``device``
+    in output chunks, returned on the CPU."""
+    import torch
+    import torch.nn.functional as F
+
+    _knots, lower, upper, frac = plan
+    dev = torch.device(device) if device is not None else weight.device
+    x = F.silu(knot_temb.to(dev, torch.float32))
+    lower, upper, frac = lower.to(dev), upper.to(dev), frac.to(dev).unsqueeze(1)
+    out = []
+    for a in range(0, weight.shape[0], ADALN_ROW_CHUNK):
+        w = weight[a : a + ADALN_ROW_CHUNK].to(dev, torch.float32)
+        b = None if bias is None else bias[a : a + ADALN_ROW_CHUNK].to(dev, torch.float32)
+        rows = F.linear(x, w, b)
+        out.append(torch.lerp(rows[lower], rows[upper], frac).to(dtype).to("cpu"))
+    return torch.cat(out, dim = 1)
+
+
 def convert_dense_transformer_to_table(
     transformer: Any, grid: Optional[Sequence[float]] = None
 ) -> int:
-    """In place on an already-loaded dense model (tests, small builds): every AdaLN projection -> its grid table."""
+    """In place on an already-loaded dense model (tests, small builds): every AdaLN projection -> its table over
+    ``grid`` (default ``table_timesteps()``), rows interpolated on the knot grid."""
     import torch
 
-    grid = list(grid or grid_timesteps())
-    temb = grid_temb((transformer.time_proj, transformer.time_embedder), grid)
+    grid = list(grid or table_timesteps())
+    plan = adaln_curve_plan(grid)
+    temb = grid_temb((transformer.time_proj, transformer.time_embedder), plan[0])
     converted = 0
     with torch.no_grad():
         for block in transformer.transformer_blocks:
             lin = block.adaln_proj.linear
-            rows = dense_adaln_rows(temb, lin.weight, lin.bias, lin.weight.dtype)
+            rows = curve_adaln_rows(temb, lin.weight, lin.bias, plan, lin.weight.dtype)
             convert_block_adaln_to_table(block, rows)
             converted += 1
         lin = transformer.norm_out.linear
         convert_norm_out_to_table(
-            transformer.norm_out, dense_adaln_rows(temb, lin.weight, lin.bias, lin.weight.dtype)
+            transformer.norm_out, curve_adaln_rows(temb, lin.weight, lin.bias, plan, torch.float32)
         )
     install_grid_time_embedding(transformer, grid)
     return converted
@@ -589,8 +787,9 @@ def canvas_size(
     width: int,
     min_generation_area: int = H3_IMAGE_MIN_GENERATION_AREA,
 ) -> tuple[int, int]:
-    """The ``(height, width)`` canvas a ``height x width`` request is generated on: scaled up to
-    ``min_generation_area`` at the same aspect when smaller, both sides rounded to multiples of 32."""
+    """The opt-in canvas floor (``min_generation_area=``; the default renders natively): the ``(height, width)``
+    canvas a ``height x width`` request is generated on, scaled up to ``min_generation_area`` at the same aspect when
+    smaller, both sides rounded to multiples of 32."""
     if height <= 0 or width <= 0:
         raise ValueError(f"height and width must be positive, got {height}x{width}")
     lo, hi = H3_IMAGE_MIN_GENERATION_AREA_RANGE
@@ -618,6 +817,198 @@ def size_short_edge(
         max(multiple, round(width * scale / multiple) * multiple),
         max(multiple, round(height * scale / multiple) * multiple),
     )
+
+
+# Reference edit workflow: Picture 1 to this many MP (area), then cover-cropped to multiples of 32.
+H3_IMAGE_SOURCE_MEGAPIXELS = 4
+
+
+def total_pixels_size(
+    width: int,
+    height: int,
+    megapixels: float = H3_IMAGE_SOURCE_MEGAPIXELS,
+) -> tuple:
+    """``(width, height)`` scaled to ``megapixels`` (units of 1024 * 1024 pixels) at the same aspect, sides rounded
+    (Python ``round``), up or down."""
+    total = int(megapixels * 1024 * 1024)
+    scale = math.sqrt(total / (width * height))
+    return round(width * scale), round(height * scale)
+
+
+def multiple_cover_size(
+    width: int,
+    height: int,
+    multiple: int = H3_IMAGE_CANVAS_MULTIPLE,
+) -> tuple:
+    """``(scaled_w, scaled_h, target_w, target_h)``: the size a picture is scaled to so that it covers the floored
+    multiple-of-``multiple`` target, then centre-cropped to it. Unchanged sizes when already on the grid or when a
+    side would floor to 0."""
+    target_w = (width // multiple) * multiple
+    target_h = (height // multiple) * multiple
+    if target_w == 0 or target_h == 0 or (target_w == width and target_h == height):
+        return width, height, width, height
+    s_w = target_w / width
+    s_h = target_h / height
+    if s_w >= s_h:
+        scaled_w, scaled_h = target_w, max(target_h, int(math.ceil(height * s_w)))
+    else:
+        scaled_w, scaled_h = max(target_w, int(math.ceil(width * s_h))), target_h
+    return scaled_w, scaled_h, target_w, target_h
+
+
+def reference_edit_size(width: int, height: int) -> tuple:
+    """The default output size of an edit with Picture 1 of ``width x height``, as the reference edit workflow
+    derives it: Picture 1 at 4 MP, then cut to multiples of 32."""
+    w, h = total_pixels_size(int(width), int(height))
+    return multiple_cover_size(w, h)[2:]
+
+
+# "0": Picture 1 keeps its own size (no 4 MP rescale).
+SOURCE_RESIZE_ENV = "UNSLOTH_H3_IMAGE_SOURCE_RESIZE"
+
+
+def source_resize_enabled() -> bool:
+    return not _env_off(SOURCE_RESIZE_ENV)
+
+
+def picture_float(image: Any) -> Any:
+    """A picture as the reference loads it: ``[1, H, W, 3]`` float32 ``uint8 / 255``; a float array passes through."""
+    import numpy as np
+    import torch
+
+    array = np.asarray(image)
+    if array.dtype != np.float32:
+        array = array.astype(np.float32) / 255.0
+    return torch.from_numpy(np.ascontiguousarray(array))[None]
+
+
+def _area_resize(picture: Any, width: int, height: int) -> Any:
+    """``[1, H, W, 3]`` float -> ``[1, height, width, 3]``, area interpolation on the channels-first view."""
+    import torch.nn.functional as F
+    return F.interpolate(picture.movedim(-1, 1), size = (height, width), mode = "area").movedim(1, -1)
+
+
+def reference_source_picture(image: Any) -> Any:
+    """Picture 1 of the reference edit workflow: scaled to 4 MP (area), then scaled to cover the floored multiple of
+    32 (area) and centre-cropped to it. A float32 ``(H, W, 3)`` array in [0, 1], not rounded to 8 bits."""
+    import numpy as np
+
+    x = picture_float(image)
+    w, h = total_pixels_size(int(x.shape[2]), int(x.shape[1]))
+    x = _area_resize(x, w, h)
+    sw, sh, tw, th = multiple_cover_size(w, h)
+    if (tw, th) != (w, h):
+        x = _area_resize(x, sw, sh)
+        x0, y0 = (sw - tw) // 2, (sh - th) // 2
+        x = x[:, y0 : y0 + th, x0 : x0 + tw, :]
+    return np.ascontiguousarray(x[0].numpy())
+
+
+PREPARED_PICTURE_ENTRIES = 4
+_PREPARED_PICTURES: "OrderedDict[tuple, tuple]" = OrderedDict()
+
+
+def _digested_picture_class() -> Any:
+    import numpy as np
+    class DigestedPicture(np.ndarray):
+        """A float picture carrying the digest of its bytes, so the reference-latent cache does not rehash it."""
+
+        digest: Optional[str] = None
+
+        @classmethod
+        def of(cls, array: Any) -> Any:
+            out = np.ascontiguousarray(array).view(cls)
+            out.digest = hashlib.blake2b(out.tobytes(), digest_size = 16).hexdigest()
+            return out
+
+    return DigestedPicture
+
+
+class _LazyDigested:
+    _cls = None
+
+    def of(self, array: Any) -> Any:
+        if _LazyDigested._cls is None:
+            _LazyDigested._cls = _digested_picture_class()
+        return _LazyDigested._cls.of(array)
+
+
+_DigestedPicture = _LazyDigested()
+
+
+def upright_size(image: Any) -> tuple:
+    """``(width, height)`` of a PIL image after its EXIF orientation is applied, without transposing it."""
+    width, height = image.size
+    try:
+        orientation = image.getexif().get(0x0112)
+    except Exception:  # noqa: BLE001 - unreadable EXIF is treated as upright
+        orientation = None
+    return (height, width) if orientation in (5, 6, 7, 8) else (width, height)
+
+
+def picture_size(picture: Any) -> tuple:
+    """``(width, height)`` of a prepared picture: a PIL image or an ``(H, W, 3)`` array."""
+    if hasattr(picture, "size") and not hasattr(picture, "shape"):
+        return tuple(picture.size)
+    return int(picture.shape[1]), int(picture.shape[0])
+
+
+def lanczos_resize(picture: Any, size: tuple) -> Any:
+    """The reference's LANCZOS resize: a float picture is truncated to 8 bits first (``clip(255 * x)`` cast to uint8),
+    an 8-bit one is used as is (it round-trips exactly). Returns a PIL image."""
+    import numpy as np
+    from PIL import Image
+
+    if not isinstance(picture, Image.Image):
+        picture = Image.fromarray(np.clip(255.0 * np.asarray(picture), 0, 255).astype(np.uint8))
+    return picture.resize(tuple(size), resample = Image.LANCZOS)
+
+
+def vision_pixel_values(pictures: Sequence[Any], patch: int, temporal: int, merge: int) -> tuple:
+    """``(pixel_values, image_grid_thw)`` for the Qwen3-VL tower, as the reference prepares each picture: float
+    ``uint8 / 255``, bilinear (no antialias) to the processor's bounded size only when it differs (above
+    ``H3_IMAGE_VISION_MAX_PIXELS`` or off the grid), normalized to [-1, 1] per channel, then patchified."""
+    import torch
+    import torch.nn.functional as F
+
+    values, grids = [], []
+    factor = patch * merge
+    for picture in pictures:
+        img = picture_float(picture).permute(0, 3, 1, 2)[0]
+        height, width = int(img.shape[1]), int(img.shape[2])
+        h_bar, w_bar = vision_smart_resize(height, width, factor)
+        img = F.interpolate(
+            img.unsqueeze(0), size = (h_bar, w_bar), mode = "bilinear", align_corners = False
+        ).squeeze(0)
+        normalized = img.clone()
+        for c in range(3):
+            normalized[c] = (img[c] - 0.5) / 0.5
+        frames = normalized.unsqueeze(0).repeat(temporal, 1, 1, 1)
+        grid_t, grid_h, grid_w = frames.shape[0] // temporal, h_bar // patch, w_bar // patch
+        x = frames.reshape(
+            grid_t, temporal, 3, grid_h // merge, merge, patch, grid_w // merge, merge, patch
+        )
+        x = x.permute(0, 3, 6, 4, 7, 2, 1, 5, 8)
+        values.append(x.reshape(grid_t * grid_h * grid_w, 3 * temporal * patch * patch))
+        grids.append([grid_t, grid_h, grid_w])
+    return torch.cat(values), torch.tensor(grids, dtype = torch.long)
+
+
+def vision_smart_resize(height: int, width: int, factor: int) -> tuple:
+    """The Qwen2-VL target size the reference uses: multiples of ``factor`` with the pixel count inside
+    ``[H3_IMAGE_VISION_MIN_PIXELS, H3_IMAGE_VISION_MAX_PIXELS]``."""
+    lo, hi = H3_IMAGE_VISION_MIN_PIXELS, H3_IMAGE_VISION_MAX_PIXELS
+    h_bar = round(height / factor) * factor
+    w_bar = round(width / factor) * factor
+    if h_bar * w_bar > hi:
+        beta = math.sqrt((height * width) / hi)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+    elif h_bar * w_bar < lo:
+        beta = math.sqrt(lo / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    return h_bar, w_bar
 
 
 def request_seed(generator: Any) -> int:
@@ -656,6 +1047,50 @@ def reference_noise(rows: Any, seed: int) -> Any:
     request seed for every reference."""
     import torch
     return torch.randn(tuple(rows.shape), generator = cpu_generator(seed), dtype = torch.float32)
+
+
+VAE_ENCODE_HALF_ENV = "UNSLOTH_H3_IMAGE_VAE_ENCODE_HALF"
+
+
+def reference_encode_dtype(device: Any, vae: Any = None) -> Any:
+    """The reference VAE's working dtype for an encode: float16 on CUDA, float32 elsewhere, with
+    ``UNSLOTH_H3_IMAGE_VAE_ENCODE_HALF=0``, or once fp16 overflowed on this VAE."""
+    import torch
+
+    if (
+        getattr(torch.device(device), "type", "cpu") == "cuda"
+        and not _env_off(VAE_ENCODE_HALF_ENV)
+        and not getattr(vae, "_unsloth_h3_encode_fp32", False)
+    ):
+        return torch.float16
+    return torch.float32
+
+
+def _decoder_input_dtype(vae: Any) -> Any:
+    """The dtype the decode path takes its latent in: its first module's, not the whole VAE's (the encoder may run in
+    another dtype, and it owns the VAE's first parameters)."""
+    import torch
+
+    for name in ("post_quant_conv", "decoder"):
+        module = getattr(vae, name, None)
+        if isinstance(module, torch.nn.Module) and any(True for _ in module.parameters()):
+            return _module_dtype(module)
+    return _module_dtype(vae)
+
+
+def set_encoder_dtype(vae: Any, dtype: Any) -> None:
+    """Cast the VAE encoder and its moment projection (the decoder keeps its own dtype)."""
+    for name in ("encoder", "quant_conv"):
+        module = getattr(vae, name, None)
+        if module is not None:
+            module.to(dtype = dtype)
+
+
+def reference_vae_pixels(picture: Any, dtype: Any, mean: Any, std: Any) -> Any:
+    """Encoder input as the reference builds it: ``[1, H, W, 3]`` float pixels to ``2x - 1``, cast to the working
+    dtype, then normalized in that dtype (``(x + 1) * 0.5``, minus mean, over std)."""
+    x = picture.permute(0, 3, 1, 2).mul(2.0).sub_(1.0).to(dtype)
+    return x.add_(1.0).mul_(0.5).sub_(mean.to(x)).div_(std.to(x))
 
 
 def reference_posterior_latents(posterior: Any, latents_mean: Any, latents_std: Any) -> Any:
@@ -750,14 +1185,14 @@ def build_packed_layout(
 
 
 def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list:
-    """Per step: (distinct timesteps, per-row index); reference rows stay at 0.999 for every step."""
+    """Per step: (distinct timesteps, per-row index); reference rows sit at ``max(t, 0.999)``."""
     import torch
 
     plan = []
     for t in timesteps:
         row = torch.full((seq_len,), float(t), dtype = torch.float32)
         if reference_rows is not None and reference_rows.numel():
-            row[reference_rows] = H3_IMAGE_REFERENCE_NOISE_AUG
+            row[reference_rows] = reference_row_timestep(float(t))
         unique, index = torch.unique(row, sorted = True, return_inverse = True)
         plan.append((unique, index))
     return plan
@@ -765,9 +1200,7 @@ def row_timestep_plan(timesteps: Any, seq_len: int, reference_rows: Any) -> list
 
 # "0": the text refiner runs every step again (the stock forward); the cached rows are bit-identical to it.
 REFINER_CACHE_ENV = "UNSLOTH_H3_IMAGE_REFINER_CACHE"
-# "1": the output norm and head run on the generated rows only, as the reference implementation does. Off by default:
-# on a GPU the smaller row count can select other kernels, so an edit is not bit-identical to the stock forward (a
-# rounding-level difference that grows over the steps), and the head is too small for it to save measurable time.
+# Output norm + head on the generated rows only, as the reference; "0" runs them on every row (stock forward).
 TARGET_HEAD_ENV = "UNSLOTH_H3_IMAGE_TARGET_HEAD"
 
 
@@ -776,7 +1209,7 @@ def refiner_cache_enabled() -> bool:
 
 
 def target_head_enabled() -> bool:
-    return (os.environ.get(TARGET_HEAD_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+    return not _env_off(TARGET_HEAD_ENV)
 
 
 def refined_text(transformer: Any, encoder_hidden_states: Any) -> Any:
@@ -784,7 +1217,11 @@ def refined_text(transformer: Any, encoder_hidden_states: Any) -> Any:
     from diffusers.models.modeling_utils import get_parameter_dtype
 
     dtype = get_parameter_dtype(transformer.context_embedder)
-    return transformer.token_refiner(transformer.context_embedder(encoder_hidden_states.to(dtype)))
+    refined = transformer.token_refiner(
+        transformer.context_embedder(encoder_hidden_states.to(dtype))
+    )
+    # A float32-computing path (fp16 cards) hands the block stack its storage dtype.
+    return refined.to(dtype)
 
 
 def _h3_image_forward(
@@ -801,11 +1238,19 @@ def _h3_image_forward(
     return_dict: bool = True,
     text_embeds: Any = None,
     output_indices: Any = None,
+    head: Any = None,
 ) -> Any:
-    """The stock transformer forward plus ``text_embeds`` (refined text rows, computed once per render) and
-    ``output_indices`` (rows the output norm and head run on)."""
+    """The stock transformer forward plus ``text_embeds`` (refined text rows, computed once per render),
+    ``output_indices`` (rows the output norm and head run on) and ``head`` (this step's ``(weight, bias)``, in place
+    of ``pdd_proj_out[pdd_step_index]``)."""
     stock = type(self).forward
-    if text_embeds is None and output_indices is None:
+    # The fp16 contract (float32 conditioning) needs refined_text's dtype hand-off, which the stock forward lacks.
+    if (
+        text_embeds is None
+        and output_indices is None
+        and head is None
+        and not self.__dict__.get(FP16_CONTRACT_ATTR)
+    ):
         return stock(
             self,
             hidden_states = hidden_states,
@@ -857,7 +1302,10 @@ def _h3_image_forward(
     hidden_states = self.norm_out(
         hidden_states.index_select(1, rows), temb, timestep_indices.index_select(0, rows)
     ).to(get_parameter_dtype(proj_out))
-    output = proj_out(hidden_states)
+    if head is not None:
+        output = torch.nn.functional.linear(hidden_states, head[0], head[1])
+    else:
+        output = proj_out(hidden_states)
     if not return_dict:
         return (output,)
     return Transformer2DModelOutput(sample = output)
@@ -912,9 +1360,10 @@ _SchedulerMixin, _ConfigMixin, _register_to_config = _scheduler_bases()
 
 
 class MiniMaxH3ImageScheduler(_SchedulerMixin, _ConfigMixin):
-    """The release's sampler: explicit sigma grid taken verbatim, ``t = 1 - sigma``, Euler in velocity form
-    ``x_next = x + (sigma - sigma_next) * v`` in float32 (MiniMaxH3Scheduler with ``euler_update_form="velocity"``,
-    ``shift_provided_sigmas=False``)."""
+    """The reference sampler: the "simple" scheduler over the grid-linear model sampling (``reference_sigmas``), the
+    DiT at ``t = 1 - timestep / 1000`` with ``timestep = sigma * 1000`` in float32, and the Euler step on the denoised
+    estimate ``x0 = x - out * sigma``, ``d = (x - x0) / sigma``, ``x_next = x + d * (sigma_next - sigma)`` in float32
+    (``out`` is the model output, minus the head's velocity). ``sample_sigmas`` is the distilled head grid."""
 
     config_name = "scheduler_config.json"
     order = 1
@@ -923,27 +1372,34 @@ class MiniMaxH3ImageScheduler(_SchedulerMixin, _ConfigMixin):
     def __init__(self, sample_sigmas: Optional[list] = None) -> None:
         self.sigmas = None
         self.timesteps = None
+        self.model_sigmas = None
         self.num_inference_steps = None
         self._step_index = None
 
+    @property
+    def head_grid(self) -> list:
+        return [float(s) for s in (self.config.sample_sigmas or H3_IMAGE_SIGMAS)]
+
     def set_timesteps(
         self,
-        sigmas: Optional[Sequence[float]] = None,
+        num_inference_steps: Optional[int] = None,
         device: Any = None,
+        sigmas: Optional[Sequence[float]] = None,
         **_: Any,
     ) -> None:
         import torch
 
-        base = list(
-            sigmas if sigmas is not None else (self.config.sample_sigmas or H3_IMAGE_SIGMAS)
-        )
-        # The released sampler rounds every sigma through its float32 timestep 1 - sigma and back.
-        timesteps = torch.tensor([1.0 - s for s in base[:-1]], dtype = torch.float32)
-        sig = torch.cat([1.0 - timesteps, torch.zeros(1)])
-        if sig.numel() < 2 or not bool((sig[1:] < sig[:-1]).all()):
+        if sigmas is not None:
+            sig = torch.tensor([float(s) for s in sigmas], dtype = torch.float32)
+        else:
+            sig = reference_sigmas(int(num_inference_steps or H3_IMAGE_STEPS), self.head_grid)
+        if sig.numel() < 2 or float(sig[-1]) != 0.0 or not bool((sig[1:] < sig[:-1]).all()):
             raise ValueError("sigmas must be strictly decreasing and end at 0.0")
+        self.model_sigmas = [model_sigma(s) for s in sig[:-1]]
         self.sigmas = sig.to(device)
-        self.timesteps = (1.0 - sig[:-1]).to(device)
+        self.timesteps = torch.tensor([1.0 - s for s in self.model_sigmas], dtype = torch.float32).to(
+            device
+        )
         self.num_inference_steps = int(self.timesteps.numel())
         self._step_index = 0
 
@@ -955,12 +1411,17 @@ class MiniMaxH3ImageScheduler(_SchedulerMixin, _ConfigMixin):
         return_dict: bool = False,
         **_: Any,
     ) -> tuple:
+        """``model_output`` is the head's velocity (the reference model returns its negative)."""
         import torch
 
         i = self._step_index
         sigma = self.sigmas[i].to(device = sample.device, dtype = torch.float32)
         sigma_next = self.sigmas[i + 1].to(device = sample.device, dtype = torch.float32)
-        prev = sample.to(torch.float32) + (sigma - sigma_next) * model_output.to(torch.float32)
+        x = sample.to(torch.float32)
+        out = -model_output.to(torch.float32)
+        denoised = x - out * sigma
+        d = (x - denoised) / sigma
+        prev = x + d * (sigma_next - sigma)
         self._step_index = i + 1
         return (prev.to(sample.dtype),)
 
@@ -1001,10 +1462,25 @@ class H3ImagePlan:
     reasons: list = field(default_factory = list)
     # host GB held once placed (host DiT blocks + encoder + 4 GB); None without a host budget
     host_need_gb: Optional[float] = None
+    parked: bool = False
+    vae_parked: bool = False
+    h2d_gib_s: Optional[float] = None
+    # stream tier measured pricing (None = old pricing); see ``render_resident_blocks``
+    working_gb: Optional[float] = None
+    slack_gb: Optional[float] = None
+    block_gb: Optional[float] = None
+    layout: Optional[str] = None
+    canvas: Optional[tuple] = None
 
     def as_dict(self) -> dict:
         return {
             "placement": self.placement,
+            "parked": self.parked,
+            "vae_parked": self.vae_parked,
+            "layout": self.layout,
+            "working_gb": None if self.working_gb is None else round(self.working_gb, 2),
+            "slack_gb": None if self.slack_gb is None else round(self.slack_gb, 2),
+            "h2d_gib_s": None if self.h2d_gib_s is None else round(self.h2d_gib_s, 2),
             "dit_gb": round(self.dit_gb, 2),
             "te_gb": round(self.te_gb, 2),
             "vae_gb": round(self.vae_gb, 2),
@@ -1038,6 +1514,56 @@ def activation_gb(
     return 1.5 + 0.35 * mp * (1 + references)
 
 
+def measured_working_set_enabled() -> bool:
+    return not _env_off(MEASURED_WORKING_SET_ENV)
+
+
+# Measured on A100-40: whole-render peak reserved less kept weights at 2048x2048, per layout, rounded up.
+STREAM_WORKING_GB = {"today": 1.9, "parked": 1.2, "parked+vae": 1.0}
+# Per extra megapixel of DiT rows: +3.37 GB at 4096x4096, +3.74 GB for a 3-reference edit (12.6 MP each).
+STREAM_WORKING_GB_PER_MP = 0.30
+# Covers allocator rounding, cuBLAS/CUTLASS/Triton workspaces and card spread.
+STREAM_RESERVE_GB = 0.75
+STREAM_RESERVE_FRACTION = 0.03
+
+
+def stream_working_gb(
+    layout: str,
+    width: int,
+    height: int,
+    references: int = 0,
+    vram_gb: Optional[float] = None,
+) -> float:
+    """Priced stream-tier working set (GB) for ``layout`` at a canvas and reference count, with the reserve."""
+    mp = max(width * height, H3_IMAGE_MIN_GENERATION_AREA) / 1e6 * (1 + max(0, int(references)))
+    grow = STREAM_WORKING_GB_PER_MP * max(0.0, mp - H3_IMAGE_MIN_GENERATION_AREA / 1e6)
+    reserve = max(STREAM_RESERVE_GB, STREAM_RESERVE_FRACTION * float(vram_gb or 0.0))
+    return STREAM_WORKING_GB[layout] + grow + reserve
+
+
+def render_resident_blocks(
+    plan: "H3ImagePlan",
+    width: int,
+    height: int,
+    references: int = 0,
+) -> Optional[int]:
+    """Resident DiT blocks this render fits under ``plan``; None without measured stream pricing."""
+    if (
+        plan.placement != PLACE_STREAM
+        or plan.working_gb is None
+        or plan.layout is None
+        or plan.dit_resident_blocks is None
+        or not plan.block_gb
+    ):
+        return None
+    need = stream_working_gb(plan.layout, width, height, references, plan.vram_gb)
+    short = need - plan.working_gb - max(0.0, float(plan.slack_gb or 0.0))
+    resident = int(plan.dit_resident_blocks)
+    if short <= 1e-9:
+        return resident
+    return max(0, resident - int(math.ceil(short / plan.block_gb - 1e-9)))
+
+
 def dit_gb_for(scheme: Optional[str], table: bool = True) -> float:
     dense_adaln_gb = 0.0 if table else H3_IMAGE_DIT_BF16_GB - H3_IMAGE_DIT_TABLE_BF16_GB
     if scheme in QUANT_SCHEMES:
@@ -1054,6 +1580,94 @@ def te_gb_for(scheme: Optional[str]) -> float:
 # 0.8B), the encoder's token embedding + vision tower (1.56 + ~1.2 GB).
 DIT_TOP_GB = 2.0
 TE_TOP_GB = 3.0
+# Parkable once-per-phase pieces (measured: refiner + context embedder 1.49 GiB, vision tower 1.11 GiB).
+DIT_REFINER_GB = 1.6
+TE_VISION_GB = 1.2
+# Least parked first; a parked VAE decodes without tile graphs (they record the weights' addresses).
+LAYOUT_TODAY = "today"
+LAYOUT_PARKED = "parked"
+LAYOUT_PARKED_VAE = "parked+vae"
+# Multiply-adds of one DiT block per token (attention 154M + feed-forward 231M).
+BLOCK_PARAMS = 385e6
+# Measured / priced block time at the int8 GEMM rate (A100: 7.8 ms priced, 11.6 ms measured at 2048x2048).
+INT8_BLOCK_EFFICIENCY = 0.67
+# Extra decode seconds per 4 MP without tile graphs (A100: 0.47 against 0.33 s).
+UNGRAPHED_DECODE_S = 0.15
+# Minimum priced per-render saving for a more parked layout to win.
+PARK_MIN_SAVING = 0.10
+
+
+def park_setting() -> Optional[bool]:
+    raw = (os.environ.get(PARK_ENV) or "auto").strip().lower()
+    if raw in ("1", "on", "true", "yes"):
+        return True
+    if raw in ("0", "off", "false", "no"):
+        return False
+    return None
+
+
+def stream_render_seconds(
+    *,
+    resident: int,
+    num_blocks: int,
+    block_gb: float,
+    steps: int,
+    h2d_gib_s: float,
+    block_tops: float,
+    width: int,
+    height: int,
+    uploaded_gb: float = 0.0,
+    extra_s: float = 0.0,
+) -> float:
+    """Priced seconds of one stream-tier render; a streamed block costs max(compute, copy) (one-ahead prefetch).
+    A100 check: 30 + 20 streamed price 0.98 s/step against 0.953 measured."""
+    tokens = max(1, int(width) * int(height) // (H3_IMAGE_VAE_SCALE * 2) ** 2)
+    compute = 2.0 * BLOCK_PARAMS * tokens / (max(float(block_tops), 1e-6) * 1e12)
+    bandwidth = max(float(h2d_gib_s), 1e-6) * 2**30
+    copy = float(block_gb) * 1e9 / bandwidth
+    streamed = max(0, int(num_blocks) - int(resident))
+    step = (int(num_blocks) - streamed) * compute + streamed * max(compute, copy)
+    return max(1, int(steps)) * step + float(uploaded_gb) * 1e9 / bandwidth + float(extra_s)
+
+
+def _choose_layout(
+    candidates: list, *, park: Optional[bool], priced: Optional[dict]
+) -> tuple[Optional[tuple], str]:
+    """``candidates``: (layout, spare GB, resident blocks, GB uploaded per render, extra s), least parked first."""
+    fitting = [c for c in candidates if c[1] >= 0]
+    if park is True:
+        fitting = fitting[-1:]
+        return (fitting[0], "parked layout forced") if fitting else (None, "")
+    if park is False:
+        fitting = [c for c in fitting if c[0] == LAYOUT_TODAY]
+        return (fitting[0], "parked layouts off") if fitting else (None, "")
+    if not fitting:
+        return None, ""
+    best = fitting[0]
+    if best[0] != LAYOUT_TODAY:
+        why = (
+            "the encoder's embedding + vision tower and the token refiner"
+            + (" and VAE" if best[0] == LAYOUT_PARKED_VAE else "")
+            + " do not fit beside the streamed blocks all session: they wait in system memory and come in for "
+            "their phase"
+        )
+    else:
+        why = "encoder, token refiner and VAE stay on the device"
+    if priced is None:
+        return best, why + " (link unmeasured)"
+    cost = {
+        c[0]: stream_render_seconds(resident = c[2], uploaded_gb = c[3], extra_s = c[4], **priced)
+        for c in fitting
+    }
+    for c in fitting[1:]:
+        if c[2] > best[2] and cost[c[0]] < cost[best[0]] * (1.0 - PARK_MIN_SAVING):
+            best = c
+            why = f"{c[0]} layout priced faster"
+    numbers = ", ".join(f"{c[0]} {c[2]} resident {cost[c[0]]:.2f} s" for c in fitting)
+    return best, (
+        f"{why} ({priced['h2d_gib_s']:.1f} GiB/s host-to-device, {priced['block_tops']:.0f} effective TOPS per "
+        f"render: {numbers})"
+    )
 
 
 def plan_placement(
@@ -1070,6 +1684,10 @@ def plan_placement(
     te_layers: int = 50,
     forced: Optional[str] = None,
     inflight: int = 1,
+    h2d_gib_s: Optional[float] = None,
+    block_tops: Optional[float] = None,
+    steps: int = H3_IMAGE_STEPS,
+    park: Optional[bool] = None,
 ) -> H3ImagePlan:
     """Pure: VRAM and host budgets (GB, None = unknown/CPU) -> placement, best first:
 
@@ -1080,7 +1698,15 @@ def plan_placement(
     - stream: DiT blocks stream past the ones that fit, the encoder streams every layer (L4 24 GB).
 
     Host: the encoder is kept only when it fits beside the DiT, else it loads per prompt and is freed after.
-    ``inflight``: streamed members on the device at once (2 with the prefetch streamer: one runs, one copies)."""
+    ``inflight``: streamed members on the device at once (2 with the prefetch streamer: one runs, one copies).
+
+    Stream tier layouts: today's keeps the encoder's embedding + vision tower, the token refiner and the VAE on the
+    card for the whole session; the parked ones keep the first two (then the VAE too) on the host and bring each in
+    only for its phase (encode, once-per-render refine, decode), so the phases take turns on one room and more DiT
+    blocks stay. The least parked layout that fits is taken (an 8 GB card parks everything), and a more parked one
+    where the card's measured link (``h2d_gib_s``) and block rate (``block_tops``) price it ``PARK_MIN_SAVING``
+    faster (a slow link); ``park`` forces all or none. A card where no layout fits is refused here with what it
+    would need."""
     reasons = []
     act = activation_gb(width, height, references)
     margin = 1.5
@@ -1127,20 +1753,79 @@ def plan_placement(
         plan.te_resident_layers = max(0, min(te_layers, int(spare / layer_gb)))
         reasons.append(f"{plan.te_resident_layers}/{te_layers} encoder layers stay on the device")
     elif choice == PLACE_STREAM:
-        spare = vram_gb - act - margin - vae_gb - DIT_TOP_GB - TE_TOP_GB - block_gb
+        measured = measured_working_set_enabled()
+
+        def _working(layout: str) -> float:
+            if not measured:
+                return act + margin
+            return stream_working_gb(layout, width, height, references, vram_gb)
+
+        spare = vram_gb - _working(LAYOUT_TODAY) - vae_gb - DIT_TOP_GB - TE_TOP_GB - block_gb
         spare -= (inflight - 1) * max(block_gb, layer_gb)
-        plan.dit_resident_blocks = max(0, min(num_blocks, int(spare / block_gb)))
+        # Parked: each phase brings its pieces in, so the peak is the largest phase.
+        step_top = DIT_TOP_GB - DIT_REFINER_GB
+        phases = [inflight * block_gb, inflight * layer_gb + TE_VISION_GB, DIT_REFINER_GB]
+        parked_spare = vram_gb - _working(LAYOUT_PARKED) - step_top - vae_gb - max(phases)
+        vae_spare = vram_gb - _working(LAYOUT_PARKED_VAE) - step_top - max(phases + [vae_gb])
+
+        def _kept(room: float) -> int:
+            return max(0, min(num_blocks, int(room / block_gb)))
+
+        ungraphed = (
+            UNGRAPHED_DECODE_S * max(width * height, H3_IMAGE_MIN_GENERATION_AREA) / (2048 * 2048)
+        )
+        candidates = [
+            (LAYOUT_TODAY, spare, _kept(spare), 0.0, 0.0),
+            (LAYOUT_PARKED, parked_spare, _kept(parked_spare), DIT_REFINER_GB, 0.0),
+            (LAYOUT_PARKED_VAE, vae_spare, _kept(vae_spare), DIT_REFINER_GB + vae_gb, ungraphed),
+        ]
+        priced = None
+        if h2d_gib_s and block_tops:
+            priced = dict(
+                num_blocks = num_blocks,
+                block_gb = block_gb,
+                steps = steps,
+                h2d_gib_s = h2d_gib_s,
+                block_tops = block_tops,
+                width = width,
+                height = height,
+            )
+        chosen, why = _choose_layout(candidates, park = park, priced = priced)
+        if chosen is None:
+            need = _working(LAYOUT_PARKED_VAE) + step_top + max(phases + [vae_gb])
+            raise RuntimeError(
+                f"MiniMax-H3-Image needs about {need:.1f} GB of free GPU memory at {width}x{height} even with "
+                f"every DiT block and encoder layer streamed and the text encoder, token refiner and VAE waiting "
+                f"in system memory, and {vram_gb:.1f} GB is free. Free GPU memory (close other GPU applications) "
+                f"or use a GPU with more memory."
+            )
+        layout, room, kept_blocks, _up, _extra = chosen
+        parked = layout != LAYOUT_TODAY
+        plan.layout = layout
+        plan.block_gb = block_gb
+        plan.canvas = (int(width), int(height), int(references))
+        if measured:
+            plan.working_gb = _working(layout)
+            plan.slack_gb = max(0.0, room - kept_blocks * block_gb)
+        plan.vae_parked = layout == LAYOUT_PARKED_VAE
+        plan.parked = parked
+        plan.h2d_gib_s = h2d_gib_s
+        plan.dit_resident_blocks = kept_blocks
         # The resident blocks hold their room through the encode, so every encoder layer streams.
         plan.te_resident_layers = 0
         reasons.append(
             f"{plan.dit_resident_blocks}/{num_blocks} DiT blocks stay on the device; encoder streams"
         )
+        reasons.append(why)
     if host_gb is not None:
         dit_host = {
             PLACE_RESIDENT: 0.0,
             PLACE_DIT_RESIDENT: 0.0,
             PLACE_SEQUENTIAL: dit_gb + vae_gb,
-            PLACE_STREAM: block_gb * (num_blocks - int(plan.dit_resident_blocks or 0)),
+            PLACE_STREAM: block_gb * (num_blocks - int(plan.dit_resident_blocks or 0))
+            # the encoder's parked pieces are already in te_gb
+            + (DIT_REFINER_GB if plan.parked else 0.0)
+            + (vae_gb if plan.vae_parked else 0.0),
         }[choice]
         need = dit_host + te_gb + 4.0
         plan.host_need_gb = need
@@ -1150,7 +1835,7 @@ def plan_placement(
         peak = dit_host + te_gb + 1.0
         if host_gb < peak:
             raise RuntimeError(
-                f"MiniMax-H3-Image needs about {peak:.0f} GB of free system memory on this GPU "
+                f"MiniMax-H3-Image needs about {peak:.1f} GB of free system memory on this GPU "
                 f"({choice} placement: {dit_host:.1f} GB of DiT blocks on the host plus the {te_gb:.1f} GB "
                 f"text encoder while it loads), and {host_gb:.1f} GB is available. Close other applications or "
                 f"use a machine with more memory."
@@ -1238,6 +1923,199 @@ class ModuleListStreamer:
         self.handles = []
 
 
+PARKED_ATTR = "_unsloth_h3_parked"
+
+
+class HostParked:
+    """``module``'s tensors live on the host and on ``device`` only between nested ``enter()``/``leave()``; a tensor
+    the phase replaced or recast (the VAE canvas's fp32 overflow fallback) becomes the new host copy."""
+
+    def __init__(
+        self,
+        module: Any,
+        device: Any,
+        *,
+        pin: bool = True,
+    ) -> None:
+        import torch
+
+        self.device = torch.device(device)
+        self.module = module
+        self.pin = pin
+        self.depth = 0
+        self.handles: list = []
+        self._host: list = []
+        self._placed: dict = {}
+        for owner, kind, name, tensor in self._tensors():
+            self._host.append((owner, kind, name, self._to_host(tensor)))
+        self._put(lambda t: t)
+
+    @property
+    def bytes(self) -> int:
+        return sum(host.numel() * host.element_size() for *_k, host in self._host)
+
+    def _tensors(self) -> list:
+        return [
+            (owner, kind, name, tensor)
+            for owner in self.module.modules()
+            for kind, table in (("p", owner._parameters), ("b", owner._buffers))
+            for name, tensor in list(table.items())
+            if tensor is not None
+        ]
+
+    def _to_host(self, tensor: Any) -> Any:
+        host = tensor.detach()
+        if host.device.type != "cpu":
+            host = host.to("cpu")
+        if self.pin:
+            try:
+                host = host.pin_memory()
+            except Exception:  # noqa: BLE001 - a tensor subclass or a refused pin: pageable
+                pass
+        return host
+
+    @staticmethod
+    def _print(tensor: Any) -> tuple:
+        try:
+            ptr = tensor.data_ptr()
+        except Exception:  # noqa: BLE001 - a tensor subclass: its identity and dtype only
+            ptr = None
+        return (id(tensor), ptr, tensor.dtype)
+
+    def _put(self, place: Callable) -> None:
+        import torch
+        self._placed = {}
+        for owner, kind, name, host in self._host:
+            value = place(host)
+            if kind == "p":
+                value = torch.nn.Parameter(value, requires_grad = False)
+                owner._parameters[name] = value
+            else:
+                owner._buffers[name] = value
+            self._placed[(id(owner), kind, name)] = (self._print(value), host)
+
+    def _keep_changes(self) -> None:
+        kept = []
+        for owner, kind, name, tensor in self._tensors():
+            placed = self._placed.get((id(owner), kind, name))
+            if placed is not None and placed[0] == self._print(tensor):
+                kept.append((owner, kind, name, placed[1]))
+            else:
+                kept.append((owner, kind, name, self._to_host(tensor)))
+        self._host = kept
+
+    def enter(self) -> None:
+        if self.depth == 0:
+            try:
+                self._put(lambda t: t.to(self.device, non_blocking = True))
+            except BaseException:
+                # an upload that fails part way (out of memory) puts every tensor back on the host and does not
+                # count as an entry, so the caller's retry uploads the whole module again
+                self._put(lambda t: t)
+                raise
+        self.depth += 1
+
+    def leave(self) -> None:
+        if self.depth == 0:
+            return
+        self.depth -= 1
+        if self.depth == 0:
+            self._keep_changes()
+            self._put(lambda t: t)
+
+    def on_forward(self, module: Any) -> "HostParked":
+        self.handles.append(module.register_forward_pre_hook(lambda _m, _a: self.enter()))
+        self.handles.append(
+            module.register_forward_hook(lambda _m, _a, _o: self.leave(), always_call = True)
+        )
+        return self
+
+    def remove(self) -> None:
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+        if self.depth:
+            self._keep_changes()
+        self.depth = 0
+        self._put(lambda t: t)
+
+
+def park_on_host(
+    module: Any,
+    device: Any,
+    *,
+    pin: bool = True,
+    per_forward: bool = False,
+) -> HostParked:
+    """Idempotent; ``per_forward`` brings ``module`` in around each forward."""
+    parked = module.__dict__.get(PARKED_ATTR)
+    if parked is None:
+        parked = HostParked(module, device, pin = pin)
+        if per_forward:
+            parked.on_forward(module)
+        module.__dict__[PARKED_ATTR] = parked
+    return parked
+
+
+def unpark(module: Any) -> bool:
+    parked = module.__dict__.pop(PARKED_ATTR, None) if module is not None else None
+    if parked is None:
+        return False
+    parked.remove()
+    return True
+
+
+def lookup_on_host(embedding: Any, device: Any) -> None:
+    """Host-side embedding lookup; rows go to ``device`` (bit-identical)."""
+    import torch
+
+    if embedding.__dict__.get(PARKED_ATTR) is not None:
+        return
+    embedding.to("cpu")
+    dev = torch.device(device)
+    handles = [
+        embedding.register_forward_pre_hook(
+            lambda _m, args: tuple(a.to("cpu") if torch.is_tensor(a) else a for a in args)
+        ),
+        embedding.register_forward_hook(lambda _m, _a, out: out.to(dev, non_blocking = True)),
+    ]
+
+    class _Lookup:
+        bytes = 0
+
+        def remove(self) -> None:
+            for handle in handles:
+                handle.remove()
+
+    embedding.__dict__[PARKED_ATTR] = _Lookup()
+
+
+def park_session_pieces(pipe: Any, device: Any, plan: H3ImagePlan) -> float:
+    """Park the refiner + context embedder (per forward) and a parked VAE (via ``_enter``); returns GB parked."""
+    if not plan.parked or plan.placement != PLACE_STREAM:
+        return 0.0
+    from .host_pinning import host_pinning_allowed
+
+    pin = host_pinning_allowed(device)
+    parked = 0
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is not None:
+        for name in ("context_embedder", "token_refiner"):
+            child = getattr(transformer, name, None)
+            if child is not None:
+                parked += park_on_host(child, device, pin = pin, per_forward = True).bytes
+    vae = getattr(pipe, "vae", None)
+    if vae is not None and plan.vae_parked:
+        from .diffusion_vae_canvas import release_graphs
+
+        # tile graphs record the weights' addresses, which change per upload
+        release_graphs(vae)
+        vae.__dict__["_unsloth_canvas_graphs"] = False
+        parked += park_on_host(vae, device, pin = pin).bytes
+    _empty_cache()
+    return parked / 1e9
+
+
 def torch_no_grad(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -1316,6 +2194,60 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         plan = self._unsloth_h3_plan
         return plan.placement if plan is not None else PLACE_RESIDENT
 
+    def _fit_render(self, width: int, height: int, references: int) -> Optional[dict]:
+        """Demote resident DiT blocks before a render bigger than planned (one-way). None = nothing to do."""
+        plan = self._unsloth_h3_plan
+        if plan is None or not measured_working_set_enabled():
+            return None
+        keep = render_resident_blocks(plan, width, height, references)
+        if keep is None:
+            return None
+        resident = int(plan.dit_resident_blocks or 0)
+        if keep >= resident:
+            return {"resident": resident}
+        self.__dict__.pop("_unsloth_h3_demotion_refusal", None)
+        done = demote_dit_blocks(
+            self,
+            keep,
+            f"{width}x{height} with {references} reference(s) needs more working set than planned",
+        )
+        refusal = self.__dict__.pop("_unsloth_h3_demotion_refusal", None)
+        if refusal is not None:
+            raise RuntimeError(
+                f"MiniMax-H3-Image: a {width}x{height} render with {references} reference picture(s) needs "
+                f"{resident - keep} DiT blocks moved off the GPU, and system memory cannot take them: {refusal}. "
+                f"Render at a smaller size or with fewer references, or free system memory and load the model "
+                f"again."
+            )
+        return {"resident": int(plan.dit_resident_blocks or 0), "demoted": bool(done)}
+
+    def _oom_demotable(self) -> bool:
+        plan = self._unsloth_h3_plan
+        return bool(
+            plan is not None
+            and plan.placement == PLACE_STREAM
+            and measured_working_set_enabled()
+            and int(plan.dit_resident_blocks or 0) > 0
+        )
+
+    def _oom_demote(self, what: str) -> bool:
+        """After a stream-tier OOM: stream 4+ more DiT blocks; False when nothing could be given back."""
+        plan = self._unsloth_h3_plan
+        if not self._oom_demotable():
+            return False
+        gc.collect()
+        _empty_cache()
+        resident = int(plan.dit_resident_blocks or 0)
+        step = max(4, int(math.ceil(STREAM_RESERVE_GB / max(float(plan.block_gb or 0.4), 1e-3))))
+        logger.warning(
+            "diffusion.minimax_h3_image: render ran out of GPU memory with %d resident DiT blocks (%s): "
+            "streaming %d more and rendering again",
+            resident,
+            what,
+            min(step, resident),
+        )
+        return demote_dit_blocks(self, max(0, resident - step), "out of memory")
+
     def _enter(self, name: str) -> Any:
         """Put component ``name`` where its phase runs; returns it."""
         module = getattr(self, name, None)
@@ -1326,6 +2258,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             return None
         if self._placement() == PLACE_SEQUENTIAL:
             module.to(self._device())
+        parked = module.__dict__.get(PARKED_ATTR) if name == "vae" else None
+        if parked is not None:
+            parked.enter()
         return module
 
     def _leave(self, name: str) -> None:
@@ -1336,6 +2271,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         if placement == PLACE_SEQUENTIAL:
             module.to("cpu")
             _empty_cache()
+        parked = module.__dict__.get(PARKED_ATTR) if name == "vae" else None
+        if parked is not None:
+            parked.leave()
         if name == "text_encoder" and self._unsloth_h3_te_loader is not None:
             self.text_encoder = None
             for streamer in list(self._unsloth_h3_streamers):
@@ -1361,6 +2299,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         for name in ("transformer", "text_encoder", "vae"):
             module = getattr(self, name, None)
             if module is not None:
+                for sub in module.modules():
+                    parked = sub.__dict__.pop(PARKED_ATTR, None)
+                    if parked is not None:
+                        parked.remove()
                 if name == "vae":
                     # the VAE canvas's tile graphs keep their private pools while anything references the VAE
                     from .diffusion_vae_canvas import release_graphs
@@ -1392,31 +2334,23 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         tags: list[int] = []
         vision_inputs: dict = {}
         if vision_images:
-            processor = self._processor()
-            # prepare_references already sized them to multiples of 32: the processor must not resample again
-            on_grid = all(
-                i.size[0] % H3_IMAGE_CANVAS_MULTIPLE == 0
-                and i.size[1] % H3_IMAGE_CANVAS_MULTIPLE == 0
-                and H3_IMAGE_VISION_MIN_PIXELS
-                <= i.size[0] * i.size[1]
-                <= H3_IMAGE_VISION_MAX_PIXELS
-                for i in vision_images
+            ip = self._processor().image_processor
+            pixel_values, grid_thw = vision_pixel_values(
+                vision_images,
+                int(getattr(ip, "patch_size", 16)),
+                int(getattr(ip, "temporal_patch_size", 2)),
+                int(getattr(ip, "merge_size", 2)),
             )
-            extra = {"do_resize": False} if on_grid else {}
-            vision = processor.image_processor(images = vision_images, return_tensors = "pt", **extra)
-            merge = int(processor.image_processor.merge_size) ** 2
+            merge = int(getattr(ip, "merge_size", 2)) ** 2
             start = tokenizer.convert_tokens_to_ids("<|vision_start|>")
             pad = tokenizer.convert_tokens_to_ids("<|image_pad|>")
             end = tokenizer.convert_tokens_to_ids("<|vision_end|>")
-            for index, grid in enumerate(vision["image_grid_thw"]):
+            for index, grid in enumerate(grid_thw):
                 label = tokenizer(f"Picture {index + 1}: ", add_special_tokens = False)["input_ids"]
                 block = [start] + [pad] * (int(grid.prod()) // merge) + [end]
                 token_ids += label + block
                 tags += [H3_IMAGE_TEXT_TAG] * len(label) + [H3_IMAGE_IMAGE_TAG] * len(block)
-            vision_inputs = {
-                "pixel_values": vision["pixel_values"],
-                "image_grid_thw": vision["image_grid_thw"],
-            }
+            vision_inputs = {"pixel_values": pixel_values, "image_grid_thw": grid_thw}
         prompt_ids = tokenizer(prompt, add_special_tokens = False)["input_ids"] if prompt else []
         token_ids += prompt_ids
         tags += [H3_IMAGE_TEXT_TAG] * len(prompt_ids)
@@ -1464,7 +2398,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         device = self._device()
         vae = self._enter("vae")
         try:
-            vae_dtype = _module_dtype(vae)
+            vae_dtype = reference_encode_dtype(device, vae)
+            encoder = getattr(vae, "encoder", None)
+            if isinstance(encoder, torch.nn.Module) and _module_dtype(encoder) != vae_dtype:
+                set_encoder_dtype(vae, vae_dtype)
             mean = torch.tensor(H3_IMAGE_PIXEL_MEAN, device = device).view(1, -1, 1, 1)
             std = torch.tensor(H3_IMAGE_PIXEL_STD, device = device).view(1, -1, 1, 1)
             lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
@@ -1472,14 +2409,17 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             out = []
             r = H3_IMAGE_VAE_SCALE
             for image in images:
-                array = np.array(image)
+                array = np.asarray(image)
                 if array.shape[0] % (2 * r) or array.shape[1] % (2 * r):
                     raise ValueError(
                         f"a reference must be sized to multiples of {2 * r} pixels, got {array.shape[1]}x{array.shape[0]}"
                     )
                 key = None
                 if ref_cache_enabled():
-                    digest = hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    digest = (
+                        getattr(image, "digest", None)
+                        or hashlib.blake2b(array.tobytes(), digest_size = 16).hexdigest()
+                    )
                     key = (id(vae), str(vae_dtype), str(device), tuple(array.shape), digest)
                 cache = self.__dict__.setdefault("_unsloth_h3_ref_posteriors", OrderedDict())
                 stats = self.__dict__.setdefault("_unsloth_h3_ref_stats", {"hits": 0, "misses": 0})
@@ -1488,11 +2428,27 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                     cache.move_to_end(key)
                     stats["hits"] += 1
                 else:
-                    pixels = torch.from_numpy(array).to(device).permute(2, 0, 1)[None]
-                    pixels = (pixels.to(torch.float32).div(255.0) - mean) / std
-                    posterior = vae.encode(pixels.to(vae_dtype), return_dict = False)[0]
+                    picture = picture_float(array).to(device)
+                    posterior = vae.encode(
+                        reference_vae_pixels(picture, vae_dtype, mean, std), return_dict = False
+                    )[0]
+                    if vae_dtype != torch.float32 and not bool(
+                        torch.isfinite(posterior.parameters).all()
+                    ):
+                        # fp16 overflowed on this picture: this load encodes in float32 from now on
+                        logger.warning(
+                            "diffusion.minimax_h3_image: fp16 VAE encode overflowed; using float32"
+                        )
+                        vae._unsloth_h3_encode_fp32 = True
+                        vae_dtype = torch.float32
+                        set_encoder_dtype(vae, vae_dtype)
+                        posterior = vae.encode(
+                            reference_vae_pixels(picture, vae_dtype, mean, std), return_dict = False
+                        )[0]
+                        if key is not None:
+                            key = (key[0], str(vae_dtype)) + key[2:]
                     latents = reference_posterior_latents(posterior, lmean, lstd)
-                    del posterior
+                    del posterior, picture
                     if key is not None:
                         stats["misses"] += 1
                         cache[key] = latents
@@ -1504,8 +2460,10 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             self._leave("vae")
 
     @staticmethod
-    def prepare_references(images: Any) -> tuple[list, list]:
-        """(VAE copies, encoder copies) of the references, upright RGB, LANCZOS-resized to each short-edge rule."""
+    def prepare_references(images: Any, source_resize: Optional[bool] = None) -> tuple[list, list]:
+        """(VAE copies, encoder copies) of the references, upright RGB, LANCZOS-resized to each short-edge rule. Picture
+        1 first goes through the reference edit workflow's 4 MP rescale (``reference_source_picture``) unless
+        ``source_resize`` (default ``source_resize_enabled()``) is off; a copy that keeps its size stays float."""
         from PIL import Image, ImageOps
 
         if images is None:
@@ -1527,11 +2485,34 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             prepared.append(image)
 
         def resize(image: Any, lo: int, hi: int) -> Any:
-            size = size_short_edge(*image.size, lo, hi)
-            return image if image.size == size else image.resize(size, resample = Image.LANCZOS)
+            size = size_short_edge(*picture_size(image), lo, hi)
+            return image if picture_size(image) == size else lanczos_resize(image, size)
 
-        vae_images = [resize(i, *H3_IMAGE_REFERENCE_SHORT_EDGE) for i in prepared]
-        vision_images = [resize(i, *H3_IMAGE_VISION_SHORT_EDGE) for i in prepared]
+        rescale_first = bool(prepared) and (
+            source_resize_enabled() if source_resize is None else source_resize
+        )
+        vae_images, vision_images = [], []
+        for index, image in enumerate(prepared):
+            source = index == 0 and rescale_first
+            key = (source, image.size, hashlib.blake2b(image.tobytes(), digest_size = 16).hexdigest())
+            copies = _PREPARED_PICTURES.get(key)
+            if copies is None:
+                picture = reference_source_picture(image) if source else image
+                vae_copy = resize(picture, *H3_IMAGE_REFERENCE_SHORT_EDGE)
+                vision_copy = resize(picture, *H3_IMAGE_VISION_SHORT_EDGE)
+                if source and (vae_copy is picture or vision_copy is picture):
+                    # digest once: the latent and prompt caches both key on it
+                    digested = _DigestedPicture.of(picture)
+                    vae_copy = digested if vae_copy is picture else vae_copy
+                    vision_copy = digested if vision_copy is picture else vision_copy
+                copies = (vae_copy, vision_copy)
+                _PREPARED_PICTURES[key] = copies
+                while len(_PREPARED_PICTURES) > PREPARED_PICTURE_ENTRIES:
+                    _PREPARED_PICTURES.popitem(last = False)
+            else:
+                _PREPARED_PICTURES.move_to_end(key)
+            vae_images.append(copies[0])
+            vision_images.append(copies[1])
         return vae_images, vision_images
 
     def __call__(
@@ -1540,7 +2521,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         image: Any = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
-        num_inference_steps: int = H3_IMAGE_STEPS,
+        num_inference_steps: Optional[int] = H3_IMAGE_STEPS,
         guidance_scale: float = H3_IMAGE_GUIDANCE,
         negative_prompt: Any = None,
         num_images_per_prompt: int = 1,
@@ -1550,16 +2531,22 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return_dict: bool = True,
         callback_on_step_end: Optional[Callable] = None,
         callback_on_step_end_tensor_inputs: Optional[list] = None,
-        min_generation_area: int = H3_IMAGE_MIN_GENERATION_AREA,
+        min_generation_area: Optional[int] = None,
         max_sequence_length: int = H3_IMAGE_MAX_SEQUENCE_LENGTH,
     ) -> Any:
         import torch
 
-        if num_inference_steps not in (None, H3_IMAGE_STEPS):
+        steps = H3_IMAGE_STEPS if num_inference_steps is None else num_inference_steps
+        if (
+            isinstance(steps, bool)
+            or int(steps) != steps
+            or not 1 <= int(steps) <= H3_IMAGE_MAX_STEPS
+        ):
             raise ValueError(
-                f"MiniMax-H3-Image is distilled to {H3_IMAGE_STEPS} steps with one output head each; "
+                f"MiniMax-H3-Image takes 1 to {H3_IMAGE_MAX_STEPS} steps (its distilled head bank); "
                 f"got num_inference_steps={num_inference_steps}."
             )
+        steps = int(steps)
         if guidance_scale is not None and float(guidance_scale) != H3_IMAGE_GUIDANCE:
             raise ValueError(
                 "MiniMax-H3-Image is guidance-distilled: guidance_scale must be 1 (no CFG)."
@@ -1579,16 +2566,20 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         if len(generators) != len(jobs):
             raise ValueError(f"got {len(generators)} generators for {len(jobs)} images")
         vae_refs, vision_refs = self.prepare_references(image)
-        # no size: an edit renders at Image 1's reference size, text-to-image at 2048x2048
-        default_w, default_h = (
-            vae_refs[0].size if vae_refs else (H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE)
-        )
+        # no size: an edit takes the reference edit size of Picture 1 (as the API and UI); text-to-image 2048x2048
+        if not vae_refs:
+            default_w, default_h = H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
+        elif source_resize_enabled():
+            first = image[0] if isinstance(image, (list, tuple)) else image
+            default_w, default_h = reference_edit_size(*upright_size(first))
+        else:
+            default_w, default_h = picture_size(vae_refs[0])
         height = int(height or default_h)
         width = int(width or default_w)
         self._interrupt = False
         images = []
         for index, (text, gen) in enumerate(zip(jobs, generators)):
-            pixels = self._render_one(
+            args = (
                 text,
                 vae_refs,
                 vision_refs,
@@ -1597,11 +2588,23 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 gen,
                 latents if index == 0 else None,
                 min_generation_area,
+                steps,
                 callback_on_step_end,
                 callback_on_step_end_tensor_inputs or ["latents"],
                 output_type,
-                batch_index = index if shared else 0,
             )
+            oom = None
+            try:
+                pixels = self._render_one(*args, batch_index = index if shared else 0)
+            except torch.OutOfMemoryError as exc:
+                # retry outside this handler: its traceback holds the failed render's tensors
+                if not self._oom_demotable():
+                    raise
+                oom = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
+            if oom is not None:
+                if not self._oom_demote(oom):
+                    raise torch.OutOfMemoryError(oom)
+                pixels = self._render_one(*args, batch_index = index if shared else 0)
             if pixels is None:
                 break
             images.extend(pixels)
@@ -1621,7 +2624,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         width: int,
         generator: Any,
         latents: Any,
-        min_generation_area: int,
+        min_generation_area: Optional[int],
+        steps: int,
         callback: Optional[Callable],
         callback_inputs: list,
         output_type: str,
@@ -1632,8 +2636,17 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         stats: dict = {"canvas": None}
         t0 = time.perf_counter()
         device = self._device()
-        canvas_h, canvas_w = canvas_size(height, width, min_generation_area)
+        if min_generation_area is None:
+            m = H3_IMAGE_CANVAS_MULTIPLE
+            if height <= 0 or width <= 0 or height % m or width % m:
+                raise ValueError(
+                    f"MiniMax-H3-Image renders at multiples of {m} pixels, got {width}x{height}."
+                )
+            canvas_h, canvas_w = height, width
+        else:
+            canvas_h, canvas_w = canvas_size(height, width, min_generation_area)
         stats["canvas"] = (canvas_w, canvas_h)
+        stats["fit"] = self._fit_render(canvas_w, canvas_h, len(vae_refs))
         hits = self._prompt_cache_hits()
         embeds, text_tags = self.encode_prompt(prompt, vision_refs)
         stats["encode_s"] = time.perf_counter() - t0
@@ -1673,7 +2686,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             rows = torch.cat([cond, target_rows])
         else:
             rows = target_rows
-        self.scheduler.set_timesteps(device = device)
+        self.scheduler.set_timesteps(steps, device = device)
         timesteps = self.scheduler.timesteps
         self._num_timesteps = len(timesteps)
         seq = int(image_idx.numel() + text_idx.numel())
@@ -1691,32 +2704,61 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             dtype = _module_dtype(transformer, skip_fp32 = True)
             prompt_embeds = embeds.to(device = device, dtype = dtype)
             extra: dict = {}
-            if h3_image_forward_active(transformer):
+            ours = h3_image_forward_active(transformer)
+            if ours:
                 if target_head_enabled():
                     extra["output_indices"] = image_idx[n_ref:].to(device)
                 if refiner_cache_enabled():
                     # the text rows do not change across steps: refine them once per render
                     extra["text_embeds"] = refined_text(transformer, prompt_embeds)
             stats["refiner_cached"] = "text_embeds" in extra
+            stats["steps"] = steps
+            grid = self.scheduler.head_grid
+            sample_sigmas = self.scheduler.sigmas.cpu()
+            bank = getattr(transformer, PDD_BANK_ATTR, None)
+            if bank is None and steps != H3_IMAGE_STEPS:
+                install_pdd_head_bank(transformer)
+                bank = getattr(transformer, PDD_BANK_ATTR, None)
+            spans = [pdd_head_span(s, sample_sigmas, grid) for s in self.scheduler.model_sigmas]
+            if bank is not None and any(stop - start != 1 for start, stop in spans):
+                bank = tuple(t.to(device) for t in bank)
+            else:
+                # every step spans one grid interval: pdd_proj_out[k] already is the reference's head for it
+                bank = None
+            if bank is not None and not ours:
+                raise ValueError(
+                    f"MiniMax-H3-Image renders {steps} steps through its own forward (blended heads), and this "
+                    "transformer's forward is wrapped."
+                )
+            stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
+            # sampler state stays float32 in x; rows = the model input in the compute dtype, as the reference casts it
+            x = rows[n_ref:].clone()
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     return None
                 unique, index = plan[i]
+                start, _stop = spans[i]
+                if bank is not None:
+                    extra["head"] = pdd_head_weights(
+                        bank, self.scheduler.model_sigmas[i], sample_sigmas, grid
+                    )
+                rows[n_ref:] = model_io(x, dtype)
                 velocity = transformer(
                     hidden_states = rows[None],
                     encoder_hidden_states = prompt_embeds,
                     timestep = unique.to(device),
                     timestep_indices = index.to(device),
-                    pdd_step_index = i,
+                    pdd_step_index = start,
                     return_dict = False,
                     **fields,
                     **extra,
                 )[0]
                 if "output_indices" not in extra:
                     velocity = velocity[:, n_ref:]
-                rows[n_ref:] = self.scheduler.step(velocity[0].float(), t, rows[n_ref:])[0]
+                velocity = model_io(velocity[0], dtype).float()
+                x = self.scheduler.step(velocity, t, x)[0]
                 if callback is not None:
-                    view = unpatchify(rows[n_ref:], lh, lw, channels, patch)
+                    view = unpatchify(x, lh, lw, channels, patch)
                     payload = {"latents": view} if "latents" in callback_inputs else {}
                     callback(self, i, t, payload)
         finally:
@@ -1725,7 +2767,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             torch.cuda.synchronize(device)
         stats["denoise_s"] = time.perf_counter() - t1
         t2 = time.perf_counter()
-        final = unpatchify(rows[n_ref:], lh, lw, channels, patch)
+        final = unpatchify(x, lh, lw, channels, patch)
         if output_type == "latent":
             self._unsloth_h3_last_stats = stats
             return [final[0]]
@@ -1750,13 +2792,13 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             lmean = torch.tensor(vae.config.latents_mean, device = device).view(1, -1, 1, 1)
             lstd = torch.tensor(vae.config.latents_std, device = device).view(1, -1, 1, 1)
             z = latents.to(device, torch.float32) * lstd + lmean
-            image = vae.decode(z.to(_module_dtype(vae)), return_dict = False)[0]
+            image = vae.decode(z.to(_decoder_input_dtype(vae)), return_dict = False)[0]
         finally:
             self._leave("vae")
         mean = torch.tensor(H3_IMAGE_PIXEL_MEAN, device = image.device).view(1, -1, 1, 1)
         std = torch.tensor(H3_IMAGE_PIXEL_STD, device = image.device).view(1, -1, 1, 1)
         image = (image.float() * std + mean).clamp(0, 1)
-        # The release truncates to 8 bits, then resizes the 8-bit image (LANCZOS).
+        # Truncated to 8 bits as the reference saves it; only the opt-in canvas floor resizes the 8-bit image back.
         u8 = (image * 255).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
         out = []
         for frame in u8:
@@ -1789,11 +2831,12 @@ def _module_dtype(module: Any, skip_fp32: bool = False) -> Any:
 
 # "1" lets the loader run on any device (the CPU tests, diagnostics); Studio refuses everything but CUDA / ROCm.
 ALLOW_ANY_DEVICE_ENV = "UNSLOTH_H3_IMAGE_ALLOW_ANY_DEVICE"
+H3_IMAGE_GGUF_REPO = "unsloth/MiniMax-H3-Image-GGUF"
 
 
 def h3_image_device_refusal(device: Any) -> Optional[str]:
-    """The load refusal for a device this model cannot run on, else None. The 33B DiT and the 33B conditioner are
-    streamed and quantized through CUDA (NVIDIA, or AMD through ROCm); Apple Silicon and the CPU have no route yet."""
+    """The pipeline load refusal for a device it cannot run on, else None. The 33B DiT and the 33B conditioner are
+    streamed and quantized through CUDA (NVIDIA, or AMD through ROCm); elsewhere the GGUFs run on sd.cpp."""
     kind = str(getattr(device, "type", device) or "").split(":")[0].strip().lower()
     if kind == "cuda" or os.environ.get(ALLOW_ANY_DEVICE_ENV, "").strip() == "1":
         return None
@@ -1802,8 +2845,8 @@ def h3_image_device_refusal(device: Any) -> Optional[str]:
     )
     return (
         f"MiniMax-H3-Image needs an NVIDIA or AMD GPU and cannot run on {where} yet: its 33B image model and 33B "
-        f"text encoder are streamed and quantized through CUDA or ROCm. Load it on a machine with an NVIDIA or AMD "
-        f"GPU."
+        f"text encoder are streamed and quantized through CUDA or ROCm. Load {H3_IMAGE_GGUF_REPO} instead, which "
+        f"runs on the native stable-diffusion.cpp engine, or use a machine with an NVIDIA or AMD GPU."
     )
 
 
@@ -1889,16 +2932,22 @@ def qwen3vl_hidden_state(
         kwargs["mm_token_type_ids"] = torch.tensor(
             processor.create_mm_token_type_ids([token_ids]), dtype = torch.long, device = device
         )
-    te_dtype = _module_dtype(text_encoder)
+    from .h3_vision_fp32 import h3_vision_float32, vision_pixel_dtype
+
+    # pixels stay float32 for the float32 vision tower (UNSLOTH_H3_VISION_FP32=0: the conditioner dtype)
+    pixel_dtype = vision_pixel_dtype(_module_dtype(text_encoder))
     for name, value in (vision_inputs or {}).items():
-        kwargs[name] = value.to(device, te_dtype) if name.startswith("pixel_") else value.to(device)
+        kwargs[name] = (
+            value.to(device, pixel_dtype) if name.startswith("pixel_") else value.to(device)
+        )
     # hidden_states[layer] is the output of decoder layer ``layer - 1``: captured by a hook instead of keeping every
     # layer's states (~10 GB with 16 references), and the layers past it are cut for the call.
     language_model = getattr(model, "language_model", None)
     layers = getattr(language_model, "layers", None)
     if layers is None or len(layers) < layer:
         kwargs["output_hidden_states"] = True
-        return model(**kwargs).hidden_states[layer]
+        with h3_vision_float32(model):
+            return model(**kwargs).hidden_states[layer]
     captured: dict = {}
 
     def _capture(_module: Any, _args: Any, output: Any) -> None:
@@ -1907,7 +2956,8 @@ def qwen3vl_hidden_state(
 
     handle = layers[layer - 1].register_forward_hook(_capture)
     try:
-        model(**kwargs)
+        with h3_vision_float32(model):
+            model(**kwargs)
     except _ReadLayerReached:
         pass
     finally:
@@ -2057,9 +3107,7 @@ def quantize_block_(block: Any, scheme: str, *, device: Any) -> int:
     return len(names)
 
 
-# cuBLASLt int8 GEMMs (torch._int_mm) refuse some row counts with CUBLAS_STATUS_NOT_SUPPORTED, and torchao then
-# silently falls back to a much slower fp32 matmul. A packed sequence rarely lands on a supported count; multiples
-# of 32 always ran and also suit the fp8 row-wise GEMM.
+# cuBLASLt refuses some int8 row counts and torchao silently falls back to fp32, so pad rows to 32.
 ROW_MULTIPLE = 32
 
 
@@ -2120,6 +3168,26 @@ def wrap_row_multiple(module: Any, names: Sequence[str]) -> int:
     return wrapped
 
 
+def restore_row_pads(transformer: Any) -> int:
+    """Re-wrap per-row int8 Linears the fused GEMM install unwrapped in the row pad; returns the count."""
+    count = 0
+    for block in getattr(transformer, "transformer_blocks", None) or ():
+        names = []
+        for fqn in tuple(QUANT_LINEAR_SUFFIXES) + ("attn.to_qkv",):
+            parent_name, _, leaf = fqn.rpartition(".")
+            try:
+                parent = block.get_submodule(parent_name) if parent_name else block
+            except AttributeError:
+                continue
+            child = parent._modules.get(leaf)
+            if child is None or type(child).__name__ == "H3ImageRowPad":
+                continue
+            names.append(fqn)
+        if names:
+            count += wrap_row_multiple(block, names)
+    return count
+
+
 def _auto_scheme_by_fit(
     vram_gb: Optional[float],
     width: int,
@@ -2128,8 +3196,7 @@ def _auto_scheme_by_fit(
     te_gb: Optional[float],
     inflight: int,
 ) -> tuple[Optional[str], str]:
-    """Auto by fit: bf16 when the table-form bf16 DiT stays on the card (beside the encoder with ``te_gb``), else
-    int8."""
+    """Auto picks bf16 DiT only if it fits beside the encoder (te_gb), else int8."""
     need = H3_IMAGE_DIT_TABLE_BF16_GB + activation_gb(width, height) + 1.5
     if vram_gb is not None and vram_gb >= need:
         if te_gb is None:
@@ -2213,6 +3280,74 @@ def resolve_dit_scheme(
         return None, f"auto: no int8 or fp8 rung on compute capability {cap[0]}.{cap[1]}, bf16"
     label = "int8 ConvRot" if order[0] == "int8" else order[0]
     return order[0], f"auto: {label} (auto order int8, fp8, bf16)"
+
+
+_INT8_RATE_PROBES: dict = {}
+
+
+def _int8_gemm_tops(device: Any) -> Optional[float]:
+    """int8 GEMM TOPS at a DiT block's shape, cached per device; None without ``torch._int_mm``."""
+    import torch
+
+    dev = torch.device(device)
+    key = (dev.type, dev.index if dev.index is not None else torch.cuda.current_device())
+    if key in _INT8_RATE_PROBES:
+        return _INT8_RATE_PROBES[key]
+    result = None
+    try:
+        with torch.cuda.device(dev):
+            a = torch.randint(-127, 127, (4096, 5376), dtype = torch.int8, device = dev)
+            b = torch.randint(-127, 127, (5376, 5376), dtype = torch.int8, device = dev).t()
+            torch._int_mm(a, b)
+            torch.cuda.synchronize(dev)
+            start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+            best = float("inf")
+            for _ in range(3):
+                start.record()
+                for _ in range(5):
+                    torch._int_mm(a, b)
+                end.record()
+                end.synchronize()
+                best = min(best, start.elapsed_time(end) / 5)
+            del a, b
+            torch.cuda.empty_cache()
+        if 0 < best < float("inf"):
+            result = 2.0 * 4096 * 5376 * 5376 / (best / 1000.0) / 1e12
+    except Exception:  # noqa: BLE001 - no int8 GEMM here: priced from the bf16 rate
+        result = None
+    _INT8_RATE_PROBES[key] = result
+    return result
+
+
+def link_measurements(
+    device: Any, scheme: Optional[str] = None
+) -> tuple[Optional[float], Optional[float]]:
+    """(host-to-device GiB/s, effective block TOPS), cached; (None, None) when unmeasurable: least parked layout."""
+    import torch
+
+    dev = torch.device(device)
+    h2d = tops = None
+    if dev.type == "cuda" and torch.cuda.is_available():
+        try:
+            from .diffusion_memory import _offload_cost_measurements
+
+            with torch.cuda.device(dev):
+                measured = _offload_cost_measurements()
+            if measured is not None:
+                h2d, tops = float(measured[0]), float(measured[1])
+            if scheme == "int8":
+                tops = _int8_gemm_tops(dev) or tops
+            if tops is not None:
+                tops *= INT8_BLOCK_EFFICIENCY
+        except Exception:  # noqa: BLE001 - unpriced
+            h2d = tops = None
+    raw = (os.environ.get(H2D_ENV) or "").strip()
+    if raw:
+        try:
+            h2d = float(raw)
+        except ValueError:
+            pass
+    return h2d, tops
 
 
 def device_budgets(device: Any) -> tuple[Optional[float], Optional[float]]:
@@ -2390,7 +3525,13 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
     from .diffusion_quant_pad import is_quantized_linear
 
     if os.environ.get(QUANT_CONDITIONING_ENV, "").strip() == "1":
-        return 0
+        if dtype is not torch.float16:
+            return 0
+        # fp16 cards (sm75): the conditioning stream outgrows float16, and only the dense path computes it in float32
+        logger.warning(
+            "diffusion.minimax_h3_image: %s=1 ignored on a float16 load; the text-conditioning path stays dense",
+            QUANT_CONDITIONING_ENV,
+        )
     dtype = dtype or torch.bfloat16
     count = 0
     for name, module in transformer.named_modules():
@@ -2405,6 +3546,271 @@ def densify_conditioning_path(transformer: Any, dtype: Any = None) -> int:
         module.weight = torch.nn.Parameter(dense.to(dtype), requires_grad = False)
         count += 1
     return count
+
+
+def follow_compute_dtype(transformer: Any, dtype: Any) -> int:
+    """A hosted file stores what it does not quantize as released: float32 (``proj_in``, the timestep embedder, the
+    PDD heads, the curve AdaLN projections) or bfloat16 (every norm, the conditioning biases, the curve AdaLN output).
+    The bfloat16 part is the block stack's precision, so it follows ``dtype`` as ``_cast`` does for the dense release;
+    left at bfloat16 on an fp16 card (sm75) it meets fp16 activations (a dtype error in ``context_embedder``, the
+    blocks promoted to float32 after the first norm). float32 tensors and quantized weights are untouched. Returns the
+    number of tensors cast."""
+    import torch
+
+    count = 0
+    for module in transformer.modules():
+        for key, param in list(module.named_parameters(recurse = False)):
+            if (
+                not param.is_floating_point()
+                or param.dtype in (dtype, torch.float32)
+                or hasattr(param, "__tensor_flatten__")
+            ):
+                continue
+            setattr(module, key, torch.nn.Parameter(param.detach().to(dtype), requires_grad = False))
+            count += 1
+        out = getattr(module, "_unsloth_adaln_out_dtype", None)
+        if out is not None and out not in (dtype, torch.float32):
+            module._unsloth_adaln_out_dtype = dtype
+            count += 1
+    return count
+
+
+def _float32_linear_forward(self: Any, x: Any) -> Any:
+    """The Linear (ConvRot or plain) in float32 from its half storage: the weight is upcast per call, never held."""
+    import torch
+    import torch.nn.functional as F
+
+    from .diffusion_convrot import (
+        build_convrot_hadamard,
+        is_rotated_linear,
+        rotate_convrot_activation,
+    )
+
+    x = x.float()
+    if is_rotated_linear(self):
+        group = self.convrot_groupsize
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = torch.float32), group
+        )
+    bias = self.bias
+    out = F.linear(x, self.weight.float(), None if bias is None else bias.float())
+    # q / k / v come out of a norm: bounded, so attention keeps the storage dtype every backend takes
+    return out.to(self.weight.dtype) if getattr(self, "_unsloth_storage_out", False) else out
+
+
+_ATTENTION_INPUTS = (".attn.to_q", ".attn.to_k", ".attn.to_v")
+
+
+FP16_CONTRACT_ATTR = "_unsloth_h3_fp16_contract"
+
+
+def conditioning_computes_in_float32(transformer: Any) -> int:
+    """fp16 runs only (sm75). The conditioning stream outgrows float16: on a real prompt the Qwen3-VL rows peak near
+    15k and ``context_embedder`` writes values past 65504 into the refiner's residual stream, so the refined text is
+    inf / NaN and the render black. bf16 has the range, float16 does not; the path runs once per render, so it
+    computes in float32 from its float16 storage (each dense Linear upcasts its weight per call, the norms that read
+    the stream hold float32) and ``refined_text`` hands the block stack its float16 copy. Attention itself (q / k / v
+    out of a norm, so bounded) stays float16, which every attention backend takes. Returns the Linears switched."""
+    import types
+
+    import torch
+
+    transformer.__dict__[FP16_CONTRACT_ATTR] = True
+    count = 0
+    for name, module in transformer.named_modules():
+        if not name.startswith(CONDITIONING_PREFIXES):
+            continue
+        if isinstance(module, torch.nn.Linear):
+            if hasattr(module.weight, "__tensor_flatten__"):
+                continue  # still quantized (UNSLOTH_H3_IMAGE_QUANT_CONDITIONING=1): its own kernel's dtype
+            module.forward = types.MethodType(_float32_linear_forward, module)
+            module._unsloth_storage_out = name.endswith(_ATTENTION_INPUTS)
+            count += 1
+            continue
+        if ".attn." in name:
+            continue  # norm_q / norm_k: read the float16 q / k
+        for key, param in list(module.named_parameters(recurse = False)):
+            if param.is_floating_point() and param.dtype is not torch.float32:
+                setattr(
+                    module, key, torch.nn.Parameter(param.detach().float(), requires_grad = False)
+                )
+    return count
+
+
+def _int8_rescaled(self: Any, y: Any) -> Any:
+    """The output scales ``stream_runs_rescaled`` folds into this Linear, in place on a fresh output (float32 when
+    called from the epilogue)."""
+    out_scale = getattr(self, "_unsloth_out_scale", None)
+    if out_scale is not None:
+        y.mul_(out_scale)
+    value_scale = getattr(self, "_unsloth_value_half_scale", None)
+    if value_scale is not None:
+        y[..., : y.shape[-1] // 2] *= value_scale
+    return y
+
+
+def _int8_float32_epilogue_forward(self: Any, x: Any) -> Any:
+    """torchao's dynamic-int8 Int8Tensor linear, op for op, with the rescale kept in float32. torchao casts
+    ``int32 acc * x_scale`` to the activation dtype before the weight scale: that product is the unscaled int8 sum,
+    past 65504 in float16 on the H3 blocks, so attention reads inf. Anything it does not know (static activation
+    scales, a torchao without these helpers, a non-float16 input) runs the class forward."""
+    import torch
+
+    weight = self.weight
+    kwargs = getattr(weight, "act_quant_kwargs", None)
+    quantize = scaled_matmul = None
+    if (
+        x.dtype is torch.float16
+        and kwargs is not None
+        and type(weight).__name__ == "Int8Tensor"
+        and getattr(weight, "act_pre_scale", None) is None
+        and getattr(weight, "act_quant_scale", None) is None
+        and getattr(weight, "act_quant_zero_point", None) is None
+    ):
+        try:
+            from torchao.kernel import int_scaled_matmul as scaled_matmul
+            from torchao.quantization.quantize_.common import (
+                _choose_quant_func_and_quantize_tensor as quantize,
+            )
+        except Exception:  # noqa: BLE001 - torchao without them: its own forward
+            quantize = None
+    if quantize is None:
+        return _int8_rescaled(self, type(self).forward(self, x))
+    from .diffusion_convrot import (
+        build_convrot_hadamard,
+        is_rotated_linear,
+        rotate_convrot_activation,
+    )
+
+    if is_rotated_linear(self):
+        group = self.convrot_groupsize
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
+        )
+    q = quantize(x, kwargs)
+    codes = q.qdata.reshape(-1, q.qdata.shape[-1])
+    x_scale = q.scale.reshape(-1, 1).float()
+    y = scaled_matmul(codes, weight.qdata.contiguous().t(), x_scale)
+    zero_point = getattr(q, "zero_point", None)
+    if zero_point is not None:
+        # an asymmetric activation's correction (all zeros for the symmetric int8 the hosted files declare)
+        y = y - (zero_point.reshape(-1, 1).float() * x_scale) * weight.qdata.sum(dim = -1).float()
+    y = y * weight.scale.flatten().float()
+    if self.bias is not None:
+        y = y + self.bias.float()
+    y = _int8_rescaled(self, y)
+    return y.reshape(*x.shape[:-1], y.shape[-1]).to(x.dtype)
+
+
+def int8_blocks_rescale_in_float32(transformer: Any) -> int:
+    """fp16 runs only (sm75): every int8 block Linear keeps its torchao GEMM but rescales in float32, as Studio's own
+    torchao-free int8 linear does on these cards. Returns the Linears switched."""
+    import types
+
+    import torch
+
+    count = 0
+    for name, module in transformer.named_modules():
+        if (
+            name.startswith("transformer_blocks.")
+            and isinstance(module, torch.nn.Linear)
+            and type(module.weight).__name__ == "Int8Tensor"
+            and "forward" not in module.__dict__
+        ):
+            module.forward = types.MethodType(_int8_float32_epilogue_forward, module)
+            count += 1
+    return count
+
+
+# fp16 cards run the residual stream at 1/4096: a T4 render reaches ~3.3e7 in blocks 39-49, past float16's 65504.
+FP16_STREAM_SCALE = 4096.0
+# and the SwiGLU product at 1/256 (block 39 reaches ~3.6e5).
+FP16_MLP_SCALE = 256.0
+_STREAM_WRITERS = ("attn.to_out.0", "attn.to_out.0.inner", "ff.net.2", "ff.net.2.inner")
+_MLP_INPUTS = ("ff.net.0.proj", "ff.net.0.proj.inner")
+
+
+def _dense_float32_rescaled_forward(self: Any, x: Any) -> Any:
+    """A plain float16 Linear computed in float32 with ``_int8_rescaled``'s output scales, so a dense (non-int8) DiT
+    gets the same stream and SwiGLU ranges as the int8 epilogue."""
+    import torch.nn.functional as F
+
+    bias = None if self.bias is None else self.bias.float()
+    return _int8_rescaled(self, F.linear(x.float(), self.weight.float(), bias)).to(x.dtype)
+
+
+def _dense_fp16_linear(module: Any) -> bool:
+    import torch
+    weight = getattr(module, "weight", None)
+    return (
+        type(module) is torch.nn.Linear
+        and "forward" not in module.__dict__
+        and type(weight) is torch.nn.Parameter
+        and weight.dtype is torch.float16
+    )
+
+
+def _int8_epilogue(module: Any) -> bool:
+    forward = module.__dict__.get("forward")
+    return getattr(forward, "__func__", None) in (
+        _int8_float32_epilogue_forward,
+        _dense_float32_rescaled_forward,
+    )
+
+
+def stream_runs_rescaled(transformer: Any, scale: float = FP16_STREAM_SCALE) -> int:
+    """fp16 only (sm75): stream runs at 1/scale, folded into the writers fp32 epilogue; norms are
+    scale invariant (eps / scale^2), so exact up to rounding; returns 0 on an unknown layout"""
+    inv = 1.0 / float(scale)
+    blocks = list(getattr(transformer, "transformer_blocks", None) or ())
+    norm_out = getattr(getattr(transformer, "norm_out", None), "norm", None)
+    norms = [norm_out] + [getattr(b, n, None) for b in blocks for n in ("norm1", "norm2")]
+    if transformer.__dict__.get("_unsloth_stream_scale") or not blocks:
+        return 0
+    if not all(isinstance(getattr(n, "eps", None), float) for n in norms):
+        return 0
+    writers = [
+        m
+        for name, m in transformer.named_modules()
+        if name.startswith("transformer_blocks.")
+        and name.endswith(_STREAM_WRITERS)
+        and not hasattr(m, "inner")
+    ]
+    if len(writers) != 2 * len(blocks):
+        return 0
+
+    def _scaled(module: Any, args: Any, output: Any) -> Any:
+        return output * inv
+
+    mlp_in = {
+        name.split(".ff.")[0]: m
+        for name, m in transformer.named_modules()
+        if name.startswith("transformer_blocks.")
+        and name.endswith(_MLP_INPUTS)
+        and not hasattr(m, "inner")
+    }
+    for module in list(writers) + list(mlp_in.values()):
+        if not _int8_epilogue(module) and _dense_fp16_linear(module):
+            module.forward = types.MethodType(_dense_float32_rescaled_forward, module)
+    for name, module in transformer.named_modules():
+        if module not in writers:
+            continue
+        if not _int8_epilogue(module):
+            module.register_forward_hook(_scaled)
+            continue
+        scale_out = inv
+        value = mlp_in.get(name.split(".ff.")[0]) if ".ff." in name else None
+        if value is not None and _int8_epilogue(value):
+            # the SwiGLU product is linear in its value half: scale it there, undo it in the projection out
+            value._unsloth_value_half_scale = 1.0 / FP16_MLP_SCALE
+            scale_out = inv * FP16_MLP_SCALE
+        module._unsloth_out_scale = scale_out
+    transformer.proj_in.register_forward_hook(_scaled)
+    transformer.token_refiner.register_forward_hook(_scaled)
+    for norm in norms:
+        norm.eps = norm.eps * inv * inv
+    transformer._unsloth_stream_scale = float(scale)
+    return len(writers)
 
 
 def hosted_prequant_available(
@@ -2573,6 +3979,167 @@ def apply_checkpoint_inv_freq(model: Any, checkpoint: Any) -> str:
     return "checkpoint"
 
 
+# Key prefixes a LoRA file may carry before the diffusers module path (diffusers single file, PEFT, kohya-style).
+_LORA_PREFIXES = ("transformer.", "base_model.model.", "diffusion_model.", "model.diffusion_model.")
+_LORA_A_SUFFIXES = (".lora_A.weight", ".lora_A.default.weight", ".lora_down.weight")
+_LORA_B_SUFFIXES = (".lora_B.weight", ".lora_B.default.weight", ".lora_up.weight")
+
+
+def _lora_metadata(path: str) -> dict:
+    """The adapter config a LoRA file carries: diffusers' ``lora_adapter_metadata`` (``transformer.`` keys stripped),
+    else a PEFT ``adapter_config.json`` beside it, else ``{}``."""
+    try:
+        from safetensors import safe_open
+        with safe_open(str(path), framework = "pt", device = "cpu") as f:
+            raw = (f.metadata() or {}).get("lora_adapter_metadata")
+        if raw:
+            meta = json.loads(raw)
+            return {
+                k.split(".", 1)[1] if k.startswith("transformer.") else k: v
+                for k, v in meta.items()
+            }
+    except Exception:  # noqa: BLE001 - unreadable metadata: alpha = r
+        pass
+    sidecar = Path(str(path)).with_name("adapter_config.json")
+    if sidecar.is_file():
+        try:
+            return dict(json.loads(sidecar.read_text(encoding = "utf-8")))
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _pattern_value(patterns: Any, module: str, default: Any) -> Any:
+    import re
+    for key, value in (patterns or {}).items():
+        if module == key or module.endswith("." + key) or re.fullmatch(key, module):
+            return value
+    return default
+
+
+def read_lora_deltas(loras: Sequence[tuple], into: Optional[dict] = None) -> dict:
+    """``{diffusers module path: [(A, B, scale * weight), ...]}`` for ``[(path, weight), ...]`` LoRA files in the
+    diffusers / PEFT layout (``<module>.lora_A.weight`` + ``lora_B``, or ``lora_down`` / ``lora_up`` + ``.alpha``).
+    The scale is ``lora_alpha / r`` from the file's adapter config (``/ sqrt(r)`` under rsLoRA), else ``alpha / r``
+    from an ``.alpha`` key, else 1 (alpha = r, as diffusers reads a file without either)."""
+    from safetensors.torch import load_file
+
+    out = into if into is not None else {}
+    for path, weight in loras:
+        if not float(weight):
+            continue
+        state = load_file(str(path))
+        meta = _lora_metadata(str(path))
+        parts: dict = {}
+        for key, tensor in state.items():
+            name = key
+            for prefix in _LORA_PREFIXES:
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+                    break
+            for slot, suffixes in (
+                ("a", _LORA_A_SUFFIXES),
+                ("b", _LORA_B_SUFFIXES),
+                ("alpha", (".alpha",)),
+            ):
+                hit = next((sfx for sfx in suffixes if name.endswith(sfx)), None)
+                if hit is not None:
+                    parts.setdefault(name[: -len(hit)], {})[slot] = tensor
+                    break
+        if not parts:
+            raise ValueError(f"{Path(str(path)).name} holds no LoRA weights this loader recognises")
+        for module, slots in parts.items():
+            if "a" not in slots or "b" not in slots:
+                raise ValueError(
+                    f"{Path(str(path)).name}: {module} has only one of its LoRA factors"
+                )
+            a, b = slots["a"].float(), slots["b"].float()
+            r = int(a.shape[0])
+            rank = int(_pattern_value(meta.get("rank_pattern"), module, meta.get("r", r)) or r)
+            if "alpha" in slots:
+                alpha = float(slots["alpha"].float().reshape(-1)[0])
+            else:
+                alpha = float(
+                    _pattern_value(meta.get("alpha_pattern"), module, meta.get("lora_alpha", rank))
+                    or rank
+                )
+            scale = alpha / (math.sqrt(rank) if meta.get("use_rslora") else rank)
+            out.setdefault(module, []).append((a, b, scale * float(weight)))
+    return out
+
+
+_NATIVE_LORA_PREFIXES = (
+    "blocks.",
+    "token_refiner.blocks.",
+    "final_layer.",
+    "video_patch_proj",
+    "condition_proj",
+)
+
+
+def native_lora_deltas(deltas: dict, heads: int, head_dim: int) -> dict:
+    """``read_lora_deltas`` output with MiniMax's native module names (ai-toolkit LoRAs, ostris' training
+    adapter: ``blocks.N.attn.qkv_proj``, ``mlp.fc1``, ...) moved onto the diffusers modules, as the checkpoint
+    converter moves the weights: a fused per-head-interleaved qkv B is reordered and split into ``to_q`` / ``to_k`` /
+    ``to_v`` sharing A, and fc1's ``[gate; value]`` B rows become ``ff.net.0.proj``'s ``[value; gate]``. Diffusers
+    names pass through unchanged."""
+    import torch
+
+    out: dict = {}
+    for module, terms in deltas.items():
+        if not module.startswith(_NATIVE_LORA_PREFIXES):
+            out.setdefault(module, []).extend(terms)
+            continue
+        if module.endswith(".attn.qkv_proj"):
+            prefix = native_transformer_key(module + ".weight")[: -len("qkv_proj.weight")]
+            for a, b, scale in terms:
+                q, k, v = reorder_interleaved_qkv(b, heads, head_dim).split(heads * head_dim, dim = 0)
+                for leaf, part in (("to_q", q), ("to_k", k), ("to_v", v)):
+                    out.setdefault(prefix + leaf, []).append((a, part.contiguous(), scale))
+            continue
+        name = native_transformer_key(module + ".weight")
+        if name is None:
+            raise ValueError(f"LoRA layer {module} names a weight the image DiT does not have")
+        target = name[: -len(".weight")]
+        if module.endswith(".mlp.fc1"):
+            target = target.replace(".mlp.fc1", ".ff.net.0.proj")
+            terms = [(a, torch.cat(b.chunk(2, dim = 0)[::-1]).contiguous(), sc) for a, b, sc in terms]
+        out.setdefault(target, []).extend(terms)
+    return out
+
+
+def merge_lora_deltas_(
+    state: dict,
+    deltas: dict,
+    *,
+    device: Any = None,
+) -> set:
+    """Add ``scale * B @ A`` (float32, on ``device``) to every ``<module>.weight`` of ``state`` a delta names, cast back
+    to the weight's dtype; returns the merged module paths. Runs on the dense weights before any quantization."""
+    import torch
+
+    merged = set()
+    for key in list(state):
+        if not key.endswith(".weight"):
+            continue
+        module = key[: -len(".weight")]
+        terms = deltas.get(module)
+        if not terms:
+            continue
+        weight = state[key]
+        dev = torch.device(device) if device is not None else weight.device
+        w = weight.to(dev, torch.float32)
+        for a, b, scale in terms:
+            if tuple(b.shape[:1]) + tuple(a.shape[1:]) != tuple(w.shape):
+                raise ValueError(
+                    f"LoRA for {module} is {tuple(b.shape[:1]) + tuple(a.shape[1:])}, the layer is {tuple(w.shape)}"
+                )
+            w.addmm_(b.to(dev, torch.float32), a.to(dev, torch.float32), alpha = float(scale))
+        state[key] = w.to(weight.dtype).to(weight.device)
+        merged.add(module)
+    return merged
+
+
 def load_h3_image_transformer(
     root: Path,
     *,
@@ -2582,14 +4149,22 @@ def load_h3_image_transformer(
     keep_on_device: bool,
     table: bool = True,
     check_cancelled: Optional[Callable[[], None]] = None,
+    lora_deltas: Optional[dict] = None,
 ) -> tuple[Any, dict]:
     """The DiT from the native ``transformer/`` + ``pdd_fused_heads.safetensors`` (or a converted
-    ``transformer_diffusers/``), one block at a time: convert, table the AdaLN, quantize on ``device``, then park on
-    the host unless ``keep_on_device``. Host peak = the finished blocks + one dense block."""
+    ``transformer_diffusers/``), one block at a time: convert, merge any LoRA (``lora_deltas``, from
+    ``read_lora_deltas``) into the dense weights, table the AdaLN, quantize on ``device``, then park on the host unless
+    ``keep_on_device``. Host peak = the finished blocks + one dense block."""
     import torch
     from safetensors import safe_open
 
     check = check_cancelled or (lambda: None)
+    merged_loras: set = set()
+
+    def merge(state: dict) -> None:
+        if lora_deltas:
+            merged_loras.update(merge_lora_deltas_(state, lora_deltas, device = device))
+
     native = _native_layout(root, "transformer", DIFFUSERS_TRANSFORMER_SUBFOLDER)
     tdir = root / ("transformer" if native else DIFFUSERS_TRANSFORMER_SUBFOLDER)
     raw_config = _read_json(tdir / "config.json")
@@ -2601,7 +4176,10 @@ def load_h3_image_transformer(
     else:
         config = {k: v for k, v in raw_config.items() if not k.startswith("_")}
     heads, head_dim = int(config["num_attention_heads"]), int(config["attention_head_dim"])
-    grid = grid_timesteps() if table else None
+    if lora_deltas:
+        lora_deltas = native_lora_deltas(lora_deltas, heads, head_dim)
+    grid = table_timesteps() if table else None
+    curve = adaln_curve_plan(grid) if grid is not None else None
     model = build_transformer_skeleton(config, table_grid = None)
     shard_map = native_shard_map(tdir)
     reader = _ShardReader(shard_map)
@@ -2620,6 +4198,7 @@ def load_h3_image_transformer(
             )
             for name, t in pairs:
                 out[name] = _cast(t, name, dtype)
+        merge(out)
         return out
 
     try:
@@ -2648,16 +4227,22 @@ def load_h3_image_transformer(
                 pdd = {k: f.get_tensor(k) for k in f.keys()}
             for name, t in split_pdd_heads(pdd, int(config["num_pdd_heads"])).items():
                 top[name] = t.to(torch.float32)
+        merge(top)
         blocks = model.transformer_blocks
         model.transformer_blocks = torch.nn.ModuleList()
         _assign(model, top, where = "transformer (top level)")
         model.transformer_blocks = blocks
         if "rope.inv_freq" in shard_map:
             stats["rope_inv_freq"] = apply_checkpoint_inv_freq(model, reader.get("rope.inv_freq"))
-        temb = grid_temb((model.time_proj, model.time_embedder), grid) if grid is not None else None
+        temb = (
+            grid_temb((model.time_proj, model.time_embedder), curve[0])
+            if curve is not None
+            else None
+        )
         if temb is not None:
             lin = model.norm_out.linear
-            rows = dense_adaln_rows(temb, lin.weight, lin.bias, dtype, target)
+            # float32 rows: the final modulation runs in float32 against the float32 heads, as in the reference
+            rows = curve_adaln_rows(temb, lin.weight, lin.bias, curve, torch.float32, target)
             convert_norm_out_to_table(model.norm_out, rows)
         check()
         for index, block in enumerate(model.transformer_blocks):
@@ -2667,7 +4252,7 @@ def load_h3_image_transformer(
             if temb is not None:
                 weight = local.pop("adaln_proj.linear.weight")
                 bias = local.pop("adaln_proj.linear.bias", None)
-                rows = dense_adaln_rows(temb, weight, bias, dtype, target)
+                rows = curve_adaln_rows(temb, weight, bias, curve, dtype, target)
                 del weight, bias
                 convert_block_adaln_to_table(block, rows)
             _assign(block, local, where = f"transformer_blocks.{index}")
@@ -2687,6 +4272,13 @@ def load_h3_image_transformer(
                 if name != "transformer_blocks":
                     child.to(target if keep_on_device else "cpu")
         stats["bytes_read"] = reader.bytes_read
+        if lora_deltas:
+            missing = sorted(set(lora_deltas) - merged_loras)
+            if missing:
+                raise ValueError(
+                    f"LoRA layers name no Linear of this MiniMax-H3-Image transformer: {missing[:5]}"
+                )
+            stats["lora_merged_layers"] = len(merged_loras)
     finally:
         reader.close()
     return model, stats
@@ -2815,8 +4407,10 @@ def make_list_streamer(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
+    later_host_bytes: int = 0,
 ) -> Any:
-    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``."""
+    """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``.
+    ``later_host_bytes``: host memory the load still takes after this streamer (a split encoder pin leaves it)."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -2831,10 +4425,170 @@ def make_list_streamer(
             replaces_counted = replaces_counted,
             release_after_forward = role == "text_encoder",
         )
+    if streamer is None and pinned and role == "text_encoder" and te_partial_pin_enabled():
+        streamer = _split_text_encoder_streamer(
+            owner,
+            members,
+            device,
+            resident,
+            reserve_bytes = reserve_bytes + max(0, int(later_host_bytes)),
+            max_pin_bytes = max_pin_bytes,
+            replaces_counted = replaces_counted,
+        )
     if streamer is None:
         streamer = ModuleListStreamer(members, device, resident)
     streamer._unsloth_role = role
     return streamer
+
+
+TE_PARTIAL_PIN_ENV = "UNSLOTH_H3_IMAGE_TE_PARTIAL_PIN"
+# kept free of the pin budget for the arena's last slab and allocator rounding
+TE_PARTIAL_PIN_SLACK_BYTES = 1 << 30
+
+
+# Host memory a parked stream-tier render takes past the load; 2 GiB dipped under the reserve on Colab L4, 3 GiB holds.
+TE_PARTIAL_PIN_RENDER_BYTES = 3 << 30
+
+
+def te_later_host_bytes(plan: "H3ImagePlan") -> int:
+    """Host bytes still taken after the encoder is placed (parked refiner / VAE, render working memory)."""
+    if not plan.parked or plan.placement != PLACE_STREAM:
+        return 0
+    parked = DIT_REFINER_GB + (float(plan.vae_gb) if plan.vae_parked else 0.0)
+    return int(parked * 1e9) + TE_PARTIAL_PIN_RENDER_BYTES
+
+
+def dit_restream_pin_bytes(transformer: Any, plan: "H3ImagePlan", early_streamer: Any) -> int:
+    """Pins of a DiT streamer placed after the encoder, else 0; the replaced one's pins stay held, so none are netted."""
+    if plan.placement != PLACE_STREAM:
+        return 0
+    resident = int(plan.dit_resident_blocks or 0)
+    if (
+        early_streamer is not None
+        and getattr(early_streamer, "_unsloth_resident", None) == resident
+    ):
+        return 0
+    from .diffusion_memory import _storage_nbytes
+
+    blocks = list(transformer.transformer_blocks)[max(0, resident) :]
+    return int(
+        sum(
+            sum(_storage_nbytes(t))
+            for b in blocks
+            for t in list(b.parameters()) + list(b.buffers())
+        )
+    )
+
+
+def te_partial_pin_enabled() -> bool:
+    return pinned_stream_enabled() and not _env_off(TE_PARTIAL_PIN_ENV)
+
+
+class SplitListStreamer:
+    """Pinned prefetch streamer for the leading layers, pageable ``ModuleListStreamer`` for the rest, seen as one."""
+
+    def __init__(self, pinned: Any, pageable: Any) -> None:
+        self.parts = [pinned, pageable]
+        self.pinned_bytes = int(getattr(pinned, "pinned_bytes", 0) or 0)
+        self.replaced_bytes = int(getattr(pinned, "replaced_bytes", 0) or 0)
+        self.streamed = int(getattr(pageable, "streamed", 0) or 0)
+        self._host = pageable._host
+
+    def stats(self) -> dict:
+        read = getattr(self.parts[0], "stats", None)
+        out = dict(read()) if callable(read) else {}
+        out["pageable"] = self.streamed
+        return out
+
+    def remove(self) -> None:
+        for part in self.parts:
+            part.remove()
+            host = getattr(part, "_host", None)
+            if isinstance(host, dict) and host is not self._host:
+                host.clear()
+
+
+def partial_pin_count(
+    sizes: Sequence[int],
+    budget_bytes: Optional[int],
+    *,
+    reserve_bytes: int = 0,
+    max_pin_bytes: Optional[int] = None,
+    replaced: bool = False,
+    slack_bytes: Optional[int] = None,
+) -> int:
+    """Leading members that fit the host pin budget and plan pin room, less ``slack_bytes``."""
+    if budget_bytes is None:
+        return 0
+    if slack_bytes is None:
+        slack_bytes = TE_PARTIAL_PIN_SLACK_BYTES
+    room = int(budget_bytes) - int(reserve_bytes) - int(slack_bytes)
+    if max_pin_bytes is not None and not replaced:
+        room = min(room, int(max_pin_bytes) - int(slack_bytes))
+    count = total = 0
+    for size in sizes:
+        if total + int(size) > room:
+            break
+        total += int(size)
+        count += 1
+    return count
+
+
+def _split_text_encoder_streamer(
+    owner: Any,
+    members: Any,
+    device: Any,
+    resident: int,
+    *,
+    reserve_bytes: int = 0,
+    max_pin_bytes: Optional[int] = None,
+    replaces_counted: bool = False,
+) -> Optional[SplitListStreamer]:
+    """Pin the leading encoder layers the budget holds, stream the rest; None when none or all fit."""
+    from .diffusion_memory import _pin_budget_mib, _storage_nbytes
+    from .diffusion_offload_prefetch import pin_replaces_host_enabled, stream_module_list
+
+    members = list(members)
+    resident = max(0, min(len(members), int(resident)))
+    streamed = members[resident:]
+    sizes = [
+        sum(sum(_storage_nbytes(t)) for t in list(m.parameters()) + list(m.buffers()))
+        for m in streamed
+    ]
+    budget = _pin_budget_mib()
+    count = partial_pin_count(
+        sizes,
+        None if budget is None else int(budget) << 20,
+        reserve_bytes = reserve_bytes,
+        max_pin_bytes = max_pin_bytes,
+        replaced = bool(replaces_counted and pin_replaces_host_enabled()),
+    )
+    if count <= 0 or count >= len(streamed):
+        return None
+    pinned = stream_module_list(
+        owner,
+        members[: resident + count],
+        device,
+        resident,
+        logger = logger,
+        reserve_bytes = reserve_bytes,
+        max_pin_bytes = max_pin_bytes,
+        replaces_counted = replaces_counted,
+        release_after_forward = True,
+    )
+    if pinned is None:
+        return None
+    pageable = ModuleListStreamer(streamed[count:], device, 0)
+    logger.info(
+        "diffusion.minimax_h3_image: text encoder streams %d of %d layers with pinned copies (%.1f GB, the host pin "
+        "budget) and %d pageable (%.1f GB)",
+        count,
+        len(streamed),
+        sum(sizes[:count]) / 1e9,
+        len(streamed) - count,
+        sum(sizes[count:]) / 1e9,
+    )
+    return SplitListStreamer(pinned, pageable)
 
 
 def stream_list(
@@ -2849,6 +4603,7 @@ def stream_list(
     reserve_bytes: int = 0,
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
+    later_host_bytes: int = 0,
 ) -> Any:
     """``make_list_streamer``, registered on the pipe by role."""
     streamer = make_list_streamer(
@@ -2861,6 +4616,7 @@ def stream_list(
         reserve_bytes = reserve_bytes,
         max_pin_bytes = max_pin_bytes,
         replaces_counted = replaces_counted,
+        later_host_bytes = later_host_bytes,
     )
     pipe._unsloth_h3_streamers.append(streamer)
     return streamer
@@ -2890,6 +4646,154 @@ def _place_streamed_dit(
     )
     streamer._unsloth_resident = resident
     return streamer
+
+
+def _host_available_gb() -> Optional[float]:
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:  # noqa: BLE001 - psutil missing: the plan's own budget still applies
+        return None
+
+
+def demotion_host_refusal(
+    plan: "H3ImagePlan",
+    count: int,
+    encoder_loaded: bool = True,
+) -> Optional[str]:
+    """Why ``count`` more DiT blocks cannot move to system memory (load's host plan, then free RAM), or None."""
+    extra = max(0, int(count)) * float(plan.block_gb or 0.0)
+    if extra <= 0:
+        return None
+    if plan.host_gb is not None and plan.host_need_gb is not None:
+        dit_host = float(plan.host_need_gb) - float(plan.te_gb) - 4.0
+        # as ``plan_placement`` budgets: kept encoder + 4 GB, per-prompt encoder + 1 GB load peak
+        need = dit_host + extra + float(plan.te_gb) + (4.0 if plan.te_kept_on_host else 1.0)
+        if need > float(plan.host_gb):
+            return (
+                f"{extra:.1f} GB more of DiT blocks in system memory would need {need:.1f} GB beside the "
+                f"{plan.te_gb:.1f} GB text encoder, over the {plan.host_gb:.1f} GB this load planned with"
+            )
+    available = _host_available_gb()
+    if available is not None:
+        want = extra + (0.0 if encoder_loaded else float(plan.te_gb)) + 1.0
+        if want > available:
+            return (
+                f"{extra:.1f} GB more of DiT blocks in system memory"
+                + (
+                    ""
+                    if encoder_loaded
+                    else f" plus the {plan.te_gb:.1f} GB text encoder it loads per prompt"
+                )
+                + f" would need {want:.1f} GB, and {available:.1f} GB is free"
+            )
+    return None
+
+
+def demote_dit_blocks(
+    pipe: Any,
+    keep: int,
+    why: str = "",
+) -> bool:
+    """Stream ``blocks[keep:]``, reusing existing pins; True when the residency changed."""
+    plan = getattr(pipe, "_unsloth_h3_plan", None)
+    streamers = getattr(pipe, "_unsloth_h3_streamers", None)
+    if plan is None or plan.placement != PLACE_STREAM or streamers is None:
+        return False
+    old = next((s for s in streamers if getattr(s, "_unsloth_role", None) == "transformer"), None)
+    if old is None:
+        return False
+    resident = int(getattr(old, "_unsloth_resident", plan.dit_resident_blocks or 0) or 0)
+    keep = max(0, min(int(keep), resident))
+    if keep >= resident:
+        return False
+    refusal = demotion_host_refusal(
+        plan, resident - keep, encoder_loaded = getattr(pipe, "text_encoder", None) is not None
+    )
+    if refusal is not None:
+        logger.warning(
+            "diffusion.minimax_h3_image: %s, but %s: keeping %d resident", why, refusal, resident
+        )
+        pipe.__dict__["_unsloth_h3_demotion_refusal"] = refusal
+        return False
+    transformer = pipe.transformer
+    device = pipe._device()
+    blocks = transformer.transformer_blocks
+    from .diffusion_offload_prefetch import PrefetchedListStreamer, stream_module_list
+    from .diffusion_minimax_h3_image_speed import speed_levers
+
+    gemm = any(str(name).startswith("h3_int8_gemm") for name in speed_levers(pipe) or ())
+    pageable = isinstance(old, ModuleListStreamer)
+    if pageable and int(getattr(old, "streamed", 0) or 0) > 0:
+        old.remove()
+        new = ModuleListStreamer(blocks, device, keep)
+    else:
+        others = [s for s in streamers if s is not old]
+        reuse = old.detach() if isinstance(old, PrefetchedListStreamer) else None
+        arenas = list(getattr(old, "arenas", ())) if reuse is not None else []
+
+        def _pinned(count: int) -> Any:
+            return stream_module_list(
+                transformer,
+                blocks,
+                device,
+                count,
+                logger = logger,
+                max_pin_bytes = pin_room_bytes(plan, others),
+                replaces_counted = pins_replace_counted(plan),
+                reuse = reuse,
+                reuse_arenas = arenas,
+            )
+
+        new = _pinned(keep)
+        if new is None and reuse is not None:
+            keep = resident
+            new = _pinned(resident)
+            if new is None:
+                # last resort: pageable swaps parameters, so torchao's stock path needs the row pads back
+                # (else cuBLASLt refuses packed row counts and torchao falls back to fp32 matmul)
+                padded = restore_row_pads(transformer) if gemm else 0
+                logger.warning(
+                    "diffusion.minimax_h3_image: the pinned DiT streamer could not be rebuilt: %d resident "
+                    "blocks, the rest stream from pageable memory (%d int8 Linears padded again)",
+                    resident,
+                    padded,
+                )
+                new = ModuleListStreamer(blocks, device, resident)
+        if new is None:
+            if gemm:
+                for block in list(blocks)[:resident]:
+                    block.to(device)
+                logger.warning(
+                    "diffusion.minimax_h3_image: %s, but the blocks cannot be pinned and the int8 GEMM needs "
+                    "pinned streaming: keeping %d resident",
+                    why,
+                    resident,
+                )
+                return False
+            new = ModuleListStreamer(blocks, device, keep)
+    new._unsloth_role = "transformer"
+    new._unsloth_resident = keep
+    streamers[streamers.index(old)] = new
+    if keep >= resident:
+        return False
+    gc.collect()
+    _empty_cache()
+    before = plan.dit_resident_blocks
+    plan.dit_resident_blocks = keep
+    if plan.block_gb:
+        if plan.working_gb is not None:
+            plan.working_gb += (
+                max(0.0, float(plan.slack_gb or 0.0)) + (resident - keep) * plan.block_gb
+            )
+        plan.slack_gb = 0.0
+        if plan.host_need_gb is not None:
+            plan.host_need_gb += (resident - keep) * plan.block_gb
+    plan.reasons = list(plan.reasons) + [
+        f"{why}: {before} -> {keep}/{len(blocks)} DiT blocks stay on the device"
+    ]
+    logger.info("diffusion.minimax_h3_image: %s", plan.reasons[-1])
+    return True
 
 
 # "0": native attention; "1": probe-gated SageAttention, no timing race; unset: kept only where it times faster
@@ -2922,22 +4826,45 @@ def _attention_processors(module: Any) -> list:
     ]
 
 
+def explicit_attention_pick(requested: Any) -> Optional[str]:
+    """The load's explicit attention alias ("sage", "native", "cudnn", ...), or None when Studio picks (unset, "auto",
+    "unsloth_int8", which is the INT8 attention control's On, or an unknown name)."""
+    from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
+
+    try:
+        alias = normalize_attention_backend(requested)
+    except ValueError:
+        return None
+    return None if alias in (ATTN_AUTO, "unsloth_int8") else alias
+
+
 def install_checkpoint_attention(
     pipe: Any,
     device: Any,
     *,
     scheme: Optional[str] = None,
     logger: Any = None,
+    int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> Optional[str]:
     """Route the DiT blocks to the declared backend (SageAttention must pass its probe here first); the token refiner
-    keeps its own. Returns the engaged backend, or None with every processor unchanged."""
+    keeps its own. Returns the engaged backend, or None with every processor unchanged. ``attention_backend``: the
+    load's pick; an explicit "sage" pins SageAttention on the blocks (no race against native, and INT8 only when its
+    control is On), any other explicit pick keeps the checkpoint's SageAttention off."""
     import torch
 
     log = logger if logger is not None else _LOG
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or getattr(pipe, ATTENTION_SAVED_ATTR, None):
         return None
-    want = checkpoint_attention_wanted(transformer, scheme)
+    pick = explicit_attention_pick(attention_backend)
+    want = (
+        checkpoint_attention_wanted(transformer, scheme)
+        if pick is None
+        else "sage"
+        if pick == "sage"
+        else None
+    )
     dev = torch.device(device)
     if want is None or dev.type != "cuda":
         return None
@@ -2955,7 +4882,16 @@ def install_checkpoint_attention(
     dtype = _module_dtype(transformer, skip_fp32 = True)
     target = types.SimpleNamespace(device = dev.type, dtype = dtype, torch_device = str(dev))
     try:
-        engaged = apply_attention_backend(pipe, want, logger = log, target = target)
+        engaged = apply_attention_backend(
+            pipe,
+            want,
+            logger = log,
+            target = target,
+            # an explicit pick is never raced over by the dispatch route
+            **({"requested": attention_backend} if pick is not None else {}),
+            # only a load's own policy: a direct call keeps the env switch, as before
+            **({"int8_policy": int8_policy} if int8_policy is not None else {}),
+        )
     except Exception as exc:  # noqa: BLE001 - native attention stays
         engaged = None
         log.warning("diffusion.minimax_h3_image: INT8 attention unavailable (%s)", exc)
@@ -2965,7 +4901,8 @@ def install_checkpoint_attention(
     if not sage_on:
         restore()
         setattr(transformer, ATTENTION_BACKEND_ATTR, tag)
-    forced = (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
+    # the env switch, or the user's own SageAttention pick, pins it: no race against native
+    forced = pick == "sage" or (os.environ.get(INT8_ATTENTION_ENV) or "").strip().lower() in (
         "1",
         "on",
         "true",
@@ -2982,9 +4919,10 @@ def install_checkpoint_attention(
         (None if not forced else True) if sage_on else False,
         forced,
         log,
+        **({"policy": int8_policy} if int8_policy is not None else {}),
     )
     if race is None and sage_on and not forced and not kernel_blocks:
-        race = race_checkpoint_attention(transformer, saved, dtype)
+        race = race_checkpoint_attention(transformer, saved, dtype, device = dev)
     sage_kept = sage_on and (forced or race is None or race["keep"])
     if kernel_blocks:
         from .diffusion_int8_attention import BACKEND as INT8_KERNEL
@@ -3026,6 +4964,8 @@ def install_checkpoint_attention(
 _RACE_ROWS = (4096, 300)
 _KERNEL_RACE_IMAGES = (4096, 1024)
 _KERNEL_LARGE_ROWS = 2560
+# Off: the block race wins 3-5% (L4 / G4 / A100) but 2048x2048 renders end to end run 6-13% slower.
+KERNEL_AUTO = False
 _RACE_ROUNDS = 7
 ATTENTION_RACE_ATTR = "_unsloth_h3_attention_race"
 
@@ -3041,16 +4981,45 @@ def _paired_ratio(times: list, first: int, second: int) -> float:
     return _median([a / b for a, b in zip(times[first], times[second]) if b > 0] or [float("inf")])
 
 
+@contextlib.contextmanager
+def _weights_on(module: Any, device: Any) -> Any:
+    """Swap ``module``'s host tensors for ``device`` copies, restoring the same host tensors after (streamers hold them)."""
+    import torch
+
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None:
+        device = torch.device("cuda", torch.cuda.current_device())
+    swapped: list = []
+    try:
+        for owner in module.modules():
+            for kind, table in (("p", owner._parameters), ("b", owner._buffers)):
+                for name, tensor in list(table.items()):
+                    # The full device, index included: a tensor on another card is staged too.
+                    if tensor is None or tensor.device == device:
+                        continue
+                    moved = tensor.to(device)
+                    swapped.append((table, name, tensor))
+                    table[name] = (
+                        torch.nn.Parameter(moved, requires_grad = False) if kind == "p" else moved
+                    )
+        yield module
+    finally:
+        for table, name, tensor in reversed(swapped):
+            table[name] = tensor
+
+
 def race_checkpoint_attention(
     transformer: Any,
     saved: dict,
     dtype: Any,
     *,
     kernel: bool = False,
+    device: Any = None,
 ) -> Optional[dict]:
     """Time one resident DiT block's attention module with the engaged INT8 backend against the backend it had
     (which keeps Studio's strided layout and fused q/k norm + RoPE); ``keep`` when INT8 is more than 2% faster.
-    None when no block's attention is on the card (nothing to time: the caller keeps the INT8 route).
+    A fully streamed DiT stages the first block's attention on CUDA ``device`` for the race, so it decides as a resident
+    layout would (else images differ by layout). None when nothing could be timed (the caller keeps the INT8 route).
 
     ``kernel`` adds Studio's INT8 attention kernel on the backend the block had: ``kernel`` maps each image row
     count of ``_KERNEL_RACE_IMAGES`` to the [native, engaged, kernel] medians in ms and ``paired`` to the per-round
@@ -3059,12 +5028,24 @@ def race_checkpoint_attention(
 
     attn = None
     norm = None
+    streamed = None
     for block in getattr(transformer, "transformer_blocks", ()) or ():
         module = getattr(block, "attn", None)
         params = list(module.parameters()) if module is not None else []
-        if module in saved and params and all(p.is_cuda for p in params):
+        if module not in saved or not params:
+            continue
+        if all(p.is_cuda for p in params):
             attn, norm = module, getattr(block, "norm1", None)
             break
+        if streamed is None:
+            streamed = (module, getattr(block, "norm1", None))
+    stage = None
+    if attn is None and streamed is not None and device is not None:
+        stage = torch.device(device)
+        if stage.type != "cuda":
+            stage = None
+        else:
+            attn, norm = streamed
     rope = getattr(transformer, "rope", None)
     if attn is None or norm is None or rope is None:
         return None
@@ -3073,7 +5054,7 @@ def race_checkpoint_attention(
     native = saved[attn]
     kernel = kernel and hasattr(type(proc), "_unsloth_int8")
     routed = (getattr(proc, "_unsloth_int8", False), getattr(proc, "_unsloth_int8_min_tokens", 0))
-    device = next(attn.parameters()).device
+    device = stage if stage is not None else next(attn.parameters()).device
     width = int(norm.normalized_shape[0])
     text = _RACE_ROWS[1]
 
@@ -3117,13 +5098,20 @@ def race_checkpoint_attention(
 
     variants = ((native, False), (engaged, False)) + (((native, True),) if kernel else ())
     try:
-        with torch.no_grad(), torch.cuda.device(device):
+        with (
+            torch.no_grad(),
+            torch.cuda.device(device),
+            _weights_on(attn, device) if stage is not None else contextlib.nullcontext(),
+        ):
             rows = {
                 image: timed(image, variants)
                 for image in (_KERNEL_RACE_IMAGES if kernel else _RACE_ROWS[:1])
             }
     except torch.OutOfMemoryError:
-        raise
+        if stage is None:
+            raise
+        # no room for a streamed block's attention beside the load: untimed, as before
+        return None
     except Exception:  # noqa: BLE001 - untimed: the caller keeps the INT8 route it already engaged
         return None
     finally:
@@ -3135,6 +5123,7 @@ def race_checkpoint_attention(
         "keep": _paired_ratio(large, 1, 0) < 0.98,
         "ms": [_median(t) for t in large[:2]],
         "native": str(native),
+        "staged": stage is not None,
     }
     if kernel:
         found["kernel"] = {n: [_median(t) for t in times] for n, times in rows.items()}
@@ -3154,6 +5143,7 @@ def _race_int8_kernel(
     sage: Optional[bool],
     forced: bool,
     log: Any,
+    policy: Any = None,
 ) -> tuple:
     """Route the DiT blocks to Studio's INT8 attention kernel when it matches fp32 attention on this card and is more
     than 2% faster than what they would run (SageAttention or their native backend) on a resident block.
@@ -3165,8 +5155,12 @@ def _race_int8_kernel(
 
     from . import diffusion_int8_attention as int8_attention
 
-    setting = int8_attention.mode()
-    if not block_modules or setting == "off" or (forced and setting != "force"):
+    setting = int8_attention.mode(policy)
+    if (
+        not block_modules
+        or setting == "off"
+        or (setting != "force" and (forced or not KERNEL_AUTO))
+    ):
         return 0, None
     started = time.perf_counter()
     record: dict = {"mode": setting, "incumbent": "sage" if sage else "native"}
@@ -3174,7 +5168,13 @@ def _race_int8_kernel(
     race = None
     try:
         ready = int8_attention.install_int8_attention(
-            transformer, device = dev, dtype = dtype, modules = block_modules, force = True, logger = log
+            transformer,
+            device = dev,
+            dtype = dtype,
+            modules = block_modules,
+            force = True,
+            logger = log,
+            policy = policy,
         )
         record["checked_s"] = round(time.perf_counter() - started, 3)
         # which INT8 implementation passed the card check: the CUDA kernel, or Triton where it cannot load
@@ -3198,6 +5198,7 @@ def _race_int8_kernel(
                 if sage is not False
                 else int8_attention._sdpa_incumbent(saved.get(block_modules[0])),
                 logger = log,
+                policy = policy,
             )
             record.update(blocks = routed, timed = "attention")
             return routed, None
@@ -3308,20 +5309,34 @@ def _place_text_encoder(
     per_prompt: bool = False,
     reserve_bytes: int = 0,
     pinned_already: Sequence[Any] = (),
+    dit_pin_bytes: int = 0,
 ) -> Any:
     """``per_prompt`` (low-host tier, encoder reloaded each prompt) streams pageable: pinning would copy 27 GB per
-    prompt. ``pinned_already``: streamers whose pins count against the host room first."""
+    prompt. ``pinned_already``: streamers whose pins count against the host room first. ``dit_pin_bytes``: pins a DiT
+    streamer placed after the encoder still takes (``dit_restream_pin_bytes``); a split encoder pin leaves them."""
     if encoder is None:
         return None
     if plan.placement == PLACE_RESIDENT:
         encoder.to(device)
     elif plan.placement in (PLACE_STREAM, PLACE_DIT_RESIDENT):
         layers = encoder.model.language_model.layers
+        parked = plan.parked and plan.placement == PLACE_STREAM
+        if parked:
+            from .host_pinning import host_pinning_allowed
+            pin = not per_prompt and host_pinning_allowed(device)
         for name, child in encoder.model.named_children():
-            if name != "language_model":
+            if name == "language_model":
+                continue
+            if parked and name == "visual":
+                park_on_host(child, device, pin = pin, per_forward = True)
+            else:
                 child.to(device)
         for name, child in encoder.model.language_model.named_children():
-            if name != "layers":
+            if name == "layers":
+                continue
+            if parked and name == "embed_tokens":
+                lookup_on_host(child, device)
+            else:
                 child.to(device)
         stream_list(
             pipe,
@@ -3334,6 +5349,7 @@ def _place_text_encoder(
             reserve_bytes = reserve_bytes,
             max_pin_bytes = pin_room_bytes(plan, pinned_already),
             replaces_counted = pins_replace_counted(plan),
+            later_host_bytes = te_later_host_bytes(plan) + max(0, int(dit_pin_bytes)),
         )
     return encoder
 
@@ -3354,8 +5370,19 @@ def load_minimax_h3_image_pipeline(
     transformer: Any = None,
     plan_width: int = 2048,
     plan_height: int = 2048,
+    loras: Sequence[tuple] = (),
+    int8_policy: Any = None,
+    attention_backend: Optional[str] = None,
 ) -> Any:
     """A ready ``MiniMaxH3ImagePipeline`` for ``repo_id`` (Hub id or local folder) placed for ``device``.
+
+    ``int8_policy``: the load's ``diffusion_int8_attention.Int8Policy`` (or ``int8_attention`` request) for Studio's
+    INT8 attention kernel; None reads the env switch. ``attention_backend``: the load's attention pick (see
+    ``install_checkpoint_attention``).
+
+    ``loras``: ``[(path, weight), ...]`` merged into the dense DiT weights at load, before quantization, so every
+    placement and speed lever runs them unchanged; a load with LoRAs therefore streams the release DiT (the hosted
+    pre-quantized files are already quantized) and a different selection is a reload.
 
     ``transformer_quant``: None/"auto" (int8, then fp8, then bf16), "int8", "fp8", "bf16". ``text_encoder_quant``:
     "int8" (Studio's hosted ConvRot conditioner) or None (bf16). ``text_encoder`` / ``transformer`` hand in prebuilt
@@ -3401,6 +5428,7 @@ def load_minimax_h3_image_pipeline(
         inflight = inflight,
     )
     table = adaln_table_enabled()
+    h2d, block_tops = link_measurements(device, scheme) if device.type == "cuda" else (None, None)
     plan_args = {
         "vram_gb": vram if device.type == "cuda" else None,
         "host_gb": host,
@@ -3409,6 +5437,9 @@ def load_minimax_h3_image_pipeline(
         "height": plan_height,
         "forced": (os.environ.get(PLACEMENT_ENV) or "").strip().lower() or None,
         "inflight": inflight,
+        "h2d_gib_s": h2d,
+        "block_tops": block_tops,
+        "park": park_setting(),
     }
     plan = plan_placement(
         te_gb = te_gb_for(te_scheme) if text_encoder is None else _module_gb(text_encoder),
@@ -3423,7 +5454,18 @@ def load_minimax_h3_image_pipeline(
         "; ".join(plan.reasons),
     )
     stats: dict = {"layout": "supplied", "quantized_linears": 0, "bytes_read": 0}
-    if transformer is None and scheme in QUANT_SCHEMES and not os.path.isdir(str(repo_id)):
+    # Any selection (a weight-0 one included) loads the release DiT, so weights 0 and 1 run the same base weights.
+    lora_deltas = read_lora_deltas(list(loras)) if loras else None
+    if loras and transformer is not None:
+        raise ValueError(
+            "MiniMax-H3-Image merges LoRAs while it loads the DiT; a supplied transformer cannot take them"
+        )
+    if (
+        transformer is None
+        and scheme in QUANT_SCHEMES
+        and not os.path.isdir(str(repo_id))
+        and not loras
+    ):
         transformer = load_hosted_prequant_transformer(
             scheme,
             base = repo_id,
@@ -3438,6 +5480,7 @@ def load_minimax_h3_image_pipeline(
             for block in transformer.transformer_blocks:
                 wrap_row_multiple(block, QUANT_LINEAR_SUFFIXES)
             densified = densify_conditioning_path(transformer, dtype)
+            follow_compute_dtype(transformer, dtype)
             logger.info(
                 "diffusion.minimax_h3_image: hosted DiT, text-conditioning path kept dense (%d Linears)",
                 densified,
@@ -3458,9 +5501,15 @@ def load_minimax_h3_image_pipeline(
             keep_on_device = plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT),
             table = table,
             check_cancelled = check,
+            lora_deltas = lora_deltas,
         )
     check()
+    if dtype is torch.float16:
+        conditioning_computes_in_float32(transformer)
+        int8_blocks_rescale_in_float32(transformer)
+        stream_runs_rescaled(transformer)
     install_h3_image_forward(transformer)
+    install_pdd_head_bank(transformer)
     vae = load_h3_image_vae(root)
     check()
     early_streamer = None
@@ -3571,7 +5620,14 @@ def load_minimax_h3_image_pipeline(
 
         pipe._unsloth_h3_te_loader = _te_loader
     else:
-        _place_text_encoder(pipe, text_encoder, plan, device, pinned_already = [early_streamer])
+        _place_text_encoder(
+            pipe,
+            text_encoder,
+            plan,
+            device,
+            pinned_already = [early_streamer],
+            dit_pin_bytes = dit_restream_pin_bytes(transformer, plan, early_streamer),
+        )
     if plan.placement != PLACE_SEQUENTIAL:
         vae.to(device)
     if plan.placement in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
@@ -3592,11 +5648,32 @@ def load_minimax_h3_image_pipeline(
         early_streamer.remove()
     from .diffusion_minimax_h3_image_speed import install_h3_image_speed
 
-    speed_levers = install_h3_image_speed(pipe, plan, device, logger)
+    speed_levers = install_h3_image_speed(
+        pipe,
+        plan,
+        device,
+        logger,
+        int8_policy = int8_policy,
+        **({"attention_backend": attention_backend} if attention_backend else {}),
+    )
     speed_levers = tuple(speed_levers) + install_h3_image_vae_canvas(vae, device, logger)
-    int8_attention = install_checkpoint_attention(pipe, device, scheme = scheme, logger = logger)
+    int8_attention = install_checkpoint_attention(
+        pipe,
+        device,
+        scheme = scheme,
+        logger = logger,
+        int8_policy = int8_policy,
+        **({"attention_backend": attention_backend} if attention_backend else {}),
+    )
     if int8_attention:
         speed_levers = tuple(speed_levers) + (f"checkpoint_attention={int8_attention}",)
+    parked_gb = park_session_pieces(pipe, device, plan)
+    if parked_gb:
+        logger.info(
+            "diffusion.minimax_h3_image: parked layout: token refiner and VAE (%.2f GB) wait in system memory "
+            "and come in for their phase; the encoder's embedding looks up on the host",
+            parked_gb,
+        )
     if device.type == "cuda" and (
         os.environ.get(TRIM_AFTER_LOAD_ENV) or "1"
     ).strip().lower() not in (
@@ -3622,6 +5699,7 @@ def load_minimax_h3_image_pipeline(
         speed_levers = speed_levers,
     )
     pipe._unsloth_h3_report = report
+    pipe._unsloth_h3_lora_layers = int(stats.get("lora_merged_layers", 0))
     try:
         transformer._unsloth_runtime_quant = scheme
     except Exception:  # noqa: BLE001 - marker only

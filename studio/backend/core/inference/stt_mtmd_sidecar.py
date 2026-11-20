@@ -383,8 +383,7 @@ def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
 def _location_candidates(
     spec: MtmdSttModel, listing, revision: Optional[str]
 ) -> list[tuple[str, Path]]:
-    """Hub caches holding the repo, then directories holding both files loose. Loose files never match a pinned
-    revision."""
+    """Hub caches of the repo, then dirs holding both files; loose ones skip pinned revisions."""
     found = [("cache", hub_cache) for hub_cache in listing.caches_holding(spec.repo)]
     if revision is None:
         found += [("loose", d) for d in listing.dirs_holding(spec.model_file, spec.mmproj_file)]

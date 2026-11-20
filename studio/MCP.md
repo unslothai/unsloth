@@ -35,6 +35,28 @@ Downloads are staged and verified before activation; failures leave the server
 disabled and can be retried with **Enable Blender MCP**. Merely opening the dialog
 or launching Unsloth Studio does not download anything.
 
+## Connect Unity, Unreal Engine, Godot, Figma or Roblox Studio
+
+These are **disabled by default** and work like Blender: open the chat's MCP menu, pick
+**Unity** or **Unreal Engine** (Godot, Figma and Roblox Studio are under **More**), approve the
+execution warning and choose **Enable**. Each app runs its own MCP server, so Unsloth Studio downloads
+nothing: it connects to `http://127.0.0.1:<port>/mcp` on the backend machine, or for Roblox Studio
+starts the launcher Studio ships.
+
+| App | MCP server | Default | Notes |
+|---|---|---|---|
+| Unity | [MCP for Unity](https://github.com/CoplayDev/unity-mcp) | 8080 | Start the server in **Window → MCP for Unity** with the HTTP transport. **Test connection** turns green once an Editor has joined (`/api/instances`). |
+| Unreal Engine | Epic's [Unreal MCP](https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor) plugin (UE 5.8+) | 8000 | Turn on **Unreal MCP** and **All Toolsets** in Edit > Plugins (off by default in 5.8); no auth. For the community [EngineWire](https://github.com/ChiR24/Unreal_mcp) plugin set port 3000 and the project folder in Advanced settings: Unsloth reads `Saved/MCP/capability-token` on every connection and sends it as `X-MCP-Capability-Token`. |
+| Godot 4 | [Godot MCP Native](https://github.com/yurineko73/Godot-MCP-Native) | 9080 | Install from AssetLib (Asset Store in 4.7), enable the plugin, then click **Start Server** in its **MCP** tab (or tick **Auto Start**). It listens on every network interface, so turn on its auth token on a shared network and add it as a custom server with an `Authorization: Bearer <token>` header instead. |
+| Figma | Figma desktop app, Dev Mode **Enable desktop MCP server** | 3845 | Read-only (no canvas writes); needs a Dev or Full seat. Windows and macOS. |
+| Roblox Studio | Built into Studio: **Assistant → Manage MCP Servers → Enable Studio as MCP server** | stdio | Unsloth runs `%LOCALAPPDATA%\Roblox\mcp.bat` (Windows) or `RobloxStudio.app/Contents/MacOS/StudioMCP` (macOS). |
+
+These rows are always listed. When Unsloth Studio cannot find an editor on the backend machine (PATH, the standard app folders, Unity Hub editors, Epic launcher installs), its row reads **Not installed**; it still opens and works once the editor is installed elsewhere.
+
+Like Blender, these tools run code in the editor on this computer, so they follow the same
+gate as local commands: owner only, and off while Remote access or LAN access is on.
+Advanced settings change the port. Tools are named `mcp__<id>__*` (`unity`, `unreal`, `godot`, `figma`, `roblox`).
+
 ## Large tool catalogs
 
 A server can expose dozens of tools with long descriptions and deeply nested
@@ -55,6 +77,21 @@ ran on earlier turns (so the prompt prefix the model server caches holds) and up
 to five tools ranked against the user's message. Tools a turn loads stay within
 half of the window, the oldest leaving first; a tool too large for that is refused
 with a message naming it.
+
+To help a local model reuse its prompt cache when a follow-up mentions a new
+topic, start Studio with `UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1`. For oversized
+catalogs, Studio advertises only `mcp_tool_search`, forced tools and tools
+mapped to an attached image. The model may need extra search calls to find a
+tool, and smaller models may miss tools they need. Only the value `1` turns it
+on, and it is an environment variable only, with no toggle in Settings.
+
+```sh
+UNSLOTH_STUDIO_MCP_SEARCH_ONLY=1 unsloth studio
+```
+
+```powershell
+$env:UNSLOTH_STUDIO_MCP_SEARCH_ONLY = "1"; unsloth studio
+```
 
 ## Unsloth Decisions MCP
 

@@ -58,8 +58,7 @@ const original: Destination = {
   runtimeId: "__LOCALID_shared",
 };
 
-// The real owner assignment is evaluated separately from the effects because
-// React completes render (including this assignment) before running effects.
+// Owner assignment is evaluated apart from effects: React renders it before running effects.
 function ownerFor(destination: Destination): string {
   const declaration = findNode(
     (node) =>
@@ -124,8 +123,7 @@ function attachment(kind: Kind): NativeIntent {
 }
 
 async function settle() {
-  // Native reads and normalization both cross promise boundaries. A macrotask
-  // lets all continuations and synchronous store subscribers settle together.
+  // Native reads and normalization cross promise boundaries; a macrotask settles all continuations.
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 

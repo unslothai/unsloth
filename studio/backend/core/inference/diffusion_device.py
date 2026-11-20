@@ -118,6 +118,13 @@ def install_frame_pad_fix(
     return patched
 
 
+def mps_synchronize() -> None:
+    """A blocking read waits on the stream's serial queue; torch.mps.synchronize() (torch <= 2.13) commits
+    off it and aborts ("already committed command buffer") while another thread copies (pytorch#197836)."""
+    import torch
+    torch.zeros(1, device = "mps").cpu()
+
+
 def install_vae_sync(
     pipe: Any,
     target: DiffusionDeviceTarget,
@@ -137,11 +144,10 @@ def install_vae_sync(
     ]
     if not modules:
         return False
-    import torch
 
     def _sync(_module, _args, _output) -> None:
         try:
-            torch.mps.synchronize()
+            mps_synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
@@ -724,6 +730,47 @@ def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> Diffusi
             pass
 
     return _mps_or_cpu_target(torch)
+
+
+def diffusion_target_is_cpu() -> bool:
+    """``resolve_diffusion_device_target().backend == "cpu"`` without its dtype probes, which initialise CUDA / MPS in
+    the server: a status poll asks this. Never raises; an unreadable probe reads as not cpu."""
+    try:
+        import torch
+    except Exception:
+        return True
+    try:
+        try:
+            from utils.hardware import DeviceType, get_device
+            studio_device = get_device()
+        except Exception:
+            DeviceType = studio_device = None
+        if DeviceType is not None and studio_device is not None:
+            if _studio_device_is(studio_device, DeviceType, "CUDA"):
+                return not torch.cuda.is_available()
+            if _studio_device_is(studio_device, DeviceType, "XPU"):
+                return False
+        if torch.cuda.is_available():
+            return False
+        xpu = getattr(torch, "xpu", None)
+        if xpu is not None and callable(getattr(xpu, "is_available", None)):
+            try:
+                if xpu.is_available():
+                    return False
+            except Exception:
+                pass
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        try:
+            mps_available = bool(
+                mps_backend is not None
+                and callable(getattr(mps_backend, "is_available", None))
+                and mps_backend.is_available()
+            )
+        except Exception:
+            mps_available = False
+        return not mps_available
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def diffusion_device_target_from_torch_device(

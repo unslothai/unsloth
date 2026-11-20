@@ -1212,6 +1212,21 @@ const WHISPER_DICTATION_LANGUAGES = new Set([
 
 /** Only literal "auto" resolves, and only to a language both the model and Whisper honor;
  * otherwise it stays auto-detect rather than 422ing every dictation. */
+export function isModelDictationLanguage(
+  model: SttModel,
+  language: string,
+): boolean {
+  const primary = language
+    .trim()
+    .replaceAll("_", "-")
+    .toLowerCase()
+    .split("-", 1)[0];
+  return (
+    isSttModelLanguageCompatible(model, language) &&
+    WHISPER_DICTATION_LANGUAGES.has(primary)
+  );
+}
+
 export function resolveModelDictationLanguage(
   model: SttModel,
   requested: string,

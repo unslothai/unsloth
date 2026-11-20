@@ -18,6 +18,7 @@ import {
   type SttDevice,
   applyDictationDictionary,
   isCuratedSttModel,
+  isModelDictationLanguage,
   recordRecentDictation,
   resolveModelDictationLanguage,
   sttContextBody,
@@ -681,6 +682,8 @@ function uint8ToBase64(bytes: Uint8Array): string {
  *  window. Confirm keeps text, discard removes it, and either releases the microphone. */
 export interface StudioModelDictationOptions {
   chatId?: string | null;
+  language?: string;
+  detectLanguage?: boolean;
   /** A microphone the caller keeps open between sessions. The adapter records from
    *  it but never stops its tracks; a session without one opens and releases its
    *  own. */
@@ -706,6 +709,27 @@ export class StudioModelDictationAdapter implements DictationAdapter {
 
   constructor(options: StudioModelDictationOptions = {}) {
     this.options = options;
+  }
+
+  private sessionLanguage(
+    model: string,
+    external: boolean,
+    setting: string,
+  ): string {
+    // "" omits the language so the model detects it; "auto" means the user's.
+    if (this.options.detectLanguage === true) {
+      return "";
+    }
+    if (external) {
+      return this.options.language ?? setting;
+    }
+    return resolveModelDictationLanguage(
+      model,
+      this.options.language &&
+        isModelDictationLanguage(model, this.options.language)
+        ? this.options.language
+        : setting,
+    );
   }
 
   static isSupported(): boolean {
@@ -739,13 +763,17 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       );
     }
     beginDictationSession();
-    const sessionLanguage = usesExternalEndpoint
-      ? settings.dictationLanguage
-      : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
+    const sessionLanguage = this.sessionLanguage(
+      sessionModel,
+      usesExternalEndpoint,
+      settings.dictationLanguage,
+    );
     // "Romanized" is not a language the backend knows: ask it to detect the
     // spoken language, then transliterate the transcript locally.
     const sessionRomanize =
-      !usesExternalEndpoint && settings.dictationLanguage === "romanized";
+      !usesExternalEndpoint &&
+      this.options.detectLanguage !== true &&
+      (this.options.language ?? settings.dictationLanguage) === "romanized";
     const sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);

@@ -206,6 +206,8 @@ class ToolLaunchPlan:
     # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
     cancel_event: Any = None
+    # Network only through a per-call proxy that refuses metadata and local addresses; unhonoured if unsupported.
+    egress_proxy: bool = False
 
 
 @dataclass
@@ -226,6 +228,8 @@ class PreparedSandboxLaunch:
     cleanup_diagnostics: list[str] = field(default_factory = list)
     spawn_callback: Callable | None = None
     launch_limitations: tuple[str, ...] = ()
+    # The proxy URL when the launch honoured ToolLaunchPlan.egress_proxy.
+    egress_proxy: str | None = None
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:
@@ -710,7 +714,8 @@ def editable_source_roots() -> tuple[str, ...]:
 
 
 def model_library_roots() -> tuple[str, ...]:
-    """Registered model folders the approval gate reads silently; NOT the whole read-silent set, which has /etc."""
+    """Registered model folders and the owner's trusted tool folders, which the approval gate reads silently;
+    NOT the whole read-silent set, which has /etc."""
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs
@@ -719,7 +724,130 @@ def model_library_roots() -> tuple[str, ...]:
             *well_known_model_dirs(),
         )
     except Exception:  # noqa: BLE001 - never fail a launch over the approval gate
+        candidates = ()
+    kept = list(_grantable_read_roots(candidates))
+    kept.extend(root for root in trusted_tool_folder_roots() if root not in kept)
+    return tuple(kept)
+
+
+def trusted_tool_folder_roots() -> tuple[str, ...]:
+    """Filtered as a model folder is, so the gate never silences a folder the jails would refuse to grant."""
+    try:
+        from utils.trusted_tool_folders_settings import trusted_tool_folders_for_caller
+        return grantable_trusted_roots(trusted_tool_folders_for_caller())
+    except Exception:  # noqa: BLE001 - never fail a launch over a stored setting
         return ()
+
+
+_TRUSTED_FOLDER_SCAN_LIMIT = 5000
+
+
+def grantable_trusted_roots(candidates) -> tuple[str, ...]:
+    """Granted whole, so any sandboxed call could read a credential anywhere inside, not only at the top."""
+    from storage.studio_db import is_denied_system_path
+
+    # Saved as real paths: one that now resolves elsewhere was swapped for a link since.
+    stable = tuple(
+        path
+        for path in candidates
+        if path and os.path.realpath(path) == path and not is_denied_system_path(path)
+    )
+    state = studio_state_roots()
+    return tuple(
+        root
+        for root in _grantable_read_roots(stable)
+        if not overlaps_studio_state(root, state) and not _holds_a_nested_credential(root)
+    )
+
+
+def overlaps_studio_state(path: str, state = None) -> bool:
+    """Case-insensitive where the volume is: macOS realpath keeps the spelling it was given."""
+    return any(
+        _is_within(path, root) or _is_within(root, path)
+        for root in (studio_state_roots() if state is None else state)
+    )
+
+
+# folder -> (fingerprint, verdict): the path-text checks dominate every launch's rescan.
+_nested_credential_verdicts: dict[str, tuple[tuple, bool]] = {}
+
+
+def _tree_fingerprint(folder: str) -> "tuple | None":
+    """Path, link target and link count of every entry; None past the cap or where the tree cannot be fully
+    read. scandir, not walk: walk lists a whole directory before the cap could stop it."""
+    rows = []
+    pending = [folder]
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:  # an execute-only directory still opens its files by name
+            return None
+        with entries:
+            for entry in entries:
+                if len(rows) >= _TRUSTED_FOLDER_SCAN_LIMIT:
+                    return None
+                target = nlink = None
+                try:
+                    # is_symlink() misses a junction, and 3.11 has no DirEntry.is_junction.
+                    linked = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
+                    is_dir = entry.is_dir(follow_symlinks = False)
+                    if linked or (is_dir and os.name == "nt"):
+                        target = os.path.realpath(entry.path)
+                    if is_dir:
+                        pending.append(entry.path)
+                    elif not linked:
+                        # Not entry.stat (st_nlink 0 on Windows); extended path, or a file named `nul` is the device.
+                        info = os.lstat(_entry_path(entry.path))
+                        # A socket, FIFO or device stays a host channel under a read-only bind.
+                        if not stat.S_ISREG(info.st_mode):
+                            return None
+                        nlink = info.st_nlink
+                except OSError:
+                    return None
+                rows.append((entry.path, entry.name, target, nlink))
+    return tuple(rows)
+
+
+def _holds_a_nested_credential(folder: str) -> bool:
+    """A tree too large to check, a hard-linked file or a link out of it counts as holding one."""
+    from . import tools
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    from .tool_path_approval import (
+        _credential_under_silent_root,
+        _normalized_fs_text,
+        _references_sensitive_path,
+    )
+
+    rows = _tree_fingerprint(folder)
+    if rows is None:
+        return True
+    # Casefolded: a case-insensitive volume opens TOKEN as token.
+    names = frozenset(name.casefold() for name in (*_CREDENTIAL_BASENAMES, *approval_names))
+    fingerprint = (rows, names, repr(tools._studio_auth_dir_markers()))
+    cached = _nested_credential_verdicts.get(folder)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    verdict = any(
+        name.casefold() in names
+        # Separator-unified: the gate's patterns spell `.config/gh` with `/` inside.
+        or _references_sensitive_path(path.replace("\\", "/"))
+        # What the gate still asks for under a silent root, folded as the gate folds it.
+        or _credential_under_silent_root(_normalized_fs_text(path))
+        # A link or junction out of the folder reads its target unchecked.
+        or (target is not None and not _is_within(target, folder))
+        # A second name can alias a credential anywhere on the volume.
+        or (nlink is not None and nlink > 1)
+        for path, name, target, nlink in rows
+    )
+    if len(_nested_credential_verdicts) > 64:  # folders dropped from the setting
+        _nested_credential_verdicts.clear()
+    _nested_credential_verdicts[folder] = (fingerprint, verdict)
+    return verdict
+
+
+def _grantable_read_roots(candidates) -> tuple[str, ...]:
+    from . import tool_path_approval
+
     state = studio_state_roots()
     forbidden = _never_a_model_library()
     hf_homes = _hf_home_roots()

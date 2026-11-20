@@ -13,6 +13,24 @@ export const formatTokenCountFull = (n: number): string => {
   return n.toLocaleString();
 };
 
+export function getSeverityColor(percent: number): {
+  bar: string;
+  stroke: string;
+  text: string;
+} {
+  if (percent > 85) {
+    return { bar: "bg-red-500", stroke: "stroke-red-500", text: "text-red-500" };
+  }
+  if (percent > 65) {
+    return { bar: "bg-amber-500", stroke: "stroke-amber-500", text: "text-amber-500" };
+  }
+  return {
+    bar: "bg-control-accent",
+    stroke: "stroke-control-accent",
+    text: "text-control-accent",
+  };
+}
+
 export type ContextUsageBarInput = {
   used?: number | null;
   total?: number | null;

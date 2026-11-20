@@ -7,7 +7,7 @@ import contextvars
 import functools
 import os
 
-from .cells import cell_text
+from .cells import cell_text, content_text
 from .iterable import is_streaming_dataset
 from .remote_images import (
     fetch_opted_in_image_bytes,
@@ -267,16 +267,6 @@ def normalize_chatml_roles(
     )
 
 
-def _content_text(content):
-    if isinstance(content, list):
-        return "\n".join(
-            part["text"]
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
-        )
-    return cell_text(content)
-
-
 _SOURCE_COLUMN = "__unsloth_source_row"
 
 
@@ -303,7 +293,7 @@ def convert_chatml_to_alpaca(
         turns = []
         for msg in convo or []:
             role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
-            content = _content_text(msg.get("content") or msg.get("value"))
+            content = content_text(msg.get("content") or msg.get("value"))
             if role is None or not content:
                 continue
             if turns and turns[-1][0] == role:

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Codex text comes from user/agent message events (legacy rollouts) or completed items (paginated),
-not response_item (injected context)."""
+"""Codex text: message events or completed items, not response_item (injected context)."""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from itertools import islice
@@ -26,6 +27,7 @@ from core.external_import import (
     title_from,
     tool_call,
 )
+from utils.device_sync_settings import sniff_image_type
 
 _UNKNOWN_FOLDER = "unknown-folder"
 
@@ -119,10 +121,32 @@ def _records(path: Path) -> list[tuple[str, int, dict]]:
     return prefix + tagged
 
 
-def _output_text(output) -> str:
-    if isinstance(output, list):
-        output = "\n\n".join(item.get("text") or "" for item in output if isinstance(item, dict))
-    return clean_text(output) if isinstance(output, str) else ""
+def _mime(data: str) -> str | None:
+    try:
+        return sniff_image_type(base64.b64decode(data[:16]))
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _image(url) -> dict | None:
+    head, _, data = str(url or "").partition(";base64,")
+    mime = head.removeprefix("data:")
+    # view_image sends the file's bytes as application/octet-stream.
+    mime = mime if mime.startswith("image/") else _mime(data)
+    return {"data": data, "mimeType": mime} if head.startswith("data:") and data and mime else None
+
+
+def _output(output) -> str | dict:
+    if not isinstance(output, list):
+        return clean_text(output) if isinstance(output, str) else ""
+    items = [item for item in output if isinstance(item, dict)]
+    text = clean_text("\n\n".join(item.get("text") or "" for item in items))
+    images = [
+        image
+        for item in items
+        if item.get("type") == "input_image" and (image := _image(item.get("image_url")))
+    ]
+    return {"text": text, "images": images} if images else text
 
 
 def _call(payload: dict, message_id: str) -> dict:
@@ -137,6 +161,13 @@ def _call(payload: dict, message_id: str) -> dict:
     )
 
 
+def _turn(text: str, images: list[str]) -> list[dict]:
+    text = clean_text(text)
+    return [{"type": "image", "image": url} for url in images] + (
+        [{"type": "text", "text": text}] if text else []
+    )
+
+
 def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     file_created, file_updated = file_times_ms(path)
     revision = session_id_of(path)
@@ -144,6 +175,11 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     inherited = 0
     open_calls: dict[str, dict] = {}
     reread: set[str] = set()
+    images: list[str] = []
+    pictured: set[str] = set()
+    made: set[str] = set()
+    ends = [0]
+    drawn = [0]
     for position, (origin, ordinal, line) in enumerate(_records(path)):
         payload = line.get("payload")
         if not isinstance(payload, dict):
@@ -153,17 +189,26 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         # (another thread) gets its own, since message ids are unique across threads.
         message_id = stable_id("codex", session_id, origin, str(ordinal), length = 16)
         item = payload.get("item") if kind == ("event_msg", "item_completed") else None
+        if kind == ("response_item", "message") and payload.get("role") == "user":
+            # The image bytes are only here; the turn's event that follows names just a path.
+            images = [
+                str(part["image_url"])
+                for part in payload.get("content") or []
+                if isinstance(part, dict)
+                and part.get("type") == "input_image"
+                and str(part.get("image_url") or "").startswith("data:image/")
+            ]
+            continue
         if kind in (("event_msg", "user_message"), ("event_msg", "agent_message")):
             role = "user" if payload["type"] == "user_message" else "assistant"
-            parts = [{"type": "text", "text": clean_text(str(payload.get("message") or ""))}]
+            attached = payload.get("images") or payload.get("local_images")
+            parts = _turn(str(payload.get("message") or ""), images if attached else [])
         elif isinstance(item, dict) and item.get("type") in ("UserMessage", "AgentMessage"):
             role = "user" if item["type"] == "UserMessage" else "assistant"
-            text = "".join(
-                str(part.get("text") or "")
-                for part in item.get("content") or []
-                if isinstance(part, dict)
-            )
-            parts = [{"type": "text", "text": clean_text(text)}]
+            content = [part for part in item.get("content") or [] if isinstance(part, dict)]
+            text = "".join(str(part.get("text") or "") for part in content)
+            attached = any(part.get("type") in ("image", "local_image") for part in content)
+            parts = _turn(text, images if attached else [])
         elif kind in (("response_item", "function_call"), ("response_item", "custom_tool_call")):
             role, parts = "assistant", [_call(payload, message_id)]
             open_calls[parts[0]["toolCallId"]] = parts[0]
@@ -172,14 +217,35 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
             ("response_item", "custom_tool_call_output"),
         ):
             call = open_calls.pop(str(payload.get("call_id")), None)
-            result = _output_text(payload.get("output"))
+            result = _output(payload.get("output"))
             if call is not None:
                 # An empty output is still a finished call; Studio replays "" differently from none.
                 call["result"] = result
             continue
+        elif kind == ("response_item", "image_generation_call") and payload.get("result"):
+            image = str(payload["result"])
+            role, parts = (
+                "assistant",
+                [
+                    {
+                        **tool_call(
+                            str(payload.get("id") or message_id),
+                            {
+                                "name": "image_generation",
+                                "input": {
+                                    "prompt": str(payload.get("revised_prompt") or ""),
+                                    "_server_tool": True,
+                                },
+                            },
+                        ),
+                        "result": {"image_b64": image, "image_mime": _mime(image) or "image/png"},
+                    }
+                ],
+            )
+            made.add(message_id)
         else:
             continue
-        if parts[0]["type"] == "text" and not parts[0]["text"]:
+        if not parts:
             continue
         if item is not None:
             reread.add(message_id)
@@ -196,6 +262,19 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
                 "metadata": {"importedFrom": "codex", "codexSessionId": session_id},
             }
         )
+        images = []
+        if parts[-1]["type"] == "image" or message_id in made:
+            pictured.add(message_id)
+        else:
+            ends.append(len(messages))
+        if message_id not in made:
+            drawn.append(len(messages))
+    # Keyed on the file's own mode: a deleted base rollout must not drop the tag.
+    if reread or _meta(path).get("history_mode") == "paginated":
+        revision = f"{revision}:items"
+    base = revision.partition(":")[0]
+    # An ":images" mark predates generated images.
+    earlier = {revision: ends, f"{base}:images": drawn} if made else {revision: ends}
     return Transcript(
         session_id = session_id,
         thread_id = thread_id,
@@ -203,12 +282,10 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         created_at_ms = messages[0]["createdAt"] if messages else file_created,
         updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
         messages = messages,
-        # Keyed on the file's own mode: a deleted base rollout must not drop the tag.
-        revision = f"{revision}:items"
-        if reread or _meta(path).get("history_mode") == "paginated"
-        else revision,
+        revision = f"{base}:generated" if made else f"{base}:images" if pictured else revision,
         inherited = inherited,
-        reread = frozenset(reread),
+        reread = frozenset(reread | pictured),
+        earlier = earlier if pictured else {},
     )
 
 

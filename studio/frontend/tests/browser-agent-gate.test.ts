@@ -306,3 +306,45 @@ test("a script runs without asking only under Always allow or its site's Scripts
   assert.equal(scriptRunsWithoutAsking("never", "https://dash.example/", rules), false);
   assert.equal(scriptRunsWithoutAsking("ask", "https://other.example/", NONE), false);
 });
+
+test("Always allow on a script prompt saves the page's own host, keeping the rules that apply there", async () => {
+  const { DEFAULT_RULE, MAX_SITE_RULES, scriptSiteRule } = await import("../src/features/browser/agent/permissions.ts");
+  const wide = { defaults: DEFAULT_RULE, sites: { "example.com": { ...DEFAULT_RULE, downloads: "block" as const } } };
+  assert.deepEqual(scriptSiteRule("https://docs.example.com/x", wide), {
+    site: "docs.example.com",
+    rule: { ...DEFAULT_RULE, browsing: "allow", downloads: "block", scripts: "allow", hostOnly: true },
+  });
+  const own = { defaults: DEFAULT_RULE, sites: { "example.com": { ...DEFAULT_RULE, actions: "allow" as const } } };
+  assert.deepEqual(scriptSiteRule("https://www.example.com/", own), {
+    site: "example.com",
+    rule: { ...DEFAULT_RULE, actions: "allow", scripts: "allow" },
+  });
+  assert.equal(scriptSiteRule("about:blank", own), null);
+  const full = {
+    defaults: DEFAULT_RULE,
+    sites: Object.fromEntries(Array.from({ length: MAX_SITE_RULES }, (_, i) => [`s${i}.example`, DEFAULT_RULE])),
+  };
+  assert.equal(scriptSiteRule("https://new.example/", full), null);
+  assert.equal(scriptSiteRule("https://s1.example/", full)?.rule.scripts, "allow");
+});
+
+test("Always allow on a script prompt covers only that host, not the rest of its site", async () => {
+  const { DEFAULT_PERMISSIONS, scriptRunsWithoutAsking, scriptSiteRule } = await import("../src/features/browser/agent/permissions.ts");
+  const saved = scriptSiteRule("https://www.google.com/search?q=x", DEFAULT_PERMISSIONS);
+  assert.ok(saved);
+  const rules = checkedPermissions({ ...DEFAULT_PERMISSIONS, sites: { [saved.site]: saved.rule } });
+  assert.equal(scriptRunsWithoutAsking("ask", "https://www.google.com/maps", rules), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://google.com/", rules), true);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://mail.google.com/", rules), false);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://accounts.google.com/", rules), false);
+  assert.equal(ruleFor("https://mail.google.com/", rules).rule.browsing, "ask");
+  const blog = scriptSiteRule("https://wordpress.com/", DEFAULT_PERMISSIONS);
+  assert.ok(blog);
+  assert.equal(scriptRunsWithoutAsking("ask", "https://attacker.wordpress.com/", permissions({ [blog.site]: blog.rule })), false);
+});
+
+test("a host-only rule set to ask still asks when the agent comes from one of its subdomains", () => {
+  const rules = permissions({ "google.com": { ...NONE.defaults, hostOnly: true } });
+  assert.equal(gateNavigation("https://google.com/", navigation({ permissions: rules, currentUrl: "https://mail.google.com/" })).kind, "ask");
+  assert.equal(gateNavigation("https://google.com/a", navigation({ permissions: rules, currentUrl: "https://www.google.com/b" })).kind, "allow");
+});

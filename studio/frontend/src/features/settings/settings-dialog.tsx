@@ -18,9 +18,11 @@ import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
 import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { ListScrollbar } from "@/components/assistant-ui/composer-model-picker/list-scrollbar";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
+  Cursor02Icon,
   ApiIcon,
   BotIcon,
   Cancel01Icon,
@@ -86,6 +88,8 @@ const TAB_LOADERS = {
     import("./tabs/sandbox-tab").then((m) => ({ default: m.SandboxTab })),
   browser: () =>
     import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
+  "computer-use": () =>
+    import("./tabs/computer-use-tab").then((m) => ({ default: m.ComputerUseTab })),
   voice: () =>
     import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
   connections: () =>
@@ -307,6 +311,12 @@ const TABS: TabDef[] = [
     icon: InternetIcon,
   },
   {
+    id: "computer-use",
+    labelKey: "computerUse.settings.title",
+    icon: Cursor02Icon,
+    badgeKey: "shell.navigation.newBadge",
+  },
+  {
     id: "keyboard-shortcuts",
     labelKey: "settings.tabs.keyboardShortcuts",
     icon: EnergyRectangleIcon,
@@ -327,6 +337,36 @@ const TABS: TabDef[] = [
     icon: ComputerTerminal01Icon,
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
+];
+
+/** Rail groups; within one, tabs keep their TABS order. */
+export const SETTINGS_NAV_GROUPS: {
+  headingKey: TranslationKey | null;
+  ids: SettingsTab[];
+}[] = [
+  {
+    headingKey: null,
+    ids: [
+      "general",
+      "profile",
+      "appearance",
+      "resources",
+      "chat",
+      "voice",
+      "browser",
+      "computer-use",
+      "keyboard-shortcuts",
+    ],
+  },
+  {
+    headingKey: "settings.navGroups.connections",
+    ids: ["api-keys", "remote-lan", "connections", "agents"],
+  },
+  {
+    headingKey: "settings.navGroups.dataAccess",
+    ids: ["sandbox", "accounts", "data", "library"],
+  },
+  { headingKey: null, ids: ["debugging", "about"] },
 ];
 
 
@@ -446,8 +486,7 @@ const SettingsPanelPane = memo(function SettingsPanelPane({
     return null;
   }
   return (
-    // Only a panel's first view waits, so the fallback is delayed and a
-    // promptly arriving panel never flashes it.
+    // Only a panel's first view waits, so a promptly arriving panel never flashes the fallback.
     <SettingsPanelBoundary
       tab={panelTab}
       message={t("settings.dialog.panelFailed")}
@@ -503,6 +542,15 @@ export function SettingsDialog() {
     [attachRail],
   );
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
+  // A group whose every tab is hidden (a managed account) drops its heading too.
+  const navGroups = useMemo(
+    () =>
+      SETTINGS_NAV_GROUPS.map((group) => ({
+        headingKey: group.headingKey,
+        tabs: visibleTabs.filter((tab) => group.ids.includes(tab.id)),
+      })).filter((group) => group.tabs.length > 0),
+    [visibleTabs],
+  );
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
   const activeTab = resolveSettingsTab(requestedTab, isOwner);
@@ -693,6 +741,7 @@ export function SettingsDialog() {
     chat: null,
     sandbox: null,
     browser: null,
+    "computer-use": null,
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,
@@ -732,6 +781,66 @@ export function SettingsDialog() {
     return () => window.cancelAnimationFrame(frame);
   }, [open, activeTab, focusTabButton]);
 
+  const renderNavTab = (tab: TabDef) => {
+    const active = activeTab === tab.id;
+    return (
+      <button
+        key={tab.id}
+        // Stable handle for UI tests: the label is translated.
+        data-testid={`settings-tab-${tab.id}`}
+        ref={(node) => {
+          tabButtonRefs.current[tab.id] = node;
+        }}
+        type="button"
+        onClick={() => setActiveTab(tab.id)}
+        className={cn(
+          "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
+          // Otherwise the flex item shrinks to its text when the list scrolls.
+          "shrink-0",
+          "focus-visible:outline-none",
+          active
+            ? "text-accent-foreground"
+            : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
+        )}
+      >
+        {active && (
+          <motion.span
+            layoutId="settings-active-pill"
+            className="absolute inset-0 rounded-full bg-accent"
+            transition={
+              reduced
+                ? { duration: 0 }
+                : {
+                    type: "spring",
+                    stiffness: 500,
+                    damping: 35,
+                    mass: 0.5,
+                  }
+            }
+          />
+        )}
+        {tab.iconComponent ? (
+          <tab.iconComponent className="relative z-10 size-icon" />
+        ) : tab.icon ? (
+          <HugeiconsIcon
+            icon={tab.icon}
+            strokeWidth={1.75}
+            className="relative z-10 size-icon"
+          />
+        ) : null}
+        <span className="relative z-10 min-w-0 truncate">
+          {t(tab.labelKey)}
+        </span>
+        {tab.badgeKey ? (
+          // Visual only, so the tab's accessible name stays its label.
+          <span aria-hidden="true" className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+            {t(tab.badgeKey)}
+          </span>
+        ) : null}
+      </button>
+    );
+  };
+
   return (
     <>
       <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
@@ -758,14 +867,14 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            "settings-surface !max-w-[min(1000px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1000px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(1060px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(1060px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring.
             "shadow-border rounded-3xl ring-0",
             // Same chrome-subtracted height the shared DialogContent uses at this
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
-            "4xl:w-[min(1160px,calc(100vw-2rem))] 4xl:!max-w-[min(1160px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
+            "3xl:w-[min(1220px,calc(100vw-2rem))] 3xl:!max-w-[min(1220px,calc(100vw-2rem))] 3xl:h-[min(960px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -882,72 +991,40 @@ export function SettingsDialog() {
                 ref={railRef}
                 onScroll={onRailScroll}
                 className={cn(
-                  // A short window leaves the list taller than the clipped sidebar, so scroll it.
-                  // Full width, so the scroll bar sits at the panel edge; the right padding gives back
-                  // what the bar takes, and a bar wider than the inset widens the left to match.
+                  // Scroll bar at the panel edge: right padding gives back --rail-scrollbar, left
+                  // widens to match.
                   "hover-scrollbar settings-rail-fade -mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto py-1 pl-[max(calc(var(--spacing)*3),var(--rail-scrollbar,0px))] pr-[max(0px,calc(var(--spacing)*3-var(--rail-scrollbar,0px)))]",
                   railFadeClass,
                   "group-data-stacked/settings:mx-0 group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:px-1 group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",
                 )}
               >
-                {visibleTabs.map((tab) => {
-                  const active = activeTab === tab.id;
+                {navGroups.map((group, index) => {
+                  const headingId = group.headingKey ? `settings-nav-group-${index}` : undefined;
                   return (
-                    <button
-                      key={tab.id}
-                      // Stable handle for UI tests: the label is translated.
-                      data-testid={`settings-tab-${tab.id}`}
-                      ref={(node) => {
-                        tabButtonRefs.current[tab.id] = node;
-                      }}
-                      type="button"
-                      onClick={() => setActiveTab(tab.id)}
-                      className={cn(
-                        "relative flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
-                        // Otherwise the flex item shrinks to its text when the list scrolls.
-                        "shrink-0",
-                        "focus-visible:outline-none",
-                        active
-                          ? "text-accent-foreground"
-                          : "text-[#383835] dark:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                      )}
+                    // Stacked, the rail is one tab row: groups and headings drop out.
+                    <div
+                      key={group.headingKey ?? `group-${index}`}
+                      className="flex flex-col gap-0.5 [&:not(:first-child)]:mt-4 group-data-stacked/settings:contents"
                     >
-                      {active && (
-                        <motion.span
-                          layoutId="settings-active-pill"
-                          className="absolute inset-0 rounded-full bg-accent"
-                          transition={
-                            reduced
-                              ? { duration: 0 }
-                              : {
-                                  type: "spring",
-                                  stiffness: 500,
-                                  damping: 35,
-                                  mass: 0.5,
-                                }
-                          }
-                        />
-                      )}
-                      {tab.iconComponent ? (
-                        <tab.iconComponent className="relative z-10 size-icon" />
-                      ) : tab.icon ? (
-                        <HugeiconsIcon
-                          icon={tab.icon}
-                          strokeWidth={1.75}
-                          className="relative z-10 size-icon"
-                        />
+                      {headingId && group.headingKey ? (
+                        <h3
+                          id={headingId}
+                          className="px-3 pb-1 text-ui-12 font-medium text-muted-foreground group-data-stacked/settings:hidden"
+                        >
+                          {t(group.headingKey)}
+                        </h3>
                       ) : null}
-                      <span className="relative z-10 min-w-0 truncate">
-                        {t(tab.labelKey)}
-                      </span>
-                      {tab.badgeKey ? (
-                        // Visual only, so the tab's accessible name stays its label.
-                        <span aria-hidden="true" className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
-                          {t(tab.badgeKey)}
-                        </span>
-                      ) : null}
-                    </button>
+                      {/* The heading stays outside the group it names, so screen readers say it once. */}
+                      <div
+                        // biome-ignore lint/a11y/useSemanticElements: stacked, the group is display: contents; a fieldset's default box would break the tab row.
+                        role="group"
+                        aria-labelledby={headingId}
+                        className="flex flex-col gap-0.5 group-data-stacked/settings:contents"
+                      >
+                        {group.tabs.map(renderNavTab)}
+                      </div>
+                    </div>
                   );
                 })}
               </nav>
@@ -967,7 +1044,8 @@ export function SettingsDialog() {
                 <div
                   ref={mainScrollRef}
                   data-settings-main-scroll=""
-                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
+                  // Native bar hidden (index.css); the drawn thumb overlays the edge.
+                  className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-12 py-6"
                 >
                   <SettingsPanelPane
                     activeTab={activeTab}
@@ -977,6 +1055,13 @@ export function SettingsDialog() {
                     scrollRef={mainScrollRef}
                   />
                 </div>
+                {/* Drawn: a macOS overlay bar insets its thumb and ignores ::-webkit-scrollbar. */}
+                <ListScrollbar
+                  target={mainScrollRef}
+                  flush={true}
+                  inset={2}
+                  thumbClassName="settings-scroll-thumb"
+                />
               </DropdownGlowContext.Provider>
             </main>
           </div>

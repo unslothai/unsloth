@@ -6883,29 +6883,12 @@ class TestServerStartupRocmFixes:
         source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
         assert '"BNB_ROCM_VERSION" not in os.environ' in source
 
-    # bnb runs hipinfo.exe via PATH at import; the venv Scripts dir is on PATH only when activated.
+    # The venv hipInfo.exe is an unsigned uv launcher Smart App Control blocks; never put its dir on PATH.
 
-    def test_main_py_prepends_hipinfo_dir_to_path(self):
-        """main.py must make hipInfo.exe resolvable before bnb imports."""
-        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
-        assert "hipInfo.exe" in source
-        # Prepend must precede the BNB_ROCM_VERSION block so bnb sees the fixed PATH.
-        assert source.find("hipInfo.exe") < source.find("BNB_ROCM_VERSION")
-
-    def test_main_py_hipinfo_prepend_gated_on_file_presence(self):
-        """Prepend must check hipInfo.exe exists first (only AMD wheels ship it; leave NVIDIA/CPU untouched)."""
-        source = _MAIN_PY_PATH.read_text(encoding = "utf-8")
-        assert 'os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe"))' in source
-
-    def test_worker_py_prepends_hipinfo_dir_to_path(self):
-        """worker.py must mirror the prepend for standalone-spawned workers."""
-        source = _WORKER_PATH.read_text(encoding = "utf-8")
-        assert "hipInfo.exe" in source
-
-    def test_install_stack_prepends_hipinfo_dir_to_path(self):
-        """install_python_stack.py must prepend so child import checks inherit a PATH where bnb's probe works."""
-        source = _STACK_PATH.read_text(encoding = "utf-8")
-        assert "hipInfo.exe" in source
+    @pytest.mark.parametrize("path_attr", ["_MAIN_PY_PATH", "_WORKER_PATH", "_STACK_PATH"])
+    def test_no_venv_scripts_prepended_to_path(self, path_attr):
+        source = globals()[path_attr].read_text(encoding = "utf-8")
+        assert "_scripts_dir + os.pathsep" not in source
 
     def test_hardware_py_injects_distributed_c10d_stub(self):
         """hardware.py must inject torch._C._distributed_c10d into sys.modules."""
