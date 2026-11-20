@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO PrefixGrouper on transformers-native Qwen3-MoE (FastModel path, opt-in).
-
-The shared-prefix stream [prompt, c_0 .. c_{G-1}] must give every completion the same log-probs
-(and, summed over completions, the same parameter grads, router and experts included) as its own
-unshared row; completions must not see each other; and the model is only covered (and only marked
-MoE-safe for the GRPO gates) with UNSLOTH_GRPO_PREFIX_GROUPER_MOE=1, without routing replay and
-without router logits in the loss.
-
-CPU flex attention has no backward, so the grad test swaps the flex kernel for a dense-mask SDPA
-reference built independently from the group specs (it checks the HF / MoE plumbing; the kernel's
-own backward is covered on CUDA by the same test when a GPU is present).
-"""
+"""GRPO PrefixGrouper on transformers-native Qwen3-MoE: per-completion log-probs and grads match
+unshared rows. CPU flex has no backward, so the grad test uses a dense-mask SDPA reference."""
 
 import importlib.util
 import sys
@@ -237,8 +227,7 @@ def test_no_leak_across_completions():
         cs2 = list(cs)
         cs2[1] = (cs[1] + 17) % (VOCAB - 1) + 1
         moved = _pg_logps(model, [(p, cs2)] + groups[1:])
-    # CPU: bit for bit. CUDA: expert GEMM shapes change with the routed token counts, so allow
-    # rounding noise (a leak moves log-probs by whole nats).
+    # CUDA expert GEMM shapes vary with routed counts: allow rounding noise (a leak is whole nats).
     atol = 1e-4 if CUDA else 0.0
     for idx in (0, 2):
         assert torch.allclose(base[0][idx], moved[0][idx], rtol = 0, atol = atol)

@@ -3,18 +3,10 @@
 
 """PrefixGrouper on transformers-native attention modules (FastModel families).
 
-An HF attention forward computes q / k / v (projections, q/k norm, RoPE) and then calls
-``ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation](self, q, k, v, mask, scaling=...,
-sliding_window=..., **kwargs)`` with ``prefix_seg_info`` riding in ``**kwargs``. When the segment
-table is present, the wrapper below points that lookup at the shared-prefix flex kernel for this
-one call (a per-module config view), so HF keeps computing q / k / v exactly as it does without
-PrefixGrouper and only the score / softmax / value step changes. The dense mask HF builds from the
-packed position_ids is ignored on that call. The wrapper raises when the kernel was not reached,
-so a forward that stops consulting the interface falls back instead of leaking across suffixes.
-
-Coverage is opt-in per attention class and config (``_FAMILIES``), only for verified families.
-MoE families additionally need ``UNSLOTH_GRPO_PREFIX_GROUPER_MOE=1`` and mark the model with
-``MOE_OK_ATTR`` so the GRPO gates lift their MoE exclusion for that model only.
+With ``prefix_seg_info`` present, each wrapped attention module's interface lookup is pointed at
+the shared-prefix flex kernel for that call; HF still computes q / k / v. The wrapper raises if the
+kernel was not reached, so callers fall back instead of leaking across suffixes. MoE families also
+need ``UNSLOTH_GRPO_PREFIX_GROUPER_MOE=1``.
 """
 
 from __future__ import annotations
@@ -24,16 +16,14 @@ import os
 from typing import Optional
 
 PG_ATTN_IMPL = "unsloth_prefix_grouper"
-# Not attention_dispatch's class-level APPLIES_PREFIX_SEG_INFO mark: eligibility depends on each
-# module's config, so prefix_seg_info_applied asks enable_hf_prefix_seg_info per model instead.
+# Eligibility is per module config, not attention_dispatch's class-level APPLIES_PREFIX_SEG_INFO.
 _WRAPPED = "_unsloth_pg_hf_wrapper"
 _ORIGINAL = "_unsloth_pg_hf_original_forward"
 
 
 # Opt-in until a GRPO step-time A/B shows a win: UNSLOTH_GRPO_PREFIX_GROUPER_MOE=1.
 MOE_ENV = "UNSLOTH_GRPO_PREFIX_GROUPER_MOE"
-# Set on a model once every decoder layer routes prefix_seg_info and the MoE opt-in holds; the
-# GRPO gates (unsloth no-grad, unsloth_zoo grad) then lift their MoE exclusion for this model.
+# Set once every decoder layer routes prefix_seg_info; lifts the GRPO gates' MoE exclusion.
 MOE_OK_ATTR = "_unsloth_prefix_grouper_moe_ok"
 
 
@@ -42,14 +32,12 @@ def moe_opt_in() -> bool:
 
 
 def _routing_replay_requested() -> bool:
-    # Routing replay matches rows by position_ids resets; the shared-prefix stream has none per
-    # suffix, so replayed routes would silently not apply.
+    # Routing replay keys on position_ids resets, which the shared stream lacks per suffix.
     return os.environ.get("UNSLOTH_GRPO_ROUTING_REPLAY", "0") == "1"
 
 
 def _qwen3_moe_text_ok(module) -> bool:
-    # Attention is plain causal GQA with q/k RMSNorm and RoPE; the MoE block routes each token
-    # independently, so deduplicating the shared prompt does not change any token's routing.
+    # Per-token MoE routing, so deduplicating the prompt does not change routing.
     config = getattr(module, "config", None)
     return (
         getattr(config, "model_type", None) == "qwen3_moe"
@@ -190,8 +178,7 @@ def _register_interface() -> bool:
     return True
 
 
-# Composite configs whose text decoder is verified with text-only inputs (the GRPO gate excludes
-# pixel_values / token_type_ids and caps the span at get_text_config().sliding_window).
+# Composite configs verified text-only (the GRPO gate excludes pixel_values / token_type_ids).
 _COMPOSITE_MODEL_TYPES = ()
 
 

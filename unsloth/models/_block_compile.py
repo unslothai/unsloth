@@ -2126,8 +2126,7 @@ def _wrap(
             or not _enabled()
             or _forced_float32(self)
             or _zero3_partitioned(self)
-            # PrefixGrouper's int segment table would recompile at every new GRPO length (also on
-            # transformers-native layers that carry it, prefix_grouper_hf).
+            # PrefixGrouper's int segment table would recompile at every new GRPO length.
             or kwargs.get("prefix_seg_info") is not None
         )
         if not stock and unsloth_forward and kwargs.get("packed_seq_lengths") is not None:
