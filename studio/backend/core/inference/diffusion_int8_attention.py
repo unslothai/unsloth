@@ -580,7 +580,8 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# A plan's first SINK_LEARN_CALLS calls learn whether a head clipped V (attention sink); it races at SINK_DECIDE_AT.
+# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it races at SINK_DECIDE_AT. A
+# known verdict is taken during the first SINK_LEARN_CALLS calls (_learn_now).
 # Undecided, a plan runs the sink path, which a graph records. A verdict other than the sink path is taken only where
 # no call whose output was used (not a thrown-away graph warm-up) clipped on the sink path: else the plan keeps it for
 # the load, so the first render repeats, and the verdict, kept for the bucket and persisted, decides the next plans
@@ -993,9 +994,8 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
             if safe:
                 seen = bool(plan.get("seen"))
                 for check in plan["checks"]:
-                    check[
-                        0
-                    ].synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
+                    # one wait per plan and load: the last undecided calls' copies may still be in flight
+                    check[0].synchronize()
                     if bool(check[1].any()):
                         seen = True
                         if len(check) > 2 and check[2]:
@@ -1127,11 +1127,12 @@ def _pick_path(
 
 
 def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
-    """For one of the plan's first SINK_LEARN_CALLS calls: its clipped-key counts (rcnt) copied to pinned host memory
-    behind the quantisers, read when the plan decides (_choose_path); no wait here."""
+    """For each undecided call before SINK_DECIDE_AT (every one runs the sink path, and a render may use it): its
+    clipped-key counts (rcnt) copied to pinned host memory behind the quantisers, read when the plan decides
+    (_choose_path); no wait here."""
     import torch
 
-    if n is None or n >= SINK_LEARN_CALLS or plan["sinks"] is not None:
+    if n is None or n >= SINK_DECIDE_AT or plan["sinks"] is not None:
         return
     # an event record is prohibited while another thread records a graph: that call goes unread
     with _outside_capture() as safe:
