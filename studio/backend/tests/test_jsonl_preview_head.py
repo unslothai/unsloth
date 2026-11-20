@@ -180,7 +180,7 @@ def test_dates_preview_as_written(tmp_path, suffix):
         path.write_text(json.dumps(rows), encoding = "utf-8")
     else:
         _write_jsonl(path, rows)
-    dataset, _ = local._stream_file_preview_slice(path, 10)
+    dataset, _ = local._stream_file_preview_slice(path, 10, dates_as_written = True)
     assert dataset.to_list() == rows
 
 
@@ -189,7 +189,7 @@ def test_dates_next_to_an_int_past_int64_preview(tmp_path):
     _write_jsonl(
         path, [{"when": "1945-05-08", "id": 9223372036854775808, "m": {"t": "2021-05-03"}}]
     )
-    dataset, _ = local._stream_file_preview_slice(path, 10)
+    dataset, _ = local._stream_file_preview_slice(path, 10, dates_as_written = True)
     assert dataset.to_list() == [{"when": "1945-05-08", "id": 2.0**63, "m": {"t": "2021-05-03"}}]
 
 
@@ -198,6 +198,21 @@ def test_dated_json_array_preview_keeps_a_column_first_seen_later(tmp_path):
     rows[11]["system"] = "be brief"
     path = tmp_path / "train.json"
     path.write_text(json.dumps(rows), encoding = "utf-8")
-    dataset, _ = local._stream_file_preview_slice(path, 10)
+    dataset, _ = local._stream_file_preview_slice(path, 10, dates_as_written = True)
     assert dataset.column_names == ["q", "when", "system"]
     assert dataset[0] == {"q": "0", "when": "1945-05-08", "system": None}
+
+
+def test_dated_preview_keeps_the_loader_types_of_other_columns(tmp_path):
+    rows = [{"when": "1945-05-08", "output": 7}] * 10 + [{"when": "1945-05-09", "output": 1.5}]
+    path = tmp_path / "train.jsonl"
+    path.write_bytes(b"\xef\xbb\xbf" + "".join(json.dumps(r) + "\n" for r in rows).encode())
+    dataset, _ = local._stream_file_preview_slice(path, 10, dates_as_written = True)
+    assert dataset[0] == {"when": "1945-05-08", "output": 7.0}
+
+
+def test_cached_hub_previews_keep_the_loader_dates(tmp_path):
+    path = tmp_path / "train.jsonl"
+    _write_jsonl(path, [{"when": "1945-05-08"}])
+    dataset, _ = local._stream_file_preview_slice(path, 10)
+    assert str(dataset[0]["when"]) == "1945-05-08 00:00:00"

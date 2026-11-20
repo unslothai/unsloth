@@ -251,7 +251,11 @@ def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | Non
     return [{key: row.get(key) for key in keys} for row in rows], b"".join(window)
 
 
-def _jsonl_rows_dataset(rows: list[dict], window: bytes):
+def _jsonl_rows_dataset(
+    rows: list[dict],
+    window: bytes,
+    dates_as_written: bool = False,
+):
     import io
 
     import pyarrow as pa
@@ -264,8 +268,8 @@ def _jsonl_rows_dataset(rows: list[dict], window: bytes):
         # The loader's reader types as training does; one block, no threads: #15681 segfaults only threaded.
         options = paj.ReadOptions(use_threads = False, block_size = len(window))
         table = paj.read_json(io.BytesIO(window), read_options = options)
-        if has_timestamp(table.schema):
-            # Training keeps date strings as written, so the preview does too.
+        if dates_as_written and has_timestamp(table.schema):
+            # Local JSON training keeps date strings as written, so its preview does too.
             parse = paj.ParseOptions(explicit_schema = timestamps_as_strings(table.schema))
             table = paj.read_json(io.BytesIO(window), read_options = options, parse_options = parse)
         return Dataset.from_list(table.slice(0, len(rows)).to_pylist())
@@ -277,7 +281,13 @@ def _jsonl_rows_dataset(rows: list[dict], window: bytes):
             raise error from None
 
 
-def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
+def _stream_file_preview_slice(
+    path: Path,
+    preview_size: int,
+    *,
+    dates_as_written: bool = False,
+    **load_kwargs,
+):
     """Stream the first ``preview_size`` rows so a large file is never fully parsed into Arrow; returns ``(Dataset, None)`` or ``None`` if empty/unsupported."""
     from itertools import islice
 
@@ -288,7 +298,7 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
         if not load_kwargs:
             head = _jsonl_head(path, preview_size)
             if head is not None:
-                return (_jsonl_rows_dataset(*head), None) if head[0] else None
+                return (_jsonl_rows_dataset(*head, dates_as_written), None) if head[0] else None
         loader = "json"
     elif name.endswith((".csv", ".tsv")):
         loader = "csv"
@@ -312,18 +322,29 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
     if not rows:
         return None
     preview = Dataset.from_list(rows, features = load_kwargs.get("features"))
-    if loader == "json" and not load_kwargs:
-        from utils.datasets.json_rows import has_timestamp, head_rows
-        if has_timestamp(preview.features.arrow_schema):
-            # Training keeps date strings as written, so the preview does too.
+    if dates_as_written and loader == "json" and not load_kwargs:
+        import pyarrow as pa
+        from datasets import Features
+
+        from utils.datasets.json_rows import has_timestamp, head_rows, timestamps_as_strings
+
+        schema = preview.features.arrow_schema
+        if has_timestamp(schema):
+            # The streamed schema keeps the loader's columns and types; only dates read as written.
             try:
                 written = head_rows(path, preview_size)
-                # Streamed rows carry the loader's column union, past the preview rows too.
-                keys = dict.fromkeys([*rows[0], *(key for row in written for key in row)])
                 preview = Dataset.from_list(
-                    [{key: row.get(key) for key in keys} for row in written]
+                    [{key: row.get(key) for key in schema.names} for row in written],
+                    features = Features.from_arrow_schema(timestamps_as_strings(schema)),
                 )
-            except (OSError, ValueError, TypeError, OverflowError, AttributeError):
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                OverflowError,
+                AttributeError,
+                pa.ArrowException,
+            ):
                 pass
     return preview, None
 
@@ -424,7 +445,10 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
 
     if suffix in (".json", ".jsonl", ".csv"):
         preview = _stream_file_preview_slice(
-            dataset_path, preview_size, **csv_as_text_kwargs([dataset_path])
+            dataset_path,
+            preview_size,
+            dates_as_written = True,
+            **csv_as_text_kwargs([dataset_path]),
         )
         if preview is None:
             raise HTTPException(
