@@ -1226,7 +1226,6 @@ class VLMPromptCacheSession:
         self._owns = dispatch is not None and self.window == self.step and not experts_offloaded
         self._max_new_tokens, self._converts = max_new_tokens, converts
         self._keeps_rows = None
-        # (length, skeleton, replay) the turn's final cache fills at finish.
         self._pending = []
 
     def __enter__(self):
@@ -1268,8 +1267,7 @@ class VLMPromptCacheSession:
         # mlx-vlm resumes past audio placeholders, which Gemma 4's helper maps to per-layer row 0.
         audio_end = media_prefix_end(token_ids, self._audio_token_ids)
         if not self._reuse or 0 < origin < audio_end:
-            # Nothing resumed or captured: without the hook a media block's prefix lacks the seam's
-            # position fixes, and here an audio placeholder follows it. Freed as a miss would be.
+            # Freed as a miss: no reuse, or an audio placeholder after the media block.
             self._keep(None)
             self._store.release_held()
             return 0
@@ -1283,7 +1281,6 @@ class VLMPromptCacheSession:
             return 0
         entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
         if prefix_len < audio_end:
-            # A miss, so nothing stays held beside the prefill.
             entries, prefix_len = None, 0
             self._store.release_held()
         self._handed_over = (
@@ -6301,7 +6298,6 @@ class MLXInferenceBackend:
                 step = self._grid_step(),
                 window = self._session_window(),
                 dispatch = dispatch,
-                # Without the hook only the class swap captures, which a drafter cannot run under.
                 reuse = dispatch is not None or not drafting,
                 max_new_tokens = max_new_tokens,
                 converts = bool(self._kv_runtime_quant_kwargs()),
