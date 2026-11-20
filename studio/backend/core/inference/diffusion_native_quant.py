@@ -660,7 +660,7 @@ def native_linear_class():
                     src.device if isinstance(src, torch.Tensor) and src.is_cuda else None
                 )
                 self._rdna = shape_ok and rdna.prepare(weight_device)
-                if shape_ok and not self._rdna:
+                if shape_ok and not self._rdna and not rdna.rdna_triton_disabled():
                     try:
                         from .rocm_bf16 import is_rocm_torch
                         self._rdna_rocm = bool(is_rocm_torch(torch))

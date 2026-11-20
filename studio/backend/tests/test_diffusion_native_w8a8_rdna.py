@@ -215,3 +215,16 @@ def test_layer_built_off_its_card_follows_the_operand_card(monkeypatch, rocm):
     assert layer._rdna is False
     assert layer._rdna_on(_operand(1)) is rocm
     assert layer._rdna_on(_operand(0)) is False
+
+
+def test_kill_switch_keeps_a_layer_off_the_rdna_kernels_after_a_card_passed(monkeypatch):
+    # A card that passed its probe earlier in the process must not pull a new layer onto RDNA once disabled.
+    import core.inference.rocm_bf16 as rocm_bf16
+
+    _fresh_state(monkeypatch, on = {1: True})
+    monkeypatch.setenv(rdna.RDNA_TRITON_ENV, "0")
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda t: True)
+    lin = torch.nn.Linear(512, 256, dtype = torch.float32)
+    layer = nq.native_linear_class()(lin, nq.NATIVE_INT8, act_int8 = True, rot_group = 256)
+    assert layer._rdna is False and layer._rdna_rocm is False
+    assert layer._rdna_on(_operand(1)) is False
