@@ -3,6 +3,9 @@
 
 """MLX context fitting: the orchestrator preflight and the tool loop's per-turn refit."""
 
+import copy
+import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -383,3 +386,87 @@ def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(
     heads = [str(prompt[:3]) for prompt in prompts]
     moves = sum(before != after for before, after in zip(heads, heads[1:]))
     assert moves < len(prompts) // 2, moves
+
+
+@pytest.mark.parametrize("engine", ["mlx", "vllm", "sglang"])
+@pytest.mark.parametrize("system_prompt", ["", "Analyze the document."])
+@pytest.mark.parametrize("tool_loop", [False, True])
+def test_compaction_without_eviction_reaches_the_backend(
+    archive_calls, engine, system_prompt, tool_loop
+):
+    backend = _backend()
+    backend.models["mlx-test"] = {
+        "context_length": 4096,
+        **({"is_mlx": True} if engine == "mlx" else {"engine": engine}),
+    }
+    if engine != "mlx":
+        backend._managed_engine = SimpleNamespace(stop = lambda: True)
+
+    def count(messages, *_args, **_kwargs):
+        return 150 + sum(len(json.dumps(m)) // 4 for m in messages), "measured"
+
+    backend.count_chat_tokens = count
+    messages = [
+        {"role": "user", "content": "Find every exception and its condition."},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "inspect",
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "arguments": json.dumps({"code": "# inspect the input\n" * 800}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "python",
+            "tool_call_id": "inspect",
+            "content": "EARLIER FINDINGS " * 200,
+        },
+        {"role": "user", "content": "List the findings."},
+    ]
+    before = copy.deepcopy(messages)
+    assert count(messages)[0] > 4096
+
+    result = backend.compact_chat_context(
+        messages,
+        system_prompt = system_prompt,
+        max_tokens = 512,
+        context_overflow = "truncate_oldest",
+        context_policy = "rolling",
+        tool_loop = tool_loop,
+        tools = [tools_mod.PYTHON_TOOL] if tool_loop else None,
+    )
+
+    fitted = result["messages"]
+    assert count(fitted)[0] <= 3584
+    assert result["system_prompt"] == ""
+    assert [m for m in fitted if m["role"] == "system"] == (
+        [{"role": "system", "content": system_prompt}] if system_prompt else []
+    )
+    assert messages[0] in fitted and messages[2] in fitted
+    assert fitted[-1] is messages[-1]
+    assert len(fitted) == len(messages) + bool(system_prompt)
+    assert messages == before
+    assert result["events"] == [] and archive_calls == []
+    assert result["boundary_applied"] is True
+
+
+@pytest.mark.parametrize("engine", ["mlx", "vllm", "sglang"])
+def test_an_already_fitting_prompt_keeps_its_system_prompt_separate(archive_calls, engine):
+    backend = _backend()
+    backend.models["mlx-test"] = {
+        "context_length": 4096,
+        **({"is_mlx": True} if engine == "mlx" else {"engine": engine}),
+    }
+    messages = [{"role": "user", "content": "Hi"}]
+    result = _fit(backend, messages)
+    assert result["messages"] == messages
+    assert result["messages"][0] is messages[0]
+    assert result["system_prompt"] == "you are helpful"
+    assert result["events"] == [] and archive_calls == []
+    assert result["boundary_applied"] is True

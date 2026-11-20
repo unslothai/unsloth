@@ -39374,9 +39374,10 @@ class LlamaCppBackend:
             """Evicts older turns from a continuation one eviction short, using the plain fit only, not the full preflight (which would archive and recall again)."""
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
+            _candidate = list(candidate)
             try:
                 _fitted, _truncation = _fit_with_instruction_pins(
-                    list(candidate),
+                    _candidate,
                     context_length = self._effective_context_length,
                     # Room the continuation needs, not the caller's cap (a small cap overstates room).
                     max_tokens = max(
@@ -39400,7 +39401,9 @@ class LlamaCppBackend:
             except Exception:
                 logger.debug("continuation eviction: fit failed", exc_info = True)
                 return None
-            if not _truncation or not _truncation.get("dropped_messages"):
+            if not _truncation:
+                return _fitted if _fitted is not _candidate else None
+            if not _truncation.get("dropped_messages"):
                 return None
             logger.info(
                 "Continuation did not fit; evicted %s older message(s) to try to keep it",
