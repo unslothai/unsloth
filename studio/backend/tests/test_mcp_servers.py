@@ -2561,8 +2561,8 @@ def test_message_matches_send_ranked_schemas_and_keep_ran_tools_callable(
     assert f'"name":"{best}"' in block and f'"name":"{ran}"' not in block
     again = _thread_turn(tools_mod, searching, chat)
     assert again[2] == accepted and again[1][-1]["content"] == block
-    # The listing and the matches share one preload share: no room left, no schemas sent.
-    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
+    # The matches have their own share: one too large for it is not sent.
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_MATCH_SHARE", 30 / searching)
     listing, sent, accepted = _thread_turn(tools_mod, searching, chat)
     assert listing == second and sent == [] and accepted == [ran]
 
@@ -2713,6 +2713,45 @@ def test_mcp_listing_refits_the_held_tools_when_a_schema_grows(tmp_path, monkeyp
     assert _names(_thread_listing(tools_mod, searching, chat)) == ["mcp_tool_search", ping, create]
     sizes["ping"] = 90
     assert _names(_thread_listing(tools_mod, searching, chat)) == ["mcp_tool_search", ping]
+
+
+def test_a_later_topic_gets_a_card_when_the_listing_fills_its_share(
+    tmp_path, monkeypatch, searching
+):
+    """Large schemas in a small window: the first listing spends the preload share, and the matches still fit."""
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if text.startswith("["):
+            return sum(
+                cost(json.dumps(item, separators = (",", ":")), ctx) for item in json.loads(text)
+            )
+        if '"name":"mcp_tool_search"' in text:
+            return 30
+        return 35 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 100 / searching)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_MATCH_SHARE", 40 / searching)
+    ping, create, move = (f"mcp__srv1__{name}" for name in ("ping", "create-pages", "move-pages"))
+    names = [spec["function"]["name"] for spec in tools_mod._cached_mcp_catalog()]
+    rankings = {"first": [ping, create], "second": [move]}
+    monkeypatch.setattr(
+        tools_mod,
+        "_mcp_ranked",
+        lambda specs, query: ([names.index(name) for name in rankings[query]], 0),
+    )
+
+    chat = [{"role": "user", "content": "first"}]
+    first = _thread_listing(tools_mod, searching, chat)
+    assert _names(first) == ["mcp_tool_search", ping, create]
+    chat += [{"role": "assistant", "content": "Done."}, {"role": "user", "content": "second"}]
+    listing, sent, matched = _thread_turn(tools_mod, searching, chat)
+    assert listing == first and matched == [move]
+    assert f'"name":"{move}"' in sent[-1]["content"]
 
 
 def test_mcp_listing_follows_a_change_of_subject_with_the_message(tmp_path, monkeypatch, searching):

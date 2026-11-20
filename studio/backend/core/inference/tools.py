@@ -13852,6 +13852,9 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
+# The tools ranked for a later message, sent after it as a search, get their own share: the fixed listing may
+# already fill the preload one, and small models rarely search for a tool themselves.
+_MCP_TOOL_MATCH_SHARE = 0.15
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
@@ -14131,9 +14134,15 @@ def _mcp_best(specs: list[dict]) -> list[str]:
     return ranked[:_MCP_TOOL_PRELOAD]
 
 
-def _mcp_fill(listing: list[dict], names: list[str], by_name: dict, ctx: int) -> list[dict]:
+def _mcp_fill(
+    listing: list[dict],
+    names: list[str],
+    by_name: dict,
+    ctx: int,
+    share: float | None = None,
+) -> list[dict]:
     chosen = list(listing)
-    left = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
+    left = ctx * (_MCP_TOOL_PRELOAD_SHARE if share is None else share) - _text_token_cost(
         json.dumps(listing, separators = (",", ":")), ctx
     )
     for name in names:
@@ -14212,20 +14221,17 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
                 spec["function"]["name"] for spec in _mcp_fill(listing, held, by_name, ctx)[1:]
             ]
     _mcp_hold(names)
-    _mcp_note_matches(specs, by_name, listing[0], names, ctx)
+    _mcp_note_matches(specs, by_name, names, ctx)
     return listing[:1] + [by_name[name] for name in names]
 
 
-def _mcp_note_matches(
-    specs: list[dict], by_name: dict, search: dict, listed: list[str], ctx: int
-) -> None:
+def _mcp_note_matches(specs: list[dict], by_name: dict, listed: list[str], ctx: int) -> None:
     box = _MCP_LISTING_MATCHES.get()
     if box is None or _mcp_thread_key() is None:
         return
     best = [name for name in _mcp_best(specs) if name not in listed]
-    # Charged against the listing's own share: the exchange sits in the protected tail, past truncation.
-    base = [search] + [by_name[name] for name in listed]
-    matches = _mcp_fill(base, best, by_name, ctx)[len(base) :]
+    # Bounded on its own: the exchange sits in the protected tail, past truncation.
+    matches = _mcp_fill([], best, by_name, ctx, _MCP_TOOL_MATCH_SHARE)
     names = [spec["function"]["name"] for spec in matches]
     names += [name for name in _mcp_ran(by_name) if name not in listed]
     box.update(matches = matches, names = list(dict.fromkeys(names)))
