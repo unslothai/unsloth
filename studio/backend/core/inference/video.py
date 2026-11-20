@@ -12096,8 +12096,10 @@ class VideoBackend:
             if ltx25_client is not None:
                 # The worker loaded the Gemma 4 encoder while the DiT loaded; a failure there fails this load.
                 ltx25_client.wait_ready(self._cancel_event if _load_token is not None else None)
-            from . import diffusion_prompt_cache
+            from . import diffusion_prompt_cache, video_t5_trim
 
+            # Before the prompt cache wraps encode_prompt: Wan's umT5 skips its padded positions on a CPU / MPS encoder.
+            video_t5_trim.install(pipe, logger)
             diffusion_prompt_cache.install(
                 pipe,
                 identity = {
