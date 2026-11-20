@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <rect width="1200" height="720" fill="#f6f7f9"/>
+  <rect x="70" y="48" width="1060" height="624" rx="18" fill="#fff" stroke="#d9dde5"/>
+  <text x="110" y="108" font-family="Inter,Arial,sans-serif" font-size="30" font-weight="700" fill="#1d2430">System and Engine</text>
+  <text x="110" y="140" font-family="Inter,Arial,sans-serif" font-size="16" fill="#697386">Monitor this Unsloth server's hardware and storage.</text>
+  <line x1="110" y1="180" x2="1090" y2="180" stroke="#e4e7ec"/>
+  <text x="110" y="226" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="650" fill="#1d2430">GPU devices</text>
+  <text x="110" y="292" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="650" fill="#1d2430">NVIDIA GeForce RTX 4090</text>
+  <text x="110" y="322" font-family="Inter,Arial,sans-serif" font-size="15" fill="#697386">GPU 0, CUDA · 18.2 GiB used of 24 GiB</text>
+  <rect x="110" y="352" width="600" height="12" rx="6" fill="#e7ebf0"/>
+  <rect x="110" y="352" width="455" height="12" rx="6" fill="#7d8798"/>
+  <text x="110" y="404" font-family="Inter,Arial,sans-serif" font-size="15" fill="#697386">GPU load 99% · 78°C · 444 W / 450 W</text>
+  <rect x="110" y="438" width="860" height="86" rx="10" fill="#fff4d6" stroke="#f0c36d"/>
+  <text x="132" y="471" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="650" fill="#8a5b00">GPU power is near its configured limit.</text>
+  <text x="132" y="498" font-family="Inter,Arial,sans-serif" font-size="14" fill="#8a5b00">If the system reboots under inference load, check PSU and thermal headroom or lower the limit with your GPU vendor's control panel.</text>
+  <text x="110" y="590" font-family="Inter,Arial,sans-serif" font-size="18" fill="#697386">After: the advisory appears only when draw is at least 95% of a known limit.</text>
+</svg>
