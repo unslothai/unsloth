@@ -18,10 +18,12 @@ import contextlib
 import functools
 import operator
 import os
+import sys
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 import torch
+import torch.utils.checkpoint
 from torch import Tensor
 import torch.nn.functional as F
 from packaging.version import Version
@@ -1764,7 +1766,31 @@ def _auto_saves_attention(config, context) -> bool:
         and config.backend == SDPA
         and context.seq_info is None
         and context.prefix_seg_info is None
+        and _saved_attention_frames_possible()
     )
+
+
+def _unsloth_checkpoint_installed_now() -> bool:
+    return (
+        getattr(torch.utils.checkpoint.CheckpointFunction, "__name__", "")
+        == "UnslothCheckpointFunction"
+    )
+
+
+# Dynamo cannot read a Function class's name; patched once at get_peft_model, before any trace.
+_unsloth_checkpoint_installed = _constant_probe(_unsloth_checkpoint_installed_now)
+
+
+def _saved_attention_frames_possible() -> bool:
+    # Frames exist only inside Unsloth's smart checkpoint (use_gradient_checkpointing = "unsloth"); any
+    # other call reaches saved_attention_call with no frame and runs plain behind torch.compiler.disable:
+    # a graph break per layer for nothing, Unsupported under a user's fullgraph=True.
+    if not _unsloth_checkpoint_installed():
+        return False
+    if not torch.compiler.is_compiling():
+        return True
+    flag = getattr(sys.modules.get("unsloth.models._block_compile"), "_IN_COMPILED_REGION", None)
+    return bool(flag) and bool(flag[0])
 
 
 def _load_saved_attention():
