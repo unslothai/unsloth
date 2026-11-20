@@ -737,7 +737,9 @@ class LemonadeNpuBackend:
                     binary = self._enable_flm()
                     self._write_marker(lemond = str(binary))
                 except NpuError as exc:
-                    if not self._ryzen_usable():
+                    # Only a code integrity refusal: a network error or an old NPU driver
+                    # would otherwise switch the user to another runtime and catalog.
+                    if not (self._ryzen_usable() and _code_integrity_refusal(exc)):
                         raise
                     self._enable_ryzen(exc)
                 self._state = "ready"

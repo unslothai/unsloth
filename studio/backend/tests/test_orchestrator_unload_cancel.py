@@ -3479,6 +3479,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/managed_engine.py",
         "core/inference/npu_backend.py",
         "core/inference/orchestrator.py",
+        "core/inference/ryzenai_runtime.py",
         "core/inference/sd_cpp_engine.py",
         "core/inference/sd_cpp_server.py",
         "core/inference/stt_ggml_sidecar.py",

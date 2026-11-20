@@ -28,12 +28,14 @@ from typing import Any, Iterator, Optional
 
 import httpx
 
+from utils.child_stdio import utf8_child_env
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.process_lifetime import (
     adopt_pid,
     child_popen_kwargs,
     forget_pid,
+    is_process_shutting_down,
     spawn_on_lifetime_thread,
     terminate_pid,
 )
@@ -191,7 +193,7 @@ class RyzenAiRuntime:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = timeout,
-                env = child_env_without_native_path_secret(),
+                env = utf8_child_env(child_env_without_native_path_secret()),
                 **windows_hidden_subprocess_kwargs(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -298,8 +300,10 @@ class RyzenAiServer:
             s.bind(("127.0.0.1", 0))
             port = int(s.getsockname()[1])
         api_key = secrets.token_urlsafe(32)
-        env = child_env_without_native_path_secret()
+        env = utf8_child_env(child_env_without_native_path_secret())
         env["UNSLOTH_RYZENAI_API_KEY"] = api_key
+        if is_process_shutting_down():
+            raise RyzenAiError("Unsloth is shutting down; not starting the RyzenAI NPU server.")
         cmd = [
             sys.executable, "-m", "core.inference.ryzenai_server",
             "--dll-dir", str(self.dll_dir), "--model-dir", str(self.model_dir),
@@ -329,6 +333,10 @@ class RyzenAiServer:
             raise RyzenAiError(f"Starting the RyzenAI NPU server failed: {exc}") from exc
         adopt_pid(proc.pid)
         self._process, self.port, self.api_key = proc, port, api_key
+        # Shutdown may have swept children before this one was adopted.
+        if is_process_shutting_down():
+            self.stop()
+            raise RyzenAiError("Unsloth is shutting down; not starting the RyzenAI NPU server.")
         threading.Thread(
             target = self._drain, args = (proc,), daemon = True, name = "ryzenai-drain"
         ).start()
@@ -344,6 +352,7 @@ class RyzenAiServer:
                     f"http://127.0.0.1:{port}/health",
                     headers = {"Authorization": f"Bearer {api_key}"},
                     timeout = 2.0,
+                    trust_env = False,  # loopback: never through HTTP_PROXY
                 )
                 if response.status_code == 200:
                     return

@@ -674,3 +674,15 @@ def test_a_reasoning_answer_is_split_in_the_response():
         assert {"reasoning_content": "Hmm"} in deltas and {"content": "42"} in deltas
     finally:
         server.shutdown()
+
+
+def test_a_network_failure_keeps_fastflowlm_instead_of_falling_back(backend, monkeypatch):
+    npu = backend
+
+    def flm_offline():
+        raise nb.NpuError("Installing FastFlowLM failed: [Errno 11001] getaddrinfo failed")
+
+    monkeypatch.setattr(npu, "_enable_flm", flm_offline)
+    monkeypatch.setattr(npu, "_enable_ryzen", lambda exc: pytest.fail("fell back to RyzenAI"))
+    with pytest.raises(nb.NpuError, match = "getaddrinfo"):
+        npu.enable()
