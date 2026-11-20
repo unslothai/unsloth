@@ -17244,7 +17244,6 @@ def _fetch_url_raw(
     refused = _page_refusal(canonical_host)
     if refused:
         return refused, "", ""
-    # Time spent waiting on the owner's approval is not spent on the read.
     if deadline is not None:
         deadline += time.monotonic() - asked_at
 
