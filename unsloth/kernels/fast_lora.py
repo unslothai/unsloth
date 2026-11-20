@@ -681,9 +681,12 @@ class LoRA_MLP(torch.autograd.Function):
                     MLP_DOWN_SKIP_STATS["skipped"] += 1
             if skip_down:
                 # Checkpoint replay of a layer whose output nothing reads: backward needs only X, e, g.
-                i = X.new_empty(X.shape)
-                if _SKIPPED_FILL is not None:
-                    i.fill_(_SKIPPED_FILL)
+                # Out of place: an ATen fill_ on a returned fresh tensor compiles a wrong gradient (#14712).
+                i = (
+                    X.new_empty(X.shape)
+                    if _SKIPPED_FILL is None
+                    else X.new_full(X.shape, _SKIPPED_FILL)
+                )
             else:
                 h = _forward_function(e, g)
                 i = matmul_lora(
