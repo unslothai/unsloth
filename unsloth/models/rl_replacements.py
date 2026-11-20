@@ -1882,6 +1882,10 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
         # children's own, leaving every module in its saved mode.
         for module, training in was_training or ():
             module.train(training)
+        # modules() yields a child shared by two parents once, so a later parent's recursive train() can flip it
+        # again: set every saved flag directly (each module's own train() side effects already ran above).
+        for module, training in was_training or ():
+            module.training = training
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
