@@ -78,6 +78,14 @@ class LoraConfig(BaseModel):
     finetune_attention_modules: bool = True
     finetune_mlp_modules: bool = True
 
+    @field_validator("target_modules", mode = "before")
+    @classmethod
+    def _join_target_modules_list(cls, value):
+        # A YAML/JSON list (the form Studio's model_defaults use) means the same as the CLI's commas.
+        if isinstance(value, (list, tuple)):
+            return ",".join(str(module) for module in value)
+        return value
+
 
 class LoggingConfig(BaseModel):
     model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
