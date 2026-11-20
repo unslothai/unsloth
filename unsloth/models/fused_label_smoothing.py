@@ -113,6 +113,11 @@ def _skip_reason(trainer, model, inputs, return_outputs):
         return "compute_loss_func"
     if getattr(trainer.args, "loss_type", None) not in (None, "nll"):
         return "loss_type"
+    # Only transformers' own LabelSmoother: a subclass or custom callable may compute another objective.
+    if type(smoother).__name__ != "LabelSmoother" or not type(smoother).__module__.startswith(
+        "transformers."
+    ):
+        return "smoother"
     if (
         not float(getattr(smoother, "epsilon", 0.0) or 0.0) > 0.0
         or getattr(smoother, "ignore_index", -100) != -100
@@ -156,11 +161,19 @@ class _FusedLabelSmoother:
     def _fallback(self, model_output, labels, shift_labels, kwargs):
         STATS["fallback"] += 1
         _FALLBACK_MODELS.add(self._model)
-        logits = (
-            model_output.get("logits", None)
-            if isinstance(model_output, dict)
-            else (model_output[1] if len(model_output) > 1 else None)
-        )
+        if isinstance(model_output, dict):
+            logits = model_output.get("logits", None)
+        else:
+            # A labelled (injected) forward returns (loss, logits, ...); a label-free one (logits, ...).
+            has_loss = (
+                self._injection.done
+                and len(model_output) > 1
+                and isinstance(model_output[0], torch.Tensor)
+                and model_output[0].dim() == 0
+            )
+            logits = (
+                model_output[1] if has_loss else (model_output[0] if len(model_output) else None)
+            )
         if not (
             isinstance(logits, torch.Tensor)
             and logits.dim() == labels.dim() + 1
@@ -172,6 +185,10 @@ class _FusedLabelSmoother:
             # No usable logits came back: run the stock label-free forward again.
             del model_output, logits
             model_output = self._model(*injection.args, **injection.kwargs)
+            return self.original(model_output, labels, shift_labels = shift_labels, **kwargs)
+        # LabelSmoother reads output[0] of a tuple, which is the loss when labels were injected.
+        if not isinstance(model_output, dict):
+            model_output = (logits,)
         return self.original(model_output, labels, shift_labels = shift_labels, **kwargs)
 
     def __call__(
