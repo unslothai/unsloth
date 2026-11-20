@@ -149,6 +149,7 @@ def _fake_cuda(monkeypatch, used):
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda i = 0: 10 * gb if i == 0 else 0)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda i = 0: 8 * gb if i == 0 else 0)
+    monkeypatch.setattr(torch._C, "_cuda_hasPrimaryContext", lambda i: i == 0, raising = False)
 
     def mem_get_info(i = 0):
         assert i == 0, "touched a device this process does not use"
@@ -265,3 +266,15 @@ def test_wiring():
     for name in ("llama.py", "vision.py"):
         source = (ROOT / "unsloth" / "models" / name).read_text()
         assert 'report_memory("vLLM init", llm)' in source
+
+
+def test_memory_report_skips_current_device_without_context(monkeypatch):
+    # Model on cuda:1 while the current device stays cuda:0: querying cuda:0 would open a context there.
+    gb = 1024**3
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda i = 0: 10 * gb if i == 1 else 0)
+    monkeypatch.setattr(torch._C, "_cuda_hasPrimaryContext", lambda i: i == 1, raising = False)
+    assert rr._devices() == [1]

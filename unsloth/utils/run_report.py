@@ -40,11 +40,12 @@ def _devices():
     try:
         if not torch.cuda.is_available() or not torch.cuda.is_initialized():
             return []
-        current = torch.cuda.current_device()
+        has_context = getattr(torch._C, "_cuda_hasPrimaryContext", None)
         return [
             index
             for index in range(torch.cuda.device_count())
-            if index == current or torch.cuda.memory_reserved(index) > 0
+            if torch.cuda.memory_reserved(index) > 0
+            or (has_context is not None and has_context(index))
         ]
     except Exception:
         return []
