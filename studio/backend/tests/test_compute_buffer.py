@@ -1560,3 +1560,78 @@ class TestOutputRowsByBuild:
             assert b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = 1) < (
                 dims["vocab"] * ub * 4
             )
+
+
+class TestComputeBufferInkling2:
+    """Measured CUDA0 MiB: Inkling-2-Mini UD-Q4_K_XL, b12568, 4 slots, --kv-unified, RTX 6000 Ada."""
+
+    _MEASURED = [
+        (65536, 512, "f16", True, 6523.02),
+        (131072, 512, "f16", True, 12859.02),
+        (262144, 512, "f16", True, 25531.02),
+        (800000, 512, "f16", True, 77530.77),
+        (65536, 256, "f16", True, 3261.34),
+        (65536, 1024, "f16", True, 13048.63),
+        (65536, 512, "q8_0", True, 6517.02),
+        (32768, 512, "f16", False, 4935.51),
+        (65536, 512, "f16", False, 9671.51),
+    ]
+
+    def _inkling2_mini(self, arch = "inkling2"):
+        b = _backend(vocab = 200058, embd = 2304, arch = arch)
+        b._n_layers = 48
+        b._n_heads = None
+        b._n_heads_by_layer = [24] * 48
+        b._n_kv_heads = 8
+        b._kv_key_length = 128
+        b._kv_value_length = 128
+        b._feed_forward_length = 1152
+        b._n_experts = 128
+        b._expert_used_count = 8
+        b._expert_feed_forward_length = 1152
+        b._sliding_window = 1024
+        b._sliding_window_pattern = ([True] * 5 + [False]) * 8
+        b._attn_res_block_size = 6
+        return b
+
+    def _total_mib(self, b, ctx, ub, ct, fa):
+        return (
+            b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = 4)
+            + b._compute_buffer_ctx_bytes(ctx, ub, ct, flash_attn = fa, n_parallel = 4)
+        ) / MIB
+
+    @pytest.mark.parametrize("ctx,ub,ct,fa,measured", _MEASURED)
+    def test_estimate_tracks_measured_buffer(self, ctx, ub, ct, fa, measured):
+        assert self._total_mib(self._inkling2_mini(), ctx, ub, ct, fa) == pytest.approx(
+            measured, rel = 0.01
+        )
+
+    def test_rate_is_the_two_bias_copies_index_and_mask(self):
+        b = self._inkling2_mini()
+        per_tok = b._compute_buffer_ctx_bytes(1_000_000, 512, "f16") / 1_000_000
+        assert per_tok == 512 * (8 * 24 + 4 + 2) == 101376
+
+    def test_generic_path_underestimated_the_failed_load(self):
+        b = self._inkling2_mini(arch = "llama")
+        assert self._total_mib(b, 800000, 512, "f16", True) < 77530.77 * 0.02
+
+    def test_bias_heads_come_from_full_attention_layers(self):
+        b = self._inkling2_mini()
+        b._n_heads_by_layer = ([16] * 5 + [32]) * 8
+        assert b._inkling2_bias_heads() == 32
+        b._n_heads_by_layer = None
+        b._n_heads = 20
+        assert b._inkling2_bias_heads() == 20
+
+    def test_layer_split_adds_only_the_extra_mask_copies(self):
+        b = self._inkling2_mini()
+        delta = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2
+        single = b._compute_buffer_ctx_bytes(65536, 512, "f16")
+        split = b._compute_buffer_ctx_bytes(65536, 512, "f16", layer_split = True)
+        assert split - single == delta * 65536
+
+    def test_residual_blocks_widen_the_activation_estimate(self):
+        b = self._inkling2_mini()
+        with_blocks = b._compute_activation_width()
+        b._attn_res_block_size = None
+        assert with_blocks - b._compute_activation_width() == 8 * 2304
