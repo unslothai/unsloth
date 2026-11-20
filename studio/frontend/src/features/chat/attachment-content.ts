@@ -1016,6 +1016,34 @@ function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8
   return Object.keys(rewritten).length ? rewritten : null;
 }
 
+// mammoth drops these wrappers with the runs inside them; a ruby keeps only its base text.
+const DOCX_RUN_WRAPPERS = ["moveTo", "fldSimple", "ruby", "dir", "bdo", "customXml"];
+const DOCX_RUN_WRAPPER_RE = /<(?:[\w.-]+:)?(?:moveTo|fldSimple|ruby|dir|bdo|customXml)[\s/>]/;
+
+export function unwrapDocxRuns(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, unwrapDocxRunParts(archiveParts(archive)));
+}
+
+function unwrapDocxRunParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = select((name) => name.endsWith(".xml"));
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!DOCX_RUN_WRAPPER_RE.test(xml)) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const w = doc.documentElement?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const wrappers = DOCX_RUN_WRAPPERS.flatMap((local) => Array.from(doc.getElementsByTagNameNS(w, local)));
+    for (const wrapper of wrappers) {
+      const content = wrapper.localName === "ruby" ? childElements(wrapper, w, "rubyBase")[0] : wrapper;
+      for (const child of Array.from(content?.childNodes ?? [])) wrapper.parentNode?.insertBefore(child, wrapper);
+      wrapper.parentNode?.removeChild(wrapper);
+    }
+    if (wrappers.length) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  return Object.keys(rewritten).length ? rewritten : null;
+}
+
 const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
 const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
 
@@ -1923,7 +1951,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   let parts: Record<string, Uint8Array> | null = repackedDocxParts(unpacked.entries);
   if (!parts) {
     const repacked = zipSync(unpacked.entries, { level: 0 });
-    const marked = markDocxNotes(writeDocxSuperscripts(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES))));
+    const marked = markDocxNotes(writeDocxSuperscripts(linearizeDocxMath(unwrapDocxRuns(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)))));
     const { value } = await mammoth.extractRawText({
       arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
     });
@@ -1941,6 +1969,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     if (rewritten) parts = { ...parts, ...rewritten };
   };
   apply(writeDocxSymbolParts(select, MAX_OPEN_DOCUMENT_XML_BYTES));
+  apply(unwrapDocxRunParts(select));
   apply(linearizeDocxMathParts(select));
   apply(writeDocxSuperscriptParts(select));
   const marked = markDocxNoteParts(select);
