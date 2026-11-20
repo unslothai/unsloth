@@ -37,3 +37,23 @@ def test_fast_cross_entropy_partly_masked_keeps_the_mean():
     torch.testing.assert_close(
         fast_cross_entropy_loss(logits, labels), expected, rtol = 1e-5, atol = 1e-5
     )
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.parametrize("vocab_size", [256, 65537])
+def test_fast_cross_entropy_masked_rows_skip_nonfinite_logits(vocab_size):
+    from unsloth.kernels.cross_entropy_loss import fast_cross_entropy_loss
+
+    torch.manual_seed(0)
+    logits = torch.randn(1, 4, vocab_size, device = "cuda", dtype = torch.bfloat16)
+    logits[0, 1] = float("nan")
+    logits[0, 3] = float("inf")
+    logits.requires_grad_(True)
+    labels = torch.tensor([[3, -100, 7, -100]], device = "cuda")
+
+    loss = fast_cross_entropy_loss(logits, labels)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert torch.isfinite(logits.grad).all()
+    assert not logits.grad[0, 1].any()
+    assert not logits.grad[0, 3].any()
