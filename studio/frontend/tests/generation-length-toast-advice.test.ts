@@ -36,7 +36,6 @@ type LengthCheck = {
   throwIfReasoningOnlyLength: () => void;
 };
 
-// The real tracker and error; only chat-api's unrelated imports are stubbed.
 const { createReasoningOnlyLengthCheck, GenerationLengthError, offersKvCacheHint } = loadWithStubs<{
   createReasoningOnlyLengthCheck: (window: {
     cap: number | null;
@@ -152,9 +151,7 @@ test("a llama.cpp model that fills its window is also pointed at a q8_0 KV cache
   assert.equal(gguf.stopCause, "context_length");
   assert.match(gguf.message, /increase the Context in Model settings, or disable thinking/);
   assert.match(gguf.message, /q8_0 KV Cache Dtype in Model settings fits more context/);
-  // NPU and provider models have no KV cache setting.
   assert.doesNotMatch(windowFilled(false).message, /KV Cache/);
-  // Max Tokens advice never mentions it.
   assert.throws(
     () =>
       reasoningOnlyRun("length", undefined, {
