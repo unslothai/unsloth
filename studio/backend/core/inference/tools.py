@@ -17235,9 +17235,13 @@ def _fetch_url_raw(
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
         return reason, "", ""
+    asked_at = time.monotonic()
     refused = _page_refusal(canonical_host)
     if refused:
         return refused, "", ""
+    # Time spent waiting on the owner's approval is not spent on the read.
+    if deadline is not None:
+        deadline += time.monotonic() - asked_at
 
     if proxy_hostname is None:
         proxy_hostname = os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1"
@@ -17363,9 +17367,12 @@ def _fetch_url_raw(
                         )
                         if refused:
                             return refused, "", ""
+                    asked_at = time.monotonic()
                     hop_error, current_host = _redirect_hop(current_url, website_policy)
                     if hop_error is not None:
                         return hop_error, "", ""
+                    if deadline is not None:
+                        deadline += time.monotonic() - asked_at
                     continue
 
             coding = (resp.headers.get("Content-Encoding") or "").strip().lower()
