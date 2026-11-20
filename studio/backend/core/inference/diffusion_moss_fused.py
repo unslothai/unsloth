@@ -36,6 +36,33 @@ def _blocks(root: Any) -> list:
     return [m for m in root.modules() if type(m) is _Block]
 
 
+def is_replica_record(key: str, value: Any) -> bool:
+    """The fused Q/K/V Linear lives outside the module tree: a CFG replica's deep copy would keep it on the source
+    card while the record's q / k / v are the replica's, so the replica would run its GEMM across cards."""
+    from .diffusion_moss_image import FUSED_QKV_ATTR
+    return key == FUSED_QKV_ATTR
+
+
+def rebuild_replica(source: Any, replica: Any) -> int:
+    """Re-fuse on the replica's own card each block the source fused (the copy dropped the records)."""
+    from .diffusion_moss_image import FUSED_QKV_ATTR
+    from .diffusion_zimage_fused import _fuse_linears, _share_storage
+
+    n = 0
+    with _LOCK:
+        for src, rep in zip(_blocks(source), _blocks(replica)):
+            rec = src.__dict__.get(FUSED_QKV_ATTR)
+            if rec is None:
+                continue
+            parts = [rep.proj[name] for name in ("q", "k", "v")]
+            fused = _fuse_linears(parts)
+            if fused is None or not _share_storage(fused, parts):
+                continue
+            rep.__dict__[FUSED_QKV_ATTR] = (fused, *parts, rec[4])
+            n += 1
+    return n
+
+
 def _int8_runnable(linear: Any) -> bool:
     from torch import nn
 
