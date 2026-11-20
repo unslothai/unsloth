@@ -2892,7 +2892,8 @@ html[data-chat-font] .aui-root {
 		padding-top: 0;
 	}
 
-	/* Disabled ones (native, aria-disabled, Radix data-disabled) keep the default cursor. */
+	/* Disabled ones (native, aria-disabled, Radix data-disabled) keep the default cursor. A text field
+	   with role="combobox" (the Compare composer) keeps its text cursor. */
 	button:not(:disabled):not([aria-disabled="true"]),
 	summary,
 	label[for],
@@ -2908,7 +2909,7 @@ html[data-chat-font] .aui-root {
 		[role="menuitemcheckbox"],
 		[role="menuitemradio"],
 		[role="option"],
-		[role="combobox"],
+		[role="combobox"]:not(textarea, input, [contenteditable="true"]),
 		[role="link"]
 	):not([aria-disabled="true"]):not([data-disabled]):not(:disabled) {
 		cursor: pointer;
@@ -3433,6 +3434,11 @@ html[data-chat-font] .aui-root {
 		max-height: 100% !important;
 		/* Reserved before typing, or the toggle appearing would reflow the text. */
 		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
+	}
+
+	/* New chat: 8px less gap above the bottom row, taken off the frame's height (minEditorHeight). */
+	.unsloth-composer-line .unsloth-composer-editor[data-new-chat] .unsloth-composer-input {
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1) - 8px);
 	}
 
 	/* Not while the frame eases to a new height (markComposerScrollEdges). */
