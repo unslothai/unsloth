@@ -57,7 +57,7 @@ def install() -> bool:
         def register_parameter(module: Any, name: str, param: Any) -> None:
             original_register_parameter(module, name, param)
             stack = getattr(_tls, "devices", None)
-            if not stack or param is None:
+            if not stack or stack[-1] is None or param is None:
                 return
             # The body of accelerate's register_empty_parameter, for this thread only.
             param_cls = type(module._parameters[name])
@@ -72,9 +72,10 @@ def install() -> bool:
         def init_on_device(device: Any, include_buffers: Optional[bool] = None):
             if include_buffers is None:
                 include_buffers = parse_flag_from_env("ACCELERATE_INIT_INCLUDE_BUFFERS", False)
-            # Pushed in both modes so a nested block's device wins over an outer one for parameters too.
+            # Buffers mode pushes None: the torch.device context places parameters there, and an outer block's
+            # device must not re-wrap them (that would also break tied weights).
             stack = _device_stack()
-            stack.append(device)
+            stack.append(None if include_buffers else device)
             try:
                 if include_buffers:
                     # Buffers: accelerate's own torch.device context, which is already thread-local.

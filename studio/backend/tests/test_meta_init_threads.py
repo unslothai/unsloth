@@ -97,6 +97,25 @@ def test_innermost_device_wins_and_buffers_follow_accelerate():
     assert bn2.weight.is_meta and bn2.running_mean.is_meta
 
 
+def test_include_buffers_keeps_tied_weights_tied():
+    import torch.nn as nn
+    from accelerate import init_empty_weights
+
+    class Tied(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a, self.b = nn.Linear(4, 4), nn.Linear(4, 4)
+            self.b.weight = self.a.weight
+
+    with init_empty_weights(include_buffers = True):
+        m = Tied()
+    assert m.b.weight is m.a.weight and m.a.weight.is_meta
+    with init_empty_weights(include_buffers = False):
+        with init_empty_weights(include_buffers = True):
+            nested = Tied()
+    assert nested.b.weight is nested.a.weight and nested.a.weight.is_meta
+
+
 def test_install_on_import_patches_accelerate_when_it_is_first_imported(tmp_path):
     import pathlib
 
