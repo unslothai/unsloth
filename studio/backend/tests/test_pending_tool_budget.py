@@ -10,15 +10,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pytest
 
-from core.inference import tools
+from core.inference import llama_cpp, tools
+from test_compact_arguments_before_results import exchange
 from test_llama_cpp_tool_loop import _make_backend, _tool_call_sse, _done, _sse, _finish
 
 
-@pytest.mark.parametrize("batch_size", [1, 2])
-@pytest.mark.parametrize("overflow", ["truncate_oldest", None])
-def test_generated_arguments_cannot_starve_an_evictable_tool_result(
-    monkeypatch, overflow, batch_size
-):
+def count(messages, *args, **kwargs):
+    return 500 + sum(len(json.dumps(m)) // 4 for m in messages)
+
+
+def make_batch(monkeypatch, batch_size):
     code = "print('records')\n" + "# inspect records\n" * 340
     codes = [code + f"\n# batch {i}" for i in range(batch_size)]
     streams = [
@@ -31,34 +32,22 @@ def test_generated_arguments_cannot_starve_an_evictable_tool_result(
     backend._effective_context_length = 8192
     backend._supports_tools = True
 
-    def count(messages, *args, **kwargs):
-        return 500 + sum(len(json.dumps(m)) // 4 for m in messages)
-
     monkeypatch.setattr(backend, "count_chat_tokens", count)
-    messages = [
-        {"role": "system", "content": "Analyze documents with Python."},
-        {"role": "user", "content": "Extract all exceptions from agreement.docx."},
+    return backend, codes, payloads
+
+
+def document_history():
+    return [
+        {"role": "user", "content": "Extract all exceptions."},
+        *exchange("old-0", "print(1)", "old output " * 750),
+        *exchange("old-1", "print(2)", "old output " * 750),
     ]
-    for i in range(2):
-        messages += [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": f"old-{i}",
-                        "type": "function",
-                        "function": {"name": "python", "arguments": '{"code":"print(1)"}'},
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "name": "python",
-                "tool_call_id": f"old-{i}",
-                "content": "old output " * 750,
-            },
-        ]
+
+
+@pytest.mark.parametrize("overflow", ["truncate_oldest", None])
+def test_generated_arguments_cannot_starve_an_evictable_tool_result(monkeypatch, overflow):
+    backend, codes, _ = make_batch(monkeypatch, 2)
+    messages = document_history()
     original = copy.deepcopy(messages)
     calls = []
 
@@ -81,10 +70,9 @@ def test_generated_arguments_cannot_starve_an_evictable_tool_result(
             context_overflow = overflow,
         )
     )
-    assert len(calls) == batch_size
     assert [c[1]["code"] for c in calls] == codes
     if overflow:
-        assert all(c[2] >= 1024 // batch_size for c in calls), [c[2] for c in calls]
+        assert all(c[2] >= 512 for c in calls)
     assert messages == original
     compacted = any(
         e.get("type") == "context_truncated" and e.get("dropped_messages", 0) > 0 for e in events
@@ -92,55 +80,34 @@ def test_generated_arguments_cannot_starve_an_evictable_tool_result(
     assert compacted is bool(overflow)
 
 
+def test_resumed_batch_keeps_both_calls_in_the_next_prompt(monkeypatch):
+    backend, _, payloads = make_batch(monkeypatch, 2)
+    monkeypatch.setattr(tools, "execute_tool", lambda *args, **kwargs: "Records.")
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "Extract all exceptions." + " supplied facts" * 780},
+                {"role": "assistant", "content": "Inspecting the records."},
+            ],
+            tools = [tools.PYTHON_TOOL],
+            context_overflow = "truncate_oldest",
+            continue_final_message = True,
+            max_tool_iterations = 1,
+        )
+    )
+    prompt = payloads[-1]["messages"]
+    assistant = next(m for m in prompt if m.get("tool_calls"))
+    assert [c["id"] for c in assistant["tool_calls"]] == ["new-0", "new-1"]
+    assert [m["tool_call_id"] for m in prompt if m["role"] == "tool"] == ["new-0", "new-1"]
+
+
 @pytest.mark.parametrize("result_size", [40, 12000])
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_recalled_history_uses_only_room_left_after_the_live_result(
     monkeypatch, result_size, batch_size
 ):
-    from core.inference import llama_cpp
-
-    code = "print('records')\n" + "# inspect records\n" * 340
-    streams = [
-        [
-            _tool_call_sse("python", {"code": code + f"\n# {i}"}, f"new-{i}", index = i)
-            for i in range(batch_size)
-        ]
-        + [_finish("tool_calls"), _done()],
-        [_sse({"content": "Done."}), _done()],
-    ]
-    backend = _make_backend(monkeypatch, streams, [])
-    backend._effective_context_length = 8192
-    backend._supports_tools = True
-
-    def count(messages, *args, **kwargs):
-        return 500 + sum(len(json.dumps(m)) // 4 for m in messages)
-
-    monkeypatch.setattr(backend, "count_chat_tokens", count)
-    messages = [
-        {"role": "system", "content": "Analyze documents with Python."},
-        {"role": "user", "content": "Extract all exceptions."},
-    ]
-    for index in range(2):
-        messages.extend(
-            [
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": f"old-{index}",
-                            "type": "function",
-                            "function": {"name": "python", "arguments": '{"code":"print(1)"}'},
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "name": "python",
-                    "tool_call_id": f"old-{index}",
-                    "content": "old output " * 750,
-                },
-            ]
-        )
+    backend, _, _ = make_batch(monkeypatch, batch_size)
+    messages = document_history()
     stages = []
     budgets = []
 

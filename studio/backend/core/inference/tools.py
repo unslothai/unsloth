@@ -17574,8 +17574,6 @@ def _tool_result_char_budget() -> int:
     cap = _tool_result_max_chars()
     ctx = _request_context_tokens()
     if ctx and _request_result_room() is not None and _can_measure_tokens(ctx, "x"):
-        # The measured token budget controls automatic output. Explicit settings
-        # and operator limits remain hard character caps.
         return tool_result_limit.MAX_MAX_CHARS if tool_result_limit.is_automatic() else cap
     if not ctx:
         # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
@@ -17964,9 +17962,6 @@ def _dense_char_limit(
     )
     fitted = min(max_chars, max(floor, fitted))
     if measured_room and min(len(text), max_chars) > fitted:
-        # Prose can fit more than four characters/token. Expand only to a measured
-        # fit, leaving a little framing headroom; do not shrink already-fitting
-        # short results or their error details to pay for this optional expansion.
         expanded = _exact_prefix_chars(
             text,
             min(len(text), max_chars),

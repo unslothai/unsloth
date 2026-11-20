@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bounded, request-local handovers for tool findings removed by context fitting.
-
-This is a model-written aid, not proof of semantic completeness. Full tool results
-remain in the normal conversation archive. A failed or oversized handover leaves
-the existing context fit and overflow handling unchanged.
-"""
-
 from __future__ import annotations
 
 import json
@@ -89,7 +82,6 @@ class WorkingEvidence:
         candidate = []
         for message in conversation:
             content = message.get("content")
-            # Restore the same object so rolling fits still recognize its original anchor ID.
             if message is self._with_evidence and self._without_evidence is not None:
                 message = self._without_evidence
             elif self.prefix and message.get("role") == "user":
@@ -120,11 +112,7 @@ class WorkingEvidence:
         return conversation, None, None
 
     def refresh(self, conversation, *, count_prompt, prompt_budget):
-        """Keep the retained record with the latest continuation notice, without re-summarizing.
-
-        Otherwise later partial outputs and retry notices can eclipse a complete working
-        record that is still technically present much earlier in the prompt.
-        """
+        """Keep the retained record with the latest continuation notice, without re-summarizing."""
         if not self.prefix:
             return conversation, None
         latest = next((m for m in reversed(conversation) if m.get("role") == "user"), None)
@@ -137,8 +125,6 @@ class WorkingEvidence:
             candidate, anchor, original = self._place(conversation, self.prefix)
             if anchor is None:
                 return conversation, None
-            # Moving an existing record may precede the normal fit. Never enlarge an
-            # already oversized prompt, nor reinsert a missing record without room.
             budget = (
                 max(prompt_budget, count_prompt(counting_copy(conversation)))
                 if present
@@ -179,7 +165,6 @@ class WorkingEvidence:
         ]
         if not gone:
             return conversation, None
-        # Never crop the source to make the summarizer fit: that would hide lost findings.
         source = {
             "current_user_request": self.query,
             "previous_working_record": self.summary,
@@ -202,7 +187,6 @@ class WorkingEvidence:
         try:
             room = min(MAX_SUMMARY_TOKENS, context_length - count_summary(messages) - 128)
             if completion_budget is not None:
-                # Leave at least half of an explicit remaining allowance for the real answer.
                 room = min(room, completion_budget // 2)
             if room < MIN_SUMMARY_TOKENS or cancelled():
                 return conversation, None
@@ -210,7 +194,7 @@ class WorkingEvidence:
             summary, finish_reason = "", None
             for event in generate(messages, room):
                 if isinstance(event, str):
-                    summary = event  # Backend emits cumulative snapshots.
+                    summary = event
                 elif isinstance(event, dict) and event.get("type") == "metadata":
                     finish_reason = event.get("finish_reason")
             if cancelled() or not summary.strip() or finish_reason != "stop":

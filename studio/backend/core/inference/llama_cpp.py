@@ -78,6 +78,7 @@ from core.inference.context_window import (
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
+    message_source_id,
     fit_rolling_context,
     image_dimensions,
     messages_with_priced_images,
@@ -431,9 +432,6 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
-    # Evict results only after reclaiming code/arguments from completed calls.
-    # The normal fit runs before the later reply-room rescue, which otherwise
-    # discovers the saving after the findings have already been discarded.
     if (
         not kwargs.get("replay_only")
         and (kwargs.get("context_length") or 0) > 1
@@ -450,22 +448,18 @@ def _fit_with_instruction_pins(
                 preserve_failed = True,
                 protected_message_ids = anchors | pins | set(argument_anchor_ids or ()),
             )
-            # No extra tokenizer request when there are no reclaimable arguments.
             if count:
                 before_tokens = kwargs["count_tokens"](messages)
                 if before_tokens > target and kwargs["count_tokens"](compacted) < before_tokens:
                     messages = compacted
         except Exception:
             logger.debug("Pre-eviction argument compaction failed", exc_info = True)
-    # Optional room for a future result must not displace results already in hand.
-    # These extra anchors are released when retrying without that optional reserve.
     reserve_anchors = (
         set(reserve_anchor_ids or ()) if kwargs.get("prompt_reserve_tokens") else set()
     )
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins | reserve_anchors) or None, **kwargs
     )
-    # A result reserve must never refuse a prompt that otherwise fits.
     if kwargs.get("prompt_reserve_tokens") and truncation and not truncation.get("fits"):
         return _fit_with_instruction_pins(
             messages,
@@ -1672,12 +1666,12 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
         default = max(0, len(messages) - 1),
     )
     messages = messages[:cutoff]
-    live = {id(message) for message in conversation}
+    live = {message_source_id(message) for message in conversation}
     count = 0
     for message in messages:
         if message.get("role") in ("system", "developer"):
             continue
-        if id(message) not in live:
+        if message_source_id(message) not in live:
             count += 1
     return count
 
@@ -1716,13 +1710,13 @@ def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
 def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict]]) -> str:
     """Text, not id or index, taken after the last eviction (first survivor may be a pin). Only moves the boundary shallower; a stale anchor never evicts live turns."""
     messages = _branch_non_system(branch)
-    live = {id(message) for message in conversation}
+    live = {message_source_id(message) for message in conversation}
     last_dropped = max(
-        (index for index, message in enumerate(messages) if id(message) not in live),
+        (index for index, message in enumerate(messages) if message_source_id(message) not in live),
         default = -1,
     )
     for message in messages[last_dropped + 1 :]:
-        if id(message) in live:
+        if message_source_id(message) in live:
             return _anchor_text(message)
     return ""
 
@@ -39365,7 +39359,6 @@ class LlamaCppBackend:
         _working_evidence_seconds = 0.0
 
         def _archive_current_context(current, before, **archive_kwargs):
-            """Archive normally, then retain a bounded handover of this request's findings."""
             nonlocal _working_evidence_seconds
             nonlocal _accumulated_completion_tokens
             nonlocal _accumulated_predicted_ms, _accumulated_predicted_n
@@ -39447,7 +39440,6 @@ class LlamaCppBackend:
                 completion_budget = _loop_budget_left(0),
             )
             if anchor is not None:
-                # Respawn callers consume counts only; keep their fitted list current too.
                 current[:] = updated
                 result["conversation"] = current
                 result["recalled"] = True
@@ -41267,6 +41259,7 @@ class LlamaCppBackend:
                             assistant_msg,
                             continue_final_message = _merge_into_partial,
                         )
+                        assistant_msg = conversation[-1]
                         assistant_appended = True
                     else:
                         assistant_msg.setdefault("tool_calls", []).append(
@@ -41404,8 +41397,6 @@ class LlamaCppBackend:
                         if decision_slot is not None:
                             abort_tool_decision(decision_slot, approval_id)
 
-                    # Price the generated call before executing it. A fit before generation
-                    # cannot reserve output reliably because the call's arguments are unknown.
                     if context_overflow == "truncate_oldest" and self._effective_context_length:
                         _pending_probe = {
                             "role": "tool",
@@ -41457,7 +41448,6 @@ class LlamaCppBackend:
                                 and not (_pending_cut or {}).get("dropped_messages")
                                 and _pending_fitted[-1] is _pending_probe
                             ):
-                                # Argument-only compaction has no eviction boundary.
                                 conversation[:] = _pending_fitted[:-1]
                             if (
                                 _pending_cut
@@ -41474,8 +41464,6 @@ class LlamaCppBackend:
                                     query_messages = _request_branch,
                                     style = "inline",
                                     recall_done = _conversation_recall_done,
-                                    # The action was chosen before this fit. Give its result
-                                    # priority; recall only after that result has been priced.
                                     force_recall = False,
                                     recall_budget_tokens = _retrieval_budget(
                                         self._effective_context_length,
@@ -41513,7 +41501,6 @@ class LlamaCppBackend:
                                         )
                                     )
                                 yield {"type": "context_truncated", **_pending_cut}
-                                # The fit can rebuild the assistant dictionary.
                                 assistant_msg = next(
                                     m
                                     for m in reversed(conversation)
@@ -41584,7 +41571,9 @@ class LlamaCppBackend:
                                 if _attempt == 0:
                                     # Compact history first, then re-price against the real tokenizer instead of trusting the saving.
                                     _compacted, _n = compact_completed_tool_arguments(
-                                        conversation, protect_last = 1
+                                        conversation,
+                                        protect_last = 1,
+                                        protected_message_ids = {id(assistant_msg)},
                                     )
                                     if _n:
                                         conversation[:] = _compacted
@@ -41907,7 +41896,9 @@ class LlamaCppBackend:
                                         and self._effective_context_length
                                     ):
                                         _roomier, _n_roomier = compact_completed_tool_arguments(
-                                            conversation, protect_last = 1
+                                            conversation,
+                                            protect_last = 1,
+                                            protected_message_ids = {id(assistant_msg)},
                                         )
                                         if _n_roomier:
                                             conversation[:] = _roomier
@@ -42153,8 +42144,6 @@ class LlamaCppBackend:
                                 chat_template_kwargs = _reasoning_kw,
                             )
 
-                        # Keep the live result and next action's headroom before
-                        # spending any spare space on older recalled conversation.
                         _after_tool_budget = _retrieval_budget(
                             self._effective_context_length,
                             _iteration_max_tokens,

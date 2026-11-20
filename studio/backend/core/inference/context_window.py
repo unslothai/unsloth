@@ -230,11 +230,21 @@ def group_turns(messages: list[dict]) -> list[list[dict]]:
     return groups
 
 
+class _CompactedToolMessage(dict):
+    def __init__(self, message: dict, calls: list[dict]):
+        super().__init__(message, tool_calls = calls)
+        self.source = message.source if isinstance(message, _CompactedToolMessage) else message
+
+
+def message_source_id(message: dict) -> int:
+    return id(message.source if isinstance(message, _CompactedToolMessage) else message)
+
+
 def evicted_messages(before: list[dict], after: list[dict]) -> list[dict]:
     """Messages in ``before`` and not ``after``. Identity, not equality: two turns can be
     byte-identical."""
-    kept = {id(message) for message in after}
-    return [message for message in before if id(message) not in kept]
+    kept = {message_source_id(message) for message in after}
+    return [message for message in before if message_source_id(message) not in kept]
 
 
 def truncate_oldest_messages(
@@ -650,7 +660,7 @@ def _compact_one_call(
                 continue
             new_calls.append({**call, "function": {**function, "arguments": replacement}})
             changed = True
-        out.append({**message, "tool_calls": new_calls} if changed else message)
+        out.append(_CompactedToolMessage(message, new_calls) if changed else message)
     return out
 
 
@@ -757,7 +767,7 @@ def compact_completed_tool_arguments(
             new_calls.append({**call, "function": {**function, "arguments": replacement}})
             changed = True
             compacted_calls += 1
-        out.append({**message, "tool_calls": new_calls} if changed else message)
+        out.append(_CompactedToolMessage(message, new_calls) if changed else message)
     return (out, compacted_calls) if compacted_calls else (messages, 0)
 
 

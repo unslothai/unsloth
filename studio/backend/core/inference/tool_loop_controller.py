@@ -1187,7 +1187,6 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
 
 
 def _truncated_output_notice(result: str) -> str | None:
-    """Retain recovery coordinates, not untrusted output text, across compaction."""
     if not re.search(
         r"(?:truncated to [0-9,]+ chars for the model;|output omitted: [0-9]+ chars, no context room left)",
         result,

@@ -10,7 +10,7 @@ from core.inference import tools
 
 @pytest.fixture
 def measured_room(monkeypatch):
-    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: False, raising = False)
+    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: False)
     context = tools._REQUEST_CONTEXT_TOKENS.set(8192)
     room = tools._REQUEST_RESULT_BUDGET.set(4000)
     monkeypatch.setattr(tools, "_tool_result_max_chars", lambda: 50000)
@@ -24,9 +24,7 @@ def measured_room(monkeypatch):
 def test_complete_result_that_fits_reserved_tokens_is_not_cut_by_window_share(measured_room):
     text = "ordinary prose " * 1200 + "\nLAST RECORD: 32"
     assert measured_room(text) < 4000
-    result = tools._truncate(text)
-    assert result == text
-    assert "LAST RECORD: 32" in result
+    assert tools._truncate(text) == text
 
 
 def test_configured_character_limit_still_wins(measured_room, monkeypatch):
@@ -64,7 +62,7 @@ def test_unknown_tokenizer_keeps_the_old_window_cap(measured_room, monkeypatch):
 
 def test_automatic_uses_measured_room_above_the_fallback_cap(measured_room, monkeypatch):
     monkeypatch.setattr(tools, "_tool_result_max_chars", lambda: 16000)
-    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: True, raising = False)
+    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: True)
     text = "ordinary prose " * 1200 + "\nLAST RECORD: 32"
     assert len(text) > 16000
     assert tools._truncate(text) == text
@@ -72,11 +70,11 @@ def test_automatic_uses_measured_room_above_the_fallback_cap(measured_room, monk
 
 def test_automatic_without_a_counter_keeps_the_fallback(measured_room, monkeypatch):
     monkeypatch.setattr(tools, "_tool_result_max_chars", lambda: 16000)
-    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: True, raising = False)
+    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: True)
     monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: None)
     assert tools._tool_result_char_budget() <= 16000
 
 
 def test_automatic_still_has_a_bounded_character_ceiling(measured_room, monkeypatch):
-    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: True, raising = False)
+    monkeypatch.setattr(tools.tool_result_limit, "is_automatic", lambda: True)
     assert tools._tool_result_char_budget() == tools.tool_result_limit.MAX_MAX_CHARS

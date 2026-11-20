@@ -63,7 +63,7 @@ def is_automatic() -> bool:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
         return run_as(OWNER, get_app_setting, MAX_CHARS_SETTING_KEY, None) is None
-    except Exception:  # noqa: BLE001 - never relax a limit when the store is unreadable
+    except Exception:
         return False
 
 

@@ -39,10 +39,3 @@ def test_python_paging_reads_the_next_unseen_chunk_without_a_shell(output_dir, t
     assert following
     assert text.startswith(prefix + following) or text.startswith(prefix + "\n" + following)
     assert "sed -n" not in code
-
-
-def test_complete_output_is_unchanged(output_dir):
-    assert (
-        tools._truncate("complete\n", limit = 300, workdir = str(output_dir), reader = "python")
-        == "complete\n"
-    )

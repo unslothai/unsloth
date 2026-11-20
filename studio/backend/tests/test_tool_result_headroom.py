@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A clipped result must leave room to retrieve the next part without losing the live exchange."""
-
 import json
 
 import pytest
@@ -10,6 +8,7 @@ import pytest
 from core.inference.checkpoint import fit_checkpoint_context
 from core.inference.context_window import fit_rolling_context
 from core.inference.llama_cpp import _fit_with_instruction_pins
+from test_compact_arguments_before_results import exchange
 
 
 def count(messages):
@@ -22,30 +21,7 @@ def conversation():
         {"role": "user", "content": "Identify every exception in agreement.docx."},
     ]
     for index in range(3):
-        messages.extend(
-            [
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": str(index),
-                            "type": "function",
-                            "function": {
-                                "name": "python",
-                                "arguments": '{"code":"print(records)"}',
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": str(index),
-                    "name": "python",
-                    "content": "exception facts " * 400,
-                },
-            ]
-        )
+        messages.extend(exchange(str(index), "print(records)", "exception facts " * 400))
     return messages
 
 
