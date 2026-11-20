@@ -54,7 +54,6 @@ from core.research.parsing import (
     _streamed_titles,
 )
 from core.research.citations import (
-    _RAW_URL,
     _allowed_document_citations,
     _citation_title,
     _document_source_citation,
@@ -99,6 +98,7 @@ _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL = re.compile(
     r"o\d+(?:[-.]|$)|codex-mini(?:[-.]|$))"
 )
 _OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
+_QUESTION_URL = re.compile(r"https?://[^\s<>\"`\x00]+", re.IGNORECASE)
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
@@ -2440,7 +2440,7 @@ class ResearchSupervisor:
         question_urls = [
             url
             for url in dict.fromkeys(
-                _trim_url_tail(match.group(0)) for match in _RAW_URL.finditer(question)
+                _trim_url_tail(match.group(0)) for match in _QUESTION_URL.finditer(question)
             )
             if check_url_access(url, website_policy)[0]
         ]

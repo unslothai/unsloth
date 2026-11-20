@@ -19,7 +19,12 @@ QUESTION = f"Research {LINKED}. and compare it with similar tools"
 
 
 @pytest.fixture
-def research_home(tmp_path, monkeypatch):
+def question():
+    return QUESTION
+
+
+@pytest.fixture
+def research_home(tmp_path, monkeypatch, question):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
@@ -36,7 +41,7 @@ def research_home(tmp_path, monkeypatch):
             "id": "user-1",
             "threadId": "thread-1",
             "role": "user",
-            "content": [{"type": "text", "text": QUESTION}],
+            "content": [{"type": "text", "text": question}],
             "createdAt": 2,
         }
     )
@@ -47,6 +52,7 @@ def _run(
     monkeypatch,
     website_policy: dict | None = None,
     page: str = PAGE,
+    question: str = QUESTION,
 ):
     from core import research_runs as worker
 
@@ -62,7 +68,7 @@ def _run(
             "inferenceRequest": {"model": "local-model"},
             "ragScope": None,
             "instructions": "",
-            "question": QUESTION,
+            "question": question,
             "websitePolicy": website_policy,
             "budgets": {
                 "maxSteps": 2,
@@ -119,3 +125,13 @@ def test_a_linked_page_that_fails_to_load_is_not_cited(research_home, monkeypatc
 
     assert calls[0] == {"url": LINKED}
     assert LINKED not in [source["url"] for source in finished["sources"]]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [f'Research "{LINKED}" and compare it', f"Research `{LINKED}` and compare it"],
+)
+def test_a_quoted_link_is_read_without_its_delimiter(research_home, monkeypatch, question):
+    _, calls, _ = _run(monkeypatch, question = question)
+
+    assert calls[0] == {"url": LINKED}
