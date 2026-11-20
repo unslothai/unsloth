@@ -532,6 +532,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.1-dev",
         profile = FamilyProfile(
             auto_prefer = _GATED_AUTO_PREFER,
+            # Hosted rotated int8 build for schnell only (every quantized Linear, group 256, read back from the file's
+            # metadata). Group 0: quantizing at load stays plain int8, and until the file is on the repo the plain
+            # hosted int8 file behind it still loads; dev / Krea-dev keep their plain variant files.
+            int8_convrot = ConvRotSpec(
+                group = 0,
+                suffixes = (),
+                filename = "FLUX.1-schnell-INT8-ConvRot.safetensors",
+                repo = "unsloth/FLUX.1-schnell-FP8",
+                default_on = True,
+            ),
             preview_factors = "flux1",
             # Auto static step skip, measured vs the no-skip render (PR #12652); dev: every 2 is 0.29 LPIPS on a
             # dense-texture prompt, so max only.

@@ -135,6 +135,9 @@ def out_of_memory(error):
 
 ok, details, ran, short = True, [], 0, []
 cases = ("segments", "segments_gqa") if name == "flash" else ("segments", "masked")
+# torch < 2.5 has no enable_gqa (a TypeError, not a kernel fault): Unsloth never sends it there.
+if "enable_gqa" not in (F.scaled_dot_product_attention.__doc__ or ""):
+    cases = tuple(case for case in cases if case != "segments_gqa")
 for dtype in dtypes:
     for head_dim in (64, 128):
         for case in cases:

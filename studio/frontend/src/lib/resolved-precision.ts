@@ -193,6 +193,24 @@ export function denseTransformerBuildLabel(status: {
   return denseDtypeLabel(status.dtype);
 }
 
+/** Loaded transformer precision: engaged quant, else GGUF as stored, else dense dtype; null when nothing is loaded. */
+export function loadedTransformerPrecisionLabel(status: {
+  loaded?: boolean;
+  transformer_quant?: string | null;
+  model_kind?: string | null;
+  dtype?: string | null;
+  gguf_variant?: string | null;
+} | null | undefined): string | null {
+  if (!status?.loaded) return null;
+  if (!isOff(status.transformer_quant)) {
+    return formatResolvedValue("transformer_quant", status.transformer_quant);
+  }
+  if (status.model_kind === "gguf" || status.dtype === "gguf") {
+    return status.gguf_variant ? `GGUF · ${status.gguf_variant}` : "GGUF";
+  }
+  return denseDtypeLabel(status.dtype);
+}
+
 /** CPU, older accelerators and fp16-incompatible families load in other dtypes; unknown is BF16. */
 function denseDtypeLabel(dtype: string | null | undefined): string {
   const text = String(dtype ?? "").trim().toLowerCase();
