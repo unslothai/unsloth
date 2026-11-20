@@ -2,8 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { ChatBackground } from "@/features/chat-background";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
 import { TOUR_OPEN_EVENT, isTourListening } from "@/features/tour";
@@ -13,7 +17,6 @@ import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Dialog as DialogPrimitive } from "radix-ui";
 import { useCallback, useRef, useState } from "react";
 import { saveOnboarding } from "../api";
 import {
@@ -161,120 +164,110 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
   const current = pages.indexOf(page);
 
   return (
-    <DialogPrimitive.Root
-      open={true}
-      onOpenChange={(open) => !open && skipAll()}
-    >
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Content
-          data-auth-wallpaper=""
-          data-onboarding=""
-          onOpenAutoFocus={(e) => {
-            e.preventDefault();
-            primaryRef.current?.focus();
-          }}
-          className="bg-background data-open:animate-in data-open:fade-in-0 fixed inset-x-0 top-[var(--studio-window-chrome-top,0px)] bottom-0 z-50 flex items-center justify-center overflow-hidden duration-300 outline-none sm:p-8"
-        >
-          <ChatBackground backdrop={true} />
-          <Card
-            ref={cardRef}
-            className="relative z-10 flex h-full w-full gap-0 rounded-none py-0 ring-0 sm:h-[min(calc(44rem*var(--ui-space-scale,1)),100%)] sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem] sm:ring-1 sm:shadow-[0_24px_64px_-24px_rgba(0,0,0,0.35)] dark:sm:shadow-[var(--composer-shadow)]"
+    // Clicking outside or Esc closes it as Skip setup, so Chat is always one click away.
+    <Dialog open={true} onOpenChange={(open) => !open && skipAll()}>
+      <DialogContent
+        ref={cardRef}
+        data-onboarding=""
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          primaryRef.current?.focus();
+        }}
+        className="flex h-[min(calc(44rem*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(40rem*var(--ui-space-scale,1))] sm:rounded-[2rem]"
+      >
+        <DialogTitle className="sr-only">
+          {t("onboarding.dialogTitle")}
+        </DialogTitle>
+        <DialogDescription className="sr-only">
+          {t("onboarding.progress", {
+            current: current + 1,
+            total: pages.length,
+          })}
+        </DialogDescription>
+        <div className="flex h-14 shrink-0 items-end justify-center">
+          <ProgressDots pages={pages} page={page} />
+        </div>
+        <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-7 pb-4 sm:px-14">
+          <AnimatePresence
+            mode="wait"
+            initial={false}
+            custom={direction}
+            onExitComplete={keepFocusInside}
           >
-            <DialogPrimitive.Title className="sr-only">
-              {t("onboarding.dialogTitle")}
-            </DialogPrimitive.Title>
-            <DialogPrimitive.Description className="sr-only">
-              {t("onboarding.progress", {
-                current: current + 1,
-                total: pages.length,
-              })}
-            </DialogPrimitive.Description>
-            <div className="flex h-14 shrink-0 items-end justify-center">
-              <ProgressDots pages={pages} page={page} />
-            </div>
-            <div className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pt-7 pb-4 sm:px-14">
-              <AnimatePresence
-                mode="wait"
-                initial={false}
-                custom={direction}
-                onExitComplete={keepFocusInside}
-              >
-                <motion.div
-                  key={page}
-                  className="mx-auto flex min-h-full w-full max-w-[calc(30rem*var(--ui-space-scale,1))] flex-col"
-                  custom={direction}
-                  variants={{
-                    enter: (d: number) => ({
-                      opacity: 0,
-                      y: 14 * d,
-                      filter: "blur(8px)",
-                    }),
-                    center: { opacity: 1, y: 0, filter: "blur(0px)" },
-                    exit: (d: number) => ({
-                      opacity: 0,
-                      y: -8 * d,
-                      filter: "blur(4px)",
-                      transition: { duration: 0.16, ease: "easeIn" },
-                    }),
-                  }}
-                  initial="enter"
-                  animate="center"
-                  exit="exit"
-                  transition={{
-                    duration: 0.42,
-                    ease: EASE_OUT_EXPO,
-                    opacity: { duration: 0.3 },
-                  }}
-                >
-                  {step}
-                </motion.div>
-              </AnimatePresence>
-            </div>
-            <div className="flex shrink-0 items-center justify-between gap-3 px-6 pt-3 pb-6 sm:px-10 sm:pb-9">
-              {page === "welcome" ? (
-                <Button
-                  variant="ghost"
-                  className={cn(PILL, "text-muted-foreground px-5")}
-                  onClick={skipAll}
-                >
-                  {t("onboarding.skipSetup")}
-                </Button>
-              ) : index > 0 ? (
-                <Button
-                  variant="ghost"
-                  className={cn(PILL, "gap-2 pr-5 pl-4")}
-                  onClick={back}
-                >
-                  <HugeiconsIcon
-                    icon={ArrowLeft01Icon}
-                    className="size-4"
-                    strokeWidth={2}
-                  />
-                  {t("onboarding.back")}
-                </Button>
-              ) : (
-                <span />
-              )}
-              <Button
-                ref={primaryRef}
-                variant="primary"
-                className={cn(
-                  PILL,
-                  "bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 min-w-36 gap-2 pr-5 pl-6",
-                )}
-                onClick={next}
-              >
-                {primaryLabel}
-                <HugeiconsIcon
-                  icon={ArrowRight01Icon}
-                  className="size-4"
-                  strokeWidth={2}
-                />
-              </Button>
-            </div>
-          </Card>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
+            <motion.div
+              key={page}
+              className="mx-auto flex min-h-full w-full max-w-[calc(30rem*var(--ui-space-scale,1))] flex-col"
+              custom={direction}
+              variants={{
+                enter: (d: number) => ({
+                  opacity: 0,
+                  y: 14 * d,
+                  filter: "blur(8px)",
+                }),
+                center: { opacity: 1, y: 0, filter: "blur(0px)" },
+                exit: (d: number) => ({
+                  opacity: 0,
+                  y: -8 * d,
+                  filter: "blur(4px)",
+                  transition: { duration: 0.16, ease: "easeIn" },
+                }),
+              }}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{
+                duration: 0.42,
+                ease: EASE_OUT_EXPO,
+                opacity: { duration: 0.3 },
+              }}
+            >
+              {step}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+        <div className="flex shrink-0 items-center justify-between gap-3 px-6 pt-3 pb-6 sm:px-10 sm:pb-9">
+          {page === "welcome" ? (
+            <Button
+              variant="ghost"
+              className={cn(PILL, "text-muted-foreground px-5")}
+              onClick={skipAll}
+            >
+              {t("onboarding.skipSetup")}
+            </Button>
+          ) : index > 0 ? (
+            <Button
+              variant="ghost"
+              className={cn(PILL, "gap-2 pr-5 pl-4")}
+              onClick={back}
+            >
+              <HugeiconsIcon
+                icon={ArrowLeft01Icon}
+                className="size-4"
+                strokeWidth={2}
+              />
+              {t("onboarding.back")}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <Button
+            ref={primaryRef}
+            variant="primary"
+            className={cn(
+              PILL,
+              "bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 min-w-36 gap-2 pr-5 pl-6",
+            )}
+            onClick={next}
+          >
+            {primaryLabel}
+            <HugeiconsIcon
+              icon={ArrowRight01Icon}
+              className="size-4"
+              strokeWidth={2}
+            />
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
