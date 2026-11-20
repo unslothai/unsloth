@@ -62,9 +62,16 @@ export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
 // Matches mcp_client.MAX_IMAGE_PAYLOAD_CHARS and mcp_images.py MAX_MCP_IMAGE_MIME_CHARS.
 export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
-export function isImageToolName(name: unknown): boolean {
+export function isImageToolName(name: unknown, importedFrom?: unknown): boolean {
   // "computer": its screenshots, so a later turn still shows the model the screen its results describe.
-  return typeof name === "string" && (name === "view_image" || name === "computer" || name.startsWith("mcp__"));
+  // "Read": Claude Code's file reader, trusted only in a chat imported from Claude Code.
+  return (
+    typeof name === "string" &&
+    (name === "view_image" ||
+      name === "computer" ||
+      name.startsWith("mcp__") ||
+      (name === "Read" && importedFrom === "claude"))
+  );
 }
 
 /** Mirrors stepped_keep in mcp_images.py. */
