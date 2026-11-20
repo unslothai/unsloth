@@ -12,47 +12,20 @@ import {
 import { initialsFromName } from "@/features/profile/utils/avatar-initials";
 import { resizeImageFileToDataUrl } from "@/features/profile/utils/resize-image-file";
 import { type TranslationKey, useT } from "@/i18n";
-import { Copy01Icon } from "@/lib/copy-icon";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { ChipIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
-  CommandLineIcon,
   CpuIcon,
   CursorInfo02Icon,
-  SquareLock02Icon,
   Upload01Icon,
-  WifiDisconnected01Icon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { greetingName } from "../lib/pages";
 import type { DeviceSummary } from "../use-device-summary";
 import { ChosenRing, Group, Mascot, Row, Tile } from "./onboarding-ui";
-
-const WELCOME_POINTS: {
-  icon: IconSvgElement;
-  title: TranslationKey;
-  body: TranslationKey;
-}[] = [
-  {
-    icon: SquareLock02Icon,
-    title: "onboarding.welcome.privateTitle",
-    body: "onboarding.welcome.privateBody",
-  },
-  {
-    icon: WifiDisconnected01Icon,
-    title: "onboarding.welcome.offlineTitle",
-    body: "onboarding.welcome.offlineBody",
-  },
-  {
-    icon: TestTubeOutlineIcon,
-    title: "onboarding.welcome.trainTitle",
-    body: "onboarding.welcome.trainBody",
-  },
-];
 
 const AVATARS = [
   "Sloth emojis/large sloth wave.png",
@@ -147,22 +120,6 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
         <p className="text-muted-foreground mt-2 text-[0.9375rem]">
           {t("onboarding.welcome.body")}
         </p>
-        <div className="mt-4 flex flex-wrap justify-center gap-1.5">
-          {WELCOME_POINTS.map((point) => (
-            <span
-              key={point.title}
-              title={t(point.body)}
-              className="bg-muted/60 text-muted-foreground flex h-7 items-center gap-1.5 rounded-full px-3 text-xs"
-            >
-              <HugeiconsIcon
-                icon={point.icon}
-                className="size-3.5"
-                strokeWidth={1.75}
-              />
-              {t(point.title)}
-            </span>
-          ))}
-        </div>
       </div>
       <form
         className="mt-7"
@@ -183,85 +140,76 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
           className="h-12 px-5 text-center text-base"
         />
       </form>
-      <Group className="mt-5">
-        <Row
-          label={t("onboarding.profile.avatar")}
-          description={
-            uploadError ? (
-              <span className="text-destructive">
-                {t("onboarding.profile.uploadError")}
-              </span>
-            ) : (
-              t("onboarding.profile.avatarBody")
-            )
-          }
-          below={
-            <div className="grid grid-cols-10 gap-2">
+      <div className="mt-5">
+        <div className="grid grid-cols-10 gap-2">
+          <AvatarChoice
+            active={avatar === null}
+            label={t("onboarding.profile.initials")}
+            onPick={() => setAvatar(null)}
+          >
+            <span className="text-muted-foreground text-xs font-semibold">
+              {initialsFromName(displayName.trim() || "?")}
+            </span>
+          </AvatarChoice>
+          {AVATARS.map((path) => {
+            const url = publicAssetUrl(path);
+            return (
               <AvatarChoice
-                active={avatar === null}
-                label={t("onboarding.profile.initials")}
-                onPick={() => setAvatar(null)}
+                key={path}
+                active={avatar === url}
+                label={t("onboarding.profile.sloth")}
+                onPick={() => setAvatar(url)}
               >
-                <span className="text-muted-foreground text-xs font-semibold">
-                  {initialsFromName(displayName.trim() || "?")}
-                </span>
+                <img
+                  alt=""
+                  src={url}
+                  draggable={false}
+                  className="size-full object-cover"
+                />
               </AvatarChoice>
-              {AVATARS.map((path) => {
-                const url = publicAssetUrl(path);
-                return (
-                  <AvatarChoice
-                    key={path}
-                    active={avatar === url}
-                    label={t("onboarding.profile.sloth")}
-                    onPick={() => setAvatar(url)}
-                  >
-                    <img
-                      alt=""
-                      src={url}
-                      draggable={false}
-                      className="size-full object-cover"
-                    />
-                  </AvatarChoice>
-                );
-              })}
-              <AvatarChoice
-                active={custom}
-                label={t("onboarding.profile.upload")}
-                onPick={() => fileInput.current?.click()}
-              >
-                {custom && avatar ? (
-                  <img
-                    alt=""
-                    src={avatar}
-                    draggable={false}
-                    className="size-full object-cover"
-                  />
-                ) : uploading ? (
-                  <span className="border-muted-foreground/30 border-t-foreground size-4 animate-spin rounded-full border-2" />
-                ) : (
-                  <HugeiconsIcon
-                    icon={Upload01Icon}
-                    className="text-muted-foreground size-4"
-                    strokeWidth={1.75}
-                  />
-                )}
-              </AvatarChoice>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
-                className="sr-only"
-                tabIndex={-1}
-                aria-hidden="true"
-                onChange={(e) => {
-                  void onUpload(e.target.files?.[0]);
-                  e.target.value = "";
-                }}
+            );
+          })}
+          <AvatarChoice
+            active={custom}
+            label={t("onboarding.profile.upload")}
+            onPick={() => fileInput.current?.click()}
+          >
+            {custom && avatar ? (
+              <img
+                alt=""
+                src={avatar}
+                draggable={false}
+                className="size-full object-cover"
               />
-            </div>
-          }
-        />
-      </Group>
+            ) : uploading ? (
+              <span className="border-muted-foreground/30 border-t-foreground size-4 animate-spin rounded-full border-2" />
+            ) : (
+              <HugeiconsIcon
+                icon={Upload01Icon}
+                className="text-muted-foreground size-4"
+                strokeWidth={1.75}
+              />
+            )}
+          </AvatarChoice>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            onChange={(e) => {
+              void onUpload(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+        </div>
+        {uploadError ? (
+          <p className="text-destructive mt-3 text-center text-xs">
+            {t("onboarding.profile.uploadError")}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -385,45 +333,6 @@ function Capabilities({ summary }: { summary: ReadySummary }) {
   );
 }
 
-const AGENT_COMMAND = "unsloth start claude";
-
-function CopyCommand() {
-  const t = useT();
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    },
-    [],
-  );
-  return (
-    <div className="bg-muted flex items-center gap-2 rounded-xl py-1.5 pr-1.5 pl-3.5">
-      <code className="min-w-0 flex-1 truncate font-mono text-xs">
-        {AGENT_COMMAND}
-      </code>
-      <button
-        type="button"
-        onClick={() => {
-          void copyToClipboard(AGENT_COMMAND).then((ok) => {
-            if (!ok) return;
-            setCopied(true);
-            if (timer.current !== null) window.clearTimeout(timer.current);
-            timer.current = window.setTimeout(() => setCopied(false), 1600);
-          });
-        }}
-        className="text-muted-foreground hover:bg-muted hover:text-foreground flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition-colors"
-      >
-        <HugeiconsIcon
-          icon={copied ? Tick02Icon : Copy01Icon}
-          className="size-3.5"
-        />
-        {copied ? t("onboarding.done.copied") : t("onboarding.done.copy")}
-      </button>
-    </div>
-  );
-}
-
 export function DoneStep({
   device,
   tour,
@@ -466,12 +375,6 @@ export function DoneStep({
               onCheckedChange={onTourChange}
             />
           }
-        />
-        <Row
-          lead={<Tile icon={CommandLineIcon} />}
-          label={t("onboarding.done.agents")}
-          description={t("onboarding.done.agentsBody")}
-          below={<CopyCommand />}
         />
       </Group>
     </div>

@@ -13,7 +13,6 @@ import {
 import {
   COLOR_THEMES,
   type ColorThemeId,
-  FLAVOR_THEME_IDS,
   type ThemeModeColors,
 } from "@/features/settings/lib/color-themes";
 import {
@@ -106,8 +105,10 @@ function Miniature({ colors }: { colors: ThemeModeColors }) {
           style={{ backgroundColor: line }}
         />
         <div
-          className="mt-auto flex h-3.5 items-center justify-end rounded-full border p-0.5"
-          style={{ borderColor: line }}
+          className="mt-auto flex h-3.5 items-center justify-end rounded-full p-0.5"
+          style={{
+            backgroundColor: `color-mix(in oklab, ${colors.foreground} 8%, transparent)`,
+          }}
         >
           <span
             className="h-full w-2.5 rounded-full"
@@ -222,7 +223,7 @@ function WallpaperTile({
       aria-label={label}
       title={label}
       onClick={onPick}
-      className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-xl ring-1 ring-border outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {children}
       {busy ? (
@@ -255,7 +256,7 @@ function Swatches() {
             className="relative flex size-7 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span
-              className="flex size-5 items-center justify-center rounded-full border border-black/10 dark:border-white/15"
+              className="flex size-5 items-center justify-center rounded-full"
               style={{ backgroundColor: colors.background }}
             >
               <span
@@ -367,7 +368,6 @@ export function LookStep() {
   const error = useBackgroundStore((s) => s.error);
   const material = useMaterialStore((s) => s.material);
   const setEnabled = useMaterialStore((s) => s.setEnabled);
-  const more = FLAVOR_THEME_IDS.length + 1 - SWATCHES.length;
   return (
     <div>
       <StepHeader
@@ -385,12 +385,8 @@ export function LookStep() {
           />
         ))}
       </div>
-      <Group className="mt-5">
-        <Row
-          label={t("onboarding.look.theme")}
-          description={t("onboarding.look.moreThemes", { count: more })}
-          trailing={<Swatches />}
-        />
+      <Group className="mt-8">
+        <Row label={t("onboarding.look.theme")} trailing={<Swatches />} />
         <Row
           label={t("onboarding.scene.wallpaper")}
           description={
@@ -404,11 +400,6 @@ export function LookStep() {
         />
         <Row
           label={t("onboarding.scene.glass")}
-          description={t(
-            material === "solid"
-              ? "onboarding.scene.solidHint"
-              : "onboarding.scene.glassHint",
-          )}
           trailing={
             <Segmented
               id="onboarding-glass"

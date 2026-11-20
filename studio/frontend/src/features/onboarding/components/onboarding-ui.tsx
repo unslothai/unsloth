@@ -37,21 +37,12 @@ export function Mascot({
   );
 }
 
-/** Rows between hairlines, no box: the column itself is the surface. */
+/** Rows separated by space alone. */
 export function Group({
   children,
   className,
 }: { children: ReactNode; className?: string }) {
-  return (
-    <div
-      className={cn(
-        "divide-border/60 border-border/60 divide-y border-y",
-        className,
-      )}
-    >
-      {children}
-    </div>
-  );
+  return <div className={cn("space-y-6", className)}>{children}</div>;
 }
 
 export function Tile({
@@ -89,7 +80,7 @@ export function Row({
   muted?: boolean;
 }) {
   return (
-    <div className="py-4">
+    <div>
       <div className="flex items-center gap-4">
         {lead}
         <div className="min-w-0 flex-1">
