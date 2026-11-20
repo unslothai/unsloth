@@ -1908,7 +1908,7 @@ test("Run settings for an MLX repo open as one checkpoint, never the Hub, and sk
   );
   assert.match(
     settings,
-    /if \(listing === undefined \|\| listing\?\.mlx\) \{\s*listing = await listed\(\s*\/\/[^\n]*\n\s*\(row\.favoriteQuant && row\.kind === "gguf"\) \|\|\s*\(row\.kind === "hub" && mlxRepo\)\s*\?\s*\{ \.\.\.target, remote: true, everyQuant: true \}\s*:\s*target,\s*\);\s*\}/,
+    /if \(listing === undefined \|\| listing\?\.mlx\) \{\s*listing =\s*\(await listed\(\s*\/\/[^\n]*\n\s*\(row\.favoriteQuant && row\.kind === "gguf"\) \|\|\s*\(row\.kind === "hub" && mlxRepo\)\s*\?\s*\{ \.\.\.target, remote: true, everyQuant: true \}\s*:\s*target,\s*\)\) \?\? listing;\s*\}/,
   );
   assert.match(
     settings,

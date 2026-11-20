@@ -3809,13 +3809,14 @@ export function ComposerModelPicker({
           ? await listed({ ...target, remote: false, everyQuant: false })
           : undefined;
       if (listing === undefined || listing?.mlx) {
-        listing = await listed(
-          // As a pick: a pinned quant is resolved even once it is gone from disk; Discover lists every precision.
-          (row.favoriteQuant && row.kind === "gguf") ||
-            (row.kind === "hub" && mlxRepo)
-            ? { ...target, remote: true, everyQuant: true }
-            : target,
-        );
+        listing =
+          (await listed(
+            // As a pick: a pinned quant is resolved even once it is gone from disk; Discover lists every precision.
+            (row.favoriteQuant && row.kind === "gguf") ||
+              (row.kind === "hub" && mlxRepo)
+              ? { ...target, remote: true, everyQuant: true }
+              : target,
+          )) ?? listing;
       }
       if (listing) {
         const { quants: list, defaultVariant, mlx, hasVision } = listing;
