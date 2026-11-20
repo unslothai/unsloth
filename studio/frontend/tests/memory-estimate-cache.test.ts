@@ -67,3 +67,76 @@ test("the cache keeps the most recent 32 answers", () => {
   assert.equal(hook.cachedMemoryEstimate("k8"), estimate, "a re-used key moves to the back");
   assert.equal(hook.cachedMemoryEstimate("k9"), null);
 });
+
+// Minimal hook runtime: enough of React for one component's state, refs and keyed effects.
+function hookHarness() {
+  const slots: unknown[] = [];
+  const effects: { deps?: unknown[]; cleanup?: void | (() => void) }[] = [];
+  let cursor = 0;
+  let pending: (() => void)[] = [];
+  const fakeReact = {
+    useState<T>(init: T | (() => T)) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = typeof init === "function" ? (init as () => T)() : init;
+      const set = (v: T | ((c: T) => T)) => {
+        slots[i] = typeof v === "function" ? (v as (c: T) => T)(slots[i] as T) : v;
+      };
+      return [slots[i] as T, set] as const;
+    },
+    useRef<T>(init: T) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: init };
+      return slots[i] as { current: T };
+    },
+    useEffect(fn: () => void | (() => void), deps?: unknown[]) {
+      const i = cursor++;
+      const prev = effects[i];
+      if (prev && deps && prev.deps && deps.every((d, j) => Object.is(d, prev.deps![j]))) return;
+      pending.push(() => {
+        if (typeof prev?.cleanup === "function") prev.cleanup();
+        effects[i] = { deps, cleanup: fn() };
+      });
+    },
+  };
+  return {
+    fakeReact,
+    render<T>(fn: () => T): T {
+      cursor = 0;
+      const out = fn();
+      const run = pending;
+      pending = [];
+      run.forEach((e) => e());
+      return out;
+    },
+  };
+}
+
+test("only a model's first estimate skips the debounce; edits while it runs are debounced", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const harness = hookHarness();
+  let calls = 0;
+  const live = loadWithStubs<typeof HookModule>(
+    new URL("../src/features/model-picker/hooks/use-memory-estimate.ts", import.meta.url),
+    {
+      react: harness.fakeReact,
+      "@/hooks/use-system": { fetchSystemInfo: async () => ({ memory_refreshed: true }) },
+      "../api/memory-estimate": {
+        fetchMemoryEstimate: () => {
+          calls += 1;
+          return new Promise(() => {});
+        },
+      },
+      "../model-config/estimate-context": estimateContext,
+    },
+  );
+  harness.render(() => live.useMemoryEstimate({ modelPath: "org/cold-GGUF", nCtx: 1024 }));
+  t.mock.timers.tick(0);
+  assert.equal(calls, 1, "the first request goes out at once");
+  for (let n = 2; n <= 20; n++) {
+    harness.render(() => live.useMemoryEstimate({ modelPath: "org/cold-GGUF", nCtx: 1024 * n }));
+    t.mock.timers.tick(10);
+  }
+  assert.equal(calls, 1, "a drag before the first answer does not fire per step");
+  t.mock.timers.tick(250);
+  assert.equal(calls, 2, "the settled value is priced once");
+});

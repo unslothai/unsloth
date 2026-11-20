@@ -105,6 +105,7 @@ export function useMemoryEstimate(
   latestRequest.current = request;
   // A model switch, including a quant switch on the same path, must clear the numbers.
   const shownModel = useRef<string | null>(state.estimate ? currentIdentity : null);
+  const firstDispatch = useRef<string | null>(null);
 
   useEffect(() => {
     const pending = latestRequest.current;
@@ -130,7 +131,9 @@ export function useMemoryEstimate(
           : { ...current, loading: current.estimate == null, stale: true, identity },
     );
     const controller = new AbortController();
-    // Debounce re-prices only; a model's first answer should not wait on a slider settling.
+    // Only a model's first request skips the debounce; edits made while it runs still settle first.
+    const immediate = modelChanged && !cached && firstDispatch.current !== identity;
+    if (immediate) firstDispatch.current = identity;
     const timer = setTimeout(() => {
       fetchMemoryEstimate(pending, controller.signal)
         .then(async (estimate) => {
@@ -149,7 +152,7 @@ export function useMemoryEstimate(
           shownModel.current = identity;
           setState({ estimate: null, loading: false, stale: false, identity, probeKey: null });
         });
-    }, modelChanged && !cached ? 0 : ESTIMATE_DEBOUNCE_MS);
+    }, immediate ? 0 : ESTIMATE_DEBOUNCE_MS);
     return () => {
       clearTimeout(timer);
       controller.abort();
