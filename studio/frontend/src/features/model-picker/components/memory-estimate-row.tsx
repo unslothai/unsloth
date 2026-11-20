@@ -247,7 +247,9 @@ export function MemoryEstimateRow({
         <div aria-busy="true" className="space-y-3">
           {(singleMemoryPool
             ? [isUnifiedMemory ? "Unified" : "Shared"]
-            : ["GPU", "Total"]
+            : gpuCapacityGb > 0
+              ? ["GPU", "Total"]
+              : ["RAM"]
           ).map((label) => (
             <div
               key={label}

@@ -254,6 +254,10 @@ test("the first fetch keeps the row's frame instead of rendering nothing", () =>
   const shared = render({ estimate: null, loading: true, singleMemoryPool: true });
   assert.match(shared, />Shared<\/span>/);
   assert.equal(shared.match(/data-memory-placeholder=""/g)?.length, 1);
+  // No GPU: the loaded row shows RAM alone, so the placeholder holds one line, not two.
+  const cpu = render({ estimate: null, loading: true, gpuCapacityGb: 0 });
+  assert.match(cpu, />RAM<\/span>/);
+  assert.equal(cpu.match(/data-memory-placeholder=""/g)?.length, 1);
 });
 
 test("no row once the backend has said it cannot size the model", () => {

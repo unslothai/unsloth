@@ -8,6 +8,12 @@ import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import { modelDisplayName } from "../model-config/model-identity";
+import {
+  cachedStagedDims,
+  rememberStagedDims,
+  stagedDimsLastInconclusive,
+  type StagedDims,
+} from "../model-config/staged-dims-cache";
 import { type RunSettingsNaming, RunSettingsPicker } from "./saved-run-settings-row";
 import {
   adoptRememberedRunSettings,
@@ -2801,26 +2807,6 @@ interface ModelConfigPageProps {
   focusField?: ModelConfigFocus;
 }
 
-type StagedDims = {
-  key: string;
-  contextLength: number | null;
-  layerCount: number | null;
-  moeLayerCount: number | null;
-  isDiffusion?: boolean;
-  diffusionUnknown?: boolean;
-};
-
-// Collapsing the Model section unmounts this page; without this every reopen re-reads the GGUF header first.
-const stagedDimsCache = new Map<string, StagedDims>();
-
-function rememberStagedDims(dims: StagedDims): void {
-  stagedDimsCache.delete(dims.key);
-  stagedDimsCache.set(dims.key, dims);
-  if (stagedDimsCache.size > 32) {
-    stagedDimsCache.delete(stagedDimsCache.keys().next().value as string);
-  }
-}
-
 export function ModelConfigPage({
   target,
   onBack,
@@ -3131,16 +3117,12 @@ export function ModelConfigPage({
   const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
-  const [fetchedStagedDims, setFetchedStagedDims] = useState<StagedDims | null>(
-    () => (contextFetchKey == null ? null : stagedDimsCache.get(contextFetchKey) ?? null),
-  );
+  const [fetchedStagedDims, setFetchedStagedDims] = useState<StagedDims | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
       return;
     }
-    const cached = stagedDimsCache.get(contextFetchKey);
-    if (cached) {
-      setFetchedStagedDims(cached);
+    if (cachedStagedDims(contextFetchKey)) {
       return;
     }
     let cancelled = false;
@@ -3188,7 +3170,9 @@ export function ModelConfigPage({
     nativePathToken,
   ]);
   const stagedDims =
-    fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
+    fetchedStagedDims?.key === contextFetchKey
+      ? fetchedStagedDims
+      : cachedStagedDims(contextFetchKey);
   // Tri-state on purpose: collapsing unknown to false lets a compare pane inherit another split.
   const classifiedIsDiffusion = resolveStagedDiffusionClassification(
     isDiffusion,
@@ -3672,7 +3656,8 @@ export function ModelConfigPage({
     memoryEstimateRequest == null &&
     contextFetchKey != null &&
     stagedDims == null &&
-    !isDiffusion;
+    !isDiffusion &&
+    !stagedDimsLastInconclusive(contextFetchKey);
   // The loaded model's reason answers only the request it was given.
   const mlxOffloadNote = (
     value: MlxOffload | undefined,
