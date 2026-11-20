@@ -1683,39 +1683,11 @@ def test_a_step_dependent_key_seals_only_when_the_render_ends(stub_torch, monkey
     assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
 
 
-def test_real_warmup_branch_seen_briefly_still_records_after_the_scope_seals(
-    stub_torch, monkeypatch
-):
-    """A step-keyed branch that runs only 1-3 times in the first render (two protected steps of eight) has not
-    finished its real warm-ups when the render seals its image scope: it records on the next render instead of
-    running eager until reset, while a new prompt length is still refused."""
-    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
-    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
-    module = _len_dit("QwenImageTransformer2DModel")
-    branch = {"v": "a"}
-    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, lambda: branch["v"])
-    handle = _armed(module, max_graphs = 8)
-    flags = ("a", "a", "a", "a", "b", "b", "a", "a")
-    for i, flag in enumerate(flags):
-        branch["v"] = flag
-        _step(handle, 3, value = float(i))
-    cg.seal_lengths((handle,))
-    assert handle.length_sealed is True and handle.stats["captures"] == 1
-    for i, flag in enumerate(flags):
-        branch["v"] = flag
-        _step(handle, 3, value = float(i))
-    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
-    branch["v"] = "a"
-    _step(handle, 15)
-    assert handle.stats["length_eager"] == 1, "a new prompt length after the seal still runs eager"
-
-
-@pytest.mark.parametrize("runs", [1, 2, 3])
-def test_real_warmup_branch_ending_the_first_render_records_on_the_next(
-    stub_torch, monkeypatch, runs
-):
-    """A branch that closes the first render after 1-3 real warm-ups (3 = all of them, the render ended before its
-    recording step) records on the second render, as the side-stream warm-up recorded it on the first."""
+@pytest.mark.parametrize("runs", [1, 2, 3, 5])
+def test_a_branch_key_records_on_its_first_call_as_before(stub_torch, monkeypatch, runs):
+    """A step-keyed branch (NVFP4 protect, a pre-hook's flag) may run on only 1-3 steps of a render, which real
+    warm-ups could not finish: every branch key records on its first call with side-stream warm-ups, as before, so
+    the first render already replays it and later renders record nothing new."""
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
     module = _len_dit("QwenImageTransformer2DModel")
@@ -1723,12 +1695,20 @@ def test_real_warmup_branch_ending_the_first_render_records_on_the_next(
     setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, lambda: branch["v"])
     handle = _armed(module, max_graphs = 8)
     flags = ("a",) * 5 + ("b",) * runs
+    replays = []
     for _ in range(2):
+        cg.note_render_steps((handle,), len(flags))
+        before = handle.stats["replays"]
         for i, flag in enumerate(flags):
             branch["v"] = flag
             _step(handle, 3, value = float(i))
         cg.seal_lengths((handle,))
-    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+        replays.append(handle.stats["replays"] - before)
+    assert handle.stats["real_warmups"] == 0 and handle.stats["captures"] == 2
+    assert replays == [len(flags), len(flags)] and handle.stats["length_eager"] == 0
+    branch["v"] = "a"
+    _step(handle, 15)
+    assert handle.stats["length_eager"] == 1, "a new prompt length after the seal still runs eager"
 
 
 class _RefDiT(_LenDiT):
@@ -2067,6 +2047,7 @@ def test_real_warmup_is_on_unless_switched_off(stub_torch, monkeypatch, value, r
         monkeypatch.setenv(cg.REAL_WARMUP_ENV, value)
     module = _FakeDiT()
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     handle(_t(value = 1.0), timestep = _t((1,), value = 10.0), return_dict = False)
     assert handle.stats["real_warmups"] == (1 if real else 0)
     assert handle.stats["captures"] == (0 if real else 1)
@@ -2077,6 +2058,7 @@ def test_real_warmup_runs_no_discarded_forward(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
     module = _FakeDiT()
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     for i in range(cg.WARMUP_ITERS):
         out = handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
         # a real step: the module ran once and its output is what the caller gets
@@ -2101,6 +2083,7 @@ def test_real_warmup_starts_over_after_reset(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
     module = _FakeDiT()
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     for i in range(cg.WARMUP_ITERS + 1):
         handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
     assert handle.stats["captures"] == 1
@@ -2114,20 +2097,70 @@ def test_real_warmup_starts_over_after_reset(stub_torch, monkeypatch):
     assert module.calls == before + 1
 
 
-def test_real_warmup_one_step_render_replays_from_the_second_render(stub_torch, monkeypatch):
-    """A 1-step render (SDXL-Turbo): the key never finishes its real warm-ups inside a render, so the next render
-    records the side-stream way and replays, as main does from render 2 (renders 2+ never run eager)."""
+@pytest.mark.parametrize("steps", [1, 2, 3])
+def test_a_render_of_up_to_warmup_steps_records_on_its_first_call_as_before(
+    stub_torch, monkeypatch, steps
+):
+    """A 1-3 step render (SDXL-Turbo's 1-step default, low-strength img2img) cannot finish real warm-ups: the key
+    records on its first call with side-stream warm-ups, as before, so every step of every render replays."""
     monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
     module = _FakeDiT()
     handle = _armed(module)
     replays = []
-    for i in range(5):
+    for r in range(5):
+        cg.note_render_steps((handle,), steps)
         before = handle.stats["replays"]
-        handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
+        for i in range(steps):
+            handle(_t(value = float(r * 10 + i)), timestep = _t((1,), value = 10.0), return_dict = False)
         cg.seal_lengths((handle,))
         replays.append(handle.stats["replays"] - before)
-    assert replays == [0, 1, 1, 1, 1]
-    assert handle.stats["real_warmups"] == 1 and handle.stats["captures"] == 1
+    assert replays == [steps] * 5
+    assert handle.stats["real_warmups"] == 0 and handle.stats["captures"] == 1
+    assert module.calls == cg.WARMUP_ITERS + 1
+
+
+@pytest.mark.parametrize("steps, real", [(None, 0), (4, cg.WARMUP_ITERS), (8, cg.WARMUP_ITERS)])
+def test_real_warmups_need_a_render_of_more_steps_than_the_warmups(
+    stub_torch, monkeypatch, steps, real
+):
+    """Real warm-ups run only where the render said it has more steps than the warm-ups; a call with no step count
+    (any caller outside a render) records on its first call as before."""
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    module = _FakeDiT()
+    handle = _armed(module)
+    cg.note_render_steps((handle,), steps)
+    for i in range(4):
+        handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.stats["real_warmups"] == real and handle.stats["captures"] == 1
+    assert handle.stats["replays"] == 4 - real
+    cg.seal_lengths((handle,))
+    assert handle._render_steps is None, "the next render says its own step count"
+
+
+def test_a_one_step_render_with_no_step_count_replays_from_the_first_render(stub_torch):
+    """SDXL-Turbo's 1-step default through a caller that names no step count: the key records on its first call,
+    so every render replays, as on main (renders 2-3 never run eager waiting for real warm-ups)."""
+    module = _FakeDiT()
+    handle = _armed(module)
+    replays = []
+    for r in range(5):
+        before = handle.stats["replays"]
+        handle(_t(value = float(r)), timestep = _t((1,), value = 10.0), return_dict = False)
+        cg.seal_lengths((handle,))
+        replays.append(handle.stats["replays"] - before)
+    assert replays == [1, 1, 1, 1, 1]
+    assert handle.stats["captures"] == 1 and module.calls == cg.WARMUP_ITERS + 1
+
+
+def test_several_denoisers_keep_the_side_stream_warmups(stub_torch, monkeypatch):
+    """Experts that split a render's steps (Wan 2.2's two transformers) may each run fewer than the warm-ups need:
+    a pipeline of more than one denoiser keeps the side-stream warm-ups."""
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    first, second = _armed(), _armed()
+    cg.note_render_steps((first, second), 8)
+    assert first._render_steps is None and second._render_steps is None
+    first(_t(), timestep = _t((1,)), return_dict = False)
+    assert first.stats["real_warmups"] == 0 and first.stats["captures"] == 1
 
 
 def _warm(handle, *args, **kwargs):
@@ -2142,6 +2175,7 @@ def test_real_warmup_records_on_the_step_after_its_warmups_and_copies_statics(st
     records once (one device sync, no side-stream forward) and replays from statics refreshed per call."""
     module = _FakeDiT()
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     warm, first, second = _t(value = 0.5), _t(value = 1.0), _t(value = 2.0)
     _warm(handle, warm, timestep = _t((1,), value = 5.0), return_dict = False)
     handle(first, timestep = _t((1,), value = 10.0), return_dict = False)
@@ -2158,6 +2192,7 @@ def test_real_warmup_records_on_the_step_after_its_warmups_and_copies_statics(st
 def test_real_warmup_warms_a_new_shape_before_its_second_graph(stub_torch):
     """test_new_shape_adds_a_second_graph on the default: each key warms on its own real steps, then records."""
     handle = _armed()
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     _warm(handle, _t((1, 4)), timestep = _t((1,)), return_dict = False)
     handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
     assert handle.stats["captures"] == 1
@@ -2174,6 +2209,7 @@ def test_real_warmup_capture_exception_poisons_and_returns_the_eager_result(stub
     stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory during capture")
     module = _FakeDiT()
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     _warm(handle, _t(), timestep = _t((1,)), return_dict = False)
     out = handle(_t(), timestep = _t((1,)), return_dict = False)
     assert handle.poisoned is True and handle.stats["fallbacks"] == 1
@@ -2190,6 +2226,7 @@ def test_real_warmup_copy_failure_runs_the_step_eager(stub_torch, monkeypatch):
     monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
     module = _FakeDiT()
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
 
     def boom(_live):
         raise RuntimeError("CUDA out of memory copying the warm-up inputs")
@@ -2206,6 +2243,7 @@ def test_real_warmup_host_tensor_poisons_at_the_recording(stub_torch):
     """A host tensor in the step is refused when the step would record, after its warm-ups; every step still runs."""
     module = _FakeDiT()
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     _warm(handle, _t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
     out = handle(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
     assert handle.poisoned is True and handle.stats["refused_host_tensor"] == 1
@@ -2218,6 +2256,7 @@ def test_real_warmup_prewarms_the_nvfp4_layers_before_its_first_step(stub_torch,
     step would run another tactic than the replays of the same seed's next render."""
     module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear())])
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
     assert len(record_prewarm) == 1 and module.calls == 1
     tuned_module, shapes = record_prewarm[0]
@@ -2238,6 +2277,7 @@ def test_a_failed_nvfp4_prewarm_before_the_real_warmup_runs_the_step_eager(stub_
     monkeypatch.setattr(nl, "nvfp4_prewarm", boom)
     module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear())])
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     out = handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
     assert out is not None and module.calls == 1
     assert handle.poisoned is True and handle.stats["fallbacks"] == 1
@@ -2251,6 +2291,7 @@ def test_real_warmup_leaves_unbaked_nvfp4_scales_to_the_capture_refusal(stub_tor
     (eager), exactly as on the side-stream path."""
     module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear(baked = False))])
     handle = _armed(module)
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
     assert handle.stats["real_warmups"] == 0 and handle.poisoned is True
     assert "unbaked" in handle.capture_error["msg"]
@@ -2261,6 +2302,7 @@ def test_a_first_render_of_real_warmups_only_keeps_its_length_window_open(stub_t
     next render's first steps record its lengths (no step of a later render runs ungraphed for want of a seal)."""
     monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
     handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    cg.note_render_steps((handle,), 8)  # a render with the steps to finish its warm-ups
     _render(handle, 3, steps = cg.WARMUP_ITERS)
     cg.seal_lengths((handle,))
     assert handle.stats["captures"] == 0 and handle.length_sealed is False
@@ -2301,6 +2343,7 @@ def test_real_cuda_real_warmup_matches_eager_bit_for_bit(monkeypatch):
     dim = 64
     module = TinyDiT(dim).to("cuda", torch.bfloat16).eval()
     handle = cg.GraphedForward(module).enable()
+    cg.note_render_steps((handle,), 8)
     try:
         steps = cg.WARMUP_ITERS + 3
         for _ in range(steps):

@@ -56,6 +56,9 @@ MAX_GRAPHS_PER_MODULE = 4
 WARMUP_ITERS = 3
 # A resident key's first real steps are its warm-ups, so no forward is run and thrown away before the recording (three
 # per key on the first render of a load); its WARMUP_ITERS-th + 1 step records. 0 keeps the side-stream warm-ups.
+# Only where the render runs the key on at least WARMUP_ITERS + 1 steps (note_render_steps: a render of more steps than
+# WARMUP_ITERS, one denoiser, a key that follows no step-dependent branch); any other key records on its first call
+# with side-stream warm-ups, as before, so a 1-3 step render replays from the next render on.
 # Exact while no first-call decision changes an output after a used step: INT8 attention keeps the sink path a used
 # call ran on for the load (diffusion_int8_attention._choose_path), NVFP4 tunes before the first step (below).
 REAL_WARMUP_ENV = "UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP"
@@ -1188,9 +1191,12 @@ class GraphedForward:
         self._warmed: dict = {}
         # Resident only, per graph key: real steps run eagerly on capture-layout copies before the recording.
         self._real_warm: dict = {}
-        # Keys whose real warm-ups did not finish inside one render (a 1-3 step render): they record the side-stream
-        # way on their next appearance, so renders 2+ replay as before.
+        # Keys whose real warm-ups did not finish inside one render: they record the side-stream way on their next
+        # appearance, so renders 2+ replay as before.
         self._real_warm_closed: set = set()
+        # The denoiser steps of the render under way (note_render_steps), None when unknown: real warm-ups need more
+        # than WARMUP_ITERS of them, else the key records on its first call as before.
+        self._render_steps: Optional[int] = None
         # Keys recorded before: a placement change re-records them with no warm-up (same shapes, new addresses).
         self._recorded: dict = {}
         # Offloaded only, per graph key: seen count, eager/graph spans, verdict ('' kept, else drop reason).
@@ -1727,6 +1733,14 @@ class GraphedForward:
                 and real_warmup_enabled()
                 and self._real_warm.get(key, 0) < self.warmup
                 and key not in self._real_warm_closed
+                and (
+                    self._real_warm.get(key, 0) > 0
+                    # a key this render runs on every step, and on more steps than the warm-ups: it records on one
+                    # of them (a branch key may appear on 1-3 steps only, and records on its first call as before)
+                    or (
+                        not step_keyed and (getattr(self, "_render_steps", None) or 0) > self.warmup
+                    )
+                )
                 and self._real_warmup_ready(key, args, kwargs)
             ):
                 # Resident: this real step is one of the key's warm-ups (compile, lazy allocations), run on copies
@@ -2928,10 +2942,30 @@ def install_cuda_graphs(
     return installed
 
 
+def note_render_steps(handles: Any, steps: Any) -> None:
+    """A render is about to run ``steps`` denoiser steps (after img2img strength): a resident key's first real steps
+    are its warm-ups only where more than WARMUP_ITERS of them follow, so it records within this render. Unknown
+    (None), or a pipeline of several denoisers (experts that split the steps), keeps the side-stream warm-ups."""
+    handles = tuple(handles or ())
+    try:
+        count = int(steps) if steps is not None and len(handles) == 1 else None
+    except Exception:  # noqa: BLE001 - an unreadable count is an unknown one
+        count = None
+    for handle in handles:
+        try:
+            handle._render_steps = count
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
+
+
 def seal_lengths(handles: Any) -> None:
     """A render ended: a denoiser whose text length follows the prompt records no new prompt length from here on
     (until ``reset``). Covers a first render that recorded but never replayed (an offloaded key still being timed)."""
     for handle in handles or ():
+        try:
+            handle._render_steps = None  # the next render says its own
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
         try:
             real = getattr(handle, "_real_warm", None)
             if real:
