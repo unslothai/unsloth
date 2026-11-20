@@ -163,7 +163,17 @@ def _without_card(character: dict) -> dict:
 def _with_normalized_book(fields: dict) -> dict:
     # Same shape as an imported book, so the prompt builder and export never see a raw one.
     if fields.get("characterBook"):
-        return {**fields, "characterBook": cards.normalize_book(fields["characterBook"])}
+        # The editor changes the top-level position and depth, but normalize_book reads an
+        # imported entry's SillyTavern extensions first, so the edits go there too. The JSON round
+        # trip turns NaN and Infinity into null, which could not be served back.
+        book = fields["characterBook"]
+        if isinstance(book.get("entries"), list):
+            book = cards._export_book(book)
+        try:
+            book = cards._json_loads(json.dumps(book))
+        except cards.CardError as exc:
+            raise HTTPException(status_code = 422, detail = str(exc)) from None
+        return {**fields, "characterBook": cards.normalize_book(book)}
     return fields
 
 

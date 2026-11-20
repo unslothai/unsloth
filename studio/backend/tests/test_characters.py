@@ -983,6 +983,50 @@ def test_a_book_sent_by_the_editor_is_normalized_like_an_import(client):
     assert entry["keys"] == ["fern"] and entry["content"] == "7"
 
 
+def test_editing_an_imported_entrys_placement_sticks(client):
+    def entry(key, position, ext_position):
+        return {
+            "keys": [key],
+            "content": key,
+            "position": position,
+            "extensions": {"position": ext_position, "depth": 4},
+        }
+
+    card = {
+        "spec": "chara_card_v2",
+        "spec_version": "2.0",
+        "data": {
+            "name": "Ivo",
+            "character_book": {
+                "entries": [entry("deck", "before_char", 0), entry("hold", "before_char", 4)]
+            },
+        },
+    }
+    imported = client.post(
+        "/api/characters/import?filename=ivo.json", content = json.dumps(card).encode()
+    ).json()["character"]
+    book = imported["characterBook"]
+    assert [e["position"] for e in book["entries"]] == ["before_char", "at_depth"]
+    book["entries"][0]["position"] = "after_char"
+    book["entries"][1]["depth"] = 2
+    patched = client.patch(f"/api/characters/{imported['id']}", json = {"characterBook": book})
+    assert patched.status_code == 200
+    stored = client.get(f"/api/characters/{imported['id']}").json()["characterBook"]["entries"]
+    assert [(e["position"], e["depth"]) for e in stored] == [("after_char", 4), ("at_depth", 2)]
+
+
+def test_a_non_finite_number_in_a_book_is_stored_as_null(client):
+    created = _character(client)
+    response = client.patch(
+        f"/api/characters/{created['id']}",
+        content = b'{"characterBook": {"entries": [{"keys": ["a"], "content": "x", "priority": NaN}]}}',
+        headers = {"content-type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["characterBook"]["entries"][0]["priority"] is None
+    assert client.get("/api/characters").status_code == 200
+
+
 def test_a_character_deleted_while_a_chat_is_made_is_a_404_and_leaves_no_chat(client, monkeypatch):
     character = _character(client)
     before = {t["id"] for t in studio_db.list_chat_threads()}
@@ -1030,7 +1074,8 @@ def test_a_large_group_opens_in_a_handful_of_connections(client, monkeypatch):
     assert response.status_code == 201
     assert len(opened) < 20
     messages = studio_db.list_chat_messages(response.json()["threadId"])
-    assert len(messages) == 1 + 15 + 16 * 65
+    # The main path, plus the bounded copies of later greetings under alternates.
+    assert 1 + 15 + 16 * 65 < len(messages) <= 1 + 15 + 16 * 65 + chats.MAX_GREETING_COPY_ROWS
 
 
 def test_a_greeting_records_its_index_in_the_card(client):
