@@ -80,12 +80,19 @@ class WorkingEvidence:
         self.summary = ""
         self.prefix = ""
         self.calls = 0
+        self._with_evidence: dict | None = None
+        self._without_evidence: dict | None = None
 
-    def _place(self, conversation: list[dict], prefix: str) -> tuple[list[dict], dict | None]:
+    def _place(
+        self, conversation: list[dict], prefix: str
+    ) -> tuple[list[dict], dict | None, dict | None]:
         candidate = []
         for message in conversation:
             content = message.get("content")
-            if self.prefix and message.get("role") == "user":
+            # Restore the same object so rolling fits still recognize its original anchor ID.
+            if message is self._with_evidence and self._without_evidence is not None:
+                message = self._without_evidence
+            elif self.prefix and message.get("role") == "user":
                 if isinstance(content, str) and content.endswith(self.prefix):
                     message = {**message, "content": content[: -len(self.prefix)]}
                 elif (
@@ -98,7 +105,8 @@ class WorkingEvidence:
         for index in range(len(candidate) - 1, -1, -1):
             if candidate[index].get("role") != "user":
                 continue
-            content = candidate[index].get("content")
+            original = candidate[index]
+            content = original.get("content")
             if isinstance(content, str):
                 candidate[index] = {**candidate[index], "content": content + prefix}
             elif isinstance(content, list):
@@ -107,9 +115,9 @@ class WorkingEvidence:
                     "content": [*content, {"type": "text", "text": prefix}],
                 }
             else:
-                return conversation, None
-            return candidate, candidate[index]
-        return conversation, None
+                return conversation, None, None
+            return candidate, candidate[index], original
+        return conversation, None, None
 
     def refresh(self, conversation, *, count_prompt, prompt_budget):
         """Keep the retained record with the latest continuation notice, without re-summarizing.
@@ -126,7 +134,7 @@ class WorkingEvidence:
             present = any(
                 m.get("role") == "user" and _text(m).endswith(self.prefix) for m in conversation
             )
-            candidate, anchor = self._place(conversation, self.prefix)
+            candidate, anchor, original = self._place(conversation, self.prefix)
             if anchor is None:
                 return conversation, None
             # Moving an existing record may precede the normal fit. Never enlarge an
@@ -138,6 +146,7 @@ class WorkingEvidence:
             )
             if count_prompt(counting_copy(candidate)) > budget:
                 return conversation, None
+            self._with_evidence, self._without_evidence = anchor, original
             return candidate, anchor
         except Exception:
             logger.debug("Working-evidence refresh unavailable", exc_info = True)
@@ -207,12 +216,13 @@ class WorkingEvidence:
             if cancelled() or not summary.strip() or finish_reason != "stop":
                 return conversation, None
             prefix = "\n\n" + RECORD_HEADER + summary.strip() + "\n\n"
-            candidate, anchor = self._place(conversation, prefix)
+            candidate, anchor, original = self._place(conversation, prefix)
             if anchor is None:
                 return conversation, None
             if count_prompt(counting_copy(candidate)) > prompt_budget or cancelled():
                 return conversation, None
             self.summary, self.prefix = summary, prefix
+            self._with_evidence, self._without_evidence = anchor, original
             return candidate, anchor
         except Exception:
             logger.debug("Working-evidence handover unavailable", exc_info = True)

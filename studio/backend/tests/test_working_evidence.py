@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from core.inference.context_window import fit_rolling_context
 from core.inference.working_evidence import WorkingEvidence, RECORD_HEADER, counting_copy
 
 
@@ -171,7 +172,7 @@ def test_previous_record_moves_to_latest_notice_without_stacking():
     final, anchor = run(state, next_current, [*next_current, next_result], generate = generate)
     assert sum(m.get("content", "").count(RECORD_HEADER) for m in final) == 1
     assert anchor is final[-1]
-    assert final[0]["content"] == current[0]["content"]
+    assert final[0] is current[0]
     assert "EX-01: full condition" in prompts[0][1]["content"]
 
 
@@ -208,14 +209,30 @@ def test_refresh_moves_complete_record_past_later_partial_output_without_regener
     updated, _ = run(state, current, before)
     later = [
         *updated,
-        {"role": "tool", "content": "Only the last eight rows."},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "last", "type": "function", "function": {"name": "python", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "last", "content": "Only the last eight rows. " * 650},
         {"role": "user", "content": "Use the available results to finish."},
     ]
     snapshot = copy.deepcopy(later)
     refreshed, anchor = state.refresh(later, count_prompt = lambda _: 3000, prompt_budget = 6144)
     assert state.calls == 1
     assert later == snapshot
-    assert refreshed[0]["content"] == current[0]["content"]
+    fitted, metadata = fit_rolling_context(
+        refreshed,
+        context_length = 4096,
+        max_tokens = 512,
+        count_tokens = lambda messages: len(json.dumps(messages)) // 4,
+        protected_message_ids = {id(current[0]), id(updated[0]), id(anchor)},
+    )
+    assert metadata["fits"]
+    assert later[1] not in fitted
+    assert current[0] in fitted
+    assert anchor in fitted
     assert anchor is refreshed[-1]
     assert "EX-01: full condition" in anchor["content"]
     assert "Use the available results to finish." in anchor["content"]
