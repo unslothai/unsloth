@@ -173,12 +173,16 @@ def _set_chat_template(tokenizer, chat_template):
         inner.chat_template = chat_template
 
 
-def _drop_none_values(value):
+def _drop_none_values(value, verbatim = ()):
     # loaded dicts cannot distinguish nulls from keys added by another row, unlike JSON strings.
     if isinstance(value, dict):
-        return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
+        return {
+            key: item if key in verbatim else _drop_none_values(item, verbatim)
+            for key, item in value.items()
+            if item is not None
+        }
     if isinstance(value, list):
-        return [_drop_none_values(item) for item in value]
+        return [_drop_none_values(item, verbatim) for item in value]
     return value
 
 

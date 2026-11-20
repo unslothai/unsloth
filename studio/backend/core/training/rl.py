@@ -9,7 +9,6 @@ No vLLM: Unsloth uses it only when the model has a ``vllm_engine``, which Studio
 from __future__ import annotations
 
 import dataclasses
-import json
 import math
 import os
 from typing import Any, Callable, Optional
@@ -28,7 +27,16 @@ _REQUIRED_ROLES = {
 }
 _AUTO_ROLE_NAMES = {
     "prompt": ("prompt", "question", "instruction", "problem", "query", "input"),
-    "answer": ("answer", "solution", "final_answer", "target", "label"),
+    "answer": (
+        "answer",
+        "solution",
+        "final_answer",
+        "target",
+        "label",
+        "output",
+        "response",
+        "completion",
+    ),
     "chosen": ("chosen", "accepted", "preferred"),
     "rejected": ("rejected", "dispreferred"),
     "system": ("system", "system_prompt"),
@@ -151,16 +159,6 @@ def resolve_role_columns(
     return resolved
 
 
-def _content_text(content: Any) -> str:
-    if isinstance(content, list):
-        return "\n".join(
-            part["text"]
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
-        )
-    return str(content)
-
-
 # function_call/observation stay for _sharegpt_tool_turns.
 _SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
 
@@ -184,6 +182,8 @@ def _as_messages(value: Any, role: str) -> list[dict]:
     if isinstance(value, list) and all(
         isinstance(m, dict) and ("content" in m or "role" in m) for m in value
     ):
+        from utils.datasets.format_conversion import _content_text
+
         # Extra fields (tool_calls, tool_call_id) carry the answer when content is null or absent.
         return [
             {
@@ -263,18 +263,20 @@ def format_rl_dataset(
                 chosen_cell, rejected_cell = _implicit_text_prompt(chosen_cell, rejected_cell)
             chosen = _as_messages(chosen_cell, "assistant")
             rejected = _as_messages(rejected_cell, "assistant")
+            from utils.datasets.chat_templates import _drop_none_values
+
             shared = 0
             # Ignore nulls: Arrow pads tool arguments with other calls' keys.
-            while shared < min(len(chosen), len(rejected)) and _strip_nulls(
+            while shared < min(len(chosen), len(rejected)) and _drop_none_values(
                 chosen[shared]
-            ) == _strip_nulls(rejected[shared]):
+            ) == _drop_none_values(rejected[shared]):
                 shared += 1
             if shared == min(len(chosen), len(rejected)):
                 shared -= 1
             # Branches repeating the mapped prompt are full conversations, even if assistant-first.
-            repeats_prompt = 0 < len(mapped) <= shared and _strip_nulls(
+            repeats_prompt = 0 < len(mapped) <= shared and _drop_none_values(
                 chosen[: len(mapped)]
-            ) == _strip_nulls(mapped)
+            ) == _drop_none_values(mapped)
             if (
                 not repeats_prompt
                 and "prompt" in roles
@@ -394,31 +396,10 @@ def render_grpo_prompts(
     return dataset.map(render, remove_columns = drop, **map_kwargs), True
 
 
-def render_prompts_without_thinking(
-    dataset,
-    tokenizer,
-    enable_thinking: bool,
-    num_proc = None,
-):
-    return render_grpo_prompts(dataset, tokenizer, enable_thinking, num_proc)
-
-
 def _row_tools(row: dict):
-    # Only structured (Arrow) schemas carry other rows' keys as None; JSON text keeps its own nulls.
-    def decode(value):
-        if not isinstance(value, str):
-            return _drop_nulls(value)
-        try:
-            return json.loads(value)
-        except ValueError:
-            return None
+    from utils.datasets.chat_templates import _row_tools as sft_row_tools
 
-    tools = row.get("tools")
-    if isinstance(tools, list):
-        tools = [tool for tool in map(decode, tools) if tool]
-    else:
-        tools = decode(tools)
-    return tools or None
+    return sft_row_tools(row.get("tools"))
 
 
 def _implicit_text_prompt(chosen: Any, rejected: Any) -> tuple[Any, Any]:
@@ -437,25 +418,6 @@ def _implicit_text_prompt(chosen: Any, rejected: Any) -> tuple[Any, Any]:
         [prompt, {"role": "assistant", "content": chosen[cut:]}],
         [prompt, {"role": "assistant", "content": rejected[cut:]}],
     )
-
-
-def _strip_nulls(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {k: _strip_nulls(v) for k, v in value.items() if v is not None}
-    if isinstance(value, list):
-        return [_strip_nulls(v) for v in value]
-    return value
-
-
-def _drop_nulls(value: Any) -> Any:
-    if isinstance(value, dict):
-        # Tool-call arguments stay as given: a null there can be the answer (required, nullable).
-        return {
-            k: v if k == "arguments" else _drop_nulls(v) for k, v in value.items() if v is not None
-        }
-    if isinstance(value, list):
-        return [_drop_nulls(v) for v in value]
-    return value
 
 
 def _row_template_kwargs(row: dict) -> dict:
@@ -510,11 +472,15 @@ def _without_padded_arguments(messages: Any, tools: Any) -> Any:
 def _without_nulls(value: Any) -> Any:
     if isinstance(value, list):
         from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+        from utils.datasets.chat_templates import _drop_none_values
 
         # JSON-string arguments as mappings: templates `tojson` a string twice.
         return _normalize_tool_call_arguments(
             [
-                {**_drop_nulls(m), "content": m.get("content")} if isinstance(m, dict) else m
+                # Tool-call arguments stay as given: a null there can be the answer (nullable).
+                {**_drop_none_values(m, verbatim = ("arguments",)), "content": m.get("content")}
+                if isinstance(m, dict)
+                else m
                 for m in value
             ]
         )
@@ -718,14 +684,6 @@ def _trl_older_than(version: str) -> bool:
         return False
 
 
-def _fp16_only_gpu() -> bool:
-    try:
-        import torch
-        return torch.cuda.is_available() and not torch.cuda.is_bf16_supported()
-    except Exception:
-        return False
-
-
 def _config_kwargs(config_cls, config_args: dict) -> dict:
     allowed = {f.name for f in dataclasses.fields(config_cls)}
     ratio = config_args.get("warmup_ratio")
@@ -757,6 +715,7 @@ def build_rl_trainer(
     settings: dict,
     reward_specs: Optional[list[dict]] = None,
     on_warning: Optional[Callable[[str], None]] = None,
+    continues_adapter: bool = False,
 ):
     """Build the TRL trainer for a non-SFT objective (PatchFastRL already swapped the classes)."""
     import trl
@@ -820,7 +779,8 @@ def build_rl_trainer(
         }
         if objective == "dpo":
             kwargs["ref_model"] = None
-            if getattr(model, "peft_config", None) and on_warning is not None:
+            # Every LoRA run has a peft_config by now; only a loaded adapter changes the reference.
+            if continues_adapter and on_warning is not None:
                 on_warning(
                     "DPO's reference here is the base model, not the LoRA adapter this run "
                     "continues from."
@@ -859,7 +819,6 @@ def build_rl_trainer(
                 "mask_truncated_completions": bool(settings.get("mask_truncated_completions")),
                 # Empty means the regular clip: Unsloth reads an explicit dapo with None as DAPO's 0.28.
                 "epsilon_high": settings.get("epsilon_high")
-                or settings.get("epsilon")
                 or next(
                     (f.default for f in dataclasses.fields(trl.GRPOConfig) if f.name == "epsilon"),
                     0.2,
@@ -872,7 +831,7 @@ def build_rl_trainer(
             eval_dataset = drop_long_prompts(eval_dataset, tokenizer, max_prompt_length)
         num_generations = int(settings.get("num_generations") or 4)
         grpo_base = {**base, "max_prompt_length": max_prompt_length}
-        if _fp16_only_gpu():
+        if base.get("fp16"):
             # Gemma 3 fp16 sampling (T4) gives non-finite logits that crash multinomial: drop them.
             grpo_base["generation_kwargs"] = {
                 **(grpo_base.get("generation_kwargs") or {}),
@@ -882,8 +841,18 @@ def build_rl_trainer(
             world = max(int(os.environ.get("WORLD_SIZE") or 1), 1)
         except ValueError:
             world = 1
-        batch = int(grpo_base.get("per_device_train_batch_size") or 1) * world
-        per_step = batch * int(grpo_base.get("gradient_accumulation_steps") or 1)
+        device_batch = int(grpo_base.get("per_device_train_batch_size") or 1)
+        accumulation = int(grpo_base.get("gradient_accumulation_steps") or 1)
+        if (device_batch * world * accumulation) % num_generations and device_batch < num_generations:
+            # As Unsloth's GRPOConfig does: a step trains whole prompt groups, as the notebooks do.
+            device_batch = grpo_base["per_device_train_batch_size"] = num_generations
+            if on_warning is not None:
+                on_warning(
+                    f"GRPO trains whole groups of {num_generations} generations per step, so the "
+                    f"batch size was raised to {num_generations}."
+                )
+        batch = device_batch * world
+        per_step = batch * accumulation
         if per_step % num_generations:
             # TRL wants a generation batch divisible by both the global batch and num_generations.
             group = batch * num_generations // math.gcd(batch, num_generations)

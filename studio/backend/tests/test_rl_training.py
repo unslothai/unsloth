@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from core.training.rl import (
     build_rl_trainer,
     install_fsdp_import_stub,
-    render_prompts_without_thinking,
+    render_grpo_prompts,
     format_rl_dataset,
     resolve_role_columns,
     rl_lengths,
@@ -267,7 +267,6 @@ def test_grpo_drops_non_finite_logits_only_on_fp16_only_gpus(monkeypatch, fp16_o
     class _Config(_FakeGRPOConfig):
         generation_kwargs: dict = None
 
-    monkeypatch.setattr(rl, "_fp16_only_gpu", lambda: fp16_only)
     monkeypatch.setitem(
         sys.modules, "trl", types.SimpleNamespace(GRPOConfig = _Config, GRPOTrainer = lambda **kw: kw)
     )
@@ -281,7 +280,7 @@ def test_grpo_drops_non_finite_logits_only_on_fp16_only_gpus(monkeypatch, fp16_o
         tokenizer = None,
         train_dataset = None,
         eval_dataset = None,
-        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        config_args = {"output_dir": "o", "max_seq_length": 1024, "fp16": fp16_only},
         settings = {},
         reward_specs = [spec],
     )
@@ -315,7 +314,7 @@ def test_default_dapo_falls_back_to_bnpo_on_old_trl(monkeypatch, version, loss_t
         on_warning = warnings.append,
     )
     assert kw["args"].loss_type == loss_type
-    assert bool(warnings) == (loss_type == "bnpo")
+    assert any("DAPO" in w for w in warnings) == (loss_type == "bnpo")
 
 
 def test_request_refuses_unknown_grpo_variant():
@@ -383,14 +382,14 @@ class _ThinkingTokenizer:
 
 def test_thinking_switch_renders_prompts_only_for_templates_that_have_one():
     ds = Dataset.from_list([{"prompt": [{"role": "user", "content": "2+2?"}], "answer": "4"}])
-    out, rendered = render_prompts_without_thinking(ds, _ThinkingTokenizer(), False)
+    out, rendered = render_grpo_prompts(ds, _ThinkingTokenizer(), False)
     assert rendered and out[0]["prompt"] == "<user>2+2?<assistant><think></think>"
     assert out[0]["answer"] == "4"
 
     class Plain:
         chat_template = "{{ messages }}"
 
-    same, rendered = render_prompts_without_thinking(ds, Plain(), False)
+    same, rendered = render_grpo_prompts(ds, Plain(), False)
     assert not rendered and same[0]["prompt"] == [{"role": "user", "content": "2+2?"}]
 
 
@@ -432,7 +431,7 @@ def test_grpo_reward_column_kept_when_it_also_fills_a_role():
 
 
 def test_grpo_reward_column_missing_from_dataset_is_refused():
-    ds = Dataset.from_list([{"question": "2+2?", "response": "4"}])
+    ds = Dataset.from_list([{"question": "2+2?", "notes": "4"}])
     with pytest.raises(ValueError, match = "compares against answer"):
         format_rl_dataset(ds, "grpo", keep_columns = ("answer",))
 
@@ -528,8 +527,12 @@ class _FakeGRPOConfigWithGenBatch(_FakeGRPOConfig):
     generation_batch_size: int = None
 
 
-@pytest.mark.parametrize("generations, expected", [(3, 36), (5, 40), (4, None)])
-def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generations, expected):
+@pytest.mark.parametrize(
+    "generations, expected, batch", [(3, 36, 4), (5, None, 5), (4, None, 4), (6, None, 6)]
+)
+def test_grpo_generation_batch_holds_whole_prompt_groups(
+    monkeypatch, generations, expected, batch
+):
     fake = types.SimpleNamespace(
         GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
     )
@@ -554,6 +557,7 @@ def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generation
         reward_specs = [spec],
     )
     assert kw["args"].generation_batch_size == expected
+    assert kw["args"].per_device_train_batch_size == batch
 
 
 def test_grpo_generation_batch_counts_every_process(monkeypatch):
@@ -581,7 +585,9 @@ def test_grpo_generation_batch_counts_every_process(monkeypatch):
         settings = {"num_generations": 3},
         reward_specs = [spec],
     )
-    assert kw["args"].generation_batch_size == 6
+    # Batch 1 on two processes is raised to one whole group per process.
+    assert kw["args"].per_device_train_batch_size == 3
+    assert kw["args"].generation_batch_size is None
 
 
 def test_resume_refuses_a_changed_reward_set():
@@ -1943,3 +1949,113 @@ def test_grpo_prompts_show_every_parallel_call_and_omit_null_content():
     out, rendered = render_grpo_prompts(ds, _SingleCallTemplate(), enable_thinking = None)
     assert rendered
     assert "[weather]" in out[0]["prompt"] and "[time]" in out[0]["prompt"]
+
+
+def _dpo_warnings(monkeypatch, continues_adapter):
+    @dataclasses.dataclass
+    class _DPOConfig:
+        output_dir: str = None
+        beta: float = 0.1
+        max_length: int = None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "trl",
+        types.SimpleNamespace(DPOConfig = _DPOConfig, DPOTrainer = lambda **kw: kw),
+    )
+    monkeypatch.setitem(sys.modules, "unsloth", types.SimpleNamespace(PatchDPOTrainer = lambda: None))
+    warnings = []
+    build_rl_trainer(
+        "dpo",
+        # A fresh LoRA run has a peft_config too: get_peft_model ran before the trainer.
+        model = types.SimpleNamespace(peft_config = {"default": object()}),
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        settings = {},
+        on_warning = warnings.append,
+        continues_adapter = continues_adapter,
+    )
+    return warnings
+
+
+def test_dpo_reference_warning_only_when_continuing_a_loaded_adapter(monkeypatch):
+    assert _dpo_warnings(monkeypatch, continues_adapter = False) == []
+    assert len(_dpo_warnings(monkeypatch, continues_adapter = True)) == 1
+
+
+def test_grpo_batch_below_the_generation_count_trains_a_whole_group_per_step(monkeypatch):
+    # The Qwen2.5 GRPO notebook's settings: batch 1, 8 generations.
+    monkeypatch.setitem(
+        sys.modules,
+        "trl",
+        types.SimpleNamespace(GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw),
+    )
+    warnings = []
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = [{"prompt": "x"}],
+        eval_dataset = None,
+        config_args = {
+            "output_dir": "o",
+            "max_seq_length": 512,
+            "per_device_train_batch_size": 1,
+            "gradient_accumulation_steps": 1,
+        },
+        settings = {"num_generations": 8},
+        reward_specs = [
+            {"name": "l", "rule": {"type": "length", "max_chars": 9, "score": {"over": 0.0, "under": 1.0}}}
+        ],
+        on_warning = warnings.append,
+    )
+    assert kw["args"].per_device_train_batch_size == 8
+    assert kw["args"].generation_batch_size is None
+    assert warnings and "raised to 8" in warnings[0]
+
+
+def test_grpo_tool_rows_get_sfts_schema_normalisation():
+    from core.training.rl import _row_tools
+
+    bare = {"name": "weather", "parameters": {"type": "object", "properties": {}}}
+    assert _row_tools({"tools": [bare]}) == [{"type": "function", "function": bare}]
+    typeless = {"function": {"name": "w", "parameters": {}}}
+    assert _row_tools({"tools": json.dumps([typeless])}) == [{"type": "function", **typeless}]
+
+
+@pytest.mark.parametrize("column", ["output", "response", "completion"])
+def test_grpo_reads_alpaca_style_answer_columns(column):
+    columns = ["instruction", "input", column]
+    assert resolve_role_columns(columns, "grpo")["answer"] == column
+
+
+@pytest.mark.parametrize(
+    "objective, vision, refused",
+    [("dpo", True, True), ("orpo", True, True), ("grpo", True, False), ("dpo", False, False)],
+)
+def test_preference_objectives_refuse_a_vision_model_before_it_loads(
+    monkeypatch, objective, vision, refused
+):
+    from fastapi import HTTPException
+
+    import routes.training as training_routes
+    import utils.models.model_config as model_config
+
+    probed = []
+    monkeypatch.setattr(
+        model_config,
+        "is_vision_model_checked",
+        lambda name, *a, **k: probed.append(name) or (vision, True),
+    )
+    preflight = training_routes._ModelPreflightResult(
+        model_name = "unsloth/gemma-4-E4B-it", model_local_path = None, cached_model_pin = None
+    )
+    if refused:
+        with pytest.raises(HTTPException) as exc:
+            training_routes._refuse_preference_objective_on_vision_model(objective, preflight, None)
+        assert exc.value.status_code == 400 and "vision-language" in exc.value.detail
+    else:
+        training_routes._refuse_preference_objective_on_vision_model(objective, preflight, None)
+    assert probed == ([] if objective == "grpo" else ["unsloth/gemma-4-E4B-it"])

@@ -1809,6 +1809,7 @@ class UnslothTrainer:
         try:
             if self.model is None:
                 raise ValueError("Model not loaded. Call load_model() first.")
+            self.continues_adapter = False
 
             if use_gradient_checkpointing is _UNSET:
                 use_gradient_checkpointing = self._use_gradient_checkpointing
@@ -1843,6 +1844,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_loftq = use_loftq,
                 )
+                self.continues_adapter = True
                 status = "Continuing from existing LoRA adapters"
                 if ignored:
                     # The adapter's own shape wins; say so instead of dropping the request silently.
@@ -5030,6 +5032,7 @@ class UnslothTrainer:
                     settings = training_args.get("rl_settings") or {},
                     reward_specs = training_args.get("reward_specs") or [],
                     on_warning = self._record_warning,
+                    continues_adapter = getattr(self, "continues_adapter", False),
                 )
                 if rl_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer

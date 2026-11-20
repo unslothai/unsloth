@@ -232,6 +232,28 @@ class _ModelPreflightResult:
     adapter_base_pin: Optional[str] = None
 
 
+def _refuse_preference_objective_on_vision_model(
+    objective: str, model_preflight: _ModelPreflightResult, hf_token: Optional[str]
+) -> None:
+    """DPO/ORPO on a vision-language model fails only once the weights load; refuse it before."""
+    if objective not in ("dpo", "orpo"):
+        return
+    from utils.models.model_config import is_vision_model_checked
+
+    # A probe that cannot answer falls through to the trainer's own check after the load.
+    vision, _ = is_vision_model_checked(
+        model_preflight.model_local_path or model_preflight.model_name,
+        hf_token or None,
+        local_files_only = bool(model_preflight.model_local_path),
+    )
+    if vision:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{objective.upper()} is not available for vision-language models yet; "
+            "use SFT or GRPO.",
+        )
+
+
 # ~30 min of 1s polls. Applied only once stepping: model load + tokenization can take far longer.
 _PROGRESS_STALL_TIMEOUT_POLLS = 1800
 
@@ -2167,6 +2189,9 @@ async def _admit_training_request(
         request,
         resume_actual_model_repo_id,
         hf_token,
+    )
+    await asyncio.to_thread(
+        _refuse_preference_objective_on_vision_model, request.objective, model_preflight, hf_token
     )
     cached_model_pin = model_preflight.cached_model_pin
     training_actual_model_repo_id = resume_actual_model_repo_id
