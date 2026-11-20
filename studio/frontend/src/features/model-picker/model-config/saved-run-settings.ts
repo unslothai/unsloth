@@ -195,6 +195,36 @@ export function saveRunSettings(
   return writeMap(map);
 }
 
+/** Copies a saved set under a collision-safe "<name> copy" name. */
+export function duplicateSavedRunSettings(
+  modelId: string,
+  sourceName: string,
+): string | null {
+  const map = readMap();
+  const key = modelKey(modelId);
+  const entries = entriesFor(map, key);
+  const source = entries.find((entry) => named(entry, sourceName));
+  if (!source || entries.length >= SAVED_RUN_SETTINGS_PER_MODEL_MAX) {
+    return null;
+  }
+
+  const base = `${source.name} copy`;
+  const names = entries.map((entry) => entry.name);
+  let name = withSuffix(base, "");
+  for (let n = 2; names.some((existing) => sameName(existing, name)); n++) {
+    name = withSuffix(base, ` ${n}`);
+  }
+  map[key] = [
+    ...entries,
+    {
+      name,
+      savedAt: Date.now(),
+      config: source.config,
+    },
+  ];
+  return writeMap(map) ? name : null;
+}
+
 export function isRunSettingsLimitReached(
   modelId: string,
   name: string,
