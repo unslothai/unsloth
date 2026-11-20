@@ -7,6 +7,8 @@ Linear (a second copy on the source card, and for MOSS a GEMM across cards)."""
 import pytest
 
 torch = pytest.importorskip("torch")
+# diffusion_moss_image builds its model classes on diffusers at import time
+pytest.importorskip("diffusers")
 from torch import nn  # noqa: E402
 
 from core.inference import diffusion_multigpu as mg  # noqa: E402
