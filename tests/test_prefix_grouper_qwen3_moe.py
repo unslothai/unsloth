@@ -227,7 +227,7 @@ def test_eager_attention_matches_too():
 
 
 def test_no_leak_across_completions():
-    """Changing completion 1 must not move completion 0 or 2 (same group) by a single ulp."""
+    """Changing completion 1 must not move completion 0 or 2 (same group) or the other group."""
     model = _model(_config())
     assert pg.prefix_seg_info_applied(model) is True
     groups = _groups(seed = 5)
@@ -237,10 +237,14 @@ def test_no_leak_across_completions():
         cs2 = list(cs)
         cs2[1] = (cs[1] + 17) % (VOCAB - 1) + 1
         moved = _pg_logps(model, [(p, cs2)] + groups[1:])
+    # CPU: bit for bit. CUDA: expert GEMM shapes change with the routed token counts, so allow
+    # rounding noise (a leak moves log-probs by whole nats).
+    atol = 1e-4 if CUDA else 0.0
     for idx in (0, 2):
-        assert torch.equal(base[0][idx], moved[0][idx])
+        assert torch.allclose(base[0][idx], moved[0][idx], rtol = 0, atol = atol)
     for a, b in zip(base[1], moved[1]):
-        assert torch.equal(a, b)
+        assert torch.allclose(a, b, rtol = 0, atol = atol)
+    assert not torch.allclose(base[0][1], moved[0][1], rtol = 0, atol = 1e-2)
 
 
 def _grads(model, fn):
