@@ -15709,8 +15709,10 @@ class LlamaCppBackend:
             requested = parse_gpu_layers_override(args)
         except ValueError:
             return False
+        if requested is None or requested == -1:
+            return True
         n_layers = self.n_layers
-        return requested is None or requested == -1 or (bool(n_layers) and requested > n_layers)
+        return bool(n_layers) and requested > n_layers
 
     def _launch_forces_full_offload(
         self,
@@ -15776,10 +15778,10 @@ class LlamaCppBackend:
             names = {device.strip().lower() for device in str(pinned).split(",")}
             reachable = {idx for idx, _free in rows if f"vulkan{idx}" in names}
         pool = 0
-        every_layer = self._argv_offloads_every_layer(argv, env)
+        every_layer = bool(shared_gpu_ids) and self._argv_offloads_every_layer(argv, env)
         # The fitter fills each device up to its free reading less the --fit-target margin (#18001).
         fit_margin = None
-        if not every_layer and self._fit_may_place_every_layer(argv, env):
+        if shared_gpu_ids and not every_layer and self._fit_may_place_every_layer(argv, env):
             fit_margin = _single_device_fit_margin(argv, env)
             if fit_margin is None:
                 fit_margin = _LLAMA_FIT_TARGET_DEFAULT_MIB
