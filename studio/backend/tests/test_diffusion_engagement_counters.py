@@ -125,10 +125,15 @@ def test_counter_does_not_coerce_a_non_bool_decision(monkeypatch):
 def test_video_render_engagement_recorded(monkeypatch):
     from core.inference import video
 
-    vae_pipe = types.SimpleNamespace(vae = _VAE())
+    class _Pipe:
+        def __init__(self):
+            self.vae = _VAE()
+
+    vae_pipe = _Pipe()
     monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
     assert U.install_untiled_decode(vae_pipe, "wan2.2-ti2v-5b")
     before = U.untiled_decode_stats(vae_pipe)
+    keys = set(vae_pipe.__dict__)
     vae_pipe.vae.decode(Z)
     lines = []
     log = types.SimpleNamespace(
@@ -141,6 +146,8 @@ def test_video_render_engagement_recorded(monkeypatch):
         "fbcache": None,
     }
     assert lines and "untiled': 1" in lines[0]
+    # Held beside the pipe, never written onto it.
+    assert set(vae_pipe.__dict__) == keys
 
 
 class _FluxPipe:

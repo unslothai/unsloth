@@ -29,6 +29,7 @@ import re
 import secrets
 import sys
 import threading
+import weakref
 import time
 import traceback
 from dataclasses import dataclass, field, replace
@@ -1008,14 +1009,22 @@ def _active_lora_pairs(pipe: Any) -> list:
     return pairs
 
 
-_RENDER_ENGAGEMENT_ATTR = "_unsloth_render_engagement"
+# Last render's engagement per pipe, held weakly: nothing is written onto the pipeline itself.
+_RENDER_ENGAGEMENT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _keep_render_engagement(pipe: Any, record: dict) -> None:
+    try:
+        _RENDER_ENGAGEMENT[pipe] = record
+    except TypeError:  # not weak-referenceable: status just reports nothing
+        pass
 
 
 def _record_fbcache_engagement(pipe: Any) -> None:
     """Log and keep (on the pipe, for status) the render's FBCache computed / skipped step counts. Never raises."""
     try:
         counts = fbcache_counts(pipe, reset = True)
-        setattr(pipe, _RENDER_ENGAGEMENT_ATTR, {"fbcache": counts})
+        _keep_render_engagement(pipe, {"fbcache": counts})
         if counts is not None:
             logger.info("diffusion.engagement: fbcache=%s", counts)
     except Exception as exc:  # noqa: BLE001 - diagnostics never fail a render
@@ -1023,7 +1032,10 @@ def _record_fbcache_engagement(pipe: Any) -> None:
 
 
 def _render_engagement(pipe: Any) -> Optional[dict]:
-    record = getattr(pipe, _RENDER_ENGAGEMENT_ATTR, None)
+    try:
+        record = _RENDER_ENGAGEMENT.get(pipe) if pipe is not None else None
+    except TypeError:
+        record = None
     return dict(record) if isinstance(record, dict) else None
 
 

@@ -446,9 +446,7 @@ def install_fbcache_counter() -> bool:
         return False
     if getattr(original, "_unsloth_fbc_counter", False):
         return True
-    import torch
 
-    @torch.compiler.disable
     def _should_compute_remaining_blocks(self, hidden_states_residual):
         compute = original(self, hidden_states_residual)
         counts = self.__dict__.get(_FBC_COUNTS_ATTR)
@@ -462,6 +460,11 @@ def install_fbcache_counter() -> bool:
             counts["skipped"] += 1
         return compute
 
+    try:
+        from torch.compiler import disable as compiler_disable
+        _should_compute_remaining_blocks = compiler_disable(_should_compute_remaining_blocks)
+    except Exception:  # noqa: BLE001 - counters are diagnostics: never block the cache
+        return False
     _should_compute_remaining_blocks._unsloth_fbc_counter = True
     _should_compute_remaining_blocks._unsloth_length_guard = getattr(
         original, "_unsloth_length_guard", False

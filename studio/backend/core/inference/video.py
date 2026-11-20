@@ -38,6 +38,7 @@ import os
 import re
 import tempfile
 import threading
+import weakref
 from utils.account_context import account_thread, current_account_id
 import time
 import types
@@ -16567,7 +16568,15 @@ _backend: Optional[VideoBackend] = None
 _backend_lock = threading.Lock()
 
 
-_RENDER_ENGAGEMENT_ATTR = "_unsloth_render_engagement"
+# Last render's engagement per pipe, held weakly: nothing is written onto the pipeline itself.
+_RENDER_ENGAGEMENT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _keep_render_engagement(pipe: Any, record: dict) -> None:
+    try:
+        _RENDER_ENGAGEMENT[pipe] = record
+    except TypeError:  # not weak-referenceable: status just reports nothing
+        pass
 
 
 def _record_render_engagement(
@@ -16580,7 +16589,7 @@ def _record_render_engagement(
         vae = decode_stats_delta(vae_before, untiled_decode_stats(pipe))
         cache = fbcache_counts(cache_pipe, reset = True)
         record = {"vae_decode": vae, "fbcache": cache}
-        setattr(pipe, _RENDER_ENGAGEMENT_ATTR, record)
+        _keep_render_engagement(pipe, record)
         if vae is not None or cache is not None:
             logger.info("video.engagement: vae_decode=%s fbcache=%s", vae, cache)
     except Exception as exc:  # noqa: BLE001 - diagnostics never fail a render
@@ -16588,7 +16597,10 @@ def _record_render_engagement(
 
 
 def _render_engagement(pipe: Any) -> Optional[dict]:
-    record = getattr(pipe, _RENDER_ENGAGEMENT_ATTR, None)
+    try:
+        record = _RENDER_ENGAGEMENT.get(pipe) if pipe is not None else None
+    except TypeError:
+        record = None
     return dict(record) if isinstance(record, dict) else None
 
 
