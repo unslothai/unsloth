@@ -44,6 +44,10 @@ NAMES = (
     "_without_instance_bound_methods",
     "_packed_seq_lengths_from_position_ids",
     "_is_unsloth_fast_backbone",
+    "_prefix_grouper_kernel",
+    "_tree_attention_eligible",
+    "_async_grpo_tree_seg_info",
+    "_forward_tree_attention",
     "_forward_tree_unrolled",
     "_unsloth_async_grpo_lm_head",
     "_fast_inference_engine",
@@ -68,8 +72,21 @@ class _Logger:
         pass
 
 
+def _pg_kernel():
+    # unsloth/utils/prefix_grouper_kernel.py without importing the package (it only needs torch).
+    name = "_pg_kernel_async_grpo_test"
+    if name not in sys.modules:
+        path = os.path.join(REPO_ROOT, "unsloth", "utils", "prefix_grouper_kernel.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
 class FakeUnslothBackbone(torch.nn.Module):
     # Attention boundaries from packed_seq_lengths only (one sequence without it), positions from position_ids.
+    # A prefix_seg_info (tree) row runs as one sequence under the kernel's mask_mod, as Unsloth's flex path does.
     def __init__(self, inner):
         super().__init__()
         self.inner = inner
@@ -81,8 +98,23 @@ class FakeUnslothBackbone(torch.nn.Module):
         input_ids = None,
         position_ids = None,
         packed_seq_lengths = None,
+        prefix_seg_info = None,
         **kwargs,
     ):
+        if prefix_seg_info is not None:
+            self.calls.append(
+                {"length": input_ids.shape[1], "prefix_seg_info": prefix_seg_info, "tree": []}
+            )
+            idx = torch.arange(prefix_seg_info.T)
+            mask_mod = _pg_kernel()._make_tree_mask_mod(prefix_seg_info.reach_end.cpu())
+            mask = mask_mod(0, 0, idx[:, None], idx[None, :])[None, None]
+            out = self.inner(
+                input_ids = input_ids,
+                position_ids = position_ids,
+                attention_mask = mask,
+                use_cache = False,
+            )
+            return types.SimpleNamespace(last_hidden_state = out.last_hidden_state)
         self.calls.append(
             {
                 "length": input_ids.shape[1],
@@ -110,6 +142,7 @@ class FakeUnslothBackbone(torch.nn.Module):
 def _load():
     src = open(RL_SOURCE_PATH, encoding = "utf-8").read()
     ns = {
+        "os": os,
         "copy": __import__("copy"),
         "inspect": __import__("inspect"),
         "textwrap": __import__("textwrap"),
@@ -130,6 +163,7 @@ def _load():
         if is_constant or (isinstance(node, ast.FunctionDef) and node.name in NAMES):
             exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
     ns["_is_unsloth_fast_backbone"] = lambda b: isinstance(b, FakeUnslothBackbone)
+    ns["_prefix_grouper_kernel"] = _pg_kernel
     return ns
 
 
@@ -160,6 +194,7 @@ def patched(monkeypatch):
         monkeypatch.setattr(
             rl, "_is_unsloth_fast_backbone", lambda b: isinstance(b, FakeUnslothBackbone)
         )
+        monkeypatch.setattr(rl, "_tree_attention_eligible", lambda model, device: False)
         return vars(rl), module
     trainer = module.AsyncGRPOTrainer
     for name in (
@@ -175,6 +210,7 @@ def patched(monkeypatch):
         if name in vars(trainer):
             monkeypatch.setattr(trainer, name, vars(trainer)[name])
     ns = _load()
+    ns["_tree_attention_eligible"] = lambda model, device: False
     ns["patch_trl_async_grpo"]()
     return ns, module
 
@@ -373,3 +409,125 @@ def test_tree_row_gradients_match_unpacked(patched):
     )
     (got,) = torch.autograd.grad(out.log_probs.flatten()[packed["token_index"]].sum(), weight)
     torch.testing.assert_close(got, expected, atol = 1e-5, rtol = 1e-4)
+
+
+def _tree_inputs(module):
+    row = module.TreeRow()
+    samples = _tree_samples()
+    for sample in samples:
+        row.add(sample)
+    packed = row.pack()
+    inputs = {k: v[None] for k, v in packed.items()}
+    kwargs = dict(
+        input_ids = inputs["input_ids"],
+        position_ids = inputs["position_ids"],
+        shift_labels = inputs["shift_labels"],
+        fused_lm_head = True,
+    )
+    return samples, packed, kwargs, module.unpad_tree(inputs)
+
+
+@pytest.mark.parametrize("tree_attention", [False, True])
+def test_tree_attention_matches_unrolled(patched, monkeypatch, tree_attention):
+    # Fast backbones that apply prefix_seg_info run the trie once over its unique tokens (no unroll);
+    # per-token logprobs, entropies and gradients equal each sample run alone and the unrolled path.
+    ns, module = patched
+    if not hasattr(module, "TreeRow"):
+        pytest.skip("this TRL packs rows without a prefix trie")
+    monkeypatch.setitem(ns, "_tree_attention_eligible", lambda model, device: tree_attention)
+    counts = ns["_ASYNC_GRPO_TREE_COUNTS"]
+    before = dict(counts)
+    model = _tiny_model()
+    samples, packed, kwargs, tree = _tree_inputs(module)
+    order = [
+        (i, p)
+        for i, s in enumerate(samples)
+        for p in range(1, len(s["input_ids"]))
+        if s["completion_mask"][p]
+    ]
+    ref_logps, ref_entropy = _reference(model, samples, order)
+    weight = model.model.layers[0].self_attn.q_proj.weight
+    loss = 0
+    for sample in samples:
+        logits = model(input_ids = sample["input_ids"][None]).logits[0].float()
+        logp = torch.log_softmax(logits[:-1], -1).gather(-1, sample["input_ids"][1:, None])[:, 0]
+        loss = loss + (logp * sample["completion_mask"][1:]).sum()
+    (expected,) = torch.autograd.grad(loss, weight)
+    fake = _head(model, module)
+    out = model(**kwargs, **tree)
+    index = packed["token_index"]
+    call = fake.calls[-1]
+    unique = packed["input_ids"].numel()
+    if tree_attention:
+        assert call["length"] == unique
+        assert counts["tree_attention"] == before["tree_attention"] + 1
+        assert counts["unrolled"] == before["unrolled"]
+    else:
+        assert call["length"] == sum(len(s["input_ids"]) for s in samples) > unique
+        assert counts["unrolled"] == before["unrolled"] + 1
+        assert counts["tree_attention"] == before["tree_attention"]
+    torch.testing.assert_close(
+        out.log_probs.flatten()[index].detach(), ref_logps, atol = 1e-5, rtol = 1e-5
+    )
+    torch.testing.assert_close(
+        out.entropy.flatten()[index].detach(), ref_entropy, atol = 1e-5, rtol = 1e-5
+    )
+    (got,) = torch.autograd.grad(out.log_probs.flatten()[index].sum(), weight)
+    torch.testing.assert_close(got, expected, atol = 1e-5, rtol = 1e-4)
+
+
+def test_tree_attention_skips_rows_without_forks(patched, monkeypatch):
+    # No shared prefix: the row is plain packing and keeps the varlen path even when tree attention is on.
+    ns, module = patched
+    if not hasattr(module, "TreeRow"):
+        pytest.skip("this TRL packs rows without a prefix trie")
+    monkeypatch.setitem(ns, "_tree_attention_eligible", lambda model, device: True)
+    model = _tiny_model()
+    row = module.TreeRow()
+    for i, sample in enumerate(_tree_samples()):
+        sample["input_ids"] = sample["input_ids"].clone()
+        sample["input_ids"][0] = 100 + i  # nothing shared, not even the system prompt
+        sample["group_id"] = i
+        row.add(sample)
+    packed = row.pack()
+    assert bool((packed["tree_segment_parents"] < 0).all())
+    inputs = {k: v[None] for k, v in packed.items()}
+    fake = _head(model, module)
+    with torch.no_grad():
+        model(
+            input_ids = inputs["input_ids"],
+            position_ids = inputs["position_ids"],
+            shift_labels = inputs["shift_labels"],
+            fused_lm_head = True,
+            **module.unpad_tree(inputs),
+        )
+    assert "prefix_seg_info" not in fake.calls[-1]
+    assert fake.calls[-1]["packed_seq_lengths"] == packed["tree_cu_seqlens_q"].diff().tolist()
+
+
+def test_tree_attention_falls_back_on_compile_error(patched, monkeypatch):
+    ns, module = patched
+    if not hasattr(module, "TreeRow"):
+        pytest.skip("this TRL packs rows without a prefix trie")
+    monkeypatch.setitem(ns, "_tree_attention_eligible", lambda model, device: True)
+    kernel = ns["_prefix_grouper_kernel"]()
+    model = _tiny_model()
+    samples, packed, kwargs, tree = _tree_inputs(module)
+    fake = _head(model, module)
+    real_forward = FakeUnslothBackbone.forward
+
+    def failing(
+        self,
+        *args,
+        prefix_seg_info = None,
+        **kw,
+    ):
+        if prefix_seg_info is not None:
+            raise kernel.PrefixGrouperCompileError("no kernel")
+        return real_forward(self, *args, **kw)
+
+    monkeypatch.setattr(FakeUnslothBackbone, "forward", failing)
+    with torch.no_grad():
+        out = model(**kwargs, **tree)
+    assert fake.calls[-1]["packed_seq_lengths"] == [len(s["input_ids"]) for s in samples]
+    assert out.log_probs.shape == packed["input_ids"][None].shape

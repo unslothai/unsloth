@@ -5213,8 +5213,126 @@ def _packing_honored(
     return bool(torch.isfinite(leak)) and bool(control > 0) and bool(leak <= 0.2 * control)
 
 
+# Prefix-trie rows on fast backbones: "tree_attention" ran the trie as is, "unrolled" expanded it per sample.
+_ASYNC_GRPO_TREE_COUNTS = {
+    "tree_attention": 0,
+    "unrolled": 0,
+    "unrolled_tokens": 0,
+    "unique_tokens": 0,
+}
+_ASYNC_GRPO_TREE_WARNED = []
+
+
+def _prefix_grouper_kernel():
+    from ..utils import prefix_grouper_kernel
+    return prefix_grouper_kernel
+
+
+def _tree_attention_eligible(model, device):
+    # Unsloth's FlexAttention prefix kernel (PrefixGrouper) masks by token labels, so it can run a prefix trie:
+    # needs every decoder layer to apply prefix_seg_info, plain causal softmax attention and per-token MLPs.
+    if os.environ.get("UNSLOTH_ASYNC_GRPO_TREE_ATTENTION", "1").lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    if device is None or device.type != "cuda":
+        return False
+    cached = getattr(model, "_unsloth_tree_attention_eligible", None)
+    if cached is None:
+        cached = False
+        try:
+            from ..utils.prefix_grouper import prefix_seg_info_applied
+            from ..utils.prefix_grouper_kernel import TORCH_SUPPORTS_PREFIX_GROUPER
+            from .dpo_prefix_share import _SSM_MOE_ATTRS, _length_dependent_rope
+
+            config = model.config
+            cached = bool(
+                TORCH_SUPPORTS_PREFIX_GROUPER
+                and config.get_text_config() is config
+                and not getattr(config, "attn_logit_softcapping", None)
+                and not getattr(config, "attention_dropout", 0)
+                and not any(getattr(config, a, None) is not None for a in _SSM_MOE_ATTRS)
+                and not _length_dependent_rope(config)
+                and not any(type(p).__name__ == "DTensor" for p in model.parameters())
+                and prefix_seg_info_applied(model)
+            )
+        except Exception:
+            cached = False
+        try:
+            model._unsloth_tree_attention_eligible = cached
+        except Exception:
+            pass
+    if not cached:
+        return False
+    try:
+        from ..context_parallel import get_cp_manager
+        from ..utils.prefix_grouper_kernel import compile_check_failed
+        return compile_check_failed() is None and get_cp_manager() is None
+    except Exception:
+        return False
+
+
+def _async_grpo_tree_seg_info(model, f_kwargs):
+    # TreeSegInfo for a prefix-trie row with at least one fork, else None (unroll it instead).
+    parents = f_kwargs.get("tree_segment_parents")
+    position_ids = f_kwargs.get("position_ids")
+    if (
+        parents is None
+        or position_ids is None
+        or position_ids.dim() != 2
+        or position_ids.shape[0] != 1
+    ):
+        return None
+    if not _tree_attention_eligible(model, position_ids.device):
+        return None
+    parents = parents.cpu()
+    if bool((parents < 0).all()):
+        return None  # nothing shared: plain packing, which the varlen kernels run faster
+    config = model.config
+    window = getattr(config, "sliding_window", None)
+    if (
+        isinstance(window, int)
+        and window > 0
+        and getattr(config, "use_sliding_window", True) is not False
+        and int(f_kwargs.get("tree_max_seqlen_k") or 0) > window
+    ):
+        return None
+    try:
+        offsets = f_kwargs["tree_cu_seqlens_q"].cpu().long()
+        seg = _prefix_grouper_kernel().build_tree_seg_info(offsets, parents, position_ids.device)
+        # Same trie TRL's tree attention gathers: each segment's K/V path is its parent's plus its own tokens.
+        lengths = (offsets[1:] - offsets[:-1]).tolist()
+        path = []
+        for length, parent in zip(lengths, parents.tolist()):
+            path.append(length + (path[parent] if parent >= 0 else 0))
+        cu_k = f_kwargs["tree_cu_seqlens_k"].cpu().long()
+        if (cu_k[1:] - cu_k[:-1]).tolist() != path or seg.T != position_ids.shape[1]:
+            return None
+    except Exception:
+        return None
+    return seg
+
+
+def _forward_tree_attention(head_forward, f_args, f_kwargs, seg):
+    # One forward over the unique tokens; the FlexAttention mask shows each segment its root-to-segment path.
+    compile_error = _prefix_grouper_kernel().PrefixGrouperCompileError
+    tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
+    f_kwargs["prefix_seg_info"] = seg
+    try:
+        outputs = head_forward(*f_args, **f_kwargs)
+    except compile_error:
+        f_kwargs.pop("prefix_seg_info", None)
+        f_kwargs.update(tree)
+        return _forward_tree_unrolled(head_forward, f_args, f_kwargs)
+    _ASYNC_GRPO_TREE_COUNTS["tree_attention"] += 1
+    return outputs
+
+
 def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
-    # TRL >= 1.17 prefix-trie rows need tree attention, which Unsloth lacks: unroll each root-to-leaf path into its
+    # Prefix-trie rows the FlexAttention tree mask cannot run (TRL >= 1.17): unroll each root-to-leaf path into its
     # own packed sequence and read each trie position back from one copy (exact; shared prefixes forwarded per sample).
     tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
     position_ids = f_kwargs.get("position_ids")
@@ -5233,6 +5351,18 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
         torch.arange(parents.numel(), device = device), path_lengths.to(device)
     )
     index = kv_index[leaf.to(device)[segment_of]]
+    _ASYNC_GRPO_TREE_COUNTS["unrolled"] += 1
+    _ASYNC_GRPO_TREE_COUNTS["unrolled_tokens"] += index.numel()
+    _ASYNC_GRPO_TREE_COUNTS["unique_tokens"] += length
+    if not _ASYNC_GRPO_TREE_WARNED and index.numel() >= 2 * length:
+        _ASYNC_GRPO_TREE_WARNED.append(True)
+        # TRL budgets a row by unique tokens; the unrolled forward runs every sample's full path.
+        print(
+            f"Unsloth: AsyncGRPOTrainer unrolled a prefix-trie row of {length} unique tokens into "
+            f"{index.numel()} tokens ({index.numel() / length:.2f}x): this model cannot run tree attention, "
+            "so peak memory follows the unrolled length. Lower the token budget if training runs out of memory.",
+            flush = True,
+        )
     # Every trie node lies on a sample's path and every sample ends on a leaf, so each position gets a copy.
     source = torch.empty(length, dtype = torch.long, device = device)
     source[index] = torch.arange(index.numel(), device = device)
@@ -5267,7 +5397,8 @@ def _unsloth_async_grpo_lm_head(
         head_forward = target.forward
         unroll_tree = False
         if _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
-            # Unsloth attention ignores TRL's tree attention and position_ids resets, so unroll prefix-trie rows.
+            # Unsloth attention ignores TRL's tree attention and position_ids resets: prefix-trie rows run through the
+            # FlexAttention tree mask where the model applies prefix_seg_info, else they are unrolled.
             unroll_tree = True
 
             def packed_kwargs(f_kwargs):
@@ -5326,6 +5457,9 @@ def _unsloth_async_grpo_lm_head(
         def forward(*f_args, **f_kwargs):
             if flag is None or f_kwargs.get(flag):
                 if unroll_tree and "tree_kv_index" in f_kwargs:
+                    seg = _async_grpo_tree_seg_info(target, f_kwargs)
+                    if seg is not None:
+                        return _forward_tree_attention(head_forward, f_args, f_kwargs, seg)
                     return _forward_tree_unrolled(head_forward, f_args, f_kwargs)
                 packed_kwargs(f_kwargs)
             return head_forward(*f_args, **f_kwargs)
