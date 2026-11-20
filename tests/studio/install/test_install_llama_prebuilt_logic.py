@@ -7346,6 +7346,10 @@ def test_a_reused_marker_takes_the_walk_back_this_run_made():
 _NO_VS_MAC = "llama-b12540-mix-c4017f9-bin-macos-arm64.tar.gz"
 
 
+def _bundle_only(choice: AssetChoice, *extra: tuple[str, str, tuple[str, str]]):
+    return release_checksums((choice.name, choice.expected_sha256, PREBUILT), *extra)
+
+
 def _published_mac_choice(name: str = _NO_VS_MAC) -> AssetChoice:
     return asset_choice(name = name, install_kind = "macos-arm64", source_label = "published")
 
@@ -7378,7 +7382,7 @@ def test_a_bundle_without_the_visual_server_is_recorded_and_stops_the_backfill(
     marker = json.loads(marker_path.read_text(encoding = "utf-8"))
     assert M._diffusion_visual_server_missing_for_marker(install_dir, host, marker) is True
 
-    M.record_visual_server_absence(install_dir, host, choice)
+    M.record_visual_server_absence(install_dir, host, choice, _bundle_only(choice))
     marker = json.loads(marker_path.read_text(encoding = "utf-8"))
     assert marker[M.MARKER_VISUAL_SERVER_ABSENT] == choice.name
     assert M.diffusion_visual_server_backfill_needed(install_dir, host, choice) is False
@@ -7402,11 +7406,36 @@ def test_a_complete_install_is_never_marked_as_missing_the_visual_server(tmp_pat
     binary.write_bytes(b"bin\n")
     before = marker_path.read_bytes()
 
-    M.record_visual_server_absence(install_dir, host, choice)
+    M.record_visual_server_absence(install_dir, host, choice, _bundle_only(choice))
     # A marker naming another asset is not this bundle's record either.
-    M.record_visual_server_absence(install_dir, host, _published_mac_choice("other.tar.gz"))
+    other = _published_mac_choice("other.tar.gz")
+    M.record_visual_server_absence(install_dir, host, other, _bundle_only(other))
 
     assert marker_path.read_bytes() == before
+
+
+def test_a_release_with_a_standalone_visual_server_keeps_its_retry_path(tmp_path: Path) -> None:
+    """A failed fetch of an approved standalone visual-server is transient: recording the
+    absence would stop the next update's backfill, which is what retries that fetch."""
+    M = INSTALL_LLAMA_PREBUILT
+    host = macos_host()
+    choice = _published_mac_choice()
+    install_dir = tmp_path / "llama.cpp"
+    marker_path = _write_published_marker(install_dir, choice.name)
+    before = marker_path.read_bytes()
+    standalone = ("llama-diffusion-gemma-visual-server-macos-arm64", "c" * 64, PREBUILT)
+
+    M.record_visual_server_absence(install_dir, host, choice, _bundle_only(choice, standalone))
+
+    assert marker_path.read_bytes() == before
+    assert M.diffusion_visual_server_backfill_needed(install_dir, host, choice) is True
+    # The Windows twin of a standalone artifact does not count for this macOS host.
+    windows_only = (standalone[0] + ".exe", "c" * 64, PREBUILT)
+    M.record_visual_server_absence(install_dir, host, choice, _bundle_only(choice, windows_only))
+    assert (
+        json.loads(marker_path.read_text(encoding = "utf-8"))[M.MARKER_VISUAL_SERVER_ABSENT]
+        == choice.name
+    )
 
 
 def test_a_second_update_on_a_bundle_without_the_visual_server_downloads_nothing(

@@ -4416,6 +4416,23 @@ def ensure_converter_scripts(
         shutil.copy2(canonical, legacy)
 
 
+def _standalone_visual_server_artifacts(
+    host: HostInfo, approved_checksums: ApprovedReleaseChecksums
+) -> "list[tuple[str, Any]]":
+    """The approved standalone visual-server artifacts for this host, in manifest order."""
+    found = []
+    for asset_name, approved in approved_checksums.artifacts.items():
+        low = asset_name.lower()
+        if "llama-diffusion-gemma-visual-server" not in low:
+            continue
+        if host.is_windows != low.endswith(".exe"):
+            continue
+        if approved.repo and approved.repo != DEFAULT_PUBLISHED_REPO:
+            continue
+        found.append((asset_name, approved))
+    return found
+
+
 def ensure_diffusion_visual_server(
     install_dir: Path,
     host: HostInfo,
@@ -4451,16 +4468,7 @@ def ensure_diffusion_visual_server(
 
     try:
         match = None
-        for asset_name, approved in approved_checksums.artifacts.items():
-            low = asset_name.lower()
-            if "llama-diffusion-gemma-visual-server" not in low:
-                continue
-            if host.is_windows and not low.endswith(".exe"):
-                continue
-            if (not host.is_windows) and low.endswith(".exe"):
-                continue
-            if approved.repo and approved.repo != DEFAULT_PUBLISHED_REPO:
-                continue
+        for asset_name, approved in _standalone_visual_server_artifacts(host, approved_checksums):
             url = release_asset_download_url(DEFAULT_PUBLISHED_REPO, release_tag, asset_name)
             if not url:
                 continue
@@ -10494,13 +10502,22 @@ def _visual_server_absence_recorded(marker: "dict[str, Any] | None", asset: "str
     return marker.get("asset") == asset and marker.get(MARKER_VISUAL_SERVER_ABSENT) == asset
 
 
-def record_visual_server_absence(install_dir: Path, host: HostInfo, choice: AssetChoice) -> None:
+def record_visual_server_absence(
+    install_dir: Path,
+    host: HostInfo,
+    choice: AssetChoice,
+    approved_checksums: ApprovedReleaseChecksums,
+) -> None:
     """After activation, note a bundle that shipped without the visual-server.
 
     Only when the backfill check would otherwise keep firing for this exact bundle, so a
-    complete install or an upstream bundle leaves the marker untouched. Best-effort: the
+    complete install or an upstream bundle leaves the marker untouched. Not when the
+    release also approves a standalone visual-server: a failed fetch of that is
+    transient, and the next update's backfill is what retries it. Best-effort: the
     install is already valid, and a missed write only costs one more re-extract.
     """
+    if _standalone_visual_server_artifacts(host, approved_checksums):
+        return
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     marker = load_prebuilt_metadata(install_dir)
     if not isinstance(marker, dict) or marker.get("asset") != choice.name:
@@ -11171,7 +11188,9 @@ def install_prebuilt(
                             f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                         )
                     try:
-                        record_visual_server_absence(install_dir, host, choice)
+                        record_visual_server_absence(
+                            install_dir, host, choice, plan.approved_checksums
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                     return
