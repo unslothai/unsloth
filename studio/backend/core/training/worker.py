@@ -3166,14 +3166,20 @@ def _remove_untrained_mlx_output_dir(output_dir):
 
 
 def _finalize_mlx_training(
-    trainer, snapshot_stop, output_dir, synchronize, send, write_stop_checkpoint
+    trainer,
+    snapshot_stop,
+    output_dir,
+    synchronize,
+    send,
+    write_stop_checkpoint,
+    owns_output_dir = False,
 ):
     stopped, cancelled = _mlx_worker_finalization_state(trainer, snapshot_stop)
     if cancelled:
         send("complete", output_dir = None, status_message = "Training cancelled")
         return
     if stopped and getattr(trainer, "_global_step", None) == 0:
-        if bool(trainer.is_main_process):
+        if owns_output_dir and bool(trainer.is_main_process):
             _remove_untrained_mlx_output_dir(output_dir)
         send("complete", output_dir = None, saved = False, status_message = "Training stopped")
         return
@@ -4030,6 +4036,8 @@ def _run_mlx_training(
         warmup_ratio = warmup_ratio if warmup_uses_ratio else None,
         eval_steps_ratio = eval_steps_ratio,
     )
+    # A step-0 stop may remove only a folder this run created, never a user-supplied one.
+    owns_output_dir = not os.path.exists(output_dir)
     _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)
 
     def _record_mlx_row_bound():
@@ -4227,6 +4235,7 @@ def _run_mlx_training(
             mx.synchronize,
             _send,
             lambda: _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir),
+            owns_output_dir = owns_output_dir,
         )
     finally:
         _finish_tracking()
