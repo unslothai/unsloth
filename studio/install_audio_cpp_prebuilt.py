@@ -179,12 +179,13 @@ def _glibc_below(min_os: Optional[str]) -> Optional[str]:
     return version
 
 
-def _accelerator_from_env() -> str:
+def _accelerator_from_env(install_dir: Path) -> str:
     """``UNSLOTH_AUDIO_CPP_ACCELERATOR`` (auto|cpu|cuda|vulkan|metal), for hosts whose GPU is not visible
     at install time (a Docker build). Set, it is an explicit request and never downgraded."""
     raw = (os.environ.get("UNSLOTH_AUDIO_CPP_ACCELERATOR") or "").strip().lower()
     if not raw:
-        return "auto"
+        recorded = read_install_record(install_dir).get("accelerator_request")
+        return recorded if recorded in ACCELERATORS else "auto"
     if raw not in ACCELERATORS:
         print(
             f"audio.cpp: ignoring UNSLOTH_AUDIO_CPP_ACCELERATOR={raw!r} (expected one of {', '.join(ACCELERATORS)})",
@@ -1136,20 +1137,21 @@ def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
     return requested == "auto" and detected == "cuda" and _cuda_runtime_wheels_installable()
 
 
-def _mark_runtime_wheels_tried(
+def _refresh_kept_record(
     target: Path, record: dict, requested: str, detected: Optional[str]
 ) -> None:
-    """A kept CPU install records the wheel attempt too, or every run would retry it."""
+    """Record this run's request (and, for CPU, the wheel attempt) on a kept install."""
+    updated = {**record, "accelerator_request": requested, "detected_accelerator": detected}
     if (
-        record.get("accelerator") != "cpu"
-        or record.get("cuda_runtime_wheels_tried")
-        or not _runtime_wheels_marker(requested, detected)
+        record.get("accelerator") == "cpu"
+        and not record.get("cuda_runtime_wheels_tried")
+        and _runtime_wheels_marker(requested, detected)
     ):
+        updated["cuda_runtime_wheels_tried"] = True
+    if updated == record:
         return
     try:
-        (target / INSTALL_RECORD).write_text(
-            json.dumps({**record, "cuda_runtime_wheels_tried": True}, indent = 2), encoding = "utf-8"
-        )
+        (target / INSTALL_RECORD).write_text(json.dumps(updated, indent = 2), encoding = "utf-8")
     except OSError:
         pass
 
@@ -1394,7 +1396,7 @@ def _install_locked(
         and _intact_install(target, existing) is not None
     ):
         print(f"audio.cpp: already matches {chosen}", flush = True)
-        _mark_runtime_wheels_tried(target, existing, requested, detected)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
     if (
         not force
@@ -1407,7 +1409,7 @@ def _install_locked(
     ):
         # The lookup named an older release than the one installed: never downgrade to it.
         print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
-        _mark_runtime_wheels_tried(target, existing, requested, detected)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
 
     cudart = cudart_asset_for(list(assets), chosen)
@@ -1519,10 +1521,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description = "Install a prebuilt audiocpp_server (audio.cpp).")
     p.add_argument(
         "--accelerator",
-        default = _accelerator_from_env(),
+        default = None,
         type = lambda value: value.strip().lower(),
         choices = list(ACCELERATORS),
-        help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else auto (detect; CPU when no bundle covers the GPU)",
+        help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else the installed request, else auto (detect; CPU when no bundle covers the GPU)",
     )
     p.add_argument("--install-dir", default = None)
     p.add_argument("--force", action = "store_true", help = "reinstall even when the bundle matches")
@@ -1540,17 +1542,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     release_tag = (args.published_release_tag or "").strip() or None
+    install_dir = Path(args.install_dir).expanduser() if args.install_dir else None
+    accelerator = args.accelerator or _accelerator_from_env(install_dir or default_install_dir())
     try:
         if args.print_asset:
-            detected = detect_accelerator() if args.accelerator == "auto" else None
+            detected = detect_accelerator() if accelerator == "auto" else None
             _, repo, release, chosen = resolve_for_request(
-                args.accelerator, detected, token, release_tag, supply_runtime = False
+                accelerator, detected, token, release_tag, supply_runtime = False
             )
             print(f"{repo} {release.get('tag_name') if release else '-'} {chosen or '(none)'}")
             return EXIT_OK if chosen else EXIT_FAILED
         install(
-            install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
-            accelerator = args.accelerator,
+            install_dir = install_dir,
+            accelerator = accelerator,
             force = args.force,
             release_tag = release_tag,
             keep_newer = args.keep_newer,
