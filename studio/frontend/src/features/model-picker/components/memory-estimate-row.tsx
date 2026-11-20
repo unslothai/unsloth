@@ -35,11 +35,13 @@ function MemoryFigure({
   bytes,
   bounded,
   tone,
+  warning,
 }: {
   label: string;
   bytes: number;
   bounded: boolean;
   tone?: string;
+  warning?: string;
 }) {
   const candidates = useMemo(
     () => memoryFigureCandidates(bytes, bounded),
@@ -96,9 +98,12 @@ function MemoryFigure({
   }, [candidates]);
   return (
     <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
-      <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
-        {label}
-      </span>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+        <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+          {label}
+        </span>
+        {warning && <span className="text-ui-12 text-amber-700 dark:text-amber-400">{warning}</span>}
+      </div>
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -186,8 +191,11 @@ function gpuPlacementRow(
   ];
   return {
     gpuId,
-    name,
-    label: total === null ? name : `${name} · ${Number((total / gib).toFixed(2))} GiB`,
+    warning: exceedsTotal
+      ? cacheBytes !== null && subtotal - total >= gib / 100
+        ? `${name} is ${formatMemoryGb(subtotal - total)} over capacity.`
+        : `${name} exceeds capacity.`
+      : exceedsFree ? `${name} exceeds free VRAM.` : null,
     deviceLabel: device?.name && device.name !== name ? `${name} · ${device.name}` : name,
     value: cacheBytes === null ? memoryFigureCandidates(subtotal, true)[0] : formatMemoryGb(subtotal),
     note: details.filter(Boolean).join(NOTE_SEPARATOR),
@@ -285,9 +293,6 @@ export function MemoryEstimateRow({
       );
   const overCapacity = gpuRows.find((row) => row.exceedsTotal);
   const pressured = overCapacity ?? gpuRows.find((row) => row.exceedsFree);
-  const placementWarning = pressured
-    ? `${pressured.name} needs more than its ${overCapacity ? "total" : "currently free"} VRAM.`
-    : null;
   const kvNote = resolveKvNote(estimate);
   const weightsNote = [
     gpuLayersNote(estimate),
@@ -346,6 +351,7 @@ export function MemoryEstimateRow({
               : estimate.gpuBytes
           }
           bounded={bounded}
+          warning={pressured?.warning ?? undefined}
           tone={
             overCapacity
               ? MEMORY_VALUE_TONE.exceeds
@@ -411,38 +417,31 @@ export function MemoryEstimateRow({
           />
         )}
         {gpuRows.length > 0 ? (
-          <div className="space-y-2 border-t border-border pt-3">
-            <div className="text-ui-12 font-medium text-foreground">Weights + cache per GPU</div>
-            {gpuRows.map((row) => (
-              <MemoryBreakdownLine
-                key={row.gpuId}
-                label={row.label}
-                value={row.value}
-                exceeds={row.exceedsTotal || row.exceedsFree}
+          <details className="group/placement text-ui-11 leading-relaxed text-muted-foreground">
+            <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-3 rounded-md text-ui-12 font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden">
+              <span>Weights + cache per GPU</span>
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                aria-hidden="true"
+                className="size-3.5 shrink-0 -rotate-90 text-muted-foreground transition-transform duration-200 group-open/placement:rotate-0 group-hover/placement:text-foreground motion-reduce:transition-none"
               />
-            ))}
-            <details className="group/placement text-ui-11 leading-relaxed text-muted-foreground">
-              <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-3 rounded-md text-ui-12 font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden">
-                <span>Layer and memory details</span>
-                <HugeiconsIcon
-                  icon={ChevronDownStandardIcon}
-                  aria-hidden="true"
-                  className="size-3.5 shrink-0 -rotate-90 text-muted-foreground transition-transform duration-200 group-open/placement:rotate-0 group-hover/placement:text-foreground motion-reduce:transition-none"
-                />
-              </summary>
+            </summary>
+            <div className="mt-2 space-y-2">
               {gpuRows.map((row) => (
-                <p key={row.gpuId} className="mt-2">
-                  <span className="font-medium">{row.deviceLabel}</span>
-                  <br />
-                  {glueNoteItems(row.note)}
-                </p>
+                <MemoryBreakdownLine
+                  key={row.gpuId}
+                  label={row.deviceLabel}
+                  value={row.value}
+                  note={row.note}
+                  exceeds={row.exceedsTotal || row.exceedsFree}
+                />
               ))}
-              <p className="mt-2">
+              <p>
                 Compute buffers and other runtime allocations need additional memory.
                 {estimate.perGpuBasis === "free_memory" && " The split uses currently free VRAM and can change when a model unloads."}
               </p>
-            </details>
-          </div>
+            </div>
+          </details>
         ) : placementMode && !stale && !cpuOnly ? (
           <p className="text-ui-12 text-muted-foreground">
             {placementMode === "auto"
@@ -451,12 +450,12 @@ export function MemoryEstimateRow({
           </p>
         ) : null}
       </div>
-      {(placementWarning || advisory) && (
+      {!pressured && advisory && (
         <p
           data-memory-advisory=""
-          className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${placementWarning || advisory?.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
+          className={`mt-1.5 text-pretty text-ui-12 leading-relaxed ${advisory.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}
         >
-          {placementWarning ?? advisory?.text}
+          {advisory.text}
         </p>
       )}
     </div>
