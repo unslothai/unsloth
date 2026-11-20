@@ -1253,3 +1253,36 @@ def test_a_display_name_two_models_share_is_refused(npu, monkeypatch):
 )
 def test_which_names_are_tried_as_npu_display_names(name, expected):
     assert nb.looks_like_npu_display_name(name) is expected
+
+
+# flm_host's answers when flm.exe exits 0xC0E90002 (a DLL Smart App Control refused) with no output.
+_SILENT_REFUSAL = "exit code 3236495362 (0xC0E90002)"
+
+
+def test_a_refused_dll_at_install_is_named_not_left_blank(npu, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_LEMOND_INSTALL_ERROR", f"FastFlowLM does not run: [ERROR] {_SILENT_REFUSAL}"
+    )
+    with pytest.raises(nb.NpuError, match = "Smart App Control") as info:
+        npu.enable()
+    assert str(npu._flm_binary().parent) in str(info.value)
+
+
+def test_a_refused_dll_at_load_is_named(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
+    monkeypatch.setenv("FAKE_LEMOND_LOAD_FAILS_FOR", "qwen3-0.6b-FLM")
+    monkeypatch.setenv(
+        "FAKE_LEMOND_LOAD_ERROR",
+        f"Failed to load model 'qwen3-0.6b-FLM': FastFlowLM failed to start: {_SILENT_REFUSAL}",
+    )
+    npu.enable()
+    with pytest.raises(nb.NpuError, match = "Smart App Control") as info:
+        npu.load("qwen3-0.6b-FLM")
+
+
+def test_an_ordinary_install_failure_keeps_its_reason(npu, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_LEMOND_INSTALL_ERROR", "FastFlowLM does not run: [ERROR] exit code 1 (0x00000001)"
+    )
+    with pytest.raises(nb.NpuError, match = "Installing FastFlowLM failed: .*0x00000001"):
+        npu.enable()
