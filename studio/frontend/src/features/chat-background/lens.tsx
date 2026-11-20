@@ -64,12 +64,16 @@ export function GlassLenses({
     // Menus and sheets portal to <body>, and app-level toasts mount anywhere under the root, not only in the workspace.
     const observer = new MutationObserver(scan);
     observer.observe(preview ? workspace : document.body, { childList: true, subtree: true });
+    // A host only moving (glass-motion) counts as glass; once the flag clears, one with no glass at rest drops out.
+    const motion = new MutationObserver(scan);
+    motion.observe(preview ? workspace : document.body, { attributes: true, subtree: true, attributeFilter: [GLASS_MOVING_ATTR] });
     // A panel opening or a menu's open animation settling changes which hosts draw glass.
     document.addEventListener("transitionend", scan, true);
     document.addEventListener("animationend", scan, true);
     scan();
     return () => {
       observer.disconnect();
+      motion.disconnect();
       document.removeEventListener("transitionend", scan, true);
       document.removeEventListener("animationend", scan, true);
       cancelAnimationFrame(frame);

@@ -546,6 +546,8 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	// Switching glass style (liquid-only rules) changes which hosts draw glass without a DOM mutation.
 	assert.match(lens, /\}, \[workspace, on, material, menus, preview, clear\]\);/);
 	assert.match(lens, /observer\.observe\(preview \? workspace : document\.body, \{ childList: true, subtree: true \}\);/);
+	// A host that was only moving drops its lens when the motion flag clears.
+	assert.match(lens, /motion\.observe\(preview \? workspace : document\.body, \{ attributes: true, subtree: true, attributeFilter: \[GLASS_MOVING_ATTR\] \}\);/);
 	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
 	assert.match(lens, /const fill = glass \?\? getComputedStyle\(host\);/);
