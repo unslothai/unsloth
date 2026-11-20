@@ -58,7 +58,17 @@ def cuda_route(mod, monkeypatch):
 def test_mm_out_dtype_only_where_cublas_accepts_it(
     mod, cuda_route, monkeypatch, w_dtype, fp16_accumulation
 ):
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_accumulation", fp16_accumulation)
+    # Saved and restored by hand: monkeypatch's undo deletes this property on some pytest versions (9.2).
+    matmul = torch.backends.cuda.matmul
+    previous = matmul.allow_fp16_accumulation
+    matmul.allow_fp16_accumulation = fp16_accumulation
+    try:
+        _check_mm_out_dtype(mod, cuda_route, w_dtype, fp16_accumulation)
+    finally:
+        matmul.allow_fp16_accumulation = previous
+
+
+def _check_mm_out_dtype(mod, cuda_route, w_dtype, fp16_accumulation):
     torch.manual_seed(0)
     W = (torch.randn(64, 128) * 0.02).to(w_dtype)
     A, B = torch.randn(8, 128) / 128**0.5, torch.randn(64, 8) * 1e-2
