@@ -3850,11 +3850,13 @@ export function ModelConfigPage({
   );
   const [naming, setNaming] = useState<RunSettingsNaming | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Until the NPU list arrives an NPU model has no name but its id, and an adopted set keeps its first name.
+  const npuNamePending = targetIsNpu && !npuCatalogListed;
   useEffect(() => {
-    if (storedRecord.remembered && persistedSet === undefined) {
+    if (storedRecord.remembered && persistedSet === undefined && !npuNamePending) {
       adoptRememberedRunSettings(configId, target.ggufVariant, storedRecord.config, modelName);
     }
-  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName]);
+  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName, npuNamePending]);
   const forSetStore = (next: PerModelConfig) =>
     normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
   const persistedEntry =

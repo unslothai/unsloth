@@ -236,6 +236,11 @@ test("an NPU model's settings are named after its picker name, not the lemonade 
     page,
     /const npuName = useNpuDisplayName\(targetIsNpu \? target\.id : null\);[\s\S]*?const modelName = npuName \?\? modelDisplayName\(configId\);/,
   );
+  // Remembered settings wait for the NPU list, so the adopted set is not named after the id.
+  assert.match(
+    page,
+    /const npuNamePending = targetIsNpu && !npuCatalogListed;\s+useEffect\(\(\) => \{\s+if \(storedRecord\.remembered && persistedSet === undefined && !npuNamePending\) \{\s+adoptRememberedRunSettings\(/,
+  );
   assert.equal(
     saved.newRunSettingsName([], "Qwen3-VL-4B-Instruct-NPU2"),
     "Qwen3-VL-4B-Instruct-NPU2 custom settings",
