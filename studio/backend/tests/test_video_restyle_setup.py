@@ -58,7 +58,6 @@ def clean_env(tmp_path, monkeypatch):
     monkeypatch.setenv(rs.DIR_ENV, str(tmp_path / "restyle"))
     # _FakeHub serves its files from tmp_path/hub, standing in for Studio's Hub cache entry of the repo.
     monkeypatch.setattr(rs, "_hub_repo_dir", lambda repo = rs.MODEL_ID: tmp_path / "hub")
-    monkeypatch.setattr(rs, "_was_cached", lambda repo, name, revision: False)
     # The fake VAE has 2 tensors, not the release's 196.
     monkeypatch.setattr(rs, "VAE_TENSORS", 2)
     return tmp_path / "restyle"
@@ -526,10 +525,40 @@ def test_setup_keeps_shards_that_were_cached_before_it_ran(tmp_path, clean_env, 
     hub = _FakeHub(tmp_path)
     first = "transformer/diffusion_pytorch_model-00001-of-00002.safetensors"
     second = "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"
-    monkeypatch.setattr(rs, "_was_cached", lambda repo, name, revision: name == first)
+    # The Hub's record of an earlier download of `first`, in the cache holding the fake repo dir.
+    earlier = tmp_path / ("models--" + rs.MODEL_ID.replace("/", "--")) / "snapshots" / "rev" / first
+    earlier.parent.mkdir(parents = True)
+    earlier.write_bytes(b"x")
     assert _runner(hub).start(background = False)["phase"] == "done"
     # The user's own earlier download stays; only what setup fetched is dropped.
     assert hub.paths[first].exists() and not hub.paths[second].exists()
+
+
+def test_was_cached_looks_in_the_given_cache(tmp_path):
+    # Not the Hub's import-time cache, which Studio stops using after a cache-home change.
+    shard = tmp_path / "hub" / "models--o--r" / "snapshots" / "abc" / "s.safetensors"
+    shard.parent.mkdir(parents = True)
+    shard.write_bytes(b"x")
+    repo = tmp_path / "hub" / "models--o--r"
+    assert rs._was_cached("o/r", "s.safetensors", "abc", repo)
+    assert not rs._was_cached("o/r", "other.safetensors", "abc", repo)
+
+
+def test_setup_cleans_only_the_cache_it_checked(tmp_path, clean_env, monkeypatch):
+    hub = _FakeHub(tmp_path)
+    active = [tmp_path / "before"]
+    monkeypatch.setattr(rs, "_hub_repo_dir", lambda repo = rs.MODEL_ID: active[0])
+    fetch = hub.download
+
+    def download(repo, name, *args, **kwargs):
+        # The cache home changes mid-setup to where the files already were.
+        if name != rs.TRANSFORMER_INDEX:
+            active[0] = tmp_path / "hub"
+        return fetch(repo, name, *args, **kwargs)
+
+    hub.download = download
+    assert _runner(hub).start(background = False)["phase"] == "done"
+    assert all(p.exists() for p in hub.paths.values())
 
 
 def test_remove_cached_drops_only_this_repos_unshared_blobs(tmp_path):
