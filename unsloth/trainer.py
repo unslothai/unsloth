@@ -2454,7 +2454,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if is_hybrid and hybrid_opt_in_device is not None:
                 print(
                     f"🦥 Unsloth: Packing enabled on {hybrid_opt_in_device} through "
-                    f"{_HYBRID_PACKING_ENV_VAR}=1 (on by default only on CUDA). The speedup "
+                    f"{_HYBRID_PACKING_ENV_VAR}=1 (not on by default on this device). The speedup "
                     "depends on this device's attention kernels, so compare seconds per step "
                     "against packing = False."
                 )

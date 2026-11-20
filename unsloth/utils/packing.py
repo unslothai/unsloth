@@ -454,7 +454,7 @@ def _hybrid_packing_enabled() -> bool:
     return _hybrid_packing_mode() == "on"
 
 
-# Auto-packed mixers (CUDA only). MoE router aux loss is computed over the whole packed row, not per document.
+# Auto-packed mixers (CUDA, and ROCm with a working flash varlen). MoE router aux loss is computed over the whole packed row, not per document.
 _HYBRID_AUTO_KINDS = ("gated_delta", "ple")
 
 HYBRID_PACKING_STATS = {
@@ -1443,7 +1443,14 @@ def _auto_hybrid_device_ok(module) -> bool:
     if _stateful_mixer_kind(module) == "ple":
         return True
     weight = next(module.parameters(), None)
-    return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
+    if weight is None or weight.device.type != "cuda":
+        return False
+    if torch.version.hip is None:
+        return True
+    # ROCm: without flash varlen the full-attention layers run a dense T x T mask and packing is a wash (#17738).
+    from .hf_packed_attention import _torch_varlen
+
+    return _torch_varlen(weight.device) is not None
 
 
 def _hybrid_opt_in_device(modules) -> Optional[str]:
@@ -1578,7 +1585,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         # Every stateful mixer, kwargs-mode ones included (transformers 5.16+ Qwen mixers move there).
         if not all(_auto_hybrid_device_ok(m) for m in hybrid_modules):
             return _hybrid_reject(
-                f"default-on only on CUDA (set {_HYBRID_PACKING_ENV_VAR}=1 to opt in on this device)"
+                f"default-on only on CUDA, or ROCm whose flash varlen passes its self-check "
+                f"(set {_HYBRID_PACKING_ENV_VAR}=1 to opt in on this device)"
             )
     rollback = _snapshot_mixers(hybrid_modules)
     if kwargs_modules or hub_short_convs:
