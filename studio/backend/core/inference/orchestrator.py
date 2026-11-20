@@ -7,6 +7,7 @@ switching between models needing different transformers versions (e.g. GLM-4.7-F
 Qwen needs 4.57.x), the old subprocess is killed and a new one spawned with the correct version.
 Pattern follows core/training/training.py."""
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import atexit
 import contextvars
 import base64
@@ -291,6 +292,13 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_fast_verify_requested",
     "mlx_fast_verify_reason",
     "mlx_offload",
+    "disable_vision",
+    "vision_disabled_by_user",
+    "reasoning_budget",
+    "reasoning_budget_message",
+    "n_ubatch",
+    "n_batch",
+    "cache_ram",
     "chat_template_override_requested",
     "chat_template_override_reason",
     "speculative_type",
@@ -409,6 +417,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     return {
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
+        "model_type": model_info.get("model_type"),
         "is_mlx": model_info.get("is_mlx", False),
         "loaded_auto_map": model_info.get("loaded_auto_map"),
         "display_name": model_info.get("display_name", model_name),
@@ -447,6 +456,15 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_request_inputs": model_info.get("audio_request_inputs"),
         "max_image_side": model_info.get("max_image_side"),
     }
+
+
+# MLX settings the worker holding the weights applies as they are; see MLXInferenceBackend.retune.
+_RETUNABLE = {
+    "reasoning_budget": "reasoning_budget",
+    "reasoning_budget_message": "reasoning_budget_message",
+    "mlx_prefill_batch": "prefill_batch",
+    "mlx_prompt_cache_mib": "prompt_cache_mib",
+}
 
 
 def _load_settings(sub_config: dict) -> dict:
@@ -2223,6 +2241,7 @@ class InferenceOrchestrator:
 
     # Bumped at publish, not load start, so a same-model reload mid-install is detected.
     load_generation: int = 0
+    _image_token_counts: tuple = (None, None)
     # Cleared at each publish; only an explicit UI load sets it, pinning the model against idle unload.
     _loaded_by_user_action: bool = False
 
@@ -2251,6 +2270,12 @@ class InferenceOrchestrator:
         spec_draft_model: Optional[str] = None,
         spec_drafters_allowed: Optional[list] = None,
         chat_template_override: Optional[str] = None,
+        disable_vision: bool = False,
+        reasoning_budget: int = -1,
+        reasoning_budget_message: str = "",
+        mlx_prefill_step: Optional[int] = None,
+        mlx_prefill_batch: Optional[int] = None,
+        mlx_prompt_cache_mib: Optional[int] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
@@ -2332,6 +2357,12 @@ class InferenceOrchestrator:
                 "spec_draft_model": spec_draft_model,
                 "spec_drafters_allowed": spec_drafters_allowed,
                 "chat_template_override": chat_template_override,
+                "disable_vision": bool(disable_vision),
+                "reasoning_budget": reasoning_budget,
+                "reasoning_budget_message": reasoning_budget_message,
+                "mlx_prefill_step": mlx_prefill_step,
+                "mlx_prefill_batch": mlx_prefill_batch,
+                "mlx_prompt_cache_mib": mlx_prompt_cache_mib,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
             }
@@ -2346,8 +2377,7 @@ class InferenceOrchestrator:
                 if audio_load_runs_on_cpu(
                     getattr(config, "audio_type", None), audio_device, config.audio_cpp
                 ):
-                    # A CPU-only runtime or package runs Auto on the CPU too: say so, so no card
-                    # is chosen and the worker hides them.
+                    # CPU-only runtimes run Auto on the CPU too; set cpu so no card is chosen.
                     audio_device = "cpu"
                     sub_config["audio_device"] = audio_device
             if audio_device_forces_cpu(audio_device) and (
@@ -2384,9 +2414,7 @@ class InferenceOrchestrator:
                     "retry when it completes."
                 )
 
-            if self._narrow_context_in_place(
-                sub_config, model_name, parallel_slots, load_cancel_event
-            ):
+            if self._retune_in_place(sub_config, model_name, parallel_slots, load_cancel_event):
                 self.loading_models.discard(model_name)
                 if on_prior_worker_released is not None:
                     on_prior_worker_released()
@@ -2617,7 +2645,9 @@ class InferenceOrchestrator:
                     failure = AudioCppFailure.from_payload(resp.get("failure"))
                     if failure is not None:
                         raise AudioCppFailureError(error, failure)
-                    raise Exception(error)
+                    load_error = Exception(error)
+                    load_error.error_kind = resp.get("error_kind")
+                    raise load_error
 
         except Exception as exc:
             self.loading_models.discard(model_name)
@@ -2637,25 +2667,33 @@ class InferenceOrchestrator:
         finally:
             self._release_load_downloads()
 
-    def _narrow_context_in_place(
+    def _retune_in_place(
         self,
         sub_config: dict,
         model_name: str,
         parallel_slots,
         cancel_event = None,
     ) -> bool:
-        """Whether the idle MLX worker holding this load took a smaller context in place."""
+        """Whether the idle MLX worker holding this load took the change in place: a smaller
+        context and the settings in _RETUNABLE, everything else as it loaded."""
         proc = self._proc
         entry = self.models.get(model_name)
-        held = getattr(self, "_worker_load_settings", None)
+        held_proc, held = getattr(self, "_worker_load_settings", None) or (None, None)
+        wanted = _load_settings(sub_config)
+        fixed = lambda settings: {k: v for k, v in settings.items() if k not in _RETUNABLE}
+        pinned = sub_config["max_seq_length"] or 0
+        narrows = 0 < pinned < ((entry or {}).get("context_length") or 0)
+        retunes = any(wanted.get(key) != (held or {}).get(key) for key in _RETUNABLE)
         if (
             sub_config["device_backend"] != "mlx"
             or sub_config["mlx_distributed"]
             or entry is None
             or self.active_model_name != model_name
             or entry.get("parallel_slots") != parallel_slots
-            or not 0 < (sub_config["max_seq_length"] or 0) < (entry.get("context_length") or 0)
-            or held != (proc, _load_settings(sub_config))
+            or not (narrows or (retunes and pinned == (entry.get("requested_context_length") or 0)))
+            or held_proc is not proc
+            or held is None
+            or fixed(held) != fixed(wanted)
             or not proc.is_alive()
             or self._replies_in_flight()
         ):
@@ -2663,7 +2701,7 @@ class InferenceOrchestrator:
         with self._dispatcher_lifecycle_lock:
             if self._worker_reserved_for is not None:
                 return False
-            self._worker_reserved_for = "the context is being narrowed"
+            self._worker_reserved_for = "the settings are being applied in place"
         acquired = False
         try:
             # A running dispatcher would drop the reply.
@@ -2677,9 +2715,13 @@ class InferenceOrchestrator:
                     return False
             with self._send_order_lock:
                 self._send_cmd(
-                    {"type": "narrow_context", "max_seq_length": sub_config["max_seq_length"]}
+                    {
+                        "type": "retune",
+                        "max_seq_length": pinned if narrows else None,
+                        **{arg: wanted.get(key) for key, arg in _RETUNABLE.items()},
+                    }
                 )
-                fields = self._wait_response("context_narrowed", timeout = 60.0).get("fields")
+                fields = self._wait_response("retuned", timeout = 60.0).get("fields")
             if not fields:
                 return False
             from utils.process_lifetime import is_process_shutting_down
@@ -2693,14 +2735,13 @@ class InferenceOrchestrator:
                 ):
                     return False
                 entry.update(fields)
+                self._worker_load_settings = (proc, wanted)
                 self.load_generation += 1
                 self._loaded_by_user_action = False
-            logger.info(
-                "Model '%s' now serves a context of %s", model_name, fields["context_length"]
-            )
+            logger.info("Model '%s' took %s in place", model_name, sorted(fields))
             return True
         except Exception as exc:
-            logger.warning("Could not narrow the context in place: %s", exc)
+            logger.warning("Could not apply the settings in place: %s", exc)
             return False
         finally:
             if acquired:
@@ -3095,6 +3136,62 @@ class InferenceOrchestrator:
         if error:
             raise RuntimeError(error)
         return int(resp["input_tokens"]), resp.get("model")
+
+    @property
+    def context_length(self) -> Optional[int]:
+        return (self.models.get(self.active_model_name) or {}).get("context_length")
+
+    def image_tokens(
+        self,
+        width: int,
+        height: int,
+        timeout: float = 30.0,
+    ) -> Optional[int]:
+        """Prompt tokens a computer-use screenshot of this size costs the loaded model, cached per
+        load; None while busy or when the worker cannot count it."""
+        if getattr(self, "_managed_engine", None) is not None or self.active_model_name is None:
+            return None
+        generation, counts = self._image_token_counts
+        if generation != self.load_generation:
+            counts = {}
+            self._image_token_counts = (self.load_generation, counts)
+        if (width, height) in counts:
+            return counts[(width, height)]
+        if not self._gen_lock.acquire(blocking = False):
+            return None
+        try:
+            with contextlib.ExitStack() as held:
+                # Reserved before the idle check, so a dispatched chat cannot slip in ahead of the count.
+                try:
+                    held.enter_context(self._reserve_worker("a screenshot is being sized"))
+                except RuntimeError:
+                    return None
+                with self._mailbox_lock:
+                    if self._mailboxes:
+                        return None
+                request_id = str(uuid.uuid4())
+                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                try:
+                    self._send_cmd(
+                        {
+                            "type": "image_tokens",
+                            "request_id": request_id,
+                            "width": width,
+                            "height": height,
+                        }
+                    )
+                    resp = self._await_reply(
+                        read_one, request_id, "image_tokens_response", "image tokens", timeout
+                    )
+                finally:
+                    release_mailbox()
+        finally:
+            self._gen_lock.release()
+        if resp is None or resp.get("error"):
+            return None
+        tokens = resp.get("tokens")
+        counts[(width, height)] = tokens if type(tokens) is int else None
+        return counts[(width, height)]
 
     def compact_chat_context(
         self,
@@ -3677,7 +3774,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,

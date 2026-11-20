@@ -7,6 +7,7 @@ deps are lazy so importing never fails on a missing one."""
 from __future__ import annotations
 
 import codecs
+import functools
 import logging
 import os
 import re
@@ -19,6 +20,18 @@ from html.parser import HTMLParser
 from . import config
 
 logger = logging.getLogger(__name__)
+
+# PyMuPDF shares one MuPDF context between threads, so two calls at once can crash the process.
+MUPDF_LOCK = threading.RLock()
+
+
+def mupdf_serialized(fn):
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with MUPDF_LOCK:
+            return fn(*args, **kwargs)
+
+    return locked
 
 
 @dataclass(frozen = True)
@@ -150,7 +163,11 @@ def _html_hidden(tag: str, attrs) -> bool:
     # any value but until-found (still searchable) hides the subtree; CSS is not evaluated
     for name, value in attrs:
         if name == "hidden":
-            return (value or "").lower() != "until-found" and tag not in _HTML_HIDDEN_IGNORED
+            return (
+                (value or "").lower() != "until-found"
+                and tag not in _HTML_HIDDEN_IGNORED
+                and "tabpanel" not in (dict(attrs).get("role") or "").lower().split()
+            )
     return False
 
 
@@ -175,6 +192,8 @@ class _Stripper(HTMLParser):
         self.labels: list[str] = []
         self.nonce = secrets.token_hex(4)
         self._label: str | None = None
+        self._sups: list[list] = []
+        self._anchor: tuple[int, list[str], int] | None = None
 
     def _in_table(self) -> bool:
         return bool(self._tables) and not self._skip and not self._deep
@@ -378,6 +397,25 @@ class _Stripper(HTMLParser):
         elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
             # absolute x/y coordinates start a separate SVG text label or line
             self._flush()
+        elif tag == "sup" and not self._skip:
+            from ..inference._html_to_md import _MAX_SUP_DEPTH, _note_reference
+
+            while self._sups and self._sups[-1][0] >= index:
+                self._sups.pop()
+            # a footnote link around or inside the sup (Pandoc, Python-Markdown, GitHub) is a reference
+            anchor = self._anchor
+            linked = (
+                anchor is not None
+                and anchor[0] in self._tag_positions.get("a", ())
+                and anchor[1] is self._line
+                and anchor[2] == len(self._line)
+            )
+            if len(self._sups) < _MAX_SUP_DEPTH and not linked and not _note_reference(dict(attrs)):
+                self._sups.append([index, self._line, len(self._line), False])
+        elif tag == "a" and not self._skip:
+            self._anchor = (index, self._line, len(self._line))
+            for sup in self._sups:
+                sup[3] = True
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -395,6 +433,8 @@ class _Stripper(HTMLParser):
             self._pop_tags(index)
             if muted:
                 return
+            if tag == "sup":
+                self._end_sup(index)
         elif self._hidden_at is not None:
             return
         if tag == "template":
@@ -427,6 +467,15 @@ class _Stripper(HTMLParser):
                     pass
         elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
             self._line.append(" ")
+
+    def _end_sup(self, index: int) -> None:
+        from ..inference._html_to_md import _raise_superscript
+        while self._sups and self._sups[-1][0] > index:
+            self._sups.pop()
+        if self._sups and self._sups[-1][0] == index:
+            _, line, start, linked = self._sups.pop()
+            if line is self._line and not linked:
+                _raise_superscript(line, start)
 
     def handle_data(self, data):
         if not self._skip and self._hidden_at is None:
@@ -636,8 +685,7 @@ def _skips_table_search(doc, number: int) -> bool:
 
 
 def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> list | None:
-    """The plain path's to_markdown calls, each split into table-search and no-search pages
-    sharing one header table."""
+    """The plain path's to_markdown calls, each split into table-search and no-search pages."""
     # Bake as to_markdown would, so the guard sees the same page.
     if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
         doc.bake()
@@ -761,6 +809,7 @@ def _pdf_form_field_lines(page) -> list[str]:
     return list(fields.values())
 
 
+@mupdf_serialized
 def _pdf(
     source: str | bytes,
     want_images: bool,
@@ -850,6 +899,7 @@ def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[
     return pages, total_pages
 
 
+@mupdf_serialized
 def mupdf_document_text(path: str) -> str:
     """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
     import pymupdf
@@ -916,6 +966,7 @@ def _figure_boxes(
     return keep
 
 
+@mupdf_serialized
 def pages_with_figures(
     path: str,
     *,
@@ -948,6 +999,7 @@ def pages_with_figures(
         doc.close()
 
 
+@mupdf_serialized
 def render_pdf_figure_tiles(
     path: str,
     page_numbers,
@@ -1017,6 +1069,7 @@ def render_pdf_figure_tiles(
         doc.close()
 
 
+@mupdf_serialized
 def render_pdf_pages(
     path: str,
     page_numbers,
@@ -1287,14 +1340,60 @@ def _docx_run_text(run) -> str:
     )
 
 
+_DOCX_LEADING_SPACE = re.compile(r"\s")
+
+
+def _docx_superscripts(p) -> list:
+    find = getattr(_docx_xpath, "superscripts", None)
+    if find is None:
+        from lxml import etree
+        find = _docx_xpath.superscripts = etree.XPath(
+            ".//w:r[w:rPr/w:vertAlign/@w:val = 'superscript']"
+            "[not(w:footnoteReference | w:endnoteReference)]",
+            namespaces = {"w": _W[1:-1]},
+        )
+    return find(p)
+
+
 def _docx_paragraph_text(paragraph) -> str:
     """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
     p = paragraph._p
-    return "".join(
-        _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
+    nodes = (
+        node
         for node in p.iter(_W + "r", *_DOCX_MATH)
         if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
     )
+    superscripts = _docx_superscripts(p)
+    if not superscripts:
+        return "".join(
+            _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
+            for node in nodes
+        )
+    from ..inference._html_to_md import _raise_superscript
+
+    superscripts = set(superscripts)
+    parts: list[str] = []
+    raised = None
+
+    def raise_from(start: int) -> None:
+        # Word whitespace is content, not layout: a group opening with a space, tab or break is no exponent
+        if not _DOCX_LEADING_SPACE.match("".join(parts[start:])):
+            _raise_superscript(parts, start)
+
+    for node in nodes:
+        text = _docx_math_text(node) if node.tag in _DOCX_MATH else _docx_run_text(node)
+        if not text:
+            continue
+        superscript = node in superscripts
+        if raised is not None and not superscript:
+            raise_from(raised)
+            raised = None
+        elif raised is None and superscript:
+            raised = len(parts)
+        parts.append(text)
+    if raised is not None:
+        raise_from(raised)
+    return "".join(parts)
 
 
 def _docx_int(value) -> int:
@@ -1718,6 +1817,7 @@ def _docx_mark_notes(document):
 _HIGH_BYTES = bytes(range(0x80, 0x100))
 _ASCII_LETTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _HIGH_RUN = re.compile(rb"[\x80-\xff]+")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f]")
 
 
 def _declared_charset(data: bytes) -> str | None:
@@ -1737,6 +1837,27 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     ):
         if data.startswith(bom):
             return data.decode(codec, errors = "replace")
+    # No BOM: NULs dominating one side of the byte pairs mean ASCII-heavy UTF-16.
+    if len(data) >= 8:
+        pairs = even_nulls = odd_nulls = 0
+        for i in range(0, min(len(data), 1024) - 1, 2):
+            if data[i : i + 2] == b"\0\0":
+                break
+            pairs += 1
+            if data[i] == 0:
+                even_nulls += 1
+            elif data[i + 1] == 0:
+                odd_nulls += 1
+        codec = None
+        if even_nulls >= 4 and odd_nulls * 10 <= even_nulls and 2 * even_nulls > pairs:
+            codec = "utf-16-be"
+        elif odd_nulls >= 4 and even_nulls * 10 <= odd_nulls and 2 * odd_nulls > pairs:
+            codec = "utf-16-le"
+        if codec is not None:
+            decoded = data.decode(codec, errors = "replace")
+            # Real text has no C0/C1 controls; NUL-shaped binaries fall through to the binary guard.
+            if _CONTROL_CHARS.search(decoded) is None:
+                return decoded
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:

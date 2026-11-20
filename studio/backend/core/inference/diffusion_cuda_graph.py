@@ -613,6 +613,22 @@ def _capture_stream(index: int) -> Any:
 
 
 @contextlib.contextmanager
+def card_graph(
+    graph: Any,
+    index: int,
+    pool: Any = None,
+):
+    """``torch.cuda.graph`` recorded on card ``index``: that card current (its sync, its allocator) and its own capture
+    stream. A bare ``torch.cuda.graph`` on a second card records on the first card's default capture stream, so the
+    graph comes out empty while the kernels run eagerly on the card they belong to."""
+    torch = _torch()
+    index = int(index)
+    with torch.cuda.device(index):
+        with _graph_with_flush(graph, pool = pool, stream = _capture_stream(index)):
+            yield
+
+
+@contextlib.contextmanager
 def _graph_without_flush(
     graph: Any,
     pool: Any = None,

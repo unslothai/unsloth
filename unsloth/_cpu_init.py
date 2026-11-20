@@ -27,6 +27,12 @@ from ._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
 
 patch_gradient_checkpointing_enable_kwargs()
 
+# The CPU route skips _gpu_init: a compressed-tensors checkpoint still loads through transformers' quantizer here.
+from .import_fixes import fix_transformers_quantizer_unquantized_converters
+
+fix_transformers_quantizer_unquantized_converters()
+del fix_transformers_quantizer_unquantized_converters
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "

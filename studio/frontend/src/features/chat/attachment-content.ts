@@ -15,6 +15,7 @@ import {
   MAX_OPEN_DOCUMENT_XML_BYTES,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
+import { SUPERSCRIPT_BASE_CHARS, isNoteReference, raiseSuperscript } from "./superscript";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
@@ -931,6 +932,90 @@ function linearizeDocxMathParts(select: DocxPartSelect): Record<string, Uint8Arr
   return Object.keys(rewritten).length ? rewritten : null;
 }
 
+const DOCX_RUN_TEXT = new Map([["tab", "\t"], ["br", "\n"], ["cr", "\n"], ["noBreakHyphen", "-"]]);
+const MC_NAMESPACE = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+const pieceText = (piece: Element) =>
+  piece.localName === "t" ? (piece.textContent ?? "") : (DOCX_RUN_TEXT.get(piece.localName) ?? "");
+
+export function writeDocxSuperscripts(archive: Uint8Array): Uint8Array {
+  return rezipDocx(archive, writeDocxSuperscriptParts(archiveParts(archive)));
+}
+
+function writeDocxSuperscriptParts(select: DocxPartSelect): Record<string, Uint8Array> | null {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = select((name) => name.endsWith(".xml"));
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!xml.includes("superscript")) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    // runs a reader may drop (tracked deletions and moves, ruby text, placeholders, one of two
+    // compatibility branches: the body reads mc:Fallback, notes mc:Choice) neither raise nor serve as a base
+    const visibleIn = (run: Element, p: Element) => {
+      for (let node = run.parentNode as Element | null; node; node = node.parentNode as Element | null) {
+        if (node.namespaceURI === MC_NAMESPACE) return false;
+        if (node.namespaceURI !== w) continue;
+        if (node.localName === "p") return node === p;
+        if (DOCX_NOTE_SKIP.has(node.localName) || (node.localName === "sdt" && isDocxPlaceholder(node, w))) return false;
+      }
+      return false;
+    };
+    const isSuperscript = (run: Element) =>
+      childElements(run, w, "rPr").some((pr) =>
+        childElements(pr, w, "vertAlign").some((align) => align.getAttributeNS(w, "val") === "superscript"),
+      );
+    let found = false;
+    for (const p of Array.from(doc.getElementsByTagNameNS(w, "p"))) {
+      let before = "";
+      let raised: Element[] = [];
+      const raise = () => {
+        const text = raised.map(pieceText).join("");
+        // Word whitespace is content, not layout: a group opening with a space, tab or break is no exponent
+        const result = /^\s/.test(text) ? text : raiseSuperscript(before, text);
+        if (result !== text) {
+          const first = raised.find((piece) => piece.localName === "t");
+          for (const piece of raised) {
+            if (piece === first) continue;
+            if (piece.localName === "t") while (piece.firstChild) piece.removeChild(piece.firstChild);
+            else piece.parentNode?.removeChild(piece);
+          }
+          if (first) {
+            while (first.firstChild) first.removeChild(first.firstChild);
+            first.appendChild(doc.createTextNode(result));
+          }
+          found = true;
+        }
+        before = (before + result).slice(-SUPERSCRIPT_BASE_CHARS);
+        raised = [];
+      };
+      for (const run of Array.from(p.getElementsByTagNameNS(w, "r"))) {
+        if (!visibleIn(run, p)) continue;
+        const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === w);
+        // a note reference gets its marker later: it ends the exponent and is no base, as in the backend reader
+        if (childElements(run, w, "footnoteReference").length || childElements(run, w, "endnoteReference").length) {
+          if (raised.length) raise();
+          before = "";
+          continue;
+        }
+        const text = pieces.map(pieceText).join("");
+        if (!text) continue;
+        if (isSuperscript(run)) {
+          // breaks and tabs stay in the exponent text, so a value never joins across them
+          raised.push(...pieces.filter((child) => child.localName === "t" || DOCX_RUN_TEXT.has(child.localName)));
+          continue;
+        }
+        if (raised.length) raise();
+        before = (before + text).slice(-SUPERSCRIPT_BASE_CHARS);
+      }
+      if (raised.length) raise();
+    }
+    if (found) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  return Object.keys(rewritten).length ? rewritten : null;
+}
+
 const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
 const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
 
@@ -1789,7 +1874,7 @@ export async function extractOfficeAttachmentText(
   const budget = textBudget(MAX_OFFICE_TEXT_BYTES);
   const parts: string[] = [];
   if (label === "PPTX") {
-    const deck = readPptx(bytes, { images: false, notes: true });
+    const deck = readPptx(bytes, { images: false, notes: true, keepHidden: true });
     for (const [index, slide] of deck.slides.entries()) {
       if (budget.cut) break;
       const lines = [budget.take(`Slide ${index + 1}`)];
@@ -1838,7 +1923,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   let parts: Record<string, Uint8Array> | null = repackedDocxParts(unpacked.entries);
   if (!parts) {
     const repacked = zipSync(unpacked.entries, { level: 0 });
-    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
+    const marked = markDocxNotes(writeDocxSuperscripts(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES))));
     const { value } = await mammoth.extractRawText({
       arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
     });
@@ -1857,6 +1942,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   };
   apply(writeDocxSymbolParts(select, MAX_OPEN_DOCUMENT_XML_BYTES));
   apply(linearizeDocxMathParts(select));
+  apply(writeDocxSuperscriptParts(select));
   const marked = markDocxNoteParts(select);
   apply(marked.rewritten);
   apply(writeDocxListNumberParts(select));
@@ -1988,6 +2074,7 @@ function collectHtmlBlockText(
   node: Node | null,
   preformatted?: string[],
   rowSpans?: number[],
+  before = "",
 ): string {
   if (!node) {
     return "";
@@ -2072,18 +2159,33 @@ function collectHtmlBlockText(
   const start = tag === "ol" ? Number.parseInt(element.getAttribute("start") ?? "", 10) : Number.NaN;
   let number = Number.isNaN(start) ? (reversed ? Array.from(element.childNodes).filter(isItem).length : 1) : start;
   const format = tag === "ol" ? lookUp(HTML_LIST_FORMATS, element.getAttribute("type") ?? "") : undefined;
+  // a link's text starts fresh, so a footnote <a><sup>1</sup></a> has no base
+  let tail = HTML_BLOCK_TAGS.has(tag) ? "\n" : tag === "a" ? "" : before;
   const text = Array.from(element.childNodes)
     .map((child) => {
-      const inner = collectHtmlBlockText(child, preformatted, groupSpans);
-      if (!isItem(child)) return inner;
+      const inner = collectHtmlBlockText(child, preformatted, groupSpans, tail);
+      if (!isItem(child)) {
+        tail = (tail + inner).slice(-SUPERSCRIPT_BASE_CHARS);
+        return inner;
+      }
       const value = Number.parseInt((child as Element).getAttribute("value") ?? "", 10);
       if (!Number.isNaN(value)) number = value;
       const label = listNumber(number, lookUp(HTML_LIST_FORMATS, (child as Element).getAttribute("type") ?? "") ?? format);
       number += reversed ? -1 : 1;
+      tail = "\n";
       return `\n${label}. ${inner.trimStart()}`;
     })
     .join("");
+  if (tag === "sup" && !isNoteReference(element.getAttribute("class"), element.getAttribute("role")) && !containsLink(element)) {
+    return raiseSuperscript(before, text);
+  }
   return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
+}
+
+function containsLink(node: Node): boolean {
+  return Array.from(node.childNodes).some(
+    (child) => child.nodeType === ELEMENT_NODE && ((child as Element).tagName.toLowerCase() === "a" || containsLink(child)),
+  );
 }
 
 const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);

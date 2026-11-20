@@ -58,7 +58,7 @@ async function decodeClipPeaks(
   );
 }
 
-function useClipPeaks(srcs: readonly (string | null)[]) {
+export function useClipPeaks(srcs: readonly (string | null)[]) {
   const [peaks, setPeaks] = useState<Record<string, number[] | null>>({});
   const key = srcs.join("\n");
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` is the srcs, joined.
@@ -184,6 +184,7 @@ export function ABCompare({
           variant="muted"
           size="icon"
           className="size-[calc(32px*var(--ui-space-scale,1))] shrink-0"
+          title={ab.playing ? "Pause" : "Play"}
           aria-label={
             ab.playing ? `Pause ${current.label}` : `Play ${current.label}`
           }

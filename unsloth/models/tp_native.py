@@ -51,6 +51,7 @@ import copy
 import dataclasses
 import functools
 import inspect
+import math
 import re
 import types
 from typing import Optional
@@ -80,6 +81,10 @@ COLWISE = "colwise"
 ROWWISE = "rowwise"
 HEAD_NORM = "replicated_with_grad_allreduce"
 ELEMENTWISE = "elementwise_replicated"  # scalar-parameter activations inside an MLP
+# A child of an attention region that reads only the block input (identical on every tp rank) and returns
+# something every head uses alike, e.g. Qwen4Exp's QSA indexer (index_qk_proj + norms -> a block mask):
+# kept whole on every rank; trainable parameters (an opted-in adapter) get their gradients summed over tp.
+INPUT_REPLICATED = "replicated_block_input"
 # A key / value projection when num_key_value_heads < tp: kept whole on every rank (Replicate DTensors, 4-bit:
 # the rows of this rank's key / value head), each rank computing the one key / value head its query heads use.
 KV_REPLICATED = "kv_replicated"
@@ -101,6 +106,7 @@ _STYLES = {
 # Outside the decoder regions (embeddings, lm_head, final norm): replicated in v1.
 _REPLICATED_STYLES = {
     "embedding_rowwise",
+    "embedding_colwise",  # transformers 5.22+ (Qwen4Exp PLE n-gram table): replicated like any embedding
     "gather",
     "sequence_parallel",
     "all_reduce",
@@ -120,6 +126,16 @@ _MOE_STYLES = {
 _MLA_STYLES = {"mla_kv_a_proj"}
 
 _ATTN_NAMES = ("self_attn", "attention", "attn", "self_attention")
+# Gated DeltaNet linear attention (Qwen3-Next / Qwen3.5 / Qwen3.5-MoE / Qwen4Exp): per-head recurrent state, so it
+# shards by heads like attention (_linear_attention_region). Any other layout under these names stays replicated.
+_LINEAR_ATTN_NAMES = ("linear_attn",)
+_GDN_SIZES = ("num_k_heads", "num_v_heads", "head_k_dim", "head_v_dim")
+# The sizes a Gated DeltaNet forward reshapes / splits with: set to this rank's local values.
+_GDN_LOCAL_ATTRS = ("num_k_heads", "num_v_heads", "key_dim", "value_dim", "conv_dim")
+_GDN_HEAD_PARAMS = ("A_log", "dt_bias")  # [num_v_heads] each
+# A forward reading the global head counts off the config would reshape to every head.
+_GDN_GLOBAL_READS = re.compile(r"config\.linear_(num_key_heads|num_value_heads)\b")
+_ATTN_INPUT_SIDE = ("indexer",)
 _MLP_NAMES = ("mlp", "feed_forward", "ffn")
 _Q, _K, _V = ("q_proj", "query"), ("k_proj", "key"), ("v_proj", "value")
 _FUSED_QKV = ("qkv_proj",)  # [q, k, v] along the output dim (Phi3)
@@ -138,6 +154,16 @@ _HEAD_NORMS = (
     "key_layernorm",
 )
 _MLA_NAMES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
+# Multi-head latent attention proper: per-head keys / values expanded from a shared latent (kv_b_proj).
+_MLA_KV_NAMES = ("kv_a_proj_with_mqa", "kv_b_proj", "kv_a_layernorm")
+# Latent-query MQA (DeepSeek-V4.1): query heads, sinks and whole o_a_proj groups shard; the single key / value
+# head and everything else reads the block input, so it is replicated (gradients summed over tp).
+_LATENT_MQA_REPLICATED = ("q_a_proj", "q_a_norm", "kv_proj", "kv_norm", "compressor", "indexer")
+_LATENT_MQA_COL = ("q_b_proj", "o_a_proj")
+_LATENT_MQA_ROW = ("o_b_proj",)
+_HEAD_PARAMS = (
+    "sinks",
+)  # per-head parameters owned by the attention module itself (shard with the heads)
 # An attention forward reading these sizes off the config would reshape to the global head count.
 _GLOBAL_HEAD_READS = re.compile(r"config\.(num_attention_heads|num_key_value_heads)\b")
 _GLOBAL_WIDTH_READS = re.compile(
@@ -163,6 +189,8 @@ class TPConfig:
     # False: the caller guarantees it, e.g. a loaded adapter or the same seed before get_peft_model on every
     # rank (random LoRA inits draw full-size factors, so per-rank seeds give per-rank factors).
     sync_trainable: bool = True
+    # Host-serve a frozen untied input embedding >= this GPU fraction (0 = never); env UNSLOTH_TP_EMBED_ON_CPU forces.
+    host_input_embedding: float = 0.15
 
 
 @dataclasses.dataclass
@@ -181,10 +209,22 @@ class _Region:
     kind: str  # "attention" / "mlp"
     projs: list
     norms: list  # per-head norms inside the region: replicated, gradients summed over tp
+    replicated: list = dataclasses.field(
+        default_factory = list
+    )  # INPUT_REPLICATED children, kept whole
     heads: int = 0
     kv_heads: int = 0
     head_dim: int = 0
     kv_replicated: bool = False  # num_key_value_heads < tp: k / v projections replicated
+    head_params: list = dataclasses.field(
+        default_factory = list
+    )  # names of per-head parameters of the region module itself (attention sinks): sharded by heads
+    latent: bool = (
+        False  # latent-query MQA (DeepSeek-V4.1): one replicated key / value head, grouped output
+    )
+    # (child module, parameter name, parts) sharded on dim 0 outside any projection (Gated DeltaNet conv1d
+    # channels): DTensors, read as this rank's local slice while the region runs.
+    child_params: list = dataclasses.field(default_factory = list)
 
 
 @dataclasses.dataclass
@@ -193,14 +233,19 @@ class TPPlan:
     regions: list
     source: str  # "user" / "transformers" / "structural"
     replicated_layers: int = (
-        0  # decoder layers with no region (e.g. linear attention): run replicated
+        0  # decoder layers with no region (e.g. short convolutions): run replicated
     )
-    # Mixture-of-experts blocks: run replicated (experts not sharded), outputs averaged over tp.
+    # MoE blocks: routed experts sharded by index where exact (moe_sharded), else replicated with outputs averaged.
     moe_blocks: list = dataclasses.field(default_factory = list)
+    moe_sharded: list = dataclasses.field(default_factory = list)
 
     @property
     def replicated_moe(self):
         return len(self.moe_blocks)
+
+    @property
+    def sharded_moe(self):
+        return len(self.moe_sharded)
 
     def styles(self):
         """{projection path: style} (the plan in transformers form, local paths)."""
@@ -244,8 +289,8 @@ def _style_for(path, compiled):
 
 
 def _weight(module):
-    base = module._modules.get("base_layer", module)
-    return base._parameters.get("weight", getattr(base, "weight", None)), base
+    base = getattr(module, "_modules", {}).get("base_layer", module)
+    return getattr(base, "_parameters", {}).get("weight", getattr(base, "weight", None)), base
 
 
 def _has_params(module):
@@ -341,6 +386,18 @@ def _is_moe_block(module):
     return False
 
 
+def _is_latent_mqa(module, text = None):
+    """An attention module with a latent query and one key / value head (DeepSeek-V4.1), no MLA key / value
+    expansion: tensor parallel by query heads and output groups."""
+    names = set(module._modules)
+    if not {"q_a_proj", "q_b_proj", "kv_proj"} <= names or names & set(_MLA_KV_NAMES):
+        return False
+    if text is not None and (getattr(text, "kv_lora_rank", None) or 0):
+        return False
+    kv_heads = getattr(text, "num_key_value_heads", 1) if text is not None else 1
+    return kv_heads in (None, 1)
+
+
 def _refuse_mla(model, layers):
     text = _text_config(model)
     if getattr(text, "kv_lora_rank", None):
@@ -348,15 +405,34 @@ def _refuse_mla(model, layers):
             "Unsloth: tensor parallelism v1 does not support multi-head latent attention (MLA, kv_lora_rank "
             f"= {text.kv_lora_rank}). Use native FSDP2 (UNSLOTH_FSDP2=1) instead."
         )
+    latent = [
+        name + "."
+        for name, module in layers.named_modules()
+        if name.rsplit(".", 1)[-1] in _ATTN_NAMES and _is_latent_mqa(module, text)
+    ]
     for name, module in layers.named_modules():
-        if name.rsplit(".", 1)[-1] in _MLA_NAMES:
-            raise ValueError(
-                f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ({name})."
-            )
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in _MLA_NAMES:
+            continue
+        if leaf not in _MLA_KV_NAMES and any(name.startswith(prefix) for prefix in latent):
+            continue  # a latent query (or an indexer's query) inside a latent-query MQA attention
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support multi-head latent attention ({name})."
+        )
 
 
-def _classify(region_path, name, child, kind, compiled):
+def _classify(
+    region_path,
+    name,
+    child,
+    kind,
+    compiled,
+    latent = False,
+):
     """(style, parts kind) for one child of an attention / MLP region, from the plan or its name."""
+    if latent and name in _LATENT_MQA_REPLICATED:
+        # Reads the block input (identical on every tp rank); its output feeds every local head alike.
+        return INPUT_REPLICATED, None
     key, style = _style_for(f"{region_path}.{name}", compiled) if compiled else (None, None)
     if style is not None:
         if style in _MOE_STYLES:
@@ -386,6 +462,10 @@ def _classify(region_path, name, child, kind, compiled):
             return COLWISE, "packed:plan"
         return style, "plan"
     if kind == "attention":
+        if latent and name in _LATENT_MQA_COL:
+            return COLWISE, None
+        if latent and name in _LATENT_MQA_ROW:
+            return ROWWISE, None
         if name in _Q + _K + _V:
             return COLWISE, None
         if name in _FUSED_QKV:
@@ -394,6 +474,8 @@ def _classify(region_path, name, child, kind, compiled):
             return ROWWISE, None
         if name in _HEAD_NORMS:
             return HEAD_NORM, None
+        if name in _ATTN_INPUT_SIDE:
+            return INPUT_REPLICATED, None
     else:
         if name in _MLP_COL:
             return COLWISE, None
@@ -420,19 +502,32 @@ def _elementwise_scalars(module):
     return not _FEATURE_REDUCTIONS.search(_drop_init(source))
 
 
+def _config_value(config, name):
+    """config.<name>, or None when the config does not hold one global value: transformers' heterogeneous
+    configs (Gemma 4) raise AmbiguousGlobalPerLayerAttributeError, not AttributeError, for a per-layer attribute."""
+    try:
+        return getattr(config, name, None)
+    except Exception:
+        return None
+
+
 def _attention_sizes(module, projs, text):
     """(heads, kv_heads, head_dim) of one attention module, from its own projections."""
-    heads_cfg = getattr(text, "num_attention_heads", None)
-    kv_cfg = getattr(text, "num_key_value_heads", None) or heads_cfg
+    heads_cfg = _config_value(text, "num_attention_heads")
+    kv_cfg = _config_value(text, "num_key_value_heads") or heads_cfg
     head_dim = getattr(module, "head_dim", None)
     if not isinstance(head_dim, int):
-        head_dim = getattr(text, "head_dim", None) or (text.hidden_size // heads_cfg)
+        head_dim = _config_value(text, "head_dim") or (text.hidden_size // heads_cfg)
     by_name = {p.name: p for p in projs}
     q = next((by_name[n] for n in _Q if n in by_name), None)
     k = next((by_name[n] for n in _K if n in by_name), None)
     if q is not None and k is not None:
         heads = _logical_shape(*_weight(q.module))[0] // head_dim
         kv_heads = _logical_shape(*_weight(k.module))[0] // head_dim
+        if heads_cfg and heads == 2 * heads_cfg and kv_heads == kv_cfg:
+            # Gated attention (Qwen3-Next / Qwen3.5 / Qwen4Exp): q_proj emits [q, gate] per head, 2 * head_dim
+            # contiguous per head, so a column split on head boundaries keeps both halves on the same rank.
+            heads = heads_cfg
     else:
         heads, kv_heads = heads_cfg, kv_cfg
     return heads, kv_heads, head_dim
@@ -481,7 +576,9 @@ def derive_tp_plan(
             )
             if not _has_params(child):
                 continue
-            if kind != "attention" and _is_moe_block(child):
+            if kind is None and child_name in _LINEAR_ATTN_NAMES and _gdn_layout(child):
+                kind = "linear_attention"
+            if kind not in ("attention", "linear_attention") and _is_moe_block(child):
                 # Replicated: identical input and weights on every tp rank, so identical outputs and grads.
                 if id(child) not in seen:
                     moe.append(child)
@@ -495,6 +592,9 @@ def derive_tp_plan(
             if id(child) in seen:
                 continue  # a block shared by several layers (Zamba2, ALBERT style): sharded once
             seen[id(child)] = path
+            if kind == "linear_attention":
+                regions.append(_linear_attention_region(path, child, compiled, user, tp_size))
+                continue
             regions.append(_region(path, child, kind, compiled, text, tp_size))
         # A pipeline parallel pass-through (a layer another stage owns) is not a replicated layer.
         replicated += found == 0 and "_pp_index" not in layer.__dict__
@@ -502,6 +602,7 @@ def derive_tp_plan(
         raise ValueError(
             "Unsloth: tensor parallelism found no attention / MLP modules to shard in the decoder layers."
         )
+    _check_kv_shared_sources(regions)
     if user:
         source = "user"
     else:
@@ -517,9 +618,48 @@ def derive_tp_plan(
     )
 
 
+def _check_kv_shared_sources(regions):
+    """A KV-shared attention reads the keys / values its source layer (the last earlier layer of its type that
+    stores them) computed on this rank: both must hold the same local key / value heads."""
+    sources = {}
+    for region in regions:
+        if (
+            region.kind == "attention"
+            and getattr(region.module, "store_full_length_kv", False) is True
+        ):
+            sources[getattr(region.module, "layer_type", None)] = region
+    for region in regions:
+        if (
+            region.kind != "attention"
+            or getattr(region.module, "is_kv_shared_layer", False) is not True
+        ):
+            continue
+        source = sources.get(getattr(region.module, "layer_type", None))
+        if source is None or (source.kv_heads, source.kv_replicated) != (
+            region.kv_heads,
+            region.kv_replicated,
+        ):
+            raise ValueError(
+                f"Unsloth: tensor parallelism cannot shard the KV-shared attention '{region.path}': its source "
+                f"layer {'is missing' if source is None else repr(source.path)} does not hold the same local key / "
+                "value heads."
+            )
+
+
 def _region(path, module, kind, compiled, text, tp):
-    projs, norms = [], []
+    projs, norms, replicated, head_params = [], [], [], []
+    latent = kind == "attention" and _is_latent_mqa(module, text)
     for name, param in module.named_parameters(recurse = False):
+        key, style = _style_for(f"{path}.{name}", compiled) if compiled else (None, None)
+        # By heads only when the plan says so, or for a latent-query MQA's own sinks: another attention's direct
+        # parameter has no known layout and stays refused.
+        per_head = kind == "attention" and (
+            (style is not None and _STYLES.get(style) == COLWISE)
+            or (style is None and latent and name in _HEAD_PARAMS)
+        )
+        if per_head and param.ndim == 1:
+            head_params.append(name)  # sizes checked once the head count is known
+            continue
         raise ValueError(
             f"Unsloth: tensor parallelism cannot shard '{path}': it owns the parameter '{name}' directly "
             "(not inside a projection), which v1 has no rule for."
@@ -527,7 +667,7 @@ def _region(path, module, kind, compiled, text, tp):
     for name, child in module.named_children():
         if not _has_params(child):
             continue
-        style, packing = _classify(path, name, child, kind, compiled)
+        style, packing = _classify(path, name, child, kind, compiled, latent = latent)
         if style is None:
             raise ValueError(
                 f"Unsloth: tensor parallelism has no rule for '{path}.{name}' ({type(child).__name__}); "
@@ -536,6 +676,9 @@ def _region(path, module, kind, compiled, text, tp):
             )
         if style in (HEAD_NORM, ELEMENTWISE):
             norms.append((name, child))
+            continue
+        if style == INPUT_REPLICATED:
+            replicated.append((name, child))
             continue
         weight, _ = _weight(child)
         if weight is None or getattr(weight, "ndim", 0) != 2:
@@ -551,15 +694,33 @@ def _region(path, module, kind, compiled, text, tp):
             f"Unsloth: '{path}' needs column and row sharded projections for tensor parallelism; found "
             f"{[(p.name, p.style) for p in projs]}."
         )
-    region = _Region(path, module, kind, projs, norms)
+    region = _Region(
+        path,
+        module,
+        kind,
+        projs,
+        norms,
+        replicated = replicated,
+        head_params = head_params,
+        latent = latent,
+    )
     if kind == "attention":
         heads, kv_heads, head_dim = _attention_sizes(module, projs, text)
         region.heads, region.kv_heads, region.head_dim = heads, kv_heads, head_dim
         _check_divisible("num_attention_heads", heads, tp, path)
-        if kv_heads < tp:
+        if latent:
+            _check_latent_mqa(region, path, tp)
+        elif kv_heads < tp:
             _replicate_kv_heads(region, path, tp)
         else:
             _check_divisible("num_key_value_heads", kv_heads, tp, path)
+        for name in head_params:
+            numel = module._parameters[name].numel()
+            if numel % heads:
+                raise ValueError(
+                    f"Unsloth: '{path}.{name}' has {numel} entries, not a multiple of the {heads} heads; tensor "
+                    "parallelism v1 shards a module's own parameters by heads only."
+                )
         for name, norm in norms:
             weight = norm._parameters.get("weight")
             numel = (
@@ -594,6 +755,9 @@ def _region(path, module, kind, compiled, text, tp):
                     f"{q + 2 * kv}; its layout is unknown to tensor parallelism v1."
                 )
             proj.parts = (q, kv, kv)
+        elif proj.parts == "grouped":
+            proj.parts = (out_features,)
+            _weight(proj.module)[1].__dict__["_unsloth_tp_grouped"] = True
         elif proj.parts == "packed":
             if out_features % 2:
                 raise ValueError(f"Unsloth: packed '{path}.{proj.name}' has an odd output size.")
@@ -604,6 +768,31 @@ def _region(path, module, kind, compiled, text, tp):
             what = "intermediate_size" if kind == "mlp" else f"{proj.name} out_features"
             _check_divisible(what, size, tp, path)
     return region
+
+
+def _check_latent_mqa(region, path, tp):
+    """Latent-query MQA: the single key / value head is replicated (already an INPUT_REPLICATED child); the
+    query heads split evenly and the grouped o_a_proj keeps whole groups per rank (rank r: groups r * G / tp ..),
+    which are exactly the groups of its query heads because a group is a run of consecutive heads."""
+    by_name = {p.name: p for p in region.projs}
+    q = by_name.get("q_b_proj")
+    if q is None or _logical_shape(*_weight(q.module))[0] != region.heads * region.head_dim:
+        raise ValueError(
+            f"Unsloth: latent-query attention '{path}' needs q_b_proj with num_attention_heads * head_dim = "
+            f"{region.heads * region.head_dim} outputs."
+        )
+    o_a = by_name.get("o_a_proj")
+    if o_a is not None:
+        groups = getattr(_weight(o_a.module)[1], "n_groups", None)
+        if not isinstance(groups, int) or groups < 1:
+            raise ValueError(f"Unsloth: '{path}.o_a_proj' is not a grouped linear (no n_groups).")
+        _check_divisible("o_groups", groups, tp, path)
+        if region.heads % groups:
+            raise ValueError(
+                f"Unsloth: '{path}': {region.heads} heads do not split into {groups} output groups."
+            )
+        o_a.parts = "grouped"
+    region.kv_replicated = True
 
 
 def _replicate_kv_heads(region, path, tp):
@@ -626,7 +815,16 @@ def _replicate_kv_heads(region, path, tp):
             f"projections. Use tp <= {kv_heads}."
         )
     kv = [p for p in region.projs if p.name in _K + _V]
-    if not any(p.name in _K for p in kv) or not any(p.name in _V for p in kv):
+    if not kv and getattr(region.module, "is_kv_shared_layer", False) is True:
+        # Gemma 4 / Gemma 3n KV-shared layer: no key / value projections, it reads the keys and values of an
+        # earlier layer of its type, whose replicated projections give each rank the head its query heads read.
+        region.kv_replicated = True
+        return
+    # Values computed from the keys (Gemma 4 attention_k_eq_v: v_proj = None, value_states = key_states).
+    values_from_keys = any(
+        n in region.module.__dict__ and region.module.__dict__[n] is None for n in _V
+    ) or any(n in region.module._modules and region.module._modules[n] is None for n in _V)
+    if not any(p.name in _K for p in kv) or not (any(p.name in _V for p in kv) or values_from_keys):
         raise ValueError(
             f"Unsloth: tensor parallel size {tp} is larger than num_key_value_heads = {kv_heads} ({path}), and "
             f"no separate key and value projections ({_K + _V}) were found to replicate."
@@ -634,6 +832,201 @@ def _replicate_kv_heads(region, path, tp):
     for proj in kv:
         proj.style = KV_REPLICATED
     region.kv_replicated = True
+
+
+def _gdn_layout(module):
+    """The input projection layout of a Gated DeltaNet tensor parallelism shards by heads, else None (the layer
+    stays replicated): "split" (in_proj_qkv / _z / _b / _a: Qwen3.5, Qwen3.5-MoE, Qwen4Exp) or "grouped"
+    (in_proj_qkvz / in_proj_ba interleaved per key head: Qwen3-Next)."""
+    names = set(module._modules)
+    if not all(type(getattr(module, n, None)) is int for n in _GDN_SIZES):
+        return None
+    if not {"conv1d", "norm", "out_proj"} <= names:
+        return None
+    if not all(isinstance(module._parameters.get(n), torch.Tensor) for n in _GDN_HEAD_PARAMS):
+        return None
+    if {"in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"} <= names:
+        return "split"
+    if {"in_proj_qkvz", "in_proj_ba"} <= names:
+        return "grouped"
+    return None
+
+
+def _gdn_parts(module, layout):
+    """({input projection: column parts}, conv1d channel parts). Each part is per head with the key heads first
+    in every group, so the rank-th 1 / tp of each part is whole heads: rank r keeps key heads r * Hk / tp ..
+    (r + 1) * Hk / tp - 1 and exactly the value heads that read them (value head j reads key head j // (Hv / Hk))."""
+    k = module.num_k_heads * module.head_k_dim
+    v = module.num_v_heads * module.head_v_dim
+    # conv1d runs over [q, k, v] of every head (also after Qwen3-Next's regrouping).
+    conv = (k, k, v)
+    if layout == "split":
+        heads = (module.num_v_heads,)
+        return {
+            "in_proj_qkv": conv,
+            "in_proj_z": (v,),
+            "in_proj_b": heads,
+            "in_proj_a": heads,
+        }, conv
+    # [q, k, v, z] and [b, a] contiguous per key head (fix_query_key_value_ordering views [..., Hk, -1]): a
+    # contiguous 1 / tp slice is Hk / tp whole key head groups.
+    return {"in_proj_qkvz": (2 * k + 2 * v,), "in_proj_ba": (2 * module.num_v_heads,)}, conv
+
+
+def _check_gdn_source(module, path):
+    source = _region_source(module, path, "it uses this rank's head count")
+    read = _GDN_GLOBAL_READS.search(source)
+    if read:
+        raise ValueError(
+            f"Unsloth: the Gated DeltaNet forward of '{path}' ({type(module).__name__}) reshapes with "
+            f"{read.group(0)}, the global head count; tensor parallelism needs it to follow the local heads."
+        )
+
+
+def _linear_attention_region(path, module, compiled, user, tp):
+    """A Gated DeltaNet sharded by heads: the input projections (and conv1d channels, A_log, dt_bias) column
+    parallel per head, out_proj row parallel, one all-reduce after it. The recurrent state is per value head,
+    the gated norm per head (replicated), so each rank runs the fla / torch kernels on its local heads only."""
+    layout = _gdn_layout(module)
+    hk, hv = module.num_k_heads, module.num_v_heads
+    if hk < 1 or hv % hk:
+        raise ValueError(
+            f"Unsloth: Gated DeltaNet '{path}' has {hv} value heads, not a multiple of its {hk} key heads; "
+            "tensor parallelism cannot group them."
+        )
+    for what, value in (("linear_num_key_heads", hk), ("linear_num_value_heads", hv)):
+        if value % tp:
+            raise ValueError(
+                f"Unsloth: tensor parallel size {tp} does not divide {what} = {value} ({path}): Gated DeltaNet "
+                "linear attention layers shard by heads. Choose a tp size that divides it."
+            )
+    proj_parts, conv_parts = _gdn_parts(module, layout)
+    for name, param in module.named_parameters(recurse = False):
+        if name not in _GDN_HEAD_PARAMS or param.ndim != 1 or param.numel() != hv:
+            raise ValueError(
+                f"Unsloth: tensor parallelism cannot shard the Gated DeltaNet '{path}': its parameter '{name}' "
+                f"{tuple(param.shape)} is not one of {_GDN_HEAD_PARAMS} with one entry per value head ({hv})."
+            )
+    projs, norms, child_params = [], [], []
+    for name, child in module.named_children():
+        if not _has_params(child):
+            continue
+        if name in proj_parts:
+            style = COLWISE
+        elif name == "out_proj":
+            style = ROWWISE
+        elif name == "norm":
+            style = HEAD_NORM
+        elif name == "conv1d":
+            style = "conv"
+        else:
+            raise ValueError(
+                f"Unsloth: tensor parallelism has no rule for '{path}.{name}' ({type(child).__name__}) inside a "
+                "Gated DeltaNet."
+            )
+        key, planned = _style_for(f"{path}.{name}", compiled) if user and compiled else (None, None)
+        if planned is not None and _STYLES.get(planned) != style:
+            raise ValueError(
+                f"Unsloth: '{key}': '{planned}' does not match how tensor parallelism shards a Gated DeltaNet "
+                f"('{name}' is {style}: input projections column parallel by heads, out_proj row parallel)."
+            )
+        if style == HEAD_NORM:
+            numel = sum(p.numel() for p in child.parameters())
+            if numel != module.head_v_dim:
+                raise ValueError(
+                    f"Unsloth: '{path}.{name}' normalizes {numel} features, not one value head "
+                    f"({module.head_v_dim}); tensor parallelism shards Gated DeltaNet by heads."
+                )
+            norms.append((name, child))
+            continue
+        if style == "conv":
+            weight = child._parameters.get("weight")
+            if (
+                not isinstance(child, nn.Conv1d)
+                or weight is None
+                or list(child._modules)
+                or tuple(weight.shape[:2]) != (sum(conv_parts), 1)
+            ):
+                raise ValueError(
+                    f"Unsloth: tensor parallelism expects a depthwise nn.Conv1d over {sum(conv_parts)} channels at "
+                    f"'{path}.{name}' (got {type(child).__name__}; LoRA on conv1d is not supported)."
+                )
+            child_params.append((child, "weight", conv_parts))
+            if child._parameters.get("bias") is not None:
+                child_params.append((child, "bias", conv_parts))
+            continue
+        weight, _ = _weight(child)
+        if weight is None or getattr(weight, "ndim", 0) != 2:
+            raise ValueError(
+                f"Unsloth: tensor parallelism expects a Linear at '{path}.{name}' (got {type(child).__name__})."
+            )
+        out_features, in_features = _logical_shape(*_weight(child))
+        if style == ROWWISE:
+            if in_features != hv * module.head_v_dim:
+                raise ValueError(
+                    f"Unsloth: '{path}.{name}' reads {in_features} features, not num_v_heads * head_v_dim = "
+                    f"{hv * module.head_v_dim}."
+                )
+            parts = (out_features,)
+        else:
+            parts = proj_parts[name]
+            if out_features != sum(parts):
+                raise ValueError(
+                    f"Unsloth: Gated DeltaNet '{path}.{name}' has {out_features} outputs, not {sum(parts)}; its "
+                    "head layout is unknown to tensor parallelism."
+                )
+        projs.append(_Proj(name, child, style, parts))
+    missing = (set(proj_parts) | {"out_proj"}) - {p.name for p in projs}
+    if missing or not child_params:
+        raise ValueError(
+            f"Unsloth: Gated DeltaNet '{path}' has no parameters in {sorted(missing) or ['conv1d']}; tensor "
+            "parallelism cannot shard it by heads."
+        )
+    _check_gdn_source(module, path)
+    return _Region(
+        path,
+        module,
+        "linear_attention",
+        projs,
+        norms,
+        heads = hv,
+        kv_heads = hk,
+        head_dim = module.head_v_dim,
+        head_params = list(_GDN_HEAD_PARAMS),
+        child_params = child_params,
+    )
+
+
+def _set_local_linear_heads(module, region, tp):
+    """The sizes the Gated DeltaNet forward splits / reshapes with, local (tp_replica puts them back)."""
+    module.__dict__["_unsloth_tp_saved_attrs"] = {
+        name: module.__dict__.get(name, _MISSING) for name in _GDN_LOCAL_ATTRS
+    }
+    hk, hv = region.kv_heads // tp, region.heads // tp
+    key_dim, value_dim = hk * module.head_k_dim, hv * module.head_v_dim
+    local = {
+        "num_k_heads": hk,
+        "num_v_heads": hv,
+        "key_dim": key_dim,
+        "value_dim": value_dim,
+        "conv_dim": 2 * key_dim + value_dim,
+    }
+    for name, value in local.items():
+        if name in _GDN_SIZES or isinstance(module.__dict__.get(name), int):
+            module.__dict__[name] = value
+    module._unsloth_tp_heads = hv
+    module._unsloth_tp_kv_heads = hk
+    # Without causal_conv1d, transformers 4.57 - 5.16 call self.conv1d(mixed_qkv): the depthwise conv's channel
+    # / group counts must be the local ones too (tp_replica puts them back with the whole weight).
+    channels = local["conv_dim"]
+    for owner, _, _ in region.child_params:
+        if isinstance(owner, nn.Conv1d) and "_unsloth_tp_saved_attrs" not in owner.__dict__:
+            names = ("in_channels", "out_channels", "groups")
+            owner.__dict__["_unsloth_tp_saved_attrs"] = {
+                n: owner.__dict__.get(n, _MISSING) for n in names
+            }
+            for n in names:
+                owner.__dict__[n] = channels
 
 
 def _logical_shape(weight, base):
@@ -1122,25 +1515,40 @@ def quant_state_copy(state, device):
     return out
 
 
-def _shard_params4bit(path, base, weight, style, parts, rank, tp):
-    """This rank's 4-bit shard (bitwise slice of the 1-GPU weight); double-quant absmax kept as float32."""
+def _shard_params4bit(
+    path,
+    base,
+    weight,
+    style,
+    parts,
+    rank,
+    tp,
+    local_codes = None,
+):
+    """This rank's 4-bit shard (bitwise slice of the 1-GPU weight); double-quant absmax kept as float32.
+    `local_codes`: this rank's packed codes already read (sharded_loading); `weight` then only carries the
+    whole QuantState and the storage dtype."""
     import bitsandbytes as bnb
 
     _check_params4bit(path, weight, style, tp)
     state = weight.quant_state
     blocksize = state.blocksize
     out_features, in_features = state.shape
-    codes = weight.data.reshape(-1).view(torch.uint8).view(out_features, in_features // 2)
+    codes = local_codes
+    if codes is None:
+        codes = weight.data.reshape(-1).view(torch.uint8).view(out_features, in_features // 2)
     absmax = state.absmax
     if state.nested:
         absmax = bnb.functional.dequantize_blockwise(state.absmax, state.state2) + state.offset
     absmax = absmax.float().view(out_features, in_features // blocksize)
     if style == COLWISE:
-        codes = shard_slice(codes, 0, parts, rank, tp)
+        if local_codes is None:
+            codes = shard_slice(codes, 0, parts, rank, tp)
         absmax = shard_slice(absmax, 0, parts, rank, tp)
         shape = (sum(parts) // tp, in_features)
     else:
-        codes = shard_slice(codes, 1, (in_features // 2,), rank, tp)
+        if local_codes is None:
+            codes = shard_slice(codes, 1, (in_features // 2,), rank, tp)
         absmax = shard_slice(absmax, 1, (in_features // blocksize,), rank, tp)
         shape = (out_features, in_features // tp)
     storage = weight.data.dtype
@@ -1170,6 +1578,7 @@ def _shard_params4bit(path, base, weight, style, parts, rank, tp):
     base._parameters["weight"] = new
     if "quant_state" in base.__dict__:
         base.quant_state = local_state
+    return new
 
 
 def _all_reduce(tensor, group):
@@ -1237,6 +1646,302 @@ def _moe_post_hook(module, args, output):
         f"Unsloth: tensor parallel replicated mixture-of-experts block {type(module).__name__} returned "
         f"{type(output)}."
     )
+
+
+# Rank r keeps ceil(E / tp) contiguous experts on the same tokens; one sum all-reduce replaces the mean (no all-to-all).
+# Uneven E is padded with zero experts the router never selects; inexact blocks keep the replicated path.
+_MOE_SHARD_ENV = "UNSLOTH_TP_MOE_SHARD"
+_EXPERT_STACKS = ("gate_up_proj", "down_proj")
+_EXPERT_CALL = ("hidden_states", "top_k_index", "top_k_weights")
+_EXPERT_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+
+
+def moe_shard_enabled():
+    import os
+    return os.environ.get(_MOE_SHARD_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def _experts_chain(block):
+    outer = block._modules.get("experts")
+    if not isinstance(outer, nn.Module):
+        return []
+    chain = [outer]
+    while isinstance(chain[-1]._modules.get("base_layer"), nn.Module):
+        chain.append(chain[-1]._modules["base_layer"])
+    return chain
+
+
+def _plain_float(t):
+    return type(t) in (nn.Parameter, torch.Tensor) and t.dtype in _EXPERT_DTYPES
+
+
+def expert_shard_problem(block):
+    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can."""
+    chain = _experts_chain(block)
+    if not chain:
+        return "no `experts` child"
+    leaf, wrappers = chain[-1], chain[:-1]
+    if isinstance(leaf, (nn.ModuleList, nn.ModuleDict)):
+        # transformers 4.x per-expert modules: the block loops them itself (no experts call), so stay replicated
+        return "unfused per-expert modules (transformers 4.x layout)"
+    E = leaf.__dict__.get("num_experts")
+    if not isinstance(E, int) or isinstance(E, bool) or E < 2:
+        return "the experts module has no integer num_experts"
+    try:
+        names = tuple(inspect.signature(type(leaf).forward).parameters)[1:]
+    except (TypeError, ValueError):
+        names = ()
+    if names != _EXPERT_CALL:
+        return f"its experts forward takes {names}, not {_EXPERT_CALL}"
+    if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
+        return "swapped expert LoRA factors"
+    if any(_has_params(child) for child in leaf.children()) or any(
+        b is not None for b in leaf._buffers.values()
+    ):
+        return "expert submodules / buffers"
+    if any(leaf._parameters.get(name) is None for name in _EXPERT_STACKS):
+        return "no fused gate_up_proj / down_proj"
+    for name, p in leaf._parameters.items():
+        if p is None:
+            continue
+        if not _plain_float(p) or _preloaded(p) is not None:
+            return f"{name} is {type(p).__name__} {p.dtype} (quantized, packed or distributed)"
+        if p.dim() < 2 or p.shape[0] != E:
+            return f"{name} {tuple(p.shape)} is not stacked by expert"
+    for wrapper in wrappers:
+        if type(wrapper).__name__ != "ParamWrapper" or not isinstance(
+            getattr(wrapper, "lora_A", None), nn.ModuleDict
+        ):
+            return f"{type(wrapper).__name__} wraps the experts"
+        if getattr(wrapper, "parameter_name", None) not in leaf._parameters:
+            return "a PEFT wrapper of a non-expert parameter"
+        if getattr(wrapper, "num_experts", None) != E or getattr(wrapper, "merged_adapters", None):
+            return "merged expert LoRA or a different num_experts"
+        own = [n for n, _ in wrapper.named_parameters() if not n.startswith("base_layer.")]
+        if any(not n.startswith(("lora_A.", "lora_B.")) for n in own):
+            return "expert LoRA beyond lora_A / lora_B (DoRA, embeddings)"
+        if any(
+            not isinstance(d, nn.Identity) for d in getattr(wrapper, "lora_dropout", {}).values()
+        ):
+            return "expert lora_dropout"
+        for adapter, A in wrapper.lora_A.items():
+            B = wrapper.lora_B[adapter] if adapter in wrapper.lora_B else None
+            if (
+                not isinstance(A, nn.Linear)
+                or not isinstance(B, nn.Linear)
+                or A.bias is not None
+                or B.bias is not None
+            ):
+                return "expert LoRA bias or non-Linear factors"
+            if not (_plain_float(A.weight) and _plain_float(B.weight)):
+                return "quantized expert LoRA factors"
+            rows = A.weight.shape[0]
+            if rows % E or B.weight.shape[1] != rows:
+                return f"expert LoRA factors {tuple(A.weight.shape)} / {tuple(B.weight.shape)} do not stack {E} experts"
+    return None
+
+
+def _loaded_zoo_module(name):
+    """Never import unsloth_zoo here: its import patches transformers process-wide (empty training logits)."""
+    import sys
+    return sys.modules.get("unsloth_zoo." + name)
+
+
+def _lora_b_layout(wrapper = None, adapter = None):
+    """Per wrapper: one still on PEFT's forward stays rank-major whatever zoo's process mode is."""
+    moe_utils = _loaded_zoo_module("temporary_patches.moe_utils")
+    per_wrapper = getattr(moe_utils, "moe_lora_b_layout_for_wrapper", None)
+    if callable(per_wrapper) and wrapper is not None:
+        return per_wrapper(wrapper, adapter)
+    layout = getattr(moe_utils, "moe_lora_b_layout", None)
+    if callable(layout):
+        return layout()
+    return "rank_major"
+
+
+def _trim_expert_pad(full, dim, groups, experts, padded, per):
+    """Drop the zero experts an uneven split padded in: dim is (groups, padded, per), keep (groups, experts, per)."""
+    if padded == experts:
+        return full
+    return (
+        full.unflatten(dim, (groups, padded, per)).narrow(dim + 1, 0, experts).flatten(dim, dim + 2)
+    )
+
+
+def _shard_expert_param(owner, name, dim, groups, per, E, E_pad, mesh, rank, tp):
+    full = owner._parameters[name]
+    t = full.detach()
+    if E_pad != E:
+        view = t.unflatten(dim, (groups, E, per))
+        zeros = view.new_zeros(view.shape[: dim + 1] + (E_pad - E,) + view.shape[dim + 2 :])
+        t = torch.cat([view, zeros], dim = dim + 1).flatten(dim, dim + 2)
+    t.requires_grad_(full.requires_grad)
+    parts = (E_pad * per,) * groups
+    param = _set_dtensor(owner, name, t, mesh, "shard", parts, dim, rank, tp)
+    pad = (groups, E, E_pad, per)
+    param._unsloth_tp_parts = (dim, parts, pad)
+    owner.__dict__.setdefault("_unsloth_tp_layouts", {})[name] = (dim, parts, tp, pad)
+    return param
+
+
+class _ExpertShard:
+    """This rank owns global experts [lo, hi) as local 0 .. hi - lo."""
+
+    def __init__(self, block, leaf, lo, hi, per_rank, experts, group):
+        self.block, self.leaf, self.group = block, leaf, group
+        self.lo, self.hi, self.per_rank, self.experts = lo, hi, per_rank, experts
+        self.swaps = []
+        self.full_attrs = []  # (module, attribute, one-GPU value): tp_replica restores these
+        self.frozen = {}
+
+
+@contextlib.contextmanager
+def _expert_locals(shard):
+    saved = []
+    try:
+        for owner, name in shard.swaps:
+            current = owner._parameters.get(name)
+            if not _is_dtensor(current):
+                continue
+            if current.requires_grad:
+                local = current.to_local()  # differentiable: the grad lands on the Shard DTensor
+            else:
+                cached = shard.frozen.get(id(current))
+                if cached is None or cached[0] is not current:
+                    cached = (current, nn.Parameter(current.to_local(), requires_grad = False))
+                    shard.frozen[id(current)] = cached
+                local = cached[1]
+            owner._parameters[name] = local
+            saved.append((owner, name, current))
+        yield
+    finally:
+        for owner, name, current in reversed(saved):
+            owner._parameters[name] = current
+
+
+def _moe_checkpoint_routing():
+    return getattr(_loaded_zoo_module("gradient_checkpointing"), "moe_checkpoint_routing", None)
+
+
+def _expert_call_args(args, kwargs):
+    if len(args) > 3:
+        return None
+    values, kwargs = list(args), dict(kwargs)
+    if not values and "x" in kwargs:  # PEFT ParamWrapper.forward(x, *args, **kwargs)
+        values.append(kwargs.pop("x"))
+    for name in _EXPERT_CALL[len(values) :]:
+        if name not in kwargs:
+            return None
+        values.append(kwargs.pop(name))
+    return None if kwargs else values
+
+
+def _experts_copy(x, group):
+    return _CopyToTP.apply(x, group)
+
+
+def _experts_reduce(y, group):
+    return _ReduceFromTP.apply(y, group)
+
+
+def _sharded_experts(shard, prior, hidden, index, weights):
+    routing = _moe_checkpoint_routing()
+    if routing is not None:
+        # Gradient checkpointing replay must select the first pass's (token, slot) pairs.
+        index, weights = routing(shard.leaf, index, weights)
+    shape, group = hidden.shape, shard.group
+    x = hidden.reshape(-1, shape[-1])
+    tokens = x.shape[0]
+    index = index.reshape(tokens, -1)
+    dense = (
+        weights.dim() == 2
+        and weights.shape[-1] == shard.experts
+        and index.shape[-1] != shard.experts
+    )
+    lo, hi = shard.lo, shard.hi
+    local = (index >= lo) & (index < hi)
+    token, slot = local.nonzero(as_tuple = True)
+    empty = token.numel() == 0
+    if empty:  # nothing routed here (or only padding experts): one zero-weight row keeps every grad defined
+        token = slot = index.new_zeros(1)
+    x = _experts_copy(x, group)  # the experts' share of the input gradient is a partial sum over tp
+    if weights.requires_grad:
+        weights = _experts_copy(weights, group)
+    xc = x.index_select(0, token)
+    ic = index.new_zeros((1, 1)) if empty else (index[token, slot] - lo).unsqueeze(1)
+    if dense:
+        wc = weights.index_select(0, token)[:, lo:hi]
+        wc = F.pad(wc, (0, shard.per_rank - wc.shape[1]))
+    else:
+        wc = weights.reshape(tokens, -1)[token, slot].unsqueeze(1)
+    if empty:
+        wc = wc * 0
+    with _expert_locals(shard):
+        yc = prior(xc, ic, wc)
+    y = yc.new_zeros((tokens, yc.shape[-1])).index_add(0, token, yc)
+    y = _experts_reduce(y, group)
+    return y.reshape(*shape[:-1], y.shape[-1])
+
+
+def _tp_experts_forward(shard, prior):
+    def forward(*args, **kwargs):
+        if shard.block.__dict__.get("_unsloth_tp_gathered"):
+            return prior(*args, **kwargs)
+        call = _expert_call_args(args, kwargs)
+        if call is None:
+            raise RuntimeError(
+                f"Unsloth: tensor parallel sharded experts of {type(shard.block).__name__} were called with "
+                f"{len(args)} positional / {sorted(kwargs)} keyword arguments, not {_EXPERT_CALL}. Set "
+                f"{_MOE_SHARD_ENV}=0 to keep the experts replicated."
+            )
+        return _sharded_experts(shard, prior, *call)
+
+    forward._unsloth_tp_experts = True
+    return forward
+
+
+def _shard_moe_experts(block, mesh, rank, tp):
+    chain = _experts_chain(block)
+    leaf, wrappers = chain[-1], chain[:-1]
+    E = leaf.num_experts
+    # At least 2 local experts: PEFT and zoo read a 1-expert stack as a plain 2-D LoRA (another factor layout).
+    per_rank = max(2, -(-E // tp))
+    E_pad = per_rank * tp
+    lo = min(rank * per_rank, E)
+    hi = min(lo + per_rank, E)
+    shard = _ExpertShard(block, leaf, lo, hi, per_rank, E, mesh.get_group())
+    for name in list(leaf._parameters):
+        if leaf._parameters[name] is not None:
+            _shard_expert_param(leaf, name, 0, 1, 1, E, E_pad, mesh, rank, tp)
+            shard.swaps.append((leaf, name))
+    for wrapper in wrappers:
+        for adapter, A in wrapper.lora_A.items():
+            B = wrapper.lora_B[adapter]
+            b_layout = _lora_b_layout(wrapper, adapter)
+            r = A.weight.shape[0] // E
+            _shard_expert_param(A, "weight", 0, 1, r, E, E_pad, mesh, rank, tp)
+            if b_layout == "rank_major":  # column j is expert j % E
+                _shard_expert_param(B, "weight", 1, r, 1, E, E_pad, mesh, rank, tp)
+            else:  # grouped_by_expert: r columns per expert
+                _shard_expert_param(B, "weight", 1, 1, r, E, E_pad, mesh, rank, tp)
+            shard.swaps += [(A, "weight"), (B, "weight")]
+            for module, key, full, local in (
+                (A, "out_features", r * E, r * per_rank),
+                (B, "in_features", r * E, r * per_rank),
+            ):
+                if isinstance(getattr(module, key, None), int):
+                    shard.full_attrs.append((module, key, full))
+                    setattr(module, key, local)
+    for module in chain:
+        if isinstance(module.__dict__.get("num_experts"), int):
+            shard.full_attrs.append((module, "num_experts", E))
+            module.num_experts = per_rank
+    outer = chain[0]
+    prior = outer.__dict__.get("forward", outer.forward)
+    outer.__dict__["_unsloth_tp_experts_prior_forward"] = outer.__dict__.get("forward", _MISSING)
+    outer.forward = _tp_experts_forward(shard, prior)
+    block.__dict__["_unsloth_tp_expert_shard"] = shard
+    return shard
 
 
 class _DropoutState:
@@ -1414,6 +2119,11 @@ def _lora_dropout(self, adapter, x):
     if state is not None:
         state.bypass += 1
     try:
+        if _weight(self)[1].__dict__.get("_unsloth_tp_grouped"):
+            # A grouped linear's input [..., G / tp, in_g] holds only this rank's groups: its slice of the mask
+            # one process draws for [..., G, in_g].
+            rank, tp = self._unsloth_tp_coord
+            return _apply_mask(x, _full_mask(x.shape, x.dim() - 2, rank, tp, p, x), p)
         if self._unsloth_tp_style in (
             COLWISE,
             KV_REPLICATED,
@@ -1445,9 +2155,25 @@ def _input_name(module):
     return "hidden_states"
 
 
+def _head_param_views(module, install):
+    """Per-head parameters of the region module itself (attention sinks) are DTensors sharded by heads; while
+    the region runs, the forward reads `self.<name>` as this rank's local heads (an instance attribute shadows
+    the Parameter; its gradient flows back into the DTensor shard)."""
+    for name in module.__dict__.get("_unsloth_tp_head_params", ()):
+        module.__dict__.pop(name, None)
+        if install:
+            module.__dict__[name] = _local(module._parameters[name])
+    for owner, name in module.__dict__.get("_unsloth_tp_child_params", ()):
+        owner.__dict__.pop(name, None)  # Gated DeltaNet conv1d channels, read as self.conv1d.weight
+        if install:
+            owner.__dict__[name] = _local(owner._parameters[name])
+
+
 def _region_pre_hook(module, args, kwargs):
     if module.__dict__.get("_unsloth_tp_gathered"):
+        _head_param_views(module, install = False)
         return None  # tp_replica: whole weights in place, the region runs as on one GPU
+    _head_param_views(module, install = True)
     group = module._unsloth_tp_group
     for name in (module.__dict__.get("_unsloth_tp_input", "hidden_states"), "hidden_states"):
         if isinstance(kwargs.get(name), torch.Tensor):
@@ -1472,6 +2198,7 @@ def _region_finish(module, y):
 
 
 def _region_post_hook(module, args, output):
+    _head_param_views(module, install = False)
     if module.__dict__.get("_unsloth_tp_gathered"):
         return None
     if isinstance(output, torch.Tensor):
@@ -1508,6 +2235,8 @@ def _tp_projection_compute(self, x):
         if bias is not None:
             bias = bias.narrow(0, *rows)
     input_dtype = x.dtype
+    if base.__dict__.get("_unsloth_tp_grouped"):
+        return _tp_grouped_compute(self, base, x, W, bias)
     if _is_params4bit(W):
         import bitsandbytes as bnb
 
@@ -1532,6 +2261,42 @@ def _tp_projection_compute(self, x):
         x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
         x_lora = _lora_dropout(self, adapter, x_lora)
         out = out + (F.linear(F.linear(x_lora, A), B) * scaling).to(out.dtype)
+    return out
+
+
+def _tp_grouped_compute(self, base, x, W, bias):
+    """A block-diagonal grouped linear (DeepSeek-V4.1 o_a_proj, input [..., G, in_g]) sharded by whole groups:
+    this rank holds G / tp groups (weight rows) and receives exactly those groups of the input. Unsloth's grouped
+    LoRA keeps lora_A shared by every group (replicated) and lora_B per group (sharded with the weight)."""
+    if _is_params4bit(W):
+        raise RuntimeError(
+            "Unsloth: tensor parallelism does not shard a 4-bit grouped linear; keep o_a_proj in 16-bit "
+            "(llm_int8_skip_modules)."
+        )
+    groups = x.shape[-2]
+    in_g = W.shape[-1]
+    out = torch.einsum("...gi,goi->...go", x, W.view(groups, -1, in_g).to(x.dtype))
+    if bias is not None:
+        out = out + bias.view(groups, -1).to(out.dtype)
+    lora_A = self._modules.get("lora_A")
+    if lora_A is None or getattr(self, "disable_adapters", True) or getattr(self, "merged", False):
+        return out
+    if not getattr(self, "_unsloth_grouped_lora", False):
+        raise RuntimeError(
+            "Unsloth: LoRA on a grouped linear needs Unsloth's grouped LoRA layer "
+            "(unsloth.models.grouped_linear_lora.register_grouped_linear_lora before get_peft_model)."
+        )
+    for adapter in _active_adapter(self) or ():
+        if adapter not in lora_A:
+            continue
+        A = _local(lora_A[adapter].weight)
+        B = _local(self.lora_B[adapter].weight)
+        scaling = self.scaling[adapter]
+        x_lora = x if torch.is_autocast_enabled() else x.to(A.dtype)
+        x_lora = _lora_dropout(self, adapter, x_lora)
+        low_rank = F.linear(x_lora, A)
+        delta = torch.einsum("...gr,gor->...go", low_rank, B.view(groups, -1, B.shape[-1]))
+        out = out + (delta * scaling).to(out.dtype)
     return out
 
 
@@ -1584,8 +2349,306 @@ def _default_mesh(model):
         raise RuntimeError(
             "Unsloth: apply_tensor_parallel needs an initialized process group (torchrun) or a tp_mesh."
         )
-    device = next(model.parameters()).device
+    device = _compute_device(model, torch.device("cpu"))
     return init_device_mesh(device.type, (dist.get_world_size(),), mesh_dim_names = ("tp",))
+
+
+def _host_served_params(model):
+    """ids of parameters of lookup tables served from (or loaded into) host memory."""
+    ids = set()
+    for module in model.modules():
+        if getattr(module, "_unsloth_offload_hooks_installed", False) or getattr(
+            module, "_unsloth_fsdp2_cpu_lookup", False
+        ):
+            ids.update(id(p) for p in module.parameters())
+    for module in _host_loaded_modules(model):
+        ids.update(id(p) for p in module.parameters())
+    return ids
+
+
+# Also set on the weight: post-load patching installs a new Embedding module over the same weight.
+_HOST_LOADED = "_unsloth_tp_host_loaded"
+_HOST_PINNED = "_unsloth_tp_host_pinned"
+_HOST_MODEL = "_unsloth_tp_host_load_model"
+
+
+def _input_embedding_host_loaded(model, embed):
+    """Marked, or unhooked on the CPU in a host-loaded model (rebuilding the weight drops marks)."""
+    if _is_host_loaded(embed):
+        return True
+    weight = embed.__dict__.get("_parameters", {}).get("weight")
+    if weight is None or weight.device.type != "cpu":
+        return False
+    if getattr(embed, "_unsloth_offload_hooks_installed", False) or getattr(
+        embed, "_unsloth_fsdp2_cpu_lookup", False
+    ):
+        return False
+    return any(level.__dict__.get(_HOST_MODEL, False) for level in _tp_chain(model))
+
+
+def _is_host_loaded(module):
+    weight = module.__dict__.get("_parameters", {}).get("weight")
+    if weight is None or weight.device.type != "cpu":
+        return False
+    return bool(
+        module.__dict__.get(_HOST_LOADED, False) or weight.__dict__.get(_HOST_LOADED, False)
+    )
+
+
+def _host_load_embedding(model, mesh, device):
+    """Input embedding apply_tensor_parallel would serve from host, judged on the meta model, or None.
+    Per rank is safe: apply_tensor_parallel agrees over the tp group and returns unserved tables to the GPU."""
+    import torch.distributed as dist
+
+    from .fsdp2_perf import _env_tristate
+
+    forced = _env_tristate("UNSLOTH_TP_EMBED_ON_CPU")
+    fraction = TPConfig.host_input_embedding
+    if forced is False or (forced is None and (not fraction or fraction <= 0)):
+        return None
+    if device.type != "cuda" or mesh.device_type != "cuda":
+        return None
+    if dist.is_initialized() and mesh.size() != dist.get_world_size():
+        return None
+    try:
+        embed = model.get_input_embeddings()
+        head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    except Exception:
+        return None
+    if not isinstance(embed, nn.Embedding):
+        return None
+    params = list(embed.parameters())
+    if len(params) != 1 or params[0] is not embed.weight:
+        return None
+    weight = embed.weight
+    if type(weight) is not nn.Parameter or not weight.is_floating_point():
+        return None
+    if head is not None and any(p is weight for p in head.parameters()):
+        return None  # tied: lm_head reads the same table
+    owners = sum(1 for m in model.modules() for p in m.parameters(recurse = False) if p is weight)
+    if owners != 1:
+        return None
+    if forced is None:
+        total = torch.cuda.get_device_properties(device).total_memory
+        if weight.numel() * weight.element_size() < fraction * total:
+            return None
+    return embed
+
+
+def _mark_host_loaded(model, embed):
+    embed.__dict__[_HOST_LOADED] = True
+    embed.weight.__dict__[_HOST_LOADED] = True
+    model.__dict__[_HOST_MODEL] = True
+    try:
+        from .vision import _pin_device_to_decoder
+        if _pin_device_to_decoder(model):
+            model.__dict__[_HOST_PINNED] = True
+    except Exception:
+        pass
+
+
+def _host_loaded_modules(model):
+    marked = [m for m in model.modules() if _is_host_loaded(m)]
+    try:
+        embed = model.get_input_embeddings()
+    except Exception:
+        embed = None
+    if (
+        isinstance(embed, nn.Module)
+        and all(embed is not m for m in marked)
+        and _input_embedding_host_loaded(model, embed)
+    ):
+        marked.append(embed)
+    return marked
+
+
+def _host_table_home(model):
+    """First accelerator parameter's device (skip meta: storage-free meta params exist), else first non-CPU."""
+    skip = _host_served_params(model)
+    fallback = None
+    for param in model.parameters():
+        if id(param) in skip:
+            continue
+        device = param.to_local().device if _is_dtensor(param) else param.device
+        if device.type not in ("cpu", "meta"):
+            return device
+        if fallback is None and device.type != "cpu":
+            fallback = device
+    return fallback
+
+
+def cast_host_read_tables(
+    model,
+    do_forced_float32 = False,
+    correct_dtype = None,
+):
+    """Cast host-read embeddings in place before the zoo dtype pass, whose module.to() on host holds both copies."""
+    converted = 0
+    for module in _host_loaded_modules(model):
+        weight = module.weight
+        if hasattr(weight, "_pre_set_compute_dtype"):
+            continue  # the pass casts it to its own pin
+        if do_forced_float32:
+            target = getattr(module, "_pre_set_compute_dtype", torch.float16)
+        elif correct_dtype == torch.float16 and weight.dtype == torch.bfloat16:
+            if any(
+                hasattr(m, "_pre_set_compute_dtype") and any(c is module for c in m.modules())
+                for m in model.modules()
+            ):
+                continue  # a module pin decides
+            target = torch.float16
+        else:
+            continue
+        if (
+            target == weight.dtype
+            or not weight.dtype.is_floating_point
+            or weight.element_size() != torch.empty(0, dtype = target).element_size()
+            or not weight.data.is_contiguous()
+        ):
+            continue
+        src = weight.data.view(-1)
+        dst = src.view(target)
+        step = max(1, _READ_SLICE_BYTES // src.element_size())
+        with torch.no_grad():
+            for start in range(0, src.numel(), step):
+                dst[start : start + step].copy_(src[start : start + step].to(target))
+        weight.data = weight.data.view(target)
+        converted += 1
+    return converted
+
+
+def _return_host_loaded(model, served):
+    """Move host-read tables apply_tensor_parallel does not serve from host back to the GPU."""
+    marked = _host_loaded_modules(model)
+    device = _host_table_home(model) if marked else None
+    try:
+        outer = model.get_input_embeddings()
+    except Exception:
+        outer = None
+    moved = 0
+    for module in marked:
+        if module is served:
+            continue
+        module.__dict__.pop(_HOST_LOADED, None)
+        module.weight.__dict__.pop(_HOST_LOADED, None)
+        if getattr(module, "_unsloth_offload_hooks_installed", False) or getattr(
+            module, "_unsloth_fsdp2_cpu_lookup", False
+        ):
+            continue
+        # trainable_token_indices: the PEFT wrapper made its own host tensors too.
+        target = module
+        if (
+            isinstance(outer, nn.Module)
+            and outer is not module
+            and any(m is module for m in outer.modules())
+        ):
+            target = outer
+        if device is not None and device.type != "cpu":
+            if any(t.device.type == "cpu" for t in (*target.parameters(), *target.buffers())):
+                target.to(device)
+                moved += 1
+    offloaded = any(
+        getattr(m, "_unsloth_offload_hooks_installed", False)
+        and any(p.device.type == "cpu" for p in m.parameters())
+        for m in model.modules()
+    )
+    if served is None and not offloaded:
+        for level in _tp_chain(model):
+            level.__dict__.pop(_HOST_MODEL, None)
+            if level.__dict__.pop(_HOST_PINNED, False):
+                level._unsloth_embedding_offloaded = False
+    return moved
+
+
+def _compute_device(model, default = None):
+    """First parameter's device, skipping host-served tables (embed_tokens is often first)."""
+    skip = _host_served_params(model)
+    for param in model.parameters():
+        if id(param) in skip:
+            continue
+        return param.to_local().device if _is_dtensor(param) else param.device
+    return default
+
+
+def _host_input_embedding(model, tp_mesh, fraction):
+    """Frozen, untied input embedding of at least `fraction` of the GPU to serve from host, or None.
+    tp must span the whole world (dp / pp wrap or split the model later). Collective: ranks decide alike."""
+    import torch.distributed as dist
+
+    from .fsdp2_perf import _env_tristate
+
+    forced = _env_tristate("UNSLOTH_TP_EMBED_ON_CPU")
+    if forced is False or (forced is None and (not fraction or fraction <= 0)):
+        return None
+    if dist.is_initialized() and tp_mesh.size() != dist.get_world_size():
+        return None
+    pick = _host_embedding_candidate(model, forced, fraction)
+    if tp_mesh.device_type == "cuda" and tp_mesh.size() > 1:
+        flag = torch.tensor(
+            [int(pick is not None)], device = torch.device("cuda", torch.cuda.current_device())
+        )
+        dist.all_reduce(flag, op = dist.ReduceOp.MIN, group = tp_mesh.get_group())
+        if not flag.item():
+            return None
+    return pick
+
+
+def _host_embedding_candidate(model, forced, fraction):
+    try:
+        embed = model.get_input_embeddings()
+        head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    except Exception:
+        return None
+    if not isinstance(embed, nn.Embedding) or any(
+        getattr(embed, flag, False)
+        for flag in ("_unsloth_offload_hooks_installed", "_unsloth_fsdp2_cpu_lookup")
+    ):
+        return None
+    params = list(embed.parameters())
+    if len(params) != 1 or params[0] is not embed.weight:
+        return None
+    weight = embed.weight
+    host_loaded = _input_embedding_host_loaded(model, embed)
+    if (
+        weight.requires_grad
+        or type(weight) is not nn.Parameter
+        or not weight.is_floating_point()
+        or weight.device.type not in (("cuda", "cpu") if forced or host_loaded else ("cuda",))
+        or getattr(weight, "_unsloth_tp_full_shape", None) is not None
+    ):
+        return None
+    if head is not None and any(
+        p is weight or p.data_ptr() == weight.data_ptr() for p in head.parameters()
+    ):
+        return None  # tied: lm_head reads the same table
+    owners = sum(1 for m in model.modules() for p in m.parameters(recurse = False) if p is weight)
+    if owners != 1:
+        return None
+    if forced is None:
+        device = _host_table_home(model) if host_loaded else weight.device
+        if device is None or device.type != "cuda":
+            return None
+        total = torch.cuda.get_device_properties(device).total_memory
+        if weight.numel() * weight.element_size() < fraction * total:
+            return None
+    return embed
+
+
+def _serve_embedding_from_host(model, embed, rank):
+    """Table on CPU, only looked-up rows go to the GPU, as native FSDP2 does (#18028)."""
+    from .fsdp2_native import _offload_lookup_table, _serve_lookups_from_cpu
+
+    nbytes = embed.weight.numel() * embed.weight.element_size()
+    if embed.weight.device.type == "cpu" and not _input_embedding_host_loaded(model, embed):
+        # UNSLOTH_TP_EMBED_ON_CPU = 1 on a CPU mesh (a host-loaded table is hooked like a GPU one)
+        _serve_lookups_from_cpu(embed)
+    else:
+        with contextlib.redirect_stdout(None) if rank != 0 else contextlib.nullcontext():
+            _offload_lookup_table(model, embed)
+    _print_rank0(
+        f"Unsloth: tensor parallel serves the frozen input embedding ({nbytes / 2**30:.2f} GiB) from CPU "
+        "memory instead of replicating it on every GPU (UNSLOTH_TP_EMBED_ON_CPU=0 keeps it on the GPU)."
+    )
 
 
 def _replica_generate(level, prior):
@@ -1731,7 +2794,7 @@ def _set_local_heads(module, region, tp):
         # Per-module config copy with local counts (Phi3 fused qkv); the shared config is left alone.
         local = copy.copy(config)
         local.num_attention_heads = heads
-        if getattr(config, "num_key_value_heads", None) is not None:
+        if _config_value(config, "num_key_value_heads") is not None:
             local.num_key_value_heads = kv_heads
         module.__dict__["config"] = local
 
@@ -1745,6 +2808,9 @@ def apply_tensor_parallel(
     """Shard every decoder attention / MLP of `model` over `tp_mesh` (None = all ranks), in place."""
     if is_tensor_parallel(model):
         return model
+    from .fsdp2_save import install_dcp_frozen_table_state_dict
+
+    install_dcp_frozen_table_state_dict()  # Trainer / DCP checkpoints never hold a frozen lookup table
     config = config or TPConfig()
     if plan is None:
         plan = config.plan
@@ -1782,7 +2848,7 @@ def apply_tensor_parallel(
                     "parallelism v1 shards every projection once."
                 )
             covered.update((id(weight), id(base.bias)))
-            if _is_params4bit(weight):
+            if _is_params4bit(weight) and _preloaded(weight) is None:
                 _check_params4bit(path, weight, proj.style, tp)
         for name, norm in region.norms:
             for p in norm.parameters():
@@ -1801,6 +2867,12 @@ def apply_tensor_parallel(
     if tp > 1 and covered and any(_preloaded(p) is not None for p in model.parameters()):
         _refuse_weight_dependent_lora_init(model)
     chain = _tp_chain(model)
+    host_embed = None
+    if not any(level.__dict__.get("_unsloth_pp") is not None for level in chain):
+        host_embed = _host_input_embedding(model, tp_mesh, config.host_input_embedding)
+    _return_host_loaded(model, host_embed)
+    if host_embed is not None:
+        _serve_embedding_from_host(model, host_embed, rank)
     if config.sync_trainable and tp > 1:
         import torch.distributed as dist
         _sync_trainable(model, group, dist.get_global_rank(group, 0))
@@ -1820,7 +2892,19 @@ def apply_tensor_parallel(
         )
         for proj in region.projs:
             _shard_projection(region, proj, tp_mesh, rank, tp)
-        for _, norm in region.norms:
+        for name in region.head_params:
+            param = region.module._parameters[name]
+            _set_dtensor(
+                region.module, name, param, tp_mesh, "shard", (param.numel(),), 0, rank, tp
+            )
+        region.module.__dict__["_unsloth_tp_head_params"] = tuple(region.head_params)
+        for owner, name, parts in region.child_params:
+            _set_dtensor(owner, name, owner._parameters[name], tp_mesh, "shard", parts, 0, rank, tp)
+        if region.child_params:
+            region.module.__dict__["_unsloth_tp_child_params"] = tuple(
+                (owner, name) for owner, name, _ in region.child_params
+            )
+        for _, norm in [*region.norms, *region.replicated]:
             for p in norm.parameters():
                 if p.requires_grad and id(p) not in hooked_norms:
                     hooked_norms.add(id(p))
@@ -1832,6 +2916,8 @@ def apply_tensor_parallel(
         module._unsloth_tp_input = _input_name(module)
         if region.kind == "attention":
             _set_local_heads(module, region, tp)
+        elif region.kind == "linear_attention":
+            _set_local_linear_heads(module, region, tp)
         module._unsloth_tp_kind = region.kind
         module._unsloth_tp_coord = (rank, tp)
         module._unsloth_tp_local_width = local_width
@@ -1850,10 +2936,16 @@ def apply_tensor_parallel(
     if tp > 1 and (dropout_regions or _has_lora_dropout(model)):
         # Dropout masks are drawn from the ranks' own RNG in lockstep: start every tp rank from rank 0's state.
         _sync_rng(group, dist_rank0 = _global_rank0(group))
+    shard_experts = moe_shard_enabled() and tp > 1
+    tp_plan.moe_sharded = []
     for block in tp_plan.moe_blocks:
         block._unsloth_tp_group = group
         block._unsloth_tp_size = tp
-        block.register_forward_hook(_moe_post_hook)
+        if shard_experts and expert_shard_problem(block) is None:
+            _shard_moe_experts(block, tp_mesh, rank, tp)
+            tp_plan.moe_sharded.append(block)
+        else:
+            block.register_forward_hook(_moe_post_hook)
     # Unsloth decode paths bypass the regions: mark and guard every wrapper level.
     info = {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source}
     inner = _unwrap(model)
@@ -1871,21 +2963,42 @@ def apply_tensor_parallel(
     if rank == 0:
         print(
             f"Unsloth: tensor parallel over {tp} ranks: {len(tp_plan.regions)} attention / MLP regions "
-            f"({tp_plan.source} plan), embeddings / lm_head / norms replicated"
+            f"({tp_plan.source} plan), "
+            + (
+                "input embedding on CPU, lm_head / norms replicated"
+                if host_embed is not None
+                else "embeddings / lm_head / norms replicated"
+            )
+            + _linear_attention_note(tp_plan)
             + (
                 f", {tp_plan.replicated_layers} layers replicated"
                 if tp_plan.replicated_layers
                 else ""
             )
             + _kv_replicated_note(tp_plan)
-            + (
-                f", {tp_plan.replicated_moe} mixture-of-experts blocks replicated (experts not sharded)"
-                if tp_plan.replicated_moe
-                else ""
-            )
+            + _moe_note(tp_plan)
             + "."
         )
     return model
+
+
+def _moe_note(tp_plan):
+    note = ""
+    if tp_plan.sharded_moe:
+        shard = tp_plan.moe_sharded[0].__dict__["_unsloth_tp_expert_shard"]
+        note += (
+            f", {tp_plan.sharded_moe} mixture-of-experts blocks with routed experts sharded by index "
+            f"({shard.per_rank} of {shard.experts} per rank; {_MOE_SHARD_ENV}=0 replicates them)"
+        )
+    replicated = len(tp_plan.moe_blocks) - tp_plan.sharded_moe
+    if replicated:
+        note += f", {replicated} mixture-of-experts blocks replicated (experts not sharded)"
+    return note
+
+
+def _linear_attention_note(tp_plan):
+    count = sum(r.kind == "linear_attention" for r in tp_plan.regions)
+    return f" (of which {count} Gated DeltaNet linear attention, sharded by heads)" if count else ""
 
 
 def _kv_replicated_note(tp_plan):
@@ -1942,6 +3055,8 @@ def _shard_projection(region, proj, mesh, rank, tp):
     in_parts = (_logical_shape(weight, base)[1],)
     if proj.style == KV_REPLICATED:
         _shard_kv_replicated(region, proj, mesh, rank, tp)
+    elif _preloaded(weight) is not None and _is_params4bit(weight):
+        pass
     elif _preloaded(weight) is not None:
         _wrap_preloaded(base, "weight", weight, mesh, 0 if col else 1)
     elif _is_params4bit(weight):
@@ -2084,7 +3199,7 @@ def check_tp_dp_composition(model, dp_mesh):
         (m.__dict__["_unsloth_tp_plan"] for m in chain if "_unsloth_tp_plan" in m.__dict__), None
     )
     for region in plan.regions if plan is not None else ():
-        for name, norm in region.norms:
+        for name, norm in [*region.norms, *region.replicated]:
             if any(p.requires_grad for p in norm.parameters()):
                 # Their tp sum is a hook on the Parameter, and FSDP2 replaces the Parameter objects.
                 raise ValueError(
@@ -2206,10 +3321,12 @@ def _full(
     full = tensor.full_tensor()
     if layout is None and param is not None:
         layout = getattr(param, "_unsloth_tp_parts", None)
-        layout = None if layout is None else (*layout, tensor.device_mesh.size())
+        layout = None if layout is None else (*layout[:2], tensor.device_mesh.size(), *layout[2:])
     if layout is not None:
-        dim, parts, tp = layout
+        dim, parts, tp = layout[:3]
         full = _unpermute(full, dim, parts, tp)
+        if len(layout) > 3:  # sharded experts: (groups, experts, padded experts, rows per expert)
+            full = _trim_expert_pad(full, dim, *layout[3])
     return full
 
 
@@ -2241,21 +3358,28 @@ def tp_full_state_dict(model, adapters_only = False):
 def _peft_state_dict(model, **kwargs):
     """What PEFT selects for save_pretrained, DTensors gathered; local tensors by reference (PEFT reruns
     its selection inside save_pretrained and must see the same model)."""
+    import inspect
+
     from peft import get_peft_model_state_dict
 
+    # Wrappers (zoo's expert factor swap) return new tensors the id match cannot find; save_pretrained converts.
+    get_peft_model_state_dict = inspect.unwrap(get_peft_model_state_dict)
     raw = model.state_dict(keep_vars = True)
     adapters = kwargs.get("selected_adapters") or list(model.peft_config)
-    known = {id(value) for value in raw.values()}
+    # PEFT selects over local shards: PEFT >= 0.22 gathers selected DTensors into new tensors itself (a
+    # collective), which the identity match below could not trace back, so every sharded factor was dropped.
+    local = {key: value.to_local() if _is_dtensor(value) else value for key, value in raw.items()}
+    sharded = {id(local[key]): key for key, value in raw.items() if _is_dtensor(value)}
     wanted, unmapped = set(), 0
     for adapter in adapters:
         selected = get_peft_model_state_dict(
             model,
-            state_dict = raw,
+            state_dict = local,
             adapter_name = adapter,
             save_embedding_layers = kwargs.get("save_embedding_layers", "auto"),
         )
-        wanted.update(id(value) for value in selected.values())
-        unmapped += sum(_is_dtensor(v) and id(v) not in known for v in selected.values())
+        wanted.update(sharded[id(v)] for v in selected.values() if id(v) in sharded)
+        unmapped += sum(_is_dtensor(v) for v in selected.values())
     if unmapped:
         raise RuntimeError(
             "Unsloth: PEFT selected tensor parallel tensors that are not in the model state dict; "
@@ -2266,7 +3390,7 @@ def _peft_state_dict(model, **kwargs):
     with torch.no_grad():
         for key, value in raw.items():
             if _is_dtensor(value):
-                if id(value) in wanted:
+                if key in wanted:
                     state[key] = _full(value, value, layouts.get(id(value))).detach()
             else:
                 state[key] = value.detach()
@@ -2296,6 +3420,9 @@ def save_tp_adapter(model, save_directory, **kwargs):
             f"mesh has {mesh.size()} of {dist.get_world_size()} ranks (data parallel > 1 is outside v1). "
             "Gather with tp_full_state_dict and write from one rank yourself."
         )
+    from .frozen_table_provenance import install as _install_table_provenance
+
+    _install_table_provenance()  # the adapter gets frozen_tables.json when the model has frozen tables
     state = _peft_state_dict(model, **kwargs)
     rank = dist.get_rank() if dist.is_initialized() else 0
     kwargs.setdefault("is_main_process", rank == 0)
@@ -2466,6 +3593,9 @@ class _SliceReader:
     def __init__(self, index):
         self.index, self.handles = index, {}
         self.full_bytes = self.slice_bytes = 0
+        self.quant = (
+            None  # bnb_sharded_load.QuantReads of a pre-quantized bitsandbytes 4-bit checkpoint
+        )
 
     def _open(self, key):
         path = self.index[key]
@@ -2499,6 +3629,52 @@ class _SliceReader:
         t = self._open(key).get_slice(key)[start:stop]
         self.slice_bytes += t.numel() * t.element_size()
         return t
+
+    def rows_to(
+        self,
+        key,
+        start,
+        stop,
+        dtype,
+        device,
+        sliced = True,
+    ):
+        """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy)."""
+        view = self._open(key).get_slice(key)
+        shape = tuple(view.get_shape())
+        tail = shape[1:]
+        from .bnb_sharded_load import _SAFETENSORS_DTYPES
+
+        itemsize = _SAFETENSORS_DTYPES[view.get_dtype()].itemsize
+        row_bytes = max(1, math.prod(tail) * itemsize)
+        rows = stop - start
+        if rows * row_bytes <= _READ_SLICE_BYTES:
+            t = view[start:stop]
+            nbytes = t.numel() * t.element_size()
+            if sliced:
+                self.slice_bytes += nbytes
+            else:
+                self.full_bytes += nbytes
+            return t.to(device = device, dtype = dtype)
+        out = torch.empty((rows,) + tail, dtype = dtype, device = device)
+        step = max(1, _READ_SLICE_BYTES // row_bytes)
+        for first in range(0, rows, step):
+            last = min(rows, first + step)
+            out[first:last].copy_(view[start + first : start + last])
+        if sliced:
+            self.slice_bytes += rows * row_bytes
+        else:
+            self.full_bytes += rows * row_bytes
+        return out
+
+    def full_to(self, key, dtype, device):
+        shape = self.shape(key)
+        if len(shape) == 0:
+            return self.full(key).to(device = device, dtype = dtype)
+        return self.rows_to(key, 0, shape[0], dtype, device, sliced = False)
+
+
+_READ_SLICE_BYTES = 64 << 20
 
 
 def _checkpoint_key(names, model, index):
@@ -2602,13 +3778,21 @@ def _fill_from_checkpoint(
     read_local,
     label = "tensor parallel",
     fallback = "full load, then apply_tensor_parallel",
+    host = (),
 ):
     """Fill a meta model from its safetensors checkpoint. `read_local(old, reader, key)` returns this rank's
     Parameter for a sharded tensor (reading only its bytes) or None, and then the tensor is read whole.
-    Meta buffers come from the checkpoint or a meta-parameter skeleton of the same class (RoPE tables).
-    Returns (reader, sharded numel, whole numel)."""
+    A bitsandbytes Linear4bit weight (pre-quantized checkpoint) is `reader.quant.module(old)`; read whole it is
+    the Params4bit transformers builds. Whole 16-bit tensors are read in row slices (no whole-table host copy);
+    those whose id is in `host` go to host memory instead of `device`. Meta buffers come from the checkpoint
+    or a meta-parameter skeleton of the same class (RoPE tables). Returns (reader, sharded numel, whole numel)."""
+    from .bnb_sharded_load import QuantReads, quantized_weights
+
     index = _checkpoint_index(name, kwargs)
     reader = _SliceReader(index)
+    quantized = quantized_weights(model)
+    if quantized:
+        reader.quant = QuantReads(reader, quantized)
     aliases = None
     sharded_numel = full_numel = 0
 
@@ -2637,14 +3821,28 @@ def _fill_from_checkpoint(
                 f"Unsloth: {label} sharded loading found no checkpoint tensor for '{names[0]}'; load "
                 f"this model without sharded loading ({fallback})."
             )
-        if reader.shape(key) != tuple(old.shape):
+        quantized_module = quantized.get(id(old))
+        if quantized_module is not None:
+            shape = (quantized_module.out_features, quantized_module.in_features)
+            stored = reader.shape(key)
+            nbytes = math.prod(stored) * reader.quant.packed_dtype(key).itemsize
+            if len(stored) != 2 or stored[1] != 1 or nbytes * 2 != math.prod(shape):
+                raise ValueError(
+                    f"Unsloth: {label} sharded loading: checkpoint tensor '{key}' ({stored}) is not the packed "
+                    f"4-bit form of a {shape} weight; load this model without sharded loading ({fallback})."
+                )
+        elif reader.shape(key) != tuple(old.shape):
             raise ValueError(
                 f"Unsloth: checkpoint tensor '{key}' has shape {reader.shape(key)}, the model expects "
                 f"{tuple(old.shape)}."
             )
         new = read_local(old, reader, key)
-        if new is None:
-            value = reader.full(key).to(device = device, dtype = old.dtype)
+        if new is None and quantized_module is not None:
+            new = reader.quant.whole(key, quantized_module, device)
+            full_numel += old.numel()
+        elif new is None:
+            target = torch.device("cpu") if id(old) in host else device
+            value = reader.full_to(key, old.dtype, target)
             new = nn.Parameter(value, requires_grad = old.requires_grad)
             full_numel += old.numel()
         else:
@@ -2671,9 +3869,20 @@ def _fill_from_checkpoint(
     return reader, sharded_numel, full_numel
 
 
-def _materialize_sharded(model, name, kwargs, mesh, plan, device):
-    """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices."""
+def _materialize_sharded(
+    model,
+    name,
+    kwargs,
+    mesh,
+    plan,
+    device,
+    host_embed = False,
+):
+    """Fill a meta model from the checkpoint: replicated tensors whole, sharded projections as local slices.
+    `host_embed`: read a host-servable input embedding straight into host memory."""
     tp, rank = mesh.size(), mesh.get_local_rank()
+    host_module = _host_load_embedding(model, mesh, device) if host_embed else None
+    host = {id(host_module.weight)} if host_module is not None else set()
     tp_plan = derive_tp_plan(model, tp, plan)
     shards = {}
     for region in tp_plan.regions:
@@ -2691,6 +3900,13 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
         if shard is None:
             return None
         proj, dim, parts = shard
+        module = reader.quant.module(old) if reader.quant is not None else None
+        if module is not None:
+            new = _read_params4bit_shard(module, reader, key, proj, rank, tp, device)
+            new._unsloth_tp_full_shape = (module.out_features, module.in_features)
+            new._unsloth_tp_preload_ranks = mesh.mesh.tolist()
+            setattr(new, _PRELOADED, (proj.style, tuple(proj.parts), tp))
+            return new
         local = reader.slice(key, dim, parts, rank, tp).to(device = device, dtype = old.dtype)
         # A plain local tensor tagged with its full shape: nn.Linear keeps the full in / out features, so
         # get_peft_model builds full-size LoRA factors with the 1-GPU init (a DTensor would make PEFT size
@@ -2704,8 +3920,10 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
         return new
 
     reader, sharded_numel, full_numel = _fill_from_checkpoint(
-        model, name, kwargs, device, read_local
+        model, name, kwargs, device, read_local, host = host
     )
+    if host_module is not None:
+        _mark_host_loaded(model, host_module)
     for region in tp_plan.regions:
         for proj in region.projs:
             base = _weight(proj.module)[1]
@@ -2721,9 +3939,38 @@ def _materialize_sharded(model, name, kwargs, mesh, plan, device):
         "read_bytes_sliced": reader.slice_bytes,
         "regions": len(tp_plan.regions),
         "source": tp_plan.source,
+        "host_loaded_embedding": host_module is not None,
     }
     model.__dict__["_unsloth_tp_load_stats"] = stats
     return stats
+
+
+def _read_params4bit_shard(module, reader, key, proj, rank, tp, device):
+    """This rank's 4-bit shard of a pre-quantized projection, as _shard_params4bit cuts the whole weight: the
+    column shard's packed rows are read alone, a row shard's columns from the whole packed tensor."""
+    state = reader.quant.quant_state(key, device)
+    storage = reader.quant.packed_dtype(key)
+    carrier = types.SimpleNamespace(quant_state = state, data = torch.empty(0, dtype = storage))
+    path = key.removesuffix(".weight")
+    _check_params4bit(path, carrier, proj.style, tp)
+    out_features, in_features = state.shape
+    half = in_features // 2
+    if proj.style == COLWISE:
+        itemsize = storage.itemsize
+        pieces, offset = [], 0
+        for size in proj.parts:
+            step = size // tp
+            start = offset + rank * step
+            rows = reader.rows(key, start * half // itemsize, (start + step) * half // itemsize)
+            pieces.append(rows.reshape(-1).view(torch.uint8).view(step, half))
+            offset += size
+        codes = torch.cat(pieces, 0) if len(pieces) > 1 else pieces[0]
+    else:
+        whole = reader.full(key).reshape(-1).view(torch.uint8).view(out_features, half)
+        codes = shard_slice(whole, 1, (half,), rank, tp)
+    return _shard_params4bit(
+        path, module, carrier, proj.style, proj.parts, rank, tp, local_codes = codes.to(device)
+    )
 
 
 def _load_device(device_map, mesh):
@@ -2740,16 +3987,90 @@ def _load_device(device_map, mesh):
     return torch.device("cuda", torch.cuda.current_device())
 
 
+def _text_config_quantized(config):
+    text = getattr(config, "get_text_config", None)
+    return any(
+        getattr(c, "quantization_config", None)
+        for c in (config, text() if callable(text) else None)
+    )
+
+
+def _whole_load_exceeds_device(name, kwargs, mesh, device):
+    """Collective over `mesh`: whether the checkpoint's files exceed 90% of the free memory of some rank's GPU
+    (a whole load there would not fit)."""
+    import os
+
+    if device.type != "cuda":
+        return False
+    try:
+        nbytes = sum(os.path.getsize(p) for p in set(_checkpoint_index(name, kwargs).values()))
+    except Exception:
+        nbytes = 0
+    free = torch.cuda.mem_get_info(device)[0]
+    flag = torch.tensor([int(nbytes > 0.9 * free)], device = device)
+    import torch.distributed as dist
+
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = mesh.get_group())
+    return bool(flag.item())
+
+
 def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     if state["active"]:
         return original(cls, name, *args, **kwargs)  # a nested load inside from_pretrained
-    config = kwargs.get("config")
+    from .bnb_sharded_load import (
+        bnb4_quantization,
+        checkpoint_quantization,
+        meta_state_dict,
+        prequantized_skeleton,
+    )
+
     label = state.get("label", "tensor parallel")
+    if callable(state["mesh"]):
+        state["mesh"] = state["mesh"]()
+    original_kwargs = kwargs
+    # A pre-quantized bitsandbytes 4-bit checkpoint loads sharded; quantizing on load does not.
+    resolved = dict(kwargs)
+    try:
+        config, quantized = checkpoint_quantization(cls, name, resolved)
+        other = quantized is None and _text_config_quantized(config)
+    except Exception:
+        quantized, other = None, False
+    asked = kwargs.get("quantization_config")
+    if quantized is not None and (
+        asked is None or bnb4_quantization(types.SimpleNamespace(quantization_config = asked))
+    ):
+        kwargs = dict(resolved, config = config)
+    else:
+        quantized = None
+    if state.get("prequantized_only") and quantized is None:
+        return original(cls, name, *args, **original_kwargs)
+    if state.get("auto"):
+        # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
+        # default); quantizing on load keeps the full load, which quantizes layer by layer.
+        mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
+        on_load = other or (
+            quantized is None
+            and any(
+                original_kwargs.get(k)
+                for k in ("load_in_4bit", "load_in_8bit", "quantization_config")
+            )
+        )
+        if (
+            on_load
+            or mesh.ndim != 1
+            or not _whole_load_exceeds_device(
+                name, original_kwargs, mesh, _load_device(original_kwargs.get("device_map"), mesh)
+            )
+        ):
+            return original(cls, name, *args, **original_kwargs)
+    config = kwargs.get("config")
     for key in _UNSUPPORTED_LOAD_KWARGS:
+        if quantized is not None and key in ("load_in_4bit", "quantization_config"):
+            continue
         if kwargs.get(key) or (key == "quantization_config" and getattr(config, key, None)):
             raise ValueError(
-                f"Unsloth: {label} sharded loading supports 16-bit safetensors checkpoints only "
-                f"(got {key}). {state.get('quantized_hint', _TP_QUANTIZED_HINT)}"
+                f"Unsloth: {label} sharded loading supports 16-bit and pre-quantized bitsandbytes 4-bit "
+                f"safetensors checkpoints only (got {key}). {state.get('quantized_hint', _TP_QUANTIZED_HINT)}"
             )
     mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
     if mesh.ndim != 1:
@@ -2759,25 +4080,37 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             )
         )
     device = _load_device(kwargs.get("device_map"), mesh)
-    kwargs = dict(kwargs, device_map = "meta")
     state["active"] = True
     try:
-        with torch.random.fork_rng(devices = []):
-            model = original(cls, name, *args, **kwargs)
+        if quantized is not None:
+            reader = _SliceReader(_checkpoint_index(name, kwargs))
+            loaded = prequantized_skeleton(
+                original, cls, name, args, kwargs, kwargs["config"], meta_state_dict(reader)
+            )
+        else:
+            kwargs = dict(kwargs, device_map = "meta")
+            with torch.random.fork_rng(devices = []):
+                loaded = original(cls, name, *args, **kwargs)
     finally:
         state["active"] = False
+    # output_loading_info = True returns (model, info); DeepSeek-V4.1 sets it itself to refuse a partial load.
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
     text = _text_config(model)
-    if getattr(text, "quantization_config", None) or getattr(
-        model.config, "quantization_config", None
+    if quantized is None and (
+        getattr(text, "quantization_config", None)
+        or getattr(model.config, "quantization_config", None)
     ):
         raise ValueError(
-            f"Unsloth: {label} sharded loading supports 16-bit checkpoints only; this checkpoint is "
-            f"pre-quantized. {state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
+            f"Unsloth: {label} sharded loading supports 16-bit and bitsandbytes 4-bit checkpoints only; this "
+            f"checkpoint is quantized otherwise. "
+            f"{state.get('prequantized_hint', 'Load it in full and call apply_tensor_parallel.')}"
         )
     materialize = state.get("materialize", _materialize_sharded)
-    materialize(model, name, kwargs, mesh, state["plan"], device)
+    materialize(
+        model, name, kwargs, mesh, state["plan"], device, **state.get("materialize_kwargs", {})
+    )
     state["models"].append(model)
-    return model
+    return loaded
 
 
 def _world_mesh():
@@ -2863,6 +4196,7 @@ def load_tensor_parallel(
 # turns into the token mean over the dp replicas, as for DDP on dp GPUs.
 
 _TP_DATA = "_unsloth_tp_data"
+_SCALE_DIVISOR = "_unsloth_scaler_dp"
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 _DP_SYNC = "_unsloth_tp_dp_sync"
 _TP_GATHER = "_unsloth_tp_gather_mesh"
@@ -3535,6 +4869,8 @@ def _tp_scaler(trainer, dp):
     from .fsdp2_native import _scaler_for_native
 
     accelerator = trainer.accelerator
+    # Read by _utils._parallel_forced_scaler.
+    accelerator.__dict__[_SCALE_DIVISOR] = dp
     if not _scaler_for_native(trainer):
         return
     handler = getattr(accelerator, "scaler_handler", None)

@@ -4,8 +4,13 @@
 """Browser use: argument and address checks, the round trip to the chat tab, and the model's view."""
 
 import asyncio
+import sys
 import threading
 import types
+
+import os
+import re
+import shutil
 
 import pytest
 
@@ -64,6 +69,30 @@ def test_navigate_adds_https_and_keeps_the_address():
 def test_navigate_refuses_local_and_non_web_addresses(url):
     with pytest.raises(ValueError):
         _request("browser_navigate", {"url": url})
+
+
+def test_navigate_refuses_the_port_this_studio_listens_on(monkeypatch):
+    state = types.SimpleNamespace(server_port = 8000, loopback_http_port = None)
+    monkeypatch.setitem(
+        sys.modules, "main", types.SimpleNamespace(app = types.SimpleNamespace(state = state))
+    )
+    with pytest.raises(ValueError, match = "Unsloth's own address"):
+        _request("browser_navigate", {"url": "http://localhost:8000/api/auth/me"})
+    out = browser_agent.format_result(
+        "browser_click", {"ok": True, "url": "http://127.0.0.1:8000/", "text": "secret"}, None
+    )
+    assert out.startswith("Error:") and "secret" not in out
+    assert (
+        _request("browser_navigate", {"url": "http://localhost:7860/"})["url"]
+        == "http://localhost:7860/"
+    )
+    state.server_port = None
+    assert (
+        _request("browser_navigate", {"url": "http://localhost:8000/"})["url"]
+        == "http://localhost:8000/"
+    )
+    with pytest.raises(ValueError):
+        _request("browser_navigate", {"url": "http://localhost:8888/"})
 
 
 @pytest.mark.parametrize(
@@ -637,3 +666,227 @@ def test_the_artifact_frame_installs_the_agent_without_eval():
     assert "buildAgent(data.code)" in html
     assert "unsafe-eval" not in _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
     assert "new Function" not in html and "eval(" not in html
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "draw.html").write_text("<canvas></canvas>")
+    (root / "sub").mkdir()
+    (root / "sub" / "pic.svg").write_text("<svg/>")
+    monkeypatch.setattr(tools_mod, "resolve_sandbox_workdir", lambda session_id = None: str(root))
+    return root
+
+
+@pytest.mark.parametrize(
+    "target, path",
+    [
+        ("draw.html", "draw.html"),
+        ("./draw.html", "draw.html"),
+        ("sub/pic.svg", "sub/pic.svg"),
+        ("draw.html?x=1#top", "draw.html"),
+    ],
+)
+def test_navigate_opens_a_workspace_file_in_the_panel(workspace, target, path):
+    request = _request("browser_navigate", {"url": target})
+    assert request["op"] == "open_file" and request["path"] == path
+    assert request["name"] == path.rsplit("/", 1)[-1]
+    raw = (workspace / path).read_bytes()
+    assert __import__("base64").b64decode(request["data"]) == raw
+    assert request["content_type"] in ("text/html", "image/svg+xml")
+
+
+def test_absolute_and_file_url_paths_inside_the_workspace_open(workspace):
+    full = workspace / "draw.html"
+    uri = full.as_uri()
+    for target in (str(full), uri, uri.replace("file://", "file://localhost", 1)):
+        assert _request("browser_navigate", {"url": target})["path"] == "draw.html"
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["/etc/passwd", "file:///etc/passwd", "../outside.html", "sub/../../outside.html", "~/x.html"],
+)
+def test_a_path_outside_the_workspace_is_refused_with_what_to_do(workspace, target):
+    (workspace.parent / "outside.html").write_text("secret")
+    with pytest.raises(ValueError) as caught:
+        _request("browser_navigate", {"url": target})
+    assert "outside the workspace" in str(caught.value)
+    assert "Write or copy the file there first" in str(caught.value)
+
+
+def test_a_link_out_of_the_workspace_is_refused(workspace):
+    (workspace.parent / "outside.html").write_text("secret")
+    (workspace / "link.html").symlink_to(workspace.parent / "outside.html")
+    with pytest.raises(ValueError, match = "outside the workspace"):
+        _request("browser_navigate", {"url": "link.html"})
+
+
+def test_a_missing_or_large_workspace_file_says_what_to_do(workspace, monkeypatch):
+    with pytest.raises(ValueError, match = "no file mandelbrot.html in the workspace"):
+        _request("browser_navigate", {"url": "mandelbrot.html"})
+    monkeypatch.setattr(browser_agent, "_MAX_WORKSPACE_FILE_BYTES", 4)
+    with pytest.raises(ValueError, match = "is over"):
+        _request("browser_navigate", {"url": "draw.html"})
+
+
+@pytest.mark.parametrize(
+    "url, opened",
+    [
+        ("example.com/page.html", "https://example.com/page.html"),
+        ("localhost:3000/draw.html", "http://localhost:3000/draw.html"),
+        ("example.md", "https://example.md"),
+    ],
+)
+def test_sites_with_file_like_paths_stay_sites(workspace, url, opened):
+    assert _request("browser_navigate", {"url": url}) == {"op": "navigate", "url": opened}
+
+
+@pytest.mark.parametrize("url", ["file://evil.example/x.html", "javascript:alert(1)"])
+def test_non_local_file_urls_and_other_schemes_are_still_refused(workspace, url):
+    with pytest.raises(ValueError, match = "only http"):
+        _request("browser_navigate", {"url": url})
+
+
+def test_the_file_reaches_the_tab_for_this_chats_workspace(tmp_path, monkeypatch):
+    seen_sessions = []
+
+    def workdir(session_id = None):
+        seen_sessions.append(session_id)
+        folder = tmp_path / (session_id or "_default")
+        folder.mkdir(exist_ok = True)
+        (folder / "page.html").write_text(f"<p>{session_id}</p>")
+        return str(folder)
+
+    monkeypatch.setattr(tools_mod, "resolve_sandbox_workdir", workdir)
+    callback, seen = _answer_with({"ok": True, "file": "page.html", "text": "s7"}, session = "s7")
+    out = tools_mod.execute_tool(
+        "browser_navigate", {"url": "page.html"}, session_id = "s7", output_callback = callback
+    )
+    assert seen_sessions == ["s7"] and seen[0]["op"] == "open_file"
+    assert __import__("base64").b64decode(seen[0]["data"]) == b"<p>s7</p>"
+    assert "File: page.html" in out
+
+
+def test_status_badge_names_a_workspace_file():
+    from core.inference.tool_loop_controller import status_for_tool
+    assert status_for_tool("browser_navigate", {"url": "./out/draw.html"}) == "Opening: draw.html"
+    assert status_for_tool("browser_navigate", {"url": "file:///w/x.svg"}) == "Opening: x.svg"
+
+
+def test_a_bare_name_the_workspace_has_points_at_its_path_form(workspace):
+    (workspace / "script.py").write_text("print(1)")
+    (workspace / "notes.md").write_text("# hi")
+    (workspace / "nb.ipynb").write_text("{}")
+    for name in ("script.py", "notes.md", "nb.ipynb"):
+        with pytest.raises(ValueError, match = rf"Open it as \./{re.escape(name)}"):
+            _request("browser_navigate", {"url": name})
+        assert _request("browser_navigate", {"url": f"./{name}"})["path"] == name
+    assert _request("browser_navigate", {"url": "./notes.md"})["content_type"] == "text/markdown"
+    assert _request("browser_navigate", {"url": "example.go"})["op"] == "navigate"
+    assert _request("browser_navigate", {"url": "example.com/../script.py"}) == {
+        "op": "navigate",
+        "url": "https://example.com/../script.py",
+    }
+    with pytest.raises(ValueError, match = "no file app.ts in the workspace"):
+        _request("browser_navigate", {"url": "app.ts"})
+
+
+_FILE_TARGETS = [
+    "draw.html",
+    "./notes.md",
+    "sub/pic.svg",
+    "file:///w/x.html",
+    "/etc/passwd",
+    "~/x.html",
+]
+_SITE_TARGETS = [
+    "https://example.com",
+    "example.com",
+    "example.com/page.html",
+    "localhost:3000/x.html",
+    "back",
+]
+
+
+@pytest.mark.parametrize("mode", ["ask", "auto", "off", "full"])
+@pytest.mark.parametrize("url", _FILE_TARGETS + _SITE_TARGETS)
+def test_opening_a_workspace_file_asks_wherever_a_sensitive_read_asks(mode, url):
+    from state.tool_policy import needs_tool_confirmation
+
+    asks = needs_tool_confirmation(
+        confirm_tool_calls = True,
+        bypass_permissions = mode == "full",
+        permission_mode = mode,
+        name = "browser_navigate",
+        arguments = {"url": url},
+    )
+    expected = {"ask": True, "auto": url in _FILE_TARGETS, "off": False, "full": False}[mode]
+    assert asks is expected
+
+
+def test_the_approval_check_and_the_open_agree_on_every_target(workspace):
+    (workspace / "script.py").write_text("print(1)")
+    for url in _FILE_TARGETS + _SITE_TARGETS + ["script.py", "./script.py", "main.go"]:
+        try:
+            opened = _request("browser_navigate", {"url": url})["op"] == "open_file"
+        except ValueError:
+            opened = False
+        if opened:
+            assert tools_mod.is_high_risk_tool_call("browser_navigate", {"url": url}), url
+            assert tools_mod.is_potentially_unsafe_tool_call("browser_navigate", {"url": url}), url
+
+
+def test_a_malformed_file_url_is_refused_and_its_badge_does_not_raise():
+    from core.inference.tool_loop_controller import status_for_tool
+    assert status_for_tool("browser_navigate", {"url": "file://["}) == "Opening a page..."
+    with pytest.raises(ValueError):
+        _request("browser_navigate", {"url": "file://["})
+
+
+def test_browsing_a_site_creates_no_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sandbox"))
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", lambda host, port: (True, "", []))
+    request = browser_agent._validated_request(
+        "browser_navigate", {"url": "example.com"}, None, "chat-browse-only"
+    )
+    assert request == {"op": "navigate", "url": "https://example.com"}
+    assert not (tmp_path / "sandbox").exists()
+
+
+def test_a_windows_file_url_keeps_its_drive(monkeypatch):
+    monkeypatch.setattr(browser_agent, "_WINDOWS", True)
+    assert (
+        browser_agent.workspace_path_of("file:///C:/Users/me/ws/a%20b.html")
+        == "C:/Users/me/ws/a b.html"
+    )
+    monkeypatch.setattr(browser_agent, "_WINDOWS", False)
+    assert browser_agent.workspace_path_of("file:///C:/x.html") == "/C:/x.html"
+
+
+@pytest.mark.parametrize("swap", ["file", "parent"])
+def test_a_link_swapped_in_after_the_checks_is_not_read(workspace, monkeypatch, swap):
+    outside = workspace.parent / "outside"
+    outside.mkdir()
+    (outside / "pic.svg").write_text("secret")
+    real_isfile = os.path.isfile
+
+    def isfile_then_swap(path):
+        found = real_isfile(path)
+        if swap == "file":
+            os.remove(workspace / "sub" / "pic.svg")
+            os.symlink(outside / "pic.svg", workspace / "sub" / "pic.svg")
+        else:
+            shutil.rmtree(workspace / "sub")
+            os.symlink(outside, workspace / "sub")
+        return found
+
+    monkeypatch.setattr(browser_agent.os.path, "isfile", isfile_then_swap)
+    try:
+        request = _request("browser_navigate", {"url": "sub/pic.svg"})
+    except ValueError as exc:
+        assert "could not be read" in str(exc)
+    else:
+        assert b"secret" not in __import__("base64").b64decode(request["data"])
+        pytest.fail("a swapped link was opened")

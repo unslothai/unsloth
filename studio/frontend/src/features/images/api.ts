@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { dropVramBudgetRetry, loadVramBudgetSettings, settleVramBudgetSave, setVramBudgetLocked } from "@/features/settings/api/vram-budget";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
@@ -11,6 +13,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import { isLoraReloadRefusal, LoraReloadRefusalError } from "./lib/lora-reload";
 import type { DetailerRecord, DetailerRequest } from "./lib/detailer";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
@@ -25,6 +28,10 @@ export interface DiffusionResolvedControl {
   reason: string;
   artifact?: string | null;
   replaced?: string | null;
+  // int8_attention only (absent on older backends, sd.cpp, MLX): "on" when the kernel engaged.
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export interface DiffusionStatus {
@@ -61,6 +68,8 @@ export interface DiffusionStatus {
   attention_backend?: string | null;
   transformer_cache?: string | null;
   baked_loras?: string[] | null;
+  // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
+  baked_lora_specs?: LoraSpecInput[] | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -72,6 +81,8 @@ export interface DiffusionStatus {
   engine_forced?: string | null;
   // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
   native_engine_eligible?: boolean;
+  // False on CPU-only torch: Diffusers engine choice is hidden.
+  gguf_diffusers_allowed?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
   // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
@@ -129,6 +140,8 @@ export interface DiffusionConditioning {
   max_output_side: number;
   max_output_pixels: number;
   reference_resolutions: number[];
+  // null = the build's tier
+  edit_output_resolution?: number | null;
   unified_edit: boolean;
   // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
   // max_condition_images in total). Absent on older backends.
@@ -211,6 +224,7 @@ export interface DiffusionLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
+  int8_attention?: "auto" | "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
@@ -445,20 +459,48 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
   return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
+/** The budget edit never reached the server, so nothing may load on the old one. */
+export class VramBudgetSaveError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Failed to save VRAM budget");
+    this.name = "VramBudgetSaveError";
+  }
+}
+
+/** Settles a slider edit first: the backend snapshots the budget for a load and its download plan. */
+export async function withSettledVramBudget<T>(run: () => Promise<T>): Promise<T> {
+  const budgetSave = settleVramBudgetSave();
+  if (!budgetSave) return run();
+  setVramBudgetLocked(true);
+  try {
+    await budgetSave.catch((error: unknown) => {
+      // Dropped and repainted together, so the slider never shows a value no load will use.
+      dropVramBudgetRetry();
+      void loadVramBudgetSettings({ force: true });
+      throw new VramBudgetSaveError(error);
+    });
+    return await run();
+  } finally {
+    setVramBudgetLocked(false);
+  }
+}
+
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
   // This POST only starts the load, so the notice settles from load-progress, not the response.
-  return withBackgroundLoadNotice(
-    "image",
-    body.model_path,
-    async () =>
-      parseLoadJson<DiffusionStatus>(
-        await authFetch("/api/inference/images/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(withAllowOversizedLoad(body)),
-        }),
-      ),
-    async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+  return withSettledVramBudget(() =>
+    withBackgroundLoadNotice(
+      "image",
+      body.model_path,
+      async () =>
+        parseLoadJson<DiffusionStatus>(
+          await authFetch("/api/inference/images/load", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(withAllowOversizedLoad(body)),
+          }),
+        ),
+      async (signal) => (await getDiffusionLoadProgress(signal)).phase,
+    ),
   );
 }
 
@@ -547,6 +589,9 @@ export async function generateDiffusionImage(
     isMemoryEstimateRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))
   ) {
     throw new MemoryEstimateRefusalError(await readFastApiError(response));
+  }
+  if (!response.ok && isLoraReloadRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))) {
+    throw new LoraReloadRefusalError(await readFastApiError(response));
   }
   return parseJson(response);
 }
@@ -944,6 +989,8 @@ export interface DiffusionTrainableFamily {
   // Deploy previews on this repo instead of the trained checkpoint (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
   deploy_bases?: Record<string, string>;
+  // Families the trained adapter loads on; absent on an older backend (the trained family alone).
+  lora_families?: string[];
   base_specs?: Record<
     string,
     {

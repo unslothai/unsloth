@@ -63,6 +63,8 @@ import pytest
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
 # A fake CPU host must not take the Vulkan route through this machine's real GPUs.
 os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
+# Installer tests mock subprocess, not downloads: never fetch the HNSW pair into this venv.
+os.environ.setdefault("RAG_VEC_ANN_AUTO_INSTALL", "0")
 
 
 @pytest.fixture(autouse = True)
@@ -91,6 +93,14 @@ def _fresh_parallel_layout():
     tp_env = sys.modules.get("unsloth.models.tp_env")
     if tp_env is not None:
         tp_env._reset_env_layout()
+
+
+@pytest.fixture(autouse = True)
+def _fresh_new_mapper_cache():
+    """Reset loader_utils' process-wide mapper cache; never imports unsloth."""
+    loader_utils = sys.modules.get("unsloth.models.loader_utils")
+    if loader_utils is not None and hasattr(loader_utils, "_NEW_MAPPER_CACHE"):
+        loader_utils._NEW_MAPPER_CACHE["entry"] = None
 
 
 @pytest.hookimpl(trylast = True)

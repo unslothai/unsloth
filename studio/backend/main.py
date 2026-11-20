@@ -220,14 +220,12 @@ if sys.platform == "win32":
     _add_rocm_dll_dirs()
     del _add_rocm_dll_dirs
 
-    # bitsandbytes runs hipinfo.exe via PATH at import; add the venv Scripts dir (AMD wheel ships it).
-    _scripts_dir = os.path.dirname(sys.executable)
-    if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
-        import shutil as _shutil
-        if not _shutil.which("hipinfo.exe"):
-            os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
-        del _shutil
-    del _scripts_dir
+    # bnb never reads its hipinfo.exe arch; the venv copy is unsigned (Smart App Control blocks it).
+    import logging as _logging
+
+    _logging.getLogger("bitsandbytes.cuda_specs").addFilter(
+        lambda _r: _r.funcName != "get_rocm_gpu_arch"
+    )
 
     # bitsandbytes derives the DLL name from torch.version.hip but the wheel ships rocm72.dll.
     if (
@@ -450,6 +448,7 @@ from routes import (
     mcp_servers_router,
     openai_fine_tuning_router,
     skills_router,
+    computer_use_router,
     models_router,
     providers_router,
     openai_codex_auth_router,
@@ -607,6 +606,20 @@ def _start_helper_precache_if_enabled() -> None:
             pass  # non-critical
 
     threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
+
+
+def _start_offline_docs_refresh_if_due() -> None:
+    """Offline docs refresh, DB check included, off the startup path."""
+    import threading
+
+    def _refresh():
+        try:
+            from utils.offline_docs_settings import refresh_offline_docs_if_due
+            refresh_offline_docs_if_due()
+        except Exception:
+            pass  # non-critical
+
+    threading.Thread(target = _refresh, daemon = True, name = "offline-docs-refresh").start()
 
 
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
@@ -1048,6 +1061,7 @@ async def lifespan(app: FastAPI):
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
+    _start_offline_docs_refresh_if_due()
 
     from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
 
@@ -1639,6 +1653,10 @@ from utils.upload_limits import (  # noqa: E402
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
+from utils.preauth_body import (  # noqa: E402
+    PREAUTH_BODY_MAX_BYTES,
+    caller_may_send_large_body_async,
+)
 
 _BODY_PROTECTED_PREFIXES = (
     # /v1 POSTs buffer JSON bodies, so cap the whole prefix; multipart routes are exact passthroughs.
@@ -1792,6 +1810,24 @@ async def _send_411(send) -> None:
     await send({"type": "http.response.body", "body": payload, "more_body": False})
 
 
+async def _send_401(send) -> None:
+    # The status and detail the route's own auth check gives an expired or missing token, so the
+    # frontend refreshes its session exactly as it would have.
+    payload = _json_for_413.dumps({"detail": "Invalid or expired token"}).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode("ascii")),
+                (b"www-authenticate", b"Bearer"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload, "more_body": False})
+
+
 async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     payload = _json_for_413.dumps(
         {"detail": (f"Request body too large ({total_bytes:,} bytes; max {max_bytes:,}).")},
@@ -1867,8 +1903,14 @@ class MaxBodyMiddleware:
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
         upload_passthrough_pattern = None,
+        preauth_max_bytes = None,
+        large_body_caller_check = None,
     ):
         self.app = app
+        # Over this many bytes the caller must hold a credential the route would accept (an async
+        # (scope, path) -> bool), checked before the body is read past it. None turns it off.
+        self.preauth_max_bytes = preauth_max_bytes
+        self.large_body_caller_check = large_body_caller_check
         self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
         self.request_max_bytes_getter = request_max_bytes_getter
@@ -1905,6 +1947,13 @@ class MaxBodyMiddleware:
         except Exception:
             return int(self.max_bytes_getter())
 
+    async def _large_body_refused(self, scope, path: str, size: int) -> bool:
+        if self.large_body_caller_check is None or self.preauth_max_bytes is None:
+            return False
+        if size <= self.preauth_max_bytes:
+            return False
+        return not await self.large_body_caller_check(scope, path)
+
     def _request_max_bytes(self, path: str) -> int:
         if self.request_max_bytes_getter is None:
             return int(self.max_bytes_getter())
@@ -1939,12 +1988,19 @@ class MaxBodyMiddleware:
                 except (ValueError, UnicodeDecodeError):
                     declared = None
                 break
+        # RFC 9112 6.3: Transfer-Encoding overrides Content-Length, and h11 keeps both headers, so a
+        # small declared length would otherwise skip the streamed size and credential checks.
+        if any(name == b"transfer-encoding" for name, _ in scope.get("headers", [])):
+            declared = None
 
         if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is not None:
                 if declared > upload_max_bytes:
                     await _send_413(send, declared, upload_max_bytes)
+                    return
+                if await self._large_body_refused(scope, path, declared):
+                    await _send_401(send)
                     return
                 await self.app(scope, receive, send)
                 return
@@ -1956,6 +2012,17 @@ class MaxBodyMiddleware:
         if declared is not None and declared > max_bytes:
             await _send_413(send, declared, max_bytes)
             return
+        caller_checked = False
+        if declared is not None and await self._large_body_refused(scope, path, declared):
+            await _send_401(send)
+            return
+        # Only a declared size over the limit ran the credential check above.
+        if (
+            declared is not None
+            and self.preauth_max_bytes is not None
+            and declared > self.preauth_max_bytes
+        ):
+            caller_checked = True
 
         chunks: list = []
         total = 0
@@ -1973,6 +2040,15 @@ class MaxBodyMiddleware:
                 if total > max_bytes:
                     await _send_413(send, total, max_bytes)
                     return
+                if (
+                    not caller_checked
+                    and self.preauth_max_bytes is not None
+                    and total > self.preauth_max_bytes
+                ):
+                    caller_checked = True
+                    if await self._large_body_refused(scope, path, total):
+                        await _send_401(send)
+                        return
                 chunks.append(body)
             if not msg.get("more_body", False):
                 break
@@ -1997,6 +2073,13 @@ class MaxBodyMiddleware:
                     )(scope, receive, send)
                     return
             limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
+            # A small compressed body skipped the credential check above; bound what it decodes to.
+            if (
+                not caller_checked
+                and self.preauth_max_bytes is not None
+                and await self._large_body_refused(scope, path, limit)
+            ):
+                limit = self.preauth_max_bytes
             try:
                 async with _zstd_decode_gate():
                     body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
@@ -2057,6 +2140,8 @@ app.add_middleware(
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
     upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
+    preauth_max_bytes = PREAUTH_BODY_MAX_BYTES,
+    large_body_caller_check = caller_may_send_large_body_async,
 )
 
 
@@ -2178,6 +2263,7 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
+app.include_router(computer_use_router, prefix = "/api/computer-use", tags = ["computer-use"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(scheduled_tasks_router, prefix = "/api/scheduled-tasks", tags = ["scheduled-tasks"])
 app.include_router(library_router, prefix = "/api/library", tags = ["library"])
@@ -2590,9 +2676,17 @@ def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    from utils.download_speed_limit import get_download_speed_limit_mbps
+    from utils.download_speed_limit import (
+        DownloadSpeedLimitUnavailableError,
+        get_download_speed_limit_mbps,
+    )
+
     caps = asdict(get_download_transport_capabilities(probe = probe))
-    return {**caps, "speed_limited": get_download_speed_limit_mbps() is not None}
+    try:
+        speed_limited = get_download_speed_limit_mbps() is not None
+    except DownloadSpeedLimitUnavailableError:
+        speed_limited = True  # unknown policy: preflight as limited, the start itself refuses
+    return {**caps, "speed_limited": speed_limited}
 
 
 @app.post(
@@ -3034,13 +3128,13 @@ def get_system_info(
         export_capability,
         video_capability,
         cpu_frequency_mhz,
+        npu_load_percent,
     )
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
 
-    # The image/video picker explicitly asks on first use; ordinary system polls
-    # must not import torchao or diffusers just to populate optional picker tiers.
+    # Media probes run only when the picker asks; polls must not import torchao or diffusers.
     if probe_media:
         # Like an image or video load: the probes import torchao and diffusers, which must not race Dynamo.
         gate_torch_stack_import("media capability probe", logger)
@@ -3154,6 +3248,7 @@ def get_system_info(
         "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
+        "npu_load_percent": npu_load_percent(),
         "ml_packages": ml_packages,
         **export_capability(),
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
@@ -3476,7 +3571,12 @@ def _should_inject_bootstrap(request: Request) -> bool:
         return False
     if _IS_COLAB and _is_colab_notebook_request(request):
         return True
-    return _is_local_bootstrap_request(request)
+    if not _is_local_bootstrap_request(request):
+        return False
+    # A loopback port is not an identity: keep the password from another OS user's connection.
+    from utils.loopback_peer import peer_is_another_local_user
+
+    return not peer_is_another_local_user(request)
 
 
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"

@@ -144,6 +144,24 @@ def test_definition_lists_and_figures_do_not_merge_words(ebooks):
     assert ebooks._html_text(data) == "Term\n\nDefinition\n\nCaption\n\nNote"
 
 
+@pytest.mark.parametrize(
+    "ruby",
+    [
+        "<ruby>東<rt>とう</rt>京<rt>きょう</rt></ruby>",
+        "<ruby>東京<rp>(</rp><rt>とうきょう</rt><rp>)</rp></ruby>",
+        "<ruby>東<rp>(</rp><rt>とう<rp>)</rp>京<rp>(</rp><rt>きょう<rp>)</rp></ruby>",
+        "<ruby>東<rp>(<rt>とう<rp>)</rp>京<rt>きょう</ruby>",
+        "<ruby><rb>東<rb>京<rt>とう<rt>きょう</ruby>",
+        "<ruby>東京<rtc>とうきょう</rtc></ruby>",
+        "<ruby><rb>東<rb>京<rtc><rt>とう<rt>きょう</rtc><rtc>Tokyo</rtc></ruby>",
+    ],
+    ids = ["rt", "rp", "omitted-rt-end", "omitted-rp-end", "omitted-rb-end", "rtc", "double-sided"],
+)
+def test_ruby_readings_are_not_inlined_into_the_text(ebooks, ruby):
+    data = f"<html><body><p>{ruby}に行く。</p></body></html>".encode("utf-8")
+    assert ebooks._html_text(data) == "東京に行く。"
+
+
 def test_bom_is_dropped_when_xml_declares_utf8(ebooks):
     data = b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?><html><body><p>Chapter</p></body></html>'
     assert ebooks._html_text(data) == "Chapter"
@@ -281,6 +299,31 @@ def test_empty_missing_unsupported_and_corrupt_inputs(ebooks, tokenizer, tmp_pat
     empty = make_epub(tmp_path / "empty.epub", chapters = {"empty.xhtml": "<p> </p>"})
     with pytest.raises(ValueError, match = "readable text"):
         ebooks.load_ebook_dataset(empty, tokenizer = tokenizer)
+
+
+@pytest.mark.parametrize("fallback", ["c1", "art", "missing"])
+def test_foreign_spine_item_uses_its_text_fallback(ebooks, tokenizer, tmp_path, fallback):
+    book = make_epub(tmp_path / "book.epub")
+    with zipfile.ZipFile(book) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    package = files["Books/content.opf"].decode()
+    items = (
+        '<item id="art" href="art.pdf" media-type="application/pdf" fallback="page"/>'
+        f'<item id="page" href="page.png" media-type="image/png" fallback="{fallback}"/>'
+    )
+    files["Books/content.opf"] = package.replace("</manifest>", items + "</manifest>").replace(
+        'idref="c1"', 'idref="art"'
+    )
+    with zipfile.ZipFile(book, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+        archive.writestr("Books/art.pdf", b"")
+        archive.writestr("Books/page.png", b"")
+    text = ebooks.load_ebook_dataset(book, tokenizer = tokenizer)[0]["text"]
+    expected = "Chapter Two\n\nSecond paragraph."
+    if fallback == "c1":
+        expected = "Chapter One\n\nFirst paragraph.\n\n" + expected
+    assert text == expected
 
 
 def test_non_linear_and_nav_documents_are_not_training_text(ebooks, tokenizer, tmp_path):

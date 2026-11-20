@@ -836,13 +836,14 @@ def connection_model_allowed(model_id: str) -> bool:
 
 
 def shared_connection_view(row: dict) -> dict | None:
+    from core.inference.providers import get_provider_info, provider_default_models
+
     view = {**row, "shared": True, "shared_by_owner": True}
     models = row.get("models") or []
-    if not models:
-        from core.inference.providers import get_provider_info
-        models = list(
-            (get_provider_info(row.get("provider_type") or "") or {}).get("default_models") or []
-        )
+    provider_type = row.get("provider_type") or ""
+    if not models and get_provider_info(provider_type) is not None:
+        from routes.providers import cached_catalog_models
+        models = list(provider_default_models(provider_type, cached_catalog_models()))
     view["models"] = [model for model in models if connection_model_allowed(model)]
     view["available_models"] = [
         model for model in row.get("available_models") or [] if model in view["models"]

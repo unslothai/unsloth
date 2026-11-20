@@ -117,6 +117,7 @@ import {
 } from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
+import { runningTrainingSelection } from "./diffusion-train-restore";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 import {
   MediaGenerationPresetControl,
@@ -133,6 +134,8 @@ type FamilyPreset = {
     rank: number;
     lr: number;
     resolution: number;
+    // A family's recommended run length (MiniMax-H3-Image overfits a style quickly); absent = the panel's 500.
+    steps?: number;
     // Both or neither: a warmup count is inert under "constant".
     lrScheduler?: LrScheduler;
     lrWarmupSteps?: number;
@@ -320,6 +323,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? p.defaults.rank,
         lr: r.defaults?.learning_rate ?? p.defaults.lr,
         resolution: r.defaults?.resolution ?? p.defaults.resolution,
+        ...(r.defaults?.train_steps ? { steps: r.defaults.train_steps } : {}),
         // No preset fallback: a reported family owns its ramp outright.
         ...lrSchedulePreset(r.defaults),
       },
@@ -345,6 +349,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? 16,
         lr: r.defaults?.learning_rate ?? 0.0001,
         resolution: r.defaults?.resolution ?? 768,
+        ...(r.defaults?.train_steps ? { steps: r.defaults.train_steps } : {}),
         ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note ?? "",
@@ -400,6 +405,7 @@ export function DiffusionTrainPanel({
   loadedBaseRepo,
   onTrainingComplete,
   onDeploy,
+  onDeployVideo,
   familyName,
   onFamilyNameChange,
   baseChoice,
@@ -421,6 +427,15 @@ export function DiffusionTrainPanel({
   onDeploy?: (args: {
     baseRepo: string;
     family: string;
+    families?: string[];
+    catalogPath: string;
+    trigger: string;
+  }) => void;
+  // Video-family adapters bake into the video loader instead; absent = no Deploy for them.
+  onDeployVideo?: (args: {
+    baseRepo: string;
+    family: string;
+    families?: string[];
     catalogPath: string;
     trigger: string;
   }) => void;
@@ -446,9 +461,11 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net with mixed_precision; every other family is a DiT using base_precision.
   const isDiT = familyName !== "sdxl";
   const isH3 = familyName === "minimax-h3";
-  const supportsCfgDropout = isDiT && !isH3;
+  // MiniMax-H3-Image trains on its 6 distilled sampler steps: no shift and no CFG dropout (guidance-distilled).
+  const isH3Image = familyName === "minimax-h3-image";
+  const supportsCfgDropout = isDiT && !isH3 && !isH3Image;
   // H3 shifts its video and audio schedules separately and applies a number to video only: no shared control.
-  const supportsFlowShift = isDiT && !isH3;
+  const supportsFlowShift = isDiT && !isH3 && !isH3Image;
   // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the reason rides in
   // vram_note); only an ABSENT field means an older backend. SDXL reports [] too but is not precision-gated,
   // hence the isDiT scope.
@@ -674,6 +691,7 @@ export function DiffusionTrainPanel({
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
+      setSteps(family.defaults.steps ?? 500);
     }
     // Reset with the family, or a DiT's warmup leaks into SDXL.
     if (!lrScheduleDirty.current) {
@@ -719,7 +737,7 @@ export function DiffusionTrainPanel({
       baseChoice: effectiveBase,
       customBase,
       durationUnit: "steps",
-      steps: 500,
+      steps: family?.defaults.steps ?? 500,
       epochs: 10,
       learningRate: family?.defaults.lr ?? 0.0001,
       rank: family?.defaults.rank ?? 16,
@@ -908,6 +926,25 @@ export function DiffusionTrainPanel({
     const id = window.setInterval(() => void poll(), 1500);
     return () => window.clearInterval(id);
   }, [active, poll]);
+
+  // After a reload the page defaults to FLUX.1-dev; show the running job's family and base instead, once per job.
+  const seededRunJob = useRef<string | null>(null);
+  useEffect(() => {
+    const jobKey = status?.job_id ?? "";
+    if (seededRunJob.current === jobKey) return;
+    const run = runningTrainingSelection(status, families);
+    if (!run) return;
+    seededRunJob.current = jobKey;
+    seededFromLoaded.current = true;
+    seededBaseFamily.current = run.familyName;
+    setFamilyName(run.familyName);
+    if (run.baseModel) {
+      baseDirty.current = true;
+      const known = families.find((f) => f.name === run.familyName)?.base_repos.includes(run.baseModel);
+      setBaseChoice(known ? run.baseModel : CUSTOM_BASE);
+      if (!known) setCustomBase(run.baseModel);
+    }
+  }, [status, families, setFamilyName, setBaseChoice]);
 
   // The backend keeps the terminal status until the next start, so dismissal is local.
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null);
@@ -1461,11 +1498,22 @@ export function DiffusionTrainPanel({
     },
     [info?.families],
   );
-  // The images loader refuses video bases, so their adapters get no Deploy to Create.
+  const loraFamiliesFor = useCallback(
+    (famName: string): string[] =>
+      info?.families?.find((f) => f.name === famName)?.lora_families ?? [famName],
+    [info?.families],
+  );
+  // The images loader refuses video bases, so their adapters deploy to the Video page instead.
   const isVideoFamily = useCallback(
     (famName: string) => info?.families?.find((f) => f.name === famName)?.is_video === true,
     [info?.families],
   );
+  const canDeployFamily = useCallback(
+    (famName: string) => !isVideoFamily(famName) || Boolean(onDeployVideo),
+    [isVideoFamily, onDeployVideo],
+  );
+  const deployLabel = (famName: string) =>
+    isVideoFamily(famName) ? "Deploy to Video" : "Deploy to Create";
 
   const navigate = useNavigate();
   const exportAdapter = useCallback(
@@ -1483,13 +1531,25 @@ export function DiffusionTrainPanel({
       return;
     }
     const famName = status.family || family?.name || "";
-    onDeploy?.({
+    (isVideoFamily(famName) ? onDeployVideo : onDeploy)?.({
       baseRepo: deployBaseFor(trainedBase, famName),
       family: famName,
+      families: loraFamiliesFor(famName),
       catalogPath: status.catalog_path,
       trigger: instancePrompt.trim(),
     });
-  }, [status, effectiveBase, customBase, family, instancePrompt, onDeploy, deployBaseFor]);
+  }, [
+    status,
+    effectiveBase,
+    customBase,
+    family,
+    instancePrompt,
+    onDeploy,
+    onDeployVideo,
+    isVideoFamily,
+    deployBaseFor,
+    loraFamiliesFor,
+  ]);
 
   // For fields no family seeds: editing one must not stop a family switch from reseeding rank / LR / resolution.
   const keepFamilyDefaults = () => {};
@@ -1716,7 +1776,7 @@ export function DiffusionTrainPanel({
             </Select>
           </div>
         )}
-        {!isH3 && (
+        {!isH3 && !isH3Image && (
           <div className={fieldClass}>
             <FieldLabel hint="Mirrors images left-right at random for extra variety. Leave off for text, logos or subjects with one-sided features (a side parting, a scar); try on for styles and symmetric subjects.">
               Random flip
@@ -2302,20 +2362,21 @@ export function DiffusionTrainPanel({
                   : ""}
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                {viewRun.saved && viewRun.catalog_path && !isVideoFamily(viewRun.family || "") && (
+                {viewRun.saved && viewRun.catalog_path && canDeployFamily(viewRun.family || "") && (
                   <Button
                     type="button"
                     size="sm"
                     onClick={() =>
-                      onDeploy?.({
+                      (isVideoFamily(viewRun.family || "") ? onDeployVideo : onDeploy)?.({
                         baseRepo: deployBaseFor(viewRun.base_model || "", viewRun.family || ""),
                         family: viewRun.family || "",
+                        families: loraFamiliesFor(viewRun.family || ""),
                         catalogPath: viewRun.catalog_path || "",
                         trigger: viewRun.instance_prompt || "",
                       })
                     }
                   >
-                    Deploy to Create
+                    {deployLabel(viewRun.family || "")}
                   </Button>
                 )}
                 {viewRun.saved && viewRun.catalog_path && (
@@ -2515,9 +2576,9 @@ export function DiffusionTrainPanel({
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
-                  {status?.catalog_path && !isVideoFamily(status.family || family?.name || "") && (
+                  {status?.catalog_path && canDeployFamily(status.family || family?.name || "") && (
                     <Button type="button" size="sm" onClick={onDeployClick}>
-                      Deploy to Create
+                      {deployLabel(status.family || family?.name || "")}
                     </Button>
                   )}
                   {status?.catalog_path && (

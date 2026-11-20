@@ -81,6 +81,8 @@ export interface CatalogGroup {
   task?: "tts" | "stt";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
+  /** sd.cpp route but no curated GGUF row: hidden on CPU-only. Must match ``family_sd_cpp_supported`` (tested). */
+  nativeGgufRoute?: boolean;
   /** Cross-owner ids for this group; suffix stripping never merges owners. */
   aliases?: readonly string[];
   /** Capability glyph fallback; the Hub listing's tags win. */
@@ -245,7 +247,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
-    // CUDA / ROCm only. Keeps the official id (loader reads VAE, tokenizer, config from it), so no fetchedFrom.
+    // CUDA / ROCm only; keeps the official id (the loader reads VAE, tokenizer, config from it).
     // Size is the bf16 total; the fit rule reads the measured offload tiers instead.
     canonicalId: "MiniMaxAI/MiniMax-H3-Image",
     displayName: "MiniMax-H3-Image",
@@ -266,6 +268,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
           { gpuGb: 39, systemRamGb: 64, requiresDenseQuant: true },
         ],
       }),
+      gguf("unsloth/MiniMax-H3-Image-GGUF"),
     ],
   },
   {
@@ -497,6 +500,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Krea 2 Turbo",
     description: "Text-to-image",
     scope: "image",
+    nativeGgufRoute: true,
     artifacts: [
       bf16Mirror("krea/Krea-2-Turbo", 18, {
         totalParams: 12820073036,
@@ -735,17 +739,23 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "nvidia/Cosmos3-Nano",
     displayName: "Cosmos3 Nano",
-    description: "Text and image to video up to 720p · needs cosmos-guardrail",
+    description: "Text and image to video up to 720p",
     scope: "video",
-    requires: "cosmos-guardrail",
-    artifacts: [bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 })],
+    artifacts: [
+      bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 }),
+      // NVIDIA's ModelOpt FP8 build: W8A8 fp8 GEMMs on RTX 40 / Hopper / Blackwell, weight-only elsewhere.
+      fp8Pipeline("nvidia/Cosmos3-Nano-FP8", 20, { totalParams: 15750057456 }),
+    ],
   },
   {
     canonicalId: "nvidia/Cosmos3-Edge",
     displayName: "Cosmos3 Edge",
     description: "Text and image to video up to 480p, small",
     scope: "video",
-    artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
+    artifacts: [
+      bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 }),
+      fp8Pipeline("nvidia/Cosmos3-Edge-FP8", 6, { totalParams: 3858999728 }),
+    ],
   },
 ];
 
@@ -1041,6 +1051,12 @@ export function artifactForRepoId(
   return group ? { group, artifact } : null;
 }
 
+export function isMediaCatalogRepo(repoId: string): boolean {
+  return [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG].some(
+    (catalog) => artifactForRepoId(repoId, catalog) !== null,
+  );
+}
+
 const BYTES_PER_GB = 1024 ** 3;
 
 /** Curated size (bytes) of an exact artifact id; undefined for GGUF. */
@@ -1226,7 +1242,7 @@ export function catalogToModelOptions(
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
       // The `models` prop is built only here, so this covers trigger name and seed ids.
-      if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
+      if (!curatedArtifactIsOfferable(artifact.repoId, host, group)) continue;
       const name =
         curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
         group.displayName;

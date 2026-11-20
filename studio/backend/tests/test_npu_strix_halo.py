@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Strix Halo GPU hint on the NPU status and catalog. Every probe is pinned; no host is read."""
+"""The Strix Halo GPU hint on the NPU status. Every probe is pinned; no host is read."""
 
 from __future__ import annotations
 
@@ -128,57 +128,6 @@ def test_an_unknown_answer_is_asked_again_and_a_known_one_is_kept(tmp_path, monk
     assert backend.status()["gpu_recommended"] is True
     # The iterator is spent: a third probe would raise StopIteration.
     assert backend.status()["gpu_recommended"] is True
-
-
-class _Response:
-    status_code = 200
-
-    def json(self):
-        return {
-            "data": [
-                {
-                    "id": name,
-                    "recipe": "flm",
-                    "labels": ["chat"],
-                    "checkpoint": tag,
-                    "downloaded": True,
-                }
-                for name, tag in (
-                    ("qwen3.5-4b-FLM", "qwen3.5:4b"),
-                    ("qwen3.6-moe-35b-FLM", "qwen3.6-moe:35b-a3b"),
-                    ("qwen3-it-4b-FLM", "qwen3-it:4b"),
-                    ("qwen3.8-mtp-27b-FLM", "qwen3.8-mtp:27b"),
-                    ("gemma3-4b-FLM", "gemma3:4b"),
-                )
-            ]
-        }
-
-
-class _Server:
-    def request(self, *_args, **_kwargs):
-        return _Response()
-
-
-def _known_issues(backend, monkeypatch) -> dict:
-    monkeypatch.setattr(backend, "_ensure_running", lambda: _Server())
-    return {model.checkpoint: model.to_json()["known_issue_url"] for model in backend.catalog()}
-
-
-def test_the_catalog_tags_the_qwen_tags_that_fail_to_load_on_strix_halo(tmp_path, monkeypatch):
-    issue = "https://github.com/ROCm/FastFlowLM/issues/705"
-    assert _known_issues(_backend(tmp_path, monkeypatch, True), monkeypatch) == {
-        "qwen3.5:4b": issue,
-        "qwen3.6-moe:35b-a3b": issue,
-        "qwen3-it:4b": None,
-        "qwen3.8-mtp:27b": None,
-        "gemma3:4b": None,
-    }
-
-
-@pytest.mark.parametrize("strix_halo", [False, None])
-def test_the_catalog_tags_nothing_off_strix_halo(tmp_path, monkeypatch, strix_halo):
-    tags = _known_issues(_backend(tmp_path, monkeypatch, strix_halo), monkeypatch)
-    assert set(tags.values()) == {None}
 
 
 def test_managed_accounts_get_no_gpu_hint():

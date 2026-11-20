@@ -6,11 +6,18 @@ import { type NpuStatus, getNpuStatus, npuProvisionalRetryMs } from "./api";
 
 let cached: NpuStatus | null = null;
 let pending: Promise<NpuStatus | null> | null = null;
+// Every mounted consumer, so enabling the NPU in one view updates the others (the live monitor).
+const listeners = new Set<(status: NpuStatus) => void>();
+
+function publish(status: NpuStatus): void {
+  cached = status;
+  for (const listener of listeners) listener(status);
+}
 
 function fetchOnce(): Promise<NpuStatus | null> {
   pending ??= getNpuStatus()
     .then((status) => {
-      cached = status;
+      publish(status);
       return status;
     })
     .catch(() => null)
@@ -25,13 +32,19 @@ export function useNpuStatus(
 ): [NpuStatus | null, (next: NpuStatus) => void] {
   const [status, setStatus] = useState<NpuStatus | null>(cached);
   useEffect(() => {
+    listeners.add(setStatus);
+    return () => {
+      listeners.delete(setStatus);
+    };
+  }, []);
+  useEffect(() => {
     if (!active) return;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Re-read a status taken before the backend's GPU scan answered (the Strix Halo hint).
     const read = (attempt: number) =>
       void fetchOnce().then((next) => {
         if (!live || !next) return;
-        setStatus(next);
         const wait = npuProvisionalRetryMs(next, attempt);
         if (wait != null) timer = setTimeout(() => read(attempt + 1), wait);
       });
@@ -41,9 +54,5 @@ export function useNpuStatus(
       clearTimeout(timer);
     };
   }, [active]);
-  const update = (next: NpuStatus) => {
-    cached = next;
-    setStatus(next);
-  };
-  return [status, update];
+  return [status, publish];
 }

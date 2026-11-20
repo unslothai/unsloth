@@ -407,14 +407,14 @@
    "vae_fused_encoder": true
   },
   "flux.3-klein": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "flux.3-klein-base": {
-   "cudnn_benchmark": true,
-   "filter_reduction_configs": false,
+   "cudnn_benchmark": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -432,13 +432,13 @@
   },
   "hunyuanvideo-1.5": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
   "hunyuanvideo-1.5-720p": {
    "cudnn_benchmark": false,
-   "filter_reduction_configs": false,
+   "filter_reduction_configs": true,
    "filter_reduction_configs_archs": [],
    "vae_fused_encoder": true
   },
@@ -1730,7 +1730,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1852,7 +1852,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1994,7 +1994,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -3266,7 +3266,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -4433,7 +4433,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
+   "auto_bf16_when_resident": null,
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -4587,14 +4587,8 @@
   ],
   "family_auto_bf16_when_resident": {
    "anima": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
-   "flux.2-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "flux.3-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "flux.3-klein-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "moss-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "moss-image-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
-   "z-image": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)"
+   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
   },
   "family_auto_prefer": {
    "flux.1": {
@@ -4714,6 +4708,19 @@
   },
   "family_train_scheme_deny": {
    "minimax-h3": [
+    "fp8",
+    "mxfp8"
+   ],
+   "minimax-h3-image": [
+    "fp8",
+    "mxfp8",
+    "nf4"
+   ],
+   "moss-image": [
+    "fp8",
+    "mxfp8"
+   ],
+   "moss-image-base": [
     "fp8",
     "mxfp8"
    ],
@@ -4993,16 +5000,19 @@
    "flux.3-klein-base": "FLUX.3 Klein Base",
    "krea-2": "Krea 2",
    "ltx-2": "LTX-2",
+   "ltx-2.5": "LTX-2.5",
    "minimax-h3": "MiniMax-H3",
    "minimax-h3-image": "MiniMax-H3-Image",
    "moss-image": "MOSS-Image",
    "qwen-image": "Qwen-Image",
+   "qwen-image-2.1": "Qwen-Image-2.1",
    "sdxl": "SDXL",
    "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
    "z-image": "Z-Image"
   },
   "trainable_video_families": [
    "ltx-2",
+   "ltx-2.5",
    "minimax-h3",
    "wan2.2-ti2v-5b"
   ],
@@ -5054,7 +5064,9 @@
    "lightricks/ltx-2.5-diffusers",
    "minimaxai/minimax-h3",
    "nvidia/cosmos3-edge",
+   "nvidia/cosmos3-edge-fp8",
    "nvidia/cosmos3-nano",
+   "nvidia/cosmos3-nano-fp8",
    "wan-ai/wan2.1-t2v-1.3b-diffusers",
    "wan-ai/wan2.1-t2v-14b-diffusers",
    "wan-ai/wan2.2-t2v-a14b-diffusers",

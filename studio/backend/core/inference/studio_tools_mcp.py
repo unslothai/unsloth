@@ -104,6 +104,8 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
         expect_gen = account.credential_gen,
         # Pinned to this account, as Deep Research does: the username could name a recreated namesake.
         account_id = None if record.is_owner else record.account_id,
+        # Only an inference only key binds NEVER; its chat's tools must not get wider access.
+        access = storage.API_KEY_ACCESS_INFERENCE if account.load_policy == "never" else None,
     )
 
 
@@ -241,8 +243,7 @@ def _still_running(result: Any) -> bool:
 
 
 def _watch_turn(cancel_event: Any, ticket: GenerationTicket) -> None:
-    """Stops a video still rendering after its call when the chat is stopped: only a Stop or an aborted
-    turn sets this per-request event."""
+    """Stops a still-rendering video when chat stops; only a Stop or aborted turn sets it."""
     if not callable(getattr(cancel_event, "wait", None)):
         return
 

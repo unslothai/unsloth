@@ -65,13 +65,18 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
     {
         "qwen-image",
+        "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
         "minimax-h3",
+        "minimax-h3-image",
     }
 )
 
@@ -80,11 +85,19 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
 TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGISTRY if f.trainable)
 
 # flow_shift defaults to auto to reproduce inference sigmas; dynamic-shift schedulers and MiniMax-H3 otherwise train unshifted.
-AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2", "minimax-h3"})
+AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset(
+    {"qwen-image", "qwen-image-2.1", "ltx-2", "ltx-2.5", "minimax-h3"}
+)
 
 # Video latents are allocated on the family's spatial compression grid, so a training resolution off that grid
 # silently changes the latent geometry. LTX-2: 32x VAE; Wan2.2-TI2V-5B: 16x VAE x 2x2 patch.
 _VIDEO_RESOLUTION_MULTIPLE = 32
+# Image families whose latent grid is coarser than the generic multiple-of-8 check.
+_IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {
+    "qwen-image-2.1": 32,
+    "flux.3-klein-base": 16,
+    "moss-image": 16,
+}
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -215,9 +228,14 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     family = _resolve_trainable_family(base_model, model_family)
-    from core.inference.video_families import assert_ltx_pick_supported
+    from core.inference.video_families import (
+        assert_local_pipeline_family,
+        assert_ltx_pick_supported,
+    )
 
     assert_ltx_pick_supported(family, base_model)
+    # "ltx-2" must not train a local LTX-2.5 pipeline, nor vice versa.
+    assert_local_pipeline_family(base_model, family)
     return family
 
 
@@ -251,10 +269,6 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
     _refuse_component_only_repo(base_model)
     # Like component-only refusal: the family is trainable, but the loader cannot open this repo.
     _refuse_ltx23_training_base(base_model)
-    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
-    from core.inference.video_families import assert_local_pipeline_not_ltx25
-
-    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -287,7 +301,11 @@ def _resolve_trainable_family(base_model: str, model_family: Optional[str] = Non
     vid = detect_video_family(base_model)
     if vid is None and is_local_diffusers:
         from core.inference.video_families import local_cosmos3_pipeline_family
-        local_family = local_cosmos3_pipeline_family(base_model)
+        from core.inference.video_families import local_ltx_pipeline_family
+
+        local_family = local_cosmos3_pipeline_family(base_model) or local_ltx_pipeline_family(
+            base_model
+        )
         vid = detect_video_family("", override = local_family) if local_family else None
     if vid is not None:
         if vid.name not in TRAINABLE_VIDEO_FAMILIES:
@@ -391,6 +409,10 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "minimax-h3":
         from core.training.diffusion_h3_trainer import run_h3_lora_training
         return run_h3_lora_training
+    # MiniMax-H3-Image: native layout, per-step distilled heads, AdaLN table (diffusion_h3_image_trainer).
+    if key == "minimax-h3-image":
+        from core.training.diffusion_h3_image_trainer import run_h3_image_lora_training
+        return run_h3_image_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
 
 
@@ -412,9 +434,24 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
+    "qwen-image-2.1": {
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
+    # Published MOSS LoRA recipe: rank 32 / lr 1e-4 at 512, rank 16 at 1024.
+    "moss-image": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # Upstream FLUX.2 DreamBooth uses rank 16 / lr 1e-4; uniform timestep draws need a warmup ramp.
     "flux.2-klein": {
         "lora_rank": 16,
@@ -430,8 +467,23 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
+    # Reference rank 32 / lr 1e-4; a sweep found rank 16 or lr 2e-4 drift unrelated prompts more.
+    "flux.3-klein-base": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # Resolution must be a multiple of 32 (LTX-2 VAE spatial compression).
     "ltx-2": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
+    "ltx-2.5": {
         "lora_rank": 32,
         "learning_rate": 1e-4,
         "resolution": 512,
@@ -452,6 +504,17 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+        "train_batch_size": 1,
+    },
+    # resolution is the canvas AREA as a side; rotary grid is canvas-normalised, so a 1 MP adapter carries to 4 MP.
+    # lr 5e-5 x 150 steps won a G4 sweep (lowest drift on unrelated prompts).
+    "minimax-h3-image": {
+        "lora_rank": 32,
+        "learning_rate": 5e-5,
+        "resolution": 1024,
+        "train_steps": 150,
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
         "train_batch_size": 1,
@@ -477,6 +540,13 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "The heaviest option.",
     },
+    # The Qwen3-VL-8B encoder (17.5 GB bf16) runs once to cache the captions and is freed before the DiT loads.
+    "qwen-image-2.1": {
+        "params": "7B",
+        "qlora_vram_gb": 20,
+        "gated": False,
+        "note": "Trains on Qwen-Image-2.1, runs on 2.1 or Turbo.",
+    },
     "z-image": {"params": "6B", "qlora_vram_gb": 12, "gated": False, "note": ""},
     "krea-2": {
         "params": "12B",
@@ -484,14 +554,33 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Trains on Krea-2-Raw, runs on Turbo.",
     },
+    "moss-image": {
+        "params": "5B",
+        "qlora_vram_gb": 18,
+        "gated": False,
+        "note": "Trains on SFT or Base; the adapter runs on both.",
+    },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
+    # Encoder freed before the DiT loads: nf4 peaks at 6.9 GB, bf16 13.1 GB (768 px, rank 32).
+    "flux.3-klein-base": {
+        "params": "5.6B",
+        "qlora_vram_gb": 12,
+        "gated": False,
+        "note": "Trains on FLUX.3 Klein Base, runs on Klein or Base.",
+    },
     # Run peak (34.8 GB on B200) includes the resident Gemma3-12B conditioner.
     "ltx-2": {
         "params": "19B",
         "qlora_vram_gb": 36,
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
+    },
+    "ltx-2.5": {
+        "params": "22B",
+        "qlora_vram_gb": 24,
+        "gated": False,
+        "note": "Video: trains a style LoRA on still images; runs on the Video page's distilled model.",
     },
     # Measured on a B200 (nf4, 704px, rank 32): run peaks at 11.6 GB during the one-time UMT5-XXL encode.
     "wan2.2-ti2v-5b": {
@@ -507,6 +596,13 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "qlora_vram_gb": 80,
         "gated": False,
         "note": "Video with sound: trains on clips that have a soundtrack.",
+    },
+    # Peaks (rank 32, ~1 MP): bf16 45.5 GB, int8 24.3 GB.
+    "minimax-h3-image": {
+        "params": "33B",
+        "qlora_vram_gb": 32,
+        "gated": False,
+        "note": "bf16 base on 80 GB cards, int8 below; the LoRA is merged in when the model loads.",
     },
 }
 # Keys are canonical upstream ids; family_train_infos adds mirror aliases the client overlays.
@@ -537,16 +633,20 @@ _DIT_TRAIN_FAMILIES = frozenset(
     {
         "flux.1",
         "qwen-image",
+        "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
+        "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
     }
 )
 # Kept separate so the DiT-specific levers (compile, the shared sigma table) do not follow.
-_FLOW_TRAIN_FAMILIES = _DIT_TRAIN_FAMILIES | {"minimax-h3"}
+_FLOW_TRAIN_FAMILIES = _DIT_TRAIN_FAMILIES | {"minimax-h3", "minimax-h3-image"}
 
 
 def effective_mixed_precision(cfg: Any) -> str:
@@ -556,7 +656,10 @@ def effective_mixed_precision(cfg: Any) -> str:
     requested = str(getattr(cfg, "mixed_precision", "") or "")
     if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _FLOW_TRAIN_FAMILIES:
         # Record the device-resolved precision, not the request, or identical resumes mismatch.
-        return "bf16" if resolve_train_device() in ("cuda", "xpu") else "no"
+        device = resolve_train_device()
+        if device == "cuda" and dit_fp16_fallback(getattr(cfg, "resolved_family", "")):
+            return "fp16"
+        return "bf16" if device in ("cuda", "xpu") else "no"
     if not torch.cuda.is_available():
         return "no"
     if requested == "bf16" and not native_bf16_supported():
@@ -597,6 +700,38 @@ def flow_bf16_trainable() -> bool:
         )
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
         return False
+
+
+# DiT families with a validated fp16 path on non-bf16 CUDA cards; others keep the bf16 refusal.
+DIT_FP16_TRAIN_FAMILIES: frozenset[str] = frozenset({"flux.2-klein", "z-image", "wan2.2-ti2v-5b"})
+# "0" disables the fallback; "force" uses it on bf16 cards too (parity checks only).
+DIT_FP16_ENV = "UNSLOTH_STUDIO_DIT_FP16"
+
+
+def dit_fp16_fallback(resolved_family: str) -> bool:
+    """Supported family on an NVIDIA GPU without native bf16 (or env ``force``); ROCm excluded. Never raises."""
+    if (resolved_family or "").strip().lower() not in DIT_FP16_TRAIN_FAMILIES:
+        return False
+    mode = os.environ.get(DIT_FP16_ENV, "").strip().lower()
+    if mode in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or torch_is_rocm():
+            return False
+        if mode == "force":
+            return True
+        return not flow_bf16_trainable()
+    except Exception:  # noqa: BLE001 -- probe failure -> the old (refusing) behaviour
+        return False
+
+
+def dit_fp16_dense_reason(mode: str) -> str:
+    return (
+        f"base_precision={mode!r} trains in bf16 compute, which this GPU does not have; on this GPU the "
+        "DiT trainer runs fp16 on the nf4 base. Use base_precision='nf4' or 'auto'."
+    )
 
 
 def resolve_train_device() -> str:
@@ -668,6 +803,8 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     try:
         import torch
         if torch.cuda.is_available() and not flow_bf16_trainable():
+            if dit_fp16_fallback(resolved_family):
+                return None
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."
@@ -876,6 +1013,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
+    if mode in ("bf16", "int8", "fp8", "mxfp8") and dit_fp16_fallback(fam):
+        return dit_fp16_dense_reason(mode)
     if fam in _FLOW_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # Dense precisions need CUDA; reject here so residents are not evicted first.
         try:
@@ -976,7 +1115,11 @@ def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[s
 
 def family_train_infos() -> list[dict[str, Any]]:
     """Lists both registries; drops a family whose pipeline class is missing, since start refuses it."""
-    from core.inference.diffusion_families import family_pipeline_available, mirror_repo
+    from core.inference.diffusion_families import (
+        family_pipeline_available,
+        mirror_hosts_artifacts,
+        mirror_repo,
+    )
     from core.inference.diffusion_transformer_quant import _family_train_denied
 
     dit_modes, dit_recommended = train_precision_modes()
@@ -995,8 +1138,10 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only.
-        supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
+        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only. The fp16 path trains eager.
+        supports_compile = (
+            bool(not dit_block) and name in _DIT_TRAIN_FAMILIES and not dit_fp16_fallback(name)
+        )
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:
@@ -1023,7 +1168,11 @@ def family_train_infos() -> list[dict[str, Any]]:
             # Mirror-id bases pair like vendor ids; return the inference mirror so Deploy stays ungated.
             training_mirror = mirror_repo(training_repo)
             if training_mirror:
-                deploy_bases[training_mirror] = mirror_repo(inference_repo) or inference_repo
+                inference_mirror = mirror_repo(inference_repo)
+                # An artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8) is a prequant repo, not a pipeline pick.
+                if inference_mirror and mirror_hosts_artifacts(inference_mirror):
+                    inference_mirror = None
+                deploy_bases[training_mirror] = inference_mirror or inference_repo
         infos.append(
             {
                 "name": name,
@@ -1057,6 +1206,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
                 # Families with several train/deploy pairs cannot use the scalar above.
                 "deploy_bases": deploy_bases,
+                # Every family the trained adapter loads on (FLUX.3 Klein Base deploys on the distilled family).
+                "lora_families": lora_run_families(name),
                 # Dropped on a dit_block so the hardware reason in vram_note is shown instead.
                 "base_specs": {} if dit_block else base_specs,
             }
@@ -1104,7 +1255,8 @@ class DiffusionLoraConfig:
     # cache_variants crop/flip draws are frozen per image; the per-step VAE sampling noise is preserved.
     cache_latents: bool = True
     cache_variants: int = 4
-    # Latent stats and caption embeddings, keyed by hash; a warm cache skips VAE and text encoders.
+    # Persistent latent stats and caption embeddings, keyed by hash; a warm cache skips VAE and text encoders.
+    # None (or blank) = the default directory (diffusion_train_extras.effective_cond_cache_dir); "off" disables it.
     cond_cache_dir: Optional[str] = None
     # DiT LoRA EMA decay; 0.0 disables; otherwise a warmup-ramped EMA is exported under ema/.
     ema_decay: float = 0.0
@@ -1164,6 +1316,13 @@ class DiffusionLoraConfig:
             raise ValueError(
                 f"'{resolved_family}' trains at a resolution that is a multiple of "
                 f"{_VIDEO_RESOLUTION_MULTIPLE} (its VAE compresses space by that factor); "
+                f"got {self.resolution}."
+            )
+        # Qwen-Image-2.1 latents are 16x and its image slots cover 2x2 latent tokens, so a canvas edge must be 32-aligned.
+        multiple = _IMAGE_RESOLUTION_MULTIPLE.get(resolved_family)
+        if multiple and self.resolution % multiple != 0:
+            raise ValueError(
+                f"'{resolved_family}' trains at a resolution that is a multiple of {multiple}; "
                 f"got {self.resolution}."
             )
         if self.mixed_precision not in ("bf16", "fp16", "no"):
@@ -1234,10 +1393,14 @@ class DiffusionLoraConfig:
         sample_every, sample_prompts = validate_sample_settings(
             self.sample_every, self.sample_prompts, resolved_family
         )
-        # A blank cond_cache_dir (the Unsloth default when unset) means "off", not cwd.
+        # Blank or unset means the default persistent cache (never cwd); an off value ("off", "none", ...) disables it.
         cond_cache_dir = (
             str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
         ) or None
+        from core.training.diffusion_train_extras import cond_cache_is_off
+
+        if cond_cache_dir is not None and cond_cache_is_off(cond_cache_dir):
+            cond_cache_dir = "off"
         compile_transformer = str(self.compile_transformer or "auto").strip().lower()
         if compile_transformer not in ("off", "on", "auto"):
             raise ValueError("compile_transformer must be one of off / on / auto")
@@ -1469,8 +1632,9 @@ def discover_image_caption_pairs(
         if not meta_path.is_file():
             continue
         # Skip a bad upload (invalid UTF-8 or non-object JSON) so the instance_prompt fallback still applies.
+        # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
-            meta_lines = meta_path.read_text(encoding = "utf-8").splitlines()
+            meta_lines = meta_path.read_text(encoding = "utf-8").split("\n")
         except (OSError, UnicodeError):
             continue
         for line in meta_lines:
@@ -1536,22 +1700,27 @@ def discover_image_caption_pairs(
 
 
 # Shared config has save_steps/resume_from_checkpoint; loops without them must raise, not ignore.
-CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
-UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "minimax-h3-image"})
+# MiniMax-H3-Image trains each picture on its own canvas (batch 1), so there is nothing to bucket.
+UNBUCKETED_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "minimax-h3-image"})
 
 # Batch is pure replication: layout, rotary grid and timesteps come from one clip and its caption.
-SINGLE_SEQUENCE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+SINGLE_SEQUENCE_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "minimax-h3-image"})
 
 # Families loaded via ModularPipeline (modular_model_index.json, no model_index.json); the trainer and start route must share this set.
-MODULAR_BASE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+MODULAR_BASE_FAMILIES: frozenset[str] = frozenset({"minimax-h3", "flux.3-klein-base"})
 
 # MiniMax-H3 canvas multiple: a 16x VAE compression and a 2x patch.
 _H3_CANVAS_MULTIPLE = 32
 
 
 def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
-    """Returns the reason this config cannot train MiniMax-H3, else None; never raises. Config-only, so the route can check before freeing residents."""
-    if (getattr(cfg, "resolved_family", "") or "").strip().lower() != "minimax-h3":
+    """Returns the reason this config cannot train MiniMax-H3 (video or image), else None; never raises. Config-only,
+    so the route can check before freeing residents."""
+    family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
+    if family == "minimax-h3-image":
+        return h3_image_train_unsupported_reason(cfg)
+    if family != "minimax-h3":
         return None
     if cfg.mixed_precision != "bf16":
         return (
@@ -1584,12 +1753,42 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
         )
-    # No conditioning cache exists on this path, so accepting the directory would promise a saving that never happens.
-    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
+    return None
+
+
+def h3_image_train_unsupported_reason(cfg: Any) -> Optional[str]:
+    """The MiniMax-H3-Image refusals: the loop's fixed bf16 compute, the 32 px canvas grid, no unconditional branch,
+    one packed sequence per step, and only the bf16 / int8 bases."""
+    if cfg.mixed_precision != "bf16":
         return (
-            "MiniMax-H3 has no persistent conditioning cache yet: each run loads the "
-            "conditioner and recomputes its captions and latents, so cond_cache_dir would be "
-            "recorded and never read. Leave it unset."
+            "MiniMax-H3-Image LoRA training requires bf16: the checkpoint keeps its patch projection and output heads "
+            "in fp32 and the block stack in bf16. Set mixed precision to bf16."
+        )
+    if cfg.resolution % _H3_CANVAS_MULTIPLE:
+        return (
+            f"MiniMax-H3-Image trains on canvases whose edges are multiples of {_H3_CANVAS_MULTIPLE} (a 16x VAE and "
+            f"a 2x patch); got resolution {cfg.resolution}."
+        )
+    if float(getattr(cfg, "cfg_dropout", 0.0) or 0.0) > 0:
+        return (
+            "MiniMax-H3-Image is guidance-distilled: it has no unconditional branch and no negative prompt, so a "
+            "classifier-free-guidance dropout trains a path the sampler never takes. Set cfg_dropout to 0."
+        )
+    if str(getattr(cfg, "weighting_scheme", "none") or "none") != "none":
+        return (
+            "MiniMax-H3-Image trains on its 6 distilled sampler steps with equal weight; a timestep weighting "
+            "scheme does not apply. Use weighting_scheme='none'."
+        )
+    if cfg.train_batch_size != 1:
+        return (
+            "MiniMax-H3-Image trains at batch size 1: one forward covers one packed [text | image] sequence whose "
+            "length is set by the picture's canvas and its caption. Use gradient_accumulation_steps to raise the "
+            "effective batch."
+        )
+    if str(getattr(cfg, "base_precision", "") or "").strip().lower() in ("fp8", "mxfp8"):
+        return (
+            f"base_precision={cfg.base_precision!r} is not supported for MiniMax-H3-Image training: the frozen base "
+            "trains as bf16 or int8. Use 'bf16', 'int8' or 'auto'."
         )
     return None
 
@@ -1615,6 +1814,19 @@ def train_recipe_overrides(cfg: Any) -> dict[str, Any]:
     family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
     if family == "minimax-h3":
         return dict(_H3_FIXED_RECIPE)
+    if family == "minimax-h3-image":
+        # nf4 (the config default) has no H3-Image path, so it runs as auto.
+        out = {
+            "center_crop": True,
+            "random_flip": False,
+            "snr_gamma": None,
+            "cache_latents": True,
+            "cache_variants": 1,
+            "bucketing": False,
+        }
+        if str(getattr(cfg, "base_precision", "") or "nf4").strip().lower() == "nf4":
+            out["base_precision"] = "auto"
+        return out
     # Min-SNR is an SDXL (epsilon-prediction) weighting; the flow-matching loops never read it.
     if family and family != "sdxl":
         return {"snr_gamma": None}
@@ -1837,6 +2049,7 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         "black-forest-labs/flux.2-klein-base-9b",
         # A video family, so the image-side inference allowlist never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
+        "lightricks/ltx-2.5-diffusers",
         # MiniMax-H3's official base, for the same reason: safetensors-only, no remote code.
         "minimaxai/minimax-h3",
         "wan-ai/wan2.2-ti2v-5b-diffusers",
@@ -1845,10 +2058,16 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
 
 # LTX-2.3 repos are single-file checkpoints the trainer cannot load; refuse before eviction.
 _LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
+_LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.5",)
 
 
 def _refuse_ltx23_training_base(base_model: str) -> None:
     """Raise for an LTX-2.3 base: the family routing accepts it, the training loader cannot."""
+    if str(base_model or "").strip().lower() in _LTX25_SINGLE_FILE_TRAIN_UNSUPPORTED:
+        raise ValueError(
+            f"'{base_model}' ships LTX-2.5 as single-file checkpoints, which cannot be a training base: the "
+            f"trainer loads a diffusers pipeline. Train from 'Lightricks/LTX-2.5-Diffusers' instead."
+        )
     if str(base_model or "").strip().lower() not in _LTX23_TRAIN_UNSUPPORTED:
         return
     raise ValueError(
@@ -1859,7 +2078,19 @@ def _refuse_ltx23_training_base(base_model: str) -> None:
     )
 
 
-def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) -> None:
+# Components a family's local base may omit because the trainer loads them from elsewhere (MiniMax-H3-Image conditions
+# on MiniMax-H3's Qwen3-VL, fetched as Studio's hosted int8 copy).
+_LOCAL_BASE_EXCLUDED_COMPONENTS: dict[str, tuple[str, ...]] = {
+    "minimax-h3-image": ("text_encoder",)
+}
+
+
+def _assert_trusted_base_model(
+    base_model: str,
+    *,
+    allow_modular: bool = False,
+    family: Optional[str] = None,
+) -> None:
     """Checked before from_pretrained so untrusted repos (possible pickle weights) are never fetched; allow_modular takes a MiniMax-H3 modular dir."""
     from core.inference.diffusion import _assert_local_base_is_pipeline, _is_trusted_diffusion_repo
 
@@ -1875,7 +2106,13 @@ def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) 
     # An existing LOCAL base is loaded as a full pipeline, which needs an index; reject a non-pipeline local dir
     # before /diffusion/start frees the GPU models.
     try:
-        _assert_local_base_is_pipeline(base_model, allow_modular = allow_modular)
+        _assert_local_base_is_pipeline(
+            base_model,
+            allow_modular = allow_modular,
+            excluded_components = _LOCAL_BASE_EXCLUDED_COMPONENTS.get(
+                str(family or "").strip().lower(), ()
+            ),
+        )
     except ValueError as e:
         shape = _single_file_shape(base_model)
         if shape is None:
@@ -2181,9 +2418,8 @@ def _publish_to_lora_catalog(
     cfg: DiffusionLoraConfig,
     steps: Optional[int] = None,
 ) -> Optional[str]:
-    """Video families are skipped: loras/diffusion is read only by the Images LoRA picker."""
-    if detect_video_family("", override = cfg.resolved_family) is not None:
-        return None
+    """Mirror into loras/diffusion, which the Images LoRA picker and the Video load's ``loras`` both read; the
+    sidecar's family keeps a video adapter out of every image family's list."""
     try:
         import shutil
 
@@ -2214,6 +2450,22 @@ def _publish_to_lora_catalog(
         return None
 
 
+def lora_run_families(family: Optional[str]) -> list[str]:
+    """Families a LoRA trained on ``family`` loads on: its own plus its ``deploy_base_repos`` targets'."""
+    name = str(family or "").strip()
+    out = [name]
+    try:
+        from core.inference.diffusion_families import detect_family
+        fam = detect_family("", override = name) if name else None
+        for _training_repo, inference_repo in getattr(fam, "deploy_base_repos", ()) or ():
+            target = detect_family(inference_repo)
+            if target is not None and target.name not in out:
+                out.append(target.name)
+    except Exception:  # noqa: BLE001 -- the trained family alone still gates the adapter correctly
+        pass
+    return out
+
+
 def _write_lora_sidecar(
     sidecar_path: Path,
     cfg: DiffusionLoraConfig,
@@ -2222,7 +2474,7 @@ def _write_lora_sidecar(
     """Records the step reached, not the configured train_steps, so a stopped run is not overstated."""
     meta = {
         "family": cfg.resolved_family,
-        "families": [cfg.resolved_family],
+        "families": lora_run_families(cfg.resolved_family),
         "base_model": cfg.base_model,
         "lora_rank": cfg.lora_rank,
         "lora_alpha": cfg.lora_alpha,

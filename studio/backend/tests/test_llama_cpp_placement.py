@@ -2633,6 +2633,164 @@ def _apu_backend(tmp_path, *, gguf_gb, avail_mib, monkeypatch):
     return backend, gguf
 
 
+def _windows_apu_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    carve_gb,
+    pal_pool_gb,
+    model_gb,
+    ple_gb,
+    used_gb = 0.5,
+):
+    """Strix Halo on Windows: 21 GB of RAM left to Windows, the rest a BIOS carve-out."""
+    import utils.hardware.hardware as hw
+
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = model_gb, avail_mib = 21 * 1024, monkeypatch = monkeypatch
+    )
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_n_layers", 48)
+    named = {"token_embd.weight": int(0.6 * 1024**3), "output.weight": int(0.6 * 1024**3)}
+    if ple_gb:
+        named["per_layer_token_embd.weight"] = int(ple_gb * 1024**3)
+    named["blk.0.ffn_up_exps.weight"] = int(model_gb * 1024**3) - sum(named.values())
+    backend._gguf_tensor_scan = lambda _path: ("qwen4exp", dict(named), 0)
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(supports_load_mode = True, supports_lazy_mode = True, lazy_mode_flag = "--lazy-mode")
+    monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps)
+    monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
+    # PAL's HIP total adds part of the shared heap, so it must never be read as the carve-out.
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_rocm_selected_pool_mib",
+        staticmethod(lambda _gpu_indices = None: int(pal_pool_gb * 1024)),
+    )
+    backend._windows_apu_gpu_used_bytes = lambda: (None if used_gb is None else used_gb * 1024**3)
+    record = {
+        "name": "AMD Radeon(TM) 8060S Graphics",
+        "dedicated_memory_bytes": int(carve_gb * 1024**3),
+    }
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = None, distinguish_failure = False: (
+            {1: record} if vendor_id == hw._AMD_PCI_VENDOR_ID else {}
+        ),
+    )
+    return backend, gguf
+
+
+_W96 = dict(carve_gb = 96, pal_pool_gb = 107.87)
+
+
+@pytest.mark.parametrize(
+    "setup, extra_args, keeps_none",
+    [
+        (dict(_W96, model_gb = 97.12, ple_gb = 36.4), ["-lzm", "on-direct", "-ngl", "49"], True),
+        (dict(_W96, model_gb = 97.12, ple_gb = 36.4), ["-lzm", "on", "-ngl", "49"], True),
+        (dict(_W96, model_gb = 62, ple_gb = 0), ["-ngl", "49"], True),
+        # A resident table stays in Windows RAM however many layers go to the GPU.
+        (dict(_W96, model_gb = 97.12, ple_gb = 36.4), ["-lzm", "off", "-ngl", "49"], False),
+        # A 32 GB carve-out under an 89 GB HIP total: the overflow lands in shared Windows RAM.
+        (dict(carve_gb = 32, pal_pool_gb = 89.465, model_gb = 62, ple_gb = 0), ["-ngl", "49"], False),
+        (dict(_W96, model_gb = 62, ple_gb = 0), ["-ngl", "24"], False),
+        # Another workload holds 60 GiB of the carve-out, or its occupancy is unreadable.
+        (dict(_W96, model_gb = 62, ple_gb = 0, used_gb = 60), ["-ngl", "49"], False),
+        (dict(_W96, model_gb = 62, ple_gb = 0, used_gb = None), ["-ngl", "49"], False),
+        (
+            dict(_W96, model_gb = 62, ple_gb = 0),
+            ["-ngl", "49", "--split-mode", "none", "--main-gpu", "-1"],
+            False,
+        ),
+    ],
+    ids = [
+        "on_direct",
+        "lazy_on",
+        "dense",
+        "lazy_off",
+        "carve32",
+        "partial",
+        "occupied",
+        "occupancy_unknown",
+        "cpu_child",
+    ],
+)
+def test_windows_rocm_apu_full_offload_prices_the_carve_out_apart_from_ram(
+    tmp_path, monkeypatch, setup, extra_args, keeps_none
+):
+    """#17605: weights in a Strix Halo carve-out are not Windows RAM, so --load-mode none stays."""
+    backend, gguf = _windows_apu_backend(tmp_path, monkeypatch, **setup)
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none", "--fit", "off", *extra_args])[
+        "cmd"
+    ]
+
+    assert (_unmapped_tokens(cmd) == ["--load-mode", "none"]) is keeps_none, cmd
+    assert ("unified-memory APU" in (backend.last_load_warning or "")) is not keeps_none
+
+
+@pytest.mark.parametrize(
+    "dedicated, shared, expected",
+    [
+        ([("luid_0x1_phys_0", 2.0 * 1024**3)], [("luid_0x1_phys_0", 1.0 * 1024**3)], 3.0 * 1024**3),
+        ([("luid_0x1_phys_0", 1024.0)], [], 64 * 1024**2),
+        (None, [], None),
+        ([], [], None),
+    ],
+    ids = ["busy", "idle_under_floor", "unreadable", "no_adapters"],
+)
+def test_windows_apu_gpu_used_bytes(monkeypatch, dedicated, shared, expected):
+    import utils.hardware.hardware as hw
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": dedicated if counter == "Dedicated Usage" else shared,
+    )
+    assert LlamaCppBackend._windows_apu_gpu_used_bytes() == expected
+
+
+@pytest.mark.parametrize(
+    "env_name", ["GGML_CUDA_ENABLE_UNIFIED_MEMORY", "UNSLOTH_ENABLE_UNIFIED_MEMORY"]
+)
+def test_windows_rocm_apu_managed_memory_gets_no_carve_out_credit(tmp_path, monkeypatch, env_name):
+    """Managed allocations are host-backed, so they sit in Windows RAM whatever the carve-out."""
+    backend, gguf = _windows_apu_backend(tmp_path, monkeypatch, **_W96, model_gb = 62, ple_gb = 0)
+    monkeypatch.setenv(env_name, "1")
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none", "--fit", "off", "-ngl", "49"])[
+        "cmd"
+    ]
+
+    assert not _unmapped_tokens(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "gpu_layers, n_cpu_moe, keeps_none",
+    [(99, 0, True), (-1, 0, False), (99, 48, False)],
+    ids = ["manual_all", "manual_auto_is_fitter", "manual_cpu_moe"],
+)
+def test_windows_rocm_apu_manual_placement_matches_the_launch(
+    tmp_path, monkeypatch, gpu_layers, n_cpu_moe, keeps_none
+):
+    """Manual -1 is the fitter's call and CPU experts stay in RAM, so neither earns the credit."""
+    backend, gguf = _windows_apu_backend(tmp_path, monkeypatch, **_W96, model_gb = 62, ple_gb = 0)
+
+    def metadata(_path):
+        backend._n_layers, backend._n_experts = 48, 128
+
+    backend._read_gguf_metadata = metadata
+    cmd = _launch(
+        backend,
+        gguf,
+        extra_args = ["--load-mode", "none"],
+        gpu_memory_mode = "manual",
+        gpu_layers = gpu_layers,
+        n_cpu_moe = n_cpu_moe,
+    )["cmd"]
+
+    assert (_unmapped_tokens(cmd) == ["--load-mode", "none"]) is keeps_none, cmd
+
+
 @pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
 def test_an_oversized_unmapped_apu_load_is_paged_before_it_launches(
     tmp_path, monkeypatch, extra_args
@@ -3246,6 +3404,49 @@ def test_a_genuinely_cpu_only_layout_is_still_recognised(tmp_path):
 
     with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
         assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary)) is True
+
+
+@pytest.mark.parametrize(
+    "libs,sycl_only",
+    [
+        (("cpu", "base", "sycl"), True),
+        (("cpu", "base", "sycl", "cuda"), False),
+        (("cpu", "base", "sycl", "vulkan"), False),
+        (("cpu", "base", "cuda"), False),
+        (("cpu", "base"), False),
+    ],
+)
+def test_sycl_build_is_not_sized_from_nvidia_or_amd_probes(tmp_path, libs, sycl_only):
+    """#17787: a SYCL llama-server on a host with an NVIDIA card was planned against nvidia-smi."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    for lib in libs:
+        (lib_dir / f"{prefix}ggml-{lib}.{extension}").write_bytes(b"x")
+
+    class VendorProbeReached(Exception):
+        pass
+
+    def vendor_probe(*_a, **_kw):
+        raise VendorProbeReached
+
+    from utils.hardware import mig
+
+    with (
+        patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir),
+        patch.object(mig, "visible_devices", side_effect = vendor_probe),
+        patch.object(LlamaCppBackend, "_get_gpu_free_memory_vulkan", return_value = []),
+    ):
+        assert LlamaCppBackend._is_sycl_only_backend(str(binary)) is sycl_only
+        if sycl_only:
+            assert LlamaCppBackend._get_gpu_memory(str(binary)) == []
+            assert LlamaCppBackend._get_gpu_memory(str(binary), for_llama_server = True) == []
+        elif "vulkan" not in libs:
+            with pytest.raises(VendorProbeReached):
+                LlamaCppBackend._get_gpu_memory(str(binary))
 
 
 def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
@@ -5361,9 +5562,10 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
         ("gemma4", _QWEN38_PLE, [], {}, _QWEN38_PLE),
         # Another architecture's table of the same name is read like any tensor.
         ("qwen3moe", _QWEN38_PLE, [], {}, 0),
-        # At or under 4 GiB, auto loads it normally; "on" reads it lazily anyway.
+        # At or under 4 GiB, auto loads it normally; explicit "on" modes read it lazily anyway.
         ("qwen4exp", 4 * _GIB, [], {}, 0),
         ("qwen4exp", 4 * _GIB, ["-lzm", "on"], {}, 4 * _GIB),
+        ("qwen4exp", 4 * _GIB, ["-lzm", "on-direct"], {}, 4 * _GIB),
         ("qwen4exp", _QWEN38_PLE, ["-lzm", "off"], {}, 0),
         ("qwen4exp", _QWEN38_PLE, ["--lazy-mode=off"], {}, 0),
         ("qwen4exp", _QWEN38_PLE, [], {"LLAMA_ARG_LAZY_MODE": "off"}, 0),
@@ -5382,6 +5584,7 @@ def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
         "other_arch",
         "under_4gib",
         "on",
+        "on_direct",
         "lzm_off",
         "inline_off",
         "env_off",
@@ -5449,9 +5652,7 @@ def test_the_header_scan_sums_shards(tmp_path):
 def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_the_cache(
     tmp_path, _moe_cache_host
 ):
-    """Qwen3.8-Flash-Next on a 94 GB host: RAM holds the lookup table resident or the
-    experts pinned, not both. The cache beats the --fit split by far, so the table is
-    read lazily (no --lazy-mode off) and the experts stay pinned for the cache."""
+    """RAM fits either the table or pinned experts: read the table lazily (no --lazy-mode off)."""
     lazy = {"per_layer_token_embd.weight": 8 * _GIB}
     # 32 GiB with 20 GiB of experts on the 20,000 MiB card: pinning the experts needs
     # 20 + 8 (prompt cache) beside the 8 GiB table, more than 34 GiB of RAM.
@@ -5470,8 +5671,7 @@ def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_
     assert cmd[cmd.index("--lazy-mode") + 1] == "off", cmd
     assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
 
-    # Too little RAM even with the table lazy: no cache, and the table decision is the
-    # one a build without the cache makes (here the table already streams).
+    # Too little RAM even with a lazy table: no cache; the table matches a build without one.
     no_cache = dict(_CACHE_CAPS_ON, supports_moe_cache = False, supports_moe_cache_auto = False)
     reference, reference_cmd = _cache_launch(tmp_path, ram_gib = 26, caps = no_cache, **shape)
     backend, cmd = _cache_launch(tmp_path, ram_gib = 26, **shape)

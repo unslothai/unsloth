@@ -387,6 +387,10 @@ def _member_tokenizer(tokenizer, model_name: str, final_format: str):
     return get_training_chat_template(copy.deepcopy(tokenizer), model_name, final_format)
 
 
+def _is_raw_text(final_format: str, config: dict) -> bool:
+    return final_format == "raw_text" or config.get("format_type") == "raw"
+
+
 def _tokenize_member(
     dataset_info,
     tokenizer,
@@ -394,6 +398,7 @@ def _tokenize_member(
     model_name: str,
     max_length: int,
     vocab_size = None,
+    wrapped: bool = False,
 ):
     """(tokenizer to save, [(input_ids, labels)]) with the single SFT path's tokenization and masking."""
     from datasets import Dataset
@@ -442,9 +447,15 @@ def _tokenize_member(
         add_special_tokens = resolve_add_special_tokens(
             member_tok, first_sample_text(dataset, "text")
         )
-        encode = build_tokenizing_transform(member_tok, "text", max_length, add_special_tokens)
-        input_ids = [list(x) for x in encode({"text": list(dataset["text"])})["input_ids"]]
-    raw = final_format == "raw_text" or config.get("format_type") == "raw"
+        texts = list(dataset["text"])
+        if wrapped:
+            # Wrapped packing carries a long document into the next row, so it is not cut here.
+            encoded = member_tok(texts, add_special_tokens = add_special_tokens)
+        else:
+            encode = build_tokenizing_transform(member_tok, "text", max_length, add_special_tokens)
+            encoded = encode({"text": texts})
+        input_ids = [list(x) for x in encoded["input_ids"]]
+    raw = _is_raw_text(final_format, config)
     if labels is None and config.get("train_on_completions") and not raw:
 
         def build_masker(holder, **kwargs):
@@ -573,15 +584,12 @@ class _MemberLossScale:
         self.good_steps = [0] * members
         self.growth_interval = growth_interval
 
-    def scale_backward(self, logits, adapter_ids):
-        """GradScaler's loss scaling per token, in fp32: a logit's gradient comes only from its member's loss."""
+    def grad_scale(self, adapter_ids, device):
+        """GradScaler's loss scaling per row or token, in fp32: a logit's gradient comes only from its member's loss."""
         import torch
 
-        scale = torch.tensor(self.scale, dtype = torch.float32, device = logits.device)
-        per_token = scale[adapter_ids.to(logits.device).clamp_min(0)]
-        per_token = per_token[:, None, None] if per_token.dim() == 1 else per_token[..., None]
-        logits.register_hook(lambda grad: grad * per_token)
-        return logits
+        scale = torch.tensor(self.scale, dtype = torch.float32, device = device)
+        return scale[adapter_ids.to(device).clamp_min(0)]
 
     def unscale_(self, slot: int, params: list) -> bool:
         """Unscales the member's gradients; False (and its gradients dropped) when any is not finite."""
@@ -674,28 +682,37 @@ def _packed_forward_isolated(model) -> bool:
     return bool((packed - alone).abs().mean() <= 0.05 * alone.abs().mean())
 
 
-def _pack_num_proc(tokenizer) -> Optional[int]:
+def _pack_num_proc(tokenizer, trainer = None) -> Optional[int]:
     """The single job's packing workers: TRL packs each worker's shard on its own, so the count moves the rows."""
-    from core.training.trainer import _tokenizer_blocks_map_workers
+    from core.training.trainer import _block_swap_engaged, _tokenizer_blocks_map_workers
+    from utils.datasets.online_tokenization import host_memory_fork_veto
     from utils.hardware import dataset_map_num_proc
+    from utils.hardware.hardware import _shared_policy
 
-    try:
-        from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
-    except ImportError:
-        from unsloth.dataset_num_proc import get_dataset_num_proc
-    return get_dataset_num_proc(
-        dataset_map_num_proc(
-            1 if _tokenizer_blocks_map_workers(tokenizer) else None, serial_as_none = False
-        )
+    # The pool forks the loaded base model, as the single job's tokenize pool does.
+    fork_veto = host_memory_fork_veto(_block_swap_engaged(trainer)) if trainer is not None else None
+    if fork_veto:
+        logger.info("Packing in process: %s", fork_veto)
+
+    count = dataset_map_num_proc(
+        1 if (_tokenizer_blocks_map_workers(tokenizer) or fork_veto) else None,
+        serial_as_none = False,
     )
+    # The same loader as the tokenize pool: `import unsloth.dataset_num_proc` would run the package
+    # __init__ (torch patches, the model stack) and fails outright on an install without unsloth_zoo.
+    policy = _shared_policy()
+    if policy is None:
+        return None if count is None or count <= 1 else count
+    return policy.get_dataset_num_proc(count)
 
 
 def _pack_rows(
     rows: list,
     max_length: int,
     num_proc: Optional[int] = None,
+    wrapped: bool = False,
 ) -> tuple[list, list]:
-    """The single job's packing (TRL's default strategy) of one member's documents into rows of max_length."""
+    """The single job's packing (wrapped, else TRL's default strategy) of one member's documents into rows of max_length."""
     import dataclasses
     import inspect
 
@@ -709,13 +726,15 @@ def _pack_rows(
             (f.default for f in dataclasses.fields(SFTConfig) if f.name == "packing_strategy"),
             "bfd",
         )
+        if wrapped:
+            strategy = "wrapped"
         packed = pack_dataset(
             dataset, max_length, strategy = strategy, map_kwargs = {"num_proc": num_proc}
         )
     else:
         packed = pack_dataset(dataset, max_length, map_kwargs = {"num_proc": num_proc})
     ids = [list(x) for x in packed["input_ids"]]
-    # Wrapped packing (TRL < 0.20) keeps no boundaries: one sequence per row, as the single job trains it.
+    # Wrapped packing (also TRL < 0.20's only strategy) keeps no boundaries: one sequence per row, as the single job trains it.
     lengths = (
         [list(n) for n in packed["seq_lengths"]]
         if "seq_lengths" in packed.column_names
@@ -725,7 +744,7 @@ def _pack_rows(
 
 
 def _collate_packed(rows: list, slots: list, lengths: list) -> dict:
-    """One padding-free row as the single job packs it, each token routed to its member, no label across documents."""
+    """One padding-free row as the single job packs it, each token routed to its member, no label across packed sequences."""
     import torch
 
     seq = [n for row in lengths for n in row]
@@ -1008,6 +1027,12 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             final_format = (
                 str(info.get("final_format", "")).lower() if isinstance(info, dict) else ""
             )
+            # The single job turns packing off for pre-tokenized rows, whose labels packing would drop.
+            packing = member.config.get("packing") and final_format != PRETOKENIZED_FORMAT
+            if packing and packs is None:
+                packs = _packs(model)
+                pack_workers = _pack_num_proc(processor, trainer) if packs else None
+            wrapped = bool(packing and packs) and _is_raw_text(final_format, member.config)
             member_tok, member.rows = _tokenize_member(
                 info,
                 tokenizer,
@@ -1015,25 +1040,21 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
                 model_name,
                 max_length,
                 vocab_size = int(model.get_input_embeddings().num_embeddings),
+                wrapped = wrapped,
             )
             # Saved as the single job saves it: the full processor (preprocessor_config.json for export).
             member.tokenizer = processor if member_tok is tokenizer else member_tok
-            # The single job turns packing off for pre-tokenized rows, whose labels packing would drop.
-            if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
-                if packs is None:
-                    packs = _packs(model)
-                    pack_workers = _pack_num_proc(processor) if packs else None
-                if packs:
-                    documents = len(member.rows)
-                    member.rows, member.seq_lengths = _pack_rows(
-                        member.rows, max_length, pack_workers
-                    )
-                    logger.info(
-                        "Batched training: %s packs %d documents into %d rows",
-                        member.run_id,
-                        documents,
-                        len(member.rows),
-                    )
+            if packing and packs:
+                documents = len(member.rows)
+                member.rows, member.seq_lengths = _pack_rows(
+                    member.rows, max_length, pack_workers, wrapped = wrapped
+                )
+                logger.info(
+                    "Batched training: %s packs %d documents into %d rows",
+                    member.run_id,
+                    documents,
+                    len(member.rows),
+                )
         except Exception as exc:
             member.done = True
             _send(
@@ -1363,8 +1384,6 @@ def _build_sft_trainer(
                     attention_mask = inputs["attention_mask"],
                     use_cache = False,
                 ).logits
-            if self.loss_scale is not None:
-                logits = self.loss_scale.scale_backward(logits.float(), ids)
             loss, per = per_adapter_loss(
                 logits,
                 inputs["labels"],
@@ -1372,6 +1391,9 @@ def _build_sft_trainer(
                 U,
                 model = self.model,
                 num_items_in_batch = num_items_in_batch,
+                grad_scale = None
+                if self.loss_scale is None
+                else self.loss_scale.grad_scale(ids, logits.device),
             )
             self.round_losses += per.detach().float().cpu()
             return loss
