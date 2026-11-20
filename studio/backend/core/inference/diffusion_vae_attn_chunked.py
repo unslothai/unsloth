@@ -236,11 +236,13 @@ def _mode_class() -> Any:
                 if call is not None:
                     q, k, v, scale = call
                     if not fused_sdpa_available(q, k, v):
+                        # Autocast casts SDPA's inputs before any kernel runs: gate on that dtype, not the caller's (a
+                        # bf16 query under fp16 autocast runs fp16 scores, which overflow).
+                        cast = _autocast_dtype(q.device.type)
+                        if cast is not None:
+                            q, k, v = (t.to(cast) for t in (q, k, v))
                         if _half_math_call(q):
                             self.half += 1
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
                             with torch.autocast(q.device.type, enabled = False):
                                 if _score_bytes(q, k) > self.budget:
                                     self.chunked += 1
@@ -249,9 +251,6 @@ def _mode_class() -> Any:
                         if _windows_rocm_untrusted_head(q, torch):
                             # fp32, or half with UNSLOTH_VAE_ATTN_HALF_MATH=0: the default dispatch would still pick the
                             # fused kernels that miscompute this head, so run the math (fp32, as ROCm's math kernel does).
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
                             with torch.autocast(q.device.type, enabled = False):
                                 if _score_bytes(q, k) > self.budget:
                                     self.chunked += 1
