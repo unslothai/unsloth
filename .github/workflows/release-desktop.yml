@@ -1717,6 +1717,11 @@ jobs:
           asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           files = [path for path in asset_dir.iterdir() if path.is_file()]
 
+          # Shipped Desktop builds only trust updater assets on unslothai/unsloth, so the renamed repo keeps pinning them there.
+          updater_repository = {'unsloth/unsloth': 'unslothai/unsloth'}.get(
+              os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_REPOSITORY']
+          )
+
           def exactly_one(suffix: str) -> pathlib.Path:
               matches = [path for path in files if path.name.endswith(suffix)]
               if len(matches) != 1:
@@ -1741,7 +1746,7 @@ jobs:
               return {
                   'signature': signature_value,
                   'url': (
-                      f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/'
+                      f'https://github.com/{updater_repository}/releases/download/'
                       f'{encoded_tag}/{encoded_name}'
                   ),
               }
@@ -1874,7 +1879,10 @@ jobs:
               'windows-x86_64': False,
               'windows-aarch64': False,
           }
-          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
+          updater_repository = {'unsloth/unsloth': 'unslothai/unsloth'}.get(
+              os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_REPOSITORY']
+          )
+          expected_prefix = f'https://github.com/{updater_repository}/releases/download/{release_tag}/'
           forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
 
           for platform, entry in platforms.items():

@@ -10,6 +10,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -415,6 +416,29 @@ def test_the_updater_manifest_points_linux_arm64_at_its_own_bundle(tmp_path):
     for key in ("linux-x86_64", "linux-x86_64-appimage"):
         assert platforms[key]["url"].endswith("Unsloth-Desktop-Linux.AppImage"), key
     assert platforms["linux-x86_64-deb"]["url"].endswith("Unsloth-Desktop-Ubuntu.deb")
+
+
+@pytest.mark.parametrize(
+    "repository,pinned",
+    [
+        ("unslothai/unsloth", "unslothai/unsloth"),
+        # After the org rename: shipped builds only trust the old owner, which GitHub redirects.
+        ("unsloth/unsloth", "unslothai/unsloth"),
+        ("someone/unsloth-staging", "someone/unsloth-staging"),
+    ],
+)
+def test_the_updater_manifest_pins_assets_to_the_owner_shipped_builds_trust(
+    tmp_path, repository, pinned
+):
+    result, _ = _run_create_release(
+        _workflow(), tmp_path, extra_env = {"GITHUB_REPOSITORY": repository}
+    )
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((tmp_path / "latest.json").read_text(encoding = "utf-8"))
+    prefix = f"https://github.com/{pinned}/releases/download/{RELEASE_TAG}/"
+    assert manifest["platforms"]
+    for key, entry in manifest["platforms"].items():
+        assert entry["url"].startswith(prefix), (key, entry["url"])
 
 
 def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
