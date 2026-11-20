@@ -7650,6 +7650,8 @@ function Get-TritonRuntimeState {
     return @{
         Healthy = [bool]($probe.Ok -and $probe.Output -match '(?m)^HEALTHY=1\s*$')
         Paired = [bool]($probe.Ok -and $probe.Output -match '(?m)^PAIRED=1\s*$')
+        # AMD triton spawns rocm-sdk.exe on import; Smart App Control / WDAC refusing it is not a broken triton.
+        Blocked = [bool](-not $probe.Ok -and "$($probe.Error)" -match '\[WinError (4551|1260)\]|Application Control policy has blocked|blocked by Smart App Control')
     }
 }
 
@@ -7674,16 +7676,19 @@ function Get-RocmTritonPairing {
     $dists = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONDISTS=(\d+)\s*$') { [int]$Matches[1] } else { 0 }
     $hip = if ($probe.Ok -and $probe.Output -match '(?m)^HIP=(\S+)\s*$') { $Matches[1] } else { "" }
     $spec = if ($hip -or $torch -match '\+rocm') { Get-TritonWindowsRocmSpec -TorchVersion $torch } else { $null }
-    $runtime = if ($spec) { Get-TritonRuntimeState } else { @{ Healthy = $false; Paired = $false } }
+    $runtime = if ($spec) { Get-TritonRuntimeState } else { @{ Healthy = $false; Paired = $false; Blocked = $false } }
     # Known is false when the probe itself failed: nothing about the venv was read, so nothing is verified.
-    return @{ Torch = $torch; Triton = $triton; Dists = $dists; Spec = $spec; Stale = [bool]($spec -and -not $runtime.Paired);
-              Healthy = $runtime.Healthy; Known = [bool]$probe.Ok }
+    # Blocked: the runtime check was refused, so judge by metadata; a reinstall cannot clear the policy.
+    $paired = if ($runtime.Blocked) { $triton -match '^3\.8(\.|$)' } else { $runtime.Paired }
+    return @{ Torch = $torch; Triton = $triton; Dists = $dists; Spec = $spec; Stale = [bool]($spec -and -not $paired);
+              Healthy = $runtime.Healthy; Blocked = [bool]$runtime.Blocked; Known = [bool]$probe.Ok }
 }
 
 function Test-RocmTritonPairingNeedsPass {
     # The same probe as the post-stack repair, so the two never disagree. Only a ROCm torch 2.11 / 2.12 is stale,
     # which the pass repairs, so the check cannot re-fire on CUDA, CPU or XPU.
     $pair = Get-RocmTritonPairing
+    if ($pair.Blocked) { Write-TritonCodeIntegrityWarning }
     if (-not $pair.Stale) { return $false }
     if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
         substep "triton-windows does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -7691,6 +7696,10 @@ function Test-RocmTritonPairingNeedsPass {
     }
     substep "triton-windows does not pair with torch $($pair.Torch) -- forcing dependency pass to repair..." "Cyan"
     return $true
+}
+
+function Write-TritonCodeIntegrityWarning {
+    substep "[WARN] Smart App Control or an App Control policy blocked rocm-sdk.exe, which triton runs; the Triton pairing check was skipped and the install kept." "Yellow"
 }
 
 function Enter-TritonInstallEnv {
@@ -8607,6 +8616,7 @@ $script:SetupVenvChanged = $true
 if ($stackExit -eq 0 -and -not $NoTorchMode) {
     $_rocmPair = Get-RocmTritonPairing
     $_rocmTritonFrom = if ($_rocmPair.Triton) { "triton-windows $($_rocmPair.Triton)" } else { "no triton-windows" }
+    if ($_rocmPair.Blocked) { Write-TritonCodeIntegrityWarning }
     if ($_rocmPair.Stale -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
         # As on the fast path: the repair needs the index, so an offline run leaves it for the next online update.
         substep "$_rocmTritonFrom does not pair with torch $($_rocmPair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -8655,6 +8665,8 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
             # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version, and a
             # probe that could not read the venv verifies nothing.
             $_rocmAfter = Get-RocmTritonPairing
+            # Blocked keeps the manifest on a 3.8 record; dropping it made every launch repair forever.
+            if ($_rocmAfter.Blocked) { Write-TritonCodeIntegrityWarning }
             if ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale) {
                 if ($_rocmHasHeld) {
                     try {
