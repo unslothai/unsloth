@@ -403,6 +403,15 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     return f"{explained} {advice}".rstrip()
 
 
+def _blocked_message(binary: Path, error: object) -> Optional[str]:
+    """The user message when Windows code integrity refused ``binary`` or its DLLs, else None."""
+    blocked = code_integrity_block_reason(error)
+    # A fail-fast status alone is an ordinary crash too (see _lemonade_start_error).
+    if blocked is None or blocked == _FAIL_FAST:
+        return None
+    return code_integrity_user_message(str(binary.parent), blocked)
+
+
 def _kill_tree(process: subprocess.Popen) -> None:
     # The whole tree: a child's children hold the pipes communicate() waits on.
     terminate_pid(process.pid, timeout = 5.0, owner_verified = True)
@@ -772,7 +781,8 @@ class LemonadeNpuBackend:
                 )
             )
         except OSError as exc:
-            return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
+            problem = _blocked_message(binary, exc) or f"flm validate could not run: {exc}"
+            return {"ready": False, "problems": [problem]}
         adopt_pid(process.pid)
         self._validate_process = process
         # After adopting: a shutdown sweep that already ran would miss it.
@@ -791,9 +801,13 @@ class LemonadeNpuBackend:
         try:
             report = json.loads(stdout)
         except ValueError:
+            # A refused DLL (flm links every model DLL) exits 0xC0E90002 before printing anything.
+            problem = _blocked_message(binary, process.returncode)
             return {
                 "ready": False,
-                "problems": [f"flm validate returned no report: {stdout[-300:].strip()}"],
+                "problems": [
+                    problem or f"flm validate returned no report: {stdout[-300:].strip()}"
+                ],
             }
         problems = [message for key, message in _VALIDATE_PROBLEMS if report.get(key) is False]
         ready = bool(report.get("ready"))
