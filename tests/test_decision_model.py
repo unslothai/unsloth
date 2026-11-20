@@ -313,7 +313,9 @@ def test_lora_init_leaves_the_rng_unless_random_state_is_set(checkpoint):
         return np.random.get_state()[1].copy(), random.getstate()
 
     model = load()
-    random.seed(1), np.random.seed(1), torch.manual_seed(1)
+    random.seed(1)
+    np.random.seed(1)
+    torch.manual_seed(1)
     before = state()
     adapters(model)
     after = state()
