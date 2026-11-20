@@ -1255,7 +1255,8 @@ class DiffusionLoraConfig:
     # cache_variants crop/flip draws are frozen per image; the per-step VAE sampling noise is preserved.
     cache_latents: bool = True
     cache_variants: int = 4
-    # Latent stats and caption embeddings, keyed by hash; a warm cache skips VAE and text encoders.
+    # Persistent latent stats and caption embeddings, keyed by hash; a warm cache skips VAE and text encoders.
+    # None (or blank) = the default directory (diffusion_train_extras.effective_cond_cache_dir); "off" disables it.
     cond_cache_dir: Optional[str] = None
     # DiT LoRA EMA decay; 0.0 disables; otherwise a warmup-ramped EMA is exported under ema/.
     ema_decay: float = 0.0
@@ -1392,10 +1393,14 @@ class DiffusionLoraConfig:
         sample_every, sample_prompts = validate_sample_settings(
             self.sample_every, self.sample_prompts, resolved_family
         )
-        # A blank cond_cache_dir (the Unsloth default when unset) means "off", not cwd.
+        # Blank or unset means the default persistent cache (never cwd); an off value ("off", "none", ...) disables it.
         cond_cache_dir = (
             str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
         ) or None
+        from core.training.diffusion_train_extras import cond_cache_is_off
+
+        if cond_cache_dir is not None and cond_cache_is_off(cond_cache_dir):
+            cond_cache_dir = "off"
         compile_transformer = str(self.compile_transformer or "auto").strip().lower()
         if compile_transformer not in ("off", "on", "auto"):
             raise ValueError("compile_transformer must be one of off / on / auto")
@@ -1748,19 +1753,12 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
         )
-    # No conditioning cache exists on this path, so accepting the directory would promise a saving that never happens.
-    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
-        return (
-            "MiniMax-H3 has no persistent conditioning cache yet: each run loads the "
-            "conditioner and recomputes its captions and latents, so cond_cache_dir would be "
-            "recorded and never read. Leave it unset."
-        )
     return None
 
 
 def h3_image_train_unsupported_reason(cfg: Any) -> Optional[str]:
     """The MiniMax-H3-Image refusals: the loop's fixed bf16 compute, the 32 px canvas grid, no unconditional branch,
-    one packed sequence per step, no conditioning cache, and only the bf16 / int8 bases."""
+    one packed sequence per step, and only the bf16 / int8 bases."""
     if cfg.mixed_precision != "bf16":
         return (
             "MiniMax-H3-Image LoRA training requires bf16: the checkpoint keeps its patch projection and output heads "
@@ -1786,11 +1784,6 @@ def h3_image_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "MiniMax-H3-Image trains at batch size 1: one forward covers one packed [text | image] sequence whose "
             "length is set by the picture's canvas and its caption. Use gradient_accumulation_steps to raise the "
             "effective batch."
-        )
-    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
-        return (
-            "MiniMax-H3-Image has no persistent conditioning cache yet: each run encodes its captions and latents "
-            "once in memory, so cond_cache_dir would be recorded and never read. Leave it unset."
         )
     if str(getattr(cfg, "base_precision", "") or "").strip().lower() in ("fp8", "mxfp8"):
         return (

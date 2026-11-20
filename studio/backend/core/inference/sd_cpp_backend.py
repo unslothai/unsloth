@@ -5228,10 +5228,57 @@ class SdCppDiffusionBackend:
 
         from PIL import Image
 
-        from core.inference import diffusion_lora
+        from core.inference import diffusion_lora, sd_cpp_torch_vae
 
         assert state.server is not None
         total = max(1, int(batch_size))
+        # CPU-only FLUX.2 renders: the server returns the final latent and torch decodes it (sd_cpp_torch_vae).
+        out_w, out_h = hires_plan.target if hires_plan is not None else (int(width), int(height))
+        torch_vae = {
+            "on": sd_cpp_torch_vae.applies(state, layers = layers)
+            and sd_cpp_torch_vae.fits_host_ram(out_w, out_h)
+        }
+
+        def _torch_decoder_ready() -> bool:
+            # Load (or reuse) the decoder before asking for a latent: a missing diffusers class or an unreadable
+            # file then costs nothing, where a failure after the render would cost a second render.
+            try:
+                sd_cpp_torch_vae.prepare(state.files.vae)
+                return True
+            except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
+                torch_vae["on"] = False
+                sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")
+                return False
+
+        def _render(server: Any, payload: dict, timeout: float) -> list:
+            """One chunk's PIL images, from torch's decode of the server's latents when that applies."""
+            accepts = getattr(server, "img_gen_accepts", None)
+            if (
+                torch_vae["on"]
+                and callable(accepts)
+                and accepts((sd_cpp_torch_vae.SERVER_FEATURE,))
+                and _torch_decoder_ready()
+            ):
+                latents = server.img_gen_latents(
+                    payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
+                )
+                try:
+                    return sd_cpp_torch_vae.decode(
+                        latents, state.files.vae, threads = state.threads, cancel_event = cancel
+                    )
+                except SdCppCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
+                    torch_vae["on"] = False
+                    sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")
+                    if cancel.is_set():
+                        raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                    timeout = max(deadline - time.monotonic(), 1.0)
+            blobs = server.img_gen(
+                payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
+            )
+            return [Image.open(io.BytesIO(b)) for b in blobs]
+
         # sd.cpp's image seed is signed int64; mask base and derived seeds to that range.
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
@@ -5331,12 +5378,7 @@ class SdCppDiffusionBackend:
                     extra_sample_args = _request_extra_sample_args(state),
                 )
                 try:
-                    blobs = state.server.img_gen(
-                        payload,
-                        on_step = self._on_log,
-                        cancel_event = cancel,
-                        total_timeout = max(deadline - time.monotonic(), 1.0),
-                    )
+                    rendered = _render(state.server, payload, max(deadline - time.monotonic(), 1.0))
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
@@ -5400,11 +5442,8 @@ class SdCppDiffusionBackend:
                             hires_payload = _stage_hires(server)
                             payload["hires"] = dict(hires_payload)
                         try:
-                            blobs = server.img_gen(
-                                payload,
-                                on_step = self._on_log,
-                                cancel_event = cancel,
-                                total_timeout = max(deadline - time.monotonic(), 1.0),
+                            rendered = _render(
+                                server, payload, max(deadline - time.monotonic(), 1.0)
                             )
                             break
                         except RuntimeError as retry_exc:
@@ -5412,14 +5451,12 @@ class SdCppDiffusionBackend:
                 device_losses = 0
                 # All-or-nothing per chunk; a layered generation decodes layers + 1 images.
                 expected = count * ((layers + 1) if layers else 1)
-                if not cancel.is_set() and len(blobs) != expected:
+                if not cancel.is_set() and len(rendered) != expected:
                     raise RuntimeError(
-                        f"sd-server returned {len(blobs)} of {expected} requested images in the batch."
+                        f"sd-server returned {len(rendered)} of {expected} requested images in the batch."
                     )
-                kept = _keep_layers(blobs, layers or 0)
-                images.extend(
-                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in kept
-                )
+                kept = _keep_layers(rendered, layers or 0)
+                images.extend(_native_output_image(state.family, im) for im in kept)
                 # sd.cpp advances the seed per generation; every layer of one carries that seed.
                 per = len(kept) // count if count else 1
                 seeds.extend(
@@ -5899,6 +5936,9 @@ class SdCppDiffusionBackend:
         # Wait for a signalled generation to exit: callers treat return as "device is free".
         with self._generate_lock:
             pass
+        from core.inference import sd_cpp_torch_vae
+
+        sd_cpp_torch_vae.release()
         return self.status()
 
     def status(self) -> dict[str, Any]:
