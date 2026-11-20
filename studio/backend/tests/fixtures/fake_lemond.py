@@ -45,14 +45,12 @@ CATALOG = [
         "max_context_window": 262144,
     },
     {
-        # FastFlowLM 1.0.13 decision model: `flm serve` refuses it without --decision.
         "id": "d3-edge-FLM",
         "checkpoint": "d3:edge",
         "labels": ["decision", "chat"],
         "size": 0.58,
     },
     {
-        # FastFlowLM 1.0.13 GPU model: runs on the HIP runtime, not the NPU.
         "id": "qwen3.5-oga-hipep-9b-FLM",
         "checkpoint": "qwen3.5-oga-hipep:9b",
         "labels": ["vision", "reasoning", "tool-calling", "chat"],

@@ -114,6 +114,20 @@ def _verify(device: Any) -> bool:
     return True
 
 
+def capturing(device: Any) -> bool:
+    """Whether a CUDA graph is recording on the current stream of ``device``'s card (queried on that card, not the
+    current one). An unanswerable query counts as capturing: the caller only skips a cold probe for this call."""
+    import torch
+    try:
+        index = device.index
+        if index is None or index == torch.cuda.current_device():
+            return bool(torch.cuda.is_current_stream_capturing())
+        with torch.cuda.device(index):
+            return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def ready(device: Any) -> bool:
     if triton is None or not enabled():
         return False
@@ -121,6 +135,10 @@ def ready(device: Any) -> bool:
     state = _STATE["verified"].get(index)
     if state is not None:
         return state
+    if capturing(device):
+        # The cold check syncs the host (.tolist(), torch.equal): never inside a capture, and no verdict recorded,
+        # so the first eager call outside it still verifies. This call takes the eager formula.
+        return False
     with _LOCK:
         state = _STATE["verified"].get(index)
         if state is None:

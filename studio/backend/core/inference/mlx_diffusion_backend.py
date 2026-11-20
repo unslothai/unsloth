@@ -524,7 +524,7 @@ class MfluxRuntime:
         import mlx.core as mx
 
         try:
-            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            info = mx.device_info()
             budget = int(info.get("max_recommended_working_set_size") or 0)
         except Exception:  # noqa: BLE001 -- no Metal reading: leave the decode untiled
             return None

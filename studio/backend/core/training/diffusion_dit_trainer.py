@@ -37,10 +37,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.training.diffusion_block_swap import (
+    block_swap_error,
+    block_swap_request,
+    compile_swapped_blocks,
+    install_dit_block_swap,
+)
 from core.training.diffusion_gc_budget import (
     StepReplay,
     enable_budgeted_checkpointing,
     is_out_of_memory,
+    plan_from_device,
+    step_down_message,
 )
 from core.training.diffusion_load_progress import report_model_load_progress
 from core._torchao_stub import is_stubbed, torch_is_rocm
@@ -760,6 +768,80 @@ def _pick_auto_precision(
     return "nf4"
 
 
+AUTO_BLOCK_SWAP_ENV = "UNSLOTH_DIT_AUTO_BLOCK_SWAP"
+
+
+# The swapped base loads dense on the host: its bf16 size, load-time overhead (measured ~1.25x peak), and headroom.
+_AUTO_SWAP_HOST_FACTOR = 1.3
+_AUTO_SWAP_HOST_RESERVE = 4 << 30
+
+
+def _auto_swap_host_ram_ok(spec, cfg) -> bool:
+    """Whether host RAM (cgroup-aware) holds the dense bf16 base for a swapped load; unreadable counts as no, since
+    the int8 path it replaces streams the load and needs far less host RAM."""
+    try:
+        from core.inference.diffusion_prequant_cache import _host_memory_bytes
+        _total, avail = _host_memory_bytes()
+        dense = _dense_bf16_gb(spec, getattr(cfg, "base_model", "") or "")
+    except Exception:  # noqa: BLE001
+        return False
+    if avail is None:
+        return False
+    return avail >= dense * (1 << 30) * _AUTO_SWAP_HOST_FACTOR + _AUTO_SWAP_HOST_RESERVE
+
+
+def _auto_block_swap_wanted(
+    cfg,
+    base_precision: str,
+    device: str,
+    spec = None,
+) -> bool:
+    """auto picked int8 (the dense base fits with little headroom): bf16 + block swap instead on a discrete NVIDIA
+    card. L4, 512 px: FLUX.2-klein 9B bf16 1.62 s/step vs int8 2.35; FLUX.1-dev with 21 of 57 blocks swapped 1.83
+    vs int8 2.83, both at bf16 loss. UNSLOTH_DIT_AUTO_BLOCK_SWAP=0 keeps int8."""
+    if (
+        getattr(cfg, "base_precision", "") or ""
+    ).strip().lower() != "auto" or base_precision != "int8":
+        return False
+    if os.environ.get(AUTO_BLOCK_SWAP_ENV, "1").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    if (
+        device != "cuda"
+        or not cfg.gradient_checkpointing
+        or torch_is_rocm()
+        or _device_is_integrated(device)
+    ):
+        return False
+    if spec is not None and not _auto_swap_host_ram_ok(spec, cfg):
+        return False
+    try:
+        import importlib.util
+        return importlib.util.find_spec("unsloth_zoo.block_swap") is not None
+    except Exception:  # noqa: BLE001 -- zoo missing or refusing to import: keep int8
+        return False
+
+
+def _device_is_integrated(device) -> bool:
+    try:
+        from core.inference.host_pinning import device_is_integrated
+        return device_is_integrated(device)
+    except Exception:  # noqa: BLE001 -- unclassifiable: discrete
+        return False
+
+
+def _checkpoint_mode(swapping: bool):
+    """Block swap needs every block checkpointed (an unchecked swapped block holds its streamed weights until
+    backward), so it overrides UNSLOTH_DIFFUSION_GC_MODE=partial; otherwise the configured mode."""
+    return "plain" if swapping else None
+
+
+def _block_swap_tokens(spec, cfg) -> int:
+    """Sequence length the block-swap reserve is sized for: 16 px per image token plus a 512-token prompt."""
+    _ = spec
+    side = max(1, int(cfg.resolution) // 16)
+    return side * side + 512
+
+
 def _dense_bf16_gb(spec, base_model: str) -> float:
     """Per-base overrides only, never the family table: flux.2-klein 9B is 2.3x its 4B default. Never raises, so a sizing lookup cannot fail a run."""
     try:
@@ -974,12 +1056,38 @@ def _flux_forward(
     return FluxPipeline._unpack_latents(model_pred, h * 8, w * 8, 8)
 
 
-def _flux_save(pipe_cls, out_dir, transformer_lora_layers):
-    from diffusers import FluxPipeline
-    FluxPipeline.save_lora_weights(
+def _save_transformer_lora(
+    save,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+) -> None:
+    # Without the adapter metadata diffusers' loader assumes lora_alpha == rank.
+    import inspect
+
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
         weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _flux_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    from diffusers import FluxPipeline
+    _save_transformer_lora(
+        FluxPipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1094,12 +1202,15 @@ def _qwen_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
     return QwenImagePipeline._unpack_latents(pred, h * 8, w * 8, 8)
 
 
-def _qwen_save(pipe_cls, out_dir, transformer_lora_layers):
+def _qwen_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import QwenImagePipeline
-    QwenImagePipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        QwenImagePipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1167,12 +1278,15 @@ def _zimage_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, de
     return -torch.stack(out, dim = 0).squeeze(2)
 
 
-def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
+def _zimage_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import ZImagePipeline
-    ZImagePipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        ZImagePipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1253,12 +1367,15 @@ def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     return pred.reshape(bsz, c, 1, h, w)
 
 
-def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
+def _krea2_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import Krea2Pipeline
-    Krea2Pipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        Krea2Pipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1410,20 +1527,8 @@ def _qwen21_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    import inspect
-
-    save = _qwen21_pipeline_cls().save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        _qwen21_pipeline_cls().save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1603,21 +1708,27 @@ def _flux2_forward(
     return unpacked
 
 
-def _flux2_save(pipe_cls, out_dir, transformer_lora_layers):
+def _flux2_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import Flux2Pipeline
-    Flux2Pipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        Flux2Pipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
-def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
+def _flux2_klein_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
     from diffusers import Flux2KleinPipeline
-    Flux2KleinPipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+    _save_transformer_lora(
+        Flux2KleinPipeline.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1803,22 +1914,9 @@ def _flux3_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    import inspect
-
     from diffusers.loaders import Flux3LoraLoaderMixin
-
-    save = Flux3LoraLoaderMixin.save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        Flux3LoraLoaderMixin.save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -1936,22 +2034,12 @@ def _moss_save(
     adapter_metadata = None,
 ):
     """``transformer.*`` keys plus adapter metadata, as MOSSImagePipeline.load_lora_weights reads."""
-    import inspect
-
     from diffusers.loaders import QwenImageLoraLoaderMixin
-
-    save = QwenImageLoraLoaderMixin.save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        QwenImageLoraLoaderMixin.save_lora_weights,
+        out_dir,
+        transformer_lora_layers,
+        adapter_metadata,
     )
 
 
@@ -2145,20 +2233,8 @@ def _ltx2_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    import inspect
-
-    save = _ltx2_pipeline_cls().save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        _ltx2_pipeline_cls().save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -2532,21 +2608,8 @@ def _wan_save(
     transformer_lora_layers,
     adapter_metadata = None,
 ):
-    # Older diffusers savers lack the metadata argument; they still get the weights.
-    import inspect
-
-    save = _wan_pipeline_cls().save_lora_weights
-    kwargs = {}
-    if (
-        adapter_metadata
-        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
-    ):
-        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
-    save(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
-        **kwargs,
+    _save_transformer_lora(
+        _wan_pipeline_cls().save_lora_weights, out_dir, transformer_lora_layers, adapter_metadata
     )
 
 
@@ -2626,6 +2689,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux_collate,
         forward = _flux_forward,
         save = _flux_save,
+        save_takes_metadata = True,
         latent_shape = _vae8_latent_shape,
         decode_latents = _flux_decode_latents,
         sample_forward_kwargs = {"guidance": 3.5},
@@ -2643,6 +2707,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _qwen_collate,
         forward = _qwen_forward,
         save = _qwen_save,
+        save_takes_metadata = True,
         latent_shape = _qwen_latent_shape,
         decode_latents = _qwen_decode_latents,
     ),
@@ -2659,6 +2724,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _zimage_collate,
         forward = _zimage_forward,
         save = _zimage_save,
+        save_takes_metadata = True,
         latent_shape = _vae8_latent_shape,
         decode_latents = _flux_decode_latents,
     ),
@@ -2675,6 +2741,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _krea2_collate,
         forward = _krea2_forward,
         save = _krea2_save,
+        save_takes_metadata = True,
         latent_shape = _qwen_latent_shape,
         decode_latents = _qwen_decode_latents,
     ),
@@ -2711,6 +2778,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_klein_save,
+        save_takes_metadata = True,
         latent_shape = _flux2_latent_shape,
         decode_latents = _flux2_decode_latents,
     ),
@@ -2767,6 +2835,7 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_save,
+        save_takes_metadata = True,
         latent_shape = _flux2_latent_shape,
         decode_latents = _flux2_decode_latents,
         # Flux2Pipeline's default guidance_scale, which Studio's FLUX.2-dev inference also uses.
@@ -3035,10 +3104,10 @@ def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
     return [hits[cap] for cap in to_encode]
 
 
-def _rekey_conditioning_cache(pcache, reopen, embeds: dict):
-    """The cache under its namespace read again now the conditioners are on disk, holding ``embeds``. A first run
-    reads the source revision before its download ("unresolved"), so without this the next run, which reads the real
-    revision, misses everything this run wrote."""
+def _rekey_conditioning_cache(pcache, reopen):
+    """The cache under its namespace read again now the conditioners are on disk. A first run reads the source
+    revision before its download ("unresolved"), and a fetch can move ``refs/main``; reopening before any encode
+    keeps this run from serving, or carrying over, entries another revision's weights produced."""
     if pcache is None:
         return None
     try:
@@ -3050,12 +3119,13 @@ def _rekey_conditioning_cache(pcache, reopen, embeds: dict):
         getattr(pcache, "text_encoder", ""),
     ):
         return pcache
-    for cap, emb in embeds.items():
-        try:
-            fresh.put(fresh.text_key(cap), emb)
-        except Exception:  # noqa: BLE001 -- disk-full etc.: the run still trains
-            pass
     return fresh
+
+
+def _encode_prompts_after_load(spec, pipe, texts, device, pcache, reopen):
+    """(cache, embeddings) for a cold load: re-key first, then read and write under the loaded weights' namespace."""
+    pcache = _rekey_conditioning_cache(pcache, reopen)
+    return pcache, _encode_prompts_cached(spec, pipe, texts, device, pcache)
 
 
 def _load_warm_conditioning(
@@ -3257,6 +3327,7 @@ def _maybe_compile_transformer(
     on_event,
     base_precision = "nf4",
     steps_left = None,
+    block_swap = False,
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
     is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
@@ -3302,6 +3373,9 @@ def _maybe_compile_transformer(
             _install_backports()
         except Exception:  # noqa: BLE001 -- the backport is best-effort
             pass
+        if block_swap:
+            # The swap hooks sit in each block's _call_impl: compile forward so they stay outside the graph.
+            return compile_swapped_blocks(transformer, fullgraph = not base_is_bnb, dynamic = True) > 0
         fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
@@ -3521,6 +3595,11 @@ def _train_dit(
         "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
     ) not in ("1", "true")
 
+    from .diffusion_train_extras import effective_cond_cache_dir  # noqa: PLC0415
+
+    # Unset = the default directory (on unless UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0); "off" = none.
+    pcache_dir = effective_cond_cache_dir(getattr(cfg, "cond_cache_dir", None))
+
     def _open_pcache():
         # Namespace on the CHECKPOINT: keys carry only content, so caches would cross models.
         from .diffusion_train_extras import source_revision  # noqa: PLC0415
@@ -3529,14 +3608,14 @@ def _train_dit(
         conditioning_key = getattr(spec, "conditioning_key", None)
         encoder = conditioning_key(fetch_cfg) if conditioning_key else ""
         return PersistentConditioningCache(
-            cfg.cond_cache_dir,
+            pcache_dir,
             namespace,
             cfg.resolution,
             **({"text_encoder": encoder} if encoder else {}),
         )
 
     pcache = None
-    if getattr(cfg, "cond_cache_dir", None):
+    if pcache_dir:
         try:
             pcache = _open_pcache()
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
@@ -3590,10 +3669,11 @@ def _train_dit(
         with report_model_load_progress(on_event):
             pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
         extra = [t for t in sample_texts if t not in to_encode]
-        encoded = _encode_prompts_cached(spec, pipe, to_encode + extra, device, pcache)
+        pcache, encoded = _encode_prompts_after_load(
+            spec, pipe, to_encode + extra, device, pcache, _open_pcache
+        )
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
         all_embeds = dict(zip(to_encode + extra, encoded))
-        pcache = _rekey_conditioning_cache(pcache, _open_pcache, all_embeds)
         sample_embeds = {t: all_embeds[t] for t in sample_texts}
         _free_text_encoders(pipe)
         gc.collect()
@@ -3657,6 +3737,11 @@ def _train_dit(
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
     base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
+    swap_request = block_swap_request(cfg)
+    # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
+    auto_swap = swap_request is None and _auto_block_swap_wanted(cfg, base_precision, device, spec)
+    if auto_swap:
+        base_precision, swap_request = "bf16", "auto"
     _emit(
         on_event,
         "model_load_started",
@@ -3665,8 +3750,20 @@ def _train_dit(
         else "transformer",
         fetch_repo = training_fetch_repo(cfg),
     )
+    swap_error = block_swap_error(
+        swap_request,
+        base_precision,
+        device,
+        cfg.gradient_checkpointing,
+        integrated = bool(swap_request) and _device_is_integrated(device),
+    )
+    if swap_error:
+        raise ValueError(swap_error)
     with report_model_load_progress(on_event):
-        transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
+        # A swapped bf16 base loads on the host: install_dit_block_swap places everything but the swapped blocks.
+        transformer = spec.load_transformer(
+            fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
+        )
     base_is_bnb = base_precision == "nf4"
     fp16_report = None
     if fp16_amp:
@@ -3686,12 +3783,41 @@ def _train_dit(
     if fp16_amp:
         # After the adapter, so the island wraps the PEFT layer.
         fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
+    swapping = False
+    if swap_request:
+        try:
+            swap_info = install_dit_block_swap(
+                transformer,
+                device,
+                swap_request,
+                tokens = _block_swap_tokens(spec, cfg),
+                batch = cfg.train_batch_size,
+            )
+        except ValueError as exc:
+            if not auto_swap:
+                raise
+            # The host copy is intact, so auto falls back to the int8 it would have picked.
+            base_precision = "int8"
+            _emit(
+                on_event, "warning", message = f"block_swap unavailable, training int8 instead: {exc}"
+            )
+        else:
+            swapping = swap_info["swapped_blocks"] > 0
+            _emit(
+                on_event,
+                "warning",
+                message = (
+                    f"block_swap: {swap_info['swapped_blocks']} of {swap_info['total_blocks']} blocks stream from "
+                    f"{swap_info['host_gib']} GiB of host RAM ({swap_info['pinned_gib']} GiB pinned)."
+                ),
+            )
     gc_budget = None
     if cfg.gradient_checkpointing:
         # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
-        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        # Block swap needs every block checkpointed, so no budget.
+        gc_budget = None if swapping else enable_budgeted_checkpointing(transformer, device)
         if gc_budget is None:
-            enable_diffusion_gradient_checkpointing(transformer)
+            enable_diffusion_gradient_checkpointing(transformer, mode = _checkpoint_mode(swapping))
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -3727,6 +3853,7 @@ def _train_dit(
             on_event,
             base_precision,
             resume_steps_left(cfg, identity),
+            block_swap = swapping,
         )
     )
     # Compiled Qwen graphs need one fixed text length across steps.
@@ -3787,9 +3914,10 @@ def _train_dit(
     fast_lora_layers = 0
     fast_lora_hooks = ()
     if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
-        if _dequant_cache_wanted(base_is_bnb, device, fp16_amp):
+        int8_cache = base_precision == "int8"
+        if _dequant_cache_wanted(base_is_bnb, device, fp16_amp, int8_base = int8_cache):
             dequant_cache = Nf4DequantCache()
-        fast_lora_layers = install_fast_lora(transformer, dequant_cache)
+        fast_lora_layers = install_fast_lora(transformer, dequant_cache, int8 = int8_cache)
         if fast_lora_layers:
             # After each optimizer step: recast the bf16 masters; after step 1: size the dequant cache.
             fast_lora_hooks = attach_training_hooks(
@@ -3964,6 +4092,9 @@ def _train_dit(
             stop_latched = True
         return stop_latched
 
+    # Set below once the budget is known; a preview before then has no copies to drop.
+    fp8_backward = None
+
     def _sample(step: int) -> None:
         nonlocal sample_plan, t_rate, t_steady
         if sample_plan is None:
@@ -3973,6 +4104,9 @@ def _train_dit(
         if dequant_cache is not None:
             # The preview needs the room; the following steps refill the cache.
             dequant_cache.suspend()
+        if fp8_backward is not None:
+            # Same for the fp8 backward copies (a preview runs no backward; the next one refills them).
+            fp8_backward.clear(keep_budget = True)
         try:
             with isolated_sampling(device, compiled):
                 transformer.eval()
@@ -4026,31 +4160,50 @@ def _train_dit(
 
     def _retry_fully_checkpointed():
         # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
-        gc_budget.fall_back()
-        if dequant_cache is not None:
-            dequant_cache.reserve(0, from_plan = True)
-        optimizer.zero_grad(set_to_none = True)
-        gc.collect()
-        _empty_device_cache(device)
-        # Restart the peak: step 1's cache plan reads it, and the failed peak would plan the cache to nothing.
-        train_peak.pause()
-        train_peak.resume()
-        _emit(
-            on_event,
-            "warning",
-            message = (
-                "Ran out of GPU memory while keeping block activations; every block is checkpointed "
-                "from this step on."
-            ),
-        )
+        # Each out-of-memory error halves the kept blocks; with none left every block is checkpointed.
+        while True:
+            gc_budget.step_down()
+            if fp8_backward is not None:
+                fp8_backward.clear()
+            if dequant_cache is not None:
+                dequant_cache.reserve(
+                    gc_budget.kept_bytes if gc_budget.keep and not gc_budget.disabled else 0,
+                    from_plan = True,
+                )
+            optimizer.zero_grad(set_to_none = True)
+            gc.collect()
+            _empty_device_cache(device)
+            # Restart the peak: step 1's cache plan reads it, and the failed peak would plan the cache to nothing.
+            train_peak.pause()
+            train_peak.resume()
+            _emit(on_event, "warning", message = step_down_message(gc_budget))
+            try:
+                losses = replay.replay(_forward_backward)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                if not gc_budget.can_retry or not is_out_of_memory(exc):
+                    raise
+                continue
+            break
         acc = None
-        for loss in replay.replay(_forward_backward):
+        for loss in losses:
             acc = accumulate_loss(acc, loss, cfg.gradient_accumulation_steps)
-        replay.clear()
+        if not gc_budget.can_retry:
+            replay.clear()
         return acc
 
     # Host copies of the step's inputs and RNG states, only while a budgeted step could still need a rerun.
     replay = StepReplay(device) if gc_budget is not None else None
+    fp8_backward = None
+    if base_precision == "fp8" and gc_budget is not None:
+        from core.training.diffusion_frozen_fp8 import BACKWARD_WEIGHTS, fp8_backward_vram_handler
+
+        fp8_backward = BACKWARD_WEIGHTS
+        fp8_backward.clear()
+        fp8_backward.active = fp8_backward.enabled()
+        if dequant_cache is None:
+            set_vram_request_handler(
+                fp8_backward_vram_handler(fp8_backward, room = gc_budget.spare_bytes_now)
+            )
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     consecutive_skips = 0
@@ -4118,7 +4271,7 @@ def _train_dit(
             if gc_budget is not None and not gc_budget.planned and canvases is not None:
                 # Bucketed runs: the plan is measured on this step's canvas and scaled to the largest bucket.
                 gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idxs))
-            if replay is not None and gc_budget.can_retry:
+            if replay is not None and gc_budget.records_inputs:
                 replay.record(inputs)
             oom = False
             try:
@@ -4167,6 +4320,9 @@ def _train_dit(
                 max(c[0] * c[1] for c in canvases) if canvases is not None else None,
                 lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
             )
+            if fp8_backward is not None:
+                # What kept activations leave of the plan's room holds column-major fp8 weights for grad_x.
+                fp8_backward.plan(gc_budget.spare_bytes)
         if ema is not None:
             ema.update(transformer)
 
@@ -4227,6 +4383,14 @@ def _train_dit(
             stopped = True
             break
 
+    if fp8_backward is not None:
+        import logging
+
+        logging.getLogger(__name__).info("fp8 backward weights: %s", fp8_backward.stats())
+        if dequant_cache is None:
+            set_vram_request_handler(None)
+        fp8_backward.clear()
+        fp8_backward.active = False
     if fast_lora_layers:
         stats = fast_lora_stats()
         if dequant_cache is not None:
@@ -4337,12 +4501,18 @@ def _warn_fp16_compile_declined(cfg, on_event) -> bool:
     return True
 
 
-def _dequant_cache_wanted(base_is_bnb, device, fp16_amp) -> bool:
-    """nf4 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
-    (on a T4 both planned from step 1's free memory and step 2 OOMed)."""
-    from core.training.diffusion_lora_fast import dequant_cache_enabled
+def _dequant_cache_wanted(
+    base_is_bnb,
+    device,
+    fp16_amp,
+    int8_base = False,
+) -> bool:
+    """nf4 / int8 dequant cache on CUDA; off on the fp16 path, whose 16 GB cards it shares with the checkpointing budget
+    (on a T4 both planned from step 1's free memory and step 2 OOMed). int8 runs eager, so the cache is its only
+    relief from torchao's per-call weight cast."""
+    from core.training.diffusion_lora_fast import dequant_cache_enabled, int8_dequant_cache_enabled
     return (
-        base_is_bnb
+        (base_is_bnb or (int8_base and int8_dequant_cache_enabled()))
         and device == "cuda"
         and not fp16_amp
         and not torch_is_rocm()
@@ -4399,29 +4569,7 @@ def _plan_gc_budget(
     held_bytes = 0,
 ) -> None:
     """After the first step: keep as many blocks' activations as free memory less ``held_bytes`` allows. Never raises."""
-    import logging
-
-    import torch
-
-    log = logging.getLogger(__name__)
-    try:
-        # The optimizer's first step allocates its moments, which every later step carries.
-        projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
-        projected += max(0, int(held_bytes))
-        free, total = torch.cuda.mem_get_info()
-        kept = gc_budget.plan(
-            projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
-        )
-    except Exception as exc:  # noqa: BLE001 -- an optimisation only: every block stays checkpointed
-        gc_budget.fall_back()
-        log.info("gradient checkpointing budget not applied: %s", exc)
-        return
-    log.info(
-        "gradient checkpointing: keeping activations for %d of %d blocks (%.2f GiB)",
-        kept,
-        gc_budget.total_blocks,
-        gc_budget.kept_bytes / (1 << 30),
-    )
+    plan_from_device(gc_budget, fb_peak, alloc_before_step, max_canvas_area, held_bytes)
 
 
 def _make_optimizer(

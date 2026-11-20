@@ -667,6 +667,11 @@ def fp8_linear_class():
                 return False
             probe = _GEMM_PROBE.get(x2.device.index)
             if probe is None and not torch.compiler.is_compiling():
+                from .diffusion_fp8_act_quant import capturing
+
+                if capturing(x2.device):
+                    # The probe GEMM reads its answer on the host: never first inside a capture, nothing recorded
+                    return False
                 fp8_gemm_runs(device = x2.device, act = self.act)
                 probe = _GEMM_PROBE.get(x2.device.index)
             return bool((probe or {}).get(self.act))

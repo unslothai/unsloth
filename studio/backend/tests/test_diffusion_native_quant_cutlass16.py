@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -239,3 +241,73 @@ def test_the_fused_forward_routes_through_the_cutlass_path(monkeypatch):
     out = layer._forward_fused(x)
     assert out.shape == (2, 32, 128) and bool((out == 1).all())
     assert calls == [((64, 512), True)] and nq._CUT16_CALLS[0] == 1
+
+
+def _two_plans(layer):
+    shape = (int(layer.weight_q.shape[0]), int(layer.weight_q.shape[1]))
+    plan = {min(cut._RACE_M): 2, max(cut._RACE_M): 4}
+    cut._NATIVE_PLAN[(None, *shape)] = dict(plan)
+    cut._NATIVE_PLAN[(1, 64, 64)] = dict(plan)  # another device / shape
+    return {k: dict(v) for k, v in cut._NATIVE_PLAN.items()}
+
+
+def _zero_codes(x2, rot_h):
+    return torch.zeros(x2.shape[0], x2.shape[1], dtype = torch.int8), torch.ones(x2.shape[0], 1)
+
+
+def _oom(*_a):
+    raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+
+def _no_int_mm(*_a):
+    pytest.fail("no int32 retry after an OOM")
+
+
+def test_cutlass16_gemm_oom_propagates_and_keeps_plans(monkeypatch):
+    layer = _layer()
+    before = _two_plans(layer)
+    nq._FUSED_STATE["codes"] = _zero_codes
+    monkeypatch.setattr(cut, "native_tile", lambda *a: 2)
+    monkeypatch.setattr(cut, "native_gemm", _oom)
+    monkeypatch.setattr(torch, "_int_mm", _no_int_mm)
+    x2 = torch.randn(64, 512).to(torch.float16)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        layer._forward_cutlass16(x2, layer.rot_h, 64)
+    assert cut._NATIVE_PLAN == before
+    assert nq._FUSED_STATE["codes"] is _zero_codes
+
+
+def test_cutlass16_gemm_fault_still_falls_back(monkeypatch):
+    layer = _layer()
+    _two_plans(layer)
+    nq._FUSED_STATE["codes"] = _zero_codes
+
+    def fault(*_a):
+        raise RuntimeError("ui8_gemm status 3")
+
+    monkeypatch.setattr(cut, "native_tile", lambda *a: 2)
+    monkeypatch.setattr(cut, "native_gemm", fault)
+    seen = []
+
+    def int_mm(a, b):
+        seen.append((tuple(a.shape), tuple(b.shape)))
+        return torch.zeros(a.shape[0], b.shape[1], dtype = torch.int32)
+
+    monkeypatch.setattr(torch, "_int_mm", int_mm)
+    out = layer._forward_cutlass16(torch.randn(64, 512).to(torch.float16), layer.rot_h, 64)
+    assert out.shape == (64, 128) and out.dtype == torch.float16
+    assert seen == [((64, 512), (512, 128))]
+    assert cut._NATIVE_PLAN == {}
+
+
+def test_eager_native_gemm_oom_propagates_and_keeps_plans(monkeypatch):
+    layer = _layer()
+    before = _two_plans(layer)
+    monkeypatch.setattr(cut, "native_tile", lambda *a: 2)
+    monkeypatch.setattr(cut, "native_gemm", _oom)
+    monkeypatch.setattr(torch, "_int_mm", _no_int_mm)
+    # is_cuda is the only device check on this path; the GEMM itself is stubbed.
+    xq = types.SimpleNamespace(is_cuda = True)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        layer._int_mm_from_q(xq, torch.ones(64, 1), torch.float16)
+    assert cut._NATIVE_PLAN == before

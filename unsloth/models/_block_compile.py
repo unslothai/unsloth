@@ -2127,7 +2127,7 @@ def _wrap(
             or _forced_float32(self)
             or _zero3_partitioned(self)
             # PrefixGrouper's int segment table would recompile at every new GRPO length.
-            or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
+            or kwargs.get("prefix_seg_info") is not None
         )
         if not stock and unsloth_forward and kwargs.get("packed_seq_lengths") is not None:
             # Packed lengths -> device cu_seqlens; no traceable varlen kernel keeps the stock forward.

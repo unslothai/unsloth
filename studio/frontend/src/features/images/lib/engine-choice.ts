@@ -16,6 +16,9 @@ export const ENGINE_OPTIONS: Array<[EngineChoice, string]> = [
 export const ENGINE_HINT =
   "Which engine runs this GGUF. Auto keeps the host's choice: diffusers on a GPU, native sd.cpp on CPU. Native usually needs less VRAM, but has no torch.compile or quantised fast paths and is often slower on CUDA. Applies on the next load (Reapply).";
 
+export const ENGINE_HINT_CPU_ONLY =
+  "Which engine runs this GGUF. This device has no GPU PyTorch can use, so GGUF image models run on the native sd.cpp engine only. Applies on the next load (Reapply).";
+
 const KEY = "unsloth:images:engine-by-model";
 
 export function engineModelKey(repoId: string | null | undefined, filename: string | null | undefined): string {
@@ -72,11 +75,27 @@ interface EngineStatus {
   engine?: string | null;
   engine_forced?: string | null;
   native_engine_eligible?: boolean;
+  /** False on CPU-only torch: GGUF runs on sd.cpp only. */
+  gguf_diffusers_allowed?: boolean;
   lora_via_native?: boolean;
   lora_after_reload?: boolean;
   supports_lora?: boolean;
   lora_unavailable_reason?: string | null;
   resolved?: Record<string, { source: string; requested?: string | boolean | null }> | null;
+}
+
+/** An older backend that omits the flag keeps Diffusers. */
+export function diffusersEngineOffered(status: EngineStatus | null | undefined): boolean {
+  return status?.gguf_diffusers_allowed !== false;
+}
+
+export function engineOptionsFor(status: EngineStatus | null | undefined): Array<[EngineChoice, string]> {
+  return diffusersEngineOffered(status) ? ENGINE_OPTIONS : ENGINE_OPTIONS.filter(([value]) => value !== "diffusers");
+}
+
+/** A Diffusers pick reads as Auto on a CPU-only host (the backend would refuse it). */
+export function hostEngineChoice(choice: EngineChoice | undefined, status: EngineStatus | null | undefined): EngineChoice | undefined {
+  return choice === "diffusers" && !diffusersEngineOffered(status) ? "auto" : choice;
 }
 
 /** The select shows only for a loaded GGUF the native engine can run. */
