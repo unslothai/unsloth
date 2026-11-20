@@ -156,6 +156,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.thinkingTools.title",
     "settings.chat.library.label",
     "settings.chat.groups.display.title",
+    "settings.chat.groups.customization.title",
     "settings.chat.modelSelection.title",
     "settings.chat.modelSelection.fitOnDeviceOnly",
     "settings.chat.modelSelection.pickerExpandLoaded",

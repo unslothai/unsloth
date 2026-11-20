@@ -3353,6 +3353,7 @@ export const vi = {
       groups: {
         replies: { title: "Phản hồi" },
         thinkingTools: { title: "Suy nghĩ và công cụ" },
+        customization: { title: "Tùy chỉnh" },
         conversations: {
           title: "Cuộc trò chuyện",
         },

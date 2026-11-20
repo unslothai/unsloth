@@ -3371,6 +3371,7 @@ export const cs = {
       groups: {
         replies: { title: "Odpovědi" },
         thinkingTools: { title: "Přemýšlení a nástroje" },
+        customization: { title: "Přizpůsobení" },
         conversations: {
           title: "Konverzace",
         },

@@ -3138,6 +3138,7 @@ export const ptBR = {
       groups: {
         replies: { title: "Respostas" },
         thinkingTools: { title: "Raciocínio e ferramentas" },
+        customization: { title: "Personalização" },
         conversations: { title: "Conversas" },
         files: { title: "Arquivos e colagem" },
         display: { title: "Exibição" },

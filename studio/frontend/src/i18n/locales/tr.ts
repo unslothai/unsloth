@@ -3352,6 +3352,7 @@ export const tr = {
       groups: {
         replies: { title: "Yanıtlar" },
         thinkingTools: { title: "Düşünme ve araçlar" },
+        customization: { title: "Özelleştirme" },
         conversations: {
           title: "Sohbetler",
         },

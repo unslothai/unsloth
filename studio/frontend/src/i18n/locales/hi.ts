@@ -3130,6 +3130,7 @@ export const hi = {
       groups: {
         replies: { title: "उत्तर" },
         thinkingTools: { title: "सोच और टूल" },
+        customization: { title: "अनुकूलन" },
         conversations: { title: "बातचीत" },
         files: { title: "फ़ाइलें और पेस्ट" },
         display: { title: "दिखावट" },

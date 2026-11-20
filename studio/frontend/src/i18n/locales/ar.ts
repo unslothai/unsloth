@@ -3121,6 +3121,7 @@ export const ar = {
       groups: {
         replies: { title: "الردود" },
         thinkingTools: { title: "التفكير والأدوات" },
+        customization: { title: "التخصيص" },
         conversations: { title: "المحادثات" },
         files: { title: "الملفات واللصق" },
         display: { title: "العرض" },

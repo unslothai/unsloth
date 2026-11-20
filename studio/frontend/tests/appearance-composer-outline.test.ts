@@ -77,13 +77,13 @@ test("light glass outlines its controls by default", () => {
   assert.ok(preferences.indexOf("<ElementOutlineSliderRow />") > preferences.indexOf("<InterfaceScaleRow />"));
 });
 
-test("the composer appearance rows live only in Chat's Composer section", () => {
+test("the composer appearance rows live only in Chat's Customization section", () => {
   const chat = readSrc("features/settings/tabs/chat-tab.tsx");
-  const start = chat.indexOf('<SettingsSection title={t("composerSettings.title")}>');
+  const start = chat.indexOf('<SettingsSection title={t("settings.chat.groups.customization.title")}>');
   assert.ok(start !== -1);
   const section = chat.slice(start, chat.indexOf("</SettingsSection>", start));
   for (const control of ["ComposerPositionSliderRow", "ComposerOutlineSliderRow", "ChatWidthSelect"]) {
-    assert.ok(section.includes(`<${control} />`), `${control} is in Composer`);
+    assert.ok(section.includes(`<${control} />`), `${control} is in Customization`);
     assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes(control));
   }
   // Sent attachments moved to Chat defaults; it is still Chat-only.

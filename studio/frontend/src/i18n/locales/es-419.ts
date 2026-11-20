@@ -3400,6 +3400,7 @@ export const es419 = {
       groups: {
         replies: { title: "Respuestas" },
         thinkingTools: { title: "Razonamiento y herramientas" },
+        customization: { title: "Personalización" },
         conversations: {
           title: "Conversaciones",
         },

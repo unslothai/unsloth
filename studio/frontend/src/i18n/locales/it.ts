@@ -3039,6 +3039,7 @@ export const it = {
       groups: {
         replies: { title: "Risposte" },
         thinkingTools: { title: "Ragionamento e strumenti" },
+        customization: { title: "Personalizzazione" },
         conversations: { title: "Conversazioni" },
         files: { title: "File e incolla" },
         display: { title: "Visualizzazione" },

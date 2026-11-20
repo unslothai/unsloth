@@ -3107,6 +3107,7 @@ export const ja = {
       groups: {
         replies: { title: "応答" },
         thinkingTools: { title: "思考とツール" },
+        customization: { title: "カスタマイズ" },
         conversations: { title: "会話" },
         files: { title: "ファイルと貼り付け" },
         display: { title: "表示" },

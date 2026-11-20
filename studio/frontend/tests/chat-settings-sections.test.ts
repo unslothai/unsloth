@@ -44,10 +44,11 @@ test("Chat defaults keeps scrolling, reply stats and the minor composer rows", (
   assert.doesNotMatch(defaults, /isOwner/, "the owner limits sit in Replies");
 });
 
-test("Composer groups behavior, formatting, layout and the picker's icon style in Chat", () => {
+test("Composer keeps behavior and formatting; Customization holds layout and the picker's icon style", () => {
   const settings = section("composerSettings.title");
   assert.match(settings, /<ComposerSettings embedded=\{true\} \/>/);
-  assert.deepEqual(labels(settings), [
+  assert.deepEqual(labels(settings), []);
+  assert.deepEqual(labels(section("settings.chat.groups.customization.title")), [
     "settings.appearance.custom.chatWidth.label",
     "settings.chat.composerPosition",
     "settings.chat.modelSelection.pickerMonochromeIcons",

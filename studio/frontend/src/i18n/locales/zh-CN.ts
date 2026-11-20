@@ -3080,6 +3080,7 @@ export const zhCN = {
       groups: {
         replies: { title: "回复" },
         thinkingTools: { title: "思考与工具" },
+        customization: { title: "自定义" },
         conversations: { title: "对话" },
         files: { title: "文件与粘贴" },
         display: { title: "显示" },

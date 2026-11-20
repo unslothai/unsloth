@@ -14,7 +14,10 @@ import {
   type QueuedPrompt,
 } from "@/features/chat/utils/queued-text-attachments";
 import { getAuthSessionEpoch } from "@/features/auth";
-import { useMarkChatWelcome } from "@/features/chat-background";
+import {
+  useChatWelcomeShown,
+  useMarkChatWelcome,
+} from "@/features/chat-background";
 
 import {
   ComposerAttachments,
@@ -3363,8 +3366,11 @@ const Composer: FC<{
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
   const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
+  // Only the new chat page (its welcome is up), not an empty chat elsewhere such as the floating one.
+  const welcomeShown = useChatWelcomeShown();
+  const newChatPage = threadEmpty && welcomeShown;
   const minEditorHeight = Math.round(
-    (16 + 24 * (threadEmpty ? COMPOSER_MIN_ROWS : 1) - (threadEmpty ? 6 : 0)) *
+    (16 + 24 * (threadEmpty ? COMPOSER_MIN_ROWS : 1) - (newChatPage ? 8 : 0)) *
       uiSpaceScale,
   );
   const maxRows = useComposerMaxRows(24 * uiSpaceScale);
@@ -6285,6 +6291,7 @@ const Composer: FC<{
             <div
               ref={editorRef}
               className="unsloth-composer-editor"
+              data-new-chat={newChatPage || undefined}
               style={
                 {
                   "--composer-editor-height": `${composerText.length === 0 ? minEditorHeight : Math.max(minEditorHeight, editorHeight)}px`,

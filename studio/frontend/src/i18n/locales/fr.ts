@@ -3158,6 +3158,7 @@ export const fr = {
       groups: {
         replies: { title: "Réponses" },
         thinkingTools: { title: "Réflexion et outils" },
+        customization: { title: "Personnalisation" },
         conversations: { title: "Conversations" },
         files: { title: "Fichiers et collage" },
         display: { title: "Affichage" },

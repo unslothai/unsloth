@@ -546,6 +546,9 @@ export function ChatTab() {
       <SettingsSection title={t("composerSettings.title")}>
         <ComposerSettings embedded={true} />
         <ComposerFormatRows />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.groups.customization.title")}>
         <SettingsRow
           label={t("settings.appearance.custom.chatWidth.label")}
           description={t("settings.appearance.custom.chatWidth.description")}

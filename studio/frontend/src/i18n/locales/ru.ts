@@ -3137,6 +3137,7 @@ export const ru = {
       groups: {
         replies: { title: "Ответы" },
         thinkingTools: { title: "Размышления и инструменты" },
+        customization: { title: "Настройка вида" },
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },
