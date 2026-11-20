@@ -1826,19 +1826,24 @@ function pdfFormFieldLines(
   return [...fields.values()];
 }
 
+// The server's OCR_MIN_CHARS: a page number or Bates stamp does not make a scanned page readable.
+const SCANNED_PAGE_MAX_CHARS = 16;
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
-  const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
+  const [{ extractText, getDocumentProxy, getResolvedPDFJS }, buffer] = await Promise.all([
     import("unpdf"),
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
   ]);
   const pdf = await getDocumentProxy(buffer);
+  let pages: string[];
+  let hasScannedPage = false;
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
     // getAnnotations re-reads the text under each link, so only forms call it
     const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
-    const pages = await Promise.all(
+    pages = await Promise.all(
       text.map(async (pageText, index) => {
         const annotations = hasFields
           ? await pdf
@@ -1850,10 +1855,36 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
         return [pageText, ...fields].filter(Boolean).join("\n");
       }),
     );
-    return normalizeExtractedText(pages.join("\n\n"));
+    const short = [...text.keys()].filter(
+      (index) => text[index]!.trim().length < SCANNED_PAGE_MAX_CHARS,
+    );
+    if (short.length) {
+      const { OPS } = await getResolvedPDFJS();
+      const imageOps = new Set<number>([
+        OPS.paintImageXObject,
+        OPS.paintInlineImageXObject,
+        OPS.paintImageXObjectRepeat,
+        OPS.paintImageMaskXObject,
+      ]);
+      // Sequential, stopping at the first: listing a page's operators decodes its images.
+      for (const index of short) {
+        hasScannedPage = await pdf
+          .getPage(index + 1)
+          .then((page) => page.getOperatorList())
+          .then(({ fnArray }) => fnArray.some((fn) => imageOps.has(fn)), () => false);
+        if (hasScannedPage) break;
+      }
+    }
   } finally {
     await pdf.destroy();
   }
+  if (hasScannedPage) {
+    const scanned = await import("./server-document")
+      .then((m) => m.extractServerDocumentText(file))
+      .catch(() => null);
+    if (scanned !== null) return scanned;
+  }
+  return normalizeExtractedText(pages.join("\n\n"));
 }
 
 // A text attachment's limit, in UTF-8 bytes. Cells are not capped, so the total must be.
