@@ -132,6 +132,7 @@ def install_frozen_prefix_skip(model):
     model_ref = weakref.ref(model)
 
     def _cut_output(module, args, output):
+        state["ran"] = True
         if isinstance(output, torch.Tensor):
             output = _leaf(output)
         elif isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
@@ -187,7 +188,7 @@ def install_frozen_prefix_skip(model):
             layer.gradient_checkpointing = False
             handles.append(layer.register_forward_pre_hook(_detach_inputs, with_kwargs = True))
         handles.append(stack[k - 1].register_forward_hook(_cut_output))
-        state["cut"] = False
+        state["cut"] = state["ran"] = False
         state["active"] = {"flags": flags, "handles": handles, "k": k}
         return None
 
@@ -196,6 +197,9 @@ def install_frozen_prefix_skip(model):
         _restore()
         if active is None or output is None:
             return None  # also the always_call run after a forward that raised
+        if not state["ran"]:
+            # The stack never ran (a vision tower on a text-only batch): nothing was skipped.
+            return None
         if not state["cut"]:
             # Layer k would have had an input without grad: its adapters got no gradient this step.
             state["disabled"] = True
