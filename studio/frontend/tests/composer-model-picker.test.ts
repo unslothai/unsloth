@@ -713,14 +713,10 @@ test("the open picker has one fixed height on every tab, whatever each tab lists
   );
   assert.match(
     picker,
-    /configTarget\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
+    /configTarget \|\| isExpanded\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
   );
   const pickerCss = readSrc("index.css");
   assert.doesNotMatch(pickerCss, /^\s*--picker-floor:/m);
-  assert.match(
-    picker,
-    /isExpanded\s+\? "h-\(--composer-picker-min-h\)"/,
-  );
   assert.match(
     picker,
     /openSide !== "bottom" &&\s+"\[--picker-floor:var\(--radix-popover-content-available-height\)\]"/,
