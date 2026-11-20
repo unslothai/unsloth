@@ -807,6 +807,7 @@ export const tr = {
     failed:
       "Motor kurulumu başarısız oldu. Yeniden deneyin veya varsayılan motoru kullanın.",
     details: "Teknik ayrıntılar",
+    lastAttempt: "Son deneme: {time}",
     cancelled: "Kurulum iptal edildi. Yeniden deneyebilirsiniz.",
     scope:
       "NVIDIA GPU'larda metin ve görsel sohbeti. İlk yükleme daha uzun sürebilir.",
@@ -3351,6 +3352,7 @@ export const tr = {
       groups: {
         replies: { title: "Yanıtlar" },
         thinkingTools: { title: "Düşünme ve araçlar" },
+        customization: { title: "Özelleştirme" },
         conversations: {
           title: "Sohbetler",
         },

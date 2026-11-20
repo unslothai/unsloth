@@ -10806,6 +10806,11 @@ def patch_hf_quantizer():
 
 patch_hf_quantizer()
 
+# DoRA: PEFT rebuilds the dense B @ A update per forward for the row norm; use the rank-r factored identity instead.
+from ..kernels.dora import patch_peft_dora_factored_norm
+
+patch_peft_dora_factored_norm()
+
 
 def _fp8_checkpoint_dequantizes_below_sm89():
     # transformers 5.x dequantizes FP8 below sm89 (same release added `dequantize`); 4.57.x raises.

@@ -1097,7 +1097,10 @@ class DiffusionTrainingStartRequest(BaseModel):
             "across runs: a rerun whose images, captions and resolution are unchanged skips "
             "loading the VAE and the multi-GB text encoders entirely. Unsloth-relative names are "
             "resolved under the Unsloth outputs root and absolute paths must stay inside it. "
-            "null or blank keeps the in-memory cache, which is rebuilt every run."
+            "null or blank uses the default cache in the Studio cache folder (on for the DiT and "
+            "MiniMax-H3 families, oldest entries evicted past "
+            "UNSLOTH_DIFFUSION_TRAIN_COND_CACHE_MAX_GB, 20 by default); 'off' keeps the in-memory "
+            "cache only, rebuilt every run, as does UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0 for the default."
         ),
     )
     compile_transformer: Literal["off", "on", "auto"] = Field(

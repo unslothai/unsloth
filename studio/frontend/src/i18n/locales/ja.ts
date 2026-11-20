@@ -734,6 +734,7 @@ export const ja = {
     background: "バックグラウンドでインストールします。",
     failed: "エンジンのインストールに失敗しました。再試行するか、デフォルトのエンジンを使用してください。",
     details: "技術的な詳細",
+    lastAttempt: "最後の試行: {time}",
     cancelled: "インストールをキャンセルしました。再試行できます。",
     scope: "NVIDIA GPU でのテキストと画像のチャット。初回の読み込みには時間がかかる場合があります。",
   },
@@ -3106,6 +3107,7 @@ export const ja = {
       groups: {
         replies: { title: "応答" },
         thinkingTools: { title: "思考とツール" },
+        customization: { title: "カスタマイズ" },
         conversations: { title: "会話" },
         files: { title: "ファイルと貼り付け" },
         display: { title: "表示" },

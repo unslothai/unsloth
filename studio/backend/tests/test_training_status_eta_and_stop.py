@@ -52,6 +52,30 @@ def test_a_stop_during_the_drafter_phase_reads_stopped_and_keeps_the_save(monkey
     assert st.details["output_dir"] == "/tmp/out"
 
 
+def test_a_stop_with_nothing_saved_clears_the_run_output_dir(monkeypatch):
+    b = _running(monkeypatch)
+    b._should_stop = True
+    b._handle_event({"type": "output_dir", "output_dir": "/tmp/out"})
+    b._handle_event(
+        {
+            "type": "complete",
+            "output_dir": None,
+            "saved": False,
+            "status_message": "Training stopped",
+        }
+    )
+    assert _status().details["output_dir"] is None
+    assert b._terminal_finalize_payload["status"] == "stopped"
+    assert b._terminal_finalize_payload["clear_output_dir"] is True
+
+
+def test_a_saved_stop_keeps_the_run_output_dir(monkeypatch):
+    b = _running(monkeypatch)
+    b._should_stop = True
+    b._handle_event({**_DONE, "status_message": "Training stopped"})
+    assert b._terminal_finalize_payload["clear_output_dir"] is False
+
+
 def test_a_cancelled_message_with_a_period_counts_as_stopped(monkeypatch):
     b = _running(monkeypatch)
     b._handle_event({**_DONE, "status_message": "Training cancelled."})

@@ -7,6 +7,19 @@ export function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 		),
 	);
 }
+/** decode() may reject while the image still loads (the spec allows it): only a failed load rejects. */
+export async function loadImage(image: HTMLImageElement, url: string): Promise<void> {
+	const loaded = new Promise<void>((resolve, reject) => {
+		image.addEventListener("load", () => resolve(), { once: true });
+		image.addEventListener("error", () => reject(new Error("decode")), { once: true });
+	});
+	image.src = url;
+	try {
+		await image.decode();
+	} catch {
+		if (!(image.complete && image.naturalWidth > 0)) await loaded;
+	}
+}
 export async function decodeImage(blob: Blob): Promise<{
 	source: CanvasImageSource;
 	width: number;
@@ -24,9 +37,8 @@ export async function decodeImage(blob: Blob): Promise<{
 	}
 	const url = URL.createObjectURL(blob),
 		image = new Image();
-	image.src = url;
 	try {
-		await image.decode();
+		await loadImage(image, url);
 		return {
 			source: image,
 			width: image.naturalWidth,

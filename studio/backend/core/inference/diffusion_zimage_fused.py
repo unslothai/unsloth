@@ -368,6 +368,31 @@ def install_modules(
     return result
 
 
+def is_replica_record(key: str, value: Any) -> bool:
+    """The fused Q/K/V Linear lives outside the module tree: a CFG replica's deep copy would keep it on the source
+    card (a second copy there, and a stale one the replica's processor skips)."""
+    return key == _QKV_ATTR
+
+
+def rebuild_replica(source: Any, replica: Any) -> int:
+    """Re-fuse on the replica's own card each attention module the source fused (the copy dropped the records)."""
+    n = 0
+    with _LOCK:
+        for src, rep in zip(source.modules(), replica.modules()):
+            if _QKV_ATTR not in src.__dict__:
+                continue
+            parts = [getattr(rep, name, None) for name in ("to_q", "to_k", "to_v")]
+            if any(p is None for p in parts):
+                continue
+            bases = [_lora_base(p) for p in parts]
+            fused = _fuse_linears(bases)
+            if fused is None or not _share_storage(fused, bases):
+                continue
+            rep.__dict__[_QKV_ATTR] = (fused, *parts)
+            n += 1
+    return n
+
+
 def probe_split_cards(cards: Any) -> tuple:
     """Probe the split's other cards (an unprobed card takes the complex RoPE the regional compile cannot lower).
     Returns the cards whose probe passed."""

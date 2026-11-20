@@ -733,6 +733,7 @@ export const hi = {
     background: "बैकग्राउंड में इंस्टॉल होता है।",
     failed: "इंजन इंस्टॉल नहीं हो सका। फिर से कोशिश करें या डिफ़ॉल्ट इंजन इस्तेमाल करें।",
     details: "तकनीकी विवरण",
+    lastAttempt: "पिछला प्रयास: {time}",
     cancelled: "इंस्टॉलेशन रद्द किया गया। आप फिर से कोशिश कर सकते हैं।",
     scope: "NVIDIA GPU पर टेक्स्ट और इमेज चैट। पहली बार लोड होने में ज़्यादा समय लग सकता है।",
   },
@@ -3129,6 +3130,7 @@ export const hi = {
       groups: {
         replies: { title: "उत्तर" },
         thinkingTools: { title: "सोच और टूल" },
+        customization: { title: "अनुकूलन" },
         conversations: { title: "बातचीत" },
         files: { title: "फ़ाइलें और पेस्ट" },
         display: { title: "दिखावट" },

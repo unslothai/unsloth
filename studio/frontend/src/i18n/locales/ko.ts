@@ -733,6 +733,7 @@ export const ko = {
     background: "백그라운드에서 설치합니다.",
     failed: "엔진 설치에 실패했습니다. 다시 시도하거나 기본 엔진을 사용하세요.",
     details: "기술 세부 정보",
+    lastAttempt: "마지막 시도: {time}",
     cancelled: "설치가 취소되었습니다. 다시 시도할 수 있습니다.",
     scope: "NVIDIA GPU에서 텍스트 및 이미지 채팅을 지원합니다. 첫 로드는 시간이 더 걸릴 수 있습니다.",
   },
@@ -3113,6 +3114,7 @@ export const ko = {
       groups: {
         replies: { title: "응답" },
         thinkingTools: { title: "생각과 도구" },
+        customization: { title: "사용자 지정" },
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },

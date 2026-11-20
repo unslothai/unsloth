@@ -645,6 +645,10 @@ def native_prepare(weight_q: Any, x_dtype: Any, has_bias: bool) -> None:
         _NATIVE_PLAN[key] = {}
         if family(torch.cuda.get_device_capability(index)) != 75 or not probed_tiles(index):
             return
+        cached = _native_cache_get(index, key)
+        if cached is not None:
+            _NATIVE_PLAN[key] = cached
+            return
         g = torch.Generator(device = "cpu").manual_seed(13)
         ws = (torch.rand(weight_q.shape[0], generator = g) * 1e-3 + 1e-5).to(weight_q.device)
         today = lambda a, w_, x_, s_, b_: reference_native(a, w_, x_, s_, torch.float16)  # noqa: E731
@@ -657,8 +661,58 @@ def native_prepare(weight_q: Any, x_dtype: Any, has_bias: bool) -> None:
             entry[m] = r["tile"]
             _NATIVE_RACES.setdefault(key, {})[m] = r
         _NATIVE_PLAN[key] = entry
+        _native_cache_put(index, key, entry)
     except Exception:  # noqa: BLE001
         return
+
+
+def _native_cache_key(index: int) -> Optional[str]:
+    """The torchao plan's disk-cache key (card, toolchain, library, sources, timing mode) plus the native kind."""
+    from . import diffusion_int8_gemm as g8
+
+    ckey = g8._cut_cache_key(index)
+    return f"{ckey}|native|{mode()}" if ckey else None
+
+
+def _native_cache_get(index: int, key: tuple) -> Optional[dict]:
+    """A complete earlier race for this card and shape, else None (race it). The race costs seconds per shape on a
+    T4 (sustained timings at 4096 rows) and runs on the first forward: a fresh process reads it back."""
+    try:
+        from . import diffusion_int8_gemm as g8
+
+        nkey = _native_cache_key(index)
+        if not nkey:
+            return None
+        slot = g8._cut_cache_read().get(nkey)
+        hit = slot.get(f"{key[1]}x{key[2]}") if isinstance(slot, dict) else None
+        if not isinstance(hit, dict):
+            return None
+        ok = probed_tiles(index)
+        entry = {m: hit.get(str(m)) for m in _RACE_M}
+        if any(str(m) not in hit for m in _RACE_M) or any(
+            v is not None and v not in ok for v in entry.values()
+        ):
+            return None
+        return entry
+    except Exception:  # noqa: BLE001 - no cache: race as before
+        return None
+
+
+def _native_cache_put(index: int, key: tuple, entry: dict) -> None:
+    try:
+        from . import diffusion_int8_gemm as g8
+
+        nkey = _native_cache_key(index)
+        if not nkey:
+            return
+        table = g8._cut_cache_read()
+        slot = table.pop(nkey, None)
+        slot = dict(slot) if isinstance(slot, dict) else {}
+        slot[f"{key[1]}x{key[2]}"] = {str(m): v for m, v in entry.items()}
+        table[nkey] = slot
+        g8._cut_cache_write(table)
+    except Exception:  # noqa: BLE001 - the plan still holds for this process
+        pass
 
 
 def native_tile(xq: Any, weight_q: Any, x_scale: Any, w_scale: Any) -> Optional[int]:

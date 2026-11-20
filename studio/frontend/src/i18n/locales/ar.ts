@@ -733,6 +733,7 @@ export const ar = {
     background: "يُثبَّت في الخلفية.",
     failed: "فشل تثبيت المحرك. أعد المحاولة أو استخدم المحرك الافتراضي.",
     details: "التفاصيل التقنية",
+    lastAttempt: "آخر محاولة: {time}",
     cancelled: "تم إلغاء التثبيت. يمكنك إعادة المحاولة.",
     scope: "محادثة نصية وبالصور على وحدات NVIDIA GPU. قد يستغرق التحميل الأول وقتًا أطول.",
   },
@@ -3120,6 +3121,7 @@ export const ar = {
       groups: {
         replies: { title: "الردود" },
         thinkingTools: { title: "التفكير والأدوات" },
+        customization: { title: "التخصيص" },
         conversations: { title: "المحادثات" },
         files: { title: "الملفات واللصق" },
         display: { title: "العرض" },

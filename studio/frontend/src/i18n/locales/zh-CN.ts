@@ -733,6 +733,7 @@ export const zhCN = {
     background: "在后台安装。",
     failed: "引擎安装失败。请重试或使用默认引擎。",
     details: "技术详情",
+    lastAttempt: "上次尝试：{time}",
     cancelled: "安装已取消。你可以重试。",
     scope: "在 NVIDIA GPU 上进行文本和图像聊天。首次加载可能需要更长时间。",
   },
@@ -3079,6 +3080,7 @@ export const zhCN = {
       groups: {
         replies: { title: "回复" },
         thinkingTools: { title: "思考与工具" },
+        customization: { title: "自定义" },
         conversations: { title: "对话" },
         files: { title: "文件与粘贴" },
         display: { title: "显示" },
