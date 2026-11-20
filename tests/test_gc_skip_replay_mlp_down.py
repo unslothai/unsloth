@@ -321,7 +321,13 @@ def test_only_the_post_norm_free_layer_arms():
     ):
         module = __import__(f"unsloth.models.{name}", fromlist = ["_"])
         for fn_name, fn in vars(module).items():
-            if inspect.isfunction(fn) and fn.__module__ == module.__name__:
+            # torch.compile parks graph-break continuations (`__resume_at_<offset>_<n>`) in the compiled function's
+            # module globals, and their source is that function's, so a compile earlier in the worker adds a copy.
+            if (
+                inspect.isfunction(fn)
+                and fn.__module__ == module.__name__
+                and fn.__code__.co_name == fn_name
+            ):
                 if "arm_mlp_output_unread(" in inspect.getsource(fn):
                     arming.append(fn_name)
     assert arming == ["LlamaDecoderLayer_fast_forward"]
