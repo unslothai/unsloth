@@ -792,6 +792,32 @@ def test_a_learning_call_inside_a_graph_warmup_is_marked_thrown_away(monkeypatch
     assert [c[2] for c in plan["checks"]] == [True, False]
 
 
+def test_every_undecided_call_before_the_decision_is_checked(monkeypatch):
+    """Calls between the learning window and the decision still run the sink path a render uses: a first clip there
+    must be seen, or a verdict other than the sink path would change the next render of the same seed."""
+    import contextlib
+
+    class _Event:
+        def record(self):
+            pass
+
+    plan = _fake_plan(mode = I.MODE_RACE)
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "Event", _Event)
+    real_empty = torch.empty
+    monkeypatch.setattr(
+        torch,
+        "empty",
+        lambda *a, **k: real_empty(*a, **{x: y for x, y in k.items() if x != "pin_memory"}),
+    )
+    i8 = torch.zeros(64, dtype = torch.int8)
+    for n in (I.SINK_LEARN_CALLS, I.SINK_DECIDE_AT - 1, I.SINK_DECIDE_AT):
+        I._check_sinks(plan, i8, n)
+    assert (
+        len(plan["checks"]) == 2
+    ), "the calls before the decision are checked, the deciding one is not"
+
+
 def test_with_a_known_verdict_a_plan_that_never_clips_drops_the_sink_path_after_its_learning_calls(
     monkeypatch,
 ):
