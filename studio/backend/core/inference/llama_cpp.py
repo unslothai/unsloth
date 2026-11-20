@@ -5830,6 +5830,16 @@ def _metal_device_looks_paravirtual_quick() -> bool:
     return "paravirtual" in low or "virtual" in low or "vmm-" in low
 
 
+def _metal_devices_env_hides_all(env: Optional[Mapping[str, str]] = None) -> bool:
+    """ggml-metal registers atoi(GGML_METAL_DEVICES) devices whenever the variable is set, so a value
+    below 1 (empty and non-numeric read as 0) leaves the llama-server that inherits it on the CPU."""
+    value = (os.environ if env is None else env).get("GGML_METAL_DEVICES")
+    if value is None:
+        return False
+    match = re.match(r"\s*([+-]?\d+)", value)
+    return (int(match.group(1)) if match else 0) < 1
+
+
 def _metal_offload_forced_off_for_polling() -> bool:
     """Whether loads on this Mac pin every GGUF layer to the CPU (the paravirtual guard), without the
     slow probes: the full probe's answer once a load has computed it, else the quick one."""
@@ -11958,20 +11968,18 @@ class LlamaCppBackend:
     @staticmethod
     def _build_has_metal(binary: Optional[str] = None) -> bool:
         """Whether this llama.cpp was built with Metal, from files alone. Builds ship shared libraries
-        (llama.cpp's default), so a ggml library set without libggml-metal is setup.sh's
+        (llama.cpp's default), so a ggml library set without a loadable libggml-metal is setup.sh's
         -DGGML_METAL=OFF fallback; with no ggml libraries beside it, the prebuilt marker decides,
         and a build with neither reads as no Metal."""
+        from utils.llama_cpp_path_settings import binary_gpu_backends
+
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return False
-        try:
-            names = [path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file()]
-        except OSError:
-            names = []
-        if any(name.startswith("libggml-metal") for name in names):
-            return True
-        if any(name.startswith("libggml") for name in names):
-            return False
+        # The executable a wrapper script runs, whose directory holds the libraries it loads.
+        backends = binary_gpu_backends(_resolve_llama_binary(binary))
+        if backends is not None:
+            return "metal" in backends
         try:
             from utils.llama_cpp_freshness import read_install_marker
             from utils.prebuilt.llama_backend import marker_backend

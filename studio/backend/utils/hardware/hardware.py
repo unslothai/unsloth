@@ -7708,10 +7708,15 @@ def _llama_cpp_offloads_to_metal() -> bool:
     try:
         from core.inference.llama_cpp import (
             LlamaCppBackend,
+            _metal_devices_env_hides_all,
             _metal_offload_forced_off_for_polling,
         )
 
-        return LlamaCppBackend._build_has_metal() and not _metal_offload_forced_off_for_polling()
+        return (
+            not _metal_devices_env_hides_all()
+            and LlamaCppBackend._build_has_metal()
+            and not _metal_offload_forced_off_for_polling()
+        )
     except Exception as e:
         logger.debug("Could not tell whether llama.cpp offloads to Metal: %s", e)
         return False

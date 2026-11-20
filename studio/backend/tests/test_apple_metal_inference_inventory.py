@@ -197,6 +197,10 @@ def _llama_install(tmp_path, libs, marker_backend = None):
         (["libggml-base.dylib", "libggml-cpu.dylib", "libggml-blas.dylib"], None, False),
         # The library set wins over a stale marker beside it.
         (["libggml-base.dylib", "libggml-cpu.dylib"], "metal", False),
+        # Versioned names, as the prebuilt also ships them.
+        (["libggml-base.0.dylib", "libggml-metal.0.20.1.dylib"], None, True),
+        # Only a loadable library name counts: dyld never opens a renamed one.
+        (["libggml-base.dylib", "libggml-cpu.dylib", "libggml-metal.dylib.disabled"], "metal", False),
         # A static build: only the marker can tell.
         ([], "metal", True),
         ([], None, False),
@@ -208,6 +212,39 @@ def test_build_has_metal_reads_the_installed_files(tmp_path, libs, marker, expec
 
     llama_cpp_freshness._marker_cache.clear()
     assert LlamaCppBackend._build_has_metal(_llama_install(tmp_path, libs, marker)) is expected
+
+
+def test_build_has_metal_follows_the_installer_wrapper(tmp_path):
+    # ~/.unsloth/llama.cpp/llama-server is a wrapper script; the libraries sit beside the binary it runs.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    server = _llama_install(tmp_path, ["libggml-base.dylib", "libggml-metal.dylib"])
+    wrapper = tmp_path / "llama.cpp" / "llama-server"
+    wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+    (tmp_path / "llama.cpp" / "libggml-base.dylib").write_bytes(b"")  # a CPU-only set at the top
+    assert LlamaCppBackend._build_has_metal(str(wrapper)) is True
+    assert server.endswith("build/bin/llama-server")
+
+
+@pytest.mark.parametrize(
+    "value, hides",
+    [
+        (None, False),
+        ("1", False),
+        ("2", False),
+        ("3x", False),  # atoi reads the leading digits
+        ("0", True),
+        (" 0", True),
+        ("", True),  # set but empty: atoi gives 0
+        ("off", True),
+        ("-1", True),
+    ],
+)
+def test_metal_devices_env_follows_ggml_metal_atoi(value, hides):
+    from core.inference.llama_cpp import _metal_devices_env_hides_all
+
+    env = {} if value is None else {"GGML_METAL_DEVICES": value}
+    assert _metal_devices_env_hides_all(env) is hides
 
 
 @pytest.fixture
@@ -280,12 +317,25 @@ def test_polled_paravirtual_check_prefers_the_loaders_full_answer(
 
 
 @pytest.mark.parametrize(
-    "has_metal, paravirtual, expected",
-    [(True, False, True), (False, False, False), (True, True, False)],
+    "has_metal, paravirtual, metal_devices, expected",
+    [
+        (True, False, None, True),
+        (False, False, None, False),
+        (True, True, None, False),
+        # llama-server inherits Studio's environment, and ggml-metal then registers no device.
+        (True, False, "0", False),
+        (True, False, "1", True),
+    ],
 )
-def test_offload_needs_a_metal_build_on_a_real_gpu(has_metal, paravirtual, expected):
+def test_offload_needs_a_metal_build_on_a_real_gpu(
+    monkeypatch, has_metal, paravirtual, metal_devices, expected
+):
     import core.inference.llama_cpp as llama_cpp
 
+    if metal_devices is None:
+        monkeypatch.delenv("GGML_METAL_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("GGML_METAL_DEVICES", metal_devices)
     with (
         patch.object(llama_cpp.LlamaCppBackend, "_build_has_metal", return_value = has_metal),
         patch.object(llama_cpp, "_metal_offload_forced_off_for_polling", return_value = paravirtual),
