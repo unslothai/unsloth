@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { prepareCharacterRun, type CharacterRun } from "@/features/characters/chat-runtime";
-import { isHiddenRoleplayTurn } from "@/features/characters/meta";
+// eslint-disable-next-line no-restricted-imports -- The characters barrel reaches back into @/features/chat (an import cycle).
+import { characterOutbound, prepareCharacterCountRun, prepareCharacterRun } from "@/features/characters/chat-runtime";
 import { estimateTokenCount } from "@/lib/estimate-tokens";
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
 
@@ -151,6 +151,7 @@ import {
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
+import { localCompactionFields, localSamplingFields } from "../utils/local-request-fields";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import { prepareComparePaneRun } from "../compare-run-ownership";
 import {
@@ -2195,27 +2196,6 @@ function localTargetReadsImages(
   return state.loadedIsMultimodal !== false;
 }
 
-// Count histories built for a character chat, so the extras send the same rolling flag the reply does.
-const characterCountHistories = new WeakSet<object>();
-// The meter recounts the same branch often; reuse its run (and lorebook scan) until the branch changes.
-const countRuns = new WeakMap<object, { threadId: string | undefined; run: Promise<CharacterRun | null> }>();
-
-function countedCharacterRun(
-  rawMessages: RunMessages,
-  threadId: string | undefined,
-  messages: RunMessages,
-): Promise<CharacterRun | null> {
-  const cached = countRuns.get(rawMessages);
-  if (cached && cached.threadId === threadId) return cached.run;
-  const run = prepareCharacterRun({ threadId, messages }).catch(() => null);
-  countRuns.set(rawMessages, { threadId, run });
-  // Only a built run is reused: an ordinary or not-yet-loaded chat is asked again next count.
-  void run.then((built) => {
-    if (!built && countRuns.get(rawMessages)?.run === run) countRuns.delete(rawMessages);
-  });
-  return run;
-}
-
 /** Tools are priced server-side since --enable-tools can inject schemas the client cannot see. */
 export async function buildLocalTokenCountHistory(
   rawMessages: RunMessages,
@@ -2223,6 +2203,8 @@ export async function buildLocalTokenCountHistory(
 ): Promise<{
   messages: OpenAIChatMessage[];
   studio_tool_history?: true;
+  /** A character chat: its extras must ask for rolling compaction, as the reply does. */
+  rolling: boolean;
 }> {
   const runtimeState = useChatRuntimeStore.getState();
   const { params } = runtimeState;
@@ -2236,12 +2218,8 @@ export async function buildLocalTokenCountHistory(
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
   // Counted as it would be sent, so a character chat's meter includes the cards.
-  const characterRun = await countedCharacterRun(rawMessages, threadId, survivingMessages);
-  const outboundMessages = (
-    characterRun
-      ? characterRun.messages
-      : survivingMessages.filter((message) => !isHiddenRoleplayTurn(message))
-  )
+  const characterRun = await prepareCharacterCountRun(rawMessages, threadId, survivingMessages);
+  const outboundMessages = characterOutbound(characterRun, survivingMessages)
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -2252,13 +2230,13 @@ export async function buildLocalTokenCountHistory(
   if (combinedSystemPrompt) {
     prependSystemPrompt(outboundMessages, combinedSystemPrompt);
   }
-  if (characterRun) characterCountHistories.add(outboundMessages);
 
   return {
     messages: outboundMessages as OpenAIChatMessage[],
     ...studioToolHistoryRequestFieldsAfterReplay(
       survivingMessages as unknown as ToolHistoryMessage[],
     ),
+    rolling: characterRun != null,
   };
 }
 
@@ -2324,42 +2302,11 @@ export function buildLocalTokenCountReasoning(
   };
 }
 
-/** The compaction fields a local completion sends for the loaded model; rolling for character chats. */
-export function localCompactionFields(
-  state: ReturnType<typeof useChatRuntimeStore.getState>,
-  rolling: boolean,
-): ReturnType<typeof ggufCompactionRequestFields> {
-  return ggufCompactionRequestFields({
-    isGguf: isServedByLlamaCpp({
-      loadedIsGguf: state.loadedIsGguf,
-      activeGgufVariant: state.activeGgufVariant,
-      activeNativePathToken: state.activeNativePathToken,
-      checkpoint: state.params.checkpoint,
-    }),
-    isMlx: state.loadedIsMlx === true,
-    isManagedEngine: state.loadedEngine !== "auto",
-    isNpu: isNpuModelId(state.params.checkpoint),
-    autoCompactEnabled: state.autoCompactEnabled,
-    rolling,
-  });
-}
-
-/** A local completion's sampling fields, as the chat sends them. */
-export function localSamplingFields(params: ReturnType<typeof useChatRuntimeStore.getState>["params"]) {
-  return {
-    temperature: params.temperature,
-    top_p: params.topP,
-    top_k: params.topK,
-    min_p: params.minP,
-    repetition_penalty: params.repetitionPenalty,
-    presence_penalty: params.presencePenalty,
-  };
-}
-
 /** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
   messages: readonly { role?: string; content?: unknown }[] = [],
+  rolling = false,
 ): Promise<Record<string, unknown>> {
   const state = useChatRuntimeStore.getState();
   const {
@@ -2386,7 +2333,7 @@ export async function buildLocalTokenCountExtras(
   const threadField = {
     ...(threadId ? { thread_id: threadId } : {}),
     max_tokens: state.params.maxTokens,
-    ...localCompactionFields(state, characterCountHistories.has(messages)),
+    ...localCompactionFields(state, rolling),
   };
   if (!supportsTools) {
     return {
@@ -5405,15 +5352,11 @@ export function createOpenAIStreamAdapter(
           ? withSandboxAttachmentPaths(survivingMessages)
           : { messages: survivingMessages, sandboxAttachments: [] };
       // The backend Gemini translator rebuilds functionCall/functionResponse parts from these.
-      let outboundMessages = renderedMessages
-        // A chat whose cast was all deleted carries on as ordinary, minus its hidden turn markers.
-        .filter((message) =>
-          characterRun ? characterRun.sends(message.id) : !isHiddenRoleplayTurn(message),
-        )
+      // A character chat's turns carry the speaker names, notes and turn instructions.
+      let outboundMessages = characterOutbound(characterRun, renderedMessages)
         .flatMap((message) => {
           const serialized = toOpenAIMessages(
-            // A character chat's turns carry the speaker names, notes and turn instructions.
-            characterRun ? characterRun.shape(message) : message,
+            message,
             replayReasoning,
             isGeminiApiProviderType(externalProvider?.providerType),
           );

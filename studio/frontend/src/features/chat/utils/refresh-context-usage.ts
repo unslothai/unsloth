@@ -345,7 +345,7 @@ export async function refreshContextUsage(
     };
 
     const payloadThreadId = threadId ?? undefined;
-    const countHistory = await buildLocalTokenCountHistory(
+    const { rolling, ...countHistory } = await buildLocalTokenCountHistory(
       runMessages,
       payloadThreadId,
     );
@@ -353,6 +353,7 @@ export async function refreshContextUsage(
     const countExtras = await buildLocalTokenCountExtras(
       payloadThreadId,
       countHistory.messages,
+      rolling,
     );
     if (!canPublish()) return;
 

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useIsRoleplayThread } from "@/features/characters/chat/message-parts";
+// eslint-disable-next-line no-restricted-imports -- The characters barrel reaches back into @/features/chat (an import cycle).
+import { useIsCharacterChat } from "@/features/characters/chat/use-thread-scene";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -139,10 +140,9 @@ import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 
-
 // Only character chats show it, so ordinary chats do not load it.
-const RoleplayPanel = lazy(() =>
-  import("@/features/characters/chat/roleplay-panel").then((m) => ({ default: m.RoleplayPanel })),
+const CharacterChatPanel = lazy(() =>
+  import("@/features/characters/chat/character-chat-panel").then((m) => ({ default: m.CharacterChatPanel })),
 );
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
@@ -500,7 +500,7 @@ export function ChatSettingsPanel({
   const params = useChatRuntimeStore((s) => s.params);
   const setParams = useChatRuntimeStore((s) => s.setParams);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const characterChat = useIsRoleplayThread(activeThreadId);
+  const characterChat = useIsCharacterChat(activeThreadId);
   const {
     width: settingsWidth,
     max: settingsMax,
@@ -1167,7 +1167,7 @@ export function ChatSettingsPanel({
         {characterChat && activeThreadId ? (
           <CollapsibleSection label={t("characters.panel.title")} defaultOpen={true} first={true}>
             <Suspense fallback={null}>
-              <RoleplayPanel key={activeThreadId} threadId={activeThreadId} />
+              <CharacterChatPanel key={activeThreadId} threadId={activeThreadId} />
             </Suspense>
           </CollapsibleSection>
         ) : null}

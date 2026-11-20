@@ -30,7 +30,7 @@ test("turn navigation is on by default and stays off once turned off", async () 
   // A character chat hides it; everywhere else it sits right before the messages.
   assert.match(
     thread,
-    /\{roleplayThread \? null : <TurnNavigator viewportRef=\{viewportElRef\} \/>\}\s*\{\/\* Drop-in for ThreadPrimitive\.Messages/,
+    /\{inCharacterChat \? null : <TurnNavigator viewportRef=\{viewportElRef\} \/>\}\s*\{\/\* Drop-in for ThreadPrimitive\.Messages/,
   );
   const prefs = readSrc("features/chat/stores/chat-preferences-store.ts");
   assert.match(prefs, /showTurnNavigation: true,/);

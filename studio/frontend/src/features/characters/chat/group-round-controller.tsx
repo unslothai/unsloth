@@ -12,7 +12,7 @@ import { useCharacterChat } from "./character-chat-context";
 const advancing = new Set<string>();
 
 /** Whether a group round in this chat is about to continue on screen (see GroupRoundController). */
-export function roundAdvancing(threadId: string | null | undefined): boolean {
+export function groupRoundPending(threadId: string | null | undefined): boolean {
   return Boolean(threadId && advancing.has(threadId));
 }
 

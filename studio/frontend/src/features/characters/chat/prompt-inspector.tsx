@@ -84,7 +84,7 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
               </section>
             ))}
             <section className="flex flex-col gap-1.5">
-              <h3 className="text-ui-13 font-semibold text-foreground">{t("characters.panel.loreInUse")}</h3>
+              <h3 className="text-ui-13 font-semibold text-foreground">{t("characters.panel.lorebookInUse")}</h3>
               {run.built.lore.fired.length ? (
                 <div className="flex flex-wrap gap-1.5">
                   {run.built.lore.fired.map((entry) => (
@@ -94,7 +94,7 @@ export function PromptInspectorDialog({ open, threadId, onClose }: { open: boole
                   ))}
                 </div>
               ) : (
-                <p className="text-ui-13 text-muted-foreground">{t("characters.panel.noLore")}</p>
+                <p className="text-ui-13 text-muted-foreground">{t("characters.panel.noLorebook")}</p>
               )}
             </section>
             {tail.length ? (

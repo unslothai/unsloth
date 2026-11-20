@@ -13,7 +13,7 @@ import { useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
 import { NovelNameplate, NovelScene, SpeakingDots } from "./novel-scene";
 import { useAskToReply } from "./ask-bridge";
-import { GroupRoundController } from "./roleplay-controller";
+import { GroupRoundController } from "./group-round-controller";
 import { CharacterChatContext } from "./character-chat-context";
 import { useThreadScene } from "./use-thread-scene";
 
@@ -42,7 +42,7 @@ export function CharacterStage({ threadId, children }: { threadId: string | null
         className={cn(
           "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
           novel &&
-            "novel-dialogue relative z-10 mx-auto mt-auto w-[calc(100%-2rem)] max-w-[calc(920px*var(--ui-space-scale,1))] flex-none basis-auto h-[52%] min-h-[calc(440px*var(--ui-space-scale,1))] overflow-visible rounded-t-[30px] bg-background/75 shadow-[0_-30px_80px_-40px_rgb(0_0_0/0.6)] ring-1 ring-white/25 backdrop-blur-2xl dark:bg-background/70 dark:ring-white/10 max-md:h-[58%] max-md:w-full [--studio-chat-header-height:calc(1.75rem*var(--ui-space-scale,1))] [--studio-chat-scroller-top:0px] [--studio-content-top-inset:0px]",
+            "character-novel-dialogue relative z-10 mx-auto mt-auto w-[calc(100%-2rem)] max-w-[calc(920px*var(--ui-space-scale,1))] flex-none basis-auto h-[var(--character-novel-panel-h)] min-h-[var(--character-novel-panel-min)] overflow-visible rounded-t-[30px] bg-background/75 shadow-[0_-30px_80px_-40px_rgb(0_0_0/0.6)] ring-1 ring-white/25 backdrop-blur-2xl dark:bg-background/70 dark:ring-white/10 max-md:h-[58%] max-md:w-full [--studio-chat-header-height:calc(1.75rem*var(--ui-space-scale,1))] [--studio-chat-scroller-top:0px] [--studio-content-top-inset:0px]",
         )}
       >
         {children}
@@ -72,7 +72,11 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
         key={focus.id}
         // Marked on the figure itself: a :has() rule above it would restyle the whole thread on every change.
         data-cutout={cutout || undefined}
-        className="stage-figure relative min-h-0 overflow-hidden rounded-[26px] bg-muted shadow-[0_24px_60px_-30px_rgb(0_0_0/0.6)] animate-in fade-in-0 zoom-in-[0.985] duration-500 max-md:aspect-[2/3] max-md:h-full md:flex-1"
+        className={cn(
+          "character-stage-figure relative min-h-0 animate-in fade-in-0 zoom-in-[0.985] duration-500 max-md:aspect-[2/3] max-md:h-full md:flex-1",
+          // A cut-out stands beside the conversation instead of filling a tile.
+          cutout ? "overflow-visible" : "overflow-hidden rounded-[26px] bg-muted shadow-[0_24px_60px_-30px_rgb(0_0_0/0.6)]",
+        )}
       >
         <button
           type="button"
@@ -88,11 +92,19 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
             className="size-full"
           />
         </button>
-        <figcaption className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-gradient-to-t from-black/70 via-black/25 to-transparent px-4 pb-3.5 pt-16 text-white max-md:hidden">
-          <span className="font-heading text-ui-20 font-semibold leading-tight [text-shadow:0_1px_2px_rgb(0_0_0/0.4)]">
+        <figcaption
+          className={cn(
+            "pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-0.5 px-4 pb-3.5 pt-16 max-md:hidden",
+            // Over a cut-out the name can fall on the figure, so it gets a halo in the page color instead of the scrim.
+            cutout
+              ? "text-foreground [text-shadow:0_0_3px_var(--background),0_0_8px_var(--background),0_0_14px_var(--background)]"
+              : "bg-gradient-to-t from-black/70 via-black/25 to-transparent text-white",
+          )}
+        >
+          <span className={cn("font-heading text-ui-20 font-semibold leading-tight", !cutout && "[text-shadow:0_1px_2px_rgb(0_0_0/0.4)]")}>
             {focus.name}
           </span>
-          {speaking ? <SpeakingDots name={focus.name} /> : null}
+          {speaking ? <SpeakingDots name={focus.name} onPage={cutout} /> : null}
         </figcaption>
       </figure>
       {others.length ? (

@@ -42,7 +42,7 @@ import { useThreadScene, type ThreadScene } from "./use-thread-scene";
 
 const PROFILE_PERSONA = "__profile__";
 
-export function RoleplayPanel({ threadId }: { threadId: string }) {
+export function CharacterChatPanel({ threadId }: { threadId: string }) {
   const t = useT();
   const navigate = useNavigate();
   const thread = useThreadScene(threadId);
@@ -70,7 +70,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   const setSettings = (next: NonNullable<ScenePatch["settings"]>) => void patch({ settings: next });
 
   return (
-    <div className="flex flex-col gap-5 pb-2" data-testid="roleplay-panel">
+    <div className="flex flex-col gap-5 pb-2" data-testid="character-chat-panel">
       <div className="flex flex-col gap-1.5">
         <span className="text-ui-12 font-medium text-nav-fg-muted">{t("characters.panel.cast")}</span>
         <ul className="flex flex-col gap-0.5">

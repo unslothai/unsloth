@@ -36,9 +36,9 @@ test("a character chat compacts by dropping its oldest turns, without a checkpoi
   // The reply and the context meter's count both send it, so the meter prices the same prompt.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /rolling: characterRun != null/);
-  // The meter flags the history it built from a character run, the same run the reply is gated on.
-  assert.match(adapter, /localCompactionFields\(state, characterCountHistories\.has\(messages\)\)/);
-  assert.match(adapter, /if \(characterRun\) characterCountHistories\.add\(outboundMessages\);/);
+  // The meter's history reports whether it was built from a character run, and its extras pass that on.
+  assert.match(adapter, /rolling: characterRun != null,\n  \};/);
+  assert.match(adapter, /localCompactionFields\(state, rolling\)/);
 });
 
 test("auto-compact off sends an explicit error overflow policy", () => {
@@ -74,7 +74,7 @@ test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /runtime\.loadedEngine !== "auto"/);
-  assert.match(adapter, /isManagedEngine: state\.loadedEngine !== "auto"/);
+  assert.match(readSrc("features/chat/utils/local-request-fields.ts"), /isManagedEngine: state\.loadedEngine !== "auto"/);
   // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
   assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
   assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
@@ -94,7 +94,7 @@ test("an NPU model compacts like a local GGUF, and /compact reaches it", () => {
     { context_overflow: "truncate_oldest", compact_context: true },
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /isNpu: isNpuModelId\(state\.params\.checkpoint\)/);
+  assert.match(readSrc("features/chat/utils/local-request-fields.ts"), /isNpu: isNpuModelId\(state\.params\.checkpoint\)/);
   assert.match(adapter, /isNpuForCompaction = isNpuModelId\(params\.checkpoint\)/);
   assert.match(adapter, /isNpu: isNpuForCompaction/);
   assert.match(adapter, /isGgufForCompaction \|\| isMlxForCompaction \|\| isNpuForCompaction/);

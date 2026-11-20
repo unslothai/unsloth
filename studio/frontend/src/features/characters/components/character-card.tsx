@@ -36,8 +36,8 @@ export function CharacterCard({
     character.chatCount === 0
       ? t("characters.noChatsYet")
       : character.chatCount === 1
-        ? t("characters.chatCountOne")
-        : t("characters.chatCountMany", { count: character.chatCount });
+        ? t("characters.chatsOne")
+        : t("characters.chatsMany", { count: character.chatCount });
   return (
     <div
       className={cn(

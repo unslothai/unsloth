@@ -87,6 +87,7 @@ import {
 } from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
+// eslint-disable-next-line no-restricted-imports -- The characters barrel reaches back into @/features/chat (an import cycle).
 import { characterChatTranscript } from "@/features/characters/export-transcript";
 import {
   buildNamedConversationsMarkdown,

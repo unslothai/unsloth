@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
 import { lastSpeakerId, roleplayMetaOf } from "../meta";
 import { shortName } from "../prompt/speakers";
-import { writeMyReply } from "./impersonate";
+import { writeMyReply } from "./write-my-reply";
 import { useAskToReply } from "./ask-bridge";
 import { useCharacterChat } from "./character-chat-context";
 
@@ -23,7 +23,7 @@ const CHIP =
   "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-muted py-0.5 text-ui-13 font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60 dark:bg-card";
 
 /** Above the composer in a character chat: who replies next, and a draft of your own reply. */
-export function RoleplaySpeakerBar() {
+export function CharacterSpeakerBar() {
   const t = useT();
   const aui = useAui();
   const thread = useCharacterChat();
@@ -78,7 +78,7 @@ export function RoleplaySpeakerBar() {
   const solo = !thread.isGroup ? thread.cast[0] : null;
   return (
     <div
-      className="roleplay-speaker-bar relative mb-2 flex items-center gap-1.5 px-1 pb-0.5"
+      className="character-speaker-bar relative mb-2 flex items-center gap-1.5 px-1 pb-0.5"
       aria-label={t("characters.chat.nextReply")}
       data-testid="speaker-bar"
     >
@@ -151,7 +151,7 @@ export function RoleplaySpeakerBar() {
   );
 }
 
-export function useRoleplayComposerPlaceholder(): string | null {
+export function useCharacterComposerPlaceholder(): string | null {
   const t = useT();
   const thread = useCharacterChat();
   if (!thread) return null;

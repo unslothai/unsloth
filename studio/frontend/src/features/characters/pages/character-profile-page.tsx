@@ -190,7 +190,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
                   ? t("characters.profile.greetingsOne")
                   : t("characters.profile.greetingsMany", { count: greetingsCount })}
                 {loreCount
-                  ? ` · ${loreCount === 1 ? t("characters.profile.loreOne") : t("characters.profile.loreMany", { count: loreCount })}`
+                  ? ` · ${loreCount === 1 ? t("characters.profile.lorebookEntriesOne") : t("characters.profile.lorebookEntriesMany", { count: loreCount })}`
                   : ""}
               </p>
             </section>

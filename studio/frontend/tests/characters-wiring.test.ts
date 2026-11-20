@@ -53,7 +53,7 @@ test("a reply subscribes to its own speaker, not the whole library", () => {
 });
 
 test("a scene text field keeps typed text, and saves only typed text when left", () => {
-  const panel = read("features/characters/chat/roleplay-panel.tsx");
+  const panel = read("features/characters/chat/character-chat-panel.tsx");
   const field = panel.slice(panel.indexOf("function SavedTextarea"));
   assert.match(field, /if \(!typed\.current\) setDraft\(value\);/);
   assert.match(field, /onChange=\{\(event\) => \{\s*typed\.current = true;/);
@@ -62,8 +62,8 @@ test("a scene text field keeps typed text, and saves only typed text when left",
 
 test("the chat page loads the character panel and picker only when they open", () => {
   const sheet = read("features/chat/chat-settings-sheet.tsx");
-  assert.doesNotMatch(sheet, /^import [^;]*from "@\/features\/characters\/chat\/roleplay-panel"/m);
-  assert.match(sheet, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/roleplay-panel"\)/);
+  assert.doesNotMatch(sheet, /^import [^;]*from "@\/features\/characters\/chat\/character-chat-panel"/m);
+  assert.match(sheet, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/character-chat-panel"\)/);
   const thread = read("components/assistant-ui/thread.tsx");
   assert.doesNotMatch(thread, /^import [^;]*from "@\/features\/characters\/chat\/start-picker"/m);
   assert.match(thread, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/start-picker"\)/);
@@ -82,7 +82,10 @@ test("a saved chat keeps who it speaks as when a default persona appears later",
 
 test("a chat with no cast left drops hidden turns, and audio replies keep the speaker", () => {
   const adapter = read("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /characterRun \? characterRun\.sends\(message\.id\) : !isHiddenRoleplayTurn\(message\)/);
-  assert.match(adapter, /: survivingMessages\.filter\(\(message\) => !isHiddenRoleplayTurn\(message\)\)/);
+  // The send and the token count both go through characterOutbound.
+  assert.match(adapter, /characterOutbound\(characterRun, renderedMessages\)/);
+  assert.match(adapter, /characterOutbound\(characterRun, survivingMessages\)/);
+  const runtime = read("features/characters/chat-runtime.ts");
+  assert.match(runtime, /: messages\.filter\(\(m\) => !isHiddenRoleplayTurn\(m\)\)/);
   assert.equal((adapter.match(/\.\.\.audioMetadata,/g) ?? []).length, 2);
 });

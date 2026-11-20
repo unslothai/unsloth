@@ -150,6 +150,7 @@ function world() {
     toast: { info: noop },
     discardQueuedChatRunSettingsForThread: noop,
     targetHasIndexingDocuments: () => indexing(),
+    groupRoundPending: () => false,
     appendQueuedPrompt: (_run: Run, item: Item) => {
       appended.push(item.prompt);
       item.dispatched = true;
@@ -497,7 +498,6 @@ async function targetForSelection(
     withAttachmentOriginal: async (_pending: unknown, complete: unknown) => complete,
     getAuthSessionEpoch: () => 0,
     hasPreStreamRunReservation: () => false,
-    roundAdvancing: () => false,
   };
   const create = new Function(...Object.keys(deps), targetFactoryJs)(
     ...Object.values(deps),

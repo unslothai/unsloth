@@ -14,7 +14,7 @@ import {
 import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
 import { applyMacros, applyNameMacros } from "../src/features/characters/prompt/macros.ts";
 import { hiddenRoleplayTurnKind } from "../src/features/characters/meta.ts";
-import { tidyRoleplayDisplay } from "../src/features/characters/prompt/display.ts";
+import { tidyCharacterDisplay } from "../src/features/characters/prompt/display.ts";
 import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
 import { mentionedIds, planReplies, seededRandom, shortName } from "../src/features/characters/prompt/speakers.ts";
 import type { Character, ChatScene, Lorebook, LorebookEntry } from "../src/features/characters/types.ts";
@@ -280,8 +280,8 @@ test("a group round plans once per user message and goes on until everyone plann
 
 test("a card's own wrapper tags are hidden on screen so the block inside renders", () => {
   const text = "Look.\n\n<stats>\n```\nHP: 10\n```\n</stats>\n<details>\nkept\n</details>";
-  assert.equal(tidyRoleplayDisplay(text), "Look.\n\n\n```\nHP: 10\n```\n\n<details>\nkept\n</details>");
-  assert.equal(tidyRoleplayDisplay("a <b>bold</b> line"), "a <b>bold</b> line");
+  assert.equal(tidyCharacterDisplay(text), "Look.\n\n\n```\nHP: 10\n```\n\n<details>\nkept\n</details>");
+  assert.equal(tidyCharacterDisplay("a <b>bold</b> line"), "a <b>bold</b> line");
 });
 
 test("opening retries keep the first member, notes skip a trailing reply, code keeps its tags", () => {
@@ -317,7 +317,7 @@ test("opening retries keep the first member, notes skip a trailing reply, code k
   assert.equal(built.texts[1], "Done.", "no final instructions on a reply");
 
   const code = "```html\n<template>\n</template>\n```\n<stats>\nok\n</stats>";
-  assert.equal(tidyRoleplayDisplay(code), "```html\n<template>\n</template>\n```\n\nok\n");
+  assert.equal(tidyCharacterDisplay(code), "```html\n<template>\n</template>\n```\n\nok\n");
 });
 
 test("a long lorebook regex key is ignored rather than run", () => {
@@ -373,11 +373,11 @@ test("card text with long unclosed macros and tags stays linear", () => {
   applyMacros(`{{${spaces}x`, ctx);
   applyMacros("{{//".repeat(20_000) + "tail", ctx);
   applyMacros(`{{roll:d1${spaces}x}}`, ctx);
-  tidyRoleplayDisplay(`<a${"b".repeat(100_000)}`);
+  tidyCharacterDisplay(`<a${"b".repeat(100_000)}`);
   assert.ok(Date.now() - started < 1000);
   assert.equal(applyMacros("a{{// note }}b{{ char }}{{//open", ctx), "abBo{{//open");
   assert.equal(applyMacros("{{roll: 2d1 + 3 }}", ctx), "5");
-  assert.equal(tidyRoleplayDisplay("<stats>\nok\n</stats>"), "\nok\n");
+  assert.equal(tidyCharacterDisplay("<stats>\nok\n</stats>"), "\nok\n");
 });
 
 test("names with $ patterns are inserted literally", () => {
@@ -644,9 +644,9 @@ test("one at a time hands on past a muted last speaker; a broken talkativeness i
 });
 
 test("display keeps code fences by length, indented code, and ordinary HTML", () => {
-  assert.equal(tidyRoleplayDisplay("````\n```\n<stats>\n````"), "````\n```\n<stats>\n````");
-  assert.equal(tidyRoleplayDisplay("    <stats>\n    x"), "    <stats>\n    x");
-  assert.equal(tidyRoleplayDisplay("<center>\nhi\n</center>"), "<center>\nhi\n</center>");
+  assert.equal(tidyCharacterDisplay("````\n```\n<stats>\n````"), "````\n```\n<stats>\n````");
+  assert.equal(tidyCharacterDisplay("    <stats>\n    x"), "    <stats>\n    x");
+  assert.equal(tidyCharacterDisplay("<center>\nhi\n</center>"), "<center>\nhi\n</center>");
 });
 
 test("writing the user's line drops the character's final instructions and nudges", () => {

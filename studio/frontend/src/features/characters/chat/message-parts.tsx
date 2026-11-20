@@ -15,14 +15,33 @@ import { Portrait } from "../components/portrait";
 import { ActionText } from "../components/action-text";
 import { toggleOnStage } from "../stage-focus";
 import { hiddenRoleplayTurnKind, roleplayMetaOf } from "../meta";
+import { stripSpeakerPrefix } from "../prompt/build";
+import { tidyCharacterDisplay } from "../prompt/display";
 import { useCharactersStore } from "../store";
 import { useCharacterChat } from "./character-chat-context";
 
 /** The speaking character's name, so a reply's leading "Name:" can be hidden. */
 const CharacterSpeakerNameContext = createContext<string | null>(null);
 
-export function useRoleplaySpeakerName(): string | null {
-  return useContext(CharacterSpeakerNameContext);
+function isTextPart(aui: ReturnType<typeof useAui>): boolean {
+  try {
+    return aui.part().getState().type === "text";
+  } catch {
+    // A part that went stale mid-render: show it unchanged.
+    return false;
+  }
+}
+
+/** Inside a framed character reply, which shows the response model in its name line. */
+export function useInCharacterReply(): boolean {
+  return useContext(CharacterSpeakerNameContext) !== null;
+}
+
+/** A character reply's text part without the leading "Name:" the chat already shows; reasoning keeps its own lines. */
+export function useCharacterReplyText(text: string): string {
+  const aui = useAui();
+  const speakerName = useContext(CharacterSpeakerNameContext);
+  return speakerName && isTextPart(aui) ? tidyCharacterDisplay(stripSpeakerPrefix(text, speakerName)) : text;
 }
 
 /** When this message was written (a reply: when it finished), with the full date on hover. */
@@ -115,7 +134,7 @@ const FRAME_PORTRAIT =
   "absolute left-0 top-0 aspect-[3/4] w-[calc(3rem*var(--ui-space-scale,1))] rounded-[12px] text-[1.05rem] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:w-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[10px]";
 
 /** Wraps a reply in a character chat: portrait and name above the text, prefix stripping below. */
-export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
+export function CharacterReplyFrame({ children }: { children: ReactNode }) {
   const t = useT();
   const speaker = useReplySpeaker();
   const thread = useCharacterChat();
@@ -125,7 +144,7 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   return (
     <CharacterSpeakerNameContext.Provider value={speaker.name}>
       <SpeakerFrame
-        className="roleplay-reply"
+        className="character-reply"
         speakerId={speaker.id}
         portrait={
           <Portrait
@@ -162,7 +181,7 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
             </span>
             <MessageTime />
             {/* With "Response model" on, the model shows after the time; the floating badge would sit on the name. */}
-            <MessageResponseModelBadge className="roleplay-model-badge min-w-0" />
+            <MessageResponseModelBadge className="min-w-0" />
           </>
         }
       >
@@ -172,7 +191,7 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   );
 }
 
-export function RoleplayUserFrame({ children }: { children: ReactNode }) {
+export function PersonaMessageFrame({ children }: { children: ReactNode }) {
   const thread = useCharacterChat();
   // Speaking as the account itself shows the account's own avatar.
   const profileAvatar = useUserProfileStore((s) => s.avatarDataUrl);
@@ -180,7 +199,7 @@ export function RoleplayUserFrame({ children }: { children: ReactNode }) {
   const { persona } = thread;
   return (
     <SpeakerFrame
-      className="roleplay-user"
+      className="character-user"
       portrait={
         <Portrait
           kind="persona"
@@ -204,8 +223,6 @@ export function RoleplayUserFrame({ children }: { children: ReactNode }) {
   );
 }
 
-export { useIsCharacterChat as useIsRoleplayThread } from "./use-thread-scene";
-
 /** The hidden bookkeeping turn this message is (the opening or a group turn marker), else null. */
 export function useHiddenRoleplayTurn(): "opening" | "turn" | null {
   return useAuiState(({ message }) => hiddenRoleplayTurnKind(message));
@@ -219,6 +236,6 @@ function CharacterUserText() {
 const CHARACTER_USER_PARTS = { Text: CharacterUserText };
 
 /** In a character chat, *actions* in the user's own messages read as italics too. */
-export function useRoleplayUserParts(): typeof CHARACTER_USER_PARTS | undefined {
+export function useCharacterUserParts(): typeof CHARACTER_USER_PARTS | undefined {
   return useCharacterChat() ? CHARACTER_USER_PARTS : undefined;
 }

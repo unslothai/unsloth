@@ -5,7 +5,7 @@ import type { ThreadMessage } from "@assistant-ui/react";
 import { getLocale, translate } from "@/i18n";
 import { getCharacter } from "./api";
 import { isCharacterChat } from "./chat-gate";
-import { roleplayMetaOf } from "./meta";
+import { isHiddenRoleplayTurn, roleplayMetaOf, type MessageLike } from "./meta";
 import { resolvePersona } from "./persona";
 import {
   buildCharacterPrompt,
@@ -16,7 +16,7 @@ import {
 } from "./prompt/build";
 import { castOf, resolveSpeaker, textOf } from "./prompt/round";
 import { useCharactersStore } from "./store";
-import type { Character, ChatScene, ResolvedPersona } from "./types";
+import type { Character, CharacterReplyMeta, ChatScene, ResolvedPersona } from "./types";
 
 export const CHARACTER_SPEAKER_RUN_KEY = "roleplaySpeakerId";
 
@@ -37,7 +37,7 @@ export interface CharacterRun {
   notedIds: ReadonlySet<string>;
   stop: string[];
   /** Stamped on the reply as `metadata.custom.roleplay`. */
-  replyMeta: { kind: "reply"; speakerId: string; speakerName: string; plan?: string[] };
+  replyMeta: CharacterReplyMeta;
   built: BuiltPrompt;
 }
 
@@ -203,3 +203,27 @@ export async function prepareCharacterRun(args: {
   };
 }
 
+/** What a run sends: a character chat's shaped turns, else the history minus hidden turn markers (a chat whose cast was all deleted). */
+export function characterOutbound<M extends MessageLike & { id: string }>(run: CharacterRun | null, messages: readonly M[]): M[] {
+  return run ? messages.filter((m) => run.sends(m.id)).map(run.shape) : messages.filter((m) => !isHiddenRoleplayTurn(m));
+}
+
+// The context meter recounts the same branch often; reuse its run (and lorebook scan) until the branch changes.
+const countRuns = new WeakMap<object, { threadId: string | undefined; run: Promise<CharacterRun | null> }>();
+
+/** prepareCharacterRun for a token count, cached per raw branch; only a built run is reused. */
+export function prepareCharacterCountRun(
+  rawMessages: object,
+  threadId: string | undefined,
+  messages: readonly ThreadMessage[],
+): Promise<CharacterRun | null> {
+  const cached = countRuns.get(rawMessages);
+  if (cached && cached.threadId === threadId) return cached.run;
+  const run = prepareCharacterRun({ threadId, messages }).catch(() => null);
+  countRuns.set(rawMessages, { threadId, run });
+  // An ordinary or not-yet-loaded chat is asked again next count.
+  void run.then((built) => {
+    if (!built && countRuns.get(rawMessages)?.run === run) countRuns.delete(rawMessages);
+  });
+  return run;
+}

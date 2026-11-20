@@ -2,14 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
-import { addressNameOf, loginDisplayName } from "@/features/profile/hooks/use-effective-profile";
+import { loginDisplayName } from "@/features/profile/hooks/use-effective-profile";
+import { addressName } from "@/features/profile/utils/address-name";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { decodeJwtSubject } from "@/features/profile/utils/jwt-subject";
 import { pickPersona } from "./meta";
 import type { ChatScene, Persona, ResolvedPersona } from "./types";
 
 function accountNameOf(profile: { nickname: string; displayName: string }): string {
-  return addressNameOf(profile, loginDisplayName(decodeJwtSubject(getAuthToken()))) || "User";
+  return addressName(profile, loginDisplayName(decodeJwtSubject(getAuthToken()))) || "User";
 }
 
 /** The name the app addresses the account by, read now. */

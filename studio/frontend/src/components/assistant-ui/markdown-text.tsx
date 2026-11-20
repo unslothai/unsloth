@@ -3,9 +3,7 @@
 
 "use client";
 
-import { useRoleplaySpeakerName } from "@/features/characters/chat/message-parts";
-import { stripSpeakerPrefix } from "@/features/characters/prompt/build";
-import { tidyRoleplayDisplay } from "@/features/characters/prompt/display";
+import { useCharacterReplyText } from "@/features/characters";
 import { openImageViewer } from "@/components/image-viewer";
 import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
 import { useT } from "@/i18n";
@@ -1686,15 +1684,6 @@ function MarkdownTextRenderer({
   );
 }
 
-function replyTextPart(aui: ReturnType<typeof useAui>): boolean {
-  try {
-    return aui.part().getState().type === "text";
-  } catch {
-    // A part that went stale mid-render: show it unchanged.
-    return false;
-  }
-}
-
 const MarkdownTextImpl = () => {
   const allowSearchImages = useContext(SearchImagesEnabledContext);
   const aui = useAui();
@@ -1703,13 +1692,7 @@ const MarkdownTextImpl = () => {
     aui.part.source === "message" && aui.part.query.type === "index"
       ? aui.part.query.index
       : 0;
-  // A character's reply sometimes opens with its own name, which the chat already shows. Text parts
-  // only: reasoning renders here too and keeps its own lines.
-  const speakerName = useRoleplaySpeakerName();
-  const text =
-    speakerName && replyTextPart(aui)
-      ? tidyRoleplayDisplay(stripSpeakerPrefix(partText, speakerName))
-      : partText;
+  const text = useCharacterReplyText(partText);
   // Streamdown only extends parsed blocks, so key per message; the cache generation covers edits
   // that drop retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);

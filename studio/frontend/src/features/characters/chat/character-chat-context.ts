@@ -10,3 +10,7 @@ export const CharacterChatContext = createContext<ThreadScene | null>(null);
 export function useCharacterChat(): ThreadScene | null {
   return useContext(CharacterChatContext);
 }
+
+export function useInCharacterChat(): boolean {
+  return useContext(CharacterChatContext) !== null;
+}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { CharacterReplyMeta } from "@/features/characters";
 // eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
 import { authFetch } from "@/features/auth/api";
 import { watchStreamSilence } from "@/lib/stream-silence";
@@ -46,7 +47,7 @@ export interface CreateChatGenerationRunInput {
   /** Stop the run once no tab follows it, instead of finishing in the background. Sent only when set. */
   stopWhenUnattended?: boolean;
   /** A character chat's speaker for this reply, stored on the reply when the run is made. */
-  assistantRoleplay?: { kind: "reply"; speakerId: string; speakerName: string; plan?: string[] };
+  assistantRoleplay?: CharacterReplyMeta;
 }
 
 export interface ChatGenerationEvent {

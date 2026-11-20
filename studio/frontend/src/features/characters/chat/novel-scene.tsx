@@ -40,8 +40,8 @@ export function NovelScene({ threadId, cast }: { threadId: string | null; cast: 
       <NovelBackdrop wallpaper={wallpaper} />
       <section
         className={cn(
-          "novel-figures pointer-events-none absolute inset-x-0 bottom-[34%] top-14 z-0 flex items-end justify-center px-[3%] max-md:bottom-[44%] max-md:top-12",
-          cast.length === 1 && "novel-figures-solo",
+          "character-novel-figures pointer-events-none absolute inset-x-0 bottom-[34%] top-[var(--character-novel-strip-top)] z-0 flex items-end justify-center px-[3%] max-md:bottom-[44%] max-md:top-12",
+          cast.length === 1 && "character-novel-figures-solo",
         )}
         aria-label={t("characters.chat.viewNovel")}
         data-testid="character-novel"
@@ -112,33 +112,33 @@ function NovelFigure({
       aria-label={viewing ? t("characters.actions.viewPicture") : t("characters.chat.replyNow", { name: character.name })}
       title={active ? character.name : t("characters.chat.replyNow", { name: character.name })}
       className={cn(
-        "novel-figure pointer-events-auto relative -mx-[1.5%] aspect-[2/3] h-full min-w-0 max-w-[36%] shrink origin-bottom cursor-pointer rounded-t-[40px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
-        active ? "z-[2] max-sm:max-w-[78%]" : "novel-figure-waiting z-[1] scale-[0.84] max-sm:hidden",
+        "character-novel-figure pointer-events-auto relative -mx-[1.5%] aspect-[2/3] h-full min-w-0 max-w-[36%] shrink origin-bottom cursor-pointer rounded-t-[40px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
+        active ? "z-[2] max-sm:max-w-[78%]" : "character-novel-figure-waiting z-[1] scale-[0.84] max-sm:hidden",
         active && character.hasAvatar && "cursor-zoom-in",
       )}
       data-active={active || undefined}
     >
       <span
-        className={cn("novel-figure-body block size-full origin-bottom", breathing && "novel-figure-speaking")}
+        className={cn("character-novel-figure-body block size-full origin-bottom", breathing && "character-novel-figure-speaking")}
         onAnimationIteration={onAnimationIteration}
       >
         <Portrait
           subject={character}
           variant="card"
           cutout={true}
-          className="novel-figure-picture size-full rounded-t-[40px]"
+          className="character-novel-figure-picture size-full rounded-t-[40px]"
         />
       </span>
     </button>
   );
 }
 
-function Dots() {
+function Dots({ className = "bg-white/90" }: { className?: string }) {
   return (
     <span className="flex gap-0.5" aria-hidden={true}>
-      <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.3s]" />
-      <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.15s]" />
-      <span className="size-1 animate-bounce rounded-full bg-white/90" />
+      <span className={cn("size-1 animate-bounce rounded-full [animation-delay:-0.3s]", className)} />
+      <span className={cn("size-1 animate-bounce rounded-full [animation-delay:-0.15s]", className)} />
+      <span className={cn("size-1 animate-bounce rounded-full", className)} />
     </span>
   );
 }
@@ -155,7 +155,7 @@ export function NovelNameplate({ threadId, cast }: { threadId: string | null; ca
       key={focus.id}
       className="pointer-events-none absolute -top-4 left-[clamp(1rem,6%,3.5rem)] z-20 flex items-center gap-2.5 rounded-full py-1.5 pl-4 pr-4 text-white shadow-[0_10px_24px_-10px_rgb(0_0_0/0.6)] ring-1 ring-white/20 animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
       style={style}
-      data-testid="novel-nameplate"
+      data-testid="character-novel-nameplate"
     >
       <span className="font-heading text-ui-15 font-semibold tracking-[-0.01em]">{shortName(focus.name)}</span>
       {speaking ? (
@@ -165,11 +165,12 @@ export function NovelNameplate({ threadId, cast }: { threadId: string | null; ca
   );
 }
 
-export function SpeakingDots({ name }: { name: string }) {
+/** onPage: drawn over the page rather than a dark scrim. */
+export function SpeakingDots({ name, onPage = false }: { name: string; onPage?: boolean }) {
   const t = useT();
   return (
-    <span className="flex items-center gap-1.5 text-ui-12 text-white/80">
-      <Dots />
+    <span className={cn("flex items-center gap-1.5 text-ui-12", !onPage && "text-white/80")}>
+      <Dots className={onPage ? "bg-muted-foreground" : undefined} />
       {t("characters.chat.speaking", { name: shortName(name) })}
     </span>
   );
@@ -177,7 +178,7 @@ export function SpeakingDots({ name }: { name: string }) {
 
 function NovelBackdrop({ wallpaper }: { wallpaper: string | null }) {
   return (
-    <div className="novel-backdrop pointer-events-none absolute inset-0 -z-10 overflow-hidden bg-background" aria-hidden={true}>
+    <div className="character-novel-backdrop pointer-events-none absolute inset-0 -z-10 overflow-hidden bg-background" aria-hidden={true}>
       {wallpaper ? (
         <img src={wallpaper} alt="" className="absolute inset-0 size-full object-cover animate-in fade-in-0 duration-500" />
       ) : (

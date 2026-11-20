@@ -10,7 +10,7 @@ const HTML_TAGS = new Set([
 ]);
 
 /** Display only: drops a card's own wrapper-tag lines (<stats>), which Markdown treats as raw HTML that swallows the block. */
-export function tidyRoleplayDisplay(text: string): string {
+export function tidyCharacterDisplay(text: string): string {
   if (!text.includes("<")) return text;
   let fence: string | null = null;
   return text

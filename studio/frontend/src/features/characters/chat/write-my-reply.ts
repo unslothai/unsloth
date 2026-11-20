@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ThreadMessage } from "@assistant-ui/react";
-import { authFetch } from "@/features/auth";
-import { localCompactionFields, localSamplingFields } from "@/features/chat/api/chat-adapter";
+import { completeChat } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { localCompactionFields, localSamplingFields } from "@/features/chat/utils/local-request-fields";
 import { getLocale, translate } from "@/i18n";
-import { readFastApiError } from "@/lib/format-fastapi-error";
 import { loadParticipants, promptHistoryOf, toPromptCharacter } from "../chat-runtime";
 import { buildImpersonationMessages, stripSpeakerPrefix } from "../prompt/build";
 import { useCharactersStore } from "../store";
@@ -26,14 +25,10 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
   });
   const state = useChatRuntimeStore.getState();
   const { params } = state;
-  const response = await authFetch("/api/inference/chat/completions", {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const text = await completeChat(
+    {
       model: params.checkpoint,
       messages: [{ role: "system", content: prompt.system }, ...prompt.messages],
-      stream: false,
       max_tokens: 320,
       ...localSamplingFields(params),
       stop: prompt.stop,
@@ -44,12 +39,8 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
       enabled_tools: [],
       // Fitted like a character reply, minus thread_id: a draft must not touch the thread's compaction state.
       ...localCompactionFields(state, true),
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(await readFastApiError(response, translate("characters.chat.writeFailed", undefined, getLocale())));
-  }
-  const data = (await response.json()) as { choices?: { message?: { content?: string | null } }[] };
-  const text = data.choices?.[0]?.message?.content ?? "";
+    },
+    { signal, failure: translate("characters.chat.writeFailed", undefined, getLocale()) },
+  );
   return stripSpeakerPrefix(text, prompt.user).trim();
 }

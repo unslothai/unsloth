@@ -204,8 +204,7 @@ import { cloudCompactionTrigger } from "./utils/auto-compaction";
 import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
-import { CastChip, ChatViewMenu } from "@/features/characters/chat/chat-chrome";
-import { CharacterStage } from "@/features/characters/chat/character-stage";
+import { CastChip, CharacterStage, ChatViewMenu } from "@/features/characters";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import { ProjectFolderChip } from "./components/project-folder-chip";
 import {

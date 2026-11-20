@@ -697,7 +697,14 @@ const SENT_FILE_COMPONENTS = {
   Document: SentFileItem,
   File: SentFileItem,
 };
-export const UserMessageAttachments: FC<{ align?: "start" | "end" }> = ({ align = "end" }) => {
+/** A sent message's side: the user's bubble sits at the end, a character chat's persona line at the start. */
+export type SentMessageAlign = "start" | "end";
+export const SENT_ALIGN_CLASSES: Record<SentMessageAlign, { items: string; justify: string }> = {
+  start: { items: "items-start", justify: "justify-start" },
+  end: { items: "items-end", justify: "justify-end" },
+};
+
+export const UserMessageAttachments: FC<{ align?: SentMessageAlign }> = ({ align = "end" }) => {
   const setting = useAppearanceCustomStore(
     (s) => s.customization.sentAttachments,
   );
@@ -706,18 +713,19 @@ export const UserMessageAttachments: FC<{ align?: "start" | "end" }> = ({ align 
   );
   if (count === 0) return null;
   const layout = sentAttachmentLayout(setting, count);
+  const { items, justify } = SENT_ALIGN_CLASSES[align];
   return (
     <SentAttachmentLayoutContext.Provider value={layout}>
-      <div className={cn("aui-user-message-attachments-end flex w-full flex-col gap-2", align === "end" ? "items-end" : "items-start")}>
-        <div className={cn("aui-user-message-attachment-images flex max-w-full flex-row flex-wrap gap-2 empty:hidden", align === "end" ? "justify-end" : "justify-start")}>
+      <div className={cn("aui-user-message-attachments-end flex w-full flex-col gap-2", items)}>
+        <div className={cn("aui-user-message-attachment-images flex max-w-full flex-row flex-wrap gap-2 empty:hidden", justify)}>
           <MessagePrimitive.Attachments components={SENT_IMAGE_COMPONENTS} />
         </div>
         <div
           className={cn(
             "aui-user-message-attachment-files max-w-full empty:hidden",
             layout === "list"
-              ? cn("flex flex-col gap-2", align === "end" ? "items-end" : "items-start")
-              : cn("flex flex-row flex-wrap gap-2", align === "end" ? "justify-end" : "justify-start"),
+              ? cn("flex flex-col gap-2", items)
+              : cn("flex flex-row flex-wrap gap-2", justify),
           )}
         >
           <MessagePrimitive.Attachments components={SENT_FILE_COMPONENTS} />

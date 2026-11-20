@@ -140,7 +140,9 @@ export interface CharacterChatSummary {
 export type RoleplayMessageMeta =
   | { kind: "opening" }
   | { kind: "turn"; speakerId: string }
-  | { kind: "reply"; speakerId: string; speakerName: string; greeting?: number };
+  | { kind: "reply"; speakerId: string; speakerName: string; greeting?: number; plan?: string[] };
+
+export type CharacterReplyMeta = Extract<RoleplayMessageMeta, { kind: "reply" }>;
 
 /** A persona as a chat uses it: a stored persona, or the account's own name when there is none. */
 export interface ResolvedPersona {
