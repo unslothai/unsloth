@@ -33,6 +33,7 @@ from core.inference.http_stream import aiter_sse_lines
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import (
+    EMPTY_PAGE_TEXT,
     EMPTY_SEARCH_RESULTS,
     RAG_SOURCES_SENTINEL,
     execute_mcp_tool,
@@ -1043,7 +1044,10 @@ def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     """empty searches must report missing evidence even when the tool succeeds."""
     if rag_sources:
         return False
-    return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
+    return is_tool_error(web_result) or web_result.strip() in (
+        *EMPTY_SEARCH_RESULTS,
+        EMPTY_PAGE_TEXT,
+    )
 
 
 def _preferred_step_error(current: str, candidate: str) -> str:
@@ -2825,7 +2829,7 @@ class ResearchSupervisor:
                 ]
                 if action["action"] == "search"
                 else [{"title": argument, "url": argument, "snippet": ""}]
-                if not is_tool_error(result)
+                if not _research_step_failed(result, [])
                 else []
             )
             for source in found_sources:

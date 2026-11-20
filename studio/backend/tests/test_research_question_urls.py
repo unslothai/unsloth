@@ -135,3 +135,10 @@ def test_a_quoted_link_is_read_without_its_delimiter(research_home, monkeypatch,
     _, calls, _ = _run(monkeypatch, question = question)
 
     assert calls[0] == {"url": LINKED}
+
+
+def test_a_linked_page_without_readable_text_is_not_cited(research_home, monkeypatch):
+    finished, calls, _ = _run(monkeypatch, page = "(page returned no readable text)")
+
+    assert calls[0] == {"url": LINKED}
+    assert LINKED not in [source["url"] for source in finished["sources"]]
