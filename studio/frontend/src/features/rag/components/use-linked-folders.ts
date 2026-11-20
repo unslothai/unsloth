@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   announceProjectSourcesUpdated,
   createLinkedFolder,
+  createServerLinkedFolder,
   deleteLinkedFolder,
   getFolderSyncJob,
   listLinkedFolders,
@@ -325,6 +326,48 @@ export function useLinkedFolders(
     onSourcesChanged,
   ]);
 
+  const linkServerPath = useCallback(
+    async (serverPath: string) => {
+      if (!scopeType || !scopeId || !serverPath.trim()) return;
+      const operationScopeKey = scopeKey;
+      setMutating(true);
+      try {
+        const displayName =
+          serverPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || serverPath;
+        const result = await withProjectWork(() =>
+          createServerLinkedFolder(
+            { type: scopeType, id: scopeId },
+            serverPath,
+            displayName,
+          ),
+        );
+        if (currentScopeKey.current !== operationScopeKey) return;
+        setStateScopeKey(operationScopeKey);
+        setFolders((current) => [
+          ...current.filter((folder) => folder.id !== result.linkedFolder.id),
+          result.linkedFolder,
+        ]);
+        userStartedJobs.current.add(result.job.id);
+        trackJob(result.job);
+        onSourcesChanged?.();
+      } catch (error) {
+        toast.error("Could not link server folder", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setMutating(false);
+      }
+    },
+    [
+      scopeKey,
+      scopeType,
+      scopeId,
+      trackJob,
+      withProjectWork,
+      onSourcesChanged,
+    ],
+  );
+
   const run = useCallback(
     async (folderId: string, mode: "sync" | "rebuild") => {
       const operationScopeKey = scopeKey;
@@ -414,6 +457,7 @@ export function useLinkedFolders(
     mutating,
     desktopSupported: isTauri && nativePathLeasesSupported,
     link,
+    linkServerPath,
     sync: (folderId: string) => run(folderId, "sync"),
     rebuild: (folderId: string) => run(folderId, "rebuild"),
     remove,

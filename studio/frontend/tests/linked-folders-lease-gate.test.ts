@@ -54,6 +54,24 @@ test("the unsupported branch distinguishes desktop connections from browser clie
   assert.ok(MANAGER.includes("sourceFolderUnavailableMessage(isTauri)"));
 });
 
+test("the server folder picker stays in its lazy chunk", () => {
+  assert.match(
+    MANAGER,
+    /const FolderBrowser = lazy\(\(\) =>[\s\S]*?import\([\s\S]*?model-selector\/folder-browser[\s\S]*?module\.FolderBrowser/,
+    "linked-folder screens must not eagerly import the shared folder browser",
+  );
+  assert.doesNotMatch(
+    MANAGER,
+    /import\s*\{\s*FolderBrowser\s*\}\s*from\s*["']@\/features\/model-picker["']/,
+    "the barrel import would make working-folder-picker's dynamic import ineffective",
+  );
+  assert.equal(
+    (MANAGER.match(/<Suspense fallback=\{null\}>/g) ?? []).length,
+    2,
+    "both linked-folder layouts must suspend while the picker chunk loads",
+  );
+});
+
 test("the capability is read from /api/health and only latches on true", () => {
   assert.match(
     READINESS,

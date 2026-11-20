@@ -34,7 +34,7 @@ import { RefreshGlyph } from "@/lib/refresh-icon";
 import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderSyncIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import type {
   FolderSyncJob,
   LinkedFolder,
@@ -42,6 +42,12 @@ import type {
   LinkedFolderSkipReason,
 } from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
+
+const FolderBrowser = lazy(() =>
+  import("@/features/model-picker/components/model-selector/folder-browser").then(
+    (module) => ({ default: module.FolderBrowser }),
+  ),
+);
 
 export const FOLDER_CARD_CLASS =
   "overflow-hidden rounded-xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
@@ -159,6 +165,7 @@ export function LinkedFoldersManager({
   onSourcesChanged?: () => void;
 }) {
   const manager = useLinkedFolders(scope, onSourcesChanged);
+  const [serverBrowserOpen, setServerBrowserOpen] = useState(false);
   const [removeIndexFolder, setRemoveIndexFolder] = useState<{
     id: string;
     name: string;
@@ -328,33 +335,53 @@ export function LinkedFoldersManager({
             })
           )}
           {scope ? (
-            <button
-              type="button"
-              disabled={!manager.desktopSupported || manager.mutating}
-              onClick={() => void manager.link()}
-              // The title is the tooltip saying why it is disabled, which would otherwise be read as the name.
-              aria-label="Add folder"
-              title={
-                manager.desktopSupported
-                  ? "Choose a local folder"
-                  : sourceFolderUnavailableMessage(isTauri)
-              }
-              className={cn(
-                rowClass,
-                "w-full cursor-pointer py-3 text-left text-sm transition-colors hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
-              )}
-            >
-              {manager.mutating ? (
-                <Spinner className="size-4 shrink-0" />
-              ) : (
+            <>
+              <button
+                type="button"
+                disabled={!manager.desktopSupported || manager.mutating}
+                onClick={() => void manager.link()}
+                // The title is the tooltip saying why it is disabled, which would otherwise be read as the name.
+                aria-label="Add local folder"
+                title={
+                  manager.desktopSupported
+                    ? "Choose a local folder"
+                    : sourceFolderUnavailableMessage(isTauri)
+                }
+                className={cn(
+                  rowClass,
+                  "w-full cursor-pointer py-3 text-left text-sm transition-colors hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+                )}
+              >
+                {manager.mutating ? (
+                  <Spinner className="size-4 shrink-0" />
+                ) : (
+                  <HugeiconsIcon
+                    icon={FolderAddIcon}
+                    strokeWidth={1.75}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                )}
+                <span>Add local folder</span>
+              </button>
+              <button
+                type="button"
+                disabled={manager.mutating}
+                onClick={() => setServerBrowserOpen(true)}
+                aria-label="Browse server folders"
+                title="Choose a folder on the Studio server"
+                className={cn(
+                  rowClass,
+                  "w-full cursor-pointer py-3 text-left text-sm transition-colors hover:bg-muted/60 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+                )}
+              >
                 <HugeiconsIcon
                   icon={FolderAddIcon}
                   strokeWidth={1.75}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
-              )}
-              <span>Add folder</span>
-            </button>
+                <span>Browse server folders</span>
+              </button>
+            </>
           ) : null}
         </div>
         {!manager.desktopSupported ? (
@@ -364,6 +391,17 @@ export function LinkedFoldersManager({
           </p>
         ) : null}
         {removeIndexConfirm}
+        <Suspense fallback={null}>
+          <FolderBrowser
+            open={serverBrowserOpen}
+            onOpenChange={setServerBrowserOpen}
+            onSelect={(path) => void manager.linkServerPath(path)}
+            title="Choose a server folder"
+            description="Select a folder on the Studio server to keep in sync for project search."
+            confirmLabel="Link server folder"
+            showModelHints={false}
+          />
+        </Suspense>
       </section>
     );
   }
@@ -382,26 +420,38 @@ export function LinkedFoldersManager({
           </p>
         </div>
         {scope ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="mt-[var(--ui-title-cap-inset)] shrink-0"
-            disabled={!manager.desktopSupported || manager.mutating}
-            onClick={() => void manager.link()}
-            title={
-              manager.desktopSupported
-                ? "Choose a local folder"
-                : sourceFolderUnavailableMessage(isTauri)
-            }
-          >
-            {manager.mutating ? (
-              <Spinner className="size-3.5" />
-            ) : (
+          <div className="mt-[var(--ui-title-cap-inset)] flex shrink-0 gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!manager.desktopSupported || manager.mutating}
+              onClick={() => void manager.link()}
+              title={
+                manager.desktopSupported
+                  ? "Choose a local folder"
+                  : sourceFolderUnavailableMessage(isTauri)
+              }
+            >
+              {manager.mutating ? (
+                <Spinner className="size-3.5" />
+              ) : (
+                <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-3.5" />
+              )}
+              Add local
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={manager.mutating}
+              onClick={() => setServerBrowserOpen(true)}
+              title="Choose a folder on the Studio server"
+            >
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-3.5" />
-            )}
-            Add folder
-          </Button>
+              Browse server
+            </Button>
+          </div>
         ) : null}
       </div>
 
@@ -482,6 +532,17 @@ export function LinkedFoldersManager({
         </ul>
       )}
       {removeIndexConfirm}
+      <Suspense fallback={null}>
+        <FolderBrowser
+          open={serverBrowserOpen}
+          onOpenChange={setServerBrowserOpen}
+          onSelect={(path) => void manager.linkServerPath(path)}
+          title="Choose a server folder"
+          description="Select a folder on the Studio server to keep in sync for project search."
+          confirmLabel="Link server folder"
+          showModelHints={false}
+        />
+      </Suspense>
     </section>
   );
 }
