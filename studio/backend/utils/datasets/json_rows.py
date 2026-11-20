@@ -76,6 +76,23 @@ def head_rows(path, count):
     return rows
 
 
+def timestamps_as_strings(data_type):
+    """``data_type`` with every timestamp, at any depth, read as the string written."""
+    import pyarrow as pa
+
+    if isinstance(data_type, pa.Schema):
+        return pa.schema([f.with_type(timestamps_as_strings(f.type)) for f in data_type])
+    if pa.types.is_timestamp(data_type):
+        return pa.string()
+    if pa.types.is_struct(data_type):
+        return pa.struct([f.with_type(timestamps_as_strings(f.type)) for f in data_type])
+    if pa.types.is_large_list(data_type):
+        return pa.large_list(timestamps_as_strings(data_type.value_type))
+    if pa.types.is_list(data_type):
+        return pa.list_(timestamps_as_strings(data_type.value_type))
+    return data_type
+
+
 def _rows(files):
     for path, *_ in files:
         for rows in _row_chunks(path):

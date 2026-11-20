@@ -182,3 +182,12 @@ def test_dates_preview_as_written(tmp_path, suffix):
         _write_jsonl(path, rows)
     dataset, _ = local._stream_file_preview_slice(path, 10)
     assert dataset.to_list() == rows
+
+
+def test_dates_next_to_an_int_past_int64_preview(tmp_path):
+    path = tmp_path / "train.jsonl"
+    _write_jsonl(
+        path, [{"when": "1945-05-08", "id": 9223372036854775808, "m": {"t": "2021-05-03"}}]
+    )
+    dataset, _ = local._stream_file_preview_slice(path, 10)
+    assert dataset.to_list() == [{"when": "1945-05-08", "id": 2.0**63, "m": {"t": "2021-05-03"}}]

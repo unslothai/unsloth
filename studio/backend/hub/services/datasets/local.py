@@ -258,16 +258,17 @@ def _jsonl_rows_dataset(rows: list[dict], window: bytes):
     import pyarrow.json as paj
     from datasets import Dataset
 
-    from utils.datasets.json_rows import has_timestamp
+    from utils.datasets.json_rows import has_timestamp, timestamps_as_strings
 
     try:
         # The loader's reader types as training does; one block, no threads: #15681 segfaults only threaded.
         options = paj.ReadOptions(use_threads = False, block_size = len(window))
         table = paj.read_json(io.BytesIO(window), read_options = options)
-        if not has_timestamp(table.schema):
-            return Dataset.from_list(table.slice(0, len(rows)).to_pylist())
-        # Training keeps date strings as written, so the preview does too.
-        return Dataset.from_list(rows)
+        if has_timestamp(table.schema):
+            # Training keeps date strings as written, so the preview does too.
+            parse = paj.ParseOptions(explicit_schema = timestamps_as_strings(table.schema))
+            table = paj.read_json(io.BytesIO(window), read_options = options, parse_options = parse)
+        return Dataset.from_list(table.slice(0, len(rows)).to_pylist())
     except pa.ArrowException as error:
         # A field that is a string in one row and an object in another (#15681): show the rows as written.
         try:
