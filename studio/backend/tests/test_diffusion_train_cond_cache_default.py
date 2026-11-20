@@ -689,3 +689,31 @@ def test_h3_image_warm_rerun_skips_the_conditioner_and_trains_identically(
     a = load_file(next((tmp_path / "o1").rglob("pytorch_lora_weights.safetensors")))
     b = load_file(next((tmp_path / "o2").rglob("pytorch_lora_weights.safetensors")))
     assert a.keys() == b.keys() and all(torch.equal(a[k], b[k]) for k in a)
+
+
+def test_h3_image_bf16_fallback_captions_never_serve_an_int8_run(
+    h3_image_release, tmp_path, monkeypatch
+):
+    import numpy as np
+    from PIL import Image
+
+    data = tmp_path / "data"
+    data.mkdir()
+    rng = np.random.default_rng(0)
+    Image.fromarray(rng.integers(0, 255, (96, 64, 3), dtype = np.uint8)).save(data / "a.png")
+    (data / "a.txt").write_text("a cat")
+    (tmp_path / "catalog").mkdir()
+    te = h3_image_release[2]
+    loads: list = []
+    try:
+        # int8 requested (the default), but the hosted file was unusable and bf16 encoded the captions.
+        te._unsloth_te_scheme = "bf16"
+        _h3_image_run(h3_image_release, data, tmp_path / "o1", monkeypatch, loads)
+        assert len(loads) == 1
+        te._unsloth_te_scheme = "int8"
+        _h3_image_run(h3_image_release, data, tmp_path / "o2", monkeypatch, loads)
+        assert len(loads) == 2, "bf16 fallback embeddings must not be served to an int8 run"
+        _h3_image_run(h3_image_release, data, tmp_path / "o3", monkeypatch, loads)
+        assert len(loads) == 2, "the int8 run's own entries must serve the next int8 run"
+    finally:
+        te.__dict__.pop("_unsloth_te_scheme", None)

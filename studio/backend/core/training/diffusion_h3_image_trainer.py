@@ -256,7 +256,7 @@ def load_text_encoder(cfg, root: Path):
             processor = AutoProcessor.from_pretrained(str(root / "processor"))
         except Exception:  # noqa: BLE001 - text-only captions do not need it on transformers 4.x
             processor = None
-    encoder, _engaged = load_h3_image_text_encoder(
+    encoder, engaged = load_h3_image_text_encoder(
         "int8" if text_encoder_scheme() == "int8" else None,
         dtype = torch.bfloat16,
         text_encoder_repo = text_encoder_repo(root),
@@ -264,6 +264,8 @@ def load_text_encoder(cfg, root: Path):
         cache_dir = hub_cache_dir(),
         local_files_only = False,
     )
+    # An unusable hosted int8 file falls back to bf16; the cache must key what actually encoded.
+    encoder._unsloth_te_scheme = "int8" if engaged == "int8" else "bf16"
     return encoder, tokenizer, processor
 
 
@@ -538,7 +540,12 @@ def _free_gb(device) -> Optional[float]:
 _H3_IMAGE_LATENT_CACHE_VERSION = "1"
 
 
-def _open_h3_image_cache(cfg, root: Path, on_event):
+def _open_h3_image_cache(
+    cfg,
+    root: Path,
+    on_event,
+    scheme: Optional[str] = None,
+):
     """The persistent conditioning cache for this run, or None (switched off, or unusable: never fatal)."""
     from core.inference.diffusion_minimax_h3_image import H3_IMAGE_TEXT_ENCODER_LAYER
     from core.training.diffusion_train_extras import (
@@ -562,7 +569,7 @@ def _open_h3_image_cache(cfg, root: Path, on_event):
             "qwen3vl",
             te_repo,
             source_revision(te_repo),
-            text_encoder_scheme(),
+            scheme or text_encoder_scheme(),
             f"hs{H3_IMAGE_TEXT_ENCODER_LAYER}",
         )
         return PersistentConditioningCache(
@@ -627,10 +634,12 @@ def _prepare_h3_image_conditioning(
         with isolated_sampling(device, False):
             encoder, tokenizer, processor = load_text_encoder(cfg, root)
             encoder.to(device)
-            # A first run reads the conditioner revision before its download: write under the real one,
-            # dropping anything served under a namespace the load has moved away from.
+            # A first run reads the conditioner revision before its download, and an int8 load can fall back
+            # to bf16: write under the real revision and scheme, dropping anything served under another namespace.
             if pcache is not None:
-                fresh = _open_h3_image_cache(cfg, root, on_event)
+                fresh = _open_h3_image_cache(
+                    cfg, root, on_event, getattr(encoder, "_unsloth_te_scheme", None)
+                )
                 if fresh is not None and (fresh.family, fresh.text_encoder) != (
                     pcache.family,
                     pcache.text_encoder,
