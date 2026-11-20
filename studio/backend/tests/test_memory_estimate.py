@@ -3027,7 +3027,10 @@ class TestAnAutoContextIsMarkedShrinkable:
         config = SimpleNamespace(**{**vars(ri._cached_estimate_config()), "gguf_file": swa})
         monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
         resp = _estimate(model_path = swa, n_parallel = 4)
-        curve = [(resp.gpu_floor_ctx, resp.gpu_floor_bytes), *[(c, g) for c, g, _ in resp.fit_curve]]
+        curve = [
+            (resp.gpu_floor_ctx, resp.gpu_floor_bytes),
+            *[(c, g) for c, g, _ in resp.fit_curve],
+        ]
         curve.append((resp.n_ctx, resp.gpu_bytes))
         slopes = [(g1 - g0) / (c1 - c0) for (c0, g0), (c1, g1) in zip(curve, curve[1:])]
         assert slopes[0] > 2 * slopes[-1], slopes

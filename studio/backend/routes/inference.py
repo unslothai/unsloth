@@ -22502,6 +22502,7 @@ async def estimate_memory(
             request.gpu_layers,
             breakdown,
         )
+
         def price_fit(n_ctx: int):
             fit = price(n_ctx = n_ctx)
             # Tensor launch can fall back to layer split, replicating compute buffers: take the larger.
