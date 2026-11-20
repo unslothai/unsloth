@@ -6,8 +6,8 @@
 A DiT LoRA run checkpoints every transformer block, so each block's forward runs twice per step (forward, then again
 in backward). After streaming the text encoders, a 4-bit run peaks at 3 to 6 GiB, which leaves most of a 24 to 80 GB
 card idle. Step 1 measures the first block of each class; afterwards free memory decides how many blocks skip the
-recompute (same kernels, same inputs, so loss and gradients are unchanged). An out-of-memory error disables the plan
-and reruns the step fully checkpointed from the same inputs.
+recompute (same kernels, same inputs, so loss and gradients are unchanged). An out-of-memory error halves the kept set
+(every block checkpointed once nothing is left) and reruns the step from the same inputs.
 
 ``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA (not ROCm); ``plain`` checkpoints every block
 and ``partial`` every Nth, as before.
@@ -16,6 +16,7 @@ and ``partial`` every Nth, as before.
 from __future__ import annotations
 
 import functools
+import gc
 import os
 from typing import Any, Optional
 
@@ -101,6 +102,12 @@ class BudgetedCheckpoint:
         self.kept_bytes = 0
         # Largest canvas area seen while measuring (bucketed runs only).
         self.probe_area: Optional[int] = None
+        self.scale = 1.0
+        self.step_downs = 0
+        # The room the plan had for kept activations; what they leave of it is ``spare_bytes``.
+        self.headroom = 0
+        # free + reserved bytes the plan saw: memory another process took since comes off ``spare_bytes_now``.
+        self.planned_avail = 0
 
     def _block_index(self, owner: Any) -> int:
         key = id(owner)
@@ -158,18 +165,64 @@ class BudgetedCheckpoint:
         scale = 1.0
         if max_canvas_area and self.probe_area:
             scale = max(1.0, max_canvas_area / self.probe_area)
+        self.scale = scale
         margin = max(_MARGIN_MIN_BYTES, int(total_bytes * _MARGIN_FRACTION))
         headroom = int((free_bytes + reserved_bytes - projected_peak - margin) * _HEADROOM_SHARE)
+        self.headroom = max(0, headroom)
+        self.planned_avail = int(free_bytes) + int(reserved_bytes)
+        self._choose(sorted(self.block_class), headroom)
+        return len(self.keep)
+
+    @property
+    def spare_bytes(self) -> int:
+        """Planned room the kept activations leave unused (0 once disabled or stepped down)."""
+        if self.disabled or self.step_downs:
+            return 0
+        return max(0, self.headroom - self.kept_bytes)
+
+    def spare_bytes_now(self) -> int:
+        """``spare_bytes`` less what the card lost since the plan (another load took it); 0 when unreadable."""
+        spare = self.spare_bytes
+        if spare <= 0:
+            return 0
+        try:
+            import torch
+            free, _total = torch.cuda.mem_get_info()
+            avail = int(free) + int(torch.cuda.memory_reserved())
+        except Exception:  # noqa: BLE001 -- unknown: cache nothing
+            return 0
+        return max(0, spare - max(0, self.planned_avail - avail))
+
+    def _choose(self, order: list, room: int) -> None:
+        # A block that does not fit (or an unmeasured one) stays checkpointed; a cheaper one after it can still fit.
         keep, used = [], 0
-        for idx in sorted(self.block_class):
-            need = int(self.estimate(idx) * scale)
-            if need < 0 or used + need > headroom:
-                break
+        for idx in order:
+            need = int(self.estimate(idx) * self.scale)
+            if need < 0 or used + need > room:
+                continue
             keep.append(idx)
             used += need
         self.keep = frozenset(keep)
         self.kept_bytes = used
-        return len(keep)
+
+    def step_down(self) -> bool:
+        """After an out-of-memory error: keep at most half the kept bytes and at least one block fewer; with nothing
+        left (or while still measuring) every block is checkpointed from now on. Returns whether blocks are still kept."""
+        if self.disabled:
+            return False
+        if self.probing or not self.keep:
+            self.fall_back()
+            return False
+        order, before, kept = sorted(self.keep), self.keep, self.kept_bytes
+        self._choose(order, kept // 2)
+        if self.keep == before:
+            # Blocks measured at zero bytes: drop the last one so the retry still changes something.
+            self._choose(order[:-1], kept)
+        if not self.keep:
+            self.fall_back()
+            return False
+        self.step_downs += 1
+        return True
 
     def fall_back(self) -> bool:
         changed = not self.disabled and (bool(self.keep) or self.probing)
@@ -251,6 +304,147 @@ class StepReplay:
             self._set_rng_state(state)
             out.append(fn(*_to_device(host, self.device)))
         return out
+
+
+def plan_from_device(
+    budget: BudgetedCheckpoint,
+    fb_peak: int,
+    alloc_before_step: int,
+    max_canvas_area: Optional[int] = None,
+    held_bytes: int = 0,
+) -> None:
+    """After the first optimizer step: keep as many blocks' activations as free memory less ``held_bytes`` allows.
+    Never raises: on any error every block stays checkpointed."""
+    import logging
+
+    import torch
+
+    log = logging.getLogger(__name__)
+    try:
+        # The optimizer's first step allocates its moments, which every later step carries.
+        projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
+        projected += max(0, int(held_bytes))
+        free, total = torch.cuda.mem_get_info()
+        kept = budget.plan(
+            projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
+        )
+    except Exception as exc:  # noqa: BLE001 -- an optimisation only: every block stays checkpointed
+        budget.fall_back()
+        log.info("gradient checkpointing budget not applied: %s", exc)
+        return
+    log.info(
+        "gradient checkpointing: keeping activations for %d of %d blocks (%.2f GiB)",
+        kept,
+        budget.total_blocks,
+        budget.kept_bytes / (1 << 30),
+    )
+
+
+def step_down_message(budget: BudgetedCheckpoint) -> str:
+    if budget.keep and not budget.disabled:
+        return (
+            "Ran out of GPU memory while keeping block activations; keeping "
+            f"{len(budget.keep)} of {budget.total_blocks} blocks from this step on."
+        )
+    return (
+        "Ran out of GPU memory while keeping block activations; every block is checkpointed "
+        "from this step on."
+    )
+
+
+# Returned by BudgetedSteps.forward_backward when the micro-batch ran out of memory and the step can rerun.
+OUT_OF_MEMORY = object()
+
+
+class BudgetedSteps:
+    """The training loop's side of a BudgetedCheckpoint (None: plain calls, nothing recorded).
+
+    Per optimizer step: ``start_step``; per micro-batch ``forward_backward(fn, inputs)``. On ``OUT_OF_MEMORY`` the
+    caller drops its references to the micro-batch, then ``rerun(fn)`` steps the plan down and replays every
+    micro-batch of the step so far from host copies (same RNG), returning their results; the caller restarts its
+    accumulators from those. Around the first optimizer update: ``before_update`` / ``after_update`` plan the budget."""
+
+    def __init__(
+        self,
+        budget: Optional[BudgetedCheckpoint],
+        device: str,
+        optimizer: Any,
+        warn: Optional[Any] = None,
+        on_step_down: Optional[Any] = None,
+    ):
+        self.budget = budget
+        self.device = device
+        self.optimizer = optimizer
+        self.warn = warn
+        self.on_step_down = on_step_down
+        self.replay = StepReplay(device) if budget is not None else None
+        self.reruns = 0
+        self._pending: Optional[tuple] = None
+
+    def start_step(self) -> None:
+        if self.replay is not None:
+            self.replay.clear()
+
+    def forward_backward(self, fn: Any, inputs: tuple) -> Any:
+        budget = self.budget
+        if budget is None:
+            return fn(*inputs)
+        if budget.can_retry:
+            self.replay.record(inputs)
+        try:
+            return fn(*inputs)
+        except Exception as exc:  # noqa: BLE001 -- re-raised unless a rerun can use less memory
+            if not budget.can_retry or not is_out_of_memory(exc):
+                raise
+        # Outside the except block, so the failed graph is freed with its traceback.
+        return OUT_OF_MEMORY
+
+    def rerun(self, fn: Any) -> list:
+        budget = self.budget
+        while True:
+            budget.step_down()
+            self.reruns += 1
+            # Partial gradients of the step are already accumulated: the whole step reruns.
+            self.optimizer.zero_grad(set_to_none = True)
+            gc.collect()
+            _empty_cache(self.device)
+            if self.on_step_down is not None:
+                self.on_step_down()
+            if self.warn is not None:
+                self.warn(step_down_message(budget))
+            try:
+                results = self.replay.replay(fn)
+            except Exception as exc:  # noqa: BLE001
+                if not budget.can_retry or not is_out_of_memory(exc):
+                    raise
+                continue
+            if not budget.can_retry:
+                self.replay.clear()
+            return results
+
+    def before_update(self) -> None:
+        import torch
+
+        budget = self.budget
+        self._pending = None
+        if budget is not None and not budget.planned:
+            self._pending = (torch.cuda.max_memory_allocated(), torch.cuda.memory_allocated())
+
+    def after_update(self, max_canvas_area: Optional[int] = None) -> None:
+        """Call only after an update that applied (an fp16 skipped step allocates no optimizer state)."""
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            plan_from_device(self.budget, pending[0], pending[1], max_canvas_area)
+
+
+def _empty_cache(device: str) -> None:
+    try:
+        import torch
+        module = getattr(torch, device, None)
+        if module is not None and hasattr(module, "empty_cache"):
+            module.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def is_out_of_memory(exc: BaseException) -> bool:

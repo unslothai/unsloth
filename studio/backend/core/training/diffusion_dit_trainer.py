@@ -41,6 +41,8 @@ from core.training.diffusion_gc_budget import (
     StepReplay,
     enable_budgeted_checkpointing,
     is_out_of_memory,
+    plan_from_device,
+    step_down_message,
 )
 from core.training.diffusion_load_progress import report_model_load_progress
 from core._torchao_stub import is_stubbed, torch_is_rocm
@@ -3952,6 +3954,9 @@ def _train_dit(
             stop_latched = True
         return stop_latched
 
+    # Set below once the budget is known; a preview before then has no copies to drop.
+    fp8_backward = None
+
     def _sample(step: int) -> None:
         nonlocal sample_plan, t_rate, t_steady
         if sample_plan is None:
@@ -3961,6 +3966,9 @@ def _train_dit(
         if dequant_cache is not None:
             # The preview needs the room; the following steps refill the cache.
             dequant_cache.suspend()
+        if fp8_backward is not None:
+            # Same for the fp8 backward copies (a preview runs no backward; the next one refills them).
+            fp8_backward.clear(keep_budget = True)
         try:
             with isolated_sampling(device, compiled):
                 transformer.eval()
@@ -4014,31 +4022,50 @@ def _train_dit(
 
     def _retry_fully_checkpointed():
         # Partial gradients of the failed micro-step are already accumulated, so the whole step reruns from its inputs.
-        gc_budget.fall_back()
-        if dequant_cache is not None:
-            dequant_cache.reserve(0, from_plan = True)
-        optimizer.zero_grad(set_to_none = True)
-        gc.collect()
-        _empty_device_cache(device)
-        # Restart the peak: step 1's cache plan reads it, and the failed peak would plan the cache to nothing.
-        train_peak.pause()
-        train_peak.resume()
-        _emit(
-            on_event,
-            "warning",
-            message = (
-                "Ran out of GPU memory while keeping block activations; every block is checkpointed "
-                "from this step on."
-            ),
-        )
+        # Each out-of-memory error halves the kept blocks; with none left every block is checkpointed.
+        while True:
+            gc_budget.step_down()
+            if fp8_backward is not None:
+                fp8_backward.clear()
+            if dequant_cache is not None:
+                dequant_cache.reserve(
+                    gc_budget.kept_bytes if gc_budget.keep and not gc_budget.disabled else 0,
+                    from_plan = True,
+                )
+            optimizer.zero_grad(set_to_none = True)
+            gc.collect()
+            _empty_device_cache(device)
+            # Restart the peak: step 1's cache plan reads it, and the failed peak would plan the cache to nothing.
+            train_peak.pause()
+            train_peak.resume()
+            _emit(on_event, "warning", message = step_down_message(gc_budget))
+            try:
+                losses = replay.replay(_forward_backward)
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                if not gc_budget.can_retry or not is_out_of_memory(exc):
+                    raise
+                continue
+            break
         acc = None
-        for loss in replay.replay(_forward_backward):
+        for loss in losses:
             acc = accumulate_loss(acc, loss, cfg.gradient_accumulation_steps)
-        replay.clear()
+        if not gc_budget.can_retry:
+            replay.clear()
         return acc
 
     # Host copies of the step's inputs and RNG states, only while a budgeted step could still need a rerun.
     replay = StepReplay(device) if gc_budget is not None else None
+    fp8_backward = None
+    if base_precision == "fp8" and gc_budget is not None:
+        from core.training.diffusion_frozen_fp8 import BACKWARD_WEIGHTS, fp8_backward_vram_handler
+
+        fp8_backward = BACKWARD_WEIGHTS
+        fp8_backward.clear()
+        fp8_backward.active = fp8_backward.enabled()
+        if dequant_cache is None:
+            set_vram_request_handler(
+                fp8_backward_vram_handler(fp8_backward, room = gc_budget.spare_bytes_now)
+            )
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     consecutive_skips = 0
@@ -4155,6 +4182,9 @@ def _train_dit(
                 max(c[0] * c[1] for c in canvases) if canvases is not None else None,
                 lambda stats: _emit(on_event, "dequant_cache_planned", **stats),
             )
+            if fp8_backward is not None:
+                # What kept activations leave of the plan's room holds column-major fp8 weights for grad_x.
+                fp8_backward.plan(gc_budget.spare_bytes)
         if ema is not None:
             ema.update(transformer)
 
@@ -4215,6 +4245,14 @@ def _train_dit(
             stopped = True
             break
 
+    if fp8_backward is not None:
+        import logging
+
+        logging.getLogger(__name__).info("fp8 backward weights: %s", fp8_backward.stats())
+        if dequant_cache is None:
+            set_vram_request_handler(None)
+        fp8_backward.clear()
+        fp8_backward.active = False
     if fast_lora_layers:
         stats = fast_lora_stats()
         if dequant_cache is not None:
@@ -4393,29 +4431,7 @@ def _plan_gc_budget(
     held_bytes = 0,
 ) -> None:
     """After the first step: keep as many blocks' activations as free memory less ``held_bytes`` allows. Never raises."""
-    import logging
-
-    import torch
-
-    log = logging.getLogger(__name__)
-    try:
-        # The optimizer's first step allocates its moments, which every later step carries.
-        projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
-        projected += max(0, int(held_bytes))
-        free, total = torch.cuda.mem_get_info()
-        kept = gc_budget.plan(
-            projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
-        )
-    except Exception as exc:  # noqa: BLE001 -- an optimisation only: every block stays checkpointed
-        gc_budget.fall_back()
-        log.info("gradient checkpointing budget not applied: %s", exc)
-        return
-    log.info(
-        "gradient checkpointing: keeping activations for %d of %d blocks (%.2f GiB)",
-        kept,
-        gc_budget.total_blocks,
-        gc_budget.kept_bytes / (1 << 30),
-    )
+    plan_from_device(gc_budget, fb_peak, alloc_before_step, max_canvas_area, held_bytes)
 
 
 def _make_optimizer(

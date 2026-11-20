@@ -67,6 +67,11 @@ from core.training.diffusion_h3_clips import (
     h3_train_canvas,
     h3_video_latent_frames,
 )
+from core.training.diffusion_gc_budget import (
+    OUT_OF_MEMORY,
+    BudgetedSteps,
+    enable_budgeted_checkpointing,
+)
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
@@ -623,8 +628,12 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             target_modules = targets,
         )
     )
+    gc_budget = None
     if cfg.gradient_checkpointing:
-        enable_diffusion_gradient_checkpointing(transformer)
+        # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        if gc_budget is None:
+            enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if not lora_params:
@@ -691,10 +700,45 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_steady = None
     done = 0
     reset_training_peak_memory(device)
+    budget_steps = BudgetedSteps(
+        gc_budget,
+        device,
+        optimizer,
+        warn = lambda message: _emit(on_event, "warning", message = message),
+    )
+
+    def _forward_backward(
+        video_rows, audio_rows, embeds, timestep, timestep_indices, num_text, targets
+    ):
+        # The layout is looked up, not recorded: its device tensors are shared by every step.
+        layout = layouts[num_text][1]
+        target_video, target_audio = targets
+        with autocast:
+            pred_video, pred_audio = transformer(
+                hidden_states = video_rows[None],
+                audio_hidden_states = audio_rows[None],
+                encoder_hidden_states = embeds,
+                timestep = timestep,
+                timestep_indices = timestep_indices,
+                token_tags = layout["token_tags"],
+                position_ids = layout["position_ids"],
+                video_indices = layout["video_indices"],
+                audio_indices = layout["audio_indices"],
+                text_indices = layout["text_indices"],
+                return_dict = False,
+            )
+            loss_video = F.mse_loss(pred_video[0].float(), target_video.float())
+            loss_audio = F.mse_loss(pred_audio[0].float(), target_audio.float())
+            # Unweighted: both streams share every adapted matrix.
+            loss = loss_video + loss_audio
+        (loss / cfg.gradient_accumulation_steps).backward()
+        return loss, loss_video, loss_audio
+
     compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_acc = video_acc = audio_acc = None
+        budget_steps.start_step()
         for _ in range(cfg.gradient_accumulation_steps):
             index = index_sampler.next_batch(1)[0]
             video_a, video_b, audio_latents = cache[index]
@@ -747,29 +791,33 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             )
             timestep = timestep.to(device, non_blocking = True)
             timestep_indices = timestep_indices.to(device, non_blocking = True)
-            with autocast:
-                pred_video, pred_audio = transformer(
-                    hidden_states = video_rows[None],
-                    audio_hidden_states = audio_rows[None],
-                    encoder_hidden_states = embeds,
-                    timestep = timestep,
-                    timestep_indices = timestep_indices,
-                    token_tags = layout["token_tags"],
-                    position_ids = layout["position_ids"],
-                    video_indices = layout["video_indices"],
-                    audio_indices = layout["audio_indices"],
-                    text_indices = layout["text_indices"],
-                    return_dict = False,
-                )
-                loss_video = F.mse_loss(pred_video[0].float(), target_video.float())
-                loss_audio = F.mse_loss(pred_audio[0].float(), target_audio.float())
-                # Unweighted: both streams share every adapted matrix.
-                loss = loss_video + loss_audio
-            (loss / cfg.gradient_accumulation_steps).backward()
             ga = cfg.gradient_accumulation_steps
-            step_acc = accumulate_loss(step_acc, loss, ga)
-            video_acc = accumulate_loss(video_acc, loss_video, ga)
-            audio_acc = accumulate_loss(audio_acc, loss_audio, ga)
+            out = budget_steps.forward_backward(
+                _forward_backward,
+                (
+                    video_rows,
+                    audio_rows,
+                    embeds,
+                    timestep,
+                    timestep_indices,
+                    num_text_tokens,
+                    (target_video, target_audio),
+                ),
+            )
+            if out is OUT_OF_MEMORY:
+                # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
+                out = video_rows = audio_rows = embeds = timestep = timestep_indices = None
+                target_video = target_audio = clean_video = clean_audio = None
+                noise_video = noise_audio = noisy_video = noisy_audio = video_a = video_b = None
+                step_acc = video_acc = audio_acc = None
+                outs = budget_steps.rerun(_forward_backward)
+            else:
+                outs = [out]
+            for loss, loss_video, loss_audio in outs:
+                step_acc = accumulate_loss(step_acc, loss, ga)
+                video_acc = accumulate_loss(video_acc, loss_video, ga)
+                audio_acc = accumulate_loss(audio_acc, loss_audio, ga)
+            outs = out = None
 
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
@@ -777,8 +825,10 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         step_loss = loss_value(step_acc)
         step_video = loss_value(video_acc)
         step_audio = loss_value(audio_acc)
+        budget_steps.before_update()
         optimizer.step()
         lr_sched.step()
+        budget_steps.after_update()
         if ema is not None:
             ema.update(transformer)
 
