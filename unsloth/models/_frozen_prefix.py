@@ -71,22 +71,23 @@ def _head_parameters(model):
     return ids
 
 
+def _first_trainable(stack):
+    for index, layer in enumerate(stack):
+        if any(p.requires_grad for p in layer.parameters()):
+            return index
+    return None
+
+
 def _plan(model, stacks, heads):
     """(stack, k) when the first k layers of one stack, and everything feeding them, hold nothing trainable."""
-    trainable = {id(p) for p in model.parameters() if p.requires_grad}
-    if not trainable:
-        return None
     for stack in stacks:
-        k = None
-        upper = set()
-        for index, layer in enumerate(stack):
-            ids = {id(p) for p in layer.parameters() if p.requires_grad}
-            if ids and k is None:
-                k = index
-            if k is not None:
-                upper.update(ids)
+        # Runs on every training forward: a stack that trains its first layer (adapters everywhere) or
+        # nothing (a frozen vision tower) is settled here, without walking the whole model's parameters.
+        k = _first_trainable(stack)
         if not k:
             continue
+        trainable = {id(p) for p in model.parameters() if p.requires_grad}
+        upper = {id(p) for layer in stack[k:] for p in layer.parameters() if p.requires_grad}
         if not trainable.issubset(upper | heads):
             return None
         # Only checkpointing makes the frozen layers replay; a layer kept out of it (checkpoint_skip_layers) is fine.
