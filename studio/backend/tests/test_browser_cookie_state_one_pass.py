@@ -134,14 +134,16 @@ def test_site_cookie_state_matches_the_two_pass_answer(seed):
         assert capped, "the 64 KiB room cap never cut a page's list"
 
 
-def test_one_request_per_distinct_cookie_path(monkeypatch):
+def test_one_request_per_distinct_path_on_the_site(monkeypatch):
     rng = random.Random(0)
     _fill(rng, "acct", ["a.example", "b.example"], total = 300, big = False)
     jar = cookies._jar("acct")
-    paths = {cookie.path or "/" for cookie in jar}
+    paths = {cookie.path or "/" for cookie in jar if cookie.domain == "a.example"}
     made = []
     real = cookies._request
     monkeypatch.setattr(cookies, "_request", lambda url: made.append(url) or real(url))
     cookies.site_cookie_state("acct", "https://a.example/a/b")
     assert len(made) == 1 + len(paths)
-    assert len(list(jar)) > len(paths)
+    made.clear()
+    cookies.site_cookie_state("acct", "https://c.example/")
+    assert made == ["https://c.example/"]

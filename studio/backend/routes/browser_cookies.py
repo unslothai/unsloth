@@ -241,9 +241,16 @@ def _site_cookies(subject: str, url: str) -> Iterable[http.cookiejar.Cookie]:
     if page is None:
         return
     jar = _jar(subject)
+    # domain_return_ok is the stdlib's own prefilter for return_ok; deepvalues keeps list(jar)'s order.
+    domains = {
+        domain: paths
+        for domain, paths in list(jar._cookies.items())  # type: ignore[attr-defined]
+        if jar._policy.domain_return_ok(domain, page)  # type: ignore[attr-defined]
+    }
+    cookies = list(http.cookiejar.deepvalues(domains))
     # return_ok only reads the request, so cookies sharing a path share one.
     at_paths: dict[str, Optional[urllib.request.Request]] = {}
-    for cookie in list(jar):
+    for cookie in cookies:
         path = cookie.path or "/"
         if path not in at_paths:
             at_paths[path] = _request(f"{page.type}://{page.host}{path}")
