@@ -212,7 +212,11 @@ def test_refresh_moves_complete_record_past_later_partial_output_without_regener
         {
             "role": "assistant",
             "tool_calls": [
-                {"id": "last", "type": "function", "function": {"name": "python", "arguments": "{}"}}
+                {
+                    "id": "last",
+                    "type": "function",
+                    "function": {"name": "python", "arguments": "{}"},
+                }
             ],
         },
         {"role": "tool", "tool_call_id": "last", "content": "Only the last eight rows. " * 650},
