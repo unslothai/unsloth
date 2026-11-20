@@ -17179,13 +17179,18 @@ def _page_refusal(host: str) -> str | None:
     return f"Blocked: {refusal}." if refusal else None
 
 
-def _redirect_hop(url: str, website_policy) -> tuple[str | None, str]:
+def _redirect_hop(url: str, website_policy, deadline):
     from .web_access_policy import check_url_access
 
     allowed, reason, host = check_url_access(url, website_policy)
     if not allowed:
-        return reason, ""
-    return _page_refusal(host), host
+        return reason, "", deadline
+    asked_at = time.monotonic()
+    refused = _page_refusal(host)
+    # Time spent waiting on the owner's approval is not spent on the read.
+    if deadline is not None:
+        deadline += time.monotonic() - asked_at
+    return refused, host, deadline
 
 
 def _is_bot_check(status: int, headers) -> bool:
@@ -17367,12 +17372,11 @@ def _fetch_url_raw(
                         )
                         if refused:
                             return refused, "", ""
-                    asked_at = time.monotonic()
-                    hop_error, current_host = _redirect_hop(current_url, website_policy)
+                    hop_error, current_host, deadline = _redirect_hop(
+                        current_url, website_policy, deadline
+                    )
                     if hop_error is not None:
                         return hop_error, "", ""
-                    if deadline is not None:
-                        deadline += time.monotonic() - asked_at
                     continue
 
             coding = (resp.headers.get("Content-Encoding") or "").strip().lower()
@@ -17448,7 +17452,7 @@ def _fetch_url_raw(
             current_url = refresh_url
             # a refresh starts a new GET like a browser.
             pending_post = None
-            hop_error, current_host = _redirect_hop(current_url, website_policy)
+            hop_error, current_host, deadline = _redirect_hop(current_url, website_policy, deadline)
             if hop_error is not None:
                 return hop_error, "", ""
         else:

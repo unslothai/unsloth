@@ -891,6 +891,55 @@ def test_a_slow_redirect_approval_does_not_use_up_the_page_read_time(asking, mon
     assert "timed out" not in out and fetched == ["pypi.org", "example.org"]
 
 
+def test_a_slow_meta_refresh_approval_does_not_use_up_the_page_read_time(asking, monkeypatch):
+    import email.message
+
+    fetched = []
+
+    def resolve(hostname, port):
+        fetched.append(hostname)
+        if hostname == "pypi.org":
+            return True, "", ["93.184.216.34"]
+        return False, "Blocked: test stops here.", []
+
+    class Page:
+        def __init__(self):
+            self._body = b'<meta http-equiv="refresh" content="0; url=https://example.org/b">'
+            self.headers = email.message.Message()
+            self.headers["Content-Type"] = "text/html; charset=utf-8"
+
+        def read(self, n = None):
+            chunk, self._body = (self._body, b"") if n is None else (self._body[:n], self._body[n:])
+            return chunk
+
+    class Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            return Page()
+
+    monkeypatch.setattr(tools, "_validate_and_resolve_host", resolve)
+    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *handlers: Opener())
+
+    def slow_chat(event):
+        question = event["network_request"]
+        if not question.get("done"):
+            threading.Timer(
+                1.5,
+                network_requests.resolve_request,
+                (question["id"], "allow", question["session_id"], OWNER.account_id),
+            ).start()
+
+    token = tools._PAGE_GATE.set(_gate(slow_chat))
+    try:
+        out = tools._download_page("https://pypi.org/a", timeout = 1)
+    finally:
+        tools._PAGE_GATE.reset(token)
+    assert "timed out" not in out and fetched == ["pypi.org", "example.org"]
+
+
 def test_allowed_only_refuses_an_unlisted_page_and_a_search_still_runs(asking, monkeypatch):
     firewall.set_network_firewall(mode = "allowlist")
     chat = _Chat("allow")
