@@ -206,6 +206,9 @@ def main() -> None:
                     encoding = "utf-8",
                 )
                 flm.chmod(0o755)
+                if os.environ.get("FAKE_LEMOND_INSTALL_ERROR"):
+                    self._send(500, {"error": {"message": os.environ["FAKE_LEMOND_INSTALL_ERROR"]}})
+                    return
                 self._send(200, {"status": "success", "recipe": "flm", "backend": "npu"})
             elif self.path == "/v1/pull":
                 pull = os.environ.get("FAKE_LEMOND_PULL")
@@ -232,7 +235,8 @@ def main() -> None:
                     self._send(404, {"error": {"message": f"Model '{name}' was not found."}})
                     return
                 if name == os.environ.get("FAKE_LEMOND_LOAD_FAILS_FOR"):
-                    self._send(500, {"error": {"message": "flm failed to start"}})
+                    message = os.environ.get("FAKE_LEMOND_LOAD_ERROR", "flm failed to start")
+                    self._send(500, {"error": {"message": message}})
                     return
                 loaded.clear()
                 loaded[name] = {"ctx_size": body.get("ctx_size"), "flm_args": ""}
