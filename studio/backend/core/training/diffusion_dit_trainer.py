@@ -771,7 +771,31 @@ def _pick_auto_precision(
 AUTO_BLOCK_SWAP_ENV = "UNSLOTH_DIT_AUTO_BLOCK_SWAP"
 
 
-def _auto_block_swap_wanted(cfg, base_precision: str, device: str) -> bool:
+# The swapped base loads dense on the host: its bf16 size, load-time overhead (measured ~1.25x peak), and headroom.
+_AUTO_SWAP_HOST_FACTOR = 1.3
+_AUTO_SWAP_HOST_RESERVE = 4 << 30
+
+
+def _auto_swap_host_ram_ok(spec, cfg) -> bool:
+    """Whether host RAM (cgroup-aware) holds the dense bf16 base for a swapped load; unreadable counts as no, since
+    the int8 path it replaces streams the load and needs far less host RAM."""
+    try:
+        from core.inference.diffusion_prequant_cache import _host_memory_bytes
+        _total, avail = _host_memory_bytes()
+        dense = _dense_bf16_gb(spec, getattr(cfg, "base_model", "") or "")
+    except Exception:  # noqa: BLE001
+        return False
+    if avail is None:
+        return False
+    return avail >= dense * (1 << 30) * _AUTO_SWAP_HOST_FACTOR + _AUTO_SWAP_HOST_RESERVE
+
+
+def _auto_block_swap_wanted(
+    cfg,
+    base_precision: str,
+    device: str,
+    spec = None,
+) -> bool:
     """auto picked int8 (the dense base fits with little headroom): bf16 + block swap instead on a discrete NVIDIA
     card. L4, 512 px: FLUX.2-klein 9B bf16 1.62 s/step vs int8 2.35; FLUX.1-dev with 21 of 57 blocks swapped 1.83
     vs int8 2.83, both at bf16 loss. UNSLOTH_DIT_AUTO_BLOCK_SWAP=0 keeps int8."""
@@ -787,6 +811,8 @@ def _auto_block_swap_wanted(cfg, base_precision: str, device: str) -> bool:
         or torch_is_rocm()
         or _device_is_integrated(device)
     ):
+        return False
+    if spec is not None and not _auto_swap_host_ram_ok(spec, cfg):
         return False
     try:
         import importlib.util
@@ -3707,7 +3733,7 @@ def _train_dit(
     base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
     swap_request = block_swap_request(cfg)
     # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
-    auto_swap = swap_request is None and _auto_block_swap_wanted(cfg, base_precision, device)
+    auto_swap = swap_request is None and _auto_block_swap_wanted(cfg, base_precision, device, spec)
     if auto_swap:
         base_precision, swap_request = "bf16", "auto"
     _emit(

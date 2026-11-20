@@ -196,3 +196,30 @@ def test_auto_keeps_int8_without_zoo_block_swap(monkeypatch):
 
     monkeypatch.setattr(importlib.util, "find_spec", missing)
     assert not dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda")
+
+
+@pytest.mark.parametrize("avail_gib, wanted", [(64, True), (16, False), (None, False)])
+def test_auto_swap_needs_host_ram_for_the_dense_base(monkeypatch, avail_gib, wanted):
+    # The swapped base loads dense on the host (the int8 path it replaces streams): a 12 GB base needs
+    # 12 * 1.3 + 4 GiB available, and an unreadable reading keeps int8.
+    import types
+
+    import core.inference.diffusion_prequant_cache as pc
+
+    import importlib.util
+
+    monkeypatch.delenv(dit.AUTO_BLOCK_SWAP_ENV, raising = False)
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
+    monkeypatch.setattr(dit, "_device_is_integrated", lambda d: False)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda n, *a: object() if n == "unsloth_zoo.block_swap" else real(n, *a),
+    )
+    monkeypatch.setattr(
+        pc, "_host_memory_bytes", lambda: (None, None if avail_gib is None else avail_gib << 30)
+    )
+    monkeypatch.setattr(dit, "_dense_bf16_gb", lambda spec, base: 12.0)
+    spec = types.SimpleNamespace(dense_bf16_gb = 12.0)
+    assert dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda", spec) is wanted
