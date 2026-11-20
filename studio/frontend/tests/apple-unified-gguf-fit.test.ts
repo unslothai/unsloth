@@ -295,7 +295,6 @@ test("a model switch on the Metal inventory credits nothing it cannot attribute 
   const device = {
     ...METAL_INVENTORY.devices[0],
     metal_working_set_gb: 16,
-    vram_used_gb: 6,
   };
   snapshot = {
     status: "ready",
@@ -305,7 +304,7 @@ test("a model switch on the Metal inventory credits nothing it cannot attribute 
     memory: { total_gb: 16, available_gb: 4 },
   };
   const inference = hooks.useInferenceGpuInfo();
-  // 4 * 0.85 = 3.4, floored to 0.25 GiB; not (4 + 6) * 0.85 = 8.5.
+  // 4 * 0.85 = 3.4, floored to 0.25 GiB; not the working set's 16 * 0.85 = 13.6.
   assert.equal(inference.unifiedLoadBudgetGb, 3.25);
   assert.equal(inference.unifiedLoadCeilingGb, 3.25);
   const switchFit = classifyGgufFit(bytesRequiring(5), {

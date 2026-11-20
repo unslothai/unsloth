@@ -2677,7 +2677,8 @@ def _mlx_device_info(mx: Any) -> Dict[str, Any]:
 
 
 def _metal_recommended_working_set_bytes(*, allow_import: bool = True) -> int:
-    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel; Metal.framework covers neither. ``allow_import=False`` (polled paths) reads only imported modules: a broken MLX import can park."""
+    """Metal's recommendedMaxWorkingSetSize, or 0: MLX, then torch.mps (2.5+, macOS 13 has no MLX wheel), then Metal.framework.
+    ``allow_import=False`` (polled paths) skips importing MLX or torch, since a broken MLX import can park."""
     try:
         if allow_import:
             import mlx.core as mx
@@ -2701,14 +2702,9 @@ def _metal_recommended_working_set_bytes(*, allow_import: bool = True) -> int:
     return _metal_framework_working_set_bytes()
 
 
-_metal_framework_working_set: Optional[int] = None
-
-
+@functools.lru_cache(maxsize = 1)
 def _metal_framework_working_set_bytes() -> int:
-    """recommendedMaxWorkingSetSize straight from Metal.framework, for a GGUF-only install with neither MLX nor torch; cached like MLX's device_info."""
-    global _metal_framework_working_set
-    if _metal_framework_working_set is not None:
-        return _metal_framework_working_set
+    """The same reading from Metal.framework, for a GGUF-only install with neither MLX nor torch."""
     rec = 0
     if sys.platform == "darwin":
         try:
@@ -2727,7 +2723,6 @@ def _metal_framework_working_set_bytes() -> int:
                 rec = int(send(device, objc.sel_registerName(b"recommendedMaxWorkingSetSize")))
         except Exception as e:
             logger.debug("Metal.framework working set read failed: %s", e)
-    _metal_framework_working_set = rec
     return rec
 
 
@@ -7760,13 +7755,8 @@ def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
         return None
     if total_bytes <= 0:
         return None
-    try:
-        working_set_bytes = int(_metal_recommended_working_set_bytes(allow_import = False) or 0)
-    except Exception as e:
-        logger.debug("Metal working set probe failed: %s", e)
-        working_set_bytes = 0
     # Same fallback as the loader.
-    working_set_bytes = working_set_bytes or total_bytes
+    working_set_bytes = _metal_recommended_working_set_bytes(allow_import = False) or total_bytes
     total_gb = round(total_bytes / (1024**3), 2)
     device: Dict[str, Any] = {
         "index": 0,

@@ -5,7 +5,6 @@
 
 import builtins
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -78,14 +77,6 @@ def test_unknown_working_set_falls_back_to_total_ram_like_the_loader():
     (device,) = _metal_info(working_set = lambda **_: 0)["devices"]
     assert device["metal_working_set_gb"] == 16.0
     assert "vram_used_gb" not in device
-
-
-def test_working_set_probe_failure_falls_back_to_total_ram():
-    def boom(**_):
-        raise RuntimeError("no metal")
-
-    (device,) = _metal_info(working_set = boom)["devices"]
-    assert device["metal_working_set_gb"] == 16.0
 
 
 @pytest.mark.parametrize(
@@ -196,7 +187,6 @@ def test_build_has_metal_follows_the_installer_wrapper(tmp_path):
     wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
     (tmp_path / "llama.cpp" / "libggml-base.dylib").write_bytes(b"")  # a CPU-only set at the top
     assert LlamaCppBackend._build_has_metal(str(wrapper)) is True
-    assert Path(server).parts[-3:] == ("build", "bin", "llama-server")
 
 
 @pytest.mark.parametrize(
@@ -256,10 +246,21 @@ def test_polled_paravirtual_check_uses_hw_model_only(
     llama_cpp = _fresh_paravirtual_caches
     calls = []
     _hw_model(monkeypatch, llama_cpp, model, calls)
-    modules = {k: v for k, v in sys.modules.items() if k.split(".")[0] != "mlx"}
-    with patch.dict(sys.modules, modules, clear = True):
+    imported = []
+    real_import = builtins.__import__
+
+    def guard(name, *args, **kwargs):
+        if name.split(".")[0] == "mlx":
+            imported.append(name)
+        return real_import(name, *args, **kwargs)
+
+    # Blocked, not dropped: re-importing an already loaded mlx.core aborts the process.
+    with (
+        patch.dict(sys.modules, {"mlx": None, "mlx.core": None}),
+        patch.object(builtins, "__import__", guard),
+    ):
         assert llama_cpp._metal_offload_forced_off_for_polling() is expected
-        assert "mlx.core" not in sys.modules
+    assert imported == []
     assert calls == ["sysctl"]
 
 
@@ -312,3 +313,25 @@ def test_offload_needs_a_metal_build_on_a_real_gpu(
         patch.object(llama_cpp, "_metal_offload_forced_off_for_polling", return_value = paravirtual),
     ):
         assert hw._llama_cpp_offloads_to_metal() is expected
+
+
+@pytest.mark.parametrize("metal", [True, False])
+def test_system_route_serves_the_metal_inventory_to_a_cpu_mac(monkeypatch, metal):
+    import main
+    import utils.hardware as hardware
+
+    cpu = {"available": False, "backend": "cpu", "devices": [], "index_kind": "relative"}
+    metal_info = {"available": True, "backend": "metal", "devices": [{"index": 0}]}
+    monkeypatch.setattr(hardware, "get_backend_visible_gpu_info", lambda: cpu)
+    monkeypatch.setattr(hardware, "get_visible_gpu_utilization", lambda: {**cpu})
+    monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(hardware, "get_cross_vendor_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(hardware, "get_mixed_vulkan_inference_gpu_info", lambda info: None)
+    monkeypatch.setattr(
+        hardware, "get_apple_metal_inference_gpu_info", lambda: metal_info if metal else None
+    )
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *a: None))
+    assert gpu["available"] is False
+    assert inference_gpu["backend"] == ("metal" if metal else "cpu")

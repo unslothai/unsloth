@@ -5752,6 +5752,12 @@ def _paravirtual_metal_allowed() -> bool:
     )
 
 
+def _names_look_virtual(names: str) -> bool:
+    # VMM-x86_64 is the Intel-guest hw.model; "virtual" covers Paravirtual and VirtualMac.
+    low = names.lower()
+    return "virtual" in low or "vmm-" in low
+
+
 @functools.lru_cache(maxsize = 1)
 def _metal_device_is_paravirtual() -> bool:
     """Virtualised Apple GPU can corrupt offload; UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1 overrides. Probe hw.model before SPDisplaysDataType (empty on headless VMs)."""
@@ -5787,8 +5793,7 @@ def _metal_device_is_paravirtual() -> bool:
             if any(m in _out for m in _match):
                 name = f"{name} {probe.stdout}".strip()
                 break
-    _low = name.lower()
-    if "paravirtual" in _low or "virtual" in _low or "vmm-" in _low:
+    if _names_look_virtual(name):
         logger.warning(
             "Metal device looks virtualised (%s). Offload can return corrupt output on "
             "paravirtual Apple GPUs, so GGUF inference will run on CPU. MLX is "
@@ -5823,8 +5828,7 @@ def _metal_device_looks_paravirtual_quick() -> bool:
         names.append(probe.stdout or "")
     except Exception:
         pass
-    low = " ".join(names).lower()
-    return "paravirtual" in low or "virtual" in low or "vmm-" in low
+    return _names_look_virtual(" ".join(names))
 
 
 def _metal_devices_env_hides_all(env: Optional[Mapping[str, str]] = None) -> bool:

@@ -44,7 +44,7 @@ def test_torch_mps_matches_mlx_working_set(monkeypatch):
     assert hardware._metal_recommended_working_set_bytes() == with_mlx
 
     monkeypatch.setitem(sys.modules, "torch", None)
-    monkeypatch.setattr(hardware, "_metal_framework_working_set", None)
+    _REAL_FRAMEWORK_WORKING_SET_BYTES.cache_clear()
     monkeypatch.setattr(
         hardware, "_metal_framework_working_set_bytes", _REAL_FRAMEWORK_WORKING_SET_BYTES
     )
