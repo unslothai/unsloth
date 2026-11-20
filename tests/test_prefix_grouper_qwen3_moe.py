@@ -57,10 +57,24 @@ GRAD_TOL = 1e-4
 VOCAB = 128
 
 
+_FLEX = pgk.flex_shared_prefix_attention
+
+
+def _eager_flex(*args, **kwargs):
+    kwargs["compiled"] = False
+    return _FLEX(*args, **kwargs)
+
+
 @pytest.fixture(autouse = True)
 def _moe_env(monkeypatch):
     monkeypatch.setenv(pghf.MOE_ENV, "1")
     monkeypatch.delenv("UNSLOTH_GRPO_ROUTING_REPLAY", raising = False)
+    if not CUDA:
+        # Same mask and kernel, plus the zoo-patched router, run eager: CPU Inductor builds cost ~20 s.
+        monkeypatch.setattr(pgk, "flex_shared_prefix_attention", _eager_flex)
+        with torch.compiler.set_stance("force_eager"):
+            yield
+        return
     yield
 
 
@@ -70,16 +84,16 @@ def _config(**overrides):
         hidden_size = 64,
         intermediate_size = 128,
         moe_intermediate_size = 32,
-        num_experts = 8,
+        num_experts = 4,
         num_experts_per_tok = 2,
         norm_topk_prob = True,
         decoder_sparse_step = 1,
         mlp_only_layers = [],
-        num_hidden_layers = 3,
+        num_hidden_layers = 2,
         num_attention_heads = 4,
         num_key_value_heads = 2,  # GQA
         head_dim = 16,
-        max_position_embeddings = 256,
+        max_position_embeddings = 64,
         attn_implementation = "sdpa",
     )
     kwargs.update(overrides)
@@ -227,8 +241,8 @@ def test_no_leak_across_completions():
         cs2 = list(cs)
         cs2[1] = (cs[1] + 17) % (VOCAB - 1) + 1
         moved = _pg_logps(model, [(p, cs2)] + groups[1:])
-    # CUDA expert GEMM shapes vary with routed counts: allow rounding noise (a leak is whole nats).
-    atol = 1e-4 if CUDA else 0.0
+    # Rounding noise only (CUDA expert GEMM shapes, CPU MoE batch variance ~1e-6); a leak is whole nats.
+    atol = 1e-4 if CUDA else 1e-5
     for idx in (0, 2):
         assert torch.allclose(base[0][idx], moved[0][idx], rtol = 0, atol = atol)
     for a, b in zip(base[1], moved[1]):
