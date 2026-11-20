@@ -1156,3 +1156,12 @@ def test_a_long_group_only_greeting_is_bounded_like_the_others():
         "data": {"name": "Ada", "group_only_greetings": ["x" * (MAX_FIELD_CHARS + 50), 7]},
     }
     assert _group_only_greetings({"card": card}) == ["x" * MAX_FIELD_CHARS]
+
+
+def test_a_greeting_is_bounded_after_its_names_are_filled():
+    from core.characters.cards import MAX_FIELD_CHARS
+    from core.characters.chats import opening_messages
+
+    ada = {"id": "a", "name": "A" * 100, "firstMes": "{{char}}" * 3000, "alternateGreetings": [], "card": None}
+    messages, _, _ = opening_messages("t", [ada], "Me", None, 0)
+    assert len(messages[-1]["content"][0]["text"]) == MAX_FIELD_CHARS

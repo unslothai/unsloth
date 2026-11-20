@@ -100,7 +100,8 @@ def opening_messages(
                     for g in _group_only_greetings(character)
                 ),
             ]
-        texts = [(i, g) for i, g in enumerate(resolved) if g and g.strip()]
+        # Clipped after names are filled: a field of macros can expand far past the raw limit.
+        texts = [(i, g[:MAX_FIELD_CHARS]) for i, g in enumerate(resolved) if g and g.strip()]
         if len(characters) > 1 and index > 0:
             # A hidden turn marker keeps each member's greeting answering a user turn.
             marker = message(
