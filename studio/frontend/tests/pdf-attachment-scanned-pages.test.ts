@@ -12,7 +12,7 @@ const { extractPdfAttachmentText } = await import("../src/features/chat/attachme
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const { recordedToasts } = await import("./helpers/store-stubs/toast.ts");
 
-function pdf(pages: { content: string; resources: string }[], extra: string[]): Uint8Array {
+function pdf(pages: { content: string; resources: string }[], extra: string[]): Uint8Array<ArrayBuffer> {
   const first = 3 + pages.length;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
