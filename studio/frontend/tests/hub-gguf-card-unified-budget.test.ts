@@ -105,6 +105,7 @@ function loadCard(
         useDeleteConfirmAction: () => ({ deleting: false, runDelete: noop }),
       },
       "@/hooks/use-vram-budget-fraction": { useVramBudgetFraction: () => null },
+      "@/hooks/use-system": { refreshSystemMemory: noop },
       "../hooks/use-online-status": { useOnlineStatus: () => true },
       "../stores/hf-token-store": { useHfTokenStore: () => null },
       "./use-required-assets-download": {
