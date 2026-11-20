@@ -3355,6 +3355,7 @@ export const id = {
       groups: {
         replies: { title: "Balasan" },
         thinkingTools: { title: "Penalaran dan alat" },
+        customization: { title: "Kustomisasi" },
         conversations: {
           title: "Percakapan",
         },

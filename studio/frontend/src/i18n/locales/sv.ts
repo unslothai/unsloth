@@ -3270,6 +3270,7 @@ export const sv = {
       groups: {
         replies: { title: "Svar" },
         thinkingTools: { title: "Tänkande och verktyg" },
+        customization: { title: "Anpassning" },
         conversations: {
           title: "Konversationer",
         },

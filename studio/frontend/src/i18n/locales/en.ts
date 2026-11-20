@@ -3143,6 +3143,7 @@ export const en = {
       groups: {
         replies: { title: "Replies" },
         thinkingTools: { title: "Thinking and tools" },
+        customization: { title: "Customization" },
         conversations: { title: "Conversations" },
         files: { title: "Files & pasting" },
         display: { title: "Display" },

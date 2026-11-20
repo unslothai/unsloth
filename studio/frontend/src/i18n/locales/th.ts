@@ -3225,6 +3225,7 @@ export const th = {
       groups: {
         replies: { title: "คำตอบ" },
         thinkingTools: { title: "การคิดและเครื่องมือ" },
+        customization: { title: "การปรับแต่ง" },
         conversations: {
           title: "การสนทนา",
         },

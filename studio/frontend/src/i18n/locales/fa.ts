@@ -3341,6 +3341,7 @@ export const fa = {
       groups: {
         replies: { title: "پاسخ‌ها" },
         thinkingTools: { title: "تفکر و ابزارها" },
+        customization: { title: "شخصی‌سازی" },
         conversations: {
           title: "گفتگوها",
         },

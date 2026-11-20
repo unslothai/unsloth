@@ -3380,6 +3380,7 @@ export const uk = {
       groups: {
         replies: { title: "Відповіді" },
         thinkingTools: { title: "Міркування та інструменти" },
+        customization: { title: "Налаштування вигляду" },
         conversations: {
           title: "Розмови",
         },

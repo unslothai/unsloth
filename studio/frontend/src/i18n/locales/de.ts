@@ -3162,6 +3162,7 @@ export const de = {
       groups: {
         replies: { title: "Antworten" },
         thinkingTools: { title: "Denken und Werkzeuge" },
+        customization: { title: "Anpassung" },
         conversations: { title: "Gespräche" },
         files: { title: "Dateien und Einfügen" },
         display: { title: "Anzeige" },

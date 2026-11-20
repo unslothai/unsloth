@@ -3192,6 +3192,7 @@ export const he = {
       groups: {
         replies: { title: "תשובות" },
         thinkingTools: { title: "חשיבה וכלים" },
+        customization: { title: "התאמה אישית" },
         conversations: {
           title: "שיחות",
         },

@@ -2908,7 +2908,7 @@ html[data-chat-font] .aui-root {
 		[role="menuitemcheckbox"],
 		[role="menuitemradio"],
 		[role="option"],
-		[role="combobox"],
+		[role="combobox"]:not(textarea, input, [contenteditable="true"]),
 		[role="link"]
 	):not([aria-disabled="true"]):not([data-disabled]):not(:disabled) {
 		cursor: pointer;
@@ -3435,6 +3435,11 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
 	}
 
+	/* Pairs with minEditorHeight's 8px new chat trim. */
+	.unsloth-composer-line .unsloth-composer-editor[data-new-chat] .unsloth-composer-input {
+		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1) - 8px);
+	}
+
 	/* Not while the frame eases to a new height (markComposerScrollEdges). */
 	.unsloth-composer-editor .unsloth-composer-input:not([data-scrollable]) {
 		overflow-y: hidden;
@@ -3930,7 +3935,6 @@ html[data-chat-font] .aui-root {
 		--composer-picker-w: clamp(calc(360px * var(--ui-space-scale, 1)), 30vw, calc(520px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
 		/* A --picker-floor default here (after Tailwind, same layer) would beat the upward utility. */
 		--composer-picker-min-h: min(calc(var(--picker-min-base, 420px) * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-floor, calc(100dvh - 16px)));
-		--composer-picker-max-h: max(var(--composer-picker-min-h), min(calc(540px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-room, var(--picker-floor, calc(100dvh - 16px)))));
 	}
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {
@@ -6950,11 +6954,17 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* Glass: wash the unmasked thread root so the header strip matches the thread. */
-html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
+/* Fades out just under the composer's top edge (vars from ThreadComposerDock). */
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
+  mask-image:
+    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), rgb(0 0 0 / .15) calc(100% - var(--thread-composer-clip, 0px) + .3 * var(--thread-composer-fade, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px) + var(--thread-composer-fade, 0px))),
+    linear-gradient(#000, #000);
+}
+/* On the root, not the masked viewport, so the header strip gets the same shade. */
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
-html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
   background: transparent;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .unsloth-welcome-greeting {
@@ -7005,6 +7015,10 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   inset: 0 0 auto;
   height: 150px;
   background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
+}
+/* Without glass the header already sits on the thread's wash. */
+html:not([data-glass], [data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):not([data-wallpaper-route="page"]) > .chat-wallpaper::after {
+  content: none;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] [data-side-panel-inset]:not(.chat-header-fade),
 html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] {

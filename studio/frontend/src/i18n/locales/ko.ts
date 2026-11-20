@@ -3114,6 +3114,7 @@ export const ko = {
       groups: {
         replies: { title: "응답" },
         thinkingTools: { title: "생각과 도구" },
+        customization: { title: "사용자 지정" },
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },

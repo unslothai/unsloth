@@ -3396,6 +3396,7 @@ export const nl = {
       groups: {
         replies: { title: "Antwoorden" },
         thinkingTools: { title: "Denken en tools" },
+        customization: { title: "Aanpassing" },
         conversations: {
           title: "Gesprekken",
         },

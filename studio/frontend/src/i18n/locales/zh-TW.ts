@@ -3205,6 +3205,7 @@ export const zhTW = {
       groups: {
         replies: { title: "回覆" },
         thinkingTools: { title: "思考與工具" },
+        customization: { title: "自訂" },
         conversations: {
           title: "對話",
         },
