@@ -38799,12 +38799,12 @@ class LlamaCppBackend:
         mcp_image = None,
         deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
-        mcp_match_exchange: Optional[dict] = None,
         sandbox_level: Optional[str] = None,
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
         live_permissions = None,
         chat_template_kwargs: Optional[dict] = None,
+        mcp_match_exchange: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
