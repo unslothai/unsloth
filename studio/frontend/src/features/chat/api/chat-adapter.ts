@@ -442,6 +442,7 @@ import {
 import {
   generateAudio,
   GenerationLengthError,
+  createReasoningOnlyLengthCheck,
   fetchGgufStagedMetadata,
   getChatAgentsMd,
   getInferenceStatus,
@@ -7348,6 +7349,10 @@ export function createOpenAIStreamAdapter(
             }
 
             const durableStream = async function* () {
+              const lengthCheck = createReasoningOnlyLengthCheck({
+                cap: requestPayload.max_tokens ?? null,
+                contextLength: servedContextLength,
+              });
               try {
                 for await (const update of followChatGenerationRun(
                   generationRunId!,
@@ -7369,6 +7374,7 @@ export function createOpenAIStreamAdapter(
                           generationFirstChunkAt ??= update.event.createdAt;
                         }
                       }
+                      lengthCheck.observe(chunk);
                       yield chunk;
                     }
                   }
@@ -7392,6 +7398,9 @@ export function createOpenAIStreamAdapter(
                   "cancelled",
                   "Generation was cancelled.",
                 );
+              }
+              if (generationStatus === "completed") {
+                lengthCheck.throwIfReasoningOnlyLength();
               }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.

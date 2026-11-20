@@ -1984,6 +1984,86 @@ function classifyStructuredDeltaContent(content: unknown): {
   return { hasAssistantContent, hasReasoningContent };
 }
 
+/** Detects a reasoning-only length stop; shared by the direct stream and durable chat runs. */
+export function createReasoningOnlyLengthCheck({
+  cap,
+  contextLength,
+}: {
+  cap: number | null;
+  contextLength: number | null;
+}) {
+  let terminalFinishReason: string | null = null;
+  let sawAssistantContent = false;
+  let sawReasoningContent = false;
+  // Needed to tell the walls apart: a Max Tokens below context did not necessarily stop it.
+  let promptTokens: number | null = null;
+  let windowCount: number | null = null;
+  // Anthropic's explicit model_context_window_exceeded signal.
+  let providerReportedWindow = false;
+
+  return {
+    observe(chunk: unknown) {
+      if (!chunk || typeof chunk !== "object") return;
+      const {
+        usage: parsedUsage,
+        timings: parsedTimings,
+        _toolEvent: parsedToolEvent,
+        choices: parsedChoices,
+      } = chunk as {
+        usage?: { prompt_tokens?: number };
+        timings?: { predicted_n?: number };
+        _toolEvent?: { type?: string };
+        choices?: Array<{
+          delta?: Record<string, unknown>;
+          finish_reason?: string | null;
+        }>;
+      };
+      if (typeof parsedUsage?.prompt_tokens === "number") {
+        promptTokens = parsedUsage.prompt_tokens;
+      }
+      windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
+      if (parsedToolEvent?.type === "context_window_exceeded") {
+        providerReportedWindow = true;
+      }
+      for (const choice of parsedChoices ?? []) {
+        const delta = choice.delta;
+        if (delta) {
+          const contentState = classifyStructuredDeltaContent(delta.content);
+          sawAssistantContent ||= contentState.hasAssistantContent;
+          sawReasoningContent ||= contentState.hasReasoningContent;
+          const reasoning =
+            delta.reasoning_content ??
+            delta.reasoning ??
+            delta.reasoning_details;
+          sawReasoningContent ||= hasNonWhitespaceText(reasoning);
+        }
+        if (choice.finish_reason) {
+          terminalFinishReason = choice.finish_reason;
+        }
+      }
+    },
+    throwIfReasoningOnlyLength() {
+      if (
+        terminalFinishReason === "length" &&
+        sawReasoningContent &&
+        !sawAssistantContent
+      ) {
+        // Backend substitutes the context length for Max Tokens "Max", so equal means unset.
+        throw new GenerationLengthError(
+          providerReportedWindow
+            ? "context_window"
+            : lengthStopCause({
+                cap,
+                contextLength,
+                promptTokens,
+                completionTokens: windowCount,
+              }),
+        );
+      }
+    },
+  };
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
@@ -2016,34 +2096,10 @@ export async function* streamChatCompletions(
   let completed = false;
   // EOF without `[DONE]` or a finish_reason chunk means the stream was cut mid-generation.
   let sawTerminalSignal = false;
-  let terminalFinishReason: string | null = null;
-  let sawAssistantContent = false;
-  let sawReasoningContent = false;
-  // Needed to tell the walls apart: a Max Tokens below context did not necessarily stop it.
-  let promptTokens: number | null = null;
-  let windowCount: number | null = null;
-  // Anthropic's explicit model_context_window_exceeded signal.
-  let providerReportedWindow = false;
-
-  const throwIfReasoningOnlyLength = () => {
-    if (
-      terminalFinishReason === "length" &&
-      sawReasoningContent &&
-      !sawAssistantContent
-    ) {
-      // Backend substitutes the context length for Max Tokens "Max", so equal means unset.
-      throw new GenerationLengthError(
-        providerReportedWindow
-          ? "context_window"
-          : lengthStopCause({
-              cap: payload.max_tokens ?? null,
-              contextLength: loadedContextLength ?? null,
-              promptTokens,
-              completionTokens: windowCount,
-            }),
-      );
-    }
-  };
+  const lengthCheck = createReasoningOnlyLengthCheck({
+    cap: payload.max_tokens ?? null,
+    contextLength: loadedContextLength ?? null,
+  });
 
   try {
     while (true) {
@@ -2063,7 +2119,7 @@ export async function* streamChatCompletions(
         if (!sawTerminalSignal) {
           throw new StreamInterruptedError();
         }
-        throwIfReasoningOnlyLength();
+        lengthCheck.throwIfReasoningOnlyLength();
         break;
       }
 
@@ -2086,7 +2142,7 @@ export async function* streamChatCompletions(
         if (dataText === "[DONE]") {
           completed = true;
           sawTerminalSignal = true;
-          throwIfReasoningOnlyLength();
+          lengthCheck.throwIfReasoningOnlyLength();
           return;
         }
 
@@ -2145,48 +2201,11 @@ export async function* streamChatCompletions(
           yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
           continue;
         }
-        const {
-          usage: parsedUsage,
-          timings: parsedTimings,
-          _toolEvent: parsedToolEvent,
-        } = parsed as {
-          usage?: { prompt_tokens?: number };
-          timings?: { predicted_n?: number };
-          _toolEvent?: { type?: string };
-        };
-        if (typeof parsedUsage?.prompt_tokens === "number") {
-          promptTokens = parsedUsage.prompt_tokens;
-        }
-        windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
-        if (parsedToolEvent?.type === "context_window_exceeded") {
-          providerReportedWindow = true;
-        }
+        lengthCheck.observe(parsed);
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
-        const parsedChoices = (
-          parsed as {
-            choices?: Array<{
-              delta?: Record<string, unknown>;
-              finish_reason?: string | null;
-            }>;
-          }
-        ).choices;
-        for (const choice of parsedChoices ?? []) {
-          const delta = choice.delta;
-          if (delta) {
-            const contentState = classifyStructuredDeltaContent(delta.content);
-            sawAssistantContent ||= contentState.hasAssistantContent;
-            sawReasoningContent ||= contentState.hasReasoningContent;
-            const reasoning =
-              delta.reasoning_content ??
-              delta.reasoning ??
-              delta.reasoning_details;
-            sawReasoningContent ||= hasNonWhitespaceText(reasoning);
-          }
-          if (choice.finish_reason) {
-            terminalFinishReason = choice.finish_reason;
-          }
-        }
-        const finishReason = parsedChoices?.[0]?.finish_reason;
+        const finishReason = (
+          parsed as { choices?: Array<{ finish_reason?: string | null }> }
+        ).choices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
         }
