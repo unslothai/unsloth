@@ -318,7 +318,8 @@ def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
             # Training keeps date strings as written, so the preview does too.
             try:
                 written = head_rows(path, preview_size)
-                keys = dict.fromkeys(key for row in written for key in row)
+                # Streamed rows carry the loader's column union, past the preview rows too.
+                keys = dict.fromkeys([*rows[0], *(key for row in written for key in row)])
                 preview = Dataset.from_list(
                     [{key: row.get(key) for key in keys} for row in written]
                 )

@@ -191,3 +191,13 @@ def test_dates_next_to_an_int_past_int64_preview(tmp_path):
     )
     dataset, _ = local._stream_file_preview_slice(path, 10)
     assert dataset.to_list() == [{"when": "1945-05-08", "id": 2.0**63, "m": {"t": "2021-05-03"}}]
+
+
+def test_dated_json_array_preview_keeps_a_column_first_seen_later(tmp_path):
+    rows = [{"q": str(i), "when": "1945-05-08"} for i in range(12)]
+    rows[11]["system"] = "be brief"
+    path = tmp_path / "train.json"
+    path.write_text(json.dumps(rows), encoding = "utf-8")
+    dataset, _ = local._stream_file_preview_slice(path, 10)
+    assert dataset.column_names == ["q", "when", "system"]
+    assert dataset[0] == {"q": "0", "when": "1945-05-08", "system": None}
