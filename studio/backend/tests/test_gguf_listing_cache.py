@@ -89,3 +89,31 @@ def test_other_failures_are_not_remembered(monkeypatch, tmp_path):
         with pytest.raises(ConnectionError):
             gguf.list_gguf_variants("unsloth/Demo-GGUF")
     assert len(calls) == 2
+
+
+def test_rate_limit_entries_expire_and_stay_bounded(monkeypatch, tmp_path):
+    _fake_hub(monkeypatch, tmp_path, fail = _RateLimited("30"))
+    clock = [1000.0]
+    monkeypatch.setattr(gguf.time, "monotonic", lambda: clock[0])
+    for i in range(gguf._HUB_LISTING_MAX + 20):
+        with pytest.raises(_RateLimited):
+            gguf.list_gguf_variants(f"unsloth/Demo-{i}-GGUF")
+    assert len(gguf._hub_rate_limited) == gguf._HUB_LISTING_MAX
+    clock[0] += 31
+    with pytest.raises(_RateLimited):
+        gguf.list_gguf_variants("unsloth/Other-GGUF")
+    assert len(gguf._hub_rate_limited) == 1
+
+
+def test_a_remembered_429_does_not_grow_its_traceback(monkeypatch, tmp_path):
+    _fake_hub(monkeypatch, tmp_path, fail = _RateLimited("30"))
+    depths = []
+    for _ in range(5):
+        try:
+            gguf.list_gguf_variants("unsloth/Demo-GGUF")
+        except _RateLimited as exc:
+            tb, n = exc.__traceback__, 0
+            while tb is not None:
+                tb, n = tb.tb_next, n + 1
+            depths.append(n)
+    assert depths[1] == depths[-1]

@@ -1407,7 +1407,7 @@ def _hub_model_info(repo_id: str, hf_token):
             return hit[1]
         limited = _hub_rate_limited.get(key)
         if limited is not None and limited[0] > now:
-            raise limited[1]
+            raise limited[1].with_traceback(None)
     try:
         # A refused credential retries once anonymously: a public listing still answers.
         info = call_with_anonymous_retry(
@@ -1422,7 +1422,12 @@ def _hub_model_info(repo_id: str, hf_token):
         wait = _retry_after_s(exc)
         if wait is not None:
             with _hub_listing_lock:
-                _hub_rate_limited[key] = (time.monotonic() + wait, exc)
+                now = time.monotonic()
+                for stale in [k for k, (until, _) in _hub_rate_limited.items() if until <= now]:
+                    del _hub_rate_limited[stale]
+                _hub_rate_limited[key] = (now + wait, exc)
+                while len(_hub_rate_limited) > _HUB_LISTING_MAX:
+                    _hub_rate_limited.pop(next(iter(_hub_rate_limited)))
         raise
     with _hub_listing_lock:
         _hub_rate_limited.pop(key, None)
