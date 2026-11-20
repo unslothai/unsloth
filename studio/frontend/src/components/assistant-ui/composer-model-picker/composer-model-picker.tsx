@@ -798,7 +798,6 @@ function RowMark({ row }: { row?: RowMarkRow }) {
         owner={parts.owner}
         repoName={parts.name}
         name={name ?? parts.name}
-        remote={false}
       />
     );
   }
