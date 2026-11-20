@@ -221,6 +221,7 @@ import {
 } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
+  isExternalModelId,
   parseExternalModelId,
   providerModelSupportsVision,
 
@@ -1696,6 +1697,7 @@ export function SharedComposer({
       const compareSignal = run.controller.signal;
       let upgradeUnloadedActive = false;
       const compareSelectionNeedsLoad = (sel: CompareModelSelection) => {
+        if (isExternalModelId(sel.id)) return false;
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
@@ -1713,6 +1715,13 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         throwIfCompareCancelled(compareSignal);
+        // Connected models run at the provider: select, never /load (that loader needs torch).
+        const selectedId: string = sel.id;
+        if (isExternalModelId(selectedId)) {
+          const live = useChatRuntimeStore.getState();
+          if (live.params.checkpoint !== selectedId) live.setCheckpoint(selectedId, null);
+          return "connected";
+        }
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
         // Never the other pane's config; no saved config means all-null defaults.
