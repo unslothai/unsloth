@@ -5,6 +5,9 @@ import {
 	MATERIALS,
 	LENS_SCALE,
 	inScope,
+	LENS_CLEAR_HOSTS,
+	LENS_HOSTS,
+	glassStrengthVars,
 	lensDrawn,
 	sanitizeScope,
 	sanitizeLens,
@@ -539,7 +542,7 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	}
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	// Menus and sheets are portaled to <body>; hosts without a backdrop filter (Glass menus off, opaque sheets) are skipped.
-	assert.match(lens, /\(preview \? PREVIEW_HOSTS : LENS_HOSTS\),\n\s*\]\.filter\(drawsGlass\)/);
+	assert.match(lens, /\(preview \? PREVIEW_HOSTS : LENS_HOSTS\),\n\s*\]\.filter\(\(h\) => drawsGlass\(h\) && \(!clear \|\| h\.matches\(LENS_CLEAR_HOSTS\)\)\)/);
 	assert.match(lens, /observer\.observe\(preview \? workspace : document\.body, \{ childList: true, subtree: true \}\);/);
 	// The Desktop sidebar frame and layered panels draw their glass (and fill) on ::before.
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
@@ -588,11 +591,56 @@ test("glass strength scales the blur and the fill of every glass surface, with n
 
 test("every glass surface keeps a readable blur floor at any strength, lens copy included", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-read-blur: 12px;\n  --glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	assert.match(css, /html\[data-glass\] \{\n  --glass-tint: var\(--glass-tint-base\);\n  --glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);\n  --glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
 	// The open chat's composer redefines --glass-blur, so it carries the floor too.
 	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), \(var\(--glass-blur-base\) \+ 5px\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
 	// Every other --glass-blur definition goes through the floor.
 	for (const [, value] of css.matchAll(/--glass-blur: ([^;]+);/g)) assert.match(value, /var\(--glass-read-blur\)/, value);
 	// The lens copy blurs with the same variable.
 	assert.match(css, /\.glass-lens-fill \.glass-lens-copy \{\n  filter: blur\(var\(--glass-blur, 12px\)\)/);
+});
+
+// Evaluates a glass blur() argument from index.css at a given --glass-strength (Liquid Glass base 10px, no repaint nudge).
+function glassBlurPx(expr: string, strength: number): number {
+	const on = Math.min(1, strength * 100);
+	const read = 12 * on;
+	const js = expr
+		.replaceAll("var(--glass-on)", String(on))
+		.replaceAll("var(--glass-strength, 1)", String(strength))
+		.replaceAll("var(--glass-read-blur)", `${read}px`)
+		.replaceAll("var(--glass-blur)", `max(${read}px, 10px * ${strength})`)
+		.replaceAll("var(--glass-blur-base)", "10px")
+		.replaceAll("var(--glass-repaint, 0)", "0")
+		.replaceAll("calc(", "(")
+		.replaceAll("max(", "Math.max(")
+		.replaceAll("min(", "Math.min(")
+		.replaceAll("px", "");
+	assert.match(js, /^[\d\s.+*(),Mathmxin-]+$/, `unexpected token in ${expr}`);
+	return Function(`return ${js}`)() as number;
+}
+
+test("glass strength 0% is clear on every surface, and 1% keeps the 12px read floor", () => {
+	assert.deepEqual(glassStrengthVars(0), { blur: 0, opacity: 0.35 });
+	assert.ok(glassStrengthVars(1).blur > 0);
+	assert.equal(glassStrengthVars(50).blur, 1);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /--glass-on: min\(1, var\(--glass-strength, 1\) \* 100\);\n  --glass-read-blur: calc\(12px \* var\(--glass-on\)\);/);
+	assert.match(css, /--glass-blur: calc\(max\(var\(--glass-read-blur\), var\(--glass-blur-base\) \* var\(--glass-strength, 1\)\) \+ var\(--glass-repaint, 0\) \* \.01px\);/);
+	const blurs = [...css.matchAll(/(?<!-webkit-)backdrop-filter: blur\(((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*)\)/g)]
+		.map((m) => m[1])
+		.filter((arg) => arg.includes("var(--glass-"));
+	assert.ok(blurs.length >= 10, `only ${blurs.length} glass blurs found`);
+	const at1 = glassStrengthVars(1).blur;
+	for (const arg of blurs) {
+		assert.equal(glassBlurPx(arg, 0), 0, `not clear at 0%: blur(${arg})`);
+		assert.ok(glassBlurPx(arg, at1) >= 12, `under the read floor at 1%: blur(${arg})`);
+	}
+});
+
+test("at glass strength 0% the lens stays on the composer only, as on main", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /const clear = useGlassStrength\(\) === 0;/);
+	assert.match(lens, /\.filter\(\(h\) => drawsGlass\(h\) && \(!clear \|\| h\.matches\(LENS_CLEAR_HOSTS\)\)\)/);
+	assert.ok(LENS_HOSTS.split(", ").includes(".unsloth-composer-surface"));
+	assert.equal(LENS_CLEAR_HOSTS, ".unsloth-composer-surface, .wallpaper-preview-composer");
 });

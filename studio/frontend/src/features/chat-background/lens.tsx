@@ -3,8 +3,8 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useAppliedMaterial, useMaterialStore } from "./material";
-import { LENS_HOSTS, LENS_SCALE, lensDrawn } from "./model";
+import { useAppliedMaterial, useGlassStrength, useMaterialStore } from "./material";
+import { LENS_CLEAR_HOSTS, LENS_HOSTS, LENS_SCALE, lensDrawn } from "./model";
 
 const HOST_FLAG = "data-glass-lens-host";
 
@@ -39,6 +39,7 @@ export function GlassLenses({
   const material = useAppliedMaterial();
   const lens = useMaterialStore((s) => s.lens);
   const menus = useMaterialStore((s) => s.menus);
+  const clear = useGlassStrength() === 0;
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   const workspace = wallpaper?.parentElement ?? null;
   const on = Boolean(workspace) && lensDrawn(material, lens);
@@ -51,7 +52,7 @@ export function GlassLenses({
         // Menus, popovers and sheets are portaled to <body>, outside the workspace.
         const found = [
           ...(preview ? workspace : document).querySelectorAll<HTMLElement>(preview ? PREVIEW_HOSTS : LENS_HOSTS),
-        ].filter(drawsGlass);
+        ].filter((h) => drawsGlass(h) && (!clear || h.matches(LENS_CLEAR_HOSTS)));
         setHosts((prev) =>
           prev.length === found.length && prev.every((h, i) => h === found[i])
             ? prev
@@ -73,7 +74,7 @@ export function GlassLenses({
       cancelAnimationFrame(frame);
       setHosts([]);
     };
-  }, [workspace, on, menus, preview]);
+  }, [workspace, on, menus, preview, clear]);
   if (!wallpaper || !on) return null;
   return hosts.map((host, i) =>
     createPortal(

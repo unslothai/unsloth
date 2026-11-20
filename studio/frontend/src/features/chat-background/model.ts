@@ -86,6 +86,15 @@ export const LENS_HOSTS = [
 export function lensDrawn(material: WindowMaterial, lens: LensMode): boolean {
 	return material !== "solid" && lens !== "off";
 }
+/** Slider (0-100) to --glass-strength (blur scale) and --glass-opacity (fill scale). 0% is clear: no blur, no read floor. */
+export function glassStrengthVars(strength: number): { blur: number; opacity: number } {
+	return {
+		blur: strength === 0 ? 0 : strength <= 50 ? 0.2 + (0.8 * strength) / 50 : 1 + (strength - 50) / 50,
+		opacity: strength <= 50 ? 0.35 + (0.65 * strength) / 50 : 1 + (strength - 50) / 50,
+	};
+}
+/** At 0% only the composer keeps its lens, as on main; every other surface is clear. */
+export const LENS_CLEAR_HOSTS = ".unsloth-composer-surface, .wallpaper-preview-composer";
 export function sanitizeStrength(value: unknown, fallback = 50): number {
 	return typeof value === "number" && Number.isFinite(value)
 		? Math.max(0, Math.min(100, Math.round(value)))

@@ -7070,10 +7070,11 @@ html[data-glass][data-glass-layers] :is([data-slot="dialog-content"], [data-slot
   will-change: opacity;
 }
 /* Glass materials (html[data-glass]): unprefixed backdrop-filter goes last, the minifier keeps only the last of the pair and Chromium ignores -webkit-. */
-/* --glass-read-blur: the least blur any glass surface (and the lens copy) gets, so text never sits on a sharp photo. */
+/* --glass-on is 0 at strength 0% and 1 above it: 0% is clear. --glass-read-blur is the least blur any glass surface (and the lens copy) gets above that, so text never sits on a sharp photo. */
 html[data-glass] {
   --glass-tint: var(--glass-tint-base);
-  --glass-read-blur: 12px;
+  --glass-on: min(1, var(--glass-strength, 1) * 100);
+  --glass-read-blur: calc(12px * var(--glass-on));
   --glass-blur: calc(max(var(--glass-read-blur), var(--glass-blur-base) * var(--glass-strength, 1)) + var(--glass-repaint, 0) * .01px);
 }
 html[data-glass="transparent"] { --glass-tint-base: 42%; --glass-blur-base: 0px; --glass-saturate: 100%; }
@@ -7885,8 +7886,8 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:not([da
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky {
   background-color: transparent;
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(calc(16px * var(--glass-on)));
+  backdrop-filter: blur(calc(16px * var(--glass-on)));
 }
 /* At rest nothing scrolls under these, so their frost read as a strip. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header], .hub-detail-bar:not([data-scrolled])) {
@@ -7919,7 +7920,7 @@ html[data-glass] [data-windows-wallpaper-page][data-wallpaper-image][data-wallpa
   position: absolute;
   inset: var(--studio-custom-titlebar-height) 0 0 anchor(--windows-page-sidebar right, 0px);
   pointer-events: none;
-  backdrop-filter: blur(max(22px, var(--glass-blur)));
+  backdrop-filter: blur(max(calc(22px * var(--glass-on)), var(--glass-blur)));
 }
 /* The pinned sidebar's glass frame, flagged by the root: this page also holds the hidden chat, and
    any :has() on it re-checked the chat on every mutation. */
