@@ -25,6 +25,8 @@ CHARACTER_CHAT_SETTINGS = {
     "ragEnabled": False,
 }
 OPENING_TEXT = "[Start a new chat]"
+# Bounds the copies of later members' greetings made under alternate greetings in a group.
+MAX_GREETING_COPY_ROWS = 512
 
 _MACRO_PATTERNS = (
     (re.compile(r"\{\{\s*char\s*\}\}|<BOT>", re.IGNORECASE), "char"),
@@ -81,11 +83,7 @@ def opening_messages(
             "createdAt": created,
         }
 
-    opening = message(None, "user", OPENING_TEXT, {"kind": "opening"})
-    messages = [opening]
-    greeting_ids: list[str] = []
-    parent_id = opening["id"]
-    for index, character in enumerate(characters):
+    def greeting_texts(character: dict) -> list[tuple[int, str]]:
         source = [character["firstMes"], *character["alternateGreetings"]]
         resolved = (greetings or {}).get(character["id"])
         # The client resolves every macro; this covers API callers that send no greetings.
@@ -101,39 +99,67 @@ def opening_messages(
                 ),
             ]
         # Clipped after names are filled: a field of macros can expand far past the raw limit.
-        texts = [(i, g[:MAX_FIELD_CHARS]) for i, g in enumerate(resolved) if g and g.strip()]
-        if len(characters) > 1 and index > 0:
-            # A hidden turn marker keeps each member's greeting answering a user turn.
-            marker = message(
-                parent_id,
-                "user",
-                f"[{character['name']}'s turn]",
-                {"kind": "turn", "speakerId": character["id"]},
-            )
-            messages.append(marker)
-            parent_id = marker["id"]
-        if not texts:
-            continue
-        # Alternates first: with no saved branch choice a chat opens on its newest row, which
-        # should be the main greeting, here and on every other device.
-        replies = [
-            message(
-                parent_id,
-                "assistant",
-                text,
-                {
-                    "kind": "reply",
-                    "speakerId": character["id"],
-                    "speakerName": character["name"],
-                    "greeting": source_index,
-                },
-            )
-            for source_index, text in [*texts[1:], texts[0]]
-        ]
-        messages.extend(replies)
-        greeting_ids.append(replies[-1]["id"])
-        parent_id = replies[-1]["id"]
-    return messages, greeting_ids, parent_id
+        return [(i, g[:MAX_FIELD_CHARS]) for i, g in enumerate(resolved) if g and g.strip()]
+
+    texts_by_member = [greeting_texts(c) for c in characters]
+    # Rows the later members' copies may add under alternate greetings (see below).
+    copies_left = MAX_GREETING_COPY_ROWS
+
+    def reply(parent_id: str, character: dict, source_index: int, text: str) -> dict:
+        return message(
+            parent_id,
+            "assistant",
+            text,
+            {
+                "kind": "reply",
+                "speakerId": character["id"],
+                "speakerName": character["name"],
+                "greeting": source_index,
+            },
+        )
+
+    def members_from(
+        index: int, parent_id: str, alternates: bool
+    ) -> tuple[list[dict], list[str], str]:
+        """Member `index` onward under `parent_id`; without `alternates`, main greetings only."""
+        nonlocal copies_left
+        rows: list[dict] = []
+        ids: list[str] = []
+        for at in range(index, len(characters)):
+            character = characters[at]
+            if len(characters) > 1 and at > 0:
+                # A hidden turn marker keeps each member's greeting answering a user turn.
+                marker = message(
+                    parent_id,
+                    "user",
+                    f"[{character['name']}'s turn]",
+                    {"kind": "turn", "speakerId": character["id"]},
+                )
+                rows.append(marker)
+                parent_id = marker["id"]
+            texts = texts_by_member[at]
+            if not texts:
+                continue
+            for source_index, text in texts[1:] if alternates else []:
+                alternate = reply(parent_id, character, source_index, text)
+                rows.append(alternate)
+                # In a group, a swiped greeting keeps the members after it: each alternate gets
+                # their main greetings too, so flipping Ann's greeting does not hide Bo's.
+                later = 2 * (len(characters) - 1 - at)
+                if later and copies_left >= later:
+                    copies_left -= later
+                    rows.extend(members_from(at + 1, alternate["id"], False)[0])
+            # Alternates first: with no saved branch choice a chat opens on its newest row, which
+            # should be the main greeting and the members after it, here and on every device.
+            main = reply(parent_id, character, *texts[0])
+            rows.append(main)
+            ids.append(main["id"])
+            parent_id = main["id"]
+        return rows, ids, parent_id
+
+    opening = message(None, "user", OPENING_TEXT, {"kind": "opening"})
+    rows, greeting_ids, head_id = members_from(0, opening["id"], True)
+    return [opening, *rows], greeting_ids, head_id
 
 
 def create_character_chat(

@@ -466,6 +466,35 @@ def test_a_group_chat_chains_each_members_greeting_through_a_turn_marker(client)
     assert studio_db.get_chat_thread(body["threadId"])["title"] == "Ann, Bo & Cy"
 
 
+def test_a_swiped_group_greeting_keeps_the_members_after_it(client):
+    a = client.post(
+        "/api/characters",
+        json = {"name": "Ann", "firstMes": "Ann here.", "alternateGreetings": ["Ann again."]},
+    ).json()
+    b = client.post(
+        "/api/characters",
+        json = {"name": "Bo", "firstMes": "Bo here.", "alternateGreetings": ["Bo again."]},
+    ).json()
+    body = client.post(
+        "/api/characters/chats", json = {"characterIds": [a["id"], b["id"]], "userName": "Pat"}
+    ).json()
+    messages = _messages(body["threadId"])
+    by_id = {m["id"]: m for m in messages}
+
+    def texts_below(message_id):
+        return [m["content"][0]["text"] for m in messages if m["parentId"] == message_id]
+
+    alternate = next(m for m in messages if m["content"][0]["text"] == "Ann again.")
+    (marker,) = [m for m in messages if m["parentId"] == alternate["id"]]
+    assert marker["metadata"]["roleplay"] == {"kind": "turn", "speakerId": b["id"]}
+    assert texts_below(marker["id"]) == ["Bo here."]
+    # The main path still opens the chat, and only it carries Bo's alternates.
+    head = by_id[body["headId"]]
+    assert head["content"][0]["text"] == "Bo here."
+    assert sorted(texts_below(head["parentId"])) == ["Bo again.", "Bo here."]
+    assert max(messages, key = lambda m: m["createdAt"])["id"] == body["headId"]
+
+
 def test_scene_updates_cast_persona_and_settings(client):
     a = client.post("/api/characters", json = {"name": "Ann"}).json()
     b = client.post("/api/characters", json = {"name": "Bo"}).json()
