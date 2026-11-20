@@ -106,6 +106,7 @@ def test_wrapped_create_skill_call_still_runs():
 @pytest.mark.parametrize("enabled", [None, {"web_search", "update_memory"}])
 def test_quoted_update_memory_call_does_not_save_a_memory(text, enabled):
     assert parse_tool_calls_from_text(text, enabled_tool_names = enabled) == []
+    assert strip_tool_markup(text, final = True, enabled_tool_names = enabled) == text
 
 
 def test_wrapped_update_memory_call_still_runs():
