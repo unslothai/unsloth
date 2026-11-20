@@ -66,6 +66,39 @@ def test_the_resolver_asks_the_runtime_torch_runs_on(monkeypatch, tmp_path, hip,
         assert len(opened) == 1 and str(lib) in opened[0]
 
 
+@pytest.mark.parametrize(
+    "hip, cuda, want", [(None, "13.0", "libcudart.so.13"), ("6.4.1", None, "libamdhip64.so.6")]
+)
+def test_the_resolver_opens_the_runtime_torch_links_not_another_mapped_one(
+    monkeypatch, hip, cuda, want
+):
+    import ctypes
+    import io
+    import sys
+
+    # Another package mapped an older runtime first; the global namespace would resolve to it.
+    maps = "".join(
+        f"7f00-7f01 r-xp 0 08:01 1 /env/lib/{name}\n"
+        for name in ("libcudart.so.12", "libamdhip64.so.5", want, want, "libc.so.6")
+    )
+    opened = []
+
+    class _Lib:
+        def __init__(self, path):
+            opened.append(path)
+
+        def __getattr__(self, name):
+            return name
+
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", cuda, raising = False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(hp, "open", lambda *_a, **_k: io.StringIO(maps), raising = False)
+    monkeypatch.setattr(ctypes, "CDLL", _Lib)
+    assert hp._resolve_get_last_error() == ("hipGetLastError" if hip else "cudaGetLastError")
+    assert opened == [f"/env/lib/{want}"]
+
+
 def test_a_refused_registration_consumes_the_pending_error(monkeypatch):
     calls = []
     holder = object.__new__(mem._RegisteredHostBuffer)

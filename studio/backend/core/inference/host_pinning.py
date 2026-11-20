@@ -107,15 +107,28 @@ def _resolve_get_last_error() -> Any:
             if fn is not None:
                 return fn
         return None
+    import os
+
+    # The runtime torch itself links: another package can map a second libcudart (a .so.12 beside torch's
+    # .so.13), and the global namespace may resolve the symbol to that one, clearing nothing torch will see.
+    lib = "libamdhip64.so" if hip else "libcudart.so"
+    major = ((torch.version.hip if hip else torch.version.cuda) or "").split(".")[0]
+    mapped = []
     try:
-        # torch usually loads the runtime globally, so the symbol resolves without naming the library
-        return getattr(ctypes.CDLL(None), sym)
-    except AttributeError:
-        # loaded RTLD_LOCAL: open the exact runtime library this process already mapped
-        lib = "libamdhip64.so" if hip else "libcudart.so"
         with open("/proc/self/maps", encoding = "utf-8") as maps:
-            path = next(ln.split()[-1] for ln in maps if lib in ln)
-        return getattr(ctypes.CDLL(path), sym)
+            for ln in maps:
+                path = ln.split()[-1]
+                if lib in os.path.basename(path) and path not in mapped:
+                    mapped.append(path)
+    except OSError:
+        pass
+    own = [p for p in mapped if os.path.basename(p).startswith(f"{lib}.{major}")] if major else []
+    for path in own or mapped:
+        fn = getattr(ctypes.CDLL(path), sym, None)
+        if fn is not None:
+            return fn
+    # no /proc (or a static runtime): torch usually loads the runtime globally
+    return getattr(ctypes.CDLL(None), sym, None)
 
 
 def consume_cuda_error() -> None:
