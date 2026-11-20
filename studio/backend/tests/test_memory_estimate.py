@@ -3009,7 +3009,6 @@ class TestAnAutoContextIsMarkedShrinkable:
         floor = ri._gguf_memory_breakdown(config, wide, n_ctx = floor_ctx, **request_fields)
         shorter = ri._gguf_memory_breakdown(config, wide, n_ctx = 256, **request_fields)
         assert shorter.gpu_bytes < resp.gpu_floor_bytes == floor.gpu_bytes < resp.gpu_bytes
-        # The client interpolates Auto's window between the two prices, so it needs both contexts.
         assert resp.gpu_floor_ctx == floor_ctx
         assert resp.floor_total_bytes == floor.total_bytes < resp.total_bytes
 

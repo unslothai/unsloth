@@ -747,8 +747,7 @@ test("Auto's window refits when a cheaper KV cache leaves more of the free memor
   const { resolveAutoFittedContext } = await import(
     "../src/features/model-picker/model-config/memory-fit.ts"
   );
-  // Unified 32 GB Mac, 8 GB free after the resident unloads. Weights 7.46 GB; f16 KV at the
-  // 262,144-token native window costs 8.14 GB over the 256-token floor, q8_0 about half that.
+  // Unified 32 GB Mac, 8 GB free after the resident unloads; q8_0 KV costs half of f16.
   const capacity: MemoryFitCapacity = {
     gpuCapacityGb: 21,
     totalCapacityGb: 21,
@@ -788,7 +787,6 @@ test("Auto's window refits when a cheaper KV cache leaves more of the free memor
   assert.equal(resolveAutoFittedContext({ ...auto(8 * GB, "f16"), nCtx: 4096 }, full, apple), 4096);
   // Off Apple (a shared-memory APU) the native window stands.
   assert.equal(resolveAutoFittedContext(auto(8 * GB, "f16"), roomy), 262144);
-  // A pinned context or an unsized cache has no window to predict; nor does an unknown free figure.
   assert.equal(resolveAutoFittedContext({ ...auto(8 * GB, "f16"), contextIsPinned: true }, capacity), null);
   assert.equal(resolveAutoFittedContext({ ...auto(8 * GB, "f16"), kvEstimable: false }, capacity), null);
   assert.equal(

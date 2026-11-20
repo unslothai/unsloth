@@ -329,15 +329,12 @@ const AUTO_CONTEXT_STEP = 256;
 const APPLE_AUTO_CONTEXT_CAP = 65536;
 const APPLE_NOTHING_FITS_CONTEXT = 8192;
 
-/** Whether the Context field previews Auto's fit, rather than the resident's window or a default.
- *  A resident Auto load with the same fit-moving settings already answered; a stale estimate
- *  priced the previous settings. */
+/** Not from a stale estimate, nor when an Auto resident with the same settings already answered. */
 export function previewsAutoFit(state: {
   isGguf: boolean;
   estimateAvailable: boolean;
   estimateStale: boolean;
   isActiveModel: boolean;
-  /** The resident's own settings are known, so they can be compared at all. */
   residentKnown: boolean;
   residentLoadedAuto: boolean;
   pendingMatchesResident: boolean;
@@ -349,9 +346,7 @@ export function previewsAutoFit(state: {
   );
 }
 
-/** The window Auto would fit to with these settings and the memory free now, or null when the
- *  estimate cannot say. Interpolated between the floor and native prices: both are the loader's
- *  own sizing, and KV and the context-linear compute share grow linearly between them. */
+/** Linear between the floor and native prices: KV and the context-linear compute grow linearly. */
 export function resolveAutoFittedContext(
   estimate: MemoryFitEstimate,
   capacity: MemoryFitCapacity,
