@@ -3804,7 +3804,7 @@ export function ComposerModelPicker({
         });
       // A complete cached snapshot with no precision folder on disk is one checkpoint: skip the Hub listing.
       let listing =
-        row.kind === "cached" && !row.partial
+        row.kind === "cached" && !row.partial && !row.favoriteQuant
           ? await listed({ ...target, remote: false, everyQuant: false })
           : undefined;
       if (listing === undefined || listing?.mlx) {

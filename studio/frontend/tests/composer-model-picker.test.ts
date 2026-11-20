@@ -1904,7 +1904,7 @@ test("Run settings for an MLX repo open as one checkpoint, never the Hub, and sk
   );
   assert.match(
     settings,
-    /row\.kind === "cached" && !row\.partial\s*\?\s*await listed\(\{ \.\.\.target, remote: false, everyQuant: false \}\)\s*:\s*undefined;\s*if \(listing === undefined \|\| listing\?\.mlx\) \{/,
+    /row\.kind === "cached" && !row\.partial && !row\.favoriteQuant\s*\?\s*await listed\(\{ \.\.\.target, remote: false, everyQuant: false \}\)\s*:\s*undefined;\s*if \(listing === undefined \|\| listing\?\.mlx\) \{/,
   );
   assert.match(
     settings,
