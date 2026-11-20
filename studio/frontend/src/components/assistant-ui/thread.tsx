@@ -1884,7 +1884,7 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
 // Gap between last message and floating composer, added to the bottom spacer height.
 const COMPOSER_SCROLL_GAP_PX = 24;
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
-// Viewport rows below the composer's top edge, and the fade above it: the wallpaper CSS masks the thread there.
+// Viewport rows below the composer's top edge, and the fade beneath that edge: the wallpaper CSS masks the thread there.
 const THREAD_COMPOSER_CLIP_VAR = "--thread-composer-clip";
 const THREAD_COMPOSER_FADE_VAR = "--thread-composer-fade";
 // After a run start, composer shrinks apply immediately: the run-start pin owns the bottom.
@@ -2725,7 +2725,7 @@ const ThreadComposerDock: FC<{
       root.style.setProperty(THREAD_COMPOSER_CLIP_VAR, `${clip}px`);
       root.style.setProperty(
         THREAD_COMPOSER_FADE_VAR,
-        "calc(40px * var(--ui-space-scale, 1))",
+        "calc(24px * var(--ui-space-scale, 1))",
       );
     };
     const apply = () => {
