@@ -28,6 +28,7 @@ export const DEVICE_SECTIONS = [
   "unsloth",
   "other",
   "npu",
+  "exported",
   "fineTuned",
   "custom",
   "lmstudio",
@@ -40,6 +41,7 @@ export const SECTION_LABEL: Record<ListSection, string> = {
   unsloth: "Unsloth",
   other: "Other models",
   npu: "NPU",
+  exported: "Exported",
   fineTuned: "Trained",
   custom: "Custom folders",
   lmstudio: "LM Studio",
@@ -55,7 +57,10 @@ export function localSection(
   source: string | undefined,
   baseModel: string | undefined,
 ): DeviceSection {
-  if (source === "training" || source === "exported") {
+  if (source === "exported") {
+    return "exported";
+  }
+  if (source === "training") {
     return "fineTuned";
   }
   if (baseModel === "LM Studio") {

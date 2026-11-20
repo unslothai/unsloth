@@ -19,6 +19,7 @@ import {
   findChosenRow,
   isChatTask,
   isTestFixtureRepo,
+  SECTION_LABEL,
   localSection,
   orderBySection,
   pickerAlignOffset,
@@ -281,6 +282,32 @@ test("Run settings open inside the composer picker, not the header picker", () =
   );
 });
 
+test("NPU rows carry a Q4NX chip, and say Runs on NPU only where no NPU header does", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /const NPU_QUANT = "Q4NX";/);
+  assert.match(picker, /row\.kind === "npu" \? \(\s+<QuantPill quant=\{NPU_QUANT\} \/>/);
+  assert.match(
+    picker,
+    /!\(row\.section === "npu" && listSections\.includes\("npu"\)\) \? \([\s\S]{0,200}NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/,
+  );
+  assert.doesNotMatch(picker, /"Converted"/);
+});
+
+test("exported GGUFs and Q4NX models converted on the Export page share an Exported section", () => {
+  assert.match(
+    readSrc("components/assistant-ui/composer-model-picker/npu-rows.ts"),
+    /section: model\.local \? "exported" : "npu"/,
+  );
+  assert.equal(SECTION_LABEL.exported, "Exported");
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /exported: "Go to exported models"/);
+  assert.match(picker, /exported: \(\s+<HugeiconsIcon\s+icon=\{FolderExportIcon\}/);
+});
+
 test("On Device groups rows like the header picker, NPU and custom folders included", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
@@ -292,7 +319,7 @@ test("On Device groups rows like the header picker, NPU and custom folders inclu
   );
   assert.match(
     readSrc("components/assistant-ui/composer-model-picker/npu-rows.ts"),
-    /kind: "npu",\s+section: "npu"/,
+    /kind: "npu",[\s\S]*?section: model\.local \? "exported" : "npu"/,
   );
   assert.match(picker, /useCustomFolders\(/);
   assert.match(
@@ -377,7 +404,7 @@ test("On Device sections follow the header picker's buckets and order", () => {
   assert.equal(repoSection("unsloth/gemma-4-E2B-it-GGUF"), "unsloth");
   assert.equal(repoSection("Qwen/Qwen3-8B"), "other");
   assert.equal(localSection("training", undefined), "fineTuned");
-  assert.equal(localSection("exported", undefined), "fineTuned");
+  assert.equal(localSection("exported", undefined), "exported");
   assert.equal(localSection("local", "LM Studio"), "lmstudio");
   assert.equal(localSection("local", "Local models"), "modelsDir");
   assert.equal(localSection("local", "Ollama"), "custom");
@@ -388,10 +415,12 @@ test("On Device sections follow the header picker's buckets and order", () => {
     { id: "c", section: "npu" as const },
     { id: "d", section: "unsloth" as const },
     { id: "e", section: "recommended" as const },
+    { id: "f", section: "fineTuned" as const },
+    { id: "g", section: "exported" as const },
   ]);
   assert.deepEqual(
     ordered.map((row) => row.id),
-    ["b", "d", "c", "a", "e"],
+    ["b", "d", "c", "g", "f", "a", "e"],
   );
 });
 

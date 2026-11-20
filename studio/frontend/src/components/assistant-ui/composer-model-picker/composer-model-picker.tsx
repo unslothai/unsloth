@@ -161,7 +161,7 @@ import { isTauri } from "@/lib/api-base";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
-import { Folder02Icon } from "@/lib/folder-icons";
+import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { classifyVariantFitOnCard } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -976,6 +976,9 @@ const CURRENT_ROW_BG =
 const DIM_CLASS =
   "opacity-55 transition-opacity group-hover/row:opacity-100 dark:opacity-50";
 
+// FastFlowLM's NPU2 builds and Export page conversions are all Q4NX files.
+const NPU_QUANT = "Q4NX";
+
 function QuantPill({ quant }: { quant: string }) {
   return (
     <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-[calc(100px*var(--ui-space-scale,1))] shrink-0 items-center truncate rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
@@ -999,6 +1002,7 @@ function ParamChip({ label }: { label: string }) {
 
 const JUMP_LABEL: Partial<Record<ListSection, string>> = {
   other: "Go to other models",
+  exported: "Go to exported models",
   fineTuned: "Go to trained models",
   custom: "Go to custom folders",
 };
@@ -1346,6 +1350,13 @@ const SECTION_ICON: Partial<Record<ListSection, ReactNode>> = {
   other: (
     <HugeiconsIcon
       icon={Flag01Icon}
+      strokeWidth={1.75}
+      className={SECTION_GLYPH}
+    />
+  ),
+  exported: (
+    <HugeiconsIcon
+      icon={FolderExportIcon}
       strokeWidth={1.75}
       className={SECTION_GLYPH}
     />
@@ -4369,7 +4380,10 @@ export function ComposerModelPicker({
                 ) : null}
               </span>
             ) : null}
-            {row.kind === "npu" && !npuProgress ? (
+            {row.kind === "npu" &&
+            !npuProgress &&
+            !(row.section === "npu" && listSections.includes("npu")) ? (
+              // Under the NPU header the header says it; Exported and Favorites have no such header.
               <span className="shrink-0 text-ui-12 text-muted-foreground">
                 {NPU_TAG_TEXT[NPU_CATALOG_TAG]}
               </span>
@@ -4379,7 +4393,7 @@ export function ComposerModelPicker({
                 {npuProgress ?? npuSizeLabel(row.npu?.size_gb ?? null)}
               </span>
             ) : row.kind === "npu" ? (
-              <QuantPill quant="NPU" />
+              <QuantPill quant={NPU_QUANT} />
             ) : null}
             {isChosen && !row.loaded && row.kind !== "external" ? (
               <HugeiconsIcon

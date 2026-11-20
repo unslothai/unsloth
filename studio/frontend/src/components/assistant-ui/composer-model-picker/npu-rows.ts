@@ -24,7 +24,8 @@ export function npuPickerRows(
       label: npuDisplayName(model),
       tab: onDevice ? DEVICE_TAB : RECOMMENDED_TAB,
       kind: "npu",
-      section: "npu",
+      // A Q4NX folder from the Export page sits with the other exports.
+      section: model.local ? "exported" : "npu",
       npu: model,
       rank,
       sizeBytes:
