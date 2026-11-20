@@ -20,11 +20,15 @@ export function npuRepoLabel(model: NpuNamed): string {
   return model.hf_repo?.trim() || model.id;
 }
 
+// AMD's RyzenAI repos all end in this; shown as -NPU, like FastFlowLM's -NPU2, to tell them from GGUFs.
+const RYZENAI_REPO_SUFFIX = /-onnx-ryzenai-npu$/i;
+
 /** The repo name without its owner, as GGUF rows show theirs. */
 export function npuDisplayName(model: NpuNamed): string {
   if (model.local) return npuLocalLabel(model.local.folder) || model.id;
   const repo = model.hf_repo?.trim();
-  return (repo && repo.slice(repo.lastIndexOf("/") + 1)) || model.id;
+  const name = repo ? repo.slice(repo.lastIndexOf("/") + 1) : "";
+  return name.replace(RYZENAI_REPO_SUFFIX, "-NPU") || model.id;
 }
 
 /** npuDisplayName of the catalog model with this id or `lemonade:` path, or null when none has it. */

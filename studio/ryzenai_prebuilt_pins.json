@@ -12,40 +12,22 @@
   "context_length": 4096,
   "models": [
     {
-      "repo": "amd/CodeLlama-7b-Instruct-hf-onnx-ryzenai-npu",
-      "size_gb": 7.54,
+      "repo": "amd/Phi-4-mini-instruct-onnx-ryzenai-npu",
+      "size_gb": 5.59,
       "labels": [
-        "chat",
-        "coding"
+        "chat"
       ]
     },
     {
-      "repo": "amd/DeepSeek-R1-Distill-Llama-8B-onnx-ryzenai-npu",
-      "size_gb": 9.3,
+      "repo": "amd/Qwen2.5-7B-Instruct-onnx-ryzenai-npu",
+      "size_gb": 8.83,
       "labels": [
-        "chat",
-        "reasoning"
+        "chat"
       ]
     },
     {
-      "repo": "amd/DeepSeek-R1-Distill-Qwen-1.5B-onnx-ryzenai-npu",
-      "size_gb": 2.3,
-      "labels": [
-        "chat",
-        "reasoning"
-      ]
-    },
-    {
-      "repo": "amd/DeepSeek-R1-Distill-Qwen-7B-onnx-ryzenai-npu",
-      "size_gb": 8.87,
-      "labels": [
-        "chat",
-        "reasoning"
-      ]
-    },
-    {
-      "repo": "amd/Llama-2-7b-chat-hf-onnx-ryzenai-npu",
-      "size_gb": 7.47,
+      "repo": "amd/Qwen2.5-3B-Instruct-onnx-ryzenai-npu",
+      "size_gb": 4.1,
       "labels": [
         "chat"
       ]
@@ -65,17 +47,64 @@
       ]
     },
     {
-      "repo": "amd/Mistral-7B-Instruct-v0.1-onnx-ryzenai-npu",
-      "size_gb": 8.01,
+      "repo": "amd/DeepSeek-R1-Distill-Qwen-7B-onnx-ryzenai-npu",
+      "size_gb": 8.87,
+      "labels": [
+        "chat",
+        "reasoning"
+      ]
+    },
+    {
+      "repo": "amd/DeepSeek-R1-Distill-Qwen-1.5B-onnx-ryzenai-npu",
+      "size_gb": 2.3,
+      "labels": [
+        "chat",
+        "reasoning"
+      ]
+    },
+    {
+      "repo": "amd/gpt-oss-20b-onnx-ryzenai-npu",
+      "size_gb": 13.4,
       "labels": [
         "chat"
       ]
     },
     {
-      "repo": "amd/Mistral-7B-Instruct-v0.2-onnx-ryzenai-npu",
-      "size_gb": 8.01,
+      "repo": "amd/Qwen2.5-Coder-7B-Instruct-onnx-ryzenai-npu",
+      "size_gb": 8.83,
+      "labels": [
+        "chat",
+        "coding"
+      ]
+    },
+    {
+      "repo": "amd/Qwen2.5-Coder-1.5B-Instruct-onnx-ryzenai-npu",
+      "size_gb": 2.25,
+      "labels": [
+        "chat",
+        "coding"
+      ]
+    },
+    {
+      "repo": "amd/Qwen-2.5_1.5B_Instruct-onnx-ryzenai-npu",
+      "size_gb": 2.25,
       "labels": [
         "chat"
+      ]
+    },
+    {
+      "repo": "amd/Phi-3.5-mini-instruct-onnx-ryzenai-npu",
+      "size_gb": 4.35,
+      "labels": [
+        "chat"
+      ]
+    },
+    {
+      "repo": "amd/DeepSeek-R1-Distill-Llama-8B-onnx-ryzenai-npu",
+      "size_gb": 9.3,
+      "labels": [
+        "chat",
+        "reasoning"
       ]
     },
     {
@@ -100,22 +129,15 @@
       ]
     },
     {
-      "repo": "amd/Phi-3.5-mini-instruct-onnx-ryzenai-npu",
-      "size_gb": 4.35,
+      "repo": "amd/Mistral-7B-Instruct-v0.2-onnx-ryzenai-npu",
+      "size_gb": 8.01,
       "labels": [
         "chat"
       ]
     },
     {
-      "repo": "amd/Phi-4-mini-instruct-onnx-ryzenai-npu",
-      "size_gb": 5.59,
-      "labels": [
-        "chat"
-      ]
-    },
-    {
-      "repo": "amd/Qwen-2.5_1.5B_Instruct-onnx-ryzenai-npu",
-      "size_gb": 2.25,
+      "repo": "amd/Mistral-7B-Instruct-v0.1-onnx-ryzenai-npu",
+      "size_gb": 8.01,
       "labels": [
         "chat"
       ]
@@ -128,36 +150,6 @@
       ]
     },
     {
-      "repo": "amd/Qwen2.5-3B-Instruct-onnx-ryzenai-npu",
-      "size_gb": 4.1,
-      "labels": [
-        "chat"
-      ]
-    },
-    {
-      "repo": "amd/Qwen2.5-7B-Instruct-onnx-ryzenai-npu",
-      "size_gb": 8.83,
-      "labels": [
-        "chat"
-      ]
-    },
-    {
-      "repo": "amd/Qwen2.5-Coder-1.5B-Instruct-onnx-ryzenai-npu",
-      "size_gb": 2.25,
-      "labels": [
-        "chat",
-        "coding"
-      ]
-    },
-    {
-      "repo": "amd/Qwen2.5-Coder-7B-Instruct-onnx-ryzenai-npu",
-      "size_gb": 8.83,
-      "labels": [
-        "chat",
-        "coding"
-      ]
-    },
-    {
       "repo": "amd/chatglm3-6b-onnx-ryzenai-npu",
       "size_gb": 7.04,
       "labels": [
@@ -165,10 +157,18 @@
       ]
     },
     {
-      "repo": "amd/gpt-oss-20b-onnx-ryzenai-npu",
-      "size_gb": 13.4,
+      "repo": "amd/Llama-2-7b-chat-hf-onnx-ryzenai-npu",
+      "size_gb": 7.47,
       "labels": [
         "chat"
+      ]
+    },
+    {
+      "repo": "amd/CodeLlama-7b-Instruct-hf-onnx-ryzenai-npu",
+      "size_gb": 7.54,
+      "labels": [
+        "chat",
+        "coding"
       ]
     }
   ]
