@@ -983,6 +983,10 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
         return (True if plan["sinks"] is None else plan["sinks"]), None
     n = plan["calls"]
     plan["calls"] = n + 1
+    # a CUDA graph's side-stream warm-ups throw their outputs away: those calls pin no route
+    plan["used_prior"] = n - plan.get("discarded", 0)
+    if _discarded_call():
+        plan["discarded"] = plan.get("discarded", 0) + 1
     if plan["sinks"] is None and n >= SINK_DECIDE_AT:
         # its event waits and the race's are prohibited while another thread records a graph: decide on a later call
         with _outside_capture() as safe:
@@ -1207,7 +1211,9 @@ def _learn_now(plan: dict, i8: Any, n: Optional[int]) -> Any:
                     False  # the same bits as the sink path this and the earlier calls took
                 )
             return True
-        if known == "native" and (n or _bucket_ran(plan) or _routes_used(plan)):
+        if known == "native" and (
+            plan.get("used_prior", n) or _bucket_ran(plan) or _routes_used(plan)
+        ):
             # earlier INT8 outputs of this bucket, or of another plan on the routes torch's attention would move, were
             # used: torch's attention would change them on the next render
             known = True
@@ -1227,9 +1233,14 @@ def _learn_now(plan: dict, i8: Any, n: Optional[int]) -> Any:
     return path
 
 
+def _used_calls(plan: dict) -> int:
+    """Calls whose outputs a render used (not a CUDA graph's thrown-away side-stream warm-ups)."""
+    return plan.get("calls", 0) - plan.get("discarded", 0)
+
+
 def _routes_used(plan: dict) -> bool:
     """Whether another plan on the routes ``_drop_routes(plan)`` would move (same card, same head dim) already ran a
-    call this load: raising their floor or restoring the stock processor would change those outputs."""
+    used call this load: raising their floor or restoring the stock processor would change those outputs."""
     try:
         dim = plan["shape"][4]
     except Exception:  # noqa: BLE001 - a plan without its shape moves no route
@@ -1238,17 +1249,17 @@ def _routes_used(plan: dict) -> bool:
         other is not plan
         and other.get("index") == plan.get("index")
         and (other.get("shape") or (None,) * 5)[4] == dim
-        and other.get("calls", 0)
+        and _used_calls(other)
         for other in _plans().values()
         if isinstance(other, dict)
     )
 
 
 def _bucket_ran(plan: dict) -> bool:
-    """Whether another plan of ``plan``'s decision bucket already ran a call this load."""
+    """Whether another plan of ``plan``'s decision bucket already ran a used call this load."""
     bucket = plan.get("decision")
     return any(
-        other is not plan and other.get("decision") == bucket and other.get("calls", 0)
+        other is not plan and other.get("decision") == bucket and _used_calls(other)
         for other in _plans().values()
         if isinstance(other, dict)
     )
