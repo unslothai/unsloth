@@ -77,3 +77,24 @@ def test_eligible_layers_still_leave_the_block(rocm_refusing):
     assert _prepare() == hpa._LEAVE_BLOCK
     assert _prepare(training = True, attention_dropout = 0.0) == hpa._LEAVE_BLOCK
     assert _prepare(training = False, attention_dropout = 0.1) == hpa._LEAVE_BLOCK
+
+
+@pytest.mark.parametrize("rejected_first", [True, False])
+def test_cached_result_is_per_layer_eligibility(rocm_refusing, rejected_first):
+    # Layers of one forward share the lengths, mask and window; a rejected layer must not decide for
+    # an eligible one through the block-preparation cache, nor the other way round.
+    config = types.SimpleNamespace(
+        _attn_implementation = "sdpa", num_attention_heads = 4, num_key_value_heads = 4
+    )
+    eligible = types.SimpleNamespace(config = config, head_dim = 16, num_key_value_groups = 1)
+    rejected = types.SimpleNamespace(
+        config = config, head_dim = 16, num_key_value_groups = 1, training = True, attention_dropout = 0.1
+    )
+    mask = torch.ones(1, 1, 6, 6, dtype = torch.bool).tril()
+    mask[0, 0, 3:, :3] = False
+    kwargs = {"packed_seq_lengths": torch.tensor([3, 3], dtype = torch.int32), "attention_mask": mask}
+    hidden = torch.randn(1, 6, 8, dtype = torch.bfloat16)
+    order = [(rejected, None), (eligible, hpa._LEAVE_BLOCK)]
+    for attention, expected in (order if rejected_first else order[::-1]) * 2:
+        layer = types.SimpleNamespace(self_attn = attention)
+        assert hpa.block_varlen_kwargs(layer, hidden, kwargs) is expected

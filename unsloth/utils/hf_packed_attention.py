@@ -1034,7 +1034,14 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
     attention = getattr(layer, "self_attn", None)
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
     window = _sliding_window(attention, kwargs) if attention is not None else None
-    entry = _BLOCK_PREP.get(window)
+    # Per-layer eligibility (head_dim, dropout, sinks, softcap) changes the result on ROCm: key on it too.
+    head_dim = getattr(attention, "head_dim", None)
+    key = (
+        window,
+        head_dim,
+        isinstance(head_dim, int) and _eager_varlen_rejects(attention, kwargs, head_dim),
+    )
+    entry = _BLOCK_PREP.get(key)
     if (
         entry is not None
         # Live tensors only: a dead weakref is None, and so is a missing mask.
@@ -1061,7 +1068,7 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and not _disabled()
     ):
         # Weak: the T x T mask must not outlive its step.
-        _BLOCK_PREP[window] = (
+        _BLOCK_PREP[key] = (
             weakref.ref(seq_lengths),
             weakref.ref(mask),
             (hidden_states.device, seq_lengths._version, mask._version),
