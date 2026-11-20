@@ -95,6 +95,8 @@ class _Registered:
         self.buf, self.ptr, self.stream = buf, None, stream
         rc = torch.cuda.cudart().cudaHostRegister(buf.data_ptr(), nbytes, 0)
         if int(rc) != 0:
+            from core.inference.host_pinning import consume_cuda_error
+            consume_cuda_error()
             raise RuntimeError(f"cudaHostRegister failed: {rc}")
         self.ptr = buf.data_ptr()
 
