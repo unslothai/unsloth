@@ -37,13 +37,14 @@ type LengthCheck = {
 };
 
 // The real tracker and error; only chat-api's unrelated imports are stubbed.
-const { createReasoningOnlyLengthCheck, GenerationLengthError } = loadWithStubs<{
+const { createReasoningOnlyLengthCheck, GenerationLengthError, offersKvCacheHint } = loadWithStubs<{
   createReasoningOnlyLengthCheck: (window: {
     cap: number | null;
     contextLength: number | null;
     kvCacheHint?: boolean;
   }) => LengthCheck;
   GenerationLengthError: new (cause: string) => Error & { stopCause: string };
+  offersKvCacheHint: (isGguf: boolean | null, kv: string | null) => boolean;
 }>(new URL("../src/features/chat/api/chat-api.ts", import.meta.url), {
   "./skill-load-event": { skillLoadCardEvent: () => ({}) },
   "./thread-read-cache.ts": {},
@@ -150,7 +151,7 @@ test("a llama.cpp model that fills its window is also pointed at a q8_0 KV cache
   const gguf = windowFilled(true);
   assert.equal(gguf.stopCause, "context_length");
   assert.match(gguf.message, /increase the Context in Model settings, or disable thinking/);
-  assert.match(gguf.message, /q8_0 KV Cache in Model settings fits more context/);
+  assert.match(gguf.message, /q8_0 KV Cache Dtype in Model settings fits more context/);
   // NPU and provider models have no KV cache setting.
   assert.doesNotMatch(windowFilled(false).message, /KV Cache/);
   // Max Tokens advice never mentions it.
@@ -165,6 +166,16 @@ test("a llama.cpp model that fills its window is also pointed at a q8_0 KV cache
   );
   assert.match(
     source,
-    /const kvCacheHint = !isExternalRequest && runtime\.loadedIsGguf === true;/,
+    /const kvCacheHint =\s*!isExternalRequest &&\s*offersKvCacheHint\(runtime\.loadedIsGguf, runtime\.loadedKvCacheDtype\);/,
   );
+});
+
+test("the KV cache hint is only offered while the llama.cpp cache is unquantized", () => {
+  assert.equal(offersKvCacheHint(true, null), true);
+  assert.equal(offersKvCacheHint(true, "f16"), true);
+  assert.equal(offersKvCacheHint(true, "bf16"), true);
+  assert.equal(offersKvCacheHint(true, "q8_0"), false);
+  assert.equal(offersKvCacheHint(true, "q4_0"), false);
+  assert.equal(offersKvCacheHint(false, null), false);
+  assert.equal(offersKvCacheHint(null, null), false);
 });

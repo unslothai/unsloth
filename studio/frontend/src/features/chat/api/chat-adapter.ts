@@ -443,6 +443,7 @@ import {
   generateAudio,
   GenerationLengthError,
   createReasoningOnlyLengthCheck,
+  offersKvCacheHint,
   fetchGgufStagedMetadata,
   getChatAgentsMd,
   getInferenceStatus,
@@ -7348,7 +7349,9 @@ export function createOpenAIStreamAdapter(
               }
             }
 
-            const kvCacheHint = !isExternalRequest && runtime.loadedIsGguf === true;
+            const kvCacheHint =
+              !isExternalRequest &&
+              offersKvCacheHint(runtime.loadedIsGguf, runtime.loadedKvCacheDtype);
             const durableStream = async function* () {
               const lengthCheck = createReasoningOnlyLengthCheck({
                 cap: requestPayload.max_tokens ?? null,

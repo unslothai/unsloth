@@ -145,9 +145,17 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "Max Tokens, disable thinking, or start a new chat.",
 };
 
-// Only llama.cpp has the setting; FastFlowLM and providers do not.
 const KV_CACHE_HINT =
-  " A q8_0 KV Cache in Model settings fits more context in the same memory.";
+  " A q8_0 KV Cache Dtype in Model settings fits more context in the same memory.";
+const FULL_PRECISION_KV = new Set(["f16", "bf16", "f32"]);
+
+/** FastFlowLM and providers have no KV cache setting; an already quantized cache gains nothing. */
+export function offersKvCacheHint(
+  loadedIsGguf: boolean | null,
+  loadedKvCacheDtype: string | null,
+): boolean {
+  return loadedIsGguf === true && FULL_PRECISION_KV.has(loadedKvCacheDtype ?? "f16");
+}
 
 /** A reasoning model spent its output budget before emitting any standard content. */
 export class GenerationLengthError extends Error {
