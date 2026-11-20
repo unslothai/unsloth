@@ -1805,7 +1805,11 @@ def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spelling
     assert loads[0].get("gguf_variant") == "Q8_0"
 
 
-def _untyped_load_payload(monkeypatch, status):
+def _untyped_load_payload(
+    monkeypatch,
+    status,
+    model = "unsloth/Qwen3-0.6B-GGUF",
+):
     backend = HttpChatBackend("http://localhost:8888", "token")
     loads = []
 
@@ -1824,7 +1828,7 @@ def _untyped_load_payload(monkeypatch, status):
 
     monkeypatch.setattr(backend, "_request", fake_request)
     backend.ensure_loaded(
-        "unsloth/Qwen3-0.6B-GGUF",
+        model,
         hf_token = None,
         max_seq_length = None,
         load_in_4bit = None,
@@ -1863,6 +1867,23 @@ def test_http_backend_load_keeps_the_resident_context_and_kv_cache(monkeypatch):
     assert "use_saved_settings" not in payload
     assert "n_parallel" not in payload
     assert "llama_extra_args" not in payload
+
+
+def test_http_backend_load_keeps_a_resident_gguf_file_loaded(monkeypatch):
+    model = "/models/Qwen3-0.6B-Q8_0.gguf"
+    status = {
+        **_RESIDENT_Q8,
+        "model_identifier": model,
+        "requested_context_length": 65536,
+        "cache_type_kv": "q8_0",
+    }
+
+    payload = _untyped_load_payload(monkeypatch, status, model = model)
+
+    assert payload["max_seq_length"] == 65536
+    assert payload["cache_type_kv"] == "q8_0"
+    assert "use_saved_settings" not in payload
+    assert "gguf_variant" not in payload
 
 
 def test_chat_leaves_untyped_tensor_parallel_to_the_server():

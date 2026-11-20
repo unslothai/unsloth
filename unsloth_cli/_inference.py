@@ -1119,7 +1119,7 @@ class HttpChatBackend:
         trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
-        status = None if model.lower().endswith(".gguf") else self._inference_status()
+        status = self._inference_status()
         payload = {"model_path": model, "hf_token": hf_token}
         if max_seq_length is not None:
             payload["max_seq_length"] = max_seq_length
@@ -1137,7 +1137,9 @@ class HttpChatBackend:
             payload["trust_remote_code"] = trust_remote_code
         resident = self._serves(model, status)
         resident_variant = (
-            status.get("gguf_variant") if resident and status.get("is_gguf") else None
+            status.get("gguf_variant")
+            if resident and status.get("is_gguf") and not model.lower().endswith(".gguf")
+            else None
         )
         if resident_variant:
             payload["gguf_variant"] = resident_variant
