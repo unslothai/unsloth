@@ -283,6 +283,55 @@ def test_a_failed_torch_decode_falls_back_to_the_server_decode(tmp_path):
     assert tv.STATS["fallback"] == 1
 
 
+class _WireServer(_Server):
+    """The real client parser on a completed job: a malformed latent response raises inside ``img_gen_latents``."""
+
+    def __init__(self, job):
+        super().__init__(None)
+        self.job = job
+
+    def img_gen_latents(self, payload, **_kw):
+        self.calls.append("latent")
+        return SdCppServer._decode_latents(self.job)
+
+
+def _latent_job(shape, data):
+    latent = {"b64": base64.b64encode(data).decode(), "dtype": "float32", "shape": shape}
+    return {"status": "completed", "result": {"images": [{"index": 0, "latent": latent}]}}
+
+
+@pytest.mark.parametrize(
+    "job",
+    [
+        _latent_job([1, 32, 2, 2], b"\x00"),
+        _latent_job([1, 32, 0, 2], b""),
+        {"status": "completed", "result": {"images": [{"index": 0, "b64_json": "AA=="}]}},
+    ],
+    ids = ["short_bytes", "bad_shape", "png_only"],
+)
+def test_a_malformed_latent_response_falls_back_to_the_server_decode(tmp_path, job):
+    server = _WireServer(job)
+    b, state = _backend(tmp_path, server)
+    images, _seeds = b._generate_server(state, **_kwargs())
+    assert server.calls == ["latent", "png"]
+    assert images[0].getpixel((0, 0)) == (255, 0, 0)
+    assert tv.STATS["fallback"] == 1
+
+
+def test_a_failed_latent_render_is_not_retried_as_png(tmp_path):
+    # Only a response this client cannot use falls back; a render the server itself failed still raises.
+    class _Failing(_Server):
+        def img_gen_latents(self, payload, **_kw):
+            self.calls.append("latent")
+            raise RuntimeError("sd-server generation failed: oom")
+
+    server = _Failing(None)
+    b, state = _backend(tmp_path, server)
+    with pytest.raises(RuntimeError, match = "oom"):
+        b._generate_server(state, **_kwargs())
+    assert server.calls == ["latent"]
+
+
 @pytest.mark.parametrize(
     "accepts, device, env", [(False, "cpu", None), (True, "vulkan", None), (True, "cpu", "0")]
 )

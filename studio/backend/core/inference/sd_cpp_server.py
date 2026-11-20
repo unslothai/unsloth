@@ -149,6 +149,10 @@ class SdCppServerUnsupported(RuntimeError):
     """The sd-server has no route / mode for this job kind; nothing ran, so the caller can fall back to sd-cli."""
 
 
+class SdCppLatentFormatError(RuntimeError):
+    """A completed ``output_latent`` job whose latents this client cannot use; the render can be redone as PNG."""
+
+
 def _route_unsupported(status_code: int, text: str, kind: str) -> bool:
     # 404: no route in this build; 400 "does not support": the loaded model lacks the mode (runtime.cpp).
     if status_code == 404:
@@ -855,24 +859,30 @@ class SdCppServer:
         for item in sorted(items, key = lambda d: d.get("index", 0)):
             latent = item.get("latent")
             if not isinstance(latent, dict) or latent.get("dtype") != "float32":
-                raise RuntimeError("sd-server returned an image item without a float32 latent.")
+                raise SdCppLatentFormatError(
+                    "sd-server returned an image item without a float32 latent."
+                )
             shape = latent.get("shape")
             if not isinstance(shape, list) or not all(isinstance(n, int) and n > 0 for n in shape):
-                raise RuntimeError(f"sd-server returned a latent with an invalid shape: {shape!r}")
+                raise SdCppLatentFormatError(
+                    f"sd-server returned a latent with an invalid shape: {shape!r}"
+                )
             try:
                 data = base64.b64decode(latent.get("b64") or "")
             except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"sd-server returned an undecodable latent: {exc}") from exc
+                raise SdCppLatentFormatError(
+                    f"sd-server returned an undecodable latent: {exc}"
+                ) from exc
             count = 1
             for n in shape:
                 count *= n
             if len(data) != count * 4:
-                raise RuntimeError(
+                raise SdCppLatentFormatError(
                     f"sd-server returned {len(data)} latent bytes for shape {shape}, expected {count * 4}."
                 )
             out.append((tuple(shape), data))
         if not out:
-            raise RuntimeError("sd-server completed the job but returned no latents.")
+            raise SdCppLatentFormatError("sd-server completed the job but returned no latents.")
         return out
 
     def _died_message(self, where: str, exc: Optional[Exception]) -> str:
