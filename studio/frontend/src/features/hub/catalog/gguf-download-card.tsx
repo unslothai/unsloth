@@ -904,8 +904,7 @@ export function GgufDownloadCard({
     setCompletedVariantKeys(new Set<string>());
   }, [repoId]);
 
-  // systemRamGb and unifiedLoadBudgetGb come from a free-memory reading nothing in the Hub
-  // refreshes; take one as a model opens. Media GGUFs show no verdict, so skip them.
+  // Hub fit badges read free memory and nothing else here refreshes it; media GGUFs show no verdict.
   // biome-ignore lint/correctness/useExhaustiveDependencies: repoId is the trigger, not an input.
   useEffect(() => {
     if (mediaRuntime) return;

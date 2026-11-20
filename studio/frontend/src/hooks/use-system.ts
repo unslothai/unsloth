@@ -127,8 +127,7 @@ let vulkanRetryAttempt = 0;
 let vulkanRetryDeferred = false;
 // A hung request must not hold systemFetchPromise, which every refreshMemory caller awaits.
 const SYSTEM_FETCH_TIMEOUT_MS = 15_000;
-// When a refresh_memory reading last landed, for refreshSystemMemory's window. Set on every
-// landing so the chat picker's probes count too.
+// Set wherever a refresh_memory reading lands, so the chat picker's probes count too.
 let lastMemoryRefreshAt: number | null = null;
 let memoryRefreshPromise: Promise<SystemInfoResponse | null> | null = null;
 
@@ -289,8 +288,6 @@ export async function fetchSystemInfo({
   return systemFetchPromise;
 }
 
-/** A fresh free-memory reading, unless one landed within `maxAgeMs`; concurrent callers share one
- *  probe. For surfaces that judge fit from free memory but have no poll of their own. */
 export function refreshSystemMemory({
   maxAgeMs,
 }: { maxAgeMs: number }): Promise<SystemInfoResponse | null> {
