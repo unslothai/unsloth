@@ -3803,6 +3803,7 @@ class InferenceOrchestrator:
         compact_context: bool = False,
         tool_choice = None,
         disable_parallel_tool_use: bool = False,
+        mcp_match_exchange: Optional[dict] = None,
         **_unused,
     ):
         """Runs the safetensors tool loop in the parent, calling the worker per turn; events match
@@ -3999,6 +4000,7 @@ class InferenceOrchestrator:
             context_fitter = _fit_iteration,
             tool_choice = tool_choice,
             disable_parallel_tool_use = disable_parallel_tool_use,
+            mcp_match_exchange = mcp_match_exchange,
         )
 
     def generate_with_adapter_control(

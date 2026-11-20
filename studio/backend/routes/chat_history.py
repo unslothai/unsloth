@@ -10,7 +10,7 @@ import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -66,6 +66,8 @@ from storage.studio_db import (
     fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
+    chat_revision_probe,
+    chat_revision_span,
     get_chat_history_revisions,
     get_chat_thread,
     get_chat_pins,
@@ -815,6 +817,18 @@ class ChatImportLedgerRecordResponse(BaseModel):
 
 # Two 409s mean opposite things (protected: stop resending; thread collision: surface failure); tell them apart by header, not detail; main.py must expose it.
 CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
+# "<thread before>,<thread after>,<history before>,<history after>" read inside the write's
+# transaction, so the writing tab can tell its own write from another device's.
+CHAT_REVISION_HEADER = "X-Unsloth-Chat-Revision"
+
+
+def _set_revision_header(response: Optional[Response], probe: dict) -> None:
+    span = chat_revision_span(probe)
+    if response is not None and span is not None:
+        (thread_before, history_before), (thread_after, history_after) = span
+        response.headers[CHAT_REVISION_HEADER] = (
+            f"{thread_before},{thread_after},{history_before},{history_after}"
+        )
 
 
 def _conflict_headers(exc: Exception) -> dict:
@@ -898,11 +912,18 @@ def _deleted_thread_error(thread_id: str) -> HTTPException:
 
 
 @router.post("/threads", response_model = ChatThread)
-def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
+def save_thread(
+    payload: ChatThread,
+    current_subject: str = Depends(get_current_subject),
+    response: Response = None,
+):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
-        return thread_from_row(upsert_chat_thread(payload.model_dump()))
+        with chat_revision_probe(payload.id) as probe:
+            saved = upsert_chat_thread(payload.model_dump())
+        _set_revision_header(response, probe)
+        return thread_from_row(saved)
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
@@ -948,6 +969,7 @@ def patch_thread(
     thread_id: str,
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
+    response: Response = None,
 ):
     patch = payload.model_dump(exclude_unset = True)
     expected_title = patch.pop("expectedTitle", None)
@@ -960,14 +982,15 @@ def patch_thread(
         raise _missing_project_error(patch["projectId"])
     settings_write = _settings_write_from_patch(patch)
     try:
-        thread = update_chat_thread(
-            thread_id,
-            patch,
-            expected_title = expected_title,
-            preserve_title_modified_at = preserve_title_modified_at,
-            expected_opening_message_id = expected_opening_message_id,
-            settings_write = settings_write,
-        )
+        with chat_revision_probe(thread_id) as probe:
+            thread = update_chat_thread(
+                thread_id,
+                patch,
+                expected_title = expected_title,
+                preserve_title_modified_at = preserve_title_modified_at,
+                expected_opening_message_id = expected_opening_message_id,
+                settings_write = settings_write,
+            )
     except sqlite3.IntegrityError as exc:
         # Same race as save_thread: the project can go away before this write lands.
         if not patch.get("projectId"):
@@ -980,6 +1003,7 @@ def patch_thread(
         )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    _set_revision_header(response, probe)
     return thread_from_row(thread)
 
 
@@ -2095,15 +2119,17 @@ def save_thread_message(
     payload: ChatMessage,
     allow_generation_edit: Annotated[bool, Query(alias = "allowGenerationEdit")] = False,
     current_subject: str = Depends(get_current_subject),
+    response: Response = None,
 ):
     if thread_id != payload.threadId or message_id != payload.id:
         raise HTTPException(status_code = 400, detail = "Message id mismatch")
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        saved = upsert_chat_message(
-            payload.model_dump(), allow_generation_edit = allow_generation_edit
-        )
+        with chat_revision_probe(thread_id) as probe:
+            saved = upsert_chat_message(
+                payload.model_dump(), allow_generation_edit = allow_generation_edit
+            )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
             raise _missing_thread_error(thread_id) from exc
@@ -2118,6 +2144,7 @@ def save_thread_message(
             headers = _conflict_headers(exc),
         ) from exc
     chat_originals.sweep()
+    _set_revision_header(response, probe)
     return ChatMessage(**saved)
 
 
@@ -2126,6 +2153,7 @@ def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
+    response: Response = None,
 ):
     mismatched_ids = [message.id for message in payload.messages if message.threadId != thread_id]
     if mismatched_ids:
@@ -2139,12 +2167,13 @@ def replace_thread_messages(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = [message.model_dump() for message in payload.messages]
     try:
-        synced = sync_chat_messages(
-            thread_id,
-            messages,
-            prune_missing = payload.pruneMissing,
-            deleted_message_ids = payload.deletedMessageIds,
-        )
+        with chat_revision_probe(thread_id) as probe:
+            synced = sync_chat_messages(
+                thread_id,
+                messages,
+                prune_missing = payload.pruneMissing,
+                deleted_message_ids = payload.deletedMessageIds,
+            )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
             raise _missing_thread_error(thread_id) from exc
@@ -2159,6 +2188,7 @@ def replace_thread_messages(
             headers = _conflict_headers(exc),
         ) from exc
     chat_originals.sweep()
+    _set_revision_header(response, probe)
     return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
 
 

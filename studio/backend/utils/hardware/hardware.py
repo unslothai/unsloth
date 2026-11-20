@@ -2260,6 +2260,12 @@ def _video_cpu_opt_in() -> bool:
         return False
 
 
+_VIDEO_NO_TORCH_INSTALL_MESSAGE = (
+    "This install was set up without PyTorch (--no-torch), so video generation is disabled. "
+    "Reinstall Unsloth Studio without --no-torch to enable it."
+)
+
+
 def video_capability() -> dict:
     """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch.
 
@@ -2311,7 +2317,9 @@ def _video_capability_verdict() -> dict:
         elif not _has_torch():
             reason = "pytorch_not_installed"
             message = (
-                "PyTorch is not installed. Video generation on Apple Silicon requires PyTorch "
+                _VIDEO_NO_TORCH_INSTALL_MESSAGE
+                if _installed_without_torch()
+                else "PyTorch is not installed. Video generation on Apple Silicon requires PyTorch "
                 "with Metal (MPS) support. Install PyTorch to enable video generation."
             )
         else:
@@ -2337,11 +2345,20 @@ def _video_capability_verdict() -> dict:
         reason = verdict[0]
         message = _gpu_present_but_unusable_message("video generation", verdict)
     elif not _has_torch():
+        # Reason kept for every no-torch host: "no_accelerator" would let the CPU opt-in admit a host without torch.
         reason = "pytorch_not_installed"
-        message = (
-            "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
-            "Intel GPU. Install PyTorch to enable video generation."
-        )
+        if verdict[0] == "no_torch" and trains_on_cpu("no_torch"):
+            message = (
+                "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator "
+                "was found on this host."
+            )
+        elif _installed_without_torch():
+            message = _VIDEO_NO_TORCH_INSTALL_MESSAGE
+        else:
+            message = (
+                "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
+                "Intel GPU. Install PyTorch to enable video generation."
+            )
     else:
         reason = "no_accelerator"
         message = (
@@ -2663,7 +2680,7 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
 
 
 def _mlx_device_info(mx: Any) -> Dict[str, Any]:
-    """Metal device properties across the MLX rename: mx.device_info() is current, mlx below 0.30 has only mx.metal.device_info(), and the stack gate accepts mlx >= 0.22.0, so reading just the new name leaves the working set cap silently unapplied."""
+    """mlx below 0.30.4 has only mx.metal.device_info(), and the gate accepts mlx >= 0.22.0."""
     for probe in (
         getattr(mx, "device_info", None),
         getattr(getattr(mx, "metal", None), "device_info", None),
@@ -2676,23 +2693,54 @@ def _mlx_device_info(mx: Any) -> Dict[str, Any]:
     return {}
 
 
-def _metal_recommended_working_set_bytes() -> int:
-    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel."""
+def _metal_recommended_working_set_bytes(*, allow_import: bool = True) -> int:
+    """Metal's recommendedMaxWorkingSetSize, or 0: MLX, then torch.mps (2.5+, macOS 13 has no MLX wheel), then Metal.framework.
+    ``allow_import=False`` (polled paths) skips importing MLX or torch, since a broken MLX import can park."""
     try:
-        import mlx.core as mx
-        if mx.metal.is_available():
+        if allow_import:
+            import mlx.core as mx
+        else:
+            mx = sys.modules.get("mlx.core")
+        if mx is not None and mx.metal.is_available():
             rec = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
             if rec > 0:
                 return rec
     except Exception:
         pass
     try:
-        import torch
-        if torch.backends.mps.is_available():
+        if allow_import:
+            import torch
+        else:
+            torch = sys.modules.get("torch")
+        if torch is not None and torch.backends.mps.is_available():
             return max(0, int(torch.mps.recommended_max_memory()))
     except Exception:
         pass
-    return 0
+    return _metal_framework_working_set_bytes()
+
+
+@functools.lru_cache(maxsize = 1)
+def _metal_framework_working_set_bytes() -> int:
+    """The same reading from Metal.framework, for a GGUF-only install with neither MLX nor torch."""
+    rec = 0
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+
+            metal = ctypes.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
+            objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+            metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            send = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p, ctypes.c_void_p)(
+                ("objc_msgSend", objc)
+            )
+            device = metal.MTLCreateSystemDefaultDevice()
+            if device:
+                rec = int(send(device, objc.sel_registerName(b"recommendedMaxWorkingSetSize")))
+        except Exception as e:
+            logger.debug("Metal.framework working set read failed: %s", e)
+    return rec
 
 
 def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
@@ -4171,6 +4219,40 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
         return by_pci
     except Exception:
         return {}
+
+
+def rocm_linux_kernel_free_mib(device: Any = None, *, module: Any = None) -> Optional[int]:
+    """Free MiB of a ROCm device per DRM sysfs, which counts the Vulkan users and desktop hipMemGetInfo misses on Linux, or None. Matched by PCI address; a sysfs total off torch's by >10% (APU carve-out, partitioned card) is another scope. Never raises."""
+    if platform.system() != "Linux":
+        return None
+    try:
+        import torch
+
+        # AMD SDK / Radeon wheels leave version.hip unset; the tag is in __version__.
+        if not (getattr(torch.version, "hip", None) or "rocm" in str(torch.__version__).lower()):
+            return None
+        mod = module if module is not None else torch.cuda
+        index = mod.current_device() if device is None else device
+        props = mod.get_device_properties(index)
+        prefix = f"{int(props.pci_domain_id):04x}:{int(props.pci_bus_id):02x}:{int(props.pci_device_id):02x}."
+        torch_total = int(props.total_memory)
+        for bdf, _card_no, dev_dir in _rocm_linux_amdgpu_cards():
+            if not bdf.lower().startswith(prefix):
+                continue
+            with open(os.path.join(dev_dir, "mem_info_vram_used"), encoding = "utf-8") as f:
+                used_bytes = int(f.read().strip())
+            with open(os.path.join(dev_dir, "mem_info_vram_total"), encoding = "utf-8") as f:
+                total_bytes = int(f.read().strip())
+            if (
+                total_bytes <= 0
+                or torch_total <= 0
+                or abs(total_bytes - torch_total) > 0.1 * torch_total
+            ):
+                return None
+            return max(0, total_bytes - used_bytes) // (1024 * 1024)
+        return None
+    except Exception:
+        return None
 
 
 # ── Windows AMD/ROCm per-adapter VRAM (issue #7072) ──────────────────────────
@@ -7688,6 +7770,65 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
         "parent_visible_gpu_ids": [],
         "devices": devices,
         "index_kind": "physical",
+    }
+
+
+def _llama_cpp_offloads_to_metal() -> bool:
+    """Whether llama-server would place GGUF layers on Metal; cheap enough for the polled /api/system."""
+    try:
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _metal_devices_env_hides_all,
+            _metal_offload_forced_off_for_polling,
+        )
+        return (
+            not _metal_devices_env_hides_all()
+            and LlamaCppBackend._build_has_metal()
+            and not _metal_offload_forced_off_for_polling()
+        )
+    except Exception as e:
+        logger.debug("Could not tell whether llama.cpp offloads to Metal: %s", e)
+        return False
+
+
+def get_apple_metal_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """llama.cpp's Metal device on Apple Silicon detected as CPU (GGUF-only install, MLX missing), else None.
+    The loader offloads to Metal there regardless, so the GGUF fit must see the unified pool."""
+    if not is_apple_silicon() or get_device() == DeviceType.MLX:
+        return None
+    if not _llama_cpp_offloads_to_metal():
+        return None
+    try:
+        import psutil
+        total_bytes = int(psutil.virtual_memory().total)
+    except Exception as e:
+        logger.debug("Apple Metal inventory could not read total memory: %s", e)
+        return None
+    if total_bytes <= 0:
+        return None
+    # Same fallback as the loader.
+    working_set_bytes = _metal_recommended_working_set_bytes(allow_import = False) or total_bytes
+    total_gb = round(total_bytes / (1024**3), 2)
+    device: Dict[str, Any] = {
+        "index": 0,
+        "index_kind": "relative",
+        "visible_ordinal": 0,
+        "name": "Apple Silicon (Metal)",
+        "memory_total_gb": total_gb,
+        "shared_memory": True,
+        "shared_memory_host_backed_gb": total_gb,
+        "metal_working_set_gb": round(working_set_bytes / (1024**3), 2),
+        # No vram_used_gb: AGX in-use is system-wide; the switch budget would credit it all as freed.
+    }
+    return {
+        "available": True,
+        "backend": "metal",
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": [device],
+        "index_kind": "relative",
+        # llama-server takes no device ids on Metal.
+        "gguf_gpu_ids_supported": False,
     }
 
 

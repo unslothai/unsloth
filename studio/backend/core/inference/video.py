@@ -38,6 +38,7 @@ import os
 import re
 import tempfile
 import threading
+import weakref
 from utils.account_context import account_thread, current_account_id
 import time
 import types
@@ -55,8 +56,9 @@ from .diffusion_int8_attention import resolve_policy as int8_attention_policy
 from .diffusion_int8_attention import resolved_entry as int8_resolved_entry
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
+    annotate_attention_resolved,
     apply_attention_backend,
-    attention_status_reason,
+    attention_resolved_entry,
     install_hunyuan_attention_trim,
     sdpa_math_only,
     _dit_head_dims,
@@ -90,6 +92,7 @@ from .diffusion_cache import (
     apply_step_cache,
     auto_static_skip_entry,
     auto_static_skip_plan,
+    fbcache_counts,
     auto_step_cache_allowed,
     skip_tier,
     cache_breaks_graph,
@@ -487,6 +490,41 @@ def _te_base_is_official(fam: Any, base: str) -> bool:
         return False
     return loading == registered or any(
         loading in group and registered in group for group in _TE_EQUIVALENT_BASES
+    )
+
+
+# Must match model-catalog.ts VIDEO_CATALOG gguf rows (checked by test_cpu_gguf_stays_native).
+CPU_GGUF_ONLY_VIDEO_REPOS = frozenset(
+    {"unsloth/minimax-h3-gguf", "unsloth/ltx-2.5-gguf", "unsloth/ltx-2.3-gguf"}
+)
+
+
+# ltx-2 serves 2.0 and 2.3; only 2.3 has a GGUF row.
+_LTX23_NAME = re.compile(r"ltx[-_.]?2[-_.]?3(?!\d)", re.IGNORECASE)
+
+
+def refuse_cpu_dense_video_pick(
+    fam: Any,
+    kind: Optional[str],
+    names: tuple = (),
+) -> None:
+    """Refuse a non-GGUF pick of such a family on CPU-only torch. ``names``: the pick's repo ids and file name."""
+    repo = str(getattr(fam, "gguf_repo", None) or "").lower()
+    if kind == "gguf" or repo not in CPU_GGUF_ONLY_VIDEO_REPOS:
+        return
+    if repo == "unsloth/ltx-2.3-gguf" and not any(_LTX23_NAME.search(str(n or "")) for n in names):
+        return
+    from .diffusion_engine_router import cpu_gguf_rule_enabled
+
+    if not cpu_gguf_rule_enabled():
+        return
+    from .diffusion_device import resolve_diffusion_device_target
+
+    if resolve_diffusion_device_target().backend != "cpu":
+        return
+    raise ValueError(
+        f"This device has no GPU PyTorch can use, so {fam.name} loads only as a GGUF here. Pick one of the "
+        f"GGUF files from '{fam.gguf_repo}' instead of the full-precision or FP8 / INT8 checkpoint."
     )
 
 
@@ -6023,6 +6061,7 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
+        refuse_cpu_dense_video_pick(fam, kind, (repo_id, display_repo_id, gguf_filename))
         # Network-free, so refused before any eviction.
         refusal = video_checkpoint_refusal(fam, repo_id, display_repo_id, gguf_filename)
         if refusal:
@@ -6290,6 +6329,9 @@ class VideoBackend:
         resolved once here into the load's ``Int8Policy``."""
         from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
 
+        # Offline mode: every metadata, revision and listing call on the load path (Studio's and the loaders') would
+        # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
+        local_files_only = bool(local_files_only) or hub_reachability.offline_mode()
         int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
@@ -10847,9 +10889,11 @@ class VideoBackend:
             if kind == "gguf":
                 from .diffusion_gguf_exact import install_exact_dequant
                 from .diffusion_gguf_lowbit import install_lowbit_iq
+                from .diffusion_gguf_mmap import install_gguf_mmap
 
                 install_lowbit_iq(logger)
                 install_exact_dequant(logger)
+                install_gguf_mmap(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -11958,10 +12002,8 @@ class VideoBackend:
                         if speed_mode is None
                         else "requested",
                     ),
-                    "attention_backend": (
-                        attention_backend,
-                        attention_engaged or "native",
-                        attention_status_reason(attention_backend, attention_engaged),
+                    "attention_backend": attention_resolved_entry(
+                        attention_backend, attention_engaged, views, target = target
                     ),
                     "int8_attention": int8_resolved_entry(
                         int8_policy,
@@ -12042,6 +12084,7 @@ class VideoBackend:
                 }
             )
             int8_annotate_resolved(resolved, int8_policy, views)
+            annotate_attention_resolved(resolved, views)
             # The optimizer's per-step audit, beside the speed_mode entry (same record as the image backend).
             autoopt.record_load_steps(
                 load_audit,
@@ -12058,8 +12101,10 @@ class VideoBackend:
             if ltx25_client is not None:
                 # The worker loaded the Gemma 4 encoder while the DiT loaded; a failure there fails this load.
                 ltx25_client.wait_ready(self._cancel_event if _load_token is not None else None)
-            from . import diffusion_prompt_cache
+            from . import diffusion_prompt_cache, video_t5_trim
 
+            # Before the prompt cache wraps encode_prompt: Wan's umT5 skips its padded positions on a CPU / MPS encoder.
+            video_t5_trim.install(pipe, logger)
             diffusion_prompt_cache.install(
                 pipe,
                 identity = {
@@ -13632,10 +13677,8 @@ class VideoBackend:
                         else "lossless optimisations only; the denoiser is in the CPU-offload rotation"
                     ),
                 ),
-                "attention_backend": (
-                    attention_backend,
-                    attention_engaged or "native",
-                    attention_status_reason(attention_backend, attention_engaged),
+                "attention_backend": attention_resolved_entry(
+                    attention_backend, attention_engaged, speed_view, target = umem_target
                 ),
                 "int8_attention": int8_resolved_entry(
                     int8_policy,
@@ -13681,6 +13724,7 @@ class VideoBackend:
             }
         )
         int8_annotate_resolved(resolved, int8_policy, speed_view)
+        annotate_attention_resolved(resolved, speed_view)
         autoopt.record_load_steps(
             h3_audit,
             attention = attention_engaged,
@@ -15093,6 +15137,10 @@ class VideoBackend:
                     diffusion_cuda_graph.set_bypass(
                         graph_handles, cache_breaks_graph(state.transformer_cache)
                     )
+                from .video_vae_untiled import untiled_decode_stats
+
+                vae_stats_before = untiled_decode_stats(pipe)
+                fbcache_counts(_skip_pipe(state, pipe), reset = True)
                 if static_skip:
                     # Auto skip was measured on text-to-video only.
                     conditioned = bool(first_pil is not None or last_pil is not None or references)
@@ -15188,6 +15236,9 @@ class VideoBackend:
                     if previewer is not None:
                         previewer.finish()
                     settle_compile_fallback(state, pipe, logger)
+                    _record_render_engagement(
+                        pipe, _skip_pipe(state, pipe), vae_stats_before, logger
+                    )
                     if static_skip:
                         logger.debug(
                             "video.step_skip: %s", static_skip_stats(_skip_pipe(state, pipe))
@@ -16458,6 +16509,7 @@ class VideoBackend:
             "packed_weights": _grouped_form_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
+            "render_engagement": _render_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
@@ -16516,6 +16568,41 @@ def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
 
 _backend: Optional[VideoBackend] = None
 _backend_lock = threading.Lock()
+
+
+_RENDER_ENGAGEMENT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _keep_render_engagement(pipe: Any, record: dict) -> None:
+    try:
+        _RENDER_ENGAGEMENT[pipe] = record
+    except TypeError:
+        pass
+
+
+def _record_render_engagement(
+    pipe: Any, cache_pipe: Any, vae_before: Optional[dict], logger: Any
+) -> None:
+    """Log and keep (on the pipe, for status) the clip's VAE decode route and FBCache decisions. Host counters only."""
+    try:
+        from .video_vae_untiled import decode_stats_delta, untiled_decode_stats
+
+        vae = decode_stats_delta(vae_before, untiled_decode_stats(pipe))
+        cache = fbcache_counts(cache_pipe, reset = True)
+        record = {"vae_decode": vae, "fbcache": cache}
+        _keep_render_engagement(pipe, record)
+        if vae is not None or cache is not None:
+            logger.info("video.engagement: vae_decode=%s fbcache=%s", vae, cache)
+    except Exception as exc:  # noqa: BLE001 - diagnostics never fail a render
+        logger.debug("video.engagement: not recorded (%s)", exc)
+
+
+def _render_engagement(pipe: Any) -> Optional[dict]:
+    try:
+        record = _RENDER_ENGAGEMENT.get(pipe) if pipe is not None else None
+    except TypeError:
+        record = None
+    return dict(record) if isinstance(record, dict) else None
 
 
 def _graph_engagement(pipe: Any) -> Optional[dict]:

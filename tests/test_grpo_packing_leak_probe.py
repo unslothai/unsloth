@@ -200,3 +200,17 @@ def test_probe_restores_int4_quant_state_training():
     _namespace()[PROBE](_trainer(), model)
     assert {name: m.training for name, m in model.named_modules()} == before
     assert layer.training and qs.training is True
+
+
+def test_probe_restores_a_child_shared_by_two_parents():
+    # One Dropout instance under two blocks: modules() yields it once, so restoring the later (training) block
+    # recursively must not leave the shared child, saved in eval mode, in training mode.
+    model = _tiny("llama").train()
+    shared = torch.nn.Dropout(0.5)
+    model.model.layers[0].shared_dropout = shared
+    model.model.layers[1].shared_dropout = shared
+    shared.eval()
+    before = {name: m.training for name, m in model.named_modules(remove_duplicate = False)}
+    _namespace()[PROBE](_trainer(), model)
+    assert shared.training is False
+    assert {name: m.training for name, m in model.named_modules(remove_duplicate = False)} == before

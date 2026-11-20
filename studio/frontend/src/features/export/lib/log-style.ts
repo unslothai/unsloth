@@ -38,3 +38,32 @@ export function getExportLogLineClass(entry: ExportLogEntry): string {
   }
   return "";
 }
+
+export const EXPORT_LOG_GROUP_SIZE = 100;
+
+export interface ExportLogGroup {
+  key: number;
+  start: number;
+  entries: ExportLogEntry[];
+}
+
+/** Fixed absolute blocks: a trim touches only the first, an append only the last. */
+export function groupExportLogLines(
+  lines: readonly ExportLogEntry[],
+  base: number,
+  size: number = EXPORT_LOG_GROUP_SIZE,
+): ExportLogGroup[] {
+  const groups: ExportLogGroup[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const start = base + i;
+    const end = Math.min(lines.length, i + size - (start % size));
+    groups.push({
+      key: Math.floor(start / size),
+      start,
+      entries: lines.slice(i, end),
+    });
+    i = end;
+  }
+  return groups;
+}

@@ -572,15 +572,18 @@ def _finalize(
     trainer,
     stop = (False, True),
     checkpoint_ok = True,
+    output_dir = "/out",
+    owns_output_dir = False,
 ):
     events = []
     _worker._finalize_mlx_training(
         trainer,
         lambda: stop,
-        "/out",
+        output_dir,
         lambda: None,
         lambda event_type, **payload: events.append((event_type, payload)),
         lambda: checkpoint_ok,
+        owns_output_dir = owns_output_dir,
     )
     return events
 
@@ -627,12 +630,53 @@ def test_mlx_rank0_save_failure_reaches_every_rank():
 
 def test_mlx_single_process_finalization_keeps_prior_contract():
     trainer = _FakeRankTrainer()
+    trainer._global_step = 3
     assert _finalize(trainer, stop = (True, False))[-1][1]["status_message"] == "Training cancelled"
     assert trainer.saved == []
 
     events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
     assert trainer.saved == ["/out"]
     assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
+
+
+@pytest.mark.parametrize(
+    "rank, world_size, owns_output_dir",
+    [(0, 1, True), (0, 2, True), (1, 2, True), (0, 1, False)],
+)
+def test_mlx_stop_before_first_step_saves_nothing_and_is_not_an_error(
+    tmp_path, rank, world_size, owns_output_dir
+):
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / _worker.ROW_BOUND_MARKER_FILE).write_text("{}")
+    trainer = _FakeRankTrainer(rank = rank, world_size = world_size)
+    trainer._global_step = 0
+    events = _finalize(
+        trainer,
+        stop = (True, True),
+        checkpoint_ok = False,
+        output_dir = str(out),
+        owns_output_dir = owns_output_dir,
+    )
+    assert trainer.saved == []
+    # Only the main rank removes the folder, and only one this run created.
+    assert out.exists() == (rank != 0 or not owns_output_dir)
+    assert events[-1] == (
+        "complete",
+        {"output_dir": None, "saved": False, "status_message": "Training stopped"},
+    )
+
+
+def test_mlx_stop_before_first_step_keeps_an_output_dir_with_other_files(tmp_path):
+    (tmp_path / _worker.ROW_BOUND_MARKER_FILE).write_text("{}")
+    (tmp_path / "keep.txt").write_text("x")
+    trainer = _FakeRankTrainer()
+    trainer._global_step = 0
+    events = _finalize(trainer, stop = (True, True), output_dir = str(tmp_path), owns_output_dir = True)
+    assert events[-1][1]["saved"] is False
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [_worker.ROW_BOUND_MARKER_FILE, "keep.txt"]
+    )
 
 
 def _adapter_setup_block():

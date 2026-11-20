@@ -226,6 +226,11 @@ fn paints_on_cpu(
             .is_some_and(compositing_disabled_by)
 }
 
+/// TextureMapper (before Skia in 2.54) blurs later layers into a backdrop-filter: index.css `webkit-legacy-compositor`.
+pub fn legacy_compositor(webkit_version: (u32, u32, u32)) -> bool {
+    webkit_version < (2, 54, 0)
+}
+
 /// Lenient: matching `"0"` byte for byte would strand someone who wrote `false` on the
 /// fallback they were opting out of.
 fn compositing_setting(value: &OsStr) -> Option<bool> {
@@ -2415,6 +2420,16 @@ mod tests {
             webkit_version,
             inputs,
         )
+    }
+
+    #[test]
+    fn the_legacy_compositor_is_every_webkitgtk_before_2_54_whatever_paints() {
+        // Not cpu_painting: 2.54 forced onto the CPU (WEBKIT_SKIA_ENABLE_CPU_RENDERING) composites with Skia.
+        assert!(legacy_compositor((2, 52, 6)));
+        assert!(legacy_compositor((2, 53, 92)));
+        assert!(!legacy_compositor((2, 54, 0)));
+        assert!(!legacy_compositor((2, 54, 2)));
+        assert!(!legacy_compositor((3, 0, 0)));
     }
 
     #[test]

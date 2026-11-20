@@ -2496,7 +2496,11 @@ def _copy_module(module: Any, device: Any) -> Any:
         keep.append(buffer)
     from .diffusion_flux_convrot_fused import is_replica_record as f3_qkv_record
     from .diffusion_flux_convrot_fused import rebuild_replica as f3_qkv_rebuild
+    from .diffusion_moss_fused import is_replica_record as moss_qkv_record
+    from .diffusion_moss_fused import rebuild_replica as moss_qkv_rebuild
     from .diffusion_qwenimage21_dense_fused import is_replica_record, rebuild_replica
+    from .diffusion_zimage_fused import is_replica_record as zimage_qkv_record
+    from .diffusion_zimage_fused import rebuild_replica as zimage_qkv_rebuild
 
     for sub in module.modules():
         offload_keys = set(_offload_attr_keys(sub))
@@ -2507,6 +2511,8 @@ def _copy_module(module: Any, device: Any) -> Any:
                 or key in _SOURCE_ONLY_ATTRS
                 or is_replica_record(key, value)
                 or f3_qkv_record(key, value)
+                or moss_qkv_record(key, value)
+                or zimage_qkv_record(key, value)
             ):
                 # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
                 # source-only cache holds source-card tensors
@@ -2521,6 +2527,9 @@ def _copy_module(module: Any, device: Any) -> Any:
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
+    if "_unsloth_adaln" in module.__dict__:
+        from .diffusion_adaln_precompute import replica_memo
+        replica_memo(module, device, memo)
     # A baked LoRA's scale pinned as a 0-d device tensor (diffusion._pin_baked_lora_scales) lives in a plain dict,
     # not a buffer: the copy needs its own on ``device``.
     for sub in module.modules():
@@ -2557,6 +2566,11 @@ def _copy_module(module: Any, device: Any) -> Any:
         f3_qkv_rebuild(module, replica)
     except Exception:  # noqa: BLE001 - the replica runs three GEMMs
         pass
+    for rebuild in (moss_qkv_rebuild, zimage_qkv_rebuild):
+        try:
+            rebuild(module, replica)
+        except Exception:  # noqa: BLE001 - the replica runs three GEMMs
+            pass
     if isinstance(router, CfgParallelRouter) and router.had_override:
         _rebind_root_forward(router.orig_forward, module, replica)
     # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.
@@ -2594,7 +2608,11 @@ def _copy_module(module: Any, device: Any) -> Any:
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController", "StepPolicy"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
+# AdaLN precompute's state (a lock, tables on the source card): the replica gets the real modulation modules instead
+# (diffusion_adaln_precompute.replica_memo).
+_SOURCE_ONLY_ATTRS = frozenset(
+    {"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas", "_unsloth_adaln"}
+)
 
 
 def _shared_state_values(sub: Any) -> list:
@@ -3417,6 +3435,14 @@ class CfgParallelRouter:
         inner = self.inner
         return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
 
+    def _arm(self, args: tuple, kwargs: dict) -> None:
+        """AdaLN precompute rows for a source call on inputs other than the outer call's (a batch half): the pre-hook
+        armed the whole batch."""
+        module = self.module_ref()
+        if module is not None and "_unsloth_adaln" in module.__dict__:
+            from .diffusion_adaln_precompute import arm_call
+            arm_call(module, args, kwargs)
+
     def _primary_noting(self, sig: Optional[tuple], args: tuple, kwargs: dict) -> Any:
         sig = self._signature(args, kwargs) if sig is None else sig
         job = self._pair_job
@@ -3556,10 +3582,16 @@ class CfgParallelRouter:
             ]
         except TypeError as exc:
             return self._skip_split(f"unsplittable input ({exc})")
+
         # inside the denoiser's own call: its root hooks already wrap the whole batch, so run_pair need not refuse them
-        res = self.run_pair(lambda: self._primary_noting(None, a0, k0), a1, k1, inside_call = True)
+        def first_half() -> Any:
+            self._arm(a0, k0)
+            return self._primary_noting(None, a0, k0)
+
+        res = self.run_pair(first_half, a1, k1, inside_call = True)
         if res is None:
             self._skip_split(f"pair not run ({self.disabled_reason or 'replica unavailable'})")
+            self._arm(args, kwargs)  # the caller runs the whole batch: its rows, not a half's
         # run_pair forgets the step: keep this one's latent so the next call is read as a new step
         self.prev_latent = latent
         self.branch = 0
@@ -3567,6 +3599,7 @@ class CfgParallelRouter:
             return None
         first, second = res
         if second is None:
+            self._arm(a1, k1)
             second = self._primary(*a1, **k1)
         if joins_all:
             try:

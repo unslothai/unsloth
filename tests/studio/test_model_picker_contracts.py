@@ -1753,9 +1753,10 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < text.index(
             'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
+        # The guard may release the pick first (dropReleasedPick, #18420); it must still return true.
         guards = re.findall(
             r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
-            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return (\w+);",
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*(?:\w+\([^;{}]*\);\s*)*)?return (\w+);",
             text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
@@ -1765,7 +1766,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         tail = text[text.rindex("} catch") :]
         assert re.search(
             r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
-            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return true;.*?return handleLoadRef",
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*(?:\w+\([^;{}]*\);\s*)*)?return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"

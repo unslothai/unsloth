@@ -919,12 +919,18 @@ def test_status_passthrough(client, monkeypatch):
         "artifact": None,
         "replaced": None,
         "steps": None,
+        "engaged": None,
+        "modules": None,
+        "routed": None,
     }
     assert body["resolved"]["text_encoder_quant"] == {
         **resolved["text_encoder_quant"],
         "artifact": None,
         "replaced": None,
         "steps": None,
+        "engaged": None,
+        "modules": None,
+        "routed": None,
     }
     assert body["resolved"]["speed_mode"]["requested"] is None
     assert body["resolved"]["speed_mode"]["status"] == "applied"

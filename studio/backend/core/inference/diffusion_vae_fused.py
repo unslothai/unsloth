@@ -1825,6 +1825,135 @@ def _accepts_first_chunk(decoder: Any) -> bool:
         return False
 
 
+def _cat_format(t: Any) -> Any:
+    """The memory format ``torch.cat`` gives a result built from tensors laid out like ``t``."""
+    torch = _torch()
+    if (
+        t.dim() == 5
+        and not t.is_contiguous()
+        and t.is_contiguous(memory_format = torch.channels_last_3d)
+    ):
+        return torch.channels_last_3d
+    return torch.contiguous_format
+
+
+class _FrameSink:
+    """``torch.cat(frames, dim = 2)`` without every frame and the result alive at once: from the second chunk on, the
+    output is one buffer sized as the first chunk's frames plus the second's for every later chunk (Wan: 1 + 4 per
+    latent frame), and each chunk is copied in as it arrives. A chunk of another size falls back to the cat."""
+
+    def __init__(self, chunks: int) -> None:
+        self.chunks = chunks
+        self.parts: list = []
+        self.buf = None
+        self.filled = 0
+        self.step = 0
+
+    def add(self, frame: Any) -> None:
+        torch = _torch()
+        if self.buf is None and len(self.parts) == 1 and self.chunks > 2:
+            first = self.parts[0]
+            shape = list(first.shape)
+            if (
+                frame.dim() == first.dim() == 5
+                and frame.dtype == first.dtype
+                and frame.device == first.device
+                and list(frame.shape[:2]) == shape[:2]
+                and list(frame.shape[3:]) == shape[3:]
+            ):
+                self.step = frame.shape[2]
+                shape[2] = first.shape[2] + self.step * (self.chunks - 1)
+                self.buf = torch.empty(
+                    shape, dtype = first.dtype, device = first.device, memory_format = _cat_format(first)
+                )
+                self.buf[:, :, : first.shape[2]].copy_(first)
+                self.filled = first.shape[2]
+                self.parts = []
+        if self.buf is not None and not self.parts:
+            end = self.filled + frame.shape[2]
+            if (
+                frame.shape[2] == self.step
+                and end <= self.buf.shape[2]
+                and frame.dtype == self.buf.dtype
+                and frame.shape[:2] == self.buf.shape[:2]
+                and frame.shape[3:] == self.buf.shape[3:]
+            ):
+                self.buf[:, :, self.filled : end].copy_(frame)
+                self.filled = end
+                return
+            # an unexpected chunk size: the written prefix and the rest are concatenated as before
+            self.parts = [self.buf[:, :, : self.filled]]
+        self.parts.append(frame)
+
+    def result(self) -> Any:
+        torch = _torch()
+        if self.buf is not None and not self.parts:
+            return self.buf if self.filled == self.buf.shape[2] else self.buf[:, :, : self.filled]
+        out = torch.cat(self.parts, dim = 2)
+        self.parts = []
+        self.buf = None
+        return out
+
+
+def _assemble_tiles(
+    rows: list,
+    blend_h: int,
+    blend_w: int,
+    out_sh: int,
+    out_sw: int,
+    sample_height: int,
+    sample_width: int,
+    patch: Optional[int],
+) -> Any:
+    """Stock ``tiled_decode``'s blend + crop + ``torch.cat`` of rows and columns + ``[:sample_height, :sample_width]``
+    (+ ``unpatchify``), written into one preallocated output: each tile is blended exactly as stock (the tile above
+    and the tile to the left, both already blended), its crop is copied to its place (unpatchified on the way), and a
+    row's tiles are dropped once the next row has blended against them. Bit-identical; peak is the output plus the
+    tiles still needed instead of the tiles plus the row cat plus the full cat (plus the unpatchify copy)."""
+    torch = _torch()
+    p = int(patch) if patch is not None else 1
+    first = rows[0][0]
+    # crop extents, as stock's tile[:, :, :, :out_sh, :out_sw]
+    hs = [min(r[0].shape[-2], out_sh) for r in rows]
+    ws = [min(t.shape[-1], out_sw) for t in rows[0]]
+    full_h, full_w = min(sum(hs), sample_height), min(sum(ws), sample_width)
+    b, c, f = first.shape[0], first.shape[1], first.shape[2]
+    if p > 1:
+        shape = (b, c // (p * p), f, full_h * p, full_w * p)
+    else:
+        shape = (b, c, f, full_h, full_w)
+    # stock's unpatchify ends in .contiguous(); without a patch the layout is the cat's
+    fmt = torch.contiguous_format if p > 1 else _cat_format(first)
+    out = torch.empty(shape, dtype = first.dtype, device = first.device, memory_format = fmt)
+    y = 0
+    for ri, row in enumerate(rows):
+        x = 0
+        for ci, tile in enumerate(row):
+            if ri > 0:
+                tile = blend_seam(rows[ri - 1][ci], tile, blend_h, -2)
+            if ci > 0:
+                tile = blend_seam(row[ci - 1], tile, blend_w, -1)
+            row[ci] = tile
+            th = min(hs[ri], full_h - y)
+            tw = min(min(tile.shape[-1], out_sw), full_w - x)
+            if th > 0 and tw > 0:
+                crop = tile[:, :, :, :th, :tw]
+                if p > 1:
+                    from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
+                    out[:, :, :, y * p : (y + th) * p, x * p : (x + tw) * p].copy_(
+                        unpatchify(crop, patch_size = p)
+                    )
+                else:
+                    out[:, :, :, y : y + th, x : x + tw].copy_(crop)
+            x += min(tile.shape[-1], out_sw)
+        if ri > 0:
+            rows[ri - 1] = (
+                None  # its bottom band is no longer read: free it (and its batch, once all views go)
+            )
+        y += hs[ri]
+    return out
+
+
 def _wan_batched_tiled_decode(
     self: Any,
     z: Any,
@@ -1863,15 +1992,14 @@ def _wan_batched_tiled_decode(
     def decode_tiles(chunk: list) -> Any:
         zt = torch.cat([z[:, :, :, i : i + tmh, j : j + tmw] for i, j in chunk], 0)
         self.clear_cache()
-        frames = []
+        frames = _FrameSink(num_frames)
         for k in range(num_frames):
             self._conv_idx = [0]
             tile = self.post_quant_conv(zt[:, :, k : k + 1])
             kw = {"first_chunk": k == 0} if first_chunk else {}
-            frames.append(
-                self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw)
-            )
-        return torch.cat(frames, dim = 2)
+            frames.add(self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw))
+            del tile
+        return frames.result()
 
     for members in groups.values():
         s = 0
@@ -1888,25 +2016,15 @@ def _wan_batched_tiled_decode(
                 continue
             for n, key in enumerate(chunk):
                 tiles[key] = out[n : n + 1]
+            del out
             s += len(chunk)
     self.clear_cache()
-    rows = [[tiles[(i, j)] for j in cols_j] for i in rows_i]
-    result_rows = []
-    for ri, row in enumerate(rows):
-        result_row = []
-        for ci, tile in enumerate(row):
-            if ri > 0:
-                tile = blend_seam(rows[ri - 1][ci], tile, blend_h, -2)
-            if ci > 0:
-                tile = blend_seam(row[ci - 1], tile, blend_w, -1)
-            result_row.append(tile[:, :, :, :out_sh, :out_sw])
-        result_rows.append(torch.cat(result_row, dim = -1))
-    dec = torch.cat(result_rows, dim = 3)[:, :, :, :sample_height, :sample_width]
-    if patch is not None:
-        from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
-        dec = unpatchify(dec, patch_size = patch)
+    rows = [[tiles.pop((i, j)) for j in cols_j] for i in rows_i]
+    dec = _assemble_tiles(
+        rows, blend_h, blend_w, out_sh, out_sw, sample_height, sample_width, patch
+    )
     if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
-        dec = torch.clamp(dec, min = -1.0, max = 1.0)
+        dec.clamp_(min = -1.0, max = 1.0)  # dec is this decode's own buffer: in place, one copy less
     if not return_dict:
         return (dec,)
     return DecoderOutput(sample = dec)
