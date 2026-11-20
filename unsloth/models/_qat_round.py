@@ -172,7 +172,25 @@ def _rewritten(quantizer, weight):
     if not isinstance(record, _RoundRecord) or record.state is None:
         quantizer.__dict__[_RECORD] = _adopted_record(weight, state)
         return False
-    return state != record.state and not _same_rounded_values(record, weight, state)
+    if state == record.state and not _unversioned_write(record, weight, state):
+        return False
+    return not _same_rounded_values(record, weight, state)
+
+
+def _unversioned_write(record, weight, state):
+    """An inference tensor has no version counter: an in place write (a reload under inference mode) keeps its
+    (pointer, None) state, so compare its values with the rounding checksum instead. False when it cannot tell."""
+    if (
+        state is None
+        or state[1] is not None
+        or not isinstance(record, _RoundRecord)
+        or record.checksum is None
+    ):
+        return False
+    try:
+        return list(_checksum(weight)) != list(record.checksum[1])
+    except Exception:
+        return False
 
 
 def _adopted_record(weight, state):
@@ -317,7 +335,7 @@ def _after_load(module, incompatible_keys):
     same, before = info
     weight = module._parameters.get("weight")
     state = _weight_state(weight)
-    if state == before:
+    if state == before and not _unversioned_write(quantizer.__dict__.get(_RECORD), weight, state):
         return  # not written (for example a failed shape check)
     if same:
         # Rounded values (another prepared model's state_dict, or this model's own): already on the grid. int8 /
