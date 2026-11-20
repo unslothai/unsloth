@@ -769,6 +769,8 @@ def native_linear_class():
                 if tile is not None:
                     try:
                         return _cut.native_gemm(xq, self.weight_q, x_scale, w_scale, tile)
+                    except torch.cuda.OutOfMemoryError:
+                        raise  # _int_mm's int32 accumulator is larger; the plan is not at fault
                     except Exception:  # noqa: BLE001 - the stock maths below
                         _cut._NATIVE_PLAN.clear()
             acc = torch._int_mm(xq, self.weight_q.t())
@@ -913,6 +915,8 @@ def native_linear_class():
                     _CUT16_CALLS[0] += 1
                     _FUSED_STATE["calls"] = _FUSED_STATE.get("calls", 0) + 1
                     return out
+                except torch.cuda.OutOfMemoryError:
+                    raise  # as for the codes: _int_mm needs more, and every plan stays valid
                 except Exception:  # noqa: BLE001 - the same maths in eager below
                     _cut._NATIVE_PLAN.clear()
             acc = torch._int_mm(xq, self.weight_q.t())
