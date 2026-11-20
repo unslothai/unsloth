@@ -21,9 +21,11 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import {
   type ApiKey,
+  type ApiKeyAccess,
   createApiKey,
   fetchApiKeys,
   revokeApiKey,
+  updateApiKeyAccess,
 } from "../api/api-keys";
 import { apiKeyActionMessage } from "../components/api-key-action-message";
 import {
@@ -66,10 +68,12 @@ export function ApiKeysTab() {
   const [revoking, setRevoking] = useState(false);
   const [regenerate, setRegenerate] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const [revealedKey, setRevealedKey] = useState<ApiKey | null>(null);
   // The examples read the store, not `revealed`: that dies with this tab and on Done.
   const freshKey = useFreshApiKeyStore((s) => s.key);
-  const reveal = (raw: string) => {
+  const reveal = (raw: string, apiKey: ApiKey) => {
     setRevealed(raw);
+    setRevealedKey(apiKey);
     useFreshApiKeyStore.getState().setKey(raw);
   };
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
@@ -93,6 +97,19 @@ export function ApiKeysTab() {
       setLoading(false);
     }
   }, []);
+
+  const changeRevealedAccess = async (access: ApiKeyAccess) => {
+    if (!revealedKey) return;
+    setActionError(null);
+    try {
+      setRevealedKey(await updateApiKeyAccess(revealedKey.id, access));
+      await load();
+    } catch (cause) {
+      setActionError(
+        apiKeyActionMessage(translate("settings.apiKeys.accessError"), cause),
+      );
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -127,8 +144,9 @@ export function ApiKeysTab() {
         const created = await createApiKey(
           revokeTarget.name,
           expiryDays(revokeTarget),
+          revokeTarget.access,
         );
-        reveal(created.key);
+        reveal(created.key, created.api_key);
       }
       await revokeApiKey(revokeTarget.id);
       useFreshApiKeyStore.getState().forgetIfRevoked(revokeTarget.key_prefix);
@@ -206,6 +224,8 @@ export function ApiKeysTab() {
             >
               <KeyRevealCard
                 rawKey={revealed}
+                access={revealedKey?.access ?? "full"}
+                onAccessChange={changeRevealedAccess}
                 onDone={() => setRevealed(null)}
               />
             </motion.div>
@@ -218,8 +238,8 @@ export function ApiKeysTab() {
               transition={transition}
             >
               <CreateKeyForm
-                onCreated={(raw) => {
-                  reveal(raw);
+                onCreated={(raw, apiKey) => {
+                  reveal(raw, apiKey);
                   void load();
                 }}
                 onError={setActionError}

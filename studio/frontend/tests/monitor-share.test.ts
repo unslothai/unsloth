@@ -13,6 +13,7 @@ import {
   modelShares,
   poolSplit,
 } from "../src/components/monitor-share.ts";
+import { describeInferenceStatus } from "../src/features/loaded-models/loaded-models-sources.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 test("Unsloth's share is split out of used memory and never exceeds it", () => {
@@ -51,13 +52,20 @@ test("both toggles are off by default and only poll loaded models when one is on
   assert.match(store, /showModelBreakdown: false/);
   assert.match(
     readSrc("features/settings/tabs/resources-tab.tsx"),
-    /useLoadedModels\(\s*wantsModels,\s*wantsModels,?\s*\)/,
+    /useLoadedModels\(\s*wantsModelRows,\s*wantsModelRows,?\s*\)/,
+  );
+  assert.match(
+    readSrc("features/settings/tabs/resources-tab.tsx"),
+    /const wantsModelRows = wantsModels \|\| npuActive\(npuStatus\);/,
   );
   // Floating monitor: mounted only while a toggle is on, and lazy (a static import breaks the startup chunking).
   const monitor = readSrc("components/floating-monitor.tsx");
   assert.match(monitor, /lazy\(\(\) => import\("\.\/monitor-loaded-models"\)\)/);
   // Not while suppressed beside Run settings: nothing shows it.
-  assert.match(monitor, /\{wantsModels && !suppressed && \(\s*<Suspense/);
+  assert.match(
+    monitor,
+    /\{\(wantsModels \|\| npuActive\(npuStatus\)\) && !suppressed && \(\s*<Suspense/,
+  );
 });
 
 test("Unsloth's share never reads below the models it holds in that pool", () => {
@@ -236,4 +244,33 @@ test("on a GPU host a proven CPU model is broken down in RAM, a GPU one in VRAM"
     ["model", "C", 2], ["app", null, 4], ["other", null, 14], ["free", null, 12],
   ]);
   assert.deepEqual(split.vram?.map((s) => [s.kind, s.gb]), [["model", 4], ["unattributed", 6], ["free", 14]]);
+});
+
+test("a resident NPU model is named on the RAM bar, where its weights live", () => {
+  const npuStatus = (sized: boolean) =>
+    describeInferenceStatus({
+      active_model: "qwen3.5-9b-FLM",
+      model_identifier: "lemonade:qwen3.5-9b-FLM",
+      is_npu: true,
+      is_vision: false,
+      loading: [],
+      loaded: ["lemonade:qwen3.5-9b-FLM"],
+      ...(sized ? { resident_mib: 6144, resident_on_gpu: false } : {}),
+    } as Parameters<typeof describeInferenceStatus>[0]);
+  const base = {
+    showShare: true, showBreakdown: true, inferenceGpuElsewhere: false,
+    processGb: 8, ramUsedGb: 20, ramTotalGb: 31.8, vramUsedGb: 2, vramTotalGb: 32,
+  };
+  // An unsized NPU row (what /status sent before) names nothing, and blanks a discrete VRAM bar.
+  const unsized = poolSplit({ ...base, entries: npuStatus(false), modelsInVram: true });
+  assert.equal(unsized.ram?.some((s) => s.kind === "model"), false);
+  assert.equal(unsized.vram, null);
+  for (const modelsInVram of [false, true]) {
+    const split = poolSplit({ ...base, entries: npuStatus(true), modelsInVram });
+    assert.deepEqual(
+      split.ram?.map((s) => [s.kind, s.name ?? null, s.gb]),
+      [["model", "qwen3.5-9b-FLM", 6], ["app", null, 2], ["other", null, 12], ["free", null, 31.8 - 20]],
+    );
+    assert.equal(split.vram?.some((s) => s.kind === "model") ?? false, false);
+  }
 });

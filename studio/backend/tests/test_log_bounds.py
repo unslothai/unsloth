@@ -41,7 +41,12 @@ def _python_retention_sources() -> str:
     """Every Python file that could plausibly prune a log directory."""
     backend = Path(_BACKEND_DIR)
     parts = []
-    for relative in ("run.py", "utils/log_retention.py", "core/inference/llama_cpp.py"):
+    for relative in (
+        "run.py",
+        "utils/log_retention.py",
+        "core/inference/llama_cpp.py",
+        "core/inference/lemonade_server.py",
+    ):
         path = backend / relative
         if path.is_file():
             parts.append(path.read_text(encoding = "utf-8", errors = "replace"))
@@ -92,6 +97,7 @@ class TestFamiliesAreBounded:
             "server",
             "llama-server",
             "diffusion-server",
+            "lemonade",
             "desktop-backend",
             "desktop-install",
             "desktop-update",

@@ -3170,6 +3170,42 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     assert events.index(provisional[0]) < events.index(gated[0])
 
 
+def test_gated_mcp_call_streams_its_arguments_before_approval(monkeypatch):
+    """An MCP call waiting for approval (an editor script, say) fills its card while the model writes it, not all at once at the end."""
+
+    name = "mcp__unreal__call_tool"
+    script = "import unreal\n" + "\n".join(f"unreal.log('step {i}')" for i in range(80))
+    arguments = {"tool_name": "execute_tool_script", "arguments": {"script": script}}
+    assert len(json.dumps(arguments)) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_structured_tool_call(name, arguments, "call_mcp_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: "deny")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "build a village in Unreal"}],
+        [{"type": "function", "function": {"name": name}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["tool_call_id"] == "call_mcp_gated"
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert len(args_events) > 1, "gated MCP call streamed no arguments"
+    assert "step 79" in "".join(e["text"] for e in args_events)
+
+    gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
+    assert gated, tool_starts
+    assert events.index(args_events[0]) < events.index(gated[0])
+    assert gated[0]["tool_call_id"] == "call_mcp_gated"  # the same card asks, not a second one
+
+
 @pytest.mark.parametrize("verdict", ["allow", "deny"])
 def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
     first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_gated")
@@ -7476,3 +7512,176 @@ def test_no_post_tool_nudge_when_only_the_user_can_unblock(monkeypatch):
     )
     content = "".join(e.get("text", "") for e in events if e.get("type") == "content")
     assert len(payloads) == 2 and "I will make the song" in content
+
+
+def test_a_released_nudge_retry_records_its_reasoning_wrap(monkeypatch):
+    """A held-back retry shown after all must record its wrap, or its reasoning reads as answer."""
+    trace = "Think </think> and <tool_call>{}</tool_call> again."
+    streams = [
+        [
+            _sse({"reasoning_content": "Plan."}),
+            _sse({"content": "I will search the web now."}),
+            _done(),
+        ],
+        [
+            _sse({"reasoning_content": trace}),
+            _sse({"content": "The square "}),
+            _sse({"reasoning_content": "Check."}),
+            _sse({"content": "is red."}),
+            _done(),
+        ],
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, streams)
+    ledger = {"wrapped": 0}
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Make a red square."}],
+        [_web_search_tool()],
+        nudge_tool_calls = True,
+        reasoning_provenance = ledger,
+    )
+
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    shown = f"<think>{trace}</think>The square <think>Check.</think>is red."
+    assert content_texts[-1] == shown
+    assert ledger["wraps"][-1] == {"len": len(trace)}
+    assert ledger["later"][-1] == {"len": len("Check."), "at": shown.index("<think>Check.")}
+
+
+def _screenshot_chain_payloads(monkeypatch, calls: int, context_overflow):
+    """A chain of one-screenshot MCP calls through the real loop; returns each request's messages."""
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image as _Image
+
+    from core.inference import mcp_images
+    from core.inference.context_window import estimate_messages_tokens_dense
+
+    def shot(index):
+        buffer = _io.BytesIO()
+        _Image.new("RGB", (64, 40), ((index * 37) % 256, (index * 91) % 256, 7)).save(
+            buffer, format = "PNG"
+        )
+        image = {"data": _b64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}
+        return "[1 image returned]\n" + mcp_images.SENTINEL + json.dumps([image])
+
+    streams = [
+        _structured_tool_call("mcp__d__screenshot", {"step": i}, f"call_{i}") for i in range(calls)
+    ] + [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    backend._effective_context_length = 65536
+    monkeypatch.setattr("core.inference.llama_cpp._mcp_image_tokens", lambda _backend: 300)
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_k: estimate_messages_tokens_dense(messages),
+    )
+    counter = iter(range(calls))
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: shot(next(counter)),
+    )
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Switch the desktop to dark mode."}],
+            tools = [{"type": "function", "function": {"name": "mcp__d__screenshot"}}],
+            max_tool_iterations = calls + 2,
+            permission_mode = "off",
+            context_overflow = context_overflow,
+        )
+    )
+    return [payload["messages"] for payload in payloads]
+
+
+def _image_count(messages) -> int:
+    return sum(
+        1
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if isinstance(part, dict) and part.get("type") == "image_url"
+    )
+
+
+def test_a_compacting_screenshot_chain_keeps_every_picture_append_only(monkeypatch):
+    """#18231: dropping the oldest picture past 8 shifted the prompt at its first image turn, so
+    llama-server re-read the whole chain on every call; with compaction on nothing is dropped."""
+    requests = _screenshot_chain_payloads(monkeypatch, 12, "truncate_oldest")
+
+    assert [_image_count(messages) for messages in requests] == list(range(13))
+    assert all(
+        requests[index][: len(requests[index - 1])] == requests[index - 1]
+        for index in range(1, len(requests))
+    )
+
+
+def test_without_compaction_the_screenshot_cap_still_steps(monkeypatch):
+    requests = _screenshot_chain_payloads(monkeypatch, 12, None)
+
+    assert [_image_count(messages) for messages in requests] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        5,
+        6,
+        7,
+        8,
+    ]
+
+
+def _mcp_match_exchange(names = ()):
+    from core.inference.tools import build_synthetic_search_exchange
+    exchange = build_synthetic_search_exchange(
+        tool_name = "mcp_tool_search",
+        call_prefix = "mcp_auto_",
+        status_label = "Finding MCP tools",
+        query = "move my page",
+        text = "Loaded 1 MCP tool. Call the one that fits directly, with the parameters in its schema:",
+        sources = None,
+    )
+    return {**exchange, "names": list(names)}
+
+
+@pytest.mark.parametrize(
+    "tool_choice, injected",
+    [
+        (None, True),
+        ("none", False),
+        ({"type": "function", "function": {"name": "render_html"}}, False),
+    ],
+)
+def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choice, injected):
+    stream = [_sse({"content": "done"}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
+    exchange = _mcp_match_exchange()
+    user = {"role": "user", "content": "move it"}
+
+    events = _run_tool_loop(
+        backend,
+        [user],
+        _render_html_tools(),
+        mcp_match_exchange = exchange,
+        tool_choice = tool_choice,
+    )
+
+    sent = payloads[0]["messages"]
+    if injected:
+        assert [m["role"] for m in sent[-3:]] == ["user", "assistant", "tool"]
+        assert sent[-3]["content"] == "move it"
+        assert sent[-2]["tool_calls"][0]["function"]["name"] == "mcp_tool_search"
+        assert sent[-1]["content"] == exchange["messages"][1]["content"]
+        ends = [e for e in events if e.get("type") == "tool_end"]
+        assert [e["tool_name"] for e in ends] == ["mcp_tool_search"]
+        assert ends[0]["result"] == exchange["messages"][1]["content"]
+    else:
+        assert sent[-1]["role"] == "user"
+        assert not any(e.get("type") == "tool_end" for e in events)

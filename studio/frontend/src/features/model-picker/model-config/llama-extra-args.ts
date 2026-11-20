@@ -474,8 +474,8 @@ const MANAGED_CONTROL_FLAGS: Record<string, string> = {
 
 /** The backend appends these last and reconciles sizing ones, so this explains which value wins. */
 const CONTROL_OWNED_FLAGS: Record<string, string> = {
-  "--ctx-size": "Context Length",
-  "-c": "Context Length",
+  "--ctx-size": "Context",
+  "-c": "Context",
   "--batch-size": "Batch Size",
   "-b": "Batch Size",
   "--ubatch-size": "Micro-batch Size",

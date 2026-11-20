@@ -57,6 +57,15 @@ test("conversation visibility scales the conversation dim and wash, and 0 keeps 
 	assert.match(css, /\{ opacity: calc\(\.4 \+ \.6 \* var\(--wallpaper-conversation, 0\)\); \}/);
 	assert.match(css, /calc\(\(1 - var\(--wallpaper-safe, 0\)\) \* \(1 - \.65 \* var\(--wallpaper-conversation, 0\)\) \* 100%\)/);
 });
+test("conversation preview shows the reply on the chat's own wash, not a card the chat never draws", async () => {
+	const { readFile } = await import("node:fs/promises");
+	const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+	const controls = await readFile(new URL("../src/features/chat-background/controls.tsx", import.meta.url), "utf8");
+	assert.match(css, /\[data-wallpaper-reading-surface\]\),\n\.wallpaper-preview\[data-wallpaper-ready\]\[data-wallpaper-ready\] > \.wallpaper-preview-wash \{\n {2}background: color-mix/);
+	assert.match(controls, /\{conversation && <div className="wallpaper-preview-wash absolute inset-0" \/>\}/);
+	assert.doesNotMatch(css, /\.aui-assistant-message-content \{[^}]*background/);
+	assert.doesNotMatch(css + controls, /wallpaper-preview-prose/);
+});
 test("uploads bound processing dimensions", () => {
 	assert.deepEqual(normalizedSize(6000, 4000), [2048, 1365]);
 	assert.deepEqual(normalizedSize(3, 7), [3, 7]);

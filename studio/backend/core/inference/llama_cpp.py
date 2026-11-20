@@ -7,8 +7,10 @@ Manages a llama-server subprocess and proxies chat completions through its
 OpenAI-compatible /v1/chat/completions endpoint.
 """
 
+from core.inference.tool_budget import DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE
 import ast
 import atexit
+import base64
 import bisect
 import collections
 import weakref
@@ -18,6 +20,7 @@ import ctypes
 import errno
 import functools
 import hashlib
+import io
 import itertools
 import json
 import logging
@@ -26,6 +29,7 @@ import os
 import re
 import struct
 from core.inference.inference_gate import holds_inference
+from core.inference.http_stream import SSE_LINE_END
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
@@ -132,6 +136,7 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     ctx_checkpoints_within_host_budget,
     effective_ctx_checkpoints,
+    selects_spec_type,
     parse_ctx_checkpoints_override,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
@@ -500,9 +505,8 @@ from core.inference.mcp_images import (
     is_image_tool as mcp_is_image_tool,
     mentions_images as mcp_images_mentioned_in,
 )
-from core.inference.tool_facts import repeatable
+from core.inference.tool_facts import STEPWISE, repeatable
 from core.inference.tool_loop_controller import (
-    BROWSER_TOOL_NAMES,
     TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
@@ -2352,8 +2356,7 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
 
 # Transport errors can beat the child to reapable; a request cannot wait the 5s MTP reload spends.
 _RESPAWN_REAP_GRACE_S = 1.0
-# Extra --fit-target per mid-session GPU OOM of one load: an identical respawn hits the same
-# allocation once the conversation is replayed (#16177).
+# Extra --fit-target per mid-session OOM; an identical respawn repeats the allocation (#16177).
 _GPU_OOM_HEADROOM_STEP_MIB = 1024.0
 _GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
@@ -2441,11 +2444,17 @@ _FIXED_IMAGE_TOKENS = {"gemma3": 256}
 
 
 def _image_token_price(backend, part: dict) -> int:
-    """One image's prompt cost for the fit and tool-result sizing (#14968): the admission ceiling,
-    unless a known projector gives a closer upper bound (the ceiling evicts history that fits)."""
+    """One image's prompt cost for the fit and tool-result sizing (#14968): llama-server's own count
+    for a size it has counted, else the admission ceiling unless a known projector gives a closer
+    upper bound (the ceiling evicts history that fits)."""
     ceiling = _mcp_image_tokens(backend)
     if ceiling <= 0:
         return 0
+    counts = getattr(backend, "_image_token_counts", None)
+    if counts:
+        dims = image_dimensions(part)
+        if dims in counts:
+            return counts[dims]
     projector = str(getattr(backend, "_mmproj_projector_type", None) or "").strip().lower()
     fixed = _FIXED_IMAGE_TOKENS.get(projector)
     if fixed:
@@ -4112,7 +4121,17 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
             logger.warning("Failed to extract GGUF quant labels: %s", e)
 
     boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
-    return sorted(f for f in main_files if boundary.search(f.lower()))
+    loose = [f for f in main_files if boundary.search(f.lower())]
+    # A bare quant request must not resolve to a longer sibling quant: q6_k is inside UD-Q6_K_XL.
+    if (_quant_label_for_endian(variant_key) or "").lower() == variant_key:
+        # llama.cpp has no _XL type, so Q4_K_XL can only name UD-Q4_K_XL.
+        accepted = (
+            {variant_key, f"ud-{variant_key}"} if variant_key.endswith("_xl") else {variant_key}
+        )
+        loose = [
+            f for f in loose if (_quant_label_for_endian(f) or variant_key).lower() in accepted
+        ]
+    return sorted(loose)
 
 
 def _resolve_variant_gguf_files(
@@ -4594,7 +4613,7 @@ def _mla_mtp_auto_enabled() -> bool:
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
-    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+    return selects_spec_type(extra_args)
 
 
 # Shared with llama_server_args so detection and stripping cannot drift.
@@ -5725,16 +5744,26 @@ def _extra_args_requests_dflash(
     return "draft-dflash" in _accumulated_spec_types(extra_args, env)
 
 
+def _paravirtual_metal_allowed() -> bool:
+    return os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _names_look_virtual(names: str) -> bool:
+    # VMM-x86_64 is the Intel-guest hw.model; "virtual" covers Paravirtual and VirtualMac.
+    low = names.lower()
+    return "virtual" in low or "vmm-" in low
+
+
 @functools.lru_cache(maxsize = 1)
 def _metal_device_is_paravirtual() -> bool:
     """Virtualised Apple GPU can corrupt offload; UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1 overrides. Probe hw.model before SPDisplaysDataType (empty on headless VMs)."""
     if sys.platform != "darwin":
         return False
-    if os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
+    if _paravirtual_metal_allowed():
         logger.info("UNSLOTH_ALLOW_PARAVIRTUAL_METAL set: keeping Metal offload.")
         return False
     name = ""
@@ -5764,8 +5793,7 @@ def _metal_device_is_paravirtual() -> bool:
             if any(m in _out for m in _match):
                 name = f"{name} {probe.stdout}".strip()
                 break
-    _low = name.lower()
-    if "paravirtual" in _low or "virtual" in _low or "vmm-" in _low:
+    if _names_look_virtual(name):
         logger.warning(
             "Metal device looks virtualised (%s). Offload can return corrupt output on "
             "paravirtual Apple GPUs, so GGUF inference will run on CPU. MLX is "
@@ -5774,6 +5802,52 @@ def _metal_device_is_paravirtual() -> bool:
         )
         return True
     return False
+
+
+@functools.lru_cache(maxsize = 1)
+def _metal_device_looks_paravirtual_quick() -> bool:
+    """_metal_device_is_paravirtual for the polled /api/system: no MLX import (parks on a broken stack), no system_profiler (seconds)."""
+    if sys.platform != "darwin" or _paravirtual_metal_allowed():
+        return False
+    names = []
+    mx = sys.modules.get("mlx.core")
+    if mx is not None:
+        try:
+            names.append(str(mx.device_info().get("device_name") or ""))
+        except Exception:
+            pass
+    try:
+        probe = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            encoding = "utf-8",
+            errors = "replace",
+        )
+        names.append(probe.stdout or "")
+    except Exception:
+        pass
+    return _names_look_virtual(" ".join(names))
+
+
+def _metal_devices_env_hides_all(env: Optional[Mapping[str, str]] = None) -> bool:
+    """ggml-metal registers atoi(GGML_METAL_DEVICES) devices when it is set, so below 1 llama-server runs on the CPU."""
+    value = (os.environ if env is None else env).get("GGML_METAL_DEVICES")
+    if value is None:
+        return False
+    # re.ASCII: atoi stops at a full-width digit or a no-break space.
+    match = re.match(r"\s*([+-]?\d+)", value, re.ASCII)
+    return (int(match.group(1)) if match else 0) < 1
+
+
+def _metal_offload_forced_off_for_polling() -> bool:
+    """The paravirtual CPU pin without slow probes: a load's full answer once cached (catches VMs hidden from hw.model), else the quick one."""
+    full = _metal_device_is_paravirtual
+    cache_info = getattr(full, "cache_info", None)
+    if cache_info is not None and cache_info().currsize:
+        return bool(full())
+    return _metal_device_looks_paravirtual_quick()
 
 
 def _paravirtual_probe_answered(server_caps: Mapping[str, object]) -> bool:
@@ -5902,6 +5976,36 @@ _MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-o
 def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
     """Matched via _flag_name: arg.cpp folds underscores to dashes, so --mmproj_offload counts too."""
     return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
+
+
+def _spec_start_failure(output: str) -> tuple[str, str]:
+    """(log reason, spec_fallback_reason) for a llama-server that died with a drafter attached."""
+    lo = output.lower()
+    # Only an unknown arch proves the binary is outdated; a context that could not be created is usually memory.
+    if "unknown model architecture" in lo:
+        return (
+            "the prebuilt may predate it; retrying without speculative decoding -- run "
+            "`unsloth studio update` for this drafter",
+            "binary_outdated",
+        )
+    if any(
+        marker in lo
+        for marker in (
+            "failed to measure draft model memory",
+            "failed to measure mtp context memory",
+            "failed to create mtp context",
+            "failed to create llama_context",
+        )
+    ):
+        return (
+            "its context could not be created, usually too little memory for the drafter at "
+            "this context length and slot count; retrying without speculative decoding",
+            "runtime_error",
+        )
+    return (
+        "retrying without speculative decoding in case the drafter is the cause",
+        "runtime_error",
+    )
 
 
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
@@ -8532,6 +8636,29 @@ _SIGKILL_REAP_TIMEOUT_S = 30
 _QUIT_SIGNAL_EXIT_GRACE_S = 2
 
 
+# llama.cpp's `<arch>.decision.type` values whose only output is decisions
+# (server_model_output_modalities); granite-switch also generates text.
+_DECISION_ONLY_GGUF_TYPES = frozenset(
+    {
+        "openjev",
+        "lev",
+        "kev",
+        "nimble",
+        "laya",
+        "clef",
+        "pplx-decider",
+        "vllm-decision2",
+        "vllm-d3",
+        "lfm2-d1",
+        "lfm2-d1-omni",
+        "h2o-lightning",
+        "openbmb-minicpm-ocr-jev",
+        "lfm3-d1",
+        "lfm3-d1-omni",
+    }
+)
+
+
 class LlamaCppBackend:
     """Held across the teardown check and publish, never a health wait; class-level for __new__ doubles."""
 
@@ -8840,6 +8967,8 @@ class LlamaCppBackend:
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # clip.projector_type set at load; the family whose image-token ceiling KV admission sizes images against.
         self._mmproj_projector_type: Optional[str] = None
+        # Image tokens per (width, height) as llama-server counts them; None once it can't say.
+        self._image_token_counts: Optional[dict] = {}
         # clip.has_vision_encoder, set at load; True keeps an undeclared projector capable.
         self._mmproj_accepts_image: bool = True
         # Set in _kill_process (monotonic); load_model reads it to decide whether to wait for VRAM reclaim.
@@ -8938,6 +9067,54 @@ class LlamaCppBackend:
 
     def _price_image(self, part: dict) -> int:
         return _image_token_price(self, part)
+
+    def image_tokens(self, width: int, height: int) -> Optional[int]:
+        """Prompt tokens a width x height image costs here, from llama-server's tokenizer alone
+        (the vision encoder is not run). None when the server cannot say."""
+        counts = self._image_token_counts
+        if counts is None or not self.is_vision:
+            return None
+        if (width, height) in counts:
+            return counts[(width, height)]
+        from PIL import Image
+
+        def tokens(size) -> Optional[int]:
+            content = [{"type": "text", "text": "image"}]
+            if size:
+                buffer = io.BytesIO()
+                # Bilevel: only the size is counted, and an 8-bit raster this large would cost hundreds of MB.
+                Image.new("1", size, 1).save(buffer, format = "PNG")
+                url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+                content.append({"type": "image_url", "image_url": {"url": url}})
+            reply = client.post(
+                f"{self.base_url}/v1/chat/completions/input_tokens",
+                json = {"messages": [{"role": "user", "content": content}]},
+            )
+            if reply.status_code in (404, 405, 501):
+                raise LookupError
+            count = reply.json().get("input_tokens") if reply.status_code == 200 else None
+            return count if type(count) is int else None
+
+        try:
+            with httpx.Client(
+                timeout = 10,
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                base = tokens(None)
+                count = tokens((width, height)) if base is not None else None
+        except LookupError:
+            if self._image_token_counts is counts:
+                self._image_token_counts = None
+            return None
+        except Exception as exc:  # noqa: BLE001 -- a busy or restarting server is asked again later
+            logger.debug("image token count failed: %s", exc)
+            return None
+        if count is None:
+            return None
+        counts[(width, height)] = count - base
+        return counts[(width, height)]
 
     def _countable_messages(self, messages: list[dict]) -> list[dict]:
         """The counting copy every fit and size probe uses: images charged, audio and video dropped."""
@@ -11266,9 +11443,8 @@ class LlamaCppBackend:
         *,
         lenient: bool = False,
     ) -> int:
-        """On-disk bytes llama-server reads for ``model_path``: with an external Engram table,
-        that table instead of the quant's own table shard, which may still be on disk.
-        ``lenient`` counts what it can read (progress, placement) instead of raising."""
+        """On-disk bytes llama-server reads; with an external Engram table, that table replaces the
+        quant's own shard; lenient counts what it can read instead of raising."""
         if self._ple_path_for(model_path) is None:
             if lenient:
                 return _gguf_set_bytes(Path(model_path))
@@ -11783,11 +11959,30 @@ class LlamaCppBackend:
         except OSError:
             return frozenset()
         backends = set()
-        for backend in ("base", "cpu", "cuda", "hip", "vulkan"):
+        for backend in ("base", "cpu", "cuda", "hip", "sycl", "vulkan"):
             stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
             if any(name == stem or name.startswith(stem + ".") for name in files):
                 backends.add(backend)
         return frozenset(backends)
+
+    @staticmethod
+    def _build_has_metal(binary: Optional[str] = None) -> bool:
+        """Whether llama.cpp was built with Metal: ggml libraries without libggml-metal are setup.sh's -DGGML_METAL=OFF fallback; a static build defers to the prebuilt marker."""
+        from utils.llama_cpp_path_settings import binary_gpu_backends
+
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        # The libraries sit beside the binary a wrapper script execs.
+        backends = binary_gpu_backends(_resolve_llama_binary(binary))
+        if backends is not None:
+            return "metal" in backends
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.llama_backend import marker_backend
+            return marker_backend(read_install_marker(binary)) == "metal"
+        except Exception:
+            return False
 
     def _record_memory_state(
         self,
@@ -12127,6 +12322,12 @@ class LlamaCppBackend:
         backend."""
         backends = LlamaCppBackend._installed_ggml_backends(binary)
         return "vulkan" in backends and not backends.intersection({"cuda", "hip"})
+
+    @staticmethod
+    def _is_sycl_only_backend(binary: Optional[str] = None) -> bool:
+        """A split-library SYCL build with no CUDA, HIP or Vulkan lib beside it."""
+        backends = LlamaCppBackend._installed_ggml_backends(binary)
+        return "sycl" in backends and not backends.intersection({"cuda", "hip", "vulkan"})
 
     _SYSMEM_FALLBACK_RISK: dict[Optional[str], bool] = {}
 
@@ -12741,11 +12942,9 @@ class LlamaCppBackend:
         n_cpu_moe: int = 0,
         cpu_child: bool = False,
     ) -> int:
-        """Weight bytes a full-offload Windows ROCm APU load puts in the BIOS carve-out, which
-        Windows does not count as RAM; 0 unless the placement and carve-out are both known.
-
-        The carve-out comes from the registry, never the HIP total: PAL adds 50-75% of the WDDM
-        shared heap (Windows RAM) to it. Host-pinned inputs (token_embd, per-layer tables) get no credit."""
+        """Carve-out bytes of a Windows ROCm APU full-offload load, read from the registry, never
+        the HIP total (PAL adds 50-75% of WDDM shared heap); 0 unless placement and carve-out are
+        known; host-pinned inputs get no credit."""
         if sys.platform != "win32" or not model_size or model_size <= 0 or not model_path:
             return 0
         if cpu_child or not self._amd_apu_wants_unified_memory(gpu_indices):
@@ -15063,6 +15262,9 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+        if LlamaCppBackend._is_sycl_only_backend(binary):
+            # The probes below size NVIDIA / AMD cards a SYCL build never runs on (#17787); unsized, --fit on sizes the SYCL device itself.
+            return []
         from utils.hardware import mig
 
         mig_rows = mig.visible_devices(fresh = True, listing = True)
@@ -19497,6 +19699,7 @@ class LlamaCppBackend:
         self._nextn_predict_layers = None
         self._architecture = None
         self._gguf_type = None
+        self._decision_type = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
@@ -19529,6 +19732,7 @@ class LlamaCppBackend:
             pooling_by_arch: dict[str, int] = {}
 
             nextn_by_arch: dict[str, int] = {}
+            decision_by_arch: dict[str, str] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -19576,10 +19780,13 @@ class LlamaCppBackend:
                             or key in arch_keys
                             or key.endswith(".pooling_type")
                             or key.endswith(".nextn_predict_layers")
+                            or key.endswith(".decision.type")
                         ):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
+                                if key.endswith(".decision.type"):
+                                    decision_by_arch[key] = val_s
                                 if key.startswith("general.") and key != "general.architecture":
                                     general[key] = val_s
                                 if key == "general.type":
@@ -19692,6 +19899,7 @@ class LlamaCppBackend:
                     f"{arch}.nextn_predict_layers",
                     self._nextn_predict_layers,
                 )
+                self._decision_type = decision_by_arch.get(f"{arch}.decision.type")
 
             # Decide diffusion routing before the SWA resolver: it can raise on an unknown arch and drop DiffusionGemma to plain llama-server.
             self._is_diffusion = bool(
@@ -21451,6 +21659,14 @@ class LlamaCppBackend:
             return (
                 "This GGUF is a LoRA adapter and needs a matching base model. "
                 "Select a full model GGUF for chat, or use this adapter with its base model."
+            )
+        decision_type = (getattr(self, "_decision_type", None) or "").strip().lower()
+        if decision_type in _DECISION_ONLY_GGUF_TYPES:
+            return (
+                f"This is a decision model ({decision_type}), not a chat model: llama.cpp "
+                "only answers decision requests with it (POST /v1/systemone) and cannot "
+                "generate text. Pick a chat GGUF, or use a decision model from Settings > "
+                "API > Decision API."
             )
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
@@ -29498,18 +29714,21 @@ class LlamaCppBackend:
                     else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
                 self._mmproj_projector_type = None
+                self._image_token_counts = {}
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:
                         from utils.models.gguf_metadata import (
                             mmproj_capabilities,
-                            read_mmproj_projector_type,
+                            read_mmproj_vision_projector_type,
                         )
 
                         has_audio, accepts_image = mmproj_capabilities(_mmproj_probe)
                         self._mmproj_has_audio = has_audio
                         self._mmproj_accepts_image = accepts_image
                         # KV admission needs the projector family to look up per-image token cost.
-                        self._mmproj_projector_type = read_mmproj_projector_type(_mmproj_probe)
+                        self._mmproj_projector_type = read_mmproj_vision_projector_type(
+                            _mmproj_probe
+                        )
                     except Exception as e:
                         logger.debug(f"mmproj capability read failed: {e}")
 
@@ -32567,7 +32786,8 @@ class LlamaCppBackend:
                 _cpu_route_reason = None
                 if not intent.cpu_fallback and _cpu_fallback_eligible:
                     _vk_outcome = self._vulkan_probe_outcome(binary)
-                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed")
+                    # A probe that failed listed no device either, so its stall gets the same CPU replay.
+                    _vulkan_suspect = _vk_outcome in ("timeout", "crashed", "error")
                     # Only when a replay can be built, so the block below never fails the load.
                     if (
                         _vk_outcome == "none"
@@ -33393,29 +33613,9 @@ class LlamaCppBackend:
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Launched without spec group; keep MTP only in requested state or the next Apply repeats the crash.
-                    _lo = "\n".join(self._stdout_lines).lower()
-                    # Only an unknown arch proves the binary is outdated; other failures are runtime.
-                    _arch_unsupported = "unknown model architecture" in _lo
-                    if (
-                        _arch_unsupported
-                        or "failed to measure draft model memory" in _lo
-                        or "failed to measure mtp context memory" in _lo
-                        or "failed to create mtp context" in _lo
-                        or "failed to create llama_context" in _lo
-                    ):
-                        _retry_reason = (
-                            "the prebuilt may predate it; retrying without "
-                            "speculative decoding -- run `unsloth studio "
-                            "update` for this drafter"
-                        )
-                        self._spec_fallback_reason = (
-                            "binary_outdated" if _arch_unsupported else "runtime_error"
-                        )
-                    else:
-                        _retry_reason = (
-                            "retrying without speculative decoding in case the drafter is the cause"
-                        )
-                        self._spec_fallback_reason = "runtime_error"
+                    _retry_reason, self._spec_fallback_reason = _spec_start_failure(
+                        "\n".join(self._stdout_lines)
+                    )
                     _drafter = (
                         Path(launch_mtp_draft_path).name
                         if launch_mtp_draft_path
@@ -34772,8 +34972,7 @@ class LlamaCppBackend:
             intent.model_identifier.lower()
         ):
             return False
-        # The Engram table is part of the weights. load_model has already turned a request for
-        # the quant's own table into none.
+        # Engram table is weight data; load_model already maps the quant's own table to none.
         if (intent.engram_precision or "").upper() != (
             getattr(self, "_engram_precision", None) or ""
         ).upper():
@@ -36272,8 +36471,7 @@ class LlamaCppBackend:
         saved = _SlotLaunchFingerprint(*saved)
         saved_regime = manifest.get("long_rope")
         if saved == current:
-            # Preserve strict reuse for older manifests, but never restore across
-            # a known switch hidden by identical requested and advertised sizes.
+            # Old manifests keep strict reuse; never restore across a hidden long_rope switch.
             return "long_rope" not in manifest or saved_regime is self._slot_long_rope
         neutral = {"requested_n_ctx": None, "effective_context_length": None}
         if saved._replace(**neutral) != current._replace(**neutral):
@@ -37432,7 +37630,7 @@ class LlamaCppBackend:
     def _sse_event_payload(event: str) -> Optional[dict]:
         """Decode one complete SSE event's ``data:`` payload, or None."""
         payload_lines = [
-            line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
+            line[5:].lstrip() for line in SSE_LINE_END.split(event) if line.startswith("data:")
         ]
         if not payload_lines:
             return None
@@ -37488,9 +37686,9 @@ class LlamaCppBackend:
                 line, pending = pending.split("\n", 1)
                 data = None
                 stripped = line.strip()
-                if stripped.startswith("data: ") and stripped != "data: [DONE]":
+                if stripped.startswith("data:") and stripped[5:].strip() != "[DONE]":
                     try:
-                        data = json.loads(stripped[6:])
+                        data = json.loads(stripped[5:])
                     except json.JSONDecodeError:
                         pass
                 if is_tool_parse_rejection(data):
@@ -38499,11 +38697,13 @@ class LlamaCppBackend:
                                     yield cumulative
                             _stream_done = True
                             break  # exit inner while
-                        if not line.startswith("data: "):
+                        if not line.startswith("data:"):
                             continue
 
                         try:
-                            data = json.loads(line[6:])
+                            data = json.loads(line[5:])
+                            if not isinstance(data, dict):
+                                continue
                             _report_live_llama_timings(perf_callback, data)
                             # Diffusion frame from the shim: forward untouched, never into content.
                             if data.get("type") == "diffusion_frame":
@@ -38542,6 +38742,11 @@ class LlamaCppBackend:
                                             )
                                             _prov_entry = {"len": 0}
                                             reasoning_provenance.setdefault("wraps", []).append(
+                                                _prov_entry
+                                            )
+                                        elif reasoning_provenance is not None:
+                                            _prov_entry = {"len": 0, "at": len(cumulative)}
+                                            reasoning_provenance.setdefault("later", []).append(
                                                 _prov_entry
                                             )
                                         cumulative += "<think>"
@@ -38642,7 +38847,7 @@ class LlamaCppBackend:
         # False when the caller knows the history held reasoning its conversion dropped.
         replay_preserve_thinking: bool = True,
         continue_final_message: bool = False,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int = DEFAULT_MAX_TOOL_CALLS_PER_MESSAGE,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
@@ -38673,6 +38878,7 @@ class LlamaCppBackend:
         website_policy: Optional[dict] = None,
         live_permissions = None,
         chat_template_kwargs: Optional[dict] = None,
+        mcp_match_exchange: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -38837,6 +39043,19 @@ class LlamaCppBackend:
         _auto_satisfies_forced_choice = bool(_auto) and (
             tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
+        # After the message, so the tool block heading the cached prompt stays put; a forced tool keeps its first call.
+        if (
+            mcp_match_exchange
+            and mcp_match_exchange.get("messages")
+            and tool_choice != "none"
+            and not initial_forced_name
+            and not (
+                continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+            )
+        ):
+            for _ev in mcp_match_exchange["events"]:
+                yield _ev
+            conversation.extend(mcp_match_exchange["messages"])
 
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -38866,6 +39085,14 @@ class LlamaCppBackend:
         # Enabled-name gate for the markerless Gemma strip (disabled/example
         # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
+        _lead_wrap = None
+
+        def _lead_think_span(text: str) -> int:
+            # The server's leading think block may quote </think>; markup stripping must not reach into it.
+            if _lead_wrap is None or not text.startswith("<think>"):
+                return 0
+            end = len("<think>") + _lead_wrap["len"]
+            return end + len("</think>") if text.startswith("</think>", end) else 0
 
         def _gemma_lead_promotable(text: str) -> bool:
             # Reads _enabled_tool_names at call time: it is rebound each tool iteration.
@@ -38880,9 +39107,15 @@ class LlamaCppBackend:
             if not (auto_heal_tool_calls or force):
                 return text
             # Shared parser-side strip covers every family; tool_healing strip omits loop-only forms (python_tag, Mistral name) and would leak them into display.
-            return _shared_strip_tool_markup(
-                text, final = final, enabled_tool_names = _enabled_names_gate
+            span = _lead_think_span(text)
+            tail = text[span:]
+            cleaned = _shared_strip_tool_markup(
+                tail, final = final, enabled_tool_names = _enabled_names_gate
             )
+            if span and final and cleaned:
+                # A whole-text final strip never trimmed the answer's lead; streaming snapshots keep it.
+                cleaned = tail[: len(tail) - len(tail.lstrip())] + cleaned
+            return text[:span] + cleaned
 
         # Avoids quadratic rescans. Think blocks stay verbatim: a rehearsed call inside one must not be deleted.
         _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
@@ -38921,7 +39154,8 @@ class LlamaCppBackend:
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-            return _streaming_stripper.strip(text)
+            span = _lead_think_span(text)
+            return text[:span] + _streaming_stripper.strip(text[span:])
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -38963,21 +39197,20 @@ class LlamaCppBackend:
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display
+            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display, _lead_wrap
             if in_thinking:
                 cumulative_display += "</think>"
                 in_thinking = False
                 _prov_entry = None
             elif reasoning_accum:
-                if (
-                    reasoning_provenance is not None
-                    and not cumulative_display
-                    and not _suppress_visible_output
-                ):
-                    reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
-                    reasoning_provenance.setdefault("wraps", []).append(
-                        {"len": len(reasoning_accum)}
-                    )
+                if reasoning_provenance is not None and not cumulative_display:
+                    wrap = {"len": len(reasoning_accum)}
+                    if _suppress_visible_output:
+                        _withheld_wraps.append(wrap)
+                    else:
+                        reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
+                        _lead_wrap = wrap
+                        reasoning_provenance.setdefault("wraps", []).append(_lead_wrap)
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
             # Not cleared: callers measure len(content_buffer) right after; recorded in _buffer_in_display so the cancel flush does not re-add it.
@@ -39031,6 +39264,7 @@ class LlamaCppBackend:
             deduplicate_tool_calls = deduplicate_tool_calls,
             session_id = session_id,
             thread_id = thread_id,
+            loaded_mcp_tools = (mcp_match_exchange or {}).get("names", ()),
         )
 
         def _tool_succeeded(tool_name: str) -> bool:
@@ -39056,8 +39290,7 @@ class LlamaCppBackend:
         # A browser task is many steps, each a chance to announce the next one and stop: there the
         # budget is one nudge per tool turn, as in the external loop, not one per request.
         _browser_turns = any(
-            ((tool.get("function") or {}).get("name") in BROWSER_TOOL_NAMES)
-            for tool in (tools or [])
+            ((tool.get("function") or {}).get("name") in STEPWISE) for tool in (tools or [])
         )
         # Text that triggered the last nudge; if the retry restates it, stop.
         _last_reprompt_text = ""
@@ -39184,6 +39417,9 @@ class LlamaCppBackend:
         iteration = -1
         # Cap is across the whole conversation, seeded with already promoted images.
         loop_mcp_image_parts: list = list(replayed_image_parts)
+        _compacts_images = bool(
+            context_overflow == "truncate_oldest" and self._effective_context_length
+        )
         while True:
             iteration += 1
             while _model_note_events:
@@ -39556,7 +39792,8 @@ class LlamaCppBackend:
                 _buffer_in_display = False
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
-                _prov_entry = None
+                _prov_entry = _lead_wrap = None
+                _withheld_wraps = []
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
                 _reasoning_summary_emitted = False
@@ -39688,11 +39925,13 @@ class LlamaCppBackend:
                                             }
                                 _stream_done = True
                                 break  # exit inner while
-                            if not line.startswith("data: "):
+                            if not line.startswith("data:"):
                                 continue
 
                             try:
-                                chunk_data = json.loads(line[6:])
+                                chunk_data = json.loads(line[5:])
+                                if not isinstance(chunk_data, dict):
+                                    continue
                                 if on_decode_slot is not None:
                                     slot = self.decode_slot_from_chunk(chunk_data)
                                     if slot is not None:
@@ -39893,18 +40132,32 @@ class LlamaCppBackend:
                                     reasoning_accum += reasoning
                                     if detect_state != _S_DRAINING:
                                         if not in_thinking:
-                                            # Suppressed iterations emit no content, so don't record
-                                            # their wraps.
+                                            # A suppressed pass's wraps are recorded only if the pass is released.
                                             if (
                                                 reasoning_provenance is not None
+                                                and _suppress_visible_output
+                                            ):
+                                                _prov_entry = {"len": 0}
+                                                if cumulative_display:
+                                                    _prov_entry["at"] = len(cumulative_display)
+                                                _withheld_wraps.append(_prov_entry)
+                                            elif (
+                                                reasoning_provenance is not None
                                                 and not cumulative_display
-                                                and not _suppress_visible_output
                                             ):
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
-                                                _prov_entry = {"len": 0}
+                                                _prov_entry = _lead_wrap = {"len": 0}
                                                 reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
+                                            elif reasoning_provenance is not None:
+                                                _prov_entry = {
+                                                    "len": 0,
+                                                    "at": len(cumulative_display),
+                                                }
+                                                reasoning_provenance.setdefault("later", []).append(
                                                     _prov_entry
                                                 )
                                             cumulative_display += "<think>"
@@ -40570,6 +40823,15 @@ class LlamaCppBackend:
                                 _stripped,
                                 _last_reprompt_text,
                             ):
+                                for _wrap in _withheld_wraps:
+                                    if "at" in _wrap:
+                                        reasoning_provenance.setdefault("later", []).append(_wrap)
+                                        continue
+                                    reasoning_provenance["wrapped"] = (
+                                        reasoning_provenance.get("wrapped", 0) + 1
+                                    )
+                                    reasoning_provenance.setdefault("wraps", []).append(_wrap)
+                                    _lead_wrap = _wrap
                                 if cumulative_display:
                                     forced_visible_text = _strip_tool_markup(
                                         cumulative_display,
@@ -40845,6 +41107,7 @@ class LlamaCppBackend:
                             never_needs = never_needs_approval,
                             sandbox_level = sandbox_level,
                             session_id = session_id,
+                            thread_id = thread_id,
                         ) or requires_os_isolation(
                             confirm_tool_calls = bool(confirm_tool_calls),
                             bypass_permissions = _bypass,
@@ -40956,6 +41219,7 @@ class LlamaCppBackend:
                         never_needs = never_needs_approval,
                         sandbox_level = sandbox_level,
                         session_id = session_id,
+                        thread_id = thread_id,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     needs_confirm = needs_confirm or image_share is not None
@@ -41795,6 +42059,9 @@ class LlamaCppBackend:
                         lead = MCP_DETACHED_IMAGE_TURN_TEXT
                         if _batch_results != 1
                         else MCP_IMAGE_TURN_TEXT,
+                        # A compacting chat keeps every picture and lets the fit make room, so
+                        # the prompt stays append-only and the prefix cache warm (#18231).
+                        limit = None if _compacts_images else MCP_MAX_TOTAL_MODEL_IMAGES,
                     )
 
                 # Close provisional cards not resolved by execution/no-op handling.
@@ -42177,7 +42444,7 @@ class LlamaCppBackend:
         reasoning_text = ""
         # Track content separately to preserve literal `</think>` in the answer.
         answer_text = ""
-        _prov_entry = None
+        _prov_entry = _lead_wrap = None
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
         _metadata_usage = None
@@ -42307,11 +42574,13 @@ class LlamaCppBackend:
                                         yield {"type": "content", "text": cumulative}
                                 _stream_done = True
                                 break  # exit inner while
-                            if not line.startswith("data: "):
+                            if not line.startswith("data:"):
                                 continue
 
                             try:
-                                chunk_data = json.loads(line[6:])
+                                chunk_data = json.loads(line[5:])
+                                if not isinstance(chunk_data, dict):
+                                    continue
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 # Capture server timings/usage from final chunks.
@@ -42342,8 +42611,13 @@ class LlamaCppBackend:
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
-                                                _prov_entry = {"len": 0}
+                                                _prov_entry = _lead_wrap = {"len": 0}
                                                 reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
+                                            elif reasoning_provenance is not None:
+                                                _prov_entry = {"len": 0, "at": len(cumulative)}
+                                                reasoning_provenance.setdefault("later", []).append(
                                                     _prov_entry
                                                 )
                                             cumulative += "<think>"
@@ -42370,8 +42644,10 @@ class LlamaCppBackend:
                                             in_thinking = False
                                             _prov_entry = None
                                         cumulative += token
+                                        _span = _lead_think_span(cumulative)
                                         cleaned = (
-                                            _final_answer_stripper.strip(cumulative)
+                                            cumulative[:_span]
+                                            + _final_answer_stripper.strip(cumulative[_span:])
                                             if auto_heal_tool_calls
                                             else cumulative
                                         )
@@ -42389,8 +42665,11 @@ class LlamaCppBackend:
                             break  # exit outer for
                     if auto_heal_tool_calls and has_content_tokens and not in_thinking:
                         # Release an answer still held as a possible bare-JSON call.
+                        _span = _lead_think_span(cumulative)
                         _flushed = _final_answer_visible(
-                            _final_answer_stripper.strip(cumulative), answer_text, at_end = True
+                            cumulative[:_span] + _final_answer_stripper.strip(cumulative[_span:]),
+                            answer_text,
+                            at_end = True,
                         )
                         if len(_flushed) > len(_last_emitted):
                             _last_emitted = _flushed
@@ -42671,8 +42950,10 @@ class LlamaCppBackend:
         should_abort = None,
         prefer_native: bool = False,
         template_options = None,
+        on_prompt = None,
     ) -> int:
-        """Strict callers raise: the text-only fallback is an approximation, not a count; others get 0."""
+        """Strict callers raise: the text-only fallback is an approximation, not a count; others get 0.
+        ``on_prompt`` receives the rendered prompt the count priced."""
         if not self.is_loaded:
             if strict:
                 raise RuntimeError("llama-server is not loaded")
@@ -42726,10 +43007,10 @@ class LlamaCppBackend:
             )
             if system_text:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
-            # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
+            # Memo skipped with prefer_native or on_prompt; a hit has no text for on_prompt.
             memo_key = (
                 None
-                if prefer_native
+                if prefer_native or on_prompt is not None
                 else _count_memo_key(
                     self,
                     template_messages,
@@ -42789,7 +43070,7 @@ class LlamaCppBackend:
                         if continue_final_message:
                             template_body["continue_final_message"] = True
                             template_body["add_generation_prompt"] = False
-                        if prefer_native:
+                        if prefer_native and on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
                             try:
@@ -42815,7 +43096,10 @@ class LlamaCppBackend:
                         if isinstance(prompt, str):
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            return _tokenize(prompt), False
+                            count = _tokenize(prompt)
+                            if on_prompt is not None:
+                                on_prompt(prompt)
+                            return count, False
                     except CountAborted:
                         # Not a template failure. Must precede the generic except.
                         raise

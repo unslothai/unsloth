@@ -14,6 +14,7 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
 MLP_FAST_ACT_QUANT_ENV = "UNSLOTH_DIFFUSION_INT8_MLP_FAST_ACT_QUANT"
@@ -78,6 +79,7 @@ def _triton_jit_toolchain_ok() -> bool:
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
     """Compile-on-first-use Triton kernel, or None when Triton is unavailable."""
     try:
@@ -1004,9 +1006,9 @@ def _plain_int8_weight(w: Any) -> bool:
             return False
         if getattr(kw, "reduce_range", False) or getattr(w, "reduce_range", False):
             return False
-        if "SYMMETRIC" not in str(getattr(kw, "mapping_type", "")) or "ASYMMETRIC" in str(
-            getattr(kw, "mapping_type", "")
-        ):
+        # plain SYMMETRIC only: the kernels divide amax by 127.5, which SYMMETRIC_NO_CLIPPING_ERR does not
+        mapping = getattr(kw, "mapping_type", None)
+        if getattr(mapping, "name", str(mapping).rsplit(".", 1)[-1]) != "SYMMETRIC":
             return False
         if type(getattr(kw, "granularity", None)).__name__ != "PerRow":
             return False

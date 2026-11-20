@@ -107,6 +107,8 @@ export interface PickerRow {
   groups?: string[];
   section?: ListSection;
   sizeBytes?: number;
+  /** Curated position (the Hub's NPU order); breaks date ties before the name does. */
+  rank?: number;
   /** In the listing's own units. */
   updatedAt?: number;
 }
@@ -164,8 +166,12 @@ export function sortDeviceRows<T extends PickerRow>(
   lastLoaded: (row: T) => number,
   desc: boolean = DEVICE_SORT_DESC[key],
 ): T[] {
+  // One key order (date, rank, name) keeps the comparator transitive; unranked rows rank last.
+  const rankOf = (row: T) => row.rank ?? Number.MAX_SAFE_INTEGER;
   const byDate = (a: T, b: T) =>
-    (b.updatedAt ?? -1) - (a.updatedAt ?? -1) || a.label.localeCompare(b.label);
+    (b.updatedAt ?? -1) - (a.updatedAt ?? -1) ||
+    rankOf(a) - rankOf(b) ||
+    a.label.localeCompare(b.label);
   const sorted = [...rows].sort((a, b) => {
     if (key === "name") {
       return a.label.localeCompare(b.label);
@@ -293,6 +299,65 @@ export function pinCoversId(pinned: readonly string[], id: string): boolean {
   });
 }
 
+/** Favorites lists each pinned quant of a repo as its own row, as the header picker did. */
+export function expandQuantFavorites<
+  T extends PickerRow & {
+    favoriteQuant?: string;
+    loadedQuant?: string | null;
+    inventoryKey?: string;
+  },
+>(rows: readonly T[], pinned: readonly string[]): T[] {
+  return rows.flatMap((row) => {
+    if (row.kind === "external") {
+      return [row];
+    }
+    const base = norm(row.id);
+    let whole = false;
+    const quants: string[] = [];
+    for (const key of pinned) {
+      const k = norm(key);
+      if (k === base) {
+        whole = true;
+      } else if (k.startsWith(`${base}::`)) {
+        quants.push(key.slice(key.indexOf("::") + 2));
+      }
+    }
+    if (quants.length === 0) {
+      return [row];
+    }
+    const perQuant = quants.map((quant) => ({
+      ...row,
+      key: `${row.key}::${quant}`,
+      // Disk state is keyed by the repo's row.
+      inventoryKey: row.key,
+      favoriteQuant: quant,
+      loaded:
+        row.loaded === true &&
+        (!row.loadedQuant || norm(row.loadedQuant) === norm(quant)),
+    }));
+    return whole ? [row, ...perQuant] : perQuant;
+  });
+}
+
+/** The pin a Favorites row stands for: its own quant's key, else the repo's first. */
+export function favoritePinKey(
+  pinned: readonly string[],
+  id: string,
+  quant?: string,
+): string | null {
+  const base = norm(id);
+  if (quant) {
+    const want = `${base}::${norm(quant)}`;
+    return pinned.find((key) => norm(key) === want) ?? null;
+  }
+  return (
+    pinned.find((key) => {
+      const k = norm(key);
+      return k === base || k.startsWith(`${base}::`);
+    }) ?? null
+  );
+}
+
 const CHAT_TASKS = new Set([
   "text-generation",
   "text2text-generation",
@@ -405,6 +470,18 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
+/** From the window, never a tab's row count, in on-screen px. */
+export function pickerMinHeight(
+  innerWidth: number,
+  innerHeight: number,
+  zoomOut: number,
+): number {
+  const screenHeight = innerHeight / zoomOut;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 400;
+  const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
+  return Math.round(420 + 120 * t);
+}
+
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,
@@ -415,15 +492,39 @@ export function pickerDropOffset(
   return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
 }
 
+/** Mirrors --composer-picker-w in index.css. */
+export function pickerWidth(
+  viewportWidth: number,
+  scale: number,
+  zoomOut = 1,
+): number {
+  return Math.min(
+    520 * scale * zoomOut,
+    Math.max(360 * scale, viewportWidth * 0.3),
+  );
+}
+
+/** Browser zoom moves innerWidth but not outerWidth; the desktop app reports its webview zoom. */
+export function pickerZoomOut(
+  innerWidth: number,
+  outerWidth: number,
+  webviewZoom: number | null,
+): number {
+  const zoom =
+    webviewZoom ??
+    (innerWidth > 0 && outerWidth > 0 ? outerWidth / innerWidth : 1);
+  // Window borders and side-docked devtools read as a slight zoom; only a real step counts.
+  return zoom < 0.95 ? Math.min(4, 1 / zoom) : 1;
+}
+
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
-export const PICKER_WIDTH = 420;
 export function pickerAlignOffset(
   align: "start" | "end",
   trigger: { left: number; right: number } | null,
   panelWidth: number,
   viewportWidth: number,
 ): number {
-  if (!trigger) {
+  if (!trigger || trigger.right <= trigger.left) {
     return 0;
   }
   // PopoverContent caps its width at the window less 32px.
@@ -449,6 +550,17 @@ export function discoverUsesFallback(
   hubResultCount: number,
 ): boolean {
   return hubQuery === "" || hubResultCount === 0;
+}
+
+/** Only Discover rows (`recommended`) use a size, so only they cost a file listing. */
+export function hubSizeIds(
+  results: readonly { id: string; isGguf: boolean }[],
+  recommended: readonly { id: string }[],
+): string[] {
+  const rows = new Set(recommended.map((m) => m.id.toLowerCase()));
+  return results.flatMap((r) =>
+    !r.isGguf && rows.has(r.id.toLowerCase()) ? [r.id] : [],
+  );
 }
 
 /** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */

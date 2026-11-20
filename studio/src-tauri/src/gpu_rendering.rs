@@ -232,6 +232,11 @@ pub struct LaunchState {
     pub env_override: Option<&'static str>,
     pub old_webkit_warning: Option<String>,
     pub old_driver_warning: Option<String>,
+    /// Whether this launch's web view paints on the CPU (Linux only). Fixed for the launch:
+    /// "Try GPU again" only takes effect after a restart.
+    pub cpu_painting: bool,
+    /// WebKitGTK before 2.54, which composites with TextureMapper (Linux only).
+    pub legacy_compositor: bool,
     flag_cleared: AtomicBool,
 }
 
@@ -242,6 +247,8 @@ impl LaunchState {
         env_override: Option<&'static str>,
         old_webkit_warning: Option<String>,
         old_driver_warning: Option<String>,
+        cpu_painting: bool,
+        legacy_compositor: bool,
     ) -> Self {
         Self {
             setting,
@@ -249,6 +256,8 @@ impl LaunchState {
             env_override,
             old_webkit_warning,
             old_driver_warning,
+            cpu_painting,
+            legacy_compositor,
             flag_cleared: AtomicBool::new(false),
         }
     }
@@ -264,6 +273,8 @@ pub struct GpuRenderingStatus {
     pub env_override: Option<String>,
     pub old_webkit_warning: Option<String>,
     pub old_driver_warning: Option<String>,
+    pub cpu_painting: bool,
+    pub legacy_compositor: bool,
 }
 
 fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
@@ -276,6 +287,8 @@ fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
             env_override: None,
             old_webkit_warning: None,
             old_driver_warning: None,
+            cpu_painting: false,
+            legacy_compositor: false,
         };
     }
     let flag_cleared = launch.flag_cleared.load(Ordering::SeqCst);
@@ -287,6 +300,8 @@ fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
         env_override: launch.env_override.map(str::to_string),
         old_webkit_warning: launch.old_webkit_warning.clone(),
         old_driver_warning: launch.old_driver_warning.clone(),
+        cpu_painting: launch.cpu_painting,
+        legacy_compositor: launch.legacy_compositor,
     }
 }
 
@@ -460,21 +475,42 @@ mod tests {
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[test]
     fn status_reports_a_pending_change_and_a_retried_fallback() {
-        let launch = LaunchState::new(GpuRendering::Auto, true, None, Some("2.50.4".into()), None);
+        let launch = LaunchState::new(
+            GpuRendering::Auto,
+            true,
+            None,
+            Some("2.50.4".into()),
+            None,
+            true,
+            true,
+        );
         let before = status(&launch, GpuRendering::Auto);
         assert!(before.fallback_active && !before.restart_required);
         // "Try GPU again" re-selects Auto and clears the flag.
         launch.flag_cleared.store(true, Ordering::SeqCst);
         let after = status(&launch, GpuRendering::Auto);
         assert!(!after.fallback_active && after.restart_required);
+        // This launch still paints on the CPU until the restart.
+        assert!(after.cpu_painting);
+        assert_eq!(
+            serde_json::to_value(&after).unwrap()["cpuPainting"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            serde_json::to_value(&after).unwrap()["legacyCompositor"],
+            serde_json::Value::Bool(true)
+        );
         let quiet = LaunchState::new(
             GpuRendering::Auto,
             false,
             Some("WEBKIT_DISABLE_DMABUF_RENDERER"),
             None,
             Some("580".into()),
+            false,
+            false,
         );
         let changed = status(&quiet, GpuRendering::Off);
+        assert!(!changed.cpu_painting && !changed.legacy_compositor);
         assert!(changed.restart_required && changed.configurable);
         assert_eq!(
             changed.env_override.as_deref(),
@@ -496,9 +532,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_setting(dir.path(), GpuRendering::Off).unwrap();
         assert_eq!(launch_setting(Some(dir.path())), GpuRendering::Auto);
-        let launch = LaunchState::new(GpuRendering::Auto, false, None, None, None);
+        let launch = LaunchState::new(GpuRendering::Auto, false, None, None, None, false, false);
         let reported = status(&launch, GpuRendering::Off);
         assert_eq!(reported.setting, GpuRendering::On);
-        assert!(!reported.configurable && !reported.restart_required);
+        assert!(!reported.configurable && !reported.restart_required && !reported.cpu_painting);
+        assert!(!reported.legacy_compositor);
     }
 }

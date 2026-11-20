@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -75,12 +76,15 @@ function SwitchRow({
   value,
   disabled,
   onUseSpeakersModel,
+  hintShared = false,
 }: {
   name: "timestamps" | "speakers";
   label: string;
   value: TranscribeSwitch;
   disabled: boolean;
   onUseSpeakersModel?: () => void;
+  /** The rail says this hint once for all its options; keep it for screen readers only. */
+  hintShared?: boolean;
 }) {
   const id = `transcribe-${name}`;
   return (
@@ -111,7 +115,11 @@ function SwitchRow({
       </FieldLabel>
       <p
         id={`${id}-hint`}
-        className="text-ui-12 leading-normal text-muted-foreground"
+        className={
+          hintShared
+            ? "sr-only"
+            : "text-ui-12 leading-normal text-muted-foreground"
+        }
       >
         {value.hint}
         {value.suggestSpeakersModel && onUseSpeakersModel ? (
@@ -148,8 +156,14 @@ export function TranscribeRail({
 }) {
   const source = useAudioTranscribeStore((state) => state.source);
   const language = useAudioTranscribeStore((state) => state.language);
+  const speakerAccent = useAudioTranscribeStore((state) => state.speakerAccent);
   // A saved language the model no longer lists falls back to Auto rather than vanishing.
   const languageValue = transcribeLanguageFor(language, languages) || AUTO;
+  const sharedHint =
+    switches.accent.hint === switches.timestamps.hint &&
+    switches.timestamps.hint === switches.speakers.hint
+      ? switches.accent.hint
+      : null;
   return (
     <AudioHistoryProvider value={historyClips}>
       <div data-tour="audio-record">
@@ -202,20 +216,54 @@ export function TranscribeRail({
         </Field>
       ) : null}
 
-      {(["timestamps", "speakers"] as const).map((name) => (
-        <SwitchRow
-          key={name}
-          name={name}
-          label={name === "timestamps" ? "Timestamps" : "Speakers"}
-          value={switches[name]}
-          disabled={disabled}
-          onUseSpeakersModel={
-            name === "speakers" && switches.timestamps.suggestSpeakersModel
-              ? undefined
-              : onUseSpeakersModel
+      <Field
+        label="Speaker accent"
+        optional
+        htmlFor="transcribe-accent"
+        hint={sharedHint ? undefined : switches.accent.hint}
+      >
+        <Input
+          id="transcribe-accent"
+          value={speakerAccent}
+          onChange={(event) =>
+            useAudioTranscribeStore.setState({
+              speakerAccent: event.target.value,
+            })
           }
+          placeholder="For example, Chinese-accented English"
+          maxLength={200}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={disabled || switches.accent.disabled}
+          aria-describedby={sharedHint ? "transcribe-options-hint" : undefined}
         />
-      ))}
+      </Field>
+
+      <div className={sharedHint ? "grid gap-4" : "contents"}>
+        {(["timestamps", "speakers"] as const).map((name) => (
+          <SwitchRow
+            key={name}
+            name={name}
+            label={name === "timestamps" ? "Timestamps" : "Speakers"}
+            value={switches[name]}
+            disabled={disabled}
+            hintShared={sharedHint !== null}
+            onUseSpeakersModel={
+              name === "speakers" && switches.timestamps.suggestSpeakersModel
+                ? undefined
+                : onUseSpeakersModel
+            }
+          />
+        ))}
+        {sharedHint ? (
+          <p
+            id="transcribe-options-hint"
+            className="text-ui-12 leading-normal text-muted-foreground"
+          >
+            {sharedHint}
+          </p>
+        ) : null}
+      </div>
     </AudioHistoryProvider>
   );
 }
@@ -407,7 +455,7 @@ export function TranscribeOutput({
     <>
         <TranscriptGallery
           top={top}
-          emptyText="Record or upload audio to transcribe. Completed transcripts are saved here."
+          emptyText="Record or upload audio, then press Transcribe. Finished transcripts are kept here."
           autoSelect={!transcript && !transcribedName && busy === null}
           active={active && mode === "transcribe"}
           currentId={transcriptRecord?.id ?? null}

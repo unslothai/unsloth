@@ -23,6 +23,8 @@ const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // Turns accelerated compositing off outright, a level above the transport switches above.
 // Presence alone is an operator override; compositing_disabled_by says which values turn it off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
+// Skia rasterizes on the CPU even with GPU compositing on.
+const SKIA_CPU_RENDERING: &str = "WEBKIT_SKIA_ENABLE_CPU_RENDERING";
 // Composited video goes through GStreamer GL, which cannot create a context on NVIDIA with the
 // AppImage's bundled GStreamer: frames stay black. Without it WebKit uses the sink main already uses.
 const GST_DISABLE_GL_SINK: &str = "WEBKIT_GST_DISABLE_GL_SINK";
@@ -197,6 +199,36 @@ fn force_dmabuf_requested(value: &OsStr) -> bool {
 fn compositing_disabled_by(value: &OsStr) -> bool {
     let value = value.as_encoded_bytes();
     !value.is_empty() && value != b"0"
+}
+
+/// Whether this launch's web process paints on the CPU, read from the environment it inherits.
+/// Skia's CPU path re-blurs every CSS shadow on each repaint, so the frontend flattens large
+/// blurred shadows to a 1px edge. True when unsure: a flat edge costs a GPU path only its softness.
+fn paints_on_cpu(
+    env: impl Fn(&str) -> Option<OsString>,
+    webkit_version: (u32, u32, u32),
+    gpu: GpuInputs,
+) -> bool {
+    let (major, minor, _) = webkit_version;
+    // Before 2.54 WebKitGTK paints on the CPU on every path we pick, GPU rendering On included.
+    if gpu.unsafe_flag || gpu.setting == GpuRendering::Off || (major, minor) < (2, 54) {
+        return true;
+    }
+    // No NVIDIA case: a distribution's disable-nvidia-dmabuf.patch only narrows the transport to
+    // shared memory, as FORCE_SHARED_MEMORY does, and Skia still rasterizes on the GPU there.
+    // WebKit disables DMA-BUF unless the value is exactly "0", so an empty value counts.
+    let set_unless_zero =
+        |name: &str| env(name).is_some_and(|value| value.as_encoded_bytes() != b"0");
+    set_unless_zero(DISABLE_DMABUF)
+        || set_unless_zero(SKIA_CPU_RENDERING)
+        || env(DISABLE_COMPOSITING)
+            .as_deref()
+            .is_some_and(compositing_disabled_by)
+}
+
+/// TextureMapper (before Skia in 2.54) blurs later layers into a backdrop-filter: index.css `webkit-legacy-compositor`.
+pub fn legacy_compositor(webkit_version: (u32, u32, u32)) -> bool {
+    webkit_version < (2, 54, 0)
 }
 
 /// Lenient: matching `"0"` byte for byte would strand someone who wrote `false` on the
@@ -566,6 +598,8 @@ pub struct RendererDecision {
     pub webkit_version: (u32, u32, u32),
     pub wayland_session: bool,
     pub nvidia_driver_branch: Option<u32>,
+    /// Whether the web process paints on the CPU, from the environment this launch hands it.
+    pub cpu_painting: bool,
 }
 
 impl RendererDecision {
@@ -604,6 +638,7 @@ pub fn configure_renderer(
         webkit_version,
         wayland_session: session_is_wayland(&env, wayland_socket, x11_open),
         nvidia_driver_branch: nvidia,
+        cpu_painting: true,
     };
     let gpu = GpuInputs {
         setting,
@@ -639,6 +674,8 @@ pub fn configure_renderer(
             release_claimed(|_| true);
         }
     }
+    // After claim/release_claimed: the web process inherits exactly this environment.
+    decision.cpu_painting = paints_on_cpu(|name| std::env::var_os(name), webkit_version, gpu);
     decision
 }
 
@@ -651,6 +688,21 @@ pub fn old_nvidia_driver_warning(branch: Option<u32>, wayland_session: bool) -> 
     } else {
         branch.to_string()
     })
+}
+
+/// Without compositing WebKit has no threaded scrolling, so its wheel animation runs on the web
+/// process main thread between slow CPU paints: nothing moves, then a large jump (#18259).
+/// `policy_never` is the view's hardware-acceleration-policy; on 2.54+ it stays ALWAYS when only
+/// compositing is off, so the variable is read too.
+pub fn smooth_scrolling_enabled(policy_never: bool) -> bool {
+    smooth_scrolling_with(
+        policy_never,
+        std::env::var_os(DISABLE_COMPOSITING).as_deref(),
+    )
+}
+
+fn smooth_scrolling_with(policy_never: bool, disable_compositing: Option<&OsStr>) -> bool {
+    !policy_never && !disable_compositing.is_some_and(compositing_disabled_by)
 }
 
 /// First line of the NVIDIA kernel module banner, which names its version and flavour.
@@ -2325,6 +2377,169 @@ mod tests {
         }
     }
 
+    /// The environment the web process inherits once `configure_renderer` has applied `plan`.
+    fn env_after(vars: &[(&str, &str)], plan: &RenderingPlan) -> Vec<(String, String)> {
+        let claimed = vars
+            .iter()
+            .find(|(key, _)| *key == APPLIED_WORKAROUND)
+            .map(|(_, value)| value.split(',').collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut env: Vec<(String, String)> = vars
+            .iter()
+            .filter(|(key, _)| *key != APPLIED_WORKAROUND && !claimed.contains(key))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        let set: &[&str] = match plan {
+            RenderingPlan::Apply(workaround, _) => workaround.variables(),
+            RenderingPlan::Gpu {
+                force_dmabuf: true, ..
+            } => &[FORCE_DMABUF],
+            _ => &[],
+        };
+        for name in set {
+            env.retain(|(key, _)| key != name);
+            env.push((name.to_string(), "1".to_string()));
+        }
+        env
+    }
+
+    fn cpu_painting_on(
+        vars: &[(&str, &str)],
+        webkit_version: (u32, u32, u32),
+        nvidia: bool,
+        inputs: GpuInputs,
+    ) -> bool {
+        let plan = plan_with_setting(vars, webkit_version, true, nvidia, inputs);
+        let env = env_after(vars, &plan);
+        paints_on_cpu(
+            |name| {
+                env.iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| OsString::from(value))
+            },
+            webkit_version,
+            inputs,
+        )
+    }
+
+    #[test]
+    fn the_legacy_compositor_is_every_webkitgtk_before_2_54_whatever_paints() {
+        // Not cpu_painting: 2.54 forced onto the CPU (WEBKIT_SKIA_ENABLE_CPU_RENDERING) composites with Skia.
+        assert!(legacy_compositor((2, 52, 6)));
+        assert!(legacy_compositor((2, 53, 92)));
+        assert!(!legacy_compositor((2, 54, 0)));
+        assert!(!legacy_compositor((2, 54, 2)));
+        assert!(!legacy_compositor((3, 0, 0)));
+    }
+
+    #[test]
+    fn cpu_painting_is_false_only_on_webkit_2_54_with_the_gpu_path_kept() {
+        let hosts = [
+            ("wayland", WAYLAND_HOST),
+            ("x11", X11_HOST),
+            ("appimage-wayland", APPIMAGE_WAYLAND_HOST),
+        ];
+        for version in [WEBKIT_BUNDLED, (2, 52, 3), WEBKIT_2_53, WEBKIT_2_54] {
+            for (name, vars) in hosts {
+                for nvidia in [false, true] {
+                    for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
+                        for flag in [false, true] {
+                            let expected =
+                                if version < WEBKIT_2_54 || flag || setting == GpuRendering::Off {
+                                    true
+                                } else {
+                                    match (setting, nvidia, name) {
+                                        // These helpers model driver 580: On must retain the
+                                        // X11 compositing fallback, including its image shadows.
+                                        (GpuRendering::On, true, "x11") => true,
+                                        // Auto takes the driver-580 X11 fallback, DISABLE_DMABUF.
+                                        (GpuRendering::Auto, true, "x11") => true,
+                                        // An AppImage on Wayland gets DISABLE_DMABUF under Auto.
+                                        (GpuRendering::Auto, false, "appimage-wayland") => true,
+                                        _ => false,
+                                    }
+                                };
+                            assert_eq!(
+                                cpu_painting_on(vars, version, nvidia, gpu(setting, flag)),
+                                expected,
+                                "{version:?} {name} nvidia={nvidia} {setting:?} flag={flag}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_shadows_follow_the_nvidia_x11_driver_gate() {
+        for version in [(2, 54, 0), (2, 54, 1), WEBKIT_2_54] {
+            for branch in [0, 580, 609, 610, 615] {
+                for setting in [GpuRendering::Auto, GpuRendering::On, GpuRendering::Off] {
+                    let inputs = gpu(setting, false);
+                    let plan =
+                        plan_with_setting_on_branch(X11_HOST, version, true, Some(branch), inputs);
+                    let env = env_after(X11_HOST, &plan);
+                    let cpu_painting = paints_on_cpu(
+                        |name| {
+                            env.iter()
+                                .find(|(key, _)| key == name)
+                                .map(|(_, value)| OsString::from(value))
+                        },
+                        version,
+                        inputs,
+                    );
+                    assert_eq!(
+                        cpu_painting,
+                        branch < 610 || setting == GpuRendering::Off,
+                        "WebKit {version:?}, NVIDIA {branch}, {setting:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_painting_follows_an_operators_variables() {
+        let auto = GpuInputs::default();
+        let on_wayland = |extra: &[(&'static str, &'static str)]| {
+            let mut vars = WAYLAND_HOST.to_vec();
+            vars.extend_from_slice(extra);
+            vars
+        };
+        for (extra, nvidia, expected) in [
+            (vec![(DISABLE_DMABUF, "1")], false, true),
+            (vec![(DISABLE_DMABUF, "")], false, true),
+            (vec![(DISABLE_DMABUF, "0")], false, false),
+            (vec![(DISABLE_COMPOSITING, "1")], false, true),
+            (vec![(DISABLE_COMPOSITING, "")], false, false),
+            (vec![(DISABLE_COMPOSITING, "0")], false, false),
+            // SHM is still GPU painting from 2.54 (measured at full speed).
+            (vec![(FORCE_SHARED_MEMORY, "1")], false, false),
+            (vec![(SKIA_CPU_RENDERING, "1")], false, true),
+            (vec![(SKIA_CPU_RENDERING, "0")], false, false),
+            (vec![(FORCE_DMABUF, "1")], true, false),
+            (vec![(FORCE_DMABUF, "0")], true, false),
+            (vec![], true, false),
+        ] {
+            assert_eq!(
+                cpu_painting_on(&on_wayland(&extra), WEBKIT_2_54, nvidia, auto),
+                expected,
+                "{extra:?} nvidia={nvidia}"
+            );
+        }
+        // A crash recorded for this host wins over an operator's FORCE_DMABUF.
+        assert!(cpu_painting_on(
+            &on_wayland(&[(FORCE_DMABUF, "1")]),
+            WEBKIT_2_54,
+            true,
+            gpu(GpuRendering::Auto, true)
+        ));
+        // Values an earlier launch claimed are dropped, not read as an operator's.
+        let relaunch = on_wayland(&[(DISABLE_DMABUF, "1"), (APPLIED_WORKAROUND, DISABLE_DMABUF)]);
+        assert!(!cpu_painting_on(&relaunch, WEBKIT_2_54, false, auto));
+    }
+
     #[test]
     fn only_a_gpu_path_on_wayland_asks_for_supervision() {
         let decision = |gpu_path: Option<&'static str>, wayland_session: bool| RendererDecision {
@@ -2334,6 +2549,7 @@ mod tests {
             webkit_version: WEBKIT_2_54,
             wayland_session,
             nvidia_driver_branch: None,
+            cpu_painting: false,
         };
         assert!(decision(Some(GPU_ON_REASON), true).wants_supervision());
         assert!(!decision(Some(GPU_ON_REASON), false).wants_supervision());
@@ -2385,5 +2601,20 @@ mod tests {
             ),
             RenderingPlan::PreserveEnvironment
         );
+    }
+
+    #[test]
+    fn smooth_scrolling_is_off_only_without_compositing() {
+        let off = |value: &str| Some(OsString::from(value));
+        assert!(smooth_scrolling_with(false, None));
+        assert!(smooth_scrolling_with(false, off("0").as_deref()));
+        assert!(smooth_scrolling_with(false, off("").as_deref()));
+        assert!(!smooth_scrolling_with(true, None));
+        for value in ["1", "00", "false"] {
+            assert!(
+                !smooth_scrolling_with(false, off(value).as_deref()),
+                "{value}"
+            );
+        }
     }
 }

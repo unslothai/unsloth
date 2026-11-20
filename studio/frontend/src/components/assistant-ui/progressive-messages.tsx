@@ -405,8 +405,7 @@ const LAYOUT_FLAGS = [
   "data-code-no-ligatures",
 ];
 
-/** What a row's wrapping depends on. The column, not the viewport: Chat width moves only the
- *  column, and the appearance settings change no width at all. */
+/** Wrapping depends on the column, not the viewport: appearance settings change no width. */
 function rowLayout(row: HTMLElement): string {
   const style = getComputedStyle(row);
   const root = document.documentElement;
@@ -1034,9 +1033,8 @@ function useThreadWindow(
       modeRef.current = "fill";
       releaseAtRef.current = performance.now() + FILL_RELEASE_MS;
       commit(null, true);
-      // WebKit serialises the selection resolved before the mount, so set it again, with an end
-      // it moved off a spacer put on the first (or last) row that spacer stood for. Rows, not the
-      // spacers: a spacer keyed by a pin is replaced by the mount.
+      // WebKit serialises the selection resolved before the mount, so set it again on rows, not
+      // spacers.
       if (selection.rangeCount !== 1) return;
       const rowAt = (from: number, step: 1 | -1): Element | null => {
         for (let index = from; index >= 0 && index < lookup.metas.length; index += step) {

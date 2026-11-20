@@ -7,7 +7,7 @@ import contextvars
 import functools
 import os
 
-from .cells import cell_text
+from .cells import cell_text, content_text
 from .iterable import is_streaming_dataset
 from .remote_images import (
     fetch_opted_in_image_bytes,
@@ -80,7 +80,7 @@ def standardize_chat_format(
         if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
             is_vlm = True
 
-    column_names = set(next(iter(dataset)).keys())
+    column_names = set((next(iter(dataset), None) or {}).keys())
 
     if chat_column:
         if chat_column not in column_names:
@@ -267,14 +267,7 @@ def normalize_chatml_roles(
     )
 
 
-def _content_text(content):
-    if isinstance(content, list):
-        return "\n".join(
-            part["text"]
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
-        )
-    return cell_text(content)
+_SOURCE_COLUMN = "__unsloth_source_row"
 
 
 def convert_chatml_to_alpaca(
@@ -282,8 +275,9 @@ def convert_chatml_to_alpaca(
     batch_size = 1000,
     num_proc = None,
     chat_column: str | None = None,
+    stats: dict | None = None,
 ):
-    """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys."""
+    """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys. ``stats`` receives {"conversations", "dropped"} counts for non-streaming datasets."""
     is_iterable = is_streaming_dataset(dataset)
     roles = {
         "system": "system",
@@ -295,7 +289,47 @@ def convert_chatml_to_alpaca(
         "output": "assistant",
     }
 
-    def _convert(examples):
+    def _convo_rows(convo, column_system):
+        turns = []
+        for msg in convo or []:
+            role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
+            content = content_text(msg.get("content") or msg.get("value"))
+            if role is None or not content:
+                continue
+            if turns and turns[-1][0] == role:
+                turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
+            else:
+                turns.append([role, content])
+        # A separate system column fills in only when the conversation has no leading system turn.
+        if (
+            isinstance(column_system, str)
+            and column_system.strip()
+            and not (turns and turns[0][0] == "system")
+        ):
+            turns.insert(0, ["system", column_system])
+
+        rows = []
+        system = ""
+        context = []
+        instruction = None
+        for role, content in turns:
+            if role == "system":
+                system = f"{system}\n\n{content}" if system else content
+            elif role == "user":
+                instruction = content
+            elif instruction is not None:
+                rows.append(
+                    (
+                        instruction,
+                        "\n\n".join(part for part in (system, "\n".join(context)) if part),
+                        content,
+                    )
+                )
+                context += [f"User: {instruction}", f"Assistant: {content}"]
+                instruction = None
+        return rows
+
+    def _convert(examples, indices = None):
         chatml_data = examples.get(chat_column) if chat_column else None
         if chatml_data is None:
             chatml_data = (
@@ -308,45 +342,22 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        sources = []
         column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo, column_system in zip(chatml_data, column_systems):
-            turns = []
-            for msg in convo or []:
-                role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
-                content = _content_text(msg.get("content") or msg.get("value"))
-                if role is None or not content:
-                    continue
-                if turns and turns[-1][0] == role:
-                    turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
-                else:
-                    turns.append([role, content])
-            # A separate system column fills in only when the conversation has no leading system turn.
-            if (
-                isinstance(column_system, str)
-                and column_system.strip()
-                and not (turns and turns[0][0] == "system")
-            ):
-                turns.insert(0, ["system", column_system])
+        for index, convo, column_system in zip(
+            indices or range(len(chatml_data)), chatml_data, column_systems
+        ):
+            for instruction, input_text, output in _convo_rows(convo, column_system):
+                instructions.append(instruction)
+                inputs.append(input_text)
+                outputs.append(output)
+                sources.append(index)
 
-            system = ""
-            context = []
-            instruction = None
-            for role, content in turns:
-                if role == "system":
-                    system = f"{system}\n\n{content}" if system else content
-                elif role == "user":
-                    instruction = content
-                elif instruction is not None:
-                    instructions.append(instruction)
-                    inputs.append(
-                        "\n\n".join(part for part in (system, "\n".join(context)) if part)
-                    )
-                    outputs.append(content)
-                    context += [f"User: {instruction}", f"Assistant: {content}"]
-                    instruction = None
-
-        return {"instruction": instructions, "input": inputs, "output": outputs}
+        converted = {"instruction": instructions, "input": inputs, "output": outputs}
+        if indices is not None:
+            converted[_SOURCE_COLUMN] = sources
+        return converted
 
     dataset_map_kwargs = {
         "batched": True,
@@ -354,6 +365,7 @@ def convert_chatml_to_alpaca(
         "remove_columns": dataset.column_names or list(next(iter(dataset), {})),
     }
 
+    count = stats is not None and not is_iterable
     if not is_iterable:
         from utils.hardware import light_map_num_proc
 
@@ -361,6 +373,7 @@ def convert_chatml_to_alpaca(
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
+        dataset_map_kwargs["with_indices"] = count
 
     result = dataset.map(_convert, **dataset_map_kwargs)
 
@@ -372,6 +385,14 @@ def convert_chatml_to_alpaca(
             raise ValueError(
                 f"Streaming ChatML-to-Alpaca conversion failed on the first row: {exc}"
             ) from exc
+
+    if count:
+        import pyarrow.compute as pc
+
+        answered = pc.count_distinct(result.data.column(_SOURCE_COLUMN)).as_py()
+        result = result.remove_columns(_SOURCE_COLUMN)
+        stats["conversations"] = len(dataset)
+        stats["dropped"] = len(dataset) - answered
 
     return result
 

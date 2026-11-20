@@ -14,9 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
-from core.inference.browser_agent import BROWSER_TOOL_NAMES
+from core.inference.browser_agent import BROWSER_TOOL_NAMES, workspace_path_of
+from core.inference.computer_use import COMPUTER_TOOL_NAME
 from core.inference.llama_tool_schema import unrelaxed
-from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
+from core.inference.mcp_images import is_image_tool, mark_as_taken, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only, repeatable
 
@@ -189,6 +190,7 @@ class ToolCallDecision:
     provenance: dict[str, Any] = field(default_factory = dict)
     status_text: str = ""
     noop_result: str = ""
+    session_id: str = ""
 
     @property
     def should_execute(self) -> bool:
@@ -222,7 +224,7 @@ class ToolCallDecision:
         fragment = self.unparsed_fragment
         # Use `raw` for unparsed arguments so the card shows the model's own text, not an internal sentinel.
         arguments = {"raw": fragment} if fragment is not None else self.arguments
-        return {
+        payload = {
             "tool_name": self.tool_name,
             "tool_call_id": self.card_id,
             "arguments": arguments,
@@ -230,6 +232,10 @@ class ToolCallDecision:
             "arguments_text": canonical_arguments_text(arguments),
             "provenance": self.provenance,
         }
+        if self.tool_name == COMPUTER_TOOL_NAME and fragment is None:
+            from core.inference.computer_use import policy as computer_policy
+            payload["computer_use"] = computer_policy.call_asks(self.arguments, self.session_id)
+        return payload
 
     def tool_start_event(self) -> dict[str, Any]:
         return {"type": "tool_start", **self.tool_start_payload()}
@@ -310,7 +316,7 @@ class ToolCallCompletion:
         """Only MCP and image-viewer tools yield images; a plain suffix elsewhere would attach bytes."""
         if not self.executed or not is_image_tool(self.decision.tool_name):
             return []
-        return split_mcp_images(self.result)[1]
+        return mark_as_taken(split_mcp_images(self.result)[1], self.decision.tool_name)
 
 
 @dataclass(frozen = True)
@@ -827,6 +833,9 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return f"Editing: {name}" if name else "Editing file..."
     if tool_name in BROWSER_TOOL_NAMES:
         return _browser_status(tool_name, arguments)
+    if tool_name == COMPUTER_TOOL_NAME:
+        from core.inference.computer_use import status_text
+        return status_text(arguments)
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"
@@ -848,6 +857,10 @@ def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
                 "forward": "Going forward",
                 "reload": "Reloading the page",
             }[url.lower()]
+        path = workspace_path_of(url)
+        if path:
+            name = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            return f"Opening: {name}" if name else "Opening a file..."
         try:
             host = urlparse(url if "://" in url else f"https://{url}").hostname or ""
         except ValueError:
@@ -900,6 +913,8 @@ def awaiting_approval_status(tool_name: str) -> str:
         return "Waiting for approval: command"
     if tool_name == "edit_file":
         return "Waiting for approval: file edit"
+    if tool_name == COMPUTER_TOOL_NAME:
+        return "Waiting for approval: computer use"
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Waiting for approval: {mcp[0]} · {mcp[1]}"
@@ -1241,6 +1256,7 @@ class ToolLoopController:
         duplicate_noop_limit: int = 2,
         session_id: str | None = None,
         thread_id: str | None = None,
+        loaded_mcp_tools: Collection[str] = (),
     ) -> None:
         self._session_id = session_id
         self._thread_id = thread_id
@@ -1250,6 +1266,11 @@ class ToolLoopController:
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+        if self._mcp_search:
+            # Matched, searched or run MCP tools stay callable unlisted.
+            self._allowed_tool_names.update(
+                name for name in loaded_mcp_tools if _mcp_tool_spec(name) is not None
+            )
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1388,6 +1409,8 @@ class ToolLoopController:
             provenance = provenance,
             status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
+            # The conversation, not the project its sandbox is shared with.
+            session_id = self._thread_id or self._session_id or "",
         )
 
     def reprepare_call(

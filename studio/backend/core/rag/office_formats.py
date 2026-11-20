@@ -51,8 +51,8 @@ _NS = {
     "opf": "http://www.idpf.org/2007/opf",
 }
 # ISO Strict OOXML names the same schemas with other URIs.
-_STRICT_NS = tuple(
-    (f"http://purl.oclc.org/ooxml/{strict}".encode(), _NS[prefix].encode())
+_STRICT_NS = {
+    f"http://purl.oclc.org/ooxml/{strict}": _NS[prefix]
     for strict, prefix in (
         ("spreadsheetml/main", "s"),
         ("presentationml/main", "p"),
@@ -61,7 +61,17 @@ _STRICT_NS = tuple(
         ("drawingml/diagram", "dgm"),
         ("officeDocument/relationships", "r"),
     )
-)
+}
+
+
+# expat also reads UTF-16, where an ASCII search for the declaration finds nothing.
+_ENTITY_DECLS = tuple("<!ENTITY".encode(codec) for codec in ("utf-8", "utf-16-le", "utf-16-be"))
+
+
+def _transitional_name(name: str) -> str:
+    namespace, separator, local = name.partition("}")
+    mapped = _STRICT_NS.get(namespace[1:]) if separator else None
+    return f"{{{mapped}}}{local}" if mapped else name
 
 
 def _q(prefix: str, tag: str) -> str:
@@ -115,18 +125,32 @@ class _Archive:
     def _xml_events(self, name: str, events: tuple[str, ...]):
         data = self.read(name)
         # Office XML never declares entities; refusing them rules out expansion attacks.
-        if b"<!ENTITY" in data:
+        if any(decl in data for decl in _ENTITY_DECLS):
             raise ValueError("XML entity declarations are not supported")
-        if b"purl.oclc.org/ooxml/" in data:
-            for strict, transitional in _STRICT_NS:
-                data = data.replace(strict, transitional)
-        parser = ET.XMLPullParser(events)
+        parser = ET.XMLPullParser((*events, "start-ns"))
+        strict = False
+
+        def read_events():
+            nonlocal strict
+            for event, element in parser.read_events():
+                if event == "start-ns":
+                    strict = strict or element[1] in _STRICT_NS
+                    continue
+                if strict and event == "start":
+                    # Expanded names identify namespaces in every XML encoding; values are data.
+                    element.tag = _transitional_name(element.tag)
+                    if element.attrib:
+                        element.attrib = {
+                            _transitional_name(key): value for key, value in element.attrib.items()
+                        }
+                yield event, element
+
         try:
             for start in range(0, len(data), 1 << 20):
                 parser.feed(data[start : start + (1 << 20)])
-                yield from parser.read_events()
+                yield from read_events()
             parser.close()
-            yield from parser.read_events()
+            yield from read_events()
         except ET.ParseError as exc:
             raise ValueError(f"malformed XML in {name}") from exc
 
@@ -266,11 +290,13 @@ _BUILTIN_NUMBER_FORMATS = {
 }
 _MAX_FORMAT_CHARS = 1024
 _FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
+_FORMAT_COLOR = re.compile(r"black|blue|cyan|green|magenta|red|white|yellow|color\d+", re.I)
+_FORMAT_SYSTEM_DATE = re.compile(r"-(f400|f800|x-sys)", re.I)  # long date and time of the OS
 
 
 def _format_tokens(code: str) -> list[tuple[str, str]] | None:
-    """("lit" | "ph" | "exp" | "sep", text) tokens of a number format, or None if unsupported."""
-    tokens, i = [], 0
+    """("lit" | "ph" | "exp" | "sep" | "color" | "fill", text) tokens of a number format, or None if unsupported."""
+    tokens, i, separators = [], 0, 0
     while i < len(code):
         ch = code[i]
         if ch == '"':
@@ -285,14 +311,19 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             end = code.find("]", i)
             inner = code[i + 1 : end] if end > 0 else ""
             if inner.startswith("$"):  # currency and locale, such as [$EUR-407]
+                if _FORMAT_SYSTEM_DATE.search(inner):
+                    return None
                 tokens.append(("lit", inner[1:].split("-")[0]))
-            elif not inner.isalnum():  # conditions such as [>100]
+            elif _FORMAT_COLOR.fullmatch(inner):
+                tokens.append(("color", inner))
+            else:  # conditions such as [>100], elapsed time
                 return None
-            i = end + 1  # colours are dropped
+            i = end + 1
         elif ch == "_":  # space the width of the next character
             tokens.append(("lit", " "))
             i += 2
         elif ch == "*":  # fill with the next character
+            tokens.append(("fill", code[i + 1 : i + 2]))
             i += 2
         elif ch in "0#?.,%":
             tokens.append(("ph", ch))
@@ -301,8 +332,15 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             tokens.append(("exp", code[i + 1]))
             i += 2
         elif ch == ";":
+            separators += 1
+            if separators == 3:  # the fourth section formats text, not numbers
+                break
             tokens.append(("sep", ";"))
             i += 1
+        elif ch == "@":  # a section holding @ formats text too, wherever it sits
+            while tokens and tokens.pop()[0] != "sep":
+                pass
+            break
         elif ch in _FORMAT_LITERALS:
             tokens.append(("lit", ch))
             i += 1
@@ -363,7 +401,12 @@ def _section_plan(tokens: list[tuple[str, str]]):
     )
 
 
+_GENERAL = object()
+
+
 def _apply_section(value: float, plan) -> str | None:
+    if plan is _GENERAL:
+        return _number(value)
     if plan is None or isinstance(plan, str):
         return plan
     (
@@ -407,7 +450,7 @@ def _apply_section(value: float, plan) -> str | None:
 
 
 def _number_plan(code: str):
-    """Each section of a numeric format read once (with whether it has tokens), or None if unsupported."""
+    """Each section of a numeric format read once, or None if unsupported."""
     tokens = _format_tokens(code) if code else None
     if not tokens:
         return None
@@ -417,17 +460,23 @@ def _number_plan(code: str):
             sections.append([])
         else:
             sections[-1].append(token)
-    return [(bool(section), _section_plan(section)) for section in sections]
+    # An empty section hides its values; Excel reads a colour-only one as General.
+    return [
+        _GENERAL
+        if section and all(kind == "color" for kind, _ in section)
+        else _section_plan([token for token in section if token[0] in ("lit", "ph", "exp")])
+        for section in sections
+    ]
 
 
 def _apply_number(value: float, plan) -> str | None:
     if plan is None:
         return None
-    if value < 0 and len(plan) > 1 and plan[1][0]:
-        return _apply_section(-value, plan[1][1])
-    if value == 0 and len(plan) > 2 and plan[2][0]:
-        return _apply_section(0.0, plan[2][1])
-    text = _apply_section(abs(value), plan[0][1])
+    if value < 0 and len(plan) > 1:
+        return _apply_section(-value, plan[1])
+    if value == 0 and len(plan) > 2:
+        return _apply_section(0.0, plan[2])
+    text = _apply_section(abs(value), plan[0])
     return None if text is None else ("-" + text if value < 0 else text)
 
 
@@ -971,6 +1020,8 @@ def _email_parts(part, html_text) -> list[str]:
     """Inline body text in order: every part of a mixed message, one choice per alternative."""
     if part.get_content_disposition() == "attachment":
         return []
+    if part.get_content_type() == "message/rfc822" and part.is_multipart():
+        return [_email_text(message, html_text) for message in part.get_payload()]
     if part.get_content_maintype() == "multipart":
         children = list(part.iter_parts())
         if part.get_content_subtype() != "alternative":

@@ -10,6 +10,7 @@ import itertools
 import re
 from pathlib import Path
 from tests.studio._js_source import assert_guard_holds, blank_literals_and_comments
+from tests.studio._playwright_robust import RUN_SETTINGS_CONTEXT_LABEL
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -904,7 +905,7 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     while an explicit local row still scans only its own directory."""
     src = _read("features/chat/api/chat-adapter.ts")
     sources = src.split("function buildAutoLoadSources", 1)[1]
-    sources = sources.split("function isRememberedSource", 1)[0]
+    sources = sources.split("function rememberedMatch", 1)[0]
     assert sources.count("preferLocalCache: true") == 2
     assert "localPath: repo.load_id || repo.cache_path" in sources
     assert "loadId: repo.load_id || repo.repo_id" in sources
@@ -1001,20 +1002,26 @@ def test_fixed_layer_gguf_pins_displayed_context():
     """A loaded auto-fit GGUF saved with Manual fixed GPU layers must pin its shown context, else a
     fresh load sends native/0 and recreates the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "const pinFixedLayerContext =" in src
-    assert 'loadableConfig.gpuMemoryMode === "manual"' in src
-    assert "customContextLength: activeLoadedContext" in src
+    assert re.search(
+        r"const fixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: loadableConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: loadableConfig\.gpuLayers,",
+        src,
+    )
+    assert "{ ...loadableConfig, customContextLength: fixedLayerPin }" in src
 
 
 def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
-    """pinFixedLayerContext is computed from the render-time config, before a same-click
-    GPU Layers draft is committed."""
+    """The render-time pin is computed before a same-click GPU Layers draft is committed, so
+    Apply recomputes it from the committed config."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "const effectivePinFixedLayerContext =" in src
-    assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
-    assert "effectiveConfig.gpuLayers != null" in src
-    assert "effectiveConfig.customContextLength == null" in src
-    assert "{ ...effectiveConfig, customContextLength: activeLoadedContext }" in src
+    assert re.search(
+        r"const effectiveFixedLayerPin = fixedLayerContextPin\(\{[^}]*"
+        r"gpuMemoryMode: effectiveConfig\.gpuMemoryMode \?\? gpuMemoryModeFallback,[^}]*"
+        r"gpuLayers: effectiveConfig\.gpuLayers,",
+        src,
+    )
+    assert "{ ...effectiveConfig, customContextLength: effectiveFixedLayerPin }" in src
 
 
 def test_blur_cache_cleared_on_every_settled_render():
@@ -1121,7 +1128,7 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "const effectiveMaxSeqLengthValue =" in page
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        "contextPinPatch(committedMaxSeqLength, pinsContextLength, config.npuPrefillChunkLen),"
         in page
     )
 
@@ -1203,10 +1210,10 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
 
 
 def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
-    """MLX sizes its own window, so the control is GGUF's Context Length and states what a
+    """MLX sizes its own window, so the control is GGUF's Context (window) and states what a
     load would serve. Max Seq Length at 4096 would describe a pin never sent."""
     page = _read("features/model-picker/components/model-config-page.tsx")
-    assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
+    assert 'const label = isMlx ? "Context" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert "displayValue={isMlx && windowUnknown && !dragging ? unknownLabel : undefined}" in page
     assert 'unknownLabel = "—",' in page
@@ -1240,7 +1247,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, pinsContextLength))" in page
+    assert "update(contextPinPatch(value, pinsContextLength, config.npuPrefillChunkLen))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
@@ -1746,9 +1753,10 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < text.index(
             'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
+        # The guard may release the pick first (dropReleasedPick, #18420); it must still return true.
         guards = re.findall(
             r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
-            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return (\w+);",
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*(?:\w+\([^;{}]*\);\s*)*)?return (\w+);",
             text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
@@ -1758,7 +1766,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         tail = text[text.rindex("} catch") :]
         assert re.search(
             r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} "
-            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*)?return true;.*?return handleLoadRef",
+            r"(?:\{\s*pickToast\.dismiss\(pickToastId\);\s*(?:\w+\([^;{}]*\);\s*)*)?return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
@@ -2383,15 +2391,15 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "n_ubatch?: number | null;" in api_types
     # One rule for every load path: omitted when blank, since an explicit null reads as set and
     # strips inherited -b / -ub.
+    # MLX reads the same two fields (#18426), so the gate may widen to MLX but must keep GGUF and
+    # must not send them to an engine that ignores them.
     load_request = " ".join(_read("features/chat/lib/load-request.ts").split())
-    assert (
-        "...(target.isGguf && settings.nBatch != null ? { n_batch: settings.nBatch } : {}),"
-        in load_request
-    )
-    assert (
-        "...(target.isGguf && settings.nUbatch != null ? { n_ubatch: settings.nUbatch } : {}),"
-        in load_request
-    )
+    for field, key in (("nBatch", "n_batch"), ("nUbatch", "n_ubatch")):
+        assert re.search(
+            rf"\.\.\.\(\(?target\.isGguf(?: \|\| mlx\))? && settings\.{field} != null "
+            rf"\? \{{ {key}: settings\.{field} \}} : \{{\}}\),",
+            load_request,
+        ), f"{key} is no longer sent, only when set, on a GGUF load"
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "pendingLoadConfig?.nBatch" in runtime
     assert "nBatch: loadNBatch, nUbatch: loadNUbatch," in runtime
@@ -2445,9 +2453,12 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     assert "n_ubatch = payload.n_ubatch," in route
     store = _read_backend("utils/openai_auto_switch_settings.py")
     assert '("n_batch", "n_ubatch")' in store
-    gguf_block = store.split("    if is_gguf:", 1)[1]
-    assert 'kwargs["n_batch"] = override["n_batch"]' in gguf_block
-    assert 'kwargs["n_ubatch"] = override["n_ubatch"]' in gguf_block
+    # Read through the builder rather than its source: the fields may be copied for GGUF alone or
+    # for GGUF and MLX alike (#18426).
+    assert _override_load_kwargs({"n_batch": 1024, "n_ubatch": 256}, is_gguf = True) == {
+        "n_batch": 1024,
+        "n_ubatch": 256,
+    }
     # A stored pass-through -b / -ub must not outrank the first-class field, and survives without one.
     build = _override_load_kwargs
     stored = ["-b", "512", "-ub", "256", "--threads", "4"]
@@ -2920,12 +2931,17 @@ def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     assert "apiLoadable: apiAutoSwitchMayLoad([id, loadId], meta.isLora)," in handoff
     assert "apiLoadable: apiAutoSwitchMayLoad([modelId], isLora)," in handoff
     predicate = " ".join(_read("features/model-picker/model-config/model-identity.ts").split())
-    assert "return !isLora && !ids.some(isOllamaLinkPath);" in predicate
+    # An Ollama MLX tag's checkpoint is indexed by the resolver, so only a materialized .gguf link is
+    # unloadable by the API (#18253).
+    assert "return !isLora && !ids.some(isMaterializedOllamaLink);" in predicate
     backfill = " ".join(_read("features/model-picker/api/migrate-model-overrides.ts").split())
-    assert "!isOllamaLinkPath(entry.modelId) &&" in backfill
+    assert "!isMaterializedOllamaLink(entry.modelId) &&" in backfill
 
     identity = _read("features/hub/lib/model-identity.ts")
     assert 'new Set([".studio_links", "ollama_links"])' in identity
+    assert "return isOllamaLinkPath(modelId) && !isOllamaMlxModelId(modelId);" in " ".join(
+        identity.split()
+    )
     resolver = _read_backend("core/inference/local_model_resolver.py")
     assert 'seg in (".studio_links", "ollama_links")' in resolver, "the rule this mirrors"
 
@@ -3235,8 +3251,9 @@ def test_a_sole_quant_row_keeps_its_gear_and_reaches_the_expander_from_its_menu(
 def test_run_settings_page_keeps_its_identifying_controls():
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'aria-label="Back to model list"' in page
-    assert 'ariaLabel="Context Length"' in page
-    assert 'aria-label="Context Length"' in page
+    # The Playwright drivers find the context field by this name (_playwright_robust.py).
+    assert f'ariaLabel="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
+    assert f'aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"' in page
     # The button element, not the word: "Reset" also appears in comments. Reset picks the pinned set,
     # else Default settings, which fills the panel with DEFAULT_PER_MODEL_CONFIG.
     reset = any(
@@ -3406,7 +3423,7 @@ def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
     """Folding a POSIX path would mark two models differing only by case as
     both being the remembered one."""
     src = _read("features/chat/api/chat-adapter.ts")
-    remembered = src.split("function isRememberedSource", 1)[1].split("\n}", 1)[0]
+    remembered = src.split("function rememberedMatch", 1)[1].split("\n}", 1)[0]
     assert "normalizeTarget(remembered.id)" in remembered
     assert "normalizeTarget(source.id)" in remembered
     assert "normalizeTarget(source.loadId)" in remembered
@@ -3489,7 +3506,7 @@ def test_sources_dedupe_on_the_load_target_alone():
 def test_variant_scans_take_the_run_signal():
     src = _read("features/chat/api/chat-adapter.ts")
     build = src.split("function buildAutoLoadSources", 1)[1]
-    build = build.split("function isRememberedSource", 1)[0]
+    build = build.split("function rememberedMatch", 1)[0]
     assert build.count("signal,") == 2
     assert "options?.abortSignal,\n      )," in src
 
@@ -3519,7 +3536,7 @@ def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
     load targets, so they must agree on POSIX case."""
     src = _read("features/chat/api/chat-adapter.ts")
-    for fn in ("autoLoadSourceKey", "isRememberedSource", "autoLoadCandidateKey"):
+    for fn in ("autoLoadSourceKey", "rememberedMatch", "autoLoadCandidateKey"):
         body = src.split(f"function {fn}(", 1)[1].split("\n}", 1)[0]
         assert "normalizeTarget(" in body, fn
         assert "id.toLowerCase()" not in body, fn

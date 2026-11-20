@@ -83,6 +83,8 @@ export interface MemoryEstimateRequest {
   nBatch?: number | null;
   nUbatch?: number | null;
   ctxCheckpoints?: number | null;
+  /** MLX's prompt cache comes out of the memory the context fits in. */
+  cacheRam?: number | null;
   speculativeType?: string | null;
   specDraftNMax?: number | null;
   specDraftModel?: string | null;
@@ -182,6 +184,7 @@ function estimateRequestBody(
     n_batch: payload.nBatch ?? null,
     n_ubatch: payload.nUbatch ?? null,
     ctx_checkpoints: payload.ctxCheckpoints ?? null,
+    cache_ram: payload.cacheRam ?? null,
     speculative_type: payload.speculativeType ?? null,
     spec_draft_n_max: payload.specDraftNMax ?? null,
     spec_draft_model: payload.specDraftModel ?? null,

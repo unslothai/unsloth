@@ -95,9 +95,7 @@ def resolve_te_quant_request(
     return (AutoTeQuant(scheme) if scheme is not None else None), True
 
 
-# Families whose automatic int8 encoder is the larger share of the default load's error AND whose bf16 encoder costs no
-# speed once resident. qwen-image (Qwen2.5-VL-7B, 2512, 16 prompts, G4, LPIPS vs the bf16 pipeline): int8 ConvRot
-# encoder 0.087 mean, bf16 encoder 0.059 at the same s/img, +6.1 GiB resident.
+# Families where the int8 encoder adds most error and the bf16 encoder costs no speed once resident.
 TE_BF16_AUTO_FAMILIES = frozenset({"qwen-image"})
 TE_BF16_AUTO_ENV = "UNSLOTH_DIFFUSION_TE_BF16_AUTO"
 TE_BF16_AUTO_REASON = (

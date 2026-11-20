@@ -45,6 +45,50 @@ export function shouldShowCompactionNotice(
   );
 }
 
+/**
+ * Notice kind: local models say compacted; a cloud connection says summarized (by whom) or dropped.
+ */
+export type CompactionNoticeKind =
+  | "compacted"
+  | "summarized"
+  | "summarized-by-provider"
+  | "dropped"
+  | "dropped-after-failed-summary";
+
+export function compactionNoticeKind(
+  truncation: ContextTruncation,
+): CompactionNoticeKind {
+  if (truncation.summarized === true) {
+    return truncation.summary_source === "unsloth"
+      ? "summarized"
+      : "summarized-by-provider";
+  }
+  if (truncation.summary_failed === true) return "dropped-after-failed-summary";
+  if (truncation.summary_failed === false) return "dropped";
+  return "compacted";
+}
+
+export const COMPACTION_NOTICE_LABEL: Record<CompactionNoticeKind, string> = {
+  compacted: "Context compacted",
+  summarized: "Earlier messages summarized",
+  "summarized-by-provider": "Earlier messages summarized",
+  dropped: "Older messages dropped",
+  "dropped-after-failed-summary": "Older messages dropped",
+};
+
+/** One sentence on what happened; the divider and the toast add what stays available. */
+export const COMPACTION_NOTICE_TEXT: Record<CompactionNoticeKind, string> = {
+  compacted: "Older messages were dropped from the model's context to make room.",
+  summarized:
+    "The model wrote a summary of the older messages, and the chat continues from it and the most recent ones.",
+  "summarized-by-provider":
+    "The provider summarized older messages to make room.",
+  dropped:
+    "The latest messages left no room for the rest, so the oldest were dropped from the model's context.",
+  "dropped-after-failed-summary":
+    "A summary of the older messages could not be written, so the oldest were dropped from the model's context instead.",
+};
+
 /** afterToolCallId is null when the fit ran before the reply began. */
 export interface CompactionMarker {
   afterToolCallId: string | null;

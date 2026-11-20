@@ -563,6 +563,19 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_fast_verify")):
         entry["mlx_fast_verify"] = True
 
+    from core.inference.npu_flm_args import NPU_IMG_PRE_RESIZE_MAX, NPU_POWER_MODES
+
+    if payload.get("npu_power_mode") in NPU_POWER_MODES:
+        entry["npu_power_mode"] = payload["npu_power_mode"]
+    chunk = _bounded_int(payload.get("npu_prefill_chunk_len"), minimum = 1, maximum = 1048576)
+    if chunk is not None:
+        entry["npu_prefill_chunk_len"] = chunk
+    resize = _bounded_int(
+        payload.get("npu_img_pre_resize"), minimum = 0, maximum = NPU_IMG_PRE_RESIZE_MAX
+    )
+    if resize is not None:
+        entry["npu_img_pre_resize"] = resize
+
     for key in ("mlx_ple_offload", "mlx_expert_offload"):
         value = payload.get(key)
         if value == "off" or (
@@ -727,16 +740,16 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     if mlx_kv_quant:
         kwargs["mlx_kv_quant"] = mlx_kv_quant
 
+    # MLX reads the micro-batch as its prefill step, the batch as its cap on a batched prefill and
+    # cache_ram as its prompt cache size.
+    for key in ("n_batch", "n_ubatch", "cache_ram"):
+        if override.get(key) is not None:
+            kwargs[key] = override[key]
     if is_gguf:
-        if override.get("n_batch") is not None:
-            kwargs["n_batch"] = override["n_batch"]
-        if override.get("n_ubatch") is not None:
-            kwargs["n_ubatch"] = override["n_ubatch"]
         for key in (
             "load_mode",
             "spec_draft_cache_type",
             "ctx_checkpoints",
-            "cache_ram",
             "engram_precision",
         ):
             if override.get(key) is not None:

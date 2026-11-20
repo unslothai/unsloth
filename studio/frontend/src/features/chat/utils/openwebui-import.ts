@@ -217,7 +217,7 @@ const PORTABLE_IMAGE = /^(?:https?:|data:)/i;
 
 const TEXT_PART_TYPES = new Set(["input_text", "output_text", "text"]);
 
-function reasoningText(source: unknown): string {
+export function reasoningText(source: unknown): string {
   if (!Array.isArray(source)) return "";
   return source
     .map((part) => (isDict(part) && typeof part.text === "string" ? part.text : ""))
@@ -225,7 +225,19 @@ function reasoningText(source: unknown): string {
     .trim();
 }
 
-const BUILTIN_TOOL_NAMES: Record<string, string> = { shell: "code_execution" };
+const BUILTIN_TOOL_NAMES: Record<string, string> = {
+  shell: "code_execution",
+  code_interpreter: "code_execution",
+};
+// Hosted cards replay strips (chat-adapter SERVER_SIDE_BUILTIN_TOOL_NAMES); only these may get a status-only result.
+const REPLAY_STRIPPED_TOOL_NAMES = new Set(["web_search", "web_fetch", "code_execution", "image_generation"]);
+// Executed by the client, so neither hosted nor answered on its own.
+export const CLIENT_RUN_CALLS = new Set([
+  "function_call",
+  "custom_tool_call",
+  "local_shell_call",
+  "computer_call",
+]);
 
 function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: boolean } {
   const parts: unknown[] = [];
@@ -291,12 +303,49 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
     const builtin = typeof item.type === "string" ? /^(\w+)_call$/.exec(item.type) : null;
     if (builtin) {
       const callId = str(item.call_id) ?? str(item.id) ?? crypto.randomUUID();
+      const commands = isDict(item.action) ? item.action.commands : undefined;
+      const name = str(item.name) ?? builtin[1];
+      const namespace = str(item.namespace) ?? str(item.server_label);
+      const hosted = !CLIENT_RUN_CALLS.has(item.type as string);
       const part: Dict = {
         type: "tool-call",
         toolCallId: callId,
-        toolName: BUILTIN_TOOL_NAMES[builtin[1]] ?? builtin[1],
-        args: isDict(item.action) ? item.action : {},
+        toolName:
+          BUILTIN_TOOL_NAMES[builtin[1]] ??
+          (namespace ? `${namespace}__${name}` : name),
+        args:
+          typeof item.code === "string"
+            ? { command: item.code }
+            : item.type === "shell_call" && Array.isArray(commands)
+              ? { kind: "bash", command: commands.join("\n") }
+              : Array.isArray(item.queries)
+                ? { queries: item.queries }
+                : item.input !== undefined
+                  ? { input: item.input }
+                  : isDict(item.arguments)
+                    ? item.arguments
+                    : typeof item.arguments === "string"
+                      ? toolArgs(parseJsonLoose(item.arguments))
+                      : isDict(item.action)
+                        ? item.action
+                        : {},
       };
+      // Marked like Studio's own hosted-tool cards, so replay never resends them as client calls.
+      if (hosted && isDict(part.args)) part.args = { ...part.args, _server_tool: true };
+      const done =
+        item.output ??
+        (Array.isArray(item.outputs) && item.outputs.length > 0
+          ? item.outputs
+          : undefined) ??
+        (Array.isArray(item.results) && item.results.length > 0
+          ? item.results
+          : undefined) ??
+        item.error ??
+        // A finished hosted card needs a result or it spins; any other card would replay a made-up one.
+        (hosted && REPLAY_STRIPPED_TOOL_NAMES.has(part.toolName as string)
+          ? (str(item.status) ?? "completed")
+          : undefined);
+      if (done != null) part.result = done;
       toolCallIndex.set(callId, part);
       parts.push(part);
       continue;
@@ -305,17 +354,18 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
     if (typeof item.type === "string" && item.type.endsWith("_call_output")) {
       const callId = str(item.call_id);
       const outputParts = Array.isArray(item.output) ? item.output : [];
-      let resultText = typeof item.output === "string" ? item.output : "";
+      const texts: string[] = [];
       const images: string[] = [];
       for (const part of outputParts) {
         if (!isDict(part)) continue;
         if (TEXT_PART_TYPES.has(part.type as string) && typeof part.text === "string") {
-          resultText += part.text;
+          texts.push(part.text);
         } else if (part.type === "input_image") {
           const url = str(part.image_url);
           if (url) images.push(url);
         }
       }
+      const resultText = typeof item.output === "string" ? item.output : texts.join("\n");
       const target = callId ? toolCallIndex.get(callId) : undefined;
       if (target) {
         // Leave result unset, not "": an empty string renders an empty Result heading.

@@ -180,6 +180,28 @@ def _select(**payload_kwargs) -> list[dict]:
     return asyncio.run(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
 
 
+def test_documented_bash_alias_selects_the_canonical_terminal_tool():
+    from models.inference import AnthropicMessagesRequest
+    from routes.inference import _select_anthropic_server_tools
+
+    messages = [{"role": "user", "content": "hi"}]
+    chat = ChatCompletionRequest(
+        model = "m", messages = messages, enable_tools = True, enabled_tools = ["bash", "python"]
+    )
+    assert chat.enabled_tools == ["terminal", "python"]
+    selected = asyncio.run(_select_request_tools(chat, tools_on = True, mcp_allowed = False))
+    assert [t["function"]["name"] for t in selected] == ["python", "terminal"]
+
+    anthropic = AnthropicMessagesRequest(
+        model = "m", max_tokens = 8, messages = messages, enabled_tools = ["bash"]
+    )
+    picked = _select_anthropic_server_tools(ALL_TOOLS, set(), anthropic.enabled_tools)
+    assert [t["function"]["name"] for t in picked] == ["terminal"]
+
+    count = ChatCountTokensRequest(model = "m", messages = messages, enabled_tools = ["bash"])
+    assert count.enabled_tools == ["terminal"]
+
+
 @pytest.mark.parametrize("mode", ["ask", "auto", "off"])
 def test_non_full_modes_keep_the_sandboxed_schemas(mode):
     tools = _select(permission_mode = mode)
@@ -309,8 +331,7 @@ def test_a_chosen_project_folder_is_named_in_every_mode(full_access):
 
 @pytest.mark.parametrize("names", [{"web_search"}, {"edit_file"}, {"web_search", "edit_file"}])
 def test_the_folder_sentence_needs_a_tool_that_can_read(names):
-    """Neither web_search nor edit_file can list or read the folder, so the sentence would ask
-    for a look the model cannot take."""
+    """Without a tool that can list or read the folder, the folder sentence is left out."""
     tools = [t for t in ALL_TOOLS if t["function"]["name"] in names]
     nudge = _build_tool_action_nudge(tools = tools, model_name = "test-8B", user_folder = True)
     assert _FOLDER_MARKER not in nudge
@@ -326,8 +347,7 @@ def test_the_folder_sentence_needs_a_tool_that_can_read(names):
     ],
 )
 def test_the_folder_sentence_names_the_tools_that_can_read(names, reader, web):
-    """Told only "a tool call", Qwen3.5-4B listed the folder and then web-searched how to read
-    app.py until it gave up with an empty answer."""
+    """Told only 'a tool call', Qwen3.5-4B listed the folder, then web-searched and gave up."""
     tip = _project_folder_tip(names)
     assert reader in tip
     assert ("web_search cannot see them" in tip) == web
@@ -335,8 +355,7 @@ def test_the_folder_sentence_names_the_tools_that_can_read(names, reader, web):
 
 @pytest.mark.parametrize("full_access", [False, True], ids = ["sandboxed", "full_access"])
 def test_the_studio_tool_loop_paths_carry_the_folder_sentence(full_access):
-    """External providers and Codex run python/terminal in the same workdir, with only the
-    environment sentences."""
+    """External providers and Codex run in the same workdir with only environment sentences."""
     only = _build_tool_action_nudge(
         tools = _CODE_TOOLS,
         model_name = "test-8B",

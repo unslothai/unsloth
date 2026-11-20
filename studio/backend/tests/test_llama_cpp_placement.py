@@ -3406,6 +3406,49 @@ def test_a_genuinely_cpu_only_layout_is_still_recognised(tmp_path):
         assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary)) is True
 
 
+@pytest.mark.parametrize(
+    "libs,sycl_only",
+    [
+        (("cpu", "base", "sycl"), True),
+        (("cpu", "base", "sycl", "cuda"), False),
+        (("cpu", "base", "sycl", "vulkan"), False),
+        (("cpu", "base", "cuda"), False),
+        (("cpu", "base"), False),
+    ],
+)
+def test_sycl_build_is_not_sized_from_nvidia_or_amd_probes(tmp_path, libs, sycl_only):
+    """#17787: a SYCL llama-server on a host with an NVIDIA card was planned against nvidia-smi."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    for lib in libs:
+        (lib_dir / f"{prefix}ggml-{lib}.{extension}").write_bytes(b"x")
+
+    class VendorProbeReached(Exception):
+        pass
+
+    def vendor_probe(*_a, **_kw):
+        raise VendorProbeReached
+
+    from utils.hardware import mig
+
+    with (
+        patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir),
+        patch.object(mig, "visible_devices", side_effect = vendor_probe),
+        patch.object(LlamaCppBackend, "_get_gpu_free_memory_vulkan", return_value = []),
+    ):
+        assert LlamaCppBackend._is_sycl_only_backend(str(binary)) is sycl_only
+        if sycl_only:
+            assert LlamaCppBackend._get_gpu_memory(str(binary)) == []
+            assert LlamaCppBackend._get_gpu_memory(str(binary), for_llama_server = True) == []
+        elif "vulkan" not in libs:
+            with pytest.raises(VendorProbeReached):
+                LlamaCppBackend._get_gpu_memory(str(binary))
+
+
 def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
     """--rpc layers land on remote devices this cannot size, so local refusal would block it."""
     backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
@@ -5609,9 +5652,7 @@ def test_the_header_scan_sums_shards(tmp_path):
 def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_the_cache(
     tmp_path, _moe_cache_host
 ):
-    """Qwen3.8-Flash-Next on a 94 GB host: RAM holds the lookup table resident or the
-    experts pinned, not both. The cache beats the --fit split by far, so the table is
-    read lazily (no --lazy-mode off) and the experts stay pinned for the cache."""
+    """RAM fits either the table or pinned experts: read the table lazily (no --lazy-mode off)."""
     lazy = {"per_layer_token_embd.weight": 8 * _GIB}
     # 32 GiB with 20 GiB of experts on the 20,000 MiB card: pinning the experts needs
     # 20 + 8 (prompt cache) beside the 8 GiB table, more than 34 GiB of RAM.
@@ -5630,8 +5671,7 @@ def test_a_resident_table_that_crowds_out_the_pinned_experts_is_read_lazily_for_
     assert cmd[cmd.index("--lazy-mode") + 1] == "off", cmd
     assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
 
-    # Too little RAM even with the table lazy: no cache, and the table decision is the
-    # one a build without the cache makes (here the table already streams).
+    # Too little RAM even with a lazy table: no cache; the table matches a build without one.
     no_cache = dict(_CACHE_CAPS_ON, supports_moe_cache = False, supports_moe_cache_auto = False)
     reference, reference_cmd = _cache_launch(tmp_path, ram_gib = 26, caps = no_cache, **shape)
     backend, cmd = _cache_launch(tmp_path, ram_gib = 26, **shape)
