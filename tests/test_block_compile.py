@@ -782,6 +782,38 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     assert calls  # no host metadata: compiled
 
 
+def test_prefix_grouper_table_keeps_the_stock_forward_on_transformers_layers(monkeypatch):
+    """prefix_grouper_hf passes the table through transformers-native layers too (Qwen3-MoE)."""
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class Qwen3MoeDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    Qwen3MoeDecoderLayer.forward.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+    M._wrap(Qwen3MoeDecoderLayer, {})
+    layer = Qwen3MoeDecoderLayer().train()
+    x = torch.randn(1, 4, 8)
+    layer(x, prefix_seg_info = object())
+    assert calls == []
+    layer(x, prefix_seg_info = None)
+    assert calls  # no table: compiled
+
+
 def test_packed_stock_forward_says_blocks_run_uncompiled(monkeypatch, capsys):
     M = _load()
     monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)

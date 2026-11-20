@@ -22,6 +22,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 QK_ROPE_ENV = "UNSLOTH_H3_QK_ROPE"
 QK_ROPE_MODE_ENV = "UNSLOTH_H3_QK_ROPE_MODE"
@@ -115,6 +116,7 @@ def _reference_rope_once(
 
 
 @lru_cache(maxsize = None)
+@publishes_closure_globals
 def _kernel() -> Any:
     import triton
     import triton.language as tl

@@ -45,6 +45,18 @@ CATALOG = [
         "max_context_window": 262144,
     },
     {
+        "id": "d3-edge-FLM",
+        "checkpoint": "d3:edge",
+        "labels": ["decision", "chat"],
+        "size": 0.58,
+    },
+    {
+        "id": "qwen3.5-oga-hipep-9b-FLM",
+        "checkpoint": "qwen3.5-oga-hipep:9b",
+        "labels": ["vision", "reasoning", "tool-calling", "chat"],
+        "size": 9.0,
+    },
+    {
         "id": "embed-gemma-300m-FLM",
         "checkpoint": "embed-gemma:300m",
         "labels": ["embeddings"],

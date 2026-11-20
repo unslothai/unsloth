@@ -62,8 +62,11 @@ _DISPLAY_NAME_SUFFIX = re.compile(r"-npu\d*$", re.IGNORECASE)
 # Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
 _VALIDATED_MARKER = "npu_validated.json"
 
-# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once
-_EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn"})
+# Unservable modes: no chat endpoint for embeddings/transcription; single-turn answers once;
+# decision models (FastFlowLM 1.0.13 d3:*) refuse plain `flm serve`.
+_EXCLUDED_LABELS = frozenset({"embeddings", "transcription", "single-turn", "decision"})
+# FastFlowLM 1.0.13 *-oga-hipep models run on the GPU through a separate HIP runtime, not the NPU.
+_GPU_FAMILY_SUFFIX = "-oga-hipep"
 # Engine limits below checkpoint metadata, from the FastFlowLM v1.0.12 model cards (docs/docs/models)
 # and qwen3_core_backend.hpp; the 27B pair fails above 8192 (ROCm/FastFlowLM#1001). Recheck on pin bumps.
 _FLM_CONTEXT_LIMITS = {
@@ -138,6 +141,26 @@ DRIVER_HELP_URL = {
 
 class NpuError(RuntimeError):
     """An NPU operation failed; the message is safe to show the user."""
+
+
+# STATUS_FAIL_FAST_EXCEPTION: an ordinary crash can exit with it too, so alone it proves no block.
+_FAIL_FAST = code_integrity_block_reason(0xC0000602)
+_FAIL_FAST_TEXT = re.compile(r"0xc0000602\b", re.IGNORECASE)
+
+
+def _lemonade_start_error(binary: Path, exc: Exception) -> str:
+    reason = code_integrity_block_reason(exc)
+    if reason == _FAIL_FAST:
+        reason = code_integrity_block_reason(_FAIL_FAST_TEXT.sub("", str(exc)))
+    if reason is not None and reason != _FAIL_FAST:
+        return code_integrity_user_message(str(binary.parent), reason)
+    if isinstance(exc, OSError):
+        return f"Lemonade could not start ({binary}): {exc}"
+    status = getattr(exc, "returncode", None)
+    if isinstance(status, int) and status != 0:
+        shown = f"0x{status & 0xFFFFFFFF:08X}" if sys.platform == "win32" else str(status)
+        return f"{exc}\nlemond exited with status {shown}."
+    return str(exc)
 
 
 class NpuBusy(NpuError):
@@ -396,6 +419,14 @@ def _code_integrity_refusal(exc: BaseException) -> bool:
         or code_integrity_block_reason(text)
         or "local model runtime" in text  # code_integrity_user_message wording
     )
+
+
+def _blocked_message(binary: Path, error: object) -> Optional[str]:
+    """The user message when Windows code integrity refused ``binary`` or its DLLs, else None."""
+    blocked = code_integrity_block_reason(error)
+    if blocked is None or blocked == _FAIL_FAST:
+        return None
+    return code_integrity_user_message(str(binary.parent), blocked)
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
@@ -720,9 +751,9 @@ class LemonadeNpuBackend:
             self._server = self._server_for(binary)
             try:
                 self._server.start()
-            except LemonadeUnavailable as exc:
+            except (LemonadeUnavailable, OSError) as exc:
                 self._server = None
-                raise NpuError(str(exc)) from exc
+                raise NpuError(_lemonade_start_error(binary, exc)) from exc
             return self._server
 
     def enable(self) -> dict[str, Any]:
@@ -832,7 +863,8 @@ class LemonadeNpuBackend:
                 )
             )
         except OSError as exc:
-            return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
+            problem = _blocked_message(binary, exc) or f"flm validate could not run: {exc}"
+            return {"ready": False, "problems": [problem]}
         adopt_pid(process.pid)
         self._validate_process = process
         # After adopting: a shutdown sweep that already ran would miss it.
@@ -851,9 +883,13 @@ class LemonadeNpuBackend:
         try:
             report = json.loads(stdout)
         except ValueError:
+            # A refused DLL (flm links every model DLL) exits 0xC0E90002 before printing anything.
+            problem = _blocked_message(binary, process.returncode)
             return {
                 "ready": False,
-                "problems": [f"flm validate returned no report: {stdout[-300:].strip()}"],
+                "problems": [
+                    problem or f"flm validate returned no report: {stdout[-300:].strip()}"
+                ],
             }
         problems = [message for key, message in _VALIDATE_PROBLEMS if report.get(key) is False]
         ready = bool(report.get("ready"))
@@ -883,7 +919,10 @@ class LemonadeNpuBackend:
     def _flm_rows(self) -> list[dict[str, Any]]:
         """Every FastFlowLM model lemond knows, including the ones the catalog cannot chat with."""
         server = self._ensure_running()
-        response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
+        try:
+            response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
+        except LemonadeUnavailable as exc:
+            raise NpuError(f"Listing NPU models failed: {exc}") from exc
         if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         return [
@@ -917,6 +956,8 @@ class LemonadeNpuBackend:
                 continue
             labels = tuple(str(label) for label in row.get("labels") or ())
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
+                continue
+            if str(row.get("checkpoint") or "").partition(":")[0].endswith(_GPU_FAMILY_SUFFIX):
                 continue
             size = row.get("size")
             size_gb = float(size) if isinstance(size, (int, float)) else None

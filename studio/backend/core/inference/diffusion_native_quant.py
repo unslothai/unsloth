@@ -650,11 +650,22 @@ def native_linear_class():
             self._int8pack_scales: dict = {}
             # ROCm RDNA: fused rotate+quant and int8 GEMM kernels, probed per card here, in eager, before any trace.
             self._rdna = False
+            # ROCm, shape the kernels take: ``_rdna_on`` then follows the operand's card, not the build card.
+            self._rdna_rocm = False
             if self.act_int8:
-                self._rdna = (
-                    rdna.shape_supported(self.in_features, self.out_features, self.rot_group)
-                    and rdna.prepare()
+                shape_ok = rdna.shape_supported(self.in_features, self.out_features, self.rot_group)
+                # Probe the card the weight is on (the load's device), not whichever card is current.
+                src = getattr(linear, "weight", None)
+                weight_device = (
+                    src.device if isinstance(src, torch.Tensor) and src.is_cuda else None
                 )
+                self._rdna = shape_ok and rdna.prepare(weight_device)
+                if shape_ok and not self._rdna and not rdna.rdna_triton_disabled():
+                    try:
+                        from .rocm_bf16 import is_rocm_torch
+                        self._rdna_rocm = bool(is_rocm_torch(torch))
+                    except Exception:  # noqa: BLE001
+                        self._rdna_rocm = False
                 # NVIDIA: the fused rotation + act quant compiled forwards take, probed once per card in eager. Only
                 # on a live CUDA context (diffusion_speed probes the denoiser's card again before the compile).
                 if (
@@ -769,6 +780,8 @@ def native_linear_class():
                 if tile is not None:
                     try:
                         return _cut.native_gemm(xq, self.weight_q, x_scale, w_scale, tile)
+                    except torch.cuda.OutOfMemoryError:
+                        raise  # _int_mm's int32 accumulator is larger; the plan is not at fault
                     except Exception:  # noqa: BLE001 - the stock maths below
                         _cut._NATIVE_PLAN.clear()
             acc = torch._int_mm(xq, self.weight_q.t())
@@ -822,7 +835,11 @@ def native_linear_class():
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def _rdna_on(self, x: Any) -> bool:
-            if not (self._rdna and x.is_cuda and x.dtype in (torch.bfloat16, torch.float16)):
+            if not (
+                (self._rdna or self._rdna_rocm)
+                and x.is_cuda
+                and x.dtype in (torch.bfloat16, torch.float16)
+            ):
                 return False
             # The custom ops have no backward: a graph that needs input gradients keeps the stock maths.
             if x.requires_grad and torch.is_grad_enabled():
@@ -913,6 +930,8 @@ def native_linear_class():
                     _CUT16_CALLS[0] += 1
                     _FUSED_STATE["calls"] = _FUSED_STATE.get("calls", 0) + 1
                     return out
+                except torch.cuda.OutOfMemoryError:
+                    raise  # as for the codes: _int_mm needs more, and every plan stays valid
                 except Exception:  # noqa: BLE001 - the same maths in eager below
                     _cut._NATIVE_PLAN.clear()
             acc = torch._int_mm(xq, self.weight_q.t())

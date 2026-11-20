@@ -777,3 +777,88 @@ def test_a_second_stop_does_not_change_what_the_child_was_told(tmp_path):
     assert svc.stop(save = False) is True
     assert svc._discard_requested is False
     assert len(queue.items) == 1
+
+
+def _fake_card(monkeypatch, cap):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: cap)
+
+
+def _sdp_state():
+    tag = getattr(getattr(torch.compiler, "config", None), "cache_key_tag", None)
+    return (
+        bool(torch.backends.cuda.cudnn_sdp_enabled()),
+        list(torch._C._get_sdp_priority_order()),
+        tag,
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(torch._C, "_set_sdp_priority_order")
+    or tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2]) < (2, 10),
+    reason = "needs the SDPA priority API (torch 2.10+)",
+)
+def test_masked_attention_goes_to_cudnn_on_measured_cards(monkeypatch):
+    # Flash takes no mask; on A100 / L4 / RTX PRO 6000 a masked call must reach cuDNN before mem-eff.
+    from torch.nn.attention import SDPBackend
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA", raising = False)
+    _fake_card(monkeypatch, (12, 0))
+    before = _sdp_state()
+    snap = _apply_perf_flags(_cfg(), "cuda")
+    try:
+        enabled, prio, tag = _sdp_state()
+        assert enabled is True
+        # A warm compile cache must not hand back a graph traced under the old pin.
+        if before[2] is not None:
+            assert tag != before[2]
+        assert prio[:4] == [
+            int(SDPBackend.FLASH_ATTENTION),
+            int(SDPBackend.CUDNN_ATTENTION),
+            int(SDPBackend.EFFICIENT_ATTENTION),
+            int(SDPBackend.MATH),
+        ]
+        assert sorted(prio) == sorted(before[1])
+    finally:
+        _restore_perf_flags(snap)
+    assert _sdp_state() == before
+
+
+@pytest.mark.parametrize("cap", [(9, 0), (10, 0), (7, 5)])
+def test_unmeasured_cards_keep_cudnn_sdpa_off(monkeypatch, cap):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA", raising = False)
+    _fake_card(monkeypatch, cap)
+    before = _sdp_state()
+    snap = _apply_perf_flags(_cfg(), "cuda")
+    try:
+        assert _sdp_state() == (False, before[1], before[2])
+    finally:
+        _restore_perf_flags(snap)
+    assert _sdp_state() == before
+
+
+def test_cudnn_sdpa_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA", "0")
+    _fake_card(monkeypatch, (8, 0))
+    before = _sdp_state()
+    snap = _apply_perf_flags(_cfg(), "cuda")
+    try:
+        assert _sdp_state() == (False, before[1], before[2])
+    finally:
+        _restore_perf_flags(snap)
+    assert _sdp_state() == before
+
+
+def test_masked_cudnn_checks_the_training_card_not_the_current_one(monkeypatch):
+    # Training on cuda:1 (an unmeasured sm90) while cuda:0 (an A100) is current keeps cuDNN off.
+    if not hasattr(torch._C, "_get_sdp_priority_order"):
+        pytest.skip("needs the SDPA priority API")
+    from core.training import diffusion_train_common as T
+
+    monkeypatch.setattr(torch, "__version__", "2.14.1+cu130")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    caps = {0: (8, 0), 1: (9, 0), None: (8, 0)}
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: caps[index])
+    assert T._masked_cudnn_priority(torch, "cuda:1") is None
+    assert T._masked_cudnn_priority(torch, "cuda:0") is not None
+    assert T._masked_cudnn_priority(torch, "cuda") is not None

@@ -4644,7 +4644,7 @@ export function HubModelPicker({
       // Downloaded weights keep their row.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
-      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
+      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass, hit.group) : true;
     },
     [catalog, downloadedSet, hostClass],
   );

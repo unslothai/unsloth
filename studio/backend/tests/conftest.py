@@ -269,6 +269,12 @@ def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _cpu_test_host_is_not_a_cpu_only_studio(monkeypatch):
+    # The CPU-only GGUF rule would refuse mocked GPU-path loads here; tests of the rule delete this env.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
@@ -281,6 +287,19 @@ def _forget_hub_unreachable_verdict():
         reach = sys.modules.get("core.inference.hub_reachability")
         if reach is not None:
             reach._UNREACHABLE.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_hub_gguf_listings():
+    def _forget():
+        gguf = sys.modules.get("hub.utils.gguf")
+        if gguf is not None:
+            gguf._hub_listings.clear()
+            gguf._hub_rate_limited.clear()
 
     _forget()
     yield
@@ -973,6 +992,11 @@ def _assume_bare_metal(monkeypatch):
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    monkeypatch.setattr(llama_cpp, "_metal_device_looks_paravirtual_quick", lambda: False)
+    # A test that hides MLX and torch must not reach the host's real Metal device instead.
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "_metal_framework_working_set_bytes", lambda: 0)
     # The route rebinds the detector as a module global, so patching llama_cpp alone is not enough.
     try:
         from routes import inference as routes_inference

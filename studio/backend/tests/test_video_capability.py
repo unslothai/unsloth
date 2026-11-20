@@ -38,8 +38,12 @@ def _patch(
     mps = None,
     torch_import_error = None,
     rosetta = False,
+    installed_without_torch = False,
+    cpu_training_reason = None,
 ):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: installed_without_torch)
+    monkeypatch.setattr(hw, "_CPU_TRAINING_REASON", cpu_training_reason)
     monkeypatch.setattr(hw, "_running_under_rosetta", lambda: rosetta)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: apple)
@@ -288,3 +292,57 @@ def test_a_broken_probe_still_beats_the_macos_branch(monkeypatch):
         system = "Darwin",
     )
     assert hw.video_capability()["video_unsupported_reason"] == "detection_failed"
+
+
+def test_no_torch_install_with_a_gpu_points_at_the_full_install(monkeypatch):
+    """A --no-torch (Chat only) install on a GPU host: the reinstall without --no-torch is the fix, not a bare
+    "install PyTorch" that would leave the install recorded as Chat only."""
+    _patch(
+        monkeypatch,
+        torch = False,
+        device = hw.DeviceType.CPU,
+        apple = False,
+        chat_only_reason = "no_torch",
+        installed_without_torch = True,
+    )
+    cap = hw.video_capability()
+    assert cap["video_supported"] is False
+    assert cap["video_unsupported_reason"] == "pytorch_not_installed"
+    assert "--no-torch" in cap["video_unsupported_message"]
+    assert "Install PyTorch" not in cap["video_unsupported_message"]
+    assert cap["video_cpu_opt_in_applicable"] is False
+
+
+def test_no_torch_install_without_a_gpu_is_not_told_to_install_pytorch(monkeypatch):
+    """The full install trains on the CPU here and brings no video device, so neither fix is offered, and the
+    CPU opt-in cannot admit a host that has no torch at all."""
+    _patch(
+        monkeypatch,
+        torch = False,
+        device = hw.DeviceType.CPU,
+        apple = False,
+        chat_only_reason = "no_torch",
+        installed_without_torch = True,
+        cpu_training_reason = "no_torch",
+    )
+    monkeypatch.setattr(hw, "_video_cpu_opt_in", lambda: True)
+    cap = hw.video_capability()
+    assert cap["video_supported"] is False
+    assert cap["video_unsupported_reason"] == "pytorch_not_installed"
+    assert "No supported accelerator" in cap["video_unsupported_message"]
+    assert "PyTorch" not in cap["video_unsupported_message"]
+    assert cap["video_cpu_opt_in_applicable"] is False
+
+
+def test_apple_silicon_no_torch_install_points_at_the_full_install(monkeypatch):
+    _patch(
+        monkeypatch,
+        torch = False,
+        device = hw.DeviceType.CPU,
+        apple = True,
+        chat_only_reason = "no_torch",
+        installed_without_torch = True,
+    )
+    cap = hw.video_capability()
+    assert cap["video_unsupported_reason"] == "pytorch_not_installed"
+    assert "--no-torch" in cap["video_unsupported_message"]
