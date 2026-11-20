@@ -5836,7 +5836,8 @@ def _metal_devices_env_hides_all(env: Optional[Mapping[str, str]] = None) -> boo
     value = (os.environ if env is None else env).get("GGML_METAL_DEVICES")
     if value is None:
         return False
-    match = re.match(r"\s*([+-]?\d+)", value)
+    # ASCII, as atoi: a full-width digit or a no-break space ends the number there.
+    match = re.match(r"\s*([+-]?\d+)", value, re.ASCII)
     return (int(match.group(1)) if match else 0) < 1
 
 

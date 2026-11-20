@@ -238,6 +238,9 @@ def test_build_has_metal_follows_the_installer_wrapper(tmp_path):
         ("", True),  # set but empty: atoi gives 0
         ("off", True),
         ("-1", True),
+        ("１", True),  # full-width 1: atoi reads only ASCII digits
+        (" 1", True),  # no-break space: not C isspace, so atoi stops at 0
+        ("\t1", False),  # ASCII whitespace is skipped, as atoi does
     ],
 )
 def test_metal_devices_env_follows_ggml_metal_atoi(value, hides):
