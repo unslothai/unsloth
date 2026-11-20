@@ -13852,8 +13852,7 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
-# The tools ranked for a later message, sent after it as a search, get their own share: the fixed listing may
-# already fill the preload one, and small models rarely search for a tool themselves.
+# A later message's matches, sent after it as a search, get their own share: the listing may fill the preload one.
 _MCP_TOOL_MATCH_SHARE = 0.15
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
