@@ -202,11 +202,14 @@ export async function fetchHub(
   if (until !== undefined) {
     const left = until - Date.now();
     if (left > 0) {
-      return new Response(null, {
+      const local = new Response(null, {
         status: 429,
         statusText: "Too Many Requests",
         headers: { "Retry-After": String(Math.ceil(left / 1000)) },
       });
+      // Errors built from response.url read as the Hub's own 429.
+      Object.defineProperty(local, "url", { value: requestUrl(input) });
+      return local;
     }
     rateLimitedUntil.delete(bucket as string);
   }

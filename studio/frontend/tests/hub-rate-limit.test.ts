@@ -50,6 +50,7 @@ test("a 429 is not re-sent until its Retry-After passes", async () => {
     const local = await fetchHub(API);
     assert.equal(local.status, 429);
     assert.equal(local.headers.get("Retry-After"), "30");
+    assert.equal(local.url, API);
     assert.equal(hub.sent.length, 1);
     clock.advance(31_000);
     await fetchHub(API);
