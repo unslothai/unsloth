@@ -69,7 +69,7 @@ def test_route_leaves_block_swap_unset_by_default(dit_route):
     r = _start(dit_route)
     assert r.status_code == 200, r.text
     assert "block_swap" not in dit_route._fake.started_with
-    assert common._config_from_dict(dit_route._fake.started_with).block_swap == "off"
+    assert common._config_from_dict(dit_route._fake.started_with).block_swap == ""
 
 
 @pytest.mark.parametrize(

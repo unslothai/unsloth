@@ -28,9 +28,10 @@ LAST_SWAPPERS: list = []
 
 
 def block_swap_request(cfg: Any) -> Optional[Union[int, str]]:
-    """None (off, the default), "auto", or a block count, from cfg.block_swap or UNSLOTH_DIT_BLOCK_SWAP."""
+    """None (off), "auto", or a block count. An unset cfg.block_swap (None or "") takes UNSLOTH_DIT_BLOCK_SWAP; an
+    explicit "off" or 0 is off even when the env asks for a swap."""
     raw = getattr(cfg, "block_swap", None)
-    if raw is None or str(raw).strip().lower() in _OFF:
+    if raw is None or str(raw).strip() == "":
         raw = os.environ.get(BLOCK_SWAP_ENV, "")
     raw = str(raw).strip().lower()
     if raw in _OFF:
