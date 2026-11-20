@@ -579,6 +579,19 @@ test("over budget, higher priority stays; what stays is placed by insertion orde
   assert.deepEqual(activateLorebook(lore, ["x"]).fired.map((f) => f.id), ["mid", "high"]);
 });
 
+test("SillyTavern exports match as SillyTavern does: regex only in slashes, substrings by default", () => {
+  // SillyTavern sets use_regex on every exported entry and writes match_whole_words: null.
+  const st = (keys: string[], extensions: Record<string, unknown> = {}) =>
+    entry({ keys, use_regex: true, content: "c", extensions: { position: 0, display_index: 0, match_whole_words: null, ...extensions } });
+  const fires = (e: LorebookEntry, text: string) => activateLorebook(book([e]), [text]).fired.length === 1;
+  assert.equal(fires(st(["[Mira]"]), "Hello there."), false, "a bracketed name is not a character class");
+  assert.equal(fires(st(["[Mira]"]), "Have you met [Mira]?"), true);
+  assert.equal(fires(st(["C++"]), "The ship runs C++ code."), true);
+  assert.equal(fires(st(["dragon"]), "The dragons attacked."), true, "substring match by default");
+  assert.equal(fires(st(["dragon"], { match_whole_words: true }), "The dragons attacked."), false);
+  assert.equal(fires(st(["/wyrm|drake/i"]), "A DRAKE lands"), true, "a slashed key is still a regex");
+});
+
 test("one lore budget covers the whole cast", () => {
   const member = (id: string) =>
     character({ id, name: id, characterBook: book([entry({ constant: true, content: "x".repeat(2000) })], { token_budget: 1024 }) });
