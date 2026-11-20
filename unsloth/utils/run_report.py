@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in run diagnostics, both off (and free) unless their variable is set.
+"""Opt-in run diagnostics, free unless their variable is set.
 
-UNSLOTH_MEMORY_REPORT=1: per device, memory held outside torch's caching allocator (CUDA context, NCCL,
-vLLM, cuBLAS workspaces, other processes) at model load, vLLM init, the first forward and the first
-optimizer step. torch.cuda.max_memory_reserved never sees that memory, so it explains an OOM the
-allocator numbers cannot.
-
-UNSLOTH_BATCH_REPORT=N (1 / true = 16): over the first N training micro-batches, one line with the
-share of token slots that hold real tokens (padded rows vs packed / padding-free) and the share that
-carries a loss. Costs one host sync per sampled micro-batch, none afterwards.
+UNSLOTH_MEMORY_REPORT=1: per-device memory outside torch's allocator (CUDA context, NCCL, vLLM, other
+processes) at load, vLLM init, first forward and first optimizer step; explains OOMs max_memory_reserved cannot.
+UNSLOTH_BATCH_REPORT=N (1 / true = 16): real-token and supervised-token share over the first N micro-batches.
 """
 
 __all__ = [
@@ -141,12 +136,9 @@ def batch_report_size():
 
 
 def batch_token_counts(inputs):
-    """[slots, real, supervised, rows, longest_row] as int64 tensors on the batch device, or None.
+    """[slots, real, supervised, rows, longest_row] int64 tensors on the batch device, or None.
 
-    real: attention_mask when present, else the packed sequence lengths, else every slot (a packed
-    or padding-free row without either has no padding Unsloth can see). supervised: the shifted
-    causal targets labels[..., 1:] != -100 (the loss never sees a row's first label; packed rows
-    already mask document starts), else completion_mask[..., 1:], else real."""
+    supervised uses shifted labels[..., 1:] != -100 (the loss never sees a row's first label)."""
     if not hasattr(inputs, "get"):
         return None
     input_ids = inputs.get("input_ids")

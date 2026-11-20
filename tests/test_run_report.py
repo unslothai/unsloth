@@ -119,7 +119,7 @@ def test_batch_report_prints_once_after_n(monkeypatch, capsys):
     assert rr.install_batch_report(trainer) is True
     for _ in range(5):
         trainer.training_step(None, _padded_batch(), 4)
-    assert trainer.calls == 5  # every step still runs the real training_step
+    assert trainer.calls == 5
     out = capsys.readouterr().out.strip().splitlines()
     assert out == [
         "Unsloth: first 3 micro-batches (padded rows): 18 of 24 token slots hold real tokens (75.0%), "
@@ -168,7 +168,7 @@ def test_memory_report_outside_allocator(monkeypatch, capsys):
         "Unsloth: memory at load on cuda:0: 80.00 GB total, 70.00 GB free, torch reserved 10.00 GB "
         "(allocated 8.00 GB), outside torch's allocator 0.00 GB (CUDA context, NCCL, vLLM, other processes)."
     ]
-    # Once per (stage, owner).
+
     assert rr.report_memory("load", owner) is None
     assert used == [0]
 
