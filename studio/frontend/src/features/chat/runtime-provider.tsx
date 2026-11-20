@@ -2514,7 +2514,12 @@ function createPersistedRunAdapter(
         yield await result;
       }
       if (!options.abortSignal?.aborted) {
-        notifyReplyFinished();
+        notifyReplyFinished(
+          options.unstable_threadId ??
+            adoptedThreadId ??
+            persistedRunThreadIds[0] ??
+            null,
+        );
       }
     },
   };

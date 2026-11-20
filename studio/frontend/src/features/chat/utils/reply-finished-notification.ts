@@ -17,6 +17,8 @@ export const REPLY_SETTLE_MS = 3_000;
 
 let sequence = 0;
 let pending: ReturnType<typeof setTimeout> | null = null;
+let pendingThreadId: string | null = null;
+let nativeActionListener: Promise<void> | null = null;
 
 function browserNotificationApi(): typeof Notification | null {
   if (typeof window === "undefined" || !("Notification" in window)) {
@@ -35,14 +37,47 @@ function windowIsInBackground(): boolean {
   );
 }
 
+function openFinishedThread(threadId: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.focus();
+  const target = new URL(window.location.href);
+  target.pathname = "/chat";
+  target.search = new URLSearchParams({ thread: threadId }).toString();
+  target.hash = "";
+  window.location.assign(target.toString());
+}
+
+function ensureNativeActionListener(): Promise<void> {
+  if (!nativeActionListener) {
+    nativeActionListener = import("@tauri-apps/plugin-notification")
+      .then(({ onAction }) =>
+        onAction((event) => {
+          if (event.actionId !== "tap") {
+            return;
+          }
+          const threadId = event.notification?.extra?.threadId;
+          if (typeof threadId === "string" && threadId.trim()) {
+            openFinishedThread(threadId);
+          }
+        }),
+      )
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+  return nativeActionListener;
+}
+
 export function cancelReplyFinishedNotification(): void {
   if (pending !== null) {
     clearTimeout(pending);
     pending = null;
   }
+  pendingThreadId = null;
 }
 
-export function notifyReplyFinished(): void {
+export function notifyReplyFinished(threadId?: string | null): void {
   if (!useChatPreferencesStore.getState().notifyWhenReplyFinishes) {
     return;
   }
@@ -51,27 +86,38 @@ export function notifyReplyFinished(): void {
   if (!windowIsInBackground()) {
     return;
   }
+  pendingThreadId = threadId?.trim() || null;
   pending = setTimeout(() => {
     pending = null;
-    sendReplyFinished();
+    const finishedThreadId = pendingThreadId;
+    pendingThreadId = null;
+    sendReplyFinished(finishedThreadId);
   }, REPLY_SETTLE_MS);
 }
 
-function sendReplyFinished(): void {
+function sendReplyFinished(threadId: string | null): void {
   if (
-    !useChatPreferencesStore.getState().notifyWhenReplyFinishes ||
-    !windowIsInBackground()
+    !(
+      useChatPreferencesStore.getState().notifyWhenReplyFinishes &&
+      windowIsInBackground()
+    )
   ) {
     return;
   }
   sequence += 1;
   if (isTauri) {
-    notifyNative({
-      key: `reply-finished:${sequence}`,
-      title: TITLE,
-      body: BODY,
-      requestPermission: false,
-    }).catch(() => undefined);
+    const notificationKey = `reply-finished:${sequence}`;
+    ensureNativeActionListener()
+      .then(() =>
+        notifyNative({
+          key: notificationKey,
+          title: TITLE,
+          body: BODY,
+          extra: threadId ? { threadId } : undefined,
+          requestPermission: false,
+        }),
+      )
+      .catch(() => undefined);
     return;
   }
   const api = browserNotificationApi();
@@ -82,7 +128,11 @@ function sendReplyFinished(): void {
     // No tag: a same-tag replacement alerts only with renotify, so a later reply would be silent.
     const notification = new api(TITLE, { body: BODY });
     notification.onclick = () => {
-      window.focus();
+      if (threadId) {
+        openFinishedThread(threadId);
+      } else {
+        window.focus();
+      }
       notification.close();
     };
   } catch {

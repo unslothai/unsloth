@@ -5,6 +5,7 @@
 
 const control = (globalThis.__TAURI_NOTIFICATION_STUB__ ??= {
   sent: [],
+  actions: [],
   granted: false,
   mode: "ok",
   requests: 0,
@@ -28,4 +29,9 @@ export function sendNotification(payload) {
     throw new Error("notification: forbidden, capability not granted");
   }
   control.sent.push(payload);
+}
+
+export async function onAction(callback) {
+  control.actions.push(callback);
+  return () => undefined;
 }

@@ -33,6 +33,7 @@ export interface NativeNotificationOptions {
   key: string;
   title: string;
   body?: string;
+  extra?: Record<string, unknown>;
   requestPermission?: boolean;
 }
 
@@ -178,7 +179,7 @@ export async function notifyNative(
     const { sendNotification } = await import(
       "@tauri-apps/plugin-notification"
     );
-    sendNotification({ title: options.title, body });
+    sendNotification({ title: options.title, body, extra: options.extra });
     rememberSentKey(options.key);
   } catch {
     // Native notifications are non-critical UI side effects.
