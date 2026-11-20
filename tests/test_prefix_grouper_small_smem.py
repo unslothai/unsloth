@@ -51,6 +51,8 @@ def kernel(monkeypatch):
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(name, None)
+    # The fake 64 KB GPUs below are NVIDIA parts; tests that need ROCm set torch.version.hip themselves.
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
     return module
 
 
