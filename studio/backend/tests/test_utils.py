@@ -294,7 +294,6 @@ class TestGetGpuMemoryInfo:
         assert abs(busy["free_gb"] - 6.0) < 0.01
 
     def test_mlx_free_reads_the_working_set_on_pre_0_30_mlx(self):
-        """mlx below 0.30.4 only has mx.metal.device_info(); the gate accepts mlx >= 0.22.0."""
         legacy = self._mlx_memory_info(available_gb = 15, recommended_gb = 11, legacy_mlx = True)
         current = self._mlx_memory_info(available_gb = 15, recommended_gb = 11)
 
