@@ -293,13 +293,15 @@ def _pending_messages(
     return reseated
 
 
-def _stale_result(stored: object, result: object) -> bool:
-    # A string matching the new text is a legacy row from before images were kept.
-    return stored == "" or (isinstance(result, dict) and stored == result.get("text"))
+def _stale_result(part: dict, result: object) -> bool:
+    # A stored string equal to the new text was imported before tool images were kept.
+    return "result" not in part or (
+        isinstance(result, dict) and part["result"] == result.get("text")
+    )
 
 
 def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[dict]:
-    """Stored messages whose tool calls were imported open, empty or without images and have a result now."""
+    """Stored messages whose tool calls were imported open or without images and have a result now."""
     stored = {m["id"]: m for m in stored_rows}
     patched = []
     for message in transcript.messages:
@@ -315,7 +317,7 @@ def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[
             {**part, "result": results[part["toolCallId"]]}
             if part.get("type") == "tool-call"
             and part.get("toolCallId") in results
-            and _stale_result(part.get("result", ""), results[part["toolCallId"]])
+            and _stale_result(part, results[part["toolCallId"]])
             else part
             for part in current["content"]
         ]

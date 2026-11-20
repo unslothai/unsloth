@@ -387,18 +387,57 @@ IMAGE_RESULT = {
     "type": "image",
     "source": {"type": "base64", "media_type": "image/png", "data": PNG},
 }
+PNG_IMAGE = {"data": PNG, "mimeType": "image/png"}
+JPEG_RESULT = {
+    "type": "image",
+    "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/"},
+}
 
 
 @pytest.mark.parametrize(
-    "content, text",
-    [([IMAGE_RESULT], ""), ([{"type": "text", "text": "Page 1"}, IMAGE_RESULT], "Page 1")],
+    "content, text, images",
+    [
+        ([IMAGE_RESULT], "", [PNG_IMAGE]),
+        (
+            [
+                {"type": "text", "text": "Page 1"},
+                IMAGE_RESULT,
+                {"type": "image", "source": "malformed"},
+                JPEG_RESULT,
+            ],
+            "Page 1",
+            [PNG_IMAGE, {"data": "/9j/", "mimeType": "image/jpeg"}],
+        ),
+    ],
 )
-def test_claude_keeps_images_a_tool_returned(claude_home, content, text):
+def test_claude_keeps_images_a_tool_returned(claude_home, content, text, images):
     _read_image(claude_home, content)
     run_import(claude.SOURCE)
 
     call = _messages(claude.SOURCE, "s1")[1]["content"][0]
-    assert call["result"] == {"text": text, "images": [{"data": PNG, "mimeType": "image/png"}]}
+    assert call["result"] == {"text": text, "images": images}
+
+
+def test_claude_parallel_tool_images_reach_their_own_calls(claude_home):
+    def use(tool_id):
+        return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {}}
+
+    def result(tool_id, image):
+        return {"type": "tool_result", "tool_use_id": tool_id, "content": [image]}
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "Compare them"),
+            c_asst("a1", [use("t1"), use("t2")], parent = "u1"),
+            c_user("r1", [result("t2", JPEG_RESULT), result("t1", IMAGE_RESULT)], parent = "a1"),
+        ],
+    )
+    calls = claude.read_transcript(path, "t", "s1").messages[1]["content"]
+    assert {c["toolCallId"]: c["result"]["images"][0]["mimeType"] for c in calls} == {
+        "t1": "image/png",
+        "t2": "image/jpeg",
+    }
 
 
 def test_claude_rewinds_keep_their_branch(claude_home):
