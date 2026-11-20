@@ -58,6 +58,23 @@ import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
 import { observeDistantRow } from "@/components/assistant-ui/distant-rows";
 import { WindowedMessageBody } from "@/components/assistant-ui/windowed-message-body";
+import { MessageQuoteCollection } from "@/components/assistant-ui/message-quote-collection";
+import { MessageSelectionLayer } from "@/components/assistant-ui/message-selection-layer";
+import {
+  type QuoteDispatch,
+  getQuoteDispatch,
+  markQuoteDispatchSendFailed,
+  markQuoteDispatchSendSettled,
+  markQuoteDispatchSendStarted,
+  quoteInfoForDispatch,
+  releaseQuoteDispatch,
+  reserveQuoteDispatch,
+} from "@/components/assistant-ui/message-quote-dispatch";
+import { parseQuoteContext } from "@/components/assistant-ui/message-quote-context";
+import {
+  createEphemeralQuoteThreadId,
+  resolveQuoteCollectionKey,
+} from "@/components/assistant-ui/message-quote-store";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
@@ -1892,6 +1909,27 @@ const THREAD_COMPOSER_FADE_VAR = "--thread-composer-fade";
 // After a run start, composer shrinks apply immediately: the run-start pin owns the bottom.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
+type SendReservedComposerOptions = {
+  readonly attachQuotes?: boolean;
+  readonly alsoGuard?: readonly string[];
+};
+
+type QuoteInfoLike = {
+  readonly messageId: string;
+  readonly text: string;
+};
+
+function quoteInfoFromMetadata(value: unknown): QuoteInfoLike | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const quote = value as { messageId?: unknown; text?: unknown };
+  return typeof quote.messageId === "string" &&
+    typeof quote.text === "string"
+    ? { messageId: quote.messageId, text: quote.text }
+    : undefined;
+}
+
 // Picked from role and edit state, not a `components` map; see thread-message-slot.ts.
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
@@ -2185,6 +2223,15 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
+  // The runtime item id survives unsaved-to-saved initialization, so quotes
+  // never move buckets when the backend thread id appears. The per-Thread
+  // fallback is never an empty string.
+  const [ephemeralQuoteThreadId] = useState(createEphemeralQuoteThreadId);
+  const quoteThreadId = resolveQuoteCollectionKey(
+    runtimeThreadId,
+    threadId,
+    ephemeralQuoteThreadId,
+  );
   const aui = useAui();
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
@@ -2416,7 +2463,11 @@ export const Thread: FC<{
             <AuiIf
               condition={({ thread }) => thread.isEmpty && !thread.isLoading}
             >
-              <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
+              <ThreadWelcome
+                hideComposer={hideComposer}
+                threadId={threadId}
+                quoteThreadId={quoteThreadId}
+              />
             </AuiIf>
           )}
 
@@ -2506,6 +2557,16 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
+          <MessageSelectionLayer
+            threadId={quoteThreadId}
+            viewportEl={viewportEl}
+            enabled={!hideComposer}
+          />
+          <MessageQuoteCollection
+            threadId={quoteThreadId}
+            viewportEl={viewportEl}
+            enabled={!hideComposer}
+          />
 
           {!hideComposer && (
             <AuiIf
@@ -2515,6 +2576,7 @@ export const Thread: FC<{
             >
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
+                quoteThreadId={quoteThreadId}
                 threadId={threadId}
                 onHeightChange={setComposerHeight}
               />
@@ -2653,8 +2715,9 @@ const childWithClass = (
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
+  quoteThreadId?: string | null;
   onHeightChange?: (height: number | null) => void;
-}> = ({ disabled, threadId, onHeightChange }) => {
+}> = ({ disabled, threadId, quoteThreadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadListItemId = useAuiState(
@@ -2798,6 +2861,7 @@ const ThreadComposerDock: FC<{
           <ComposerAnimated
             disabled={disabled}
             threadId={threadId}
+            quoteThreadId={quoteThreadId}
             menuSide="top"
           />
         </div>
@@ -2882,7 +2946,8 @@ function buildWelcome(hour: number, name: string): Welcome {
 const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
-}> = ({ hideComposer, threadId }) => {
+  quoteThreadId?: string | null;
+}> = ({ hideComposer, threadId, quoteThreadId }) => {
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
@@ -3007,7 +3072,12 @@ const ThreadWelcome: FC<{
               <div className="flex flex-col pb-[calc(22px*var(--ui-space-scale,1))]">{greetingRow}</div>
             </div>
             <div className="aui-thread-welcome-message relative flex w-full flex-col">
-              {!hideComposer && <ComposerAnimated threadId={threadId} />}
+              {!hideComposer && (
+                <ComposerAnimated
+                  threadId={threadId}
+                  quoteThreadId={quoteThreadId}
+                />
+              )}
               {/* Out of flow, so the composer stays centred by its own box. */}
               {!hideComposer && !incognito && (
                 <ModelPickerAnnouncement className="absolute inset-x-0 top-full mt-[calc(28px*var(--ui-space-scale,1))]" />
@@ -3048,15 +3118,17 @@ const ComposerAnimated: FC<{
   disabled?: boolean;
   placeholder?: string;
   threadId?: string | null;
+  quoteThreadId?: string | null;
   menuSide?: "top" | "bottom";
   disableQueue?: boolean;
-}> = ({ disabled, threadId, menuSide, disableQueue }) => {
+}> = ({ disabled, threadId, quoteThreadId, menuSide, disableQueue }) => {
   return (
     <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
           threadId={threadId}
+          quoteThreadId={quoteThreadId}
           menuSide={menuSide}
           disableQueue={disableQueue}
         />
@@ -3104,9 +3176,10 @@ const Composer: FC<{
   disabled?: boolean;
   placeholder?: string;
   threadId?: string | null;
+  quoteThreadId?: string | null;
   menuSide?: "top" | "bottom";
   disableQueue?: boolean;
-}> = ({ disabled, threadId, menuSide, disableQueue }) => {
+}> = ({ disabled, threadId, quoteThreadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
@@ -5425,68 +5498,193 @@ const Composer: FC<{
   );
 
   // alsoGuard: prior composer text, so a late write of what the user typed is refused too.
-  const sendReservedComposer = useCallback((...alsoGuard: string[]) => {
-    const assistantRuntime =
-      aui.threads().__internal_getAssistantRuntime?.();
-    let reservationToken: symbol | null = null;
-    reservationToken = reservePreStreamRun(preStreamThreadIds, {
-      usesLocalModel:
-        parseExternalModelId(
-          useChatRuntimeStore.getState().params.checkpoint,
-        ) === null,
-      cancel: (reservedThreadIds) => {
-        if (preStreamRunReservationRef.current === reservationToken) {
-          preStreamRunReservationRef.current = null;
-        }
-        for (const reservedThreadId of reservedThreadIds) {
-          try {
-            assistantRuntime?.threads.getById(reservedThreadId).cancelRun();
+  const sendReservedComposer = useCallback(
+    (options: SendReservedComposerOptions = {}) => {
+      const assistantRuntime =
+        aui.threads().__internal_getAssistantRuntime?.();
+      let attachQuotes = options.attachQuotes === true;
+      const alsoGuard = options.alsoGuard ?? [];
+      let dispatch: QuoteDispatch | null = null;
+
+      if (attachQuotes) {
+        const existingQuote = aui.composer().getState().quote;
+        if (existingQuote !== undefined) {
+          const parsed = parseQuoteContext(existingQuote);
+          if (parsed.kind === "invalid") {
+            toast.error("The composer quote is invalid", {
+              description: "Nothing was sent. Your quote collection was kept.",
+            });
             return;
-          } catch {
-            // Thread hydration can retire an alias; try the next captured id.
+          }
+          if (parsed.kind === "valid") {
+            if (getQuoteDispatch(parsed.envelope.contextId) !== null) {
+              toast.error("Those quotes are already being sent");
+              return;
+            }
+            // A stale valid envelope from an interrupted attempt belongs to us.
+            aui.composer().setQuote(undefined);
+          } else {
+            // Never overwrite another feature's quote. Send it normally and keep
+            // our collection available for the next message.
+            attachQuotes = false;
           }
         }
-      },
-    });
-    if (!reservationToken) {
-      toast.error("Wait for the current response to finish");
-      return;
-    }
-    preStreamRunReservationRef.current = reservationToken;
-    try {
-      // Only after reservation succeeds: a refused send keeps the in-flight transcript.
-      cancelAudioUpload();
-      const sentText = aui.composer().getState().text;
-      // Stamp before send() awaits attachments; see utils/chat-thread-creation-claim.ts.
-      const chatStateAtSend = useChatRuntimeStore.getState();
-      claimThreadCreation(preStreamThreadIds, {
-        projectId: projectScope,
-        incognito: chatStateAtSend.incognito,
-        modelId: chatStateAtSend.params.checkpoint ?? "",
-        modelGgufVariant: chatStateAtSend.activeGgufVariant,
-        createdAt: Date.now(),
-      });
-      aui.composer().send();
-      // Empty texts are dropped, so an attachment-only send still clears.
-      armJustSent(sentText, ...alsoGuard);
-    } catch (error) {
-      if (releasePreStreamRunReservation(reservationToken)) {
-        notifyPromptQueueRunFailed(referenceThreadId);
       }
-      preStreamRunReservationRef.current = null;
-      toast.error("Could not prepare attachments", {
-        description:
-          error instanceof Error ? error.message : "Please retry the send.",
+
+      let reservationToken: symbol | null = null;
+      reservationToken = reservePreStreamRun(preStreamThreadIds, {
+        usesLocalModel:
+          parseExternalModelId(
+            useChatRuntimeStore.getState().params.checkpoint,
+          ) === null,
+        cancel: (reservedThreadIds) => {
+          if (preStreamRunReservationRef.current === reservationToken) {
+            preStreamRunReservationRef.current = null;
+          }
+          for (const reservedThreadId of reservedThreadIds) {
+            try {
+              assistantRuntime?.threads.getById(reservedThreadId).cancelRun();
+              return;
+            } catch {
+              // Thread hydration can retire an alias; try the next captured id.
+            }
+          }
+        },
       });
-    }
-  }, [
-    aui,
-    armJustSent,
-    cancelAudioUpload,
-    preStreamThreadIds,
-    projectScope,
-    referenceThreadId,
-  ]);
+      if (!reservationToken) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      preStreamRunReservationRef.current = reservationToken;
+
+      const releaseDispatch = () => {
+        if (dispatch === null) {
+          return;
+        }
+        releaseQuoteDispatch(dispatch.contextId);
+        dispatch = null;
+      };
+      const clearOurQuote = (contextId: string) => {
+        const current = aui.composer().getState().quote;
+        const parsed = parseQuoteContext(current);
+        if (
+          parsed.kind === "valid" &&
+          parsed.envelope.contextId === contextId
+        ) {
+          aui.composer().setQuote(undefined);
+        }
+      };
+      const failSend = (error: unknown) => {
+        if (dispatch !== null) {
+          const contextId = dispatch.contextId;
+          markQuoteDispatchSendFailed(contextId);
+          releaseDispatch();
+          clearOurQuote(contextId);
+        }
+        if (releasePreStreamRunReservation(reservationToken)) {
+          notifyPromptQueueRunFailed(referenceThreadId);
+        }
+        preStreamRunReservationRef.current = null;
+        toast.error("Could not prepare attachments", {
+          description:
+            error instanceof Error ? error.message : "Please retry the send.",
+        });
+      };
+
+      try {
+        if (attachQuotes && quoteThreadId) {
+          const prepared = reserveQuoteDispatch(quoteThreadId);
+          if (prepared.kind === "invalid") {
+            if (releasePreStreamRunReservation(reservationToken)) {
+              notifyPromptQueueRunFailed(referenceThreadId);
+            }
+            preStreamRunReservationRef.current = null;
+            toast.error("Could not attach the selected quotes", {
+              description: "Nothing was sent. Your quote collection was kept.",
+            });
+            return;
+          }
+          if (prepared.kind === "reserved") {
+            dispatch = prepared.dispatch;
+            aui.composer().setQuote(quoteInfoForDispatch(dispatch));
+          }
+        }
+
+        // Only after reservation succeeds: a refused send keeps the in-flight transcript.
+        cancelAudioUpload();
+        const sentText = aui.composer().getState().text;
+        // Stamp before send() awaits attachments; see utils/chat-thread-creation-claim.ts.
+        const chatStateAtSend = useChatRuntimeStore.getState();
+        claimThreadCreation(preStreamThreadIds, {
+          projectId: projectScope,
+          incognito: chatStateAtSend.incognito,
+          modelId: chatStateAtSend.params.checkpoint ?? "",
+          modelGgufVariant: chatStateAtSend.activeGgufVariant,
+          createdAt: Date.now(),
+        });
+        if (dispatch !== null) {
+          markQuoteDispatchSendStarted(
+            (dispatch as QuoteDispatch).contextId,
+          );
+        }
+        const sendResult = aui.composer().send() as unknown;
+        if (dispatch !== null) {
+          const activeDispatch = dispatch as QuoteDispatch;
+          const contextId = activeDispatch.contextId;
+          if (aui.composer().getState().quote !== undefined) {
+            // The composer ignored the send; the quote was not consumed.
+            markQuoteDispatchSendFailed(contextId);
+            releaseDispatch();
+            clearOurQuote(contextId);
+            if (releasePreStreamRunReservation(reservationToken)) {
+              notifyPromptQueueRunFailed(referenceThreadId);
+            }
+            preStreamRunReservationRef.current = null;
+            return;
+          }
+        }
+        const sendPromise =
+          sendResult !== null &&
+          typeof sendResult === "object" &&
+          typeof (sendResult as PromiseLike<void>).then === "function"
+            ? (sendResult as Promise<void>)
+            : null;
+        if (sendPromise === null) {
+          if (dispatch !== null) {
+            markQuoteDispatchSendSettled(
+              (dispatch as QuoteDispatch).contextId,
+            );
+          }
+        } else {
+          void sendPromise.then(
+            () => {
+              if (dispatch !== null) {
+                markQuoteDispatchSendSettled(
+                  (dispatch as QuoteDispatch).contextId,
+                );
+              }
+            },
+            (error) => {
+              failSend(error);
+            },
+          );
+        }
+        // Empty texts are dropped, so an attachment-only send still clears.
+        armJustSent(sentText, ...alsoGuard);
+      } catch (error) {
+        failSend(error);
+      }
+    },
+    [
+      aui,
+      armJustSent,
+      cancelAudioUpload,
+      preStreamThreadIds,
+      projectScope,
+      quoteThreadId,
+      referenceThreadId,
+    ],
+  );
 
   const interceptSend = useCallback(
     (event: { preventDefault: () => void }) => {
@@ -5610,7 +5808,7 @@ const Composer: FC<{
       clearStoredDraft();
       // keep this synchronous so stale run state cannot drop the send after dismissing the toast.
       // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
-      sendReservedComposer();
+      sendReservedComposer({ attachQuotes: true });
     }
   }, [
     pendingSend,
@@ -6104,19 +6302,22 @@ const Composer: FC<{
         closeOverlay();
         event.preventDefault();
         // The wrapper replaced what the user typed, so guard that text as well.
-        sendReservedComposer(visibleBeforeWrap, trimmed);
+        sendReservedComposer({
+          attachQuotes: false,
+          alsoGuard: [visibleBeforeWrap, trimmed],
+        });
         return;
       }
 
       if (hasAttachments || hasPendingAudio) {
         event.preventDefault();
         clearStoredDraft();
-        sendReservedComposer();
+        sendReservedComposer({ attachQuotes: true });
         return;
       }
       event.preventDefault();
       clearStoredDraft();
-      sendReservedComposer();
+      sendReservedComposer({ attachQuotes: true });
     },
     [
       aui,
@@ -9407,13 +9608,23 @@ const EditComposer: FC = () => {
   const researchActive = useThreadResearchActive();
   // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
+  const sourceQuoteValue = useAuiState(
+    ({ message }) => message.metadata?.custom?.quote,
+  );
+  const sendEdit = useCallback(() => {
+    // Always replace, including with undefined. assistant-ui creates a fresh
+    // edit composer per session, but clearing unconditionally prevents a quote
+    // from ever leaking between edit sessions if that lifecycle changes.
+    aui.composer().setQuote(quoteInfoFromMetadata(sourceQuoteValue));
+    aui.composer().send({ startRun: true });
+  }, [aui, sourceQuoteValue]);
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
       return;
     }
     resendAfterCancelRef.current = false;
-    aui.composer().send({ startRun: true });
+    sendEdit();
   });
 
   // ComposerPrimitive.Root's Enter handler sends without startRun, dropping an unchanged edit.
@@ -9424,8 +9635,8 @@ const EditComposer: FC = () => {
       aui.thread().cancelRun();
       return;
     }
-    aui.composer().send({ startRun: true });
-  }, [aui, isComposingRef]);
+    sendEdit();
+  }, [aui, isComposingRef, sendEdit]);
 
   return (
     // Top gap and type match UserMessage, so the text stays near the prompt's line.

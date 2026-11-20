@@ -18,6 +18,7 @@ import {
   modelVisibleMessage,
   toolOnlyImages,
 } from "./mcp-image";
+import { appendQuoteContextToText } from "@/components/assistant-ui/message-quote-context";
 import { llamaServerLoadFields } from "../lib/load-request";
 import {
   clearedServerTuningState,
@@ -1754,6 +1755,14 @@ function prependSystemPrompt<T extends { role: string; content: unknown }>(
   messages.unshift({ role: "system", content: text } as T);
 }
 
+function quoteValueForMessage(message: RunMessage): unknown {
+  return (
+    message as {
+      metadata?: { custom?: Record<string, unknown> };
+    }
+  ).metadata?.custom?.quote;
+}
+
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -1778,7 +1787,11 @@ function toOpenAIMessages(
       : serialized;
   }
 
-  const textContent = collectTextParts(message).join("\n");
+  const baseText = collectTextParts(message).join("\n");
+  const textContent =
+    message.role === "user"
+      ? appendQuoteContextToText(baseText, quoteValueForMessage(message))
+      : baseText;
   const imageParts = collectImageParts(message);
   return [
     {

@@ -61,6 +61,18 @@ import {
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
 import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
+import {
+  acceptQuoteDispatchForMessage,
+  markQuoteDispatchHistoryFailed,
+  markQuoteDispatchHistoryOutcome,
+  markQuoteDispatchHistoryPending,
+  quoteContextIdForMessage,
+  releaseQuoteDispatchForMessage,
+} from "@/components/assistant-ui/message-quote-dispatch";
+import {
+  type HistoryWriteOutcome,
+  historyWriteOutcome,
+} from "./utils/history-write-outcome";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -1416,6 +1428,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
           ...(m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {}),
           ...(m.metadata?.scheduledTask ? { scheduledTask: m.metadata.scheduledTask } : {}),
           ...(typeof m.metadata?.revision === "number" ? { revision: m.metadata.revision } : {}),
+          ...(m.metadata?.quote !== undefined ? { quote: m.metadata.quote } : {}),
         },
       },
     };
@@ -3035,13 +3048,17 @@ function useStudioRuntimeAdapters(
           initializeThread.then(({ remoteId }) => remoteId),
           localThreadId,
         );
-        const write = (async () => {
+        const quoteContextId = quoteContextIdForMessage(message);
+        if (quoteContextId !== null) {
+          markQuoteDispatchHistoryPending(quoteContextId);
+        }
+        const write = (async (): Promise<HistoryWriteOutcome> => {
           const { remoteId } = await initializeThread;
           // Clear-all tombstones directly so a stalled request cannot block it.
           await awaitStoredChatThreadWrites(remoteId);
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
-            return;
+            return "delivered";
           }
           // Not while backgrounded or mid-switch (mainThreadId is still the outgoing thread then).
           const switchState = newThreadSwitchStateRef?.current;
@@ -3112,9 +3129,9 @@ function useStudioRuntimeAdapters(
           // Server-managed messages reject client edits with 409, so skip the save.
           if (preserveServerManaged) {
             await throwIfHistoryWasCleared(remoteId);
-            return;
+            return "delivered";
           }
-          await saveStoredChatMessage({
+          const record: MessageRecord = {
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
@@ -3123,10 +3140,32 @@ function useStudioRuntimeAdapters(
             ...(attachments.length > 0 && { attachments }),
             ...(incomingMetadata && { metadata: incomingMetadata }),
             createdAt,
-          });
+          };
+          const saved = await saveStoredChatMessage(record);
           await throwIfHistoryWasCleared(remoteId);
+          // Incognito, rejected-payload and protected early returns reuse the
+          // input record. The run still proceeds, so that is delivered-only.
+          return historyWriteOutcome(record, saved);
         })();
-        return trackHistoryAppend(message.id, write);
+        const tracked = write.then(
+          (outcome) => {
+            if (quoteContextId === null) {
+              return;
+            }
+            markQuoteDispatchHistoryOutcome(quoteContextId);
+            if (outcome === "persisted" || outcome === "delivered") {
+              acceptQuoteDispatchForMessage(message);
+            }
+          },
+          (error) => {
+            if (quoteContextId !== null) {
+              markQuoteDispatchHistoryFailed(quoteContextId);
+              releaseQuoteDispatchForMessage(message);
+            }
+            throw error;
+          },
+        );
+        return trackHistoryAppend(message.id, tracked);
       },
     }),
     [

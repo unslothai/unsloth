@@ -5,6 +5,40 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const ptBR = {
+  messageSelection: {
+    toolbar: "Selection actions",
+    quote: "Quote",
+    copy: "Copy",
+    copied: "Copied",
+    copyAsMarkdown: "Copy as Markdown",
+    quotedFrom: "Quoted from assistant response {turn} ({id}):",
+    quotedFromNoTurn: "Quoted from an assistant response ({id}):",
+    quoteUnavailable: "The chat composer is not available right now.",
+    quoteCaptureFailed: "This passage could not be quoted.",
+    quoteCollection: "Quote collection",
+    moveQuoteCollection: "Move quote collection",
+    quoteSendPending: "Quotes are still being sent.",
+    quoteSendPendingSaving:
+      "Releasing is available if this takes too long. The message may still finish.",
+    quoteSendPendingWarning:
+      "If the original message still finishes, releasing now can send these quotes twice.",
+    releaseQuotes: "Release quotes",
+    releaseQuotesAnyway: "Release anyway",
+    keepWaitingQuotes: "Keep waiting",
+    multipleQuotes: "Multiple quotes",
+    expandQuotes: "Expand quotes",
+    collapseQuotes: "Collapse quotes",
+    removeQuote: "Remove quote",
+    quoteDialogTitle: "Quote passage",
+    quoteDialogDescription:
+      "Add an optional comment for the assistant, then save this passage to the conversation's quotes.",
+    quoteDialogPassage: "Quoted passage",
+    quoteDialogCommentLabel: "Comment (optional)",
+    quoteDialogCommentPlaceholder: "Add an optional comment...",
+    quoteDialogSave: "Save quote",
+    copyFailed: "Could not copy the selection.",
+    copyEmpty: "There is nothing to copy.",
+  },
   turns: {
     label: "Turno {number}",
     bookmarkedLabel: "Turno {number}, com marcador",
