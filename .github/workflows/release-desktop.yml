@@ -1554,11 +1554,21 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "paths=$(ConvertTo-Json -AsArray -InputObject $output -Compress)" >> $env:GITHUB_OUTPUT
       - name: Scan the signed combined installer with Defender
+        id: scan_universal
         shell: pwsh
         timeout-minutes: 20
         env:
           ARTIFACT_PATHS: ${{ steps.package.outputs.paths }}
         run: *defender-scan
+      - name: Preserve the signed sample if the combined installer scan fails
+        if: failure() && steps.scan_universal.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: flagged-windows-bundles-universal
+          path: ${{ runner.temp }}/Unsloth-Desktop-Windows.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
       - name: Prepare Microsoft submission packet
         if: always() && steps.package.outcome == 'success'
         shell: pwsh
