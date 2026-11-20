@@ -278,7 +278,9 @@ def test_decode_compile_finds_the_slot():
 
 
 def test_load_installs_before_the_speed_layer():
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
     install_at = src.index("install_finite_decode(pipe, target")
     assert (
         src.index("enable_fp16_vae_decode(pipe, target")
