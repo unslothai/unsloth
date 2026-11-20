@@ -899,14 +899,21 @@ def _resolve_auto() -> str:
     """Auto picks sentence-transformers on a CUDA/ROCm GPU, else llama-server; GPU detection uses smi."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    if _gpu_present(LlamaCppBackend):
+    global _gpu_found_key
+    key = _gpu_probe_key(LlamaCppBackend)
+    if key == _gpu_found_key:
         return "sentence-transformers"
-    if LlamaCppBackend._find_llama_server_binary():
-        return "llama-server"
-    return "sentence-transformers"
+    binary = key[1]
+    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
+    if LlamaCppBackend._get_gpu_free_memory(binary = binary):
+        # Kept only if no key input moved while the probe ran (another thread changing a mask).
+        if _gpu_probe_key(LlamaCppBackend) == key:
+            _gpu_found_key = key
+        return "sentence-transformers"
+    return "llama-server" if binary else "sentence-transformers"
 
 
-# Key of the last probe that found a GPU; misses are never cached.
+# Key of the last probe that found a GPU (each probe spawns nvidia-smi / amd-smi); misses are never cached.
 _gpu_found_key: tuple | None = None
 
 
@@ -923,21 +930,6 @@ def _gpu_probe_key(llama_cpp_backend) -> tuple:
         binary_id,
         frozenset(os.environ.items()),
     )
-
-
-def _gpu_present(llama_cpp_backend) -> bool:
-    """Caches a found GPU per binary + environment: each probe spawns nvidia-smi / amd-smi."""
-    global _gpu_found_key
-    key = _gpu_probe_key(llama_cpp_backend)
-    if key == _gpu_found_key:
-        return True
-    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
-    if llama_cpp_backend._get_gpu_free_memory():
-        # Kept only if no key input moved while the probe ran (another thread changing a mask).
-        if _gpu_probe_key(llama_cpp_backend) == key:
-            _gpu_found_key = key
-        return True
-    return False
 
 
 # Cached: the auto GPU probe is a subprocess (#10390).

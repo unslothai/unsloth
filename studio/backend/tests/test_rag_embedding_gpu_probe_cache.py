@@ -11,16 +11,19 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 @pytest.fixture
 def probe(monkeypatch):
-    state = {"gpus": [(0, 40000)], "calls": 0, "binary": None}
+    state = {"gpus": [(0, 40000)], "calls": 0, "binary": None, "finds": 0, "probed_with": []}
 
-    def _gpus(*_a, **_kw):
+    def _gpus(*_a, **kw):
         state["calls"] += 1
+        state["probed_with"].append(kw.get("binary"))
         return state["gpus"]
 
+    def _find():
+        state["finds"] += 1
+        return state["binary"]
+
     monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_gpus))
-    monkeypatch.setattr(
-        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: state["binary"])
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(_find))
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
     embeddings._reset_backend()
     monkeypatch.setattr(embeddings, "_gpu_found_key", None, raising = False)
@@ -47,6 +50,16 @@ def test_no_gpu_answer_is_probed_every_time(probe, tmp_path):
     probe["gpus"] = [(0, 40000)]
     assert embeddings._resolve_auto() == "sentence-transformers"
     assert probe["calls"] == 3
+
+
+def test_miss_looks_up_the_binary_once(probe, tmp_path):
+    binary = tmp_path / "llama-server"
+    binary.write_text("")
+    probe["binary"] = str(binary)
+    probe["gpus"] = []
+    assert embeddings._resolve_auto() == "llama-server"
+    assert probe["finds"] == 1
+    assert probe["probed_with"] == [str(binary)]
 
 
 def test_environment_change_probes_again(probe, monkeypatch):
