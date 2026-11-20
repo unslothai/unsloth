@@ -438,7 +438,9 @@ def test_a_lemond_that_cannot_be_spawned_is_an_npu_error(npu):
     lemond = npu.installer.binary
     lemond.chmod(0o644)
     try:
-        with pytest.raises(nb.NpuError, match = "Lemonade could not start .*Permission denied"):
+        with pytest.raises(
+            nb.NpuError, match = "The NPU runtime could not start .*Permission denied"
+        ):
             restarted.catalog()
     finally:
         lemond.chmod(0o755)

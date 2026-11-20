@@ -155,7 +155,7 @@ def _lemonade_start_error(binary: Path, exc: Exception) -> str:
     if reason is not None and reason != _FAIL_FAST:
         return code_integrity_user_message(str(binary.parent), reason)
     if isinstance(exc, OSError):
-        return f"Lemonade could not start ({binary}): {exc}"
+        return f"The NPU runtime could not start ({binary}): {exc}"
     status = getattr(exc, "returncode", None)
     if isinstance(status, int) and status != 0:
         shown = f"0x{status & 0xFFFFFFFF:08X}" if sys.platform == "win32" else str(status)
@@ -396,14 +396,14 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
         server.note(f"Request failed: {explained}")
     if lines:
         _events.warning(
-            "Lemonade output before the NPU error",
+            "NPU runtime output before the NPU error",
             error = message,
             lemonade_log = log_name,
             lemonade_output = lines,
             overlapped_another_request = shared,
         )
     if explained == message and log_name:
-        explained = f"{message} (Lemonade's output is on the Logs page.)"
+        explained = f"{message} (The NPU runtime's output is on the Logs page.)"
     return f"{explained} {advice}".rstrip()
 
 
@@ -786,6 +786,10 @@ class LemonadeNpuBackend:
 
     def _enable_flm(self) -> Path:
         self._state = "installing"
+        if self._server is not None and self._installed_lemond() is None:
+            # A running lemond or flm holds the files an upgrade replaces (Windows locks them).
+            self._server.stop()
+            self._loaded = None
         try:
             binary = _installer_module().install(self.root, cancel = self._closing)
             self._state = "starting"
@@ -1398,7 +1402,7 @@ class LemonadeNpuBackend:
         except LemonadeUnavailable as exc:
             raise NpuError(str(exc)) from exc
         if not model_ids:
-            raise NpuError(f"Lemonade has no FastFlowLM model for {checkpoint}.")
+            raise NpuError(f"FastFlowLM has no model for {checkpoint}.")
         resident = self.resident()
         if resident is not None and resident.model.id in model_ids:
             raise NpuError(f"Unload {resident.model.id} before deleting this folder.")
@@ -1535,7 +1539,7 @@ class LemonadeNpuBackend:
                         raise NpuError(f"Loading {model.id} failed: {reason}")
                 resident_ctx = self._resident_context(server, model.id)
                 if resident_ctx is None:
-                    raise NpuError(f"Lemonade did not report {model.id} as loaded on the NPU.")
+                    raise NpuError(f"The NPU runtime did not report {model.id} as loaded.")
                 with self._commit_lock:
                     self._raise_if_load_cancelled(model_id)
                     self._loaded = _Loaded(
