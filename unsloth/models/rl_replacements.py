@@ -4254,6 +4254,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
 
             # Old / ref logps must use the policy pass's scorer, else the ratio starts away from 1 and the KL is biased.
+            # The forwards below run under torch.no_grad() as TRL's do, not inference_mode: the compiled packed
+            # forward under inference_mode is not bit-equal to the loss's grad-mode one (~0.01 nats per token).
             try:
                 if os.environ.get("UNSLOTH_GRPO_LOGPROB_RECOMPUTE", "0") == "1":
                     from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
@@ -4541,7 +4543,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pg_chunks = max(1, total_rows * multiplier)
 
                         def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
-                            with _get_inference_mode_context_manager(model):
+                            with torch.no_grad():
                                 with torch.amp.autocast(
                                     device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
@@ -4670,7 +4672,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         _pk_in_packed = True
-                        with _get_inference_mode_context_manager(model):
+                        with torch.no_grad():
                             with torch.amp.autocast(
                                 device_type = DEVICE_TYPE_TORCH,
                                 dtype = self._autocast_dtype,
@@ -4736,7 +4738,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         else:
                             # verify against the per-row forward (ground truth)
                             _pk_ref = torch.zeros_like(_pk_result)
-                            with _get_inference_mode_context_manager(model):
+                            with torch.no_grad():
                                 with torch.amp.autocast(
                                     device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
@@ -4943,7 +4945,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
                 _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
 
-            with _get_inference_mode_context_manager(model):
+            with torch.no_grad():
                 for (
                     input_ids_chunk,
                     attention_mask_chunk,
