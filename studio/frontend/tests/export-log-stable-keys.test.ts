@@ -23,7 +23,6 @@ const line = (i: number): Entry => ({
   line: `tensor ${i}`,
   ts: null,
 });
-// The row key the log box renders for each visible line.
 const keyOf = (i: number) => store().logBase + i;
 
 test("row keys stay attached to the same line when the head is trimmed", () => {

@@ -39,7 +39,6 @@ export function getExportLogLineClass(entry: ExportLogEntry): string {
   return "";
 }
 
-/** Lines per rendered block; a block holds absolute lines [k * size, (k + 1) * size). */
 export const EXPORT_LOG_GROUP_SIZE = 100;
 
 export interface ExportLogGroup {
