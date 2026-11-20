@@ -18706,10 +18706,15 @@ class LlamaCppBackend:
     _INKLING_CTX_COMPUTE_BYTES_PER_TOK = 8192  # per token at ub=512
     # Dense relative-bias fallback (quantized KV disables the banded path): ~402 KiB/tok measured.
     _INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK = 402470  # per token at ub=512
-    # Inkling 2 (llama.cpp models/inkling2.cpp) has no banded path: a dense f32 [n_kv, ub, n_head]
-    # relative bias plus its permuted copy, and an i32 [n_kv, ub] index. Bytes per cell per ub token.
+    # Inkling 2 relative bias (llama.cpp with unslothai/llama.cpp#385 and #386). Bytes per cell per ub token.
+    # Banded flash path (flash attention, f16/bf16/f32 cache, head dim 64/128, ub > 32): 18 * ub per cell
+    # plus a flat f32 [ub, ub, n_head] block.
+    _INKLING2_BANDED_BYTES = 18
+    # Dense fallback: f32 [n_kv, ub, n_head] bias, its permuted copy and an i32 [n_kv, ub] index. #385
+    # chunks the rows past 2^29 elements, so this is an upper bound (exact to 32k at ub=512).
     _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
     _INKLING2_REL_INDEX_BYTES = 4
+    _INKLING2_BANDED_MIN_UBATCH = 33
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -18894,8 +18899,18 @@ class LlamaCppBackend:
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
         if getattr(self, "_architecture", None) == "inkling2":
-            # Sliding layers' smaller bias reuses this allocation; q8_0 measures as f16 (no dequant).
+            # Sliding layers' smaller bias reuses this allocation; no dequant copy on either path.
             n_head = self._inkling2_bias_heads()
+            head_dim = getattr(self, "_kv_key_length", None) or 128
+            banded = (
+                flash_attn
+                and (cache_type_kv or "f16").strip().lower() in ("f16", "bf16", "f32")
+                and head_dim in (64, 128)
+                and ub >= self._INKLING2_BANDED_MIN_UBATCH
+            )
+            if banded:
+                per_tok = self._INKLING2_BANDED_BYTES * ub + split_extra
+                return int(per_tok * n_ctx + 4 * n_head * ub * ub)
             per_tok = (
                 mask_rate
                 + split_extra

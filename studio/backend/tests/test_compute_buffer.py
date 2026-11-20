@@ -1563,18 +1563,26 @@ class TestOutputRowsByBuild:
 
 
 class TestComputeBufferInkling2:
-    """Measured CUDA0 MiB: Inkling-2-Mini UD-Q4_K_XL, b12568, 4 slots, --kv-unified, RTX 6000 Ada."""
+    """Measured CUDA0 MiB: Inkling-2-Mini UD-Q4_K_XL, llama.cpp with unslothai/llama.cpp#385 and #386,
+    4 slots, --kv-unified, RTX 6000 Ada."""
 
-    _MEASURED = [
-        (65536, 512, "f16", True, 6523.02),
-        (131072, 512, "f16", True, 12859.02),
-        (262144, 512, "f16", True, 25531.02),
-        (800000, 512, "f16", True, 77530.77),
-        (65536, 256, "f16", True, 3261.34),
-        (65536, 1024, "f16", True, 13048.63),
-        (65536, 512, "q8_0", True, 6517.02),
-        (32768, 512, "f16", False, 4935.51),
-        (65536, 512, "f16", False, 9671.51),
+    _BANDED = [
+        # (n_ctx, ubatch, slots, MiB) with flash attention and an f16 cache
+        (65536, 512, 4, 781.06),
+        (262144, 512, 4, 2509.06),
+        (800000, 512, 4, 7236.31),
+        (65536, 256, 4, 386.81),
+        (65536, 2048, 4, 3350.38),
+        (262144, 2048, 4, 10236.38),
+        (65536, 512, 1, 672.12),
+    ]
+    _DENSE = [
+        # (n_ctx, cache type, flash attention, MiB): #385 chunks the bias, the estimate stays above
+        (65536, "q8_0", True, 4573.92),
+        (131072, "q8_0", True, 6175.42),
+        (262144, "q8_0", True, 12191.42),
+        (65536, "f16", False, 5159.41),
+        (131072, "f16", False, 5543.41),
     ]
 
     def _inkling2_mini(self, arch = "inkling2"):
@@ -1594,26 +1602,55 @@ class TestComputeBufferInkling2:
         b._attn_res_block_size = 6
         return b
 
-    def _total_mib(self, b, ctx, ub, ct, fa):
+    def _total_mib(
+        self,
+        b,
+        ctx,
+        ub,
+        ct,
+        fa,
+        slots = 4,
+    ):
         return (
-            b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = 4)
-            + b._compute_buffer_ctx_bytes(ctx, ub, ct, flash_attn = fa, n_parallel = 4)
+            b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = slots)
+            + b._compute_buffer_ctx_bytes(ctx, ub, ct, flash_attn = fa, n_parallel = slots)
         ) / MIB
 
-    @pytest.mark.parametrize("ctx,ub,ct,fa,measured", _MEASURED)
-    def test_estimate_tracks_measured_buffer(self, ctx, ub, ct, fa, measured):
-        assert self._total_mib(self._inkling2_mini(), ctx, ub, ct, fa) == pytest.approx(
-            measured, rel = 0.01
-        )
+    @pytest.mark.parametrize("ctx,ub,slots,measured", _BANDED)
+    def test_banded_estimate_tracks_measured_buffer(self, ctx, ub, slots, measured):
+        est = self._total_mib(self._inkling2_mini(), ctx, ub, "f16", True, slots)
+        assert measured <= est <= measured * 1.2
 
-    def test_rate_is_the_two_bias_copies_index_and_mask(self):
+    @pytest.mark.parametrize("ctx,ct,fa,measured", _DENSE)
+    def test_dense_estimate_stays_above_the_chunked_buffer(self, ctx, ct, fa, measured):
+        assert self._total_mib(self._inkling2_mini(), ctx, 512, ct, fa) >= measured
+
+    def test_dense_rate_is_the_two_bias_copies_index_and_mask(self):
         b = self._inkling2_mini()
-        per_tok = b._compute_buffer_ctx_bytes(1_000_000, 512, "f16") / 1_000_000
+        per_tok = b._compute_buffer_ctx_bytes(1_000_000, 512, "q8_0") / 1_000_000
         assert per_tok == 512 * (8 * 24 + 4 + 2) == 101376
 
+    def test_banded_rate_is_eighteen_bytes_per_ubatch_token(self):
+        b = self._inkling2_mini()
+        rate = (
+            b._compute_buffer_ctx_bytes(2_000_000, 512, "f16")
+            - b._compute_buffer_ctx_bytes(1_000_000, 512, "f16")
+        ) / 1_000_000
+        assert rate == 18 * 512
+
+    @pytest.mark.parametrize(
+        "ct,fa,ub", [("q8_0", True, 512), ("f16", False, 512), ("f16", True, 32)]
+    )
+    def test_ineligible_configurations_take_the_dense_path(self, ct, fa, ub):
+        b = self._inkling2_mini()
+        dense = 512 * (8 * 24 + 4) if ub == 512 else ub * (8 * 24 + 4)
+        assert b._compute_buffer_ctx_bytes(65536, ub, ct, flash_attn = fa) >= dense * 65536
+
     def test_generic_path_underestimated_the_failed_load(self):
+        # Before inkling2 had its own branch it took the generic rate: 928 MiB for a load that
+        # needed 77531 MiB on the build without #385/#386.
         b = self._inkling2_mini(arch = "llama")
-        assert self._total_mib(b, 800000, 512, "f16", True) < 77530.77 * 0.02
+        assert self._total_mib(b, 800000, 512, "f16", True) < 1000
 
     def test_bias_heads_come_from_full_attention_layers(self):
         b = self._inkling2_mini()
@@ -1623,11 +1660,12 @@ class TestComputeBufferInkling2:
         b._n_heads = 20
         assert b._inkling2_bias_heads() == 20
 
-    def test_layer_split_adds_only_the_extra_mask_copies(self):
+    @pytest.mark.parametrize("ct", ["f16", "q8_0"])
+    def test_layer_split_adds_only_the_extra_mask_copies(self, ct):
         b = self._inkling2_mini()
         delta = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2
-        single = b._compute_buffer_ctx_bytes(65536, 512, "f16")
-        split = b._compute_buffer_ctx_bytes(65536, 512, "f16", layer_split = True)
+        single = b._compute_buffer_ctx_bytes(65536, 512, ct)
+        split = b._compute_buffer_ctx_bytes(65536, 512, ct, layer_split = True)
         assert split - single == delta * 65536
 
     def test_residual_blocks_widen_the_activation_estimate(self):
