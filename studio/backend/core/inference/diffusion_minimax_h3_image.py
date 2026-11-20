@@ -4980,12 +4980,16 @@ def _weights_on(module: Any, device: Any) -> Any:
     """Swap ``module``'s host tensors for ``device`` copies, restoring the same host tensors after (streamers hold them)."""
     import torch
 
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None:
+        device = torch.device("cuda", torch.cuda.current_device())
     swapped: list = []
     try:
         for owner in module.modules():
             for kind, table in (("p", owner._parameters), ("b", owner._buffers)):
                 for name, tensor in list(table.items()):
-                    if tensor is None or tensor.device.type == device.type:
+                    # The full device, index included: a tensor on another card is staged too.
+                    if tensor is None or tensor.device == device:
                         continue
                     moved = tensor.to(device)
                     swapped.append((table, name, tensor))
