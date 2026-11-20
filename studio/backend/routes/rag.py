@@ -1079,21 +1079,70 @@ def _image_text(path: str, filename: str) -> tuple[str, str | None]:
     return text, " ".join(notes) or None
 
 
-def _scanned_page_text(path: str, pages: list) -> tuple[dict[int, str], list[int]]:
+def _page_text(page, scanned_text: dict[int, str]) -> str:
+    original = page.text.strip()
+    scanned = scanned_text.get(page.page_number, "")
+    return scanned if original in scanned else "\n\n".join(filter(None, [original, scanned]))
+
+
+def _length_before(pages: list, texts: dict[int, str], page_number: int) -> int:
+    """Characters of the joined text ahead of *page_number*; OCR only ever adds to it."""
+    length = 0
+    for page in pages:
+        if page.page_number == page_number:
+            break
+        text = _page_text(page, texts)
+        if text:
+            length += len(text) + (2 if length else 0)
+    return length
+
+
+def _scanned_page_text(
+    path: str,
+    pages: list,
+    max_chars: int | None = None,
+) -> tuple[dict[int, str], list[int], int]:
+    """OCR text by page, unread scanned pages, and pages kept; pages past *max_chars* are never OCR'd."""
     from core.rag import captioner, parsers, pdf_ocr
 
     scanned = [page.page_number for page in pages if page.needs_ocr]
     # pdf_ocr.ocr_pages takes MUPDF_LOCK even for no pages, stalling text-only reads behind ingestion OCR.
     if not scanned:
-        return {}, []
+        return {}, [], len(pages)
     wanted = scanned[: config.OCR_MAX_PAGES]
-    texts = {}
+    texts: dict[int, str] = {}
+    if max_chars is None:
+        if captioner.vision_endpoint() is not None:
+            texts = captioner.ocr_pages(parsers.render_pdf_pages(path, wanted, dpi = config.OCR_DPI))
+        rest = [number for number in wanted if number not in texts]
+        if rest:
+            texts.update(pdf_ocr.ocr_pages(path, rest))
+        return texts, [number for number in scanned if number not in texts], len(pages)
+
+    # Counted in code points, never more than the UTF-16 units the page measures, so its cut still lands.
+    def past_cap(number: int, extra: dict[int, str] | None = None) -> bool:
+        return _length_before(pages, {**texts, **extra} if extra else texts, number) > max_chars
+
     if captioner.vision_endpoint() is not None:
-        texts = captioner.ocr_pages(parsers.render_pdf_pages(path, wanted, dpi = config.OCR_DPI))
-    rest = [number for number in wanted if number not in texts]
+        for number in wanted:
+            if past_cap(number):
+                break
+            texts.update(
+                captioner.ocr_pages(parsers.render_pdf_pages(path, [number], dpi = config.OCR_DPI))
+            )
+    rest = [number for number in wanted if number not in texts and not past_cap(number)]
     if rest:
-        texts.update(pdf_ocr.ocr_pages(path, rest))
-    return texts, [number for number in scanned if number not in texts]
+        texts.update(pdf_ocr.ocr_pages(path, rest, until = past_cap))
+    kept, length = len(pages), 0
+    for index, page in enumerate(pages):
+        if length > max_chars:
+            kept = index
+            break
+        text = _page_text(page, texts)
+        if text:
+            length += len(text) + (2 if length else 0)
+    kept_numbers = {page.page_number for page in pages[:kept]}
+    return texts, [n for n in scanned if n in kept_numbers and n not in texts], kept
 
 
 def _unread_pages_warning(filename: str, unread: list[int]) -> str:
@@ -1109,7 +1158,12 @@ def _unread_pages_warning(filename: str, unread: list[int]) -> str:
 
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
-def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
+def extract_text(
+    file: UploadFile = File(...),
+    # Translate keeps only its first max_chars characters; scanned pages past them are not OCR'd.
+    max_chars: Annotated[int | None, Form(ge = 1)] = None,
+    subject: str = Depends(get_current_subject),
+) -> dict:
     from core.rag import parsers
 
     stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
@@ -1135,7 +1189,7 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         return result
     try:
         pages = parsers.parse(stored_path)
-        scanned_text, unread = _scanned_page_text(stored_path, pages)
+        scanned_text, unread, kept = _scanned_page_text(stored_path, pages, max_chars)
     except ImportError as exc:
         raise HTTPException(status_code = 503, detail = f"{filename} could not be read: {exc}") from exc
     # Not only ValueError: python-docx raises its own errors for a damaged .docm/.dotx.
@@ -1147,12 +1201,9 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
     # Capped page by page: joining everything first would hold a huge extraction several times over.
     parts: list[bytes] = []
     room = _EXTRACT_TEXT_MAX_BYTES
-    truncated = False
-    for page in pages:
-        original = page.text.strip()
-        scanned = scanned_text.get(page.page_number, "")
-        text = scanned if original in scanned else "\n\n".join(filter(None, [original, scanned]))
-        chunk = text.encode("utf-8")
+    truncated = kept < len(pages)
+    for page in pages[:kept]:
+        chunk = _page_text(page, scanned_text).encode("utf-8")
         if not chunk:
             continue
         if parts:
