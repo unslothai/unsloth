@@ -637,15 +637,17 @@ def test_mlx_single_process_finalization_keeps_prior_contract():
     assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
 
 
-def test_mlx_stop_before_first_step_saves_nothing_and_is_not_an_error(tmp_path):
+@pytest.mark.parametrize("rank, world_size", [(0, 1), (0, 2), (1, 2)])
+def test_mlx_stop_before_first_step_saves_nothing_and_is_not_an_error(tmp_path, rank, world_size):
     out = tmp_path / "run"
     out.mkdir()
     (out / _worker.ROW_BOUND_MARKER_FILE).write_text("{}")
-    trainer = _FakeRankTrainer()
+    trainer = _FakeRankTrainer(rank = rank, world_size = world_size)
     trainer._global_step = 0
     events = _finalize(trainer, stop = (True, True), checkpoint_ok = False, output_dir = str(out))
     assert trainer.saved == []
-    assert not out.exists()
+    # Only the main rank owns the run folder.
+    assert out.exists() == (rank != 0)
     assert events[-1] == (
         "complete",
         {"output_dir": None, "saved": False, "status_message": "Training stopped"},
@@ -657,7 +659,8 @@ def test_mlx_stop_before_first_step_keeps_an_output_dir_with_other_files(tmp_pat
     (tmp_path / "keep.txt").write_text("x")
     trainer = _FakeRankTrainer()
     trainer._global_step = 0
-    _finalize(trainer, stop = (True, True), output_dir = str(tmp_path))
+    events = _finalize(trainer, stop = (True, True), output_dir = str(tmp_path))
+    assert events[-1][1]["saved"] is False
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
         [_worker.ROW_BOUND_MARKER_FILE, "keep.txt"]
     )

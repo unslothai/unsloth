@@ -226,6 +226,26 @@ def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch, stop_sav
     assert events[-1]["status_message"] == message
 
 
+@pytest.mark.parametrize(
+    "stop_save, message", [(True, "Training stopped"), (False, "Training cancelled")]
+)
+def test_mlx_stop_during_s3_download_skips_the_model_load(monkeypatch, stop_save, message):
+    def _cancelled_download(*_args, **_kwargs):
+        raise sys.modules["core.training.s3_dataset"].S3DownloadCancelled()
+
+    loaded, events = _run_mlx_until_model_load(
+        monkeypatch,
+        {"s3_config": {"bucket": "b"}},
+        [True],
+        prepare = _cancelled_download,
+        stop_save = stop_save,
+    )
+
+    assert loaded == []
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["status_message"] == message
+
+
 def _checkpoint_with_tokens(path, *tokens):
     decoder = {str(index): {"content": token} for index, token in enumerate(tokens)}
     (path / "tokenizer_config.json").write_text(
