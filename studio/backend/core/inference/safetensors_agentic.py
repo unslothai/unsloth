@@ -583,6 +583,7 @@ def run_safetensors_tool_loop(
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
     tool_choice = None,
     disable_parallel_tool_use: bool = False,
+    mcp_match_exchange: Optional[dict] = None,
 ) -> Generator[dict, None, None]:
     """Yields status, content, tool_start and tool_end event dicts; content is cumulative text per turn."""
     if mcp_image is not None:
@@ -663,6 +664,18 @@ def run_safetensors_tool_loop(
     rag_autoinjected = bool(_auto)
     # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
     forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
+    if (
+        mcp_match_exchange
+        and mcp_match_exchange.get("messages")
+        and tool_choice != "none"
+        and not forced_tool_name(tool_choice)
+        and not (
+            continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+        )
+    ):
+        for _ev in mcp_match_exchange["events"]:
+            yield _ev
+        conversation.extend(mcp_match_exchange["messages"])
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the

@@ -34441,6 +34441,10 @@ async def produce_openai_chat_completions(
                     system_prompt = _nudge
                 gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
 
+            from core.inference.tools import mcp_match_exchange
+
+            _gguf_mcp_exchange = mcp_match_exchange(gguf_messages, tools_to_use)
+
             _gguf_auto_heal_tool_calls = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
@@ -34522,6 +34526,7 @@ async def produce_openai_chat_completions(
                     permission_upgrade = gguf_live_permissions,
                 )
                 yield from llama_backend.generate_chat_completion_with_tools(
+                    mcp_match_exchange = _gguf_mcp_exchange,
                     reasoning_provenance = _gguf_think_prov,
                     live_permissions = gguf_live_permissions,
                     instruction_anchor_ids = skill_instruction_ids,
@@ -36588,6 +36593,10 @@ async def produce_openai_chat_completions(
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
 
+        from core.inference.tools import mcp_match_exchange
+
+        _sf_mcp_exchange = mcp_match_exchange(_sf_chat_messages, _sf_tools_to_use)
+
         _sf_website_policy = getattr(payload, "_website_policy", None)
         _sf_website_policy_kwargs = (
             {"website_policy": _sf_website_policy} if _sf_website_policy else {}
@@ -36597,6 +36606,7 @@ async def produce_openai_chat_completions(
             return backend.generate_chat_completion_with_tools(
                 messages = _sf_chat_messages,
                 tools = _sf_tools_to_use,
+                mcp_match_exchange = _sf_mcp_exchange,
                 system_prompt = _sf_system_prompt or "",
                 images = _sf_loop_images or None,
                 # The caller's own picture is not the loop's to evict.

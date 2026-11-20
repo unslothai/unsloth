@@ -38878,6 +38878,7 @@ class LlamaCppBackend:
         website_policy: Optional[dict] = None,
         live_permissions = None,
         chat_template_kwargs: Optional[dict] = None,
+        mcp_match_exchange: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -39042,6 +39043,19 @@ class LlamaCppBackend:
         _auto_satisfies_forced_choice = bool(_auto) and (
             tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
+        # After the message, so the tool block heading the cached prompt stays put; a forced tool keeps its first call.
+        if (
+            mcp_match_exchange
+            and mcp_match_exchange.get("messages")
+            and tool_choice != "none"
+            and not initial_forced_name
+            and not (
+                continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+            )
+        ):
+            for _ev in mcp_match_exchange["events"]:
+                yield _ev
+            conversation.extend(mcp_match_exchange["messages"])
 
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -39250,6 +39264,7 @@ class LlamaCppBackend:
             deduplicate_tool_calls = deduplicate_tool_calls,
             session_id = session_id,
             thread_id = thread_id,
+            loaded_mcp_tools = (mcp_match_exchange or {}).get("names", ()),
         )
 
         def _tool_succeeded(tool_name: str) -> bool:
