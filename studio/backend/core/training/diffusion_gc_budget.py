@@ -185,8 +185,14 @@ class _Checkpoint:
 class BudgetedCheckpoint:
     """``gradient_checkpointing_func`` for a diffusers model: checkpoints every block except those in ``keep``."""
 
-    def __init__(self, base: Optional[Any] = None):
+    def __init__(
+        self,
+        base: Optional[Any] = None,
+        swapped: Optional[Any] = None,
+    ):
         self.base = base or _Checkpoint(save_attention = True)
+        # Checkpoint for block-swapped blocks: every op recomputed, no selective policy.
+        self.swapped = swapped or _Checkpoint(save_attention = False)
         self.keep: frozenset = frozenset()
         self.probing = True
         self.planned = False
@@ -224,8 +230,10 @@ class BudgetedCheckpoint:
         owner = _owner(function)
         if getattr(owner, SWAPPED_ATTR, False):
             # A block-swapped block streams its weights from host RAM: kept activations would hold them on the card
-            # until backward, so it is always checkpointed and never measured or planned.
-            return self.base(function, *args, **kwargs)
+            # until backward, so it is always checkpointed and never measured or planned. Plainly: its swap hooks
+            # copy the next block's weights inside the region, in the other direction during the recompute, which a
+            # selective checkpoint (saved attention) rejects as a mismatched op.
+            return self.swapped(function, *args, **kwargs)
         idx = self._block_index(owner)
         if self.probing and not self.disabled:
             cls = type(owner).__name__

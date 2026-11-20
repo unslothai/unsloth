@@ -60,20 +60,34 @@ def test_swapped_blocks_are_never_measured_or_kept(monkeypatch):
     swapped = (model.blocks[0], model.blocks[3])
     for block in swapped:
         setattr(block, gb.SWAPPED_ATTR, True)
-    base = _Base()
-    budget = gb.BudgetedCheckpoint(base = base)
+    base, plain = _Base(), _Base()
+    budget = gb.BudgetedCheckpoint(base = base, swapped = plain)
     x = torch.randn(1, 2, 4)
     _step(budget, model, x)
     # Probing measured the first resident block, not the swapped first block; swapped blocks went through the
-    # checkpoint every time.
+    # plain checkpoint every time, resident ones never.
     assert sorted(budget.block_class) == [0, 1]
-    assert base.calls.count(model.blocks[0]) == 1 and base.calls.count(model.blocks[3]) == 1
+    assert plain.calls == [model.blocks[0], model.blocks[3]]
+    assert model.blocks[0] not in base.calls and model.blocks[3] not in base.calls
     budget.plan(projected_peak = 1 * GIB, free_bytes = 70 * GIB, reserved_bytes = 0, total_bytes = 80 * GIB)
     assert budget.planned and len(budget.keep) == 2
     base.calls.clear()
+    plain.calls.clear()
     _step(budget, model, x)
     # After the plan the resident blocks run unchecked; the swapped ones are still checkpointed.
-    assert base.calls == [model.blocks[0], model.blocks[3]]
+    assert base.calls == [] and plain.calls == [model.blocks[0], model.blocks[3]]
+
+
+def test_swapped_blocks_use_a_checkpoint_without_the_selective_policy():
+    # A swapped block's hooks copy weights inside the region (and the other way round in the recompute): a selective
+    # checkpoint would fail the backward with a copy_ it has no storage for.
+    budget = gb.BudgetedCheckpoint()
+    assert budget.swapped.context_fn is None
+    block = _Block()
+    setattr(block, gb.SWAPPED_ATTR, True)
+    x = torch.randn(1, 2, 4, requires_grad = True)
+    budget(block, x).sum().backward()
+    assert budget.swapped.saved_attention == 0 and x.grad is not None
 
 
 def _install_fake_zoo(monkeypatch, made):
