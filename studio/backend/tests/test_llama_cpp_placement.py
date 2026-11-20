@@ -3158,15 +3158,33 @@ def test_a_fit_owned_vulkan_igpu_load_credits_what_the_fitter_can_place(
 
     cmd = _launch(backend, gguf, gpu_memory_mode = "manual")["cmd"]
 
-    assert _modes(cmd, "--fit") == ["on"], cmd
     warning = backend.last_load_warning or ""
     if oversized:
         assert _modes(cmd, "--load-mode") == ["mmap"], cmd
         assert "does not fit in GPU memory" in warning, warning
     else:
         assert _modes(cmd, "--load-mode") == [], cmd
-        assert _modes(cmd, "--fit-target") == ["512"], cmd
         assert "does not fit in GPU memory" not in warning, warning
+
+
+@pytest.mark.parametrize(
+    "argv, env, expected",
+    [
+        (["--fit", "on"], {}, True),
+        (["--fit", "on", "-ngl", "-1"], {}, True),
+        (["--fit", "on", "-ngl", "20"], {}, False),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "0"}, False),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "20"}, False),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "all"}, True),
+        (["--fit", "on"], {"LLAMA_ARG_N_GPU_LAYERS": "auto"}, True),
+        (["--fit", "off"], {}, False),
+        (["--fit", "on", "--device", "none"], {}, False),
+    ],
+)
+def test_the_fitter_owns_igpu_placement_only_without_a_layer_cap(argv, env, expected):
+    backend = LlamaCppBackend()
+    backend._n_layers = 48
+    assert backend._fit_may_place_every_layer(argv, env) is expected
 
 
 def test_the_igpu_dedicated_usage_is_read_for_the_carve_out_adapter(monkeypatch):

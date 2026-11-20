@@ -15709,6 +15709,14 @@ class LlamaCppBackend:
             requested = parse_gpu_layers_override(args)
         except ValueError:
             return False
+        if requested is None and env and _env_fixes_gpu_layers(env):
+            raw = str(env.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip().lower()
+            if raw == "all":
+                return True
+            try:
+                requested = int(raw)
+            except ValueError:
+                return False
         if requested is None or requested == -1:
             return True
         n_layers = self.n_layers
