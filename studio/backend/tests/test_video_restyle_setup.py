@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import threading
 from pathlib import Path
@@ -601,6 +602,37 @@ def test_remove_cached_keeps_a_blob_another_revision_links_under_another_name(tm
     assert not new.is_symlink() and blob.exists() and old.read_bytes() == b"x"
     rs._remove_cached(str(old), repo)
     assert not blob.exists()
+
+
+def test_remove_cached_through_a_symlinked_cache_root(tmp_path):
+    # Studio's cache path has a symlinked ancestor; the Hub hands back the shard under the resolved one.
+    real = tmp_path / "disk" / "hub"
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "hub").symlink_to(real, target_is_directory = True)
+    shared, own = real / "models--x" / "blobs" / "abc", real / "models--x" / "blobs" / "def"
+    shared.parent.mkdir(parents = True)
+    shared.write_bytes(b"x")
+    own.write_bytes(b"y")
+    links = {}
+    for rev, name, blob in (("r1", "a", shared), ("r2", "a", shared), ("r1", "b", own)):
+        link = real / "models--x" / "snapshots" / rev / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(blob)
+        links[rev, name] = link
+    repo = tmp_path / "home" / "hub" / "models--x"
+    rs._remove_cached(str(links["r1", "a"]), repo)
+    assert not os.path.lexists(links["r1", "a"]) and shared.exists()  # r2 still links it
+    rs._remove_cached(str(links["r2", "a"]), repo)
+    assert not os.path.lexists(links["r2", "a"]) and not shared.exists()
+    # The unresolved spelling of the same cache is Studio's too.
+    rs._remove_cached(str(repo / "snapshots" / "r1" / "b"), repo)
+    assert not os.path.lexists(links["r1", "b"]) and not own.exists()
+    # Another cache with the same layout is not Studio's.
+    other = tmp_path / "other" / "models--x" / "snapshots" / "r1" / "c"
+    other.parent.mkdir(parents = True)
+    other.write_bytes(b"z")
+    rs._remove_cached(str(other), repo)
+    assert other.exists()
 
 
 def test_a_failure_after_the_merge_leaves_no_orphaned_outputs(tmp_path, clean_env):

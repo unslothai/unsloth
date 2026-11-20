@@ -419,16 +419,18 @@ def _remove_cached(path: str, repo_dir: Optional[Path] = None) -> None:
     if repo_dir is None:
         return
     p = Path(path)
-    snapshots = repo_dir / "snapshots"
-    try:
-        p.relative_to(snapshots)
-    except ValueError:
+    # hf_hub_download resolves its cache_dir, so its paths may name the repo under the resolved cache root.
+    for root in (repo_dir, repo_dir.parent.resolve() / repo_dir.name):
+        snapshots = root / "snapshots"
+        if p.is_relative_to(snapshots):
+            break
+    else:
         logger.info("restyle setup: %s is outside Studio's cache for that repo; kept", path)
         return
     try:
         target = p.resolve() if p.is_symlink() else None
         p.unlink(missing_ok = True)
-        if target is None or not target.is_relative_to(repo_dir / "blobs"):
+        if target is None or not target.is_relative_to(repo_dir.resolve() / "blobs"):
             return
         for other in snapshots.rglob("*"):
             if other.is_symlink() and other.resolve() == target:
