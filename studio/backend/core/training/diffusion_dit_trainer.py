@@ -829,6 +829,12 @@ def _device_is_integrated(device) -> bool:
         return False
 
 
+def _checkpoint_mode(swapping: bool):
+    """Block swap needs every block checkpointed (an unchecked swapped block holds its streamed weights until
+    backward), so it overrides UNSLOTH_DIFFUSION_GC_MODE=partial; otherwise the configured mode."""
+    return "plain" if swapping else None
+
+
 def _block_swap_tokens(spec, cfg) -> int:
     """Sequence length the block-swap reserve is sized for: 16 px per image token plus a 512-token prompt."""
     _ = spec
@@ -3811,7 +3817,7 @@ def _train_dit(
         # Block swap needs every block checkpointed, so no budget.
         gc_budget = None if swapping else enable_budgeted_checkpointing(transformer, device)
         if gc_budget is None:
-            enable_diffusion_gradient_checkpointing(transformer)
+            enable_diffusion_gradient_checkpointing(transformer, mode = _checkpoint_mode(swapping))
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 

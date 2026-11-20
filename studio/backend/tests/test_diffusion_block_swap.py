@@ -223,3 +223,30 @@ def test_auto_swap_needs_host_ram_for_the_dense_base(monkeypatch, avail_gib, wan
     monkeypatch.setattr(dit, "_dense_bf16_gb", lambda spec, base: 12.0)
     spec = types.SimpleNamespace(dense_bf16_gb = 12.0)
     assert dit._auto_block_swap_wanted(_auto_cfg(), "int8", "cuda", spec) is wanted
+
+
+def test_swapping_checkpoints_every_block_even_with_partial_mode(monkeypatch):
+    # UNSLOTH_DIFFUSION_GC_MODE=partial checkpoints every Nth block; with swapped blocks every block must be.
+    import core.training.diffusion_train_common as common
+
+    monkeypatch.setenv(common.GC_MODE_ENV, "partial")
+    assert dit._checkpoint_mode(True) == "plain"
+    assert dit._checkpoint_mode(False) is None
+    seen = []
+
+    def fake_enable(
+        model,
+        every_n_blocks = 1,
+        **_k,
+    ):
+        seen.append(every_n_blocks)
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "unsloth_zoo.block_checkpointing",
+        types.SimpleNamespace(enable_block_gradient_checkpointing = fake_enable),
+    )
+    model = torch.nn.Linear(2, 2)
+    common.enable_diffusion_gradient_checkpointing(model, mode = dit._checkpoint_mode(True))
+    common.enable_diffusion_gradient_checkpointing(model, mode = dit._checkpoint_mode(False))
+    assert seen[0] == 1 and seen[1] >= 2
