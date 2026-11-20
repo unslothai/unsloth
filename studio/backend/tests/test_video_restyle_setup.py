@@ -538,6 +538,23 @@ def test_remove_cached_drops_only_this_repos_unshared_blobs(tmp_path):
     assert elsewhere.exists()
 
 
+def test_remove_cached_keeps_a_blob_another_revision_links_under_another_name(tmp_path):
+    repo = tmp_path / "models--nvidia--Cosmos3-Nano-Sim-Transfer"
+    blob = repo / "blobs" / "abc"
+    blob.parent.mkdir(parents = True)
+    blob.write_bytes(b"x")
+    # The same content-addressed blob, renamed between revisions.
+    old = repo / "snapshots" / "r1" / "transformer" / "old_name.safetensors"
+    new = repo / "snapshots" / "r2" / "transformer" / "s.safetensors"
+    for link in (old, new):
+        link.parent.mkdir(parents = True)
+        link.symlink_to(blob)
+    rs._remove_cached(str(new), repo)
+    assert not new.is_symlink() and blob.exists() and old.read_bytes() == b"x"
+    rs._remove_cached(str(old), repo)
+    assert not blob.exists()
+
+
 def test_a_failure_after_the_merge_leaves_no_orphaned_outputs(tmp_path, clean_env):
     hub = _FakeHub(tmp_path)
 

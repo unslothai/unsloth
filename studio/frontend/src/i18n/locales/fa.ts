@@ -805,6 +805,7 @@ export const fa = {
     failed:
       "نصب موتور ناموفق بود. دوباره تلاش کنید یا از موتور پیش‌فرض استفاده کنید.",
     details: "جزئیات فنی",
+    lastAttempt: "آخرین تلاش: {time}",
     cancelled: "نصب لغو شد. می‌توانید دوباره تلاش کنید.",
     scope:
       "گفتگوی متنی و تصویری روی GPUهای NVIDIA. اولین بارگذاری ممکن است بیشتر طول بکشد.",
@@ -3340,6 +3341,7 @@ export const fa = {
       groups: {
         replies: { title: "پاسخ‌ها" },
         thinkingTools: { title: "تفکر و ابزارها" },
+        customization: { title: "شخصی‌سازی" },
         conversations: {
           title: "گفتگوها",
         },

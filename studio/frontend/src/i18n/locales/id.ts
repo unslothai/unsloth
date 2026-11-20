@@ -806,6 +806,7 @@ export const id = {
     background: "Diinstal di latar belakang.",
     failed: "Instalasi engine gagal. Coba lagi atau gunakan engine default.",
     details: "Detail teknis",
+    lastAttempt: "Percobaan terakhir: {time}",
     cancelled: "Instalasi dibatalkan. Anda dapat mencoba lagi.",
     scope:
       "Chat teks dan gambar di GPU NVIDIA. Pemuatan pertama mungkin memakan waktu lebih lama.",
@@ -3354,6 +3355,7 @@ export const id = {
       groups: {
         replies: { title: "Balasan" },
         thinkingTools: { title: "Penalaran dan alat" },
+        customization: { title: "Kustomisasi" },
         conversations: {
           title: "Percakapan",
         },

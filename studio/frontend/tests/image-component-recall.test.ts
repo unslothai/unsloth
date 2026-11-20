@@ -139,14 +139,14 @@ test("Reapply of a resident model sends that model's files, never the fields ano
   const tree = ts.createSourceFile("images-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const declarations: Record<string, string> = {};
   const visit = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node) && ["pickComponentFiles", "handleReapply"].includes(node.name.getText(tree)))
+    if (ts.isVariableDeclaration(node) && ["pickComponentFiles", "reapplyLoad", "handleReapply"].includes(node.name.getText(tree)))
       declarations[node.name.getText(tree)] = `const ${node.getText(tree)};`;
     ts.forEachChild(node, visit);
   };
   visit(tree);
-  assert.ok(declarations.pickComponentFiles && declarations.handleReapply);
+  assert.ok(declarations.pickComponentFiles && declarations.reapplyLoad && declarations.handleReapply);
   const { outputText } = ts.transpileModule(
-    `${declarations.pickComponentFiles}\n${declarations.handleReapply}\nreturn handleReapply;`,
+    `${declarations.pickComponentFiles}\n${declarations.reapplyLoad}\n${declarations.handleReapply}\nreturn handleReapply;`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   );
   const reapply = (fields: { te: string; vae: string }, owner: object, status: object) => {

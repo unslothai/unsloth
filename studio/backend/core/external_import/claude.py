@@ -55,19 +55,32 @@ def _user_text(text: str, expanded: bool) -> str:
     return clean_text(_LOCAL_STDOUT.split(text)[0])
 
 
-def _result_text(content: Any) -> str:
-    if isinstance(content, list):
-        content = "\n\n".join(
-            block.get("text") or ""
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return clean_text(content) if isinstance(content, str) else ""
+def _image(block: dict) -> dict | None:
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    media = str(source.get("media_type") or "")
+    if source.get("type") == "base64" and media.startswith("image/") and source.get("data"):
+        return {"data": str(source["data"]), "mimeType": media}
+    return None
+
+
+def _result(content: Any) -> str | dict:
+    if not isinstance(content, list):
+        return clean_text(content) if isinstance(content, str) else ""
+    blocks = [block for block in content if isinstance(block, dict)]
+    text = clean_text(
+        "\n\n".join(block.get("text") or "" for block in blocks if block.get("type") == "text")
+    )
+    images = [
+        image for block in blocks if block.get("type") == "image" and (image := _image(block))
+    ]
+    return {"text": text, "images": images} if images else text
 
 
 def _parts(
     record: dict, message_id: str, expanded: bool
-) -> tuple[list[dict], dict[str, str], bool]:
+) -> tuple[list[dict], dict[str, str | dict], bool]:
     """Parts, ``{tool_use_id: result}`` this record answers, and whether revision "" kept it. Thinking is dropped."""
     content = record.get("message", {}).get("content")
     if isinstance(content, str):
@@ -86,17 +99,16 @@ def _parts(
             if text:
                 parts.append({"type": "text", "text": text})
                 legacy = legacy or not (user and _COMMAND.search(raw))
-        elif kind == "image" and user:
-            source = block.get("source") or {}
-            media = str(source.get("media_type") or "")
-            if source.get("type") == "base64" and media.startswith("image/") and source.get("data"):
-                parts.append({"type": "image", "image": f"data:{media};base64,{source['data']}"})
+        elif kind == "image" and user and (image := _image(block)):
+            parts.append(
+                {"type": "image", "image": f"data:{image['mimeType']};base64,{image['data']}"}
+            )
         elif kind == "tool_use" and not user:
             legacy = True
             parts.append(tool_call(str(block.get("id") or f"{message_id}-{position}"), block))
         elif kind == "tool_result" and user and block.get("tool_use_id"):
             # empty output still marks a finished call; Studio replays "" differently from none
-            results[str(block["tool_use_id"])] = _result_text(block.get("content"))
+            results[str(block["tool_use_id"])] = _result(block.get("content"))
     return parts, results, legacy
 
 

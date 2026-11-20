@@ -733,6 +733,7 @@ export const ptBR = {
     background: "Instala em segundo plano.",
     failed: "A instalação do mecanismo falhou. Tente novamente ou use o mecanismo padrão.",
     details: "Detalhes técnicos",
+    lastAttempt: "Última tentativa: {time}",
     cancelled: "Instalação cancelada. Você pode tentar novamente.",
     scope: "Chat de texto e imagem em GPUs NVIDIA. O primeiro carregamento pode demorar mais.",
   },
@@ -3137,6 +3138,7 @@ export const ptBR = {
       groups: {
         replies: { title: "Respostas" },
         thinkingTools: { title: "Raciocínio e ferramentas" },
+        customization: { title: "Personalização" },
         conversations: { title: "Conversas" },
         files: { title: "Arquivos e colagem" },
         display: { title: "Exibição" },

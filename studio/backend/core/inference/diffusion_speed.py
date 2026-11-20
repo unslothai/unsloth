@@ -1893,13 +1893,13 @@ def _fused_vae_planned(pipe: Any) -> bool:
 
 
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; DiTs only in max mode or when the env forces it; never on Windows ROCm, where
-    compiled decode skips routing."""
+    """U-Nets always; DiTs only in max mode or when the env forces it; never for a VAE with an attention head wider
+    than 256 on Windows ROCm, where compiled decode skips the routing that keeps it off the broken fused kernels."""
     if _fused_vae_planned(pipe):
         return False
-    from .diffusion_vae_attn_chunked import windows_rocm
+    from .diffusion_vae_attn_chunked import vae_has_untrusted_head, windows_rocm
 
-    if windows_rocm():
+    if windows_rocm() and vae_has_untrusted_head(getattr(pipe, "vae", None)):
         return False
     if _denoiser_unet(pipe) is not None:
         return True

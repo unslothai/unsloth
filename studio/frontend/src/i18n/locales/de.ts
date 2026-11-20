@@ -733,6 +733,7 @@ export const de = {
     background: "Wird im Hintergrund installiert.",
     failed: "Installation der Engine fehlgeschlagen. Versuchen Sie es erneut oder verwenden Sie die Standard-Engine.",
     details: "Technische Details",
+    lastAttempt: "Letzter Versuch: {time}",
     cancelled: "Installation abgebrochen. Sie können es erneut versuchen.",
     scope: "Text- und Bild-Chat auf NVIDIA-GPUs. Das erste Laden kann länger dauern.",
   },
@@ -3161,6 +3162,7 @@ export const de = {
       groups: {
         replies: { title: "Antworten" },
         thinkingTools: { title: "Denken und Werkzeuge" },
+        customization: { title: "Anpassung" },
         conversations: { title: "Gespräche" },
         files: { title: "Dateien und Einfügen" },
         display: { title: "Anzeige" },
