@@ -52,6 +52,29 @@ export const orderHighlightRequests = <T extends { speculative?: boolean }>(
   ...requests.filter((request) => request.speculative),
 ];
 
+/* Equal styles share one object so the clone keeps them shared; grammar state is not sent. */
+export function transferableResult(result: HighlightResult): HighlightResult {
+  const styles = new Map<string, Record<string, string>>();
+  const shared = (style: Record<string, string>): Record<string, string> => {
+    let key = "";
+    for (const property in style) key += `${property}:${style[property]};`;
+    const known = styles.get(key);
+    if (known !== undefined) return known;
+    styles.set(key, style);
+    return style;
+  };
+  const transferred: HighlightResult = {
+    ...result,
+    tokens: result.tokens.map((line) =>
+      line.map((token) =>
+        token.htmlStyle ? { ...token, htmlStyle: shared(token.htmlStyle) } : token,
+      ),
+    ),
+  };
+  delete transferred.grammarState;
+  return transferred;
+}
+
 /** Transfer only requested lines; the worker keeps the complete grammar context. */
 export function reasoningHighlightReply(
   request: ReasoningHighlightRequest,
@@ -66,6 +89,8 @@ export function reasoningHighlightReply(
           return tokens ? [{ line, tokens }] : [];
         })
       : [],
-    ...(request.full ? { result } : {}),
+    ...(request.full
+      ? { result: result === null ? null : transferableResult(result) }
+      : {}),
   };
 }

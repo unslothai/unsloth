@@ -34,7 +34,8 @@ test("saved ids missing from the live catalog stay pickable", () => {
 
 test("automatic catalog loads ignore the typed API key and Base URL", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
-  assert.match(dialog, /apiKey: silent \? "" : apiKey\.trim\(\),/);
+  assert.match(dialog, /const typedKey = apiKey\.trim\(\);/);
+  assert.match(dialog, /apiKey: silent \? "" : typedKey,/);
   assert.match(
     dialog,
     /const baseUrl = silent\s*\? editingProvider\?\.baseUrl \|\| null\s*: parseBaseUrlForProvider\(\s*baseUrlDraft,/,
@@ -51,7 +52,10 @@ test("explicit OpenRouter reloads keep saved routing variants too", () => {
 
 test("automatic catalog loads do not disable saving", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
-  assert.match(dialog, /if \(silent\) setCatalogAutoLoad\(autoLoad\);\s*else setModelsLoading\(true\);/);
+  assert.match(
+    dialog,
+    /if \(silent\) setCatalogAutoLoad\(autoLoad\);\s*else \{\s*checkedKeyRef\.current = typedKey;\s*setModelsLoading\(true\);/,
+  );
   const save = dialog.match(/disabled=\{\s*registryLoading \|\|[^}]*\}\s*onClick=\{\(\) =>\s*editingProviderId\s*\? void saveProviderEdits\(\)/);
   assert.ok(save, "Save button not found");
   assert.doesNotMatch(save[0], /catalogAutoLoading/);
@@ -60,7 +64,7 @@ test("automatic catalog loads do not disable saving", () => {
 test("a response from a retired automatic load is dropped by identity, not key", () => {
   const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
   assert.match(dialog, /const autoLoad = \{ key: autoLoadCatalogKey \};\s*autoLoadedCatalogRef\.current = autoLoad;/);
-  assert.match(dialog, /if \(silent && autoLoadedCatalogRef\.current !== autoLoad\) return;/);
+  assert.match(dialog, /if \(silent && autoLoadedCatalogRef\.current !== autoLoad\) return null;/);
   assert.match(
     dialog,
     /return \(\) => \{\s*if \(autoLoadedCatalogRef\.current === autoLoad\) autoLoadedCatalogRef\.current = null;\s*\};\s*\}, \[autoLoadCatalogKey\]\);/,

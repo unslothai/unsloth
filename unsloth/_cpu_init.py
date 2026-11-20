@@ -27,6 +27,12 @@ from ._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
 
 patch_gradient_checkpointing_enable_kwargs()
 
+# The CPU route skips _gpu_init: a compressed-tensors checkpoint still loads through transformers' quantizer here.
+from .import_fixes import fix_transformers_quantizer_unquantized_converters
+
+fix_transformers_quantizer_unquantized_converters()
+del fix_transformers_quantizer_unquantized_converters
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
@@ -95,6 +101,11 @@ def train_on_responses_only(*args, **kwargs):
     if _train_on_responses_only is None:
         from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
     return _train_on_responses_only(*args, **kwargs)
+
+
+def check_dataset(*args, **kwargs):
+    from .chat_templates import check_dataset as _check_dataset
+    return _check_dataset(*args, **kwargs)
 
 
 try:
@@ -333,6 +344,7 @@ __all__ = [
     "standardize_data_formats",
     "standardize_sharegpt",
     "train_on_responses_only",
+    "check_dataset",
     "UnslothTrainer",
     "UnslothTrainingArguments",
     "UnslothVisionDataCollator",

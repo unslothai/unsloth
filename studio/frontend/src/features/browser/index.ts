@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isLoopbackUrl } from "./address";
 import { browserPanelAvailable } from "./panel-availability";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -22,6 +23,7 @@ export { MAX_BOOKMARKS } from "./bookmarks-store";
 export { canScreenshot } from "./screenshot-support";
 export { browserTabType, fileBarKind, textFileKind } from "./file-kind";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
+export { HistoryFileError, importHistoryFile } from "./history-import";
 export { useBrowserHistoryStore } from "./history-store";
 export { useNativeBrowser } from "./native-support";
 export { pinBrowserPage } from "./resize-pin";
@@ -51,6 +53,8 @@ export type { PinnedPage } from "./pinned-pages-store";
 
 export function openUrlInBrowser(url: string): boolean {
   if (!browserPanelAvailable() || !useBrowserPrefsStore.getState().openLinksInBrowser) return false;
+  // A local page opens in the panel only when typed there (browser-panel.tsx): its links go to the default browser.
+  if (isLoopbackUrl(url)) return false;
   useBrowserStore.getState().openUrl(url);
   return true;
 }

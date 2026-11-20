@@ -61,6 +61,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedContextEnforced: null,
     loadedContextUnboundedWhenBatched: false,
     loadedParallelSlots: null,
+    loadedNpuContextFit: null,
     loadedContextBudget: null,
   });
   assert.deepEqual(loadedContextFields({ is_gguf: false, context_length: 2048 }), {
@@ -72,6 +73,7 @@ test("an MLX response carries a window without a native one", () => {
     loadedContextEnforced: null,
     loadedContextUnboundedWhenBatched: false,
     loadedParallelSlots: null,
+    loadedNpuContextFit: null,
     loadedContextBudget: null,
   });
   assert.equal(loadedContextFields(null).loadedIsGguf, null);
@@ -245,13 +247,9 @@ test("an outgoing self-sizing window does not become the next model's request", 
       ggufVariant: null,
       isGguf: false,
       customContextLength: null,
-      loadedContextLength: null,
-      currentCheckpoint: "mlx-community/Some-MLX",
-      activeGgufVariant: null,
       isMlx: false,
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: unpinnedDefaultRequest(true, afterMlx, DEFAULT_MAX_SEQ_LENGTH),
-      presetSource: "builtin-default",
     }),
     4096,
   );
@@ -300,12 +298,9 @@ test("a load keeps the pin it was built from, wherever the record held it", () =
       modelId: "org/mlx-model",
       isGguf: false,
       customContextLength: null,
-      loadedContextLength: null,
-      currentCheckpoint: "",
       isMlx: true,
       pinnedMaxSeqLength: 8192,
       defaultMaxSeqLength: DEFAULT_MAX_SEQ_LENGTH,
-      presetSource: "custom",
     }),
   );
 });

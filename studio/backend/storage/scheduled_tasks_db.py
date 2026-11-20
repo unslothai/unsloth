@@ -66,6 +66,30 @@ def chat_id_for_run(run_id: str) -> str:
     return str(uuid.uuid5(_RUN_CHAT_NAMESPACE, run_id))
 
 
+def message_ids_for_run(run_id: str) -> tuple[str, str]:
+    """Derived, so a failed run's two messages in a task's chat can be found."""
+    return (
+        str(uuid.uuid5(_RUN_CHAT_NAMESPACE, f"{run_id}:prompt")),
+        str(uuid.uuid5(_RUN_CHAT_NAMESPACE, f"{run_id}:answer")),
+    )
+
+
+def discard_run_output(conn: sqlite3.Connection, run_ids: list[str]) -> None:
+    if not run_ids:
+        return
+    delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
+    message_ids = [message_id for run_id in run_ids for message_id in message_ids_for_run(run_id)]
+    conn.execute(
+        f"DELETE FROM chat_messages WHERE id IN ({', '.join('?' * len(message_ids))})",
+        message_ids,
+    )
+
+
+def discard_run(run_id: str) -> None:
+    with _connect("BEGIN IMMEDIATE") as conn:
+        discard_run_output(conn, [run_id])
+
+
 def _task_from_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -82,6 +106,8 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "allowModelLoad": bool(row["allow_model_load"]),
         "archiveSuccessful": bool(row["archive_successful"]),
         "projectId": row["project_id"],
+        "webSearch": bool(row["web_search"]),
+        "threadId": row["thread_id"],
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -163,6 +189,8 @@ _TASK_COLUMNS = (
     "allow_model_load",
     "archive_successful",
     "project_id",
+    "web_search",
+    "thread_id",
     "next_run_at",
 )
 
@@ -181,6 +209,8 @@ def _task_values(task: dict) -> tuple:
         1 if task.get("allowModelLoad") else 0,
         1 if task.get("archiveSuccessful") else 0,
         task.get("projectId"),
+        1 if task.get("webSearch") else 0,
+        task.get("threadId"),
         task["nextRunAt"],
     )
 
@@ -238,7 +268,7 @@ def delete_task(task_id: str) -> bool:
             (task_id,),
         ).fetchall()
         if running:
-            delete_chat_threads_in(conn, [chat_id_for_run(row["id"]) for row in running])
+            discard_run_output(conn, [row["id"] for row in running])
         cursor = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
         return cursor.rowcount > 0
 
@@ -291,9 +321,7 @@ def poll(
     worker_id: str,
     next_run_after: Callable[[dict, int], Optional[int]],
 ) -> tuple[Optional[tuple[dict, dict]], Optional[int]]:
-    """A scheduler pass on one connection: fail stale runs, claim what is due, and say when the next run is due.
-
-    Reads first, so an idle pass never takes the writer lock."""
+    """Fails stale runs and claims due work; reads first so an idle pass never takes the writer lock."""
     with _connect() as conn:
         stale, due = _state(conn, now, stale_before)
         if stale:
@@ -444,7 +472,7 @@ def finish_run(
         if row is None:
             return False
         if discard_chat:
-            delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
+            discard_run_output(conn, [run_id])
         # The chat can already be gone; the foreign key would refuse the whole update.
         if (
             thread_id is not None
@@ -477,8 +505,7 @@ def _fail_stale(conn: sqlite3.Connection, stale_before: int) -> None:
         [(now_ms(), run_id) for run_id in run_ids],
     )
     # Delete its chat in this transaction, so a failed run never keeps one and a late save cannot restore it.
-    if run_ids:
-        delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
+    discard_run_output(conn, run_ids)
     for task_id in {row["task_id"] for row in rows}:
         _trim_history(conn, task_id)
 

@@ -230,9 +230,8 @@ def test_the_early_bail_restores_the_environment_too():
 
 
 def test_both_scripts_resolve_the_warning_root_the_same_way():
-    """install.ps1 and setup.ps1 each mirror the resolver's precedence for the
-    message, so a drift in one would send only half the flows to the right
-    directory."""
+    """install.ps1 and setup.ps1 each mirror the resolver's precedence for the warning, so drift in
+    one would send only half the flows to the right directory."""
     install_root = _read(INSTALL_PS1)
     install_root = install_root[
         install_root.index("$UnslothRoot =") : install_root.index("-Tauri:$TauriMode")

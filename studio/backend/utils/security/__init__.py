@@ -95,8 +95,7 @@ def preflight_remote_code_consent_for_targets(
 
 
 def should_block_remote_code(result: "ScanResult") -> bool:
-    """Recommend blocking by default on CRITICAL/HIGH findings. Advisory only: the
-    caller still surfaces findings and takes explicit consent.
-    """
+    """Recommends blocking by default on CRITICAL or HIGH findings; advisory only, as the caller
+    still surfaces findings and takes explicit consent."""
     sev = result.max_severity
     return sev in (CRITICAL, HIGH)

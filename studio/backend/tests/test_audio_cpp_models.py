@@ -486,6 +486,9 @@ _CLONE_TABLE = {
     "miotts": ("tts", False, "unused"),
     "mira_tts": ("tts", False, "unused"),
     "sopro_tts": ("tts", False, "unused"),
+    "xtts_v2": ("tts", False, "unused"),
+    "zonos3": ("tts", False, "unused"),
+    "vieneu_v3_turbo": ("tts", False, "unused"),
     "breeze_tts": ("tts", True, "required"),
     "omnivoice": ("tts", True, "required"),
     "voxcpm1": ("tts", True, "required"),
@@ -1881,9 +1884,11 @@ def test_umbrella_repo_is_hidden_from_chat():
     assert is_hidden_model("Audio-CPP/audio.cpp-GGUF")
 
 
-def test_resident_estimate_scales_with_the_variant():
+def test_resident_estimate_scales_with_the_variant(monkeypatch):
     import routes.inference as ri
+    from core.inference import audio_cpp_failures as af
 
+    monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
     small = ri.audio_cpp_resident_gb(237 * 1024**2)
     big = ri.audio_cpp_resident_gb(5899 * 1024**2)
     assert 1.5 < small < 3 and 15 < big < 18

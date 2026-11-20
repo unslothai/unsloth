@@ -286,6 +286,9 @@ def test_h3_video_keeps_sd_cpps_default_threads_unless_studio_knows_better(monke
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: 6)  # a tighter container quota
     assert bk._explicit_threads() == 6
     monkeypatch.setattr(bk.sys, "platform", "win32")
+    monkeypatch.setattr(
+        bk, "_windows_cores", lambda: None
+    )  # unreadable topology: sd.cpp's own default
     assert bk._explicit_threads() is None
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", "12")
     assert bk._explicit_threads() == 12
@@ -486,6 +489,53 @@ def test_windows_runs_the_logical_cpus_on_a_small_non_hybrid_smt_host(monkeypatc
     assert bk._default_threads() == 2
     monkeypatch.delenv(bk.SD_CPP_CPU_SMT_ENV)
     assert bk._default_threads(smt = False) == 2
+
+
+def _win_topology(
+    p_cores,
+    e_cores = 0,
+    smt = True,
+):
+    """P cores (EfficiencyClass 1 on a hybrid part) then E cores (class 0, no SMT)."""
+    p_class = 1 if e_cores else 0
+    buf = b"".join(_win_record(0, p_class, smt = smt) for _ in range(p_cores))
+    return buf + b"".join(_win_record(0, 0, smt = False) for _ in range(e_cores)) + _win_record(2)
+
+
+@pytest.mark.parametrize(
+    "cpus, topology, expected",
+    [
+        (
+            16,
+            _win_topology(16, smt = False),
+            16,
+        ),  # no SMT (e.g. a VM): sd.cpp's Windows fallback runs 8
+        (24, _win_topology(8, 16, smt = False), 24),  # Arrow Lake 8P + 16E, no SMT: sd.cpp runs 12
+        (8, _win_topology(4, 4, smt = False), 8),  # Lunar Lake 4P + 4E: sd.cpp runs 4
+        (32, _win_topology(8, 16), 24),  # Raptor Lake 8P (SMT) + 16E: one per core, as on Linux
+        (16, _win_topology(8), None),  # 8 cores / 16 threads: sd.cpp's half is the core count
+        (
+            4,
+            _win_topology(2),
+            None,
+        ),  # 2 cores / 4 threads: sd.cpp's all-CPU default measured faster
+        (4, _win_topology(4, smt = False), None),  # 4 CPUs: sd.cpp already runs all of them
+        (16, None, None),  # unreadable topology: sd.cpp's own default
+    ],
+    ids = ["16c", "8p16e", "4p4e", "8p_smt16e", "8c16t", "2c4t", "4c", "unreadable"],
+)
+def test_h3_video_passes_the_windows_core_count_when_sd_cpp_would_halve_it(
+    monkeypatch, cpus, topology, expected
+):
+    _host(monkeypatch, cpus = cpus, platform = "win32")
+    monkeypatch.setattr(bk, "_apple_performance_cores", lambda: None)
+    parsed = bk._parse_windows_cores(topology) if topology is not None else None
+    monkeypatch.setattr(bk, "_windows_cores", lambda: parsed)
+    assert bk._explicit_threads() == expected
+    if parsed is not None:
+        assert bk._default_threads(smt = False) == parsed[0]
+    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "5")
+    assert bk._explicit_threads() == 5
 
 
 def test_windows_cores_is_none_off_windows(monkeypatch):

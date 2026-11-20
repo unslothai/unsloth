@@ -121,8 +121,7 @@ def _isolated_offline_env(monkeypatch, **preset):
 
 @pytest.fixture(params = ["env", "force"])
 def window_branch(request, monkeypatch):
-    """Both ways the window goes offline: env vars only (huggingface_hub not yet usable) or the
-    loader's _force_hf_offline (post-import)."""
+    """Offline via env vars before huggingface_hub loads, or _force_hf_offline after import."""
     from utils.utils import force_hf_offline
 
     if request.param == "env":
@@ -135,8 +134,7 @@ def window_branch(request, monkeypatch):
 
 
 def _install_kernel_reaches_the_lock(monkeypatch):
-    """Whether ssm_runtime._install_kernel gets past its offline guard (to the kernel lock, which
-    is stubbed busy so nothing installs)."""
+    """Checks _install_kernel clears its offline guard; the kernel lock is stubbed busy."""
     from utils import kernel_install, ssm_runtime
 
     reached = []

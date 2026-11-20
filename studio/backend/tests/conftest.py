@@ -104,6 +104,134 @@ def _no_vae_structural_verdict_cache(monkeypatch):
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
 
 
+def _cuda_device_info_from_the_test_torch():
+    """The devices the test's fake torch describes; none for the real torch (never this host's driver)."""
+    torch = sys.modules.get("torch")
+    cuda = getattr(torch, "cuda", None)
+    props = getattr(cuda, "get_device_properties", None)
+    if props is None or str(getattr(props, "__module__", "") or "").startswith("torch"):
+        return []
+    try:
+        count = int(cuda.device_count())
+    except Exception:
+        return None
+    devices = []
+    for ordinal in range(count):
+        try:
+            p = props(ordinal)
+        except Exception:
+            devices.append(None)
+            continue
+        integrated = bool(getattr(p, "is_integrated", False) or getattr(p, "integrated", False))
+        devices.append(
+            (
+                f"0000:{ordinal + 1:02x}:00.0",
+                integrated,
+                int(getattr(p, "total_memory", 0) or 0),
+                str(getattr(p, "name", "") or ""),
+            )
+        )
+    return devices
+
+
+def _c_cuda_mask():
+    """CUDA_VISIBLE_DEVICES as cuInit reads it: the C environment, which os.environ writes reach."""
+    import ctypes
+
+    getenv = ctypes.CDLL(None).getenv
+    getenv.restype, getenv.argtypes = ctypes.c_char_p, [ctypes.c_char_p]
+    raw = getenv(b"CUDA_VISIBLE_DEVICES")
+    return None if raw is None else raw.decode(errors = "replace").strip()
+
+
+# A run that hid every GPU must never open a context: a CPU test that rewrites the mask and reaches a real CUDA
+# init would open one on each card it names (xdist workers held 600-900 MiB on six GPUs), so that init fails it.
+_SESSION_HID_GPUS = os.name != "nt" and _c_cuda_mask() in ("", "-1")
+_cuda_init_state = {"cpu_test": False, "attempts": []}
+
+
+def _refuse_cuda_init_once_unhidden(torch):
+    c = getattr(torch, "_C", None)
+    real = getattr(c, "_cuda_init", None)
+    if real is None or getattr(real, "_studio_cpu_test_check", False):
+        return
+
+    def _cuda_init(*a, **k):
+        mask = _c_cuda_mask()
+        if _cuda_init_state["cpu_test"] and mask not in ("", "-1"):
+            import traceback
+            _cuda_init_state["attempts"].append(
+                (mask, "".join(traceback.format_stack(limit = 12)[:-1]))
+            )
+            raise RuntimeError("a CPU test initialised CUDA after unhiding the GPUs (refused)")
+        return real(*a, **k)
+
+    _cuda_init._studio_cpu_test_check = True
+    c._cuda_init = _cuda_init
+
+
+class _AfterTorchImport:
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if name != "torch" or "torch" in sys.modules:
+            return None
+        sys.meta_path.remove(self)
+        spec = _ilu.find_spec("torch")
+        if spec is None or spec.loader is None:
+            return spec
+        exec_module = spec.loader.exec_module
+
+        def _exec(module):
+            exec_module(module)
+            _refuse_cuda_init_once_unhidden(module)
+
+        spec.loader.exec_module = _exec
+        return spec
+
+
+if _SESSION_HID_GPUS:
+    if "torch" in sys.modules:
+        _refuse_cuda_init_once_unhidden(sys.modules["torch"])
+    else:
+        sys.meta_path.insert(0, _AfterTorchImport())
+
+
+@pytest.fixture(autouse = True)
+def _no_cuda_context_from_a_cpu_test(request):
+    if not _SESSION_HID_GPUS or request.node.get_closest_marker("gpu") is not None:
+        yield
+        return
+    _cuda_init_state["cpu_test"], _cuda_init_state["attempts"] = True, []
+    try:
+        yield
+    finally:
+        _cuda_init_state["cpu_test"] = False
+    if _cuda_init_state["attempts"]:
+        mask, stack = _cuda_init_state["attempts"][0]
+        pytest.fail(
+            f"this CPU test initialised CUDA with CUDA_VISIBLE_DEVICES={mask!r} after the run had hidden "
+            f"every GPU; its next device call opens a context on each card it names. Fake the device query (torch.cuda, "
+            f"utils.hardware.nvidia.get_cuda_device_info) or mark the test gpu. First call:\n{stack}",
+            pytrace = False,
+        )
+
+
+@pytest.fixture(autouse = True)
+def _no_real_cuda_device_query(monkeypatch):
+    try:
+        from utils.hardware import nvidia
+    except Exception:
+        return
+    monkeypatch.setattr(
+        nvidia, "get_cuda_device_info", _cuda_device_info_from_the_test_torch, raising = False
+    )
+    monkeypatch.setattr(nvidia, "_CUDA_DEVICE_INFO_CACHE", {}, raising = False)
+
+
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
     """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
@@ -138,6 +266,12 @@ def _zoo_without_gdn_decode_kernel(monkeypatch):
 @pytest.fixture(autouse = True)
 def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
     monkeypatch.setenv("UNSLOTH_SD_CPP_WINDOWS_ROCM", "1")
+
+
+@pytest.fixture(autouse = True)
+def _cpu_test_host_is_not_a_cpu_only_studio(monkeypatch):
+    # The CPU-only GGUF rule would refuse mocked GPU-path loads here; tests of the rule delete this env.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
 
 
 @pytest.fixture(autouse = True)
@@ -180,6 +314,68 @@ def _forget_mcp_discovery_state():
     _forget()
     yield
     _forget()
+
+
+@pytest.fixture(autouse = True)
+def _restore_diffusers_active_attention_backend():
+    # diffusers' ModelMixin.set_attention_backend also sets the process-wide active backend, which every
+    # processor without its own backend dispatches to: a test that set "_native_cudnn" left later CPU
+    # forwards with no SDPA kernel ("No viable backend for scaled_dot_product_attention").
+    dispatch = sys.modules.get("diffusers.models.attention_dispatch")
+    registry = getattr(dispatch, "_AttentionBackendRegistry", None)
+    before = getattr(registry, "_active_backend", None)
+    yield
+    if registry is None:
+        dispatch = sys.modules.get("diffusers.models.attention_dispatch")
+        registry = getattr(dispatch, "_AttentionBackendRegistry", None)
+        if registry is None:
+            return
+        try:  # first imported during this test: its default is the environment's, read at import
+            before = dispatch.AttentionBackendName(dispatch.DIFFUSERS_ATTN_BACKEND)
+        except Exception:
+            return
+    if getattr(registry, "_active_backend", None) != before:
+        registry._active_backend = before
+
+
+_DYNAMO_PROCESS_KNOBS = ("suppress_errors", "recompile_limit", "cache_size_limit")
+
+
+def _dynamo_own_knobs(cfg):
+    # Only the config's own entries. Reading an alias (cache_size_limit -> recompile_limit on torch 2.6+) runs
+    # importlib.import_module, which at teardown re-imported torch into tests that had taken it out of
+    # sys.modules and blocked imports ("_has_torch_function already has a docstring").
+    entries = getattr(cfg, "_config", None) or {}
+    return [
+        k
+        for k in _DYNAMO_PROCESS_KNOBS
+        if k in entries and getattr(entries[k], "alias", None) is None
+    ]
+
+
+@pytest.fixture(autouse = True)
+def _restore_dynamo_process_knobs():
+    # The DiT trainer's compile step sets dynamo's suppress_errors (and a 64 recompile limit) process-wide, so a
+    # later test on the same xdist worker that turns on fail_on_recompile_limit_hit died with "Dynamo configs
+    # suppress_error and fail_on_recompile_limit_hit can not both be active at the same time".
+    dynamo = sys.modules.get("torch._dynamo")
+    cfg = getattr(dynamo, "config", None)
+    before = {k: getattr(cfg, k) for k in _dynamo_own_knobs(cfg)} if cfg is not None else None
+    yield
+    if cfg is None:
+        dynamo = sys.modules.get("torch._dynamo")
+        cfg = getattr(dynamo, "config", None)
+        if cfg is None:
+            return
+        # first imported during this test: its defaults are the module's own
+        before = {}
+        for k in _dynamo_own_knobs(cfg):
+            default = cfg._config[k].default
+            if isinstance(default, (bool, int)):
+                before[k] = default
+    for k, v in before.items():
+        if getattr(cfg, k, v) != v:
+            setattr(cfg, k, v)
 
 
 @pytest.fixture(autouse = True)
@@ -549,6 +745,9 @@ def _forget_the_cached_owner_identity():
         lifetime._owner_identity = None
 
 
+_REAL_OS_NAME = os.name
+
+
 @pytest.fixture(autouse = True)
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
@@ -561,15 +760,21 @@ def _isolate_wal_keepers():
     rag_enabled = rag_db._wal_keepers_enabled
     rag_db.start_wal_keepers()
     yield
-    for path in set(studio_db._wal_keepers) - before:
-        studio_db.close_wal_keeper_for(path)
-    studio_db._wal_unsupported.intersection_update(unsupported)
-    for path in set(rag_db._wal_keepers) - rag_before:
-        rag_db.close_wal_keeper_for(path)
-    if rag_enabled:
-        rag_db.start_wal_keepers()
-    else:
-        rag_db.close_wal_keeper()
+    # Runs before the test's monkeypatch is undone: a test faking Windows (os.name = "nt") would make
+    # close_wal_keeper_for's Path() a WindowsPath, which cannot be built here.
+    patched_os_name, os.name = os.name, _REAL_OS_NAME
+    try:
+        for path in set(studio_db._wal_keepers) - before:
+            studio_db.close_wal_keeper_for(path)
+        studio_db._wal_unsupported.intersection_update(unsupported)
+        for path in set(rag_db._wal_keepers) - rag_before:
+            rag_db.close_wal_keeper_for(path)
+        if rag_enabled:
+            rag_db.start_wal_keepers()
+        else:
+            rag_db.close_wal_keeper()
+    finally:
+        os.name = patched_os_name
 
 
 @pytest.fixture(autouse = True)
@@ -1245,8 +1450,16 @@ def healthy_diffusers(monkeypatch):
                 return object
             raise AttributeError(name)
 
+    from core.inference import diffusion_families as _df
+
+    # A present class below its floor is refused, so a healthy stand-in must also clear every floor.
+    version = str(getattr(_real, "__version__", "0.39.0"))
+    for floor in _df._PIPELINE_MIN_DIFFUSERS.values():
+        if not _df._installed_at_least(version, floor):
+            version = floor
+
     proxy = _AnyPipeline("diffusers")
-    proxy.__version__ = str(getattr(_real, "__version__", "0.39.0"))
+    proxy.__version__ = version
     for attr in ("__path__", "__file__", "__spec__", "__loader__"):
         if _real is not None and hasattr(_real, attr):
             setattr(proxy, attr, getattr(_real, attr))

@@ -41,9 +41,8 @@ def _fake_torch(monkeypatch, *, bind_utils: bool):
 
 
 def test_reports_false_when_utils_is_not_bound_on_the_parent(warm, monkeypatch):
-    """The failure an ``import`` cannot observe. Both imports succeed here; only the
-    attribute read distinguishes the broken state, so a probe that merely imported would
-    report success in exactly the case that matters."""
+    """Only the attribute read exposes the broken state; a probe that merely imports would report
+    success exactly when it matters."""
     _fake_torch(monkeypatch, bind_utils = False)
     assert warm.ensure_dynamo_imported() is False
 
@@ -103,9 +102,8 @@ def test_the_warm_closes_the_window_before_it_starts_a_thread():
 
 
 def test_the_stage_list_and_its_purge_contract_are_untouched():
-    """The window is closed INSIDE an existing stage, not by adding one. _STAGES carries a
-    purge-on-failure mapping whose only plausible entry for a dynamo stage would be torch,
-    and purging torch is never right. This pins that decision."""
+    """The dynamo fix sits inside an existing _STAGES stage; purging torch on failure is never
+    right, so the stage list stays pinned."""
     from utils import torch_warmup
     assert [name for name, _ in torch_warmup._STAGES] == [
         "hardware",
@@ -243,9 +241,8 @@ def test_load_failure_is_logged_with_a_traceback():
 
 
 def test_the_dynamo_failure_is_rewritten_into_something_actionable():
-    """The raw text names a private torch module and reads as a bug in the model, while the
-    only remedy is a restart. Measured on torch 2.10: a process that has lost this import race
-    does not recover, so "try again" in the same process is wrong advice."""
+    """On torch 2.10 a process that loses this import race never recovers, so the message must say
+    restart, not retry."""
     from core.inference.diffusion import dynamo_partial_init_message
 
     exc = AttributeError(
@@ -301,8 +298,7 @@ def test_an_explicit_cause_is_still_followed():
 
 
 def test_a_cyclic_exception_chain_terminates():
-    """The walk is guarded by identity, not a depth counter, so a self-referential chain
-    cannot spin."""
+    """The chain walk tracks seen exceptions by identity, so a cyclic chain terminates."""
     from core.inference.diffusion import dynamo_partial_init_message
 
     a = RuntimeError("a")

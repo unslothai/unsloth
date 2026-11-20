@@ -176,9 +176,8 @@ def _in_use(entry: dict) -> Optional[Path]:
 
 
 def location_dir(key: str, default: Path) -> Path:
-    """`key`'s folder, ready to use. Only the default is created: a chosen folder that has gone is
-    not made again, or files would land on the disk beneath its mount point and vanish once the
-    drive is back."""
+    """key's folder, ready to use; only the default is created, since a chosen folder that has gone
+    must not be remade, or files land on the disk beneath its mount point."""
     from utils.paths.storage_roots import ensure_dir
 
     entry = _chosen_entry(key)
@@ -200,16 +199,14 @@ def is_available(key: str) -> bool:
 
 
 def chosen_available(key: str) -> bool:
-    """False while `key`'s chosen folder itself is on a drive that is not there, even while the
-    folder a move was leaving stands in for it."""
+    """False while key's chosen drive is absent, even if a leftover folder stands in for it."""
     entry = _chosen_entry(key)
     return entry is None or not _unavailable(entry)
 
 
 def wait_for_move(key: str) -> None:
-    """Mark `key`'s move cut short as waiting for its chosen folder's drive, which keeps the folder
-    it was leaving in use until the move is taken up again. For this process only: the next load
-    tries the move again."""
+    """Marks key's cut-short move as waiting for its chosen drive, which keeps the folder it was
+    leaving in use until taken up again; this process only, as the next load retries it."""
     with _lock:
         entry = _cache.get(_db_key(), {}).get(key)
         if entry is not None and entry.get("moving_from"):
@@ -223,8 +220,7 @@ def moving_from(key: str) -> Optional[Path]:
 
 
 def moving_from_available(key: str) -> bool:
-    """False while the folder `key`'s files are leaving is on a drive that is not there: a folder
-    missing from it then is not one the move emptied."""
+    """False while key's leaving folder's drive is gone; a folder missing then was not emptied."""
     entry = _chosen_entry(key)
     return not entry or not entry.get("moving_from") or _source_available(entry)
 

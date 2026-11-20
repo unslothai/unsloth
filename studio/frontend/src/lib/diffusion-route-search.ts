@@ -17,9 +17,13 @@ const trimmed = (value: string | null | undefined): string | null =>
 /** The label rides its own param because `quant` is consumed as a filename. */
 export function diffusionRouteSearch(
   model: string,
-  meta: { ggufFilename?: string | null; ggufVariant?: string | null },
+  meta: {
+    checkpointFilename?: string;
+    ggufFilename?: string | null;
+    ggufVariant?: string | null;
+  },
 ): DiffusionRouteSearch {
-  const filename = trimmed(meta.ggufFilename);
+  const filename = trimmed(meta.checkpointFilename) ?? trimmed(meta.ggufFilename);
   if (filename) return { model, quant: filename };
   const label = trimmed(meta.ggufVariant);
   return label ? { model, ggufQuant: label } : { model };
@@ -30,6 +34,11 @@ export function routedGgufFilename(
 ): string | null {
   const quant = trimmed(search.quant);
   return quant && isGgufName(quant) ? quant : null;
+}
+
+export function routedImageFilename(search: Pick<DiffusionRouteSearch, "quant">): string | null {
+  const filename = trimmed(search.quant);
+  return filename?.toLowerCase().endsWith(".safetensors") ? filename : routedGgufFilename(search);
 }
 
 /** A non-filename in `quant` (hand-built link, older producer) is a label too. */

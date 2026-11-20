@@ -287,8 +287,7 @@ def test_fused_eligibility_is_one_rule(monkeypatch):
 
 
 def test_a_caller_buffer_that_is_not_the_output_keeps_main_behavior(monkeypatch):
-    # torch.matmul(..., out = empty) resizes; the fused order writes the rank-r term first, so it is
-    # taken only when the buffer is already the output.
+    # matmul out= resizes foreign buffers, so the fused path runs only when out is the output.
     g = torch.Generator(device = "cpu").manual_seed(0)
     X, W = torch.randn(7, H, generator = g), torch.randn(I, H, generator = g)
     A, B = torch.randn(4, H, generator = g), torch.randn(I, 4, generator = g)
@@ -388,8 +387,7 @@ def test_a_caller_buffer_sharing_an_operand_keeps_main_behavior(monkeypatch):
 
 
 def test_shared_lora_a_grads_have_the_parameter_layout(monkeypatch):
-    # The shared backward hands back d_A whose .t() is contiguous like the [r, K] parameter, so autograd
-    # does not copy it into a new layout.
+    # d_A is handed back with .t() contiguous like [r, K], so autograd does not copy it.
     _set(monkeypatch, True)
     X = torch.randn(10, H)
     As = (torch.randn(4, H).t(), torch.randn(4, H).t())
@@ -713,8 +711,7 @@ def test_sparse_base_weight_keeps_the_base_then_lora_order_under_export(monkeypa
 
 @pytest.fixture
 def one_rank_mesh(tmp_path):
-    # One-rank gloo group on a file store (no TCP / libuv rendezvous, no environment variables); only a
-    # group this fixture created is destroyed.
+    # One-rank gloo on a file store (no TCP, no env vars); destroy only the group made here.
     if not isinstance(kernel_utils._LORA_DTENSOR, type):
         pytest.skip("torch.distributed.tensor is not available")
     import torch.distributed as dist
@@ -775,8 +772,7 @@ def _dtensor_lora_inputs(mesh, which, placement):
     X, W = torch.randn(2, 4, 4, generator = g), torch.randn(4, 4, generator = g)
     A, B = torch.randn(2, 4, generator = g), torch.randn(4, 2, generator = g)
     pl = {"replicate": Replicate(), "shard0": Shard(0), "shard1": Shard(1)}[placement]
-    # Mixed plain / DTensor LoRA weights fail on main as well (in-place gradient writes), so the adapters
-    # are either both plain or both DTensor.
+    # Mixed plain/DTensor adapters fail on main too (in-place grad writes), so both must match.
     X = distribute_tensor(X, mesh, [pl])
     if which == "XAB":
         A, B = (distribute_tensor(t, mesh, [Replicate()]) for t in (A, B))
@@ -852,8 +848,7 @@ def test_dtensor_operands_keep_the_base_then_lora_order(
 
 @pytest.mark.parametrize("name", ["W", "QKV", "MLP"])
 def test_a_dtensor_activation_records_the_base_then_lora_order(name, one_rank_mesh, monkeypatch):
-    # With plain adapters the backward cannot run under DTensor on main either, so only the recorded
-    # forward decision is checked here.
+    # Plain adapters cannot backprop under DTensor on main either; only the forward is checked.
     from torch.distributed.tensor.experimental import implicit_replication
 
     X, W, A, B = _dtensor_lora_inputs(one_rank_mesh, "X", "replicate")
@@ -1079,6 +1074,7 @@ def test_decode_keeps_a_subclass_adapter(which, bsz, monkeypatch):
         "_has_active_dora_adapter",
         "_has_active_lora_bias",
         "_has_packed_qweight",
+        "_has_qat_linear",
     ):
         monkeypatch.setattr(kernel_utils, name, lambda proj: False)
 
@@ -1121,6 +1117,34 @@ def test_decode_packed_base_keeps_its_matmul(bsz, fp8):
         actual = kernel_utils.fast_linear_forward(proj, X)
     torch.testing.assert_close(actual, expected)
     assert calls == [X.shape]
+
+
+@pytest.mark.parametrize("bsz", [1, 3])
+@pytest.mark.parametrize("tagged", [False, True])
+def test_decode_returns_the_strided_out_with_its_strides(tagged, bsz, monkeypatch):
+    # The MLP writes down_proj into temp_up[..., :hd]: the caller's strided out comes back as is.
+    g = torch.Generator().manual_seed(0)
+    X, W = torch.randn(bsz, 1, 64, generator = g), torch.randn(32, 64, generator = g)
+    A, B = torch.randn(4, 64, generator = g), torch.randn(32, 4, generator = g)
+    for name in (
+        "_has_non_lora_adapter",
+        "_has_multiple_active_adapters",
+        "_has_active_dora_adapter",
+        "_has_active_lora_bias",
+        "_has_packed_qweight",
+        "_has_qat_linear",
+    ):
+        monkeypatch.setattr(kernel_utils, name, lambda proj: False)
+    B_in = _tag(B) if tagged else B
+    monkeypatch.setattr(
+        kernel_utils, "get_lora_parameters_bias", lambda proj: (W, None, A, B_in, 0.5, None)
+    )
+    out = torch.empty(bsz, 1, 40)[:, :, :32]
+    got = kernel_utils.fast_linear_forward(None, X, out = out)
+    assert got.data_ptr() == out.data_ptr() and got.stride() == out.stride()
+    assert (type(got) is _TaggedTensor) == tagged
+    want = X @ W.t() + 0.5 * (X @ A.t()) @ B.t()
+    torch.testing.assert_close(_plain(got), want, rtol = 1e-5, atol = 1e-5)
 
 
 @pytest.mark.parametrize("which", ["A", "B"])

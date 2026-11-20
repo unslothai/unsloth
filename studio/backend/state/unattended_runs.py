@@ -18,8 +18,7 @@ from state import run_subscribers
 
 logger = get_logger(__name__)
 
-# Comfortably past a reload and the follower's longest reconnect backoff, short enough that a run
-# the user meant to stop does not keep its model busy for long.
+# Outlasts a reload and a follower's reconnect backoff, yet short enough not to pin the model.
 _GRACE_DEFAULT_S = 30.0
 _CHECK_INTERVAL_S = 5.0
 
@@ -70,14 +69,8 @@ def watch(
     cancel: Callable[[], Awaitable[None]],
     replace: bool = False,
 ) -> None:
-    """Stop ``attendance_id`` once it has gone ``_GRACE_S`` with no follower.
-
-    ``attendance_id`` is the id its followers stamp in ``run_subscribers``. Idempotent by default:
-    a run already watched keeps the watch it has, so re-arming on every reattach cannot reset its
-    grace. ``replace`` is for a new attempt under the same id (a rebound or retried Deep Research
-    run), which must not inherit the previous attempt's grace. Safe from any thread; nothing here
-    touches the loop.
-    """
+    """Stops attendance_id once it has gone _GRACE_S with no follower; re-arming keeps an existing
+    grace; replace gives a new attempt its own grace; thread-safe"""
     if not attendance_id:
         return
     key = _key(account_id, attendance_id)

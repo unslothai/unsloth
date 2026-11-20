@@ -28,7 +28,6 @@ export interface FloatingMonitorDockState {
   sidebarWidth: number;
   /** Viewport width; 0 or less means unknown, which skips the capacity check. */
   viewportWidth: number;
-  /** The monitor's rendered width; natively resizable, so `w-64` is a floor. */
   monitorWidth?: number;
   uiSpaceScale?: number;
 }

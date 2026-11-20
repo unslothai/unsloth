@@ -145,8 +145,7 @@ def _shard_rows_signature(
     file_names,
     read_started_ns: int | None = None,
 ) -> tuple | None:
-    # Stamps must predate the footer read by the settle window, so a mid-read write never
-    # pairs with old counts.
+    # Stamps predate the read by the settle window; mid-read writes never pair with old counts.
     if read_started_ns is None:
         read_started_ns = time.time_ns()
     settled_before_ns = read_started_ns - _SHARD_ROWS_SETTLE_NS
@@ -675,6 +674,8 @@ class JobManager:
             if self._job is None or self._job.job_id != job.job_id:
                 return
             if et == EVENT_JOB_STARTED:
+                if self._job.status in {"cancelling", "cancelled", "completed", "error"}:
+                    return
                 self._job.status = "active"
                 self._job.artifact_path = event.get("artifact_path") or self._job.artifact_path
                 self._job.execution_type = event.get("execution_type") or self._job.execution_type

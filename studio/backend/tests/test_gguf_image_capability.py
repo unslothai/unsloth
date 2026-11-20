@@ -76,12 +76,12 @@ def test_a_model_without_a_projector_takes_no_image():
 
 
 def test_the_load_reads_both_capabilities_from_the_projector_it_attaches():
-    """The read cannot be reached without spawning llama-server, so pin it in the source:
-    both flags must come from one call on the same probed path, or the pair can describe
-    two files."""
+    """Reaching the read needs llama-server, so pin it in source: both flags must share one probed path."""
     with _stub_modules_ctx():
         from core.inference.llama_cpp import LlamaCppBackend
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "has_audio, accepts_image = mmproj_capabilities(_mmproj_probe)" in src
     assert "self._mmproj_has_audio = has_audio" in src
     assert "self._mmproj_accepts_image = accepts_image" in src
+    assert "self._mmproj_projector_type = read_mmproj_vision_projector_type(" in src
+    assert "self._image_token_counts = {}" in src

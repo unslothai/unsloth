@@ -63,8 +63,7 @@ def test_the_hint_still_works_when_nothing_narrowed():
 
 
 def test_the_api_key_survives_the_four_token_narrowing():
-    """The forced-CPU arm drops 4 tokens. A stale index ate --api-key SECRET,
-    so the retry would have served an unauthenticated llama-server."""
+    """The 4-token drop must keep --api-key, or the retry serves an unauthenticated server."""
     fb = _fallback(_narrowed("--split-mode", "-sm", "--tensor-split", "-ts"))
     assert fb[fb.index("--api-key") + 1] == "SECRET"
     assert "--chat-template-file" in fb and "t.jinja" in fb
@@ -97,8 +96,7 @@ def test_no_token_is_lost_by_any_narrowing():
 
 
 def test_the_block_is_found_even_if_it_moved_right():
-    """Defensive: the hint is a hint. A future site that INSERTS ahead of the
-    block must not corrupt the slice either."""
+    """The index is only a hint; the block must still be found if an insert moves it right."""
     padded = ["--threads", "8", *_CMD]
     fb = _fallback(padded)
     # Compare the whole list: a slice cut two tokens early would eat --split-mode.

@@ -80,7 +80,7 @@ def _sse(delta = None, finish = None) -> bytes:
     return f"data: {json.dumps({'choices': [choice]})}\n\n".encode()
 
 
-@pytest.mark.parametrize("provider", ["llama_cpp", "vllm", "custom"])
+@pytest.mark.parametrize("provider", ["llama_cpp", "vllm", "deepseek", "custom"])
 @pytest.mark.parametrize("preserve", [True, False, None])
 def test_tool_round_thinking_reaches_the_next_request(monkeypatch, provider, preserve):
     call = {

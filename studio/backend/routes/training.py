@@ -269,6 +269,13 @@ def _run_finished(backend) -> bool:
     return bool(check()) if callable(check) else False
 
 
+async def _await_finished_worker_exit(backend) -> None:
+    """A run that reported terminal holds the GPU until its worker exits: give that exit the stop grace
+    before a new start reads is_training_active()."""
+    if _run_finished(backend):
+        await asyncio.to_thread(backend.wait_for_finished_worker)
+
+
 def _run_active(backend) -> bool:
     """Liveness minus terminal: a run that reported terminal is done even while its worker
     tears down. The GPU admission guards deliberately keep using is_training_active(), since
@@ -2287,6 +2294,7 @@ async def _admit_training_request(
             raise HTTPException(status_code = 409, detail = str(exc))
         if not effective_load_in_4bit:
             training_kwargs["load_in_4bit"] = False
+            training_kwargs["load_in_4bit_forced_16bit"] = True
             logger.info(
                 "Latest-transformers sidecar active for %s - sizing and "
                 "training in 16-bit (4-bit is disabled for brand-new "
@@ -2389,6 +2397,7 @@ async def start_training(
                 except S3DependencyUnavailable as exc:
                     raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
+        await _await_finished_worker_exit(backend)
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             _reject_start_request(
@@ -2471,6 +2480,7 @@ async def start_training(
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
+            _free_restyle_for_training()
             try:
                 # Video pipelines load under the VIDEO arbiter owner; tear down too. Must precede the chat block.
                 from core.inference import gpu_arbiter
@@ -3530,6 +3540,22 @@ def diffusion_dataset_interlock():
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
+def _free_restyle_for_training() -> None:
+    """The restyle sd-server sits outside the arbiter's owners; a running restyle refuses the start."""
+    from core.inference import video_restyle
+    from routes.training_vram import ManagedEngineStillRunning
+
+    try:
+        idle = video_restyle.runner.unload_if_idle()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not unload the video restyle server for training: %s", e)
+        return
+    if not idle:
+        raise ManagedEngineStillRunning(
+            "A video restyle is running. Cancel it or wait for it to finish."
+        )
+
+
 def _free_gpu_for_diffusion_training() -> None:
     """Frees resident GPU models first; the trainer's SDXL pipeline would OOM beside them."""
     try:
@@ -3565,6 +3591,7 @@ def _free_gpu_for_diffusion_training() -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
+    _free_restyle_for_training()
     try:
         from core.inference import gpu_arbiter
         from core.inference.video import get_video_backend
@@ -3708,7 +3735,9 @@ async def start_diffusion_training(
 
     # Refuse while an LLM training run holds the GPU (symmetric with start_training).
     try:
-        if get_training_backend().is_training_active():
+        llm_backend = get_training_backend()
+        await _await_finished_worker_exit(llm_backend)
+        if llm_backend.is_training_active():
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -3769,8 +3798,8 @@ async def start_diffusion_training(
             detail = (
                 "cond_cache_dir is not supported for the sdxl family: its trainer uses a "
                 "per-run in-memory latent cache and would ignore the persistent one. Omit it, "
-                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, qwen-image, "
-                "z-image, krea-2), which reuses conditioning across runs."
+                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, flux.3-klein-base, "
+                "qwen-image, z-image, krea-2), which reuses conditioning across runs."
             ),
         )
 
@@ -3838,6 +3867,7 @@ async def start_diffusion_training(
         _assert_trusted_base_model(
             config.get("base_model", ""),
             allow_modular = normalized_cfg.resolved_family in MODULAR_BASE_FAMILIES,
+            family = normalized_cfg.resolved_family,
         )
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
@@ -4754,8 +4784,9 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
         if not meta_path.is_file():
             continue
         # Tolerate a bad upload (invalid UTF-8, or non-object JSON): skip the record so these endpoints do not 500.
+        # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
-            lines = meta_path.read_text(encoding = "utf-8").splitlines()
+            lines = meta_path.read_text(encoding = "utf-8").split("\n")
         except (OSError, UnicodeError):
             continue
         for line in lines:
@@ -5234,7 +5265,7 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     captions: dict[str, str] = {}
     # read_text on a companion raises and fails the whole import.
     for jf in drop_appledouble_metadata(sorted(snap.rglob("*.jsonl"))):
-        for line in jf.read_text(encoding = "utf-8").splitlines():
+        for line in jf.read_text(encoding = "utf-8").split("\n"):
             line = line.strip()
             if not line:
                 continue

@@ -31,6 +31,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
     SDPA,
 )
 from .gemma import (
@@ -134,6 +135,7 @@ def _flash_decode_usable(config, hidden_states, attention_mask):
 
 
 # Logit softcapping.
+@applies_prefix_seg_info
 def Gemma2Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -529,7 +531,8 @@ def Gemma2Model_fast_forward_inference(
     norm_weight = self.model.layers[0].input_layernorm.weight
     out_weights = _LazyDeviceScratch(
         DEVICE_COUNT,
-        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
+        # Shape only: under FSDP2 block streaming this is still a DTensor; empty_like would copy that.
+        lambda device: torch.empty(norm_weight.shape, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)

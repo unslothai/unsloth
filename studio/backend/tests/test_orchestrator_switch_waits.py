@@ -4,7 +4,9 @@
 import inspect
 import multiprocessing as mp
 import os
+import pickle
 import queue
+import struct
 import threading
 import time
 
@@ -284,9 +286,24 @@ def test_stalled_reader_is_abandoned_after_the_idle_grace(monkeypatch):
     assert rec.terminated == []
 
 
-def _send_interrupted_frame(replies, send):
+def _write_partial_frame(replies):
+    """Writes the first 32 KiB of a 1 MiB frame directly, under one pipe buffer so the write never
+    blocks and a reader stays blocked in it; replies.put raced the shutdown drainer and flaked."""
+    payload = pickle.dumps({"type": "diffusion_frame", "request_id": "r1", "image": "x" * 1048576})
+    writer = replies._writer
+    if hasattr(writer, "_send"):
+        writer._send(struct.pack("!i", len(payload)) + payload[: 32 * 1024])
+    else:
+        # Windows PipeConnection has no raw write: send the frame through the feeder and keep the
+        # earlier wait for bytes on the pipe, so the caller does not exit before anything is sent.
+        replies.put(pickle.loads(payload))
+        assert replies._reader.poll(30)
+
+
+def _send_interrupted_frame(replies, send, wrote):
     send.wait()
-    replies.put({"type": "diffusion_frame", "request_id": "r1", "image": "x" * 1048576})
+    _write_partial_frame(replies)
+    wrote.set()
     time.sleep(60)
 
 
@@ -295,8 +312,8 @@ def _shutdown_interrupted_writer():
     o = InferenceOrchestrator()
     o._cmd_queue, o._resp_queue = ctx.Queue(), ctx.Queue()
     o._cancel_event = ctx.Event()
-    send = ctx.Event()
-    o._proc = ctx.Process(target = _send_interrupted_frame, args = (o._resp_queue, send))
+    send, wrote = ctx.Event(), ctx.Event()
+    o._proc = ctx.Process(target = _send_interrupted_frame, args = (o._resp_queue, send, wrote))
     o._proc.start()
     proc = o._proc
     o._mailboxes["r1"] = orch_mod._WorkerMailbox(proc)
@@ -309,7 +326,7 @@ def _shutdown_interrupted_writer():
         calls += 1
         if calls == 2:
             send.set()
-            assert o._resp_queue._reader.poll(30)
+            assert wrote.wait(30)
             time.sleep(orch_mod._SHUTDOWN_CANCEL_GRACE_S + 0.1)
         return replies
 
@@ -338,8 +355,7 @@ def test_forced_shutdown_does_not_read_an_interrupted_queue_frame():
 
 def _crash_during_frame(replies, send):
     send.wait()
-    replies.put({"type": "diffusion_frame", "request_id": "r1", "image": "x" * 1048576})
-    assert replies._reader.poll(30)
+    _write_partial_frame(replies)
     os._exit(1)
 
 

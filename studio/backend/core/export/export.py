@@ -31,7 +31,7 @@ from huggingface_hub import HfApi, ModelCard
 from hub.utils.hf_tokens import HfTokenArg, apply_token_to_child_env, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
-from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models import is_vision_model, audio_vlm_multimodal_lm_checked, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import (
     detect_audio_type,
@@ -606,6 +606,20 @@ def _dir_is_fresh(directory):
     )
 
 
+def _copy_replacing_links(source, destination):
+    # copytree writes through a destination symlink or hard link, changing the file it points at.
+    for dirpath, _, files in os.walk(source):
+        target = os.path.join(destination, os.path.relpath(dirpath, source))
+        if os.path.islink(target):
+            os.unlink(target)
+        os.makedirs(target, exist_ok = True)
+        for name in files:
+            dst = os.path.join(target, name)
+            if os.path.lexists(dst):
+                os.unlink(dst)
+            shutil.copy2(os.path.join(dirpath, name), dst)
+
+
 def _holds_checkpoint_weights(directory, files = None):
     if files is not None:
         return any(
@@ -639,6 +653,10 @@ class _ReusedFolderWrites:
         except OSError as exception:
             logger.info(f"Reused folder not tracked, staging a second save: {exception}")
             self._before = None
+
+    @property
+    def tracked(self) -> bool:
+        return self._before is not None
 
     def _scan(self, settled_before: Optional[int] = None) -> dict:
         notes = {}
@@ -1075,6 +1093,13 @@ class ExportBackend:
                 self.is_vision = self._audio_type in (None, "audio_vlm") and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
+                # Only a definitive no (not an unreadable config) takes the multimodal load below.
+                audio_vlm_multimodal = False
+                if self._audio_type == "audio_vlm" and not self.is_vision:
+                    takes, known = audio_vlm_multimodal_lm_checked(
+                        model_id, hf_token = probe_token, local_files_only = local_files_only
+                    )
+                    audio_vlm_multimodal = known and takes
                 from utils.models.diffusion_lm import diffusion_lm_profile_for_model
 
                 self.diffusion_lm_profile = (
@@ -1177,6 +1202,34 @@ class ExportBackend:
                     **_device_map_kw,
                     **_offload_kw,
                 )
+
+            elif self._audio_type == "audio_vlm" and audio_vlm_multimodal:
+                # LFM3-Audio: the text load builds the bare backbone with no LM head; Training and Chat use this class.
+                from unsloth import FastModel
+                from transformers import AutoModelForMultimodalLM
+
+                logger.info("Loading as audio-input model (AutoModelForMultimodalLM)...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    auto_model = AutoModelForMultimodalLM,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                    **_offload_kw,
+                )
+                if base_model and not hasattr(tokenizer, "feature_extractor"):
+                    with _offline_window_if(local_files_only):
+                        tokenizer = _with_base_processor(
+                            tokenizer,
+                            base_model,
+                            trust_remote_code = trust_remote_code,
+                            token = token,
+                            local_files_only = local_files_only,
+                        )
 
             elif self.diffusion_lm_profile:
                 from unsloth import FastModel
@@ -2209,15 +2262,26 @@ class ExportBackend:
                 )
 
                 if npu_q4nx:
-                    source = q4nx.source_gguf(exported_ggufs, quant_methods)
+                    sources = q4nx.source_ggufs(exported_ggufs, quant_methods)
                     try:
-                        if source is None:
+                        if not sources:
                             raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
-                        with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
-                            q4nx.convert_gguf_to_q4nx(source, staging)
-                            self._write_q4nx_companions(staging, exported_config)
-                            # The NPU folder is deployed on its own, so it carries its own report.
-                            self._sync_reap_report(staging)
+                        # Q4_0 fits some models and Q4_1 others: a refused source falls to the next.
+                        for index, source in enumerate(sources):
+                            try:
+                                with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
+                                    q4nx.convert_gguf_to_q4nx(
+                                        source,
+                                        staging,
+                                        json.loads(exported_config) if exported_config else None,
+                                    )
+                                    self._write_q4nx_companions(staging, exported_config)
+                                    # The NPU folder is deployed on its own, so it carries its own report.
+                                    self._sync_reap_report(staging)
+                                break
+                            except q4nx.SourceMismatch:
+                                if index == len(sources) - 1:
+                                    raise
                     except Exception as exception:
                         logger.error(f"Q4NX conversion failed: {exception}")
                         return (
@@ -2707,6 +2771,11 @@ class ExportBackend:
                 f"LoRA -> GGUF conversion failed (exit {result.returncode}): "
                 + (result.stderr or result.stdout or "").strip()[-2000:]
             )
+        if not os.path.isfile(out_gguf):
+            raise RuntimeError(
+                f"LoRA GGUF conversion reported success but wrote no .gguf file to {out_gguf}. "
+                "Check the export log for the path the converter actually used."
+            )
 
     def export_lora_adapter(
         self,
@@ -2789,19 +2858,51 @@ class ExportBackend:
                         None,
                     )
 
+        gguf_staging = contextlib.ExitStack()
+        staged_gguf_dir = None
+
         def save_lora_gguf(directory):
-            # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
-            if _IS_MLX:
-                self._save_mlx_adapter(directory, "peft", gguf_outtype = outtype, hf_token = hf_token)
-                return
-            self.current_model.save_pretrained_gguf(
-                directory,
-                self.current_tokenizer,
-                save_method = "lora",
-                quantization_method = outtype,
-                # False keeps a denied caller off get_token().
-                token = normalize_token(hf_token),
+            nonlocal staged_gguf_dir
+            reused_writes = None if _dir_is_fresh(directory) else _ReusedFolderWrites(directory)
+            written = None
+            # Untracked folder: skip the wasted in-place conversion.
+            if reused_writes is None or reused_writes.tracked:
+                if _IS_MLX:
+                    self._save_mlx_adapter(
+                        directory, "peft", gguf_outtype = outtype, hf_token = hf_token
+                    )
+                else:
+                    self.current_model.save_pretrained_gguf(
+                        directory,
+                        self.current_tokenizer,
+                        save_method = "lora",
+                        quantization_method = outtype,
+                        # False keeps a denied caller off get_token().
+                        token = normalize_token(hf_token),
+                    )
+                written = reused_writes.written() if reused_writes else None
+            if reused_writes and written is None:
+                tmp_dir = gguf_staging.enter_context(_staging_dir(Path(directory).parent))
+                staged = os.path.join(tmp_dir, Path(directory).name)
+                ensure_dir(Path(staged))
+                ggufs = save_lora_gguf(staged)
+                _copy_replacing_links(staged, directory)
+                staged_gguf_dir = staged
+                return [os.path.join(directory, os.path.basename(f)) for f in ggufs]
+            final_ggufs = sorted(
+                str(p)
+                for p in drop_appledouble_metadata(list(Path(directory).iterdir()))
+                if p.is_file()
+                and p.name.lower().endswith(".gguf")
+                and (written is None or p.name in written)
             )
+            if not final_ggufs:
+                raise RuntimeError(
+                    f"LoRA GGUF conversion reported success but wrote no .gguf file to "
+                    f"{directory}. Check the export log for the path the converter actually "
+                    "used, then upgrade with `pip install --upgrade unsloth unsloth_zoo` and retry."
+                )
+            return final_ggufs
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
@@ -2827,13 +2928,7 @@ class ExportBackend:
 
                 if gguf:
                     _apply_wsl_sudo_patch()
-                    save_lora_gguf(save_directory)
-                    # iterdir, not glob.glob: glob hides dot-leading names.
-                    final_ggufs = sorted(
-                        str(p)
-                        for p in drop_appledouble_metadata(list(Path(save_directory).iterdir()))
-                        if p.is_file() and p.name.lower().endswith(".gguf")
-                    )
+                    final_ggufs = save_lora_gguf(save_directory)
                     logger.info(
                         "LoRA GGUF export complete. Files in %s:\n  %s",
                         save_directory,
@@ -2872,9 +2967,9 @@ class ExportBackend:
 
                 if gguf:
                     with contextlib.ExitStack() as stack:
-                        upload_dir = output_path
-                        if not save_dir_was_empty:
-                            # A reused folder can hold leftovers, so upload a clean second save; the converter names the GGUF model after its folder
+                        upload_dir = staged_gguf_dir or output_path
+                        if not save_dir_was_empty and staged_gguf_dir is None:
+                            # A reused folder can hold leftovers, so upload a clean second save.
                             upload_dir = os.path.join(
                                 stack.enter_context(_staging_dir(Path(output_path).parent)),
                                 Path(output_path).name,
@@ -2914,6 +3009,8 @@ class ExportBackend:
 
             logger.error(traceback.format_exc())
             return False, f"Adapter export failed: {str(e)}", None
+        finally:
+            gguf_staging.close()
 
 
 _export_backend = None

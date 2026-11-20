@@ -13,9 +13,14 @@ import {
 } from "@/components/update/update-notes-layout";
 import { useReleaseNotes } from "@/hooks/use-release-notes";
 import { useT } from "@/i18n";
+import { openLink } from "@/lib/open-link";
 import { resolveReleaseBodyLinks } from "@/lib/release-body-links";
-import { releaseNotesPreview } from "@/lib/release-notes-preview";
 import {
+  type ReleaseNotesLink,
+  releaseNotesPreview,
+} from "@/lib/release-notes-preview";
+import {
+  type MouseEvent,
   type ReactElement,
   type ReactNode,
   useCallback,
@@ -96,6 +101,13 @@ function NotesMessage({
   );
 }
 
+// target="_blank" has nowhere to go in the Tauri webview; openLink() uses the system browser.
+function handleExternalClick(event: MouseEvent<HTMLAnchorElement>): void {
+  if (openLink(event.currentTarget.href)) {
+    event.preventDefault();
+  }
+}
+
 function NotesLink({
   href,
   isRelease,
@@ -109,6 +121,7 @@ function NotesLink({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={handleExternalClick}
       className={UPDATE_NOTES_LINK_CLASS}
       data-testid="update-release-notes-link"
     >
@@ -234,6 +247,36 @@ export function ReleaseNotesPanel({
   );
 }
 
+function linked(
+  text: string,
+  links: ReleaseNotesLink[],
+  part: ReleaseNotesLink["part"],
+): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let from = 0;
+  for (const link of links) {
+    if (link.part !== part) {
+      continue;
+    }
+    nodes.push(
+      text.slice(from, link.start),
+      <a
+        key={link.start}
+        href={link.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={handleExternalClick}
+        className="underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground"
+      >
+        {text.slice(link.start, link.end)}
+      </a>,
+    );
+    from = link.end;
+  }
+  nodes.push(text.slice(from));
+  return nodes;
+}
+
 function ReleaseNotesSummary({
   preview,
 }: {
@@ -265,8 +308,12 @@ function ReleaseNotesSummary({
             &bull;
           </span>
           <span className="line-clamp-2 min-w-0">
-            <span className={UPDATE_NOTES_LEAD_CLASS}>{item.lead}</span>
-            {item.rest ? <span> {item.rest}</span> : null}
+            <span className={UPDATE_NOTES_LEAD_CLASS}>
+              {linked(item.lead, item.links, "lead")}
+            </span>
+            {item.rest ? (
+              <span> {linked(item.rest, item.links, "rest")}</span>
+            ) : null}
           </span>
         </li>
       ))}

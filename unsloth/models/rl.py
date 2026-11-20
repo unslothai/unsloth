@@ -47,6 +47,7 @@ except ImportError:  # unsloth_zoo predates the scope
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from . import _decode_graphs
 from .rl_replacements import (
+    _class_source,
     _unsloth_get_model_config,
     _unsloth_text_configs,
     RL_EXTRA_ARGS,
@@ -253,6 +254,55 @@ def _caller_sampling_only(model, kwargs):
     return {**kwargs, "generation_config": generation_config, "use_model_defaults": False}
 
 
+def _loss_only_eval_keeps_nothing(trainer, prediction_loss_only) -> bool:
+    args = getattr(trainer, "args", None)
+    if args is None:
+        return False
+    if prediction_loss_only is None:
+        prediction_loss_only = getattr(args, "prediction_loss_only", False)
+    if not prediction_loss_only or getattr(args, "batch_eval_metrics", False):
+        return False
+    return "inputs" not in (getattr(args, "include_for_metrics", None) or ())
+
+
+def _patch_loss_only_eval_flush(trainer_class) -> None:
+    """Skip the eval_accumulation_steps empty_cache() flush for loss-only eval (nothing to offload)."""
+    original = getattr(trainer_class, "evaluation_loop", None)
+    if original is None or getattr(original, "_unsloth_loss_only_no_flush", False):
+        return
+    try:
+        parameters = inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        return
+    if "prediction_loss_only" not in parameters:
+        return
+    names = list(parameters)
+
+    @functools.wraps(original)
+    def evaluation_loop(self, *args, **kwargs):
+        if "prediction_loss_only" in kwargs:
+            prediction_loss_only = kwargs["prediction_loss_only"]
+        else:
+            index = names.index("prediction_loss_only") - 1
+            prediction_loss_only = args[index] if len(args) > index else None
+        train_args = getattr(self, "args", None)
+        saved = getattr(train_args, "eval_accumulation_steps", None)
+        if (
+            saved is None
+            or os.environ.get("UNSLOTH_EVAL_EMPTY_CACHE", "0") == "1"
+            or not _loss_only_eval_keeps_nothing(self, prediction_loss_only)
+        ):
+            return original(self, *args, **kwargs)
+        train_args.eval_accumulation_steps = None
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            train_args.eval_accumulation_steps = saved
+
+    evaluation_loop._unsloth_loss_only_no_flush = True
+    trainer_class.evaluation_loop = evaluation_loop
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -332,8 +382,8 @@ def PatchRL(FastLanguageModel):
                 yield unwrapped_model
             finally:
                 generating_model.generate = original_generate
-                # Back to training: the next optimizer step invalidates the decode graphs, so free
-                # them and their decode buffers (KV cache) for the backward pass now.
+                # Back to training: free the decode graphs and their buffers (KV cache) for the backward
+                # pass, unless they fit beside it (keep_for_training: they replay the updated adapters).
                 _decode_graphs.release_for_training(model)
                 FastLanguageModel.for_training(
                     model,
@@ -456,6 +506,7 @@ def PatchRL(FastLanguageModel):
     if ppo_module is not None and hasattr(ppo_module, unwrap):
         setattr(ppo_module, unwrap, unsloth_unwrap_model_for_generation)
     Trainer.prediction_step = unsloth_prediction_step
+    _patch_loss_only_eval_flush(Trainer)
 
 
 grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
@@ -515,6 +566,10 @@ try:
     from unsloth.models._utils import _unsloth_dataset_column_names
 except Exception:
     def _unsloth_dataset_column_names(dataset): return dataset.column_names
+try:
+    from unsloth.models._utils import _unsloth_tp_skip_dpo_ref_adapter
+except Exception:
+    def _unsloth_tp_skip_dpo_ref_adapter(model): return False
 # Drops/renames config arguments the installed TRL no longer accepts, so a
 # script pinned to an older TRL keeps working after an upgrade. Falls back to
 # the historical raw passthrough so this can never break trainer construction.
@@ -1497,10 +1552,7 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
-# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs return no router logits and
-# crash (`aux_loss.to`, or Jamba's load_balancing_loss_func indexing an empty tuple). Dense = every expert count
-# 0 (granite-4.0-h-350m) or 1 (AI21-Jamba-Reasoning-3B builds a plain MLP for 1 expert; a 1-expert router's aux
-# loss is a constant with no gradient anyway). Real MoE keeps its aux loss.
+# Dense models (0 or 1 experts) need the aux loss off: TRL >= 1.7 enables it and they crash.
 _DENSE_ROUTER_AUX_LOSS_OFF = (
     "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
     "    _text_config = self.model.config\n"
@@ -2104,7 +2156,8 @@ def _grpo_hidden_states_reproduce_logits(model, hidden_states, logits):
         return None
     transforms = detect_logit_transforms(_unsloth_get_model_config(model))
     with torch.no_grad():
-        got = head(hidden_states[..., -1:, :].to(weight.dtype)).float()
+        # A dispatched model's top-level hook returns hidden states on the input device, not the head's.
+        got = head(hidden_states[..., -1:, :].to(device = weight.device, dtype = weight.dtype)).float()
         if transforms["logit_scale_multiply"]:
             got = got * float(transforms["logit_scale_multiply"])
         if transforms["logit_scale_divide"]:
@@ -2590,7 +2643,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     _trainer_src_of = RLTrainer
     _config_src_of = RLConfig
     try:
-        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_src = _class_source(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
         _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
         if not RLTrainer.__module__.startswith("trl.experimental.") and (
@@ -2610,7 +2663,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         pass
 
     try:
-        _config_src = inspect.getsource(RLConfig)
+        _config_src = _class_source(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
         if not RLConfig.__module__.startswith("trl.experimental.") and (
@@ -2630,10 +2683,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     # Reuse the probe reads above unless they failed or the class was swapped for its parent.
     if _trainer_src is None or RLTrainer is not _trainer_src_of:
-        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_src = _class_source(RLTrainer)
     old_RLTrainer_source = _trainer_src
     if _config_src is None or RLConfig is not _config_src_of:
-        _config_src = inspect.getsource(RLConfig)
+        _config_src = _class_source(RLConfig)
     old_RLConfig_source = _config_src
 
     if _trainer_resolved_module is not None:
@@ -3244,6 +3297,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "data_collator" in call_args and "train_dataset" in call_args:
         data_collator_check = (
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
+        )
+        if trainer_file == "sft_trainer":
+            # assistant_only_loss on a vision run -> Unsloth's train_on_responses_only, on every transformers version.
+            data_collator_check += (
+                "from unsloth.trainer import _route_vision_assistant_only_loss\n"
+                "data_collator = _route_vision_assistant_only_loss(args, data_collator, model, __tokenizer, train_dataset, "
+                "eval_dataset if 'eval_dataset' in locals() else None)\n"
+            )
+        data_collator_check += (
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
             "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in _unsloth_dataset_column_names(train_dataset):\n"
@@ -3298,6 +3360,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         accelerator_check = (
             "if hasattr(self, 'accelerator'):\n"
+            "    from unsloth.models._utils import _unsloth_forced_float32_grad_scaler\n"
+            "    _unsloth_forced_float32_grad_scaler(self, model)\n"
             "    scaler = self.accelerator.scaler\n"
             "    current_model = model\n"
             "    while hasattr(current_model, 'model'):\n"
@@ -3332,14 +3396,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
 
-    # TRL >= 1.7 writes router_aux_loss_coef to the config after MoE CausalLMs cached it at init; nll loss reads the stale copy.
+    # MoE CausalLMs cache router_aux_loss_coef at init, so a forward that adds its own aux loss reads the checkpoint
+    # value. Hand them the trainer's resolved coefficient: TRL 1.7-1.17 also wrote it to the config, TRL >= 1.18 only
+    # applies it in compute_loss.
     if trainer_file == "sft_trainer":
         RLTrainer_post += (
             "if hasattr(self, 'aux_loss_enabled') and hasattr(getattr(self, 'model', None), 'modules'):\n"
+            "    _trainer_coef = getattr(self, 'router_aux_loss_coef', None)\n"
             "    for _module in self.model.modules():\n"
             "        _config = getattr(_module, 'config', None)\n"
             "        if 'router_aux_loss_coef' in vars(_module) and hasattr(_config, 'get_text_config'):\n"
-            "            _coef = getattr(_config.get_text_config(), 'router_aux_loss_coef', None)\n"
+            "            _coef = _trainer_coef if _trainer_coef is not None else getattr(_config.get_text_config(), 'router_aux_loss_coef', None)\n"
             "            if _coef is not None:\n"
             "                _module.router_aux_loss_coef = _coef\n"
             "pass\n"
@@ -3350,6 +3417,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         RLTrainer_post += (
             "if getattr(self, 'vllm_generation', None) is not None:\n"
             "    self.vllm_generation._unsloth_vllm_sampling_params = getattr(getattr(self, 'args', None), 'vllm_sampling_params', None)\n"
+            "pass\n"
+        )
+
+    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "try:\n"
+            "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+            "except ImportError:\n"
+            "    _unsloth_install_image_dedup = None\n"
+            "if _unsloth_install_image_dedup is not None:\n"
+            "    _unsloth_install_image_dedup(getattr(self, 'model', None))\n"
             "pass\n"
         )
 
@@ -3463,6 +3542,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "auto_find_batch_size": False,  # Cannot work on GRPO
             # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
             "vllm_importance_sampling_correction": False,
+            # None = unset: resolved below to "token_truncate" instead of TRL's "sequence_mask".
+            "vllm_importance_sampling_mode": None,
             # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
             "router_aux_loss_coef": 0.0,
             # None = unset, so the dapo check below can tell it from an explicit False.
@@ -3476,7 +3557,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     # TRL >= 1.7.0 defaults SFT to loss_type="chunked_nll" (trl#5846), which patches the lm_head and calls the backbone directly, so unsloth_fused_ce_loss never runs (ours chunks too and peaks 1.7-3.7GB lower on gemma-3-4b at 141-8192 tokens), and it divides by num_items_in_batch ignoring model_accepts_loss_kwargs, so on models setting that flag False (gemma3, qwen-vl, paligemma, glm4v) training_step divides by grad-accum again and loss and grads are scaled 1/GA. Explicit loss_type= still wins. Kept scoped to sft_trainer, since loss_type is an unrelated field in DPO/KTO/GRPO.
     if trainer_file == "sft_trainer":
-        replacements = {"loss_type": "nll"}
+        # None = unset: trainer.py packs text datasets by default.
+        replacements = {"loss_type": "nll", "packing": None}
         for k, v in replacements.items():
             x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
             y = f"'{v}'" if type(v) is str else f"{v}"
@@ -3492,9 +3574,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
-    # optim = 'adamw_8bit' is kept under FSDP2: native FSDP2 (fsdp2_native._swap_bnb_optimizer) and
-    # accelerate's FSDP2 (fsdp2._localize_or_refuse_bnb after Accelerator._prepare_fsdp2) step bitsandbytes
-    # Adam / AdamW on each rank's local shard, and refuse the bitsandbytes optimizers that cannot (unsloth#3551).
+    # optim 'adamw_8bit' is kept under FSDP2: bitsandbytes Adam/AdamW step on each local shard;
+    # other bitsandbytes optimizers are refused (unsloth#3551).
     if "optim" in call_args:
         extra_args += (
             "_unsloth_flash_adamw = str(getattr(optim, 'value', optim)).strip().lower() == 'adamw_flash'\n"
@@ -3624,6 +3705,20 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             + "\n"
         )
 
+    # sequence_mask multiplies token ratios over the completion; vLLM logprobs cover only the min_p / top_p kept set,
+    # so every ratio is < 1 and the product shrinks with length (Qwen3-0.6B min_p 0.1: ESS 0.42 vs 0.996 per token).
+    if trainer_file == "grpo_trainer" and "vllm_importance_sampling_mode" in call_args:
+        extra_args += (
+            "if vllm_importance_sampling_mode is None:\n"
+            "    vllm_importance_sampling_mode = 'token_truncate'\n"
+            + (
+                "    if vllm_importance_sampling_correction:\n"
+                "        print(\"Unsloth: vllm_importance_sampling_correction = True now defaults to token-level truncated importance sampling (vllm_importance_sampling_mode = 'token_truncate'). Set vllm_importance_sampling_mode = 'sequence_mask' for TRL's default.\")\n"
+                if "vllm_importance_sampling_correction" in call_args
+                else ""
+            )
+        )
+
     # Check dr_grpo loss_type with scale_rewards for GRPO; TRL >= 0.22 defaults scale_rewards to group.
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
@@ -3743,6 +3838,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
         "                _gc_kwargs['use_reentrant'] = True\n"
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
+        "                if hasattr(self, 'activation_checkpointing_kwargs'):\n"
+        "                    self.activation_checkpointing_kwargs = _gc_kwargs\n"
     )
 
     if "optim" in call_args:
@@ -4134,8 +4231,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
     if trainer_file in ("dpo_trainer", "grpo_trainer"):
         try:
-            from ..context_parallel import patch_rl_trainer
-            patch_rl_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"), trainer_file)
+            trainer_cls = getattr(created_module, f"Unsloth{RLTrainer_name}")
+            cp_module = sys.modules.get(__name__.rsplit(".", 2)[0] + ".context_parallel")
+            if cp_module is not None and not hasattr(cp_module, "patch_rl_trainer"):
+                # context_parallel is mid-import (its unsloth.utils import loaded us); it patches these at its end.
+                cp_module.__dict__.setdefault("_DEFERRED_RL_TRAINERS", []).append(
+                    (trainer_cls, trainer_file)
+                )
+            else:
+                from ..context_parallel import patch_rl_trainer
+                patch_rl_trainer(trainer_cls, trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
     if trainer_file == "ppo_trainer":
@@ -4155,6 +4260,36 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(
                 f"Unsloth: Could not wrap GKD hidden-state fallback for {RLTrainer_name}: {e}"
             )
+    if trainer_file in _HIDDEN_STATES_FALLBACK_TRAINERS:
+        try:
+            _wrap_grpo_hidden_states_fallback(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap hidden-state fallback for {RLTrainer_name}: {e}")
+    if trainer_file in ("dpo_trainer", "orpo_trainer", "cpo_trainer"):
+        # Chosen and rejected share the prompt: run it once (UNSLOTH_DPO_PREFIX_SHARE, dpo_prefix_share.py).
+        try:
+            from .dpo_prefix_share import wrap_preference_trainer
+            wrap_preference_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not add the shared-prefix forward to {RLTrainer_name}: {e}"
+            )
+
+
+# The AST fused-head forward ignores UNSLOTH_RETURN_HIDDEN_STATES; unwrapped, these trainers score full logits.
+_HIDDEN_STATES_FALLBACK_TRAINERS = frozenset(
+    (
+        "dpo_trainer",
+        "kto_trainer",
+        "orpo_trainer",
+        "cpo_trainer",
+        "bco_trainer",
+        "online_dpo_trainer",
+        "xpo_trainer",
+        "nash_md_trainer",
+        "rloo_trainer",
+    )
+)
 
 
 # TRL 1.10+ rejects list train_dataset; only list or tuple, since IterableDataset skips TRL streaming
@@ -4175,6 +4310,25 @@ def _allow_list_train_dataset(function, source, trainer_file):
             "cols = _unsloth_dataset_column_names(dataset)",
         )
     return source
+
+
+# TRL >= 1.0 DPOTrainer copies ".default." into a "ref" adapter (1.0-1.6 peft_config["default"], 1.7+ default_config).
+_DPO_REF_ADAPTER_BLOCK = re.compile(
+    r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*"
+    r"(?:default_config|model\.peft_config\[\s*[\"']default[\"']\s*\])\s*\)[ \t]*\n"
+    r"(?P<body>.*?ref_param\.data\.copy_\(param\.data\)[ \t]*)$",
+    flags = re.DOTALL | re.MULTILINE,
+)
+
+
+def _guard_dpo_ref_adapter_for_tp(init):
+    def _guard(match):
+        indent = match.group("indent")
+        lines = match.group(0).split("\n")
+        body = "\n".join("    " + line if line.strip() else line for line in lines)
+        return f"{indent}if not _unsloth_tp_skip_dpo_ref_adapter(model):\n{body}"
+
+    return _DPO_REF_ADAPTER_BLOCK.sub(_guard, init, count = 1)
 
 
 def patch_functions(
@@ -4236,6 +4390,9 @@ def patch_functions(
         return "\n".join(commented_lines)
 
     init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
+
+    if trainer_file == "dpo_trainer":
+        init = _guard_dpo_ref_adapter_for_tp(init)
 
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches the first match, .+? the final one.
@@ -4374,7 +4531,7 @@ def patch_functions(
 
     functions = dir(RLTrainer)
     if RLTrainer_source is None:
-        RLTrainer_source = inspect.getsource(RLTrainer)
+        RLTrainer_source = _class_source(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {
@@ -4559,8 +4716,13 @@ def patch_trl_rl_trainers():
     import trl.trainer
 
     all_trainers = dir(trl.trainer)
+    # async_grpo_trainer (TRL >= 1.18) is patched in place by patch_trl_async_grpo, which needs TRL's own globals.
     all_trainers = [
-        x for x in all_trainers if x.islower() and x.endswith("_trainer") and x != "base_trainer"
+        x
+        for x in all_trainers
+        if x.islower()
+        and x.endswith("_trainer")
+        and x not in ("base_trainer", "async_grpo_trainer")
     ]
     # Imported before the walk rebinds trl.trainer.sft_trainer.SFTTrainer, so GKDTrainer(SFTTrainer) keeps TRL's own base whatever the user's import order.
     experimental = _import_trl_experimental_trainers()
@@ -4903,9 +5065,10 @@ def patch_trl_fused_lm_head_kernel():
     if kernel is None or getattr(kernel, "_unsloth_fused_linear", False):
         return
     # TRL 1.1 - 1.13's kernel takes no ``bias``: the adapter would shift every argument after ``weight``.
+    # No readable forward (unsloth_zoo's CPU dispatch): the adapter could not tell how many outputs TRL unpacks.
     forward = getattr(kernel, "forward", None)
     try:
-        if forward is not None and "bias" not in inspect.signature(forward).parameters:
+        if forward is None or "bias" not in inspect.signature(forward).parameters:
             return
     except (TypeError, ValueError):
         return
@@ -4978,9 +5141,14 @@ def _text_prepended_position_ids(position_ids):
 
 
 @torch.no_grad()
-def _packing_honored(backbone, position_transform = None):
+def _packing_honored(
+    backbone,
+    position_transform = None,
+    packed_lengths = False,
+):
     # Runs the backbone the way the fused head does: a second packed sequence must match itself run alone far more
     # closely than when it can see the first one. Numeric, so it covers every attention and mixer implementation.
+    # packed_lengths: also pass packed_seq_lengths, as the SFT padding-free collator does.
     params = next(backbone.parameters(), None)
     if params is None:
         return False
@@ -4998,42 +5166,110 @@ def _packing_honored(backbone, position_transform = None):
     if dtype not in (torch.float16, torch.bfloat16):
         dtype = torch.bfloat16 if params.dtype == torch.float32 else params.dtype
     training = [(module, module.training) for module in backbone.modules()]
-    # Training mode, as in the trainer: some models (gpt-oss) take a different attention path when training.
-    # Dropout off so the comparison is deterministic.
+    # Train mode as in the trainer (gpt-oss differs), dropout off for a deterministic compare.
     backbone.train()
+    rates = []
     for module in backbone.modules():
         if isinstance(module, torch.nn.modules.dropout._DropoutNd):
             module.training = False
+        # Functional attention dropout (`dropout_p = self.attention_dropout if self.training`).
+        for attr in ("attention_dropout", "dropout"):
+            value = getattr(module, attr, None)
+            if type(value) is float and value > 0:
+                rates.append((module, attr, value))
+                setattr(module, attr, 0.0)
 
-    def hidden(input_ids, position_ids):
+    def hidden(input_ids, position_ids, lengths):
+        extra = {}
+        if packed_lengths:
+            extra["packed_seq_lengths"] = torch.tensor(lengths, dtype = torch.int32, device = device)
         with torch.autocast(device.type, dtype = dtype, enabled = device.type in ("cuda", "xpu")):
             out = backbone(
-                input_ids = input_ids, position_ids = transform(position_ids), use_cache = False
+                input_ids = input_ids,
+                position_ids = transform(position_ids),
+                use_cache = False,
+                **extra,
             )
-        return out.last_hidden_state.float()
+        # A backbone output, a causal LM output (remote code probed whole) or a bare tensor.
+        for name in ("last_hidden_state", "logits"):
+            value = getattr(out, name, None)
+            if isinstance(value, torch.Tensor):
+                return value.float()
+        return (out[0] if isinstance(out, (tuple, list)) else out).float()
 
     try:
         arange = lambda n: torch.arange(n, device = device)[None]
-        packed = hidden(ids, torch.cat([arange(first), arange(second)], dim = 1))[0, first:]
-        alone = hidden(ids[:, first:], arange(second))[0]
-        crossed = hidden(ids, arange(first + second))[0, first:]
+        packed = hidden(ids, torch.cat([arange(first), arange(second)], dim = 1), [first, second])
+        packed = packed[0, first:]
+        alone = hidden(ids[:, first:], arange(second), [second])[0]
+        crossed = hidden(ids, arange(first + second), [first + second])[0, first:]
     finally:
         for module, mode in training:
             module.training = mode
+        for module, attr, value in rates:
+            setattr(module, attr, value)
     leak = (packed - alone).abs().mean()
     control = (crossed - alone).abs().mean()
     return bool(torch.isfinite(leak)) and bool(control > 0) and bool(leak <= 0.2 * control)
 
 
-def _unsloth_async_grpo_lm_head(original, flag):
+def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
+    # TRL >= 1.17 prefix-trie rows need tree attention, which Unsloth lacks: unroll each root-to-leaf path into its
+    # own packed sequence and read each trie position back from one copy (exact; shared prefixes forwarded per sample).
+    tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
+    position_ids = f_kwargs.get("position_ids")
+    parents = tree["tree_segment_parents"]
+    cu_seqlens_k = tree["tree_cu_seqlens_k"].long()
+    path_lengths = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
+    if bool((parents < 0).all()):
+        f_kwargs["packed_seq_lengths"] = path_lengths.to(torch.int32)
+        return head_forward(*f_args, **f_kwargs)
+    length = position_ids.shape[1]
+    device = position_ids.device
+    leaf = torch.ones(parents.numel(), dtype = torch.bool, device = parents.device)
+    leaf[parents[parents >= 0].long()] = False
+    kv_index = tree["tree_kv_index"].to(device)
+    segment_of = torch.repeat_interleave(
+        torch.arange(parents.numel(), device = device), path_lengths.to(device)
+    )
+    index = kv_index[leaf.to(device)[segment_of]]
+    # Every trie node lies on a sample's path and every sample ends on a leaf, so each position gets a copy.
+    source = torch.empty(length, dtype = torch.long, device = device)
+    source[index] = torch.arange(index.numel(), device = device)
+    chosen = torch.zeros(index.numel(), dtype = torch.bool, device = device)
+    chosen[source] = True
+
+    for key, value in list(f_kwargs.items()):
+        if torch.is_tensor(value) and value.dim() >= 2 and value.shape[:2] == (1, length):
+            value = value.index_select(1, index.to(value.device))
+            if key in ("shift_labels", "labels"):
+                value = value.masked_fill(~chosen.to(value.device)[None], -100)
+            f_kwargs[key] = value
+    f_kwargs["packed_seq_lengths"] = path_lengths[leaf.to(path_lengths.device)].to(torch.int32)
+    outputs = head_forward(*f_args, **f_kwargs)
+    for key, value in list(outputs.items()) if hasattr(outputs, "items") else ():
+        if torch.is_tensor(value) and value.dim() >= 2 and value.shape[:2] == (1, index.numel()):
+            outputs[key] = value.index_select(1, source.to(value.device))
+    return outputs
+
+
+def _unsloth_async_grpo_lm_head(
+    original,
+    flag,
+    tree_attention = None,
+):
     # TRL >= 1.15 `add_fused_lm_head` (active when `flag` is passed), TRL 1.13-1.14 `patch_chunked_lm_head` (always).
+    # tree_attention: the attention TRL >= 1.17 sets on the model for prefix-trie rows.
     def patch_lm_head(model, *args, **kwargs):
         # The head replaces the CausalLM forward and calls its backbone, so it must sit under any PEFT wrapper.
         target = model.get_base_model() if hasattr(model, "get_base_model") else model
         original(target, *args, **kwargs)
         head_forward = target.forward
+        unroll_tree = False
         if _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
-            # Unsloth's attention reads sequence boundaries from packed_seq_lengths, not position_ids resets.
+            # Unsloth attention ignores TRL's tree attention and position_ids resets, so unroll prefix-trie rows.
+            unroll_tree = True
+
             def packed_kwargs(f_kwargs):
                 if f_kwargs.get("packed_seq_lengths") is None:
                     lengths = _packed_seq_lengths_from_position_ids(f_kwargs.get("position_ids"))
@@ -5052,6 +5288,9 @@ def _unsloth_async_grpo_lm_head(original, flag):
             )
             transforms = [None, _text_prepended_position_ids] if is_vlm else [None]
             attn = str(getattr(config, "_attn_implementation", None) or "")
+            if tree_attention is not None and attn == tree_attention:
+                # TRL's own tree attention routes every segment along its path; it runs only on its GPU kernel.
+                return
             if "flash" in attn and not is_vlm:
                 # Varlen flash attention reads sequence boundaries from position_ids, as TRL expects; TRL builds
                 # these models on CPU, where the kernel cannot run the self-test.
@@ -5086,6 +5325,8 @@ def _unsloth_async_grpo_lm_head(original, flag):
         @functools.wraps(head_forward)
         def forward(*f_args, **f_kwargs):
             if flag is None or f_kwargs.get(flag):
+                if unroll_tree and "tree_kv_index" in f_kwargs:
+                    return _forward_tree_unrolled(head_forward, f_args, f_kwargs)
                 packed_kwargs(f_kwargs)
             return head_forward(*f_args, **f_kwargs)
 
@@ -5139,12 +5380,45 @@ def _dataset_has_images(dataset):
     return False
 
 
+# URLs of the in-process servers Unsloth started for AsyncGRPOTrainer (each carries a per-run secret).
+_ASYNC_GRPO_SERVER_URLS = set()
+
+
 def _start_async_grpo_vllm_server(model):
     from ._async_grpo_vllm import UnslothAsyncVLLMServer
     return UnslothAsyncVLLMServer(model)
 
 
-def _check_async_grpo_fast_inference(async_module, model, train_dataset):
+def _pin_async_grpo_server_url(args, kwargs):
+    # TRL >= 1.18 pickles the config at train start, after the user's URL is restored: use a copy.
+    positional = len(args) > 0 and hasattr(args[0], "vllm_server_base_url")
+    config = args[0] if positional else kwargs.get("config")
+    if getattr(config, "vllm_server_base_url", None) not in _ASYNC_GRPO_SERVER_URLS:
+        return args, kwargs
+    config = copy.copy(config)
+    if positional:
+        return (config, *args[1:]), kwargs
+    return args, {**kwargs, "config": config}
+
+
+def _async_grpo_replays_sampling_masks(async_module):
+    # TRL >= 1.17 renormalizes top-k / top-p logprobs over the candidate set vLLM returns per token. The check lives
+    # on the rollout loop: public `AsyncRolloutLoop` in 1.18, the worker's private `_loop_cls` in 1.17.
+    worker = getattr(async_module, "AsyncRolloutWorker", None)
+    loops = (
+        getattr(async_module, "AsyncRolloutLoop", None),
+        worker,
+        getattr(worker, "_loop_cls", None),
+    )
+    return any(callable(getattr(loop, "_check_sampling_replay", None)) for loop in loops)
+
+
+def _check_async_grpo_fast_inference(
+    async_module,
+    model,
+    train_dataset,
+    config = None,
+):
     if not hasattr(async_module, "select_adapter_sync"):
         raise ValueError(
             "Unsloth: AsyncGRPOTrainer with fast_inference=True syncs a LoRA adapter, which needs TRL >= 1.14. "
@@ -5161,6 +5435,16 @@ def _check_async_grpo_fast_inference(async_module, model, train_dataset):
         raise ValueError(
             "Unsloth: TRL's AsyncGRPOTrainer sends token ids only to vLLM, so image prompts are not supported. "
             "Use GRPOTrainer for image prompts."
+        )
+    top_k = getattr(config, "top_k", None) or 0
+    top_p = getattr(config, "top_p", None)
+    truncated = top_k > 0 or (top_p is not None and top_p < 1.0)
+    if truncated and _async_grpo_replays_sampling_masks(async_module):
+        raise ValueError(
+            "Unsloth: with top_k / top_p, TRL's AsyncGRPOTrainer needs the candidate set of every sampled token "
+            "(a vLLM server started with --return-sampling-mask --enable-scale-out), which the in-process "
+            "fast_inference engine does not return. Set top_k = 0 and top_p = 1.0, or load with "
+            "fast_inference=False and run a separate vLLM server."
         )
 
 
@@ -5311,18 +5595,33 @@ def _async_grpo_masked_compute_loss(compute_loss):
     return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
 
 
+def _import_trl_async_grpo_module():
+    # TRL >= 1.18: stable module (experimental is a subclassing shim, so both are covered); 1.13-1.17: experimental.
+    errors = []
+    for package, name in (
+        ("trl.trainer", "trl.trainer.async_grpo_trainer"),
+        ("trl.experimental.async_grpo", "trl.experimental.async_grpo.async_grpo_trainer"),
+    ):
+        try:
+            if importlib.util.find_spec(package) is None or importlib.util.find_spec(name) is None:
+                continue
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                module = importlib.import_module(name)
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+            continue
+        if hasattr(module, "AsyncGRPOTrainer"):
+            return module
+    if errors:
+        logger.info(f"Unsloth: Could not import TRL's async GRPO trainer: {'; '.join(errors)}")
+    return None
+
+
 def patch_trl_async_grpo():
     # Let TRL's AsyncGRPOTrainer take a loaded Unsloth model; keep packed rows from attending across sequences.
-    if importlib.util.find_spec("trl.experimental") is None:
-        return
-    try:
-        if importlib.util.find_spec("trl.experimental.async_grpo") is None:
-            return
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            import trl.experimental.async_grpo.async_grpo_trainer as async_module
-    except Exception as e:
-        logger.info(f"Unsloth: Could not import trl.experimental.async_grpo: {e}")
+    async_module = _import_trl_async_grpo_module()
+    if async_module is None:
         return
     heads = [
         (name, flag)
@@ -5345,8 +5644,13 @@ def patch_trl_async_grpo():
         return original_create(model_id, *args, **kwargs)
 
     async_module.create_model_from_path = create_model_from_path
+    tree_attention = getattr(async_module, "TREE_ATTENTION", None)
     for name, flag in heads:
-        setattr(async_module, name, _unsloth_async_grpo_lm_head(getattr(async_module, name), flag))
+        setattr(
+            async_module,
+            name,
+            _unsloth_async_grpo_lm_head(getattr(async_module, name), flag, tree_attention),
+        )
 
     trainer_class = async_module.AsyncGRPOTrainer
     original_init = trainer_class.__init__
@@ -5376,19 +5680,23 @@ def patch_trl_async_grpo():
         server = None
         if _async_grpo_uses_fast_inference(model, config, kwargs):
             train_dataset = args[2] if len(args) >= 3 else kwargs.get("train_dataset")
-            _check_async_grpo_fast_inference(async_module, model, train_dataset)
+            _check_async_grpo_fast_inference(async_module, model, train_dataset, config)
             _check_async_grpo_adapter_servable(model)
             server = _start_async_grpo_vllm_server(model)
-            saved_config = (config.vllm_server_base_url, config.max_inflight_tasks)
+            _ASYNC_GRPO_SERVER_URLS.add(server.url)
+            # TRL 1.14-1.17 `max_inflight_tasks`; 1.18 `max_concurrent_rollouts` (sized by TRL).
+            inflight = getattr(config, "max_inflight_tasks", None)
+            saved_config = (config.vllm_server_base_url, inflight)
             config.vllm_server_base_url = server.url
-            if getattr(config, "max_inflight_tasks", 0) < 0:
+            if inflight is not None and inflight < 0:
                 # TRL's default counts rows, not rollouts, so token-budget packing would leave the engine
                 # nearly idle; let the engine batch as many as it can schedule.
                 config.max_inflight_tasks = server.max_num_seqs
         # TRL unfreezes a VLM's whole text model and LM head; under LoRA that is full fine-tuning of the base (and,
-        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set.
+        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set. By name:
+        # native FSDP2 shards inside Trainer.__init__, replacing every parameter with a new DTensor one.
         trainable = (
-            {id(p) for p in model.parameters() if p.requires_grad}
+            {name for name, p in model.named_parameters() if p.requires_grad}
             if isinstance(model, torch.nn.Module) and hasattr(model, "peft_config")
             else None
         )
@@ -5409,8 +5717,8 @@ def patch_trl_async_grpo():
                 restore_requires_grad()
                 restore_text_config()
             if trainable is not None:
-                for p in model.parameters():
-                    if p.requires_grad and id(p) not in trainable:
+                for name, p in model.named_parameters():
+                    if p.requires_grad and name not in trainable:
                         p.requires_grad_(False)
             if server is not None:
                 if not getattr(self, "_lora_sync", False):
@@ -5422,7 +5730,8 @@ def patch_trl_async_grpo():
         except BaseException:
             if server is not None:
                 server.stop()
-                config.max_inflight_tasks = saved_config[1]
+                if saved_config[1] is not None:
+                    config.max_inflight_tasks = saved_config[1]
             raise
         if server is not None:
             self._unsloth_vllm_server = server
@@ -5468,6 +5777,7 @@ def patch_trl_async_grpo():
                             f"Unsloth: Could not map the chat template for the rollout process: {e}"
                         )
                     kwargs["processing_class"] = processing_class
+                args, kwargs = _pin_async_grpo_server_url(args, kwargs)
                 super().__init__(*args, **kwargs)
 
         async_module.AsyncRolloutWorker = AsyncRolloutWorker
@@ -5502,6 +5812,6 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
     try:
         patch_trl_async_grpo()
     except Exception as e:
-        logger.info(f"Unsloth: Could not patch trl.experimental.async_grpo: {e}")
+        logger.info(f"Unsloth: Could not patch TRL's AsyncGRPOTrainer: {e}")
     if type(algorithm) is str and algorithm.islower():
         PatchRLStatistics(algorithm)

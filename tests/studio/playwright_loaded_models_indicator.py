@@ -150,8 +150,7 @@ def chat(**overrides) -> dict:
 
 
 class Runtime:
-    """Mutable stub state, so a scenario can change what a runtime holds
-    between polls without tearing the routes down."""
+    """Mutable stub state: scenarios change runtime contents between polls without re-routing."""
 
     def __init__(self) -> None:
         self.reset()

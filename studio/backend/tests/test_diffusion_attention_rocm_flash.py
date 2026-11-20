@@ -151,6 +151,7 @@ _NVIDIA_EXPECTED = {
     "sage": ("sage", "sage"),
     "xformers": ("xformers", "xformers"),
     "aiter": (None, None),
+    "unsloth_int8": ("_native_cudnn", "_native_cudnn"),
 }
 
 
@@ -544,10 +545,16 @@ def test_status_reason_is_derived_from_the_engaged_backend():
         return open(att.__file__.replace("diffusion_attention.py", name), encoding = "utf-8").read()
 
     image, video = read("diffusion.py"), read("video.py")
-    assert image.count("attention_status_reason(attention_backend, attention_engaged)") == 1
+    # the entry is read off the attention modules (attention_resolved_entry), whose auto reason is this one
+    assert (
+        image.count(
+            "attention_resolved_entry(\n                                attention_backend, attention_engaged"
+        )
+        == 1
+    )
     assert image.count("auto_attention_reason(attention_engaged)") == 1
     assert '"cuDNN fused attention upgrade"' not in image
-    assert video.count("attention_status_reason(attention_backend, attention_engaged)") == 2
+    assert video.count("attention_resolved_entry(") == 2
     assert "cuDNN fused attention on NVIDIA" not in video
 
 
@@ -1199,8 +1206,7 @@ def test_max_abs_error_alone_rejects(max_rel, wins):
     assert att._rocm_flash_wins({**_GOOD, "max_rel": max_rel}) is wins
 
 
-# Lengths: calls are gated per power-of-two length bucket; an unseen bucket is timed on its first eager call and never
-# inherits the 4096 verdict.
+# Gates are per power-of-two length bucket; an unseen bucket is timed, never inheriting 4096.
 
 
 @pytest.mark.parametrize(
@@ -2443,8 +2449,7 @@ def test_admission_key_does_not_alias_geometry_and_lengths(monkeypatch):
     assert len(att.ROCM_FLASH_ADMISSIONS) == 2
 
 
-# A re-apply on the same pipe that no longer picks ROCm flash takes the tracking off with it: the badge and the memory
-# guard must not keep reading the pipe as flash.
+# Native re-apply drops ROCm flash tracking so the badge and memory guard stop reading flash.
 
 
 def test_reapply_to_native_removes_rocm_flash_tracking(monkeypatch):

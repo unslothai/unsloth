@@ -57,9 +57,8 @@ def _getattr_geteuid(node: ast.AST) -> ast.Call | None:
 
 
 def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
-    """Whether this lambda could take this call's arguments. True when the source does
-    not say (a `*args` at the call site, say), since a false alarm is worse than a miss
-    in a scan everybody has to keep green."""
+    """Whether this lambda could take the call's arguments; a call with starred or keyword-unpacked
+    arguments returns True, since a false alarm is worse than a miss."""
     if any(isinstance(arg, ast.Starred) for arg in call.args) or any(
         keyword.arg is None for keyword in call.keywords
     ):
@@ -82,9 +81,8 @@ def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
 
 
 def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
-    """Whether getattr's third argument survives being called this way on Windows. A
-    literal never does. A lambda is checked against the call. Anything else is taken at
-    its word, since whether a name is callable is not decidable from this file."""
+    """Whether getattr's third argument survives this call on Windows: a literal never does, a
+    lambda is checked against the call, and other expressions are taken at face value."""
     if isinstance(fallback, ast.Lambda):
         return _lambda_accepts(fallback, call)
     return not isinstance(
@@ -480,9 +478,8 @@ def _flagged(source: str) -> list[int]:
 
 
 def test_an_os_name_guard_is_read_for_polarity_not_presence():
-    """`os.name == "posix" or os.geteuid() == 0` names the same attribute as the real
-    guard and spares nothing: on Windows the left side is false, so the call is reached.
-    A scan that matched the words alone would pass exactly this."""
+    """os.name == 'posix' or os.geteuid() == 0 names the same attribute but spares nothing: on
+    Windows the left side is false and the call is reached; a word-matching scan would accept it."""
     assert _flagged(
         "import os, pytest\n"
         '@pytest.mark.skipif(os.name == "posix" or os.geteuid() == 0, reason = "x")\n'
@@ -565,9 +562,8 @@ def test_a_statement_level_platform_guard_is_honoured():
 
 
 def test_a_getattr_fallback_has_to_be_callable():
-    """getattr(os, "geteuid", None)() picks None on Windows and raises TypeError there,
-    which Linux never shows because the real function is picked. A literal fallback is
-    no fallback."""
+    """getattr(os, 'geteuid', None)() picks None on Windows and raises TypeError there, which Linux
+    never shows since the real function is picked; a literal fallback is no fallback."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", None)() == 0\n')
     assert _flagged('import os\nROOT = getattr(os, "geteuid", 1)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
@@ -584,8 +580,7 @@ def test_a_direct_import_fails_before_any_decorator_can_skip():
 
 
 def test_a_class_header_is_evaluated_where_the_class_is_written():
-    """Bases and keywords run at the `class`, exactly as a decorator does, and the body
-    was already traversed while they were not."""
+    """Bases and keywords run at the class line, as a decorator does, so they are checked."""
     assert _flagged("import os\nclass C(Base if os.geteuid() else Other):\n    pass\n")
     assert _flagged("import os\nclass D(metaclass = meta(os.geteuid())):\n    pass\n")
     assert not _flagged(
@@ -631,8 +626,7 @@ def test_a_non_callable_container_fallback_is_no_fallback():
 
 
 def test_an_invoked_fallback_lambda_runs_its_body_on_windows():
-    """`getattr(os, "geteuid", lambda: os.geteuid())()` picks the fallback there and runs
-    it, so its body is the one place Windows definitely reaches."""
+    """On Windows getattr picks the lambda fallback and runs it, so its body is reached there."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", lambda: os.geteuid())() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
 
@@ -676,8 +670,7 @@ def test_an_annotation_is_a_string_under_the_future_import():
 
 
 def test_a_lambda_fallback_short_of_a_keyword_only_argument():
-    """**kwargs does not satisfy a required keyword-only parameter: Python still wants it
-    by name, so the fallback fails on Windows whatever it collects."""
+    """**kwargs cannot fill a required keyword-only parameter; the fallback fails on Windows."""
     assert _flagged(
         'import os\nROOT = getattr(os, "geteuid", lambda *, required, **kw: 1)() == 0\n'
     )
@@ -696,8 +689,7 @@ def test_a_negative_number_is_still_a_literal():
 
 
 def test_starred_unpacking_exhausts_the_generator_here():
-    """A star says outright that the generator is consumed on the spot, which a call
-    around it does not."""
+    """A star unpacking consumes the generator on the spot, which a call around it does not."""
     assert _flagged("import os\nROOT = [*(os.geteuid() for _ in range(1))]\n")
     assert _flagged("import os\nROOT = f(*(os.geteuid() for _ in range(1)))\n")
     assert not _flagged("import os\nGEN = (os.geteuid() for _ in range(1))\n")
@@ -755,8 +747,7 @@ def test_a_relative_import_is_not_the_stdlib_os():
 
 
 def test_an_eager_comprehension_advances_the_generator_it_iterates():
-    """A list, set or dict comprehension runs on the spot, so a generator it iterates is
-    advanced there too."""
+    """A list, set or dict comprehension advances the generator it iterates on the spot."""
     assert _flagged("import os\nROOT = [x for x in (os.geteuid() for _ in range(1))]\n")
     assert _flagged("import os\nROOT = {x for x in (os.geteuid() for _ in range(1))}\n")
     assert not _flagged("import os\nGEN = (x for x in (os.geteuid() for _ in range(1)))\n")

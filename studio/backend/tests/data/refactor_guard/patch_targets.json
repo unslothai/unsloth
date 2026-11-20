@@ -204,7 +204,6 @@
     "tests/test_diffusion_backend.py"
   ],
   "core.inference.diffusion_transformer_quant.apply_small_m_padding": [
-    "tests/test_diffusion_h3_trainer.py",
     "tests/test_diffusion_prequant.py",
     "tests/test_diffusion_prequant.py"
   ],

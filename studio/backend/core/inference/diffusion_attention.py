@@ -8,6 +8,8 @@ lazy."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import os
 import re
@@ -30,6 +32,8 @@ _ALIASES: dict[str, str] = {
     "sage": "sage",
     "xformers": "xformers",
     "aiter": "aiter",
+    # Studio's INT8 attention kernel: the automatic native pick, with the strided processors routed to the kernel
+    "unsloth_int8": "unsloth_int8",
 }
 ATTN_ALIASES = (ATTN_AUTO,) + tuple(dict.fromkeys(_ALIASES))
 
@@ -114,6 +118,88 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 # An incomplete ROCm probe is retried, but not by every check of the same load (up to 90 s per attempt).
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
+# Probe keys whose unanswered probe put the parent on MATH: they read as math-only until a probe answers.
+_ROCM_PROBE_FORCED_MATH: set[tuple[str, str]] = set()
+
+# Candidate-card probes must not flip the process-wide SDPA switches the running card also uses.
+_SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_sdpa_probe_read_only", default = False
+)
+
+
+@contextlib.contextmanager
+def read_only_sdpa_probe():
+    token = _SDPA_PROBE_READ_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _SDPA_PROBE_READ_ONLY.reset(token)
+
+
+# AOTriton refuses the archs it lists as experimental unless TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1, which Studio sets
+# process-wide (main.py) so gfx1151 / gfx1100 do not fall back to MATH on AOTriton < 0.12. The opt-in is measured only on the
+# archs below. AOTriton 0.12b added the gfx1103 / gfx1152 / gfx1153 iGPUs as experimental, and on a Radeon 780M (gfx1103) those
+# kernels hung the GPU, both in the probe children and in the text encoder (#17985). Elsewhere the children probe with the
+# opt-in off, so AOTriton's own release list decides, and the parent keeps only fused kernels a child confirmed.
+ROCM_AOTRITON_EXPERIMENTAL_ENV = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
+ROCM_AOTRITON_EXPERIMENTAL_VERIFIED_ARCHS = frozenset(
+    ("gfx90a", "gfx942", "gfx950", "gfx1100", "gfx1101", "gfx1151", "gfx1200", "gfx1201")
+)
+_ROCM_UNVERIFIED_LOGGED: set[str] = set()
+
+
+def _rocm_device_arch(device: str) -> str:
+    """Normalised gfx target torch presents for ``device``, "" when unreadable. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, torch.device(device).index)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _rocm_kfd_silicon_archs(device: str) -> Optional[list[str]]:
+    """KFD's silicon target for ``device``; every KFD GPU's when the masks cannot be composed into its physical node
+    (a UUID mask, GPU_DEVICE_ORDINAL, an index past the list)."""
+    try:
+        import torch
+
+        from utils.hardware.amd import amd_kfd_gpu_gfx_targets
+
+        from .sd_cpp_backend import _physical_index_of
+
+        targets = amd_kfd_gpu_gfx_targets()
+        if not targets:
+            return targets
+        physical, _masked = _physical_index_of(torch.device(device).index or 0)
+        if physical is not None and 0 <= physical < len(targets):
+            return [targets[physical]]
+        return targets
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rocm_aotriton_experimental_verified(device: str) -> bool:
+    """Whether AOTriton's experimental kernels are verified on ``device``; an unreadable arch is False."""
+    verified = ROCM_AOTRITON_EXPERIMENTAL_VERIFIED_ARCHS
+    if _rocm_device_arch(device) not in verified:
+        return False
+    import sys
+
+    if sys.platform.startswith("linux") and any(
+        key.startswith("HSA_OVERRIDE_GFX_VERSION") and value.strip()
+        for key, value in os.environ.items()
+    ):
+        # The override renames the target torch reports; the kernels still run on the silicon KFD names.
+        silicon = _rocm_kfd_silicon_archs(device)
+        return bool(silicon) and all(arch in verified for arch in silicon)
+    return True
+
+
+def _rocm_children_experimental(device: str) -> bool:
+    # UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 leaves the parent's fused kernels on: the children then answer for what it runs.
+    return not _rocm_guard_allowed() or _rocm_aotriton_experimental_verified(device)
 
 
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
@@ -122,18 +208,35 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     key = (device, str(dtype))
     last = _ROCM_PROBE_INCOMPLETE.get(key)
     if last is not None and time.monotonic() - last < _ROCM_PROBE_RETRY_S:
-        return ()
+        return (SDPA_MATH,) if key in _ROCM_PROBE_FORCED_MATH else ()
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # Whichever check completes the probe applies its answer; fp32 never runs fused kernels.
-        if _rocm_guard_allowed() and str(dtype) in ("torch.float16", "torch.bfloat16"):
+        _ROCM_PROBE_FORCED_MATH.discard(key)
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and _rocm_guard_allowed()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+        ):
             try:
                 _apply_rocm_guard(available)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
                 pass
     else:
         _ROCM_PROBE_INCOMPLETE[key] = time.monotonic()
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+            and not _rocm_children_experimental(device)
+        ):
+            # No child answered, and the parent would run unconfirmed fused kernels under its experimental opt-in.
+            # Report MATH so callers bound the score matrix; _sdpa_capability does not memoize it, so the probe retries.
+            try:
+                _apply_rocm_guard((SDPA_MATH,))
+                _ROCM_PROBE_FORCED_MATH.add(key)
+                return (SDPA_MATH,)
+            except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
+                pass
     return available
 
 
@@ -155,6 +258,18 @@ def _run_rocm_sdpa_children(device: str, dtype: Any) -> tuple[str, ...]:
     dll_directories = _rocm_dll_directories()
     if dll_directories:
         child_env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
+    if not _rocm_children_experimental(device):
+        # "0" is check_env's opt-out: AOTriton's experimental archs answer "No available kernel".
+        child_env[ROCM_AOTRITON_EXPERIMENTAL_ENV] = "0"
+        if device not in _ROCM_UNVERIFIED_LOGGED:
+            _ROCM_UNVERIFIED_LOGGED.add(device)
+            _module_logger().info(
+                "diffusion.attention: %s (%s) is not an arch AOTriton's experimental SDPA kernels are verified on; "
+                "probing fused SDPA with them off. %s=1 keeps them.",
+                device,
+                _rocm_device_arch(device) or "unknown arch",
+                ROCM_FUSED_SDPA_ALLOW_ENV,
+            )
 
     def probe(backend: str) -> str:
         try:
@@ -299,10 +414,7 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
 
 
 def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
-    """The SDPA backends that actually EXECUTE on ``target``, cheapest source of truth available.
-
-    Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
-    unanswerable probe must never be read as "only math", which is a claim about the hardware."""
+    """SDPA backends that really run on target; empty when the probe cannot run, never read as math-only."""
     kernels = _sdpa_capability(target)
     if _target_device(target).split(":")[0] == "mps":
         # MPS dispatch ignores the torch.backends.cuda toggles.
@@ -339,9 +451,9 @@ def _sdpa_capability(target: Any) -> tuple[str, ...]:
         available = _probe_sdpa_kernels(device, dtype)
     except Exception:  # noqa: BLE001 - a probe is a diagnostic; it may never fail a load
         available = ()
-    # Memoize only an answer: empty means the probe itself failed (transient).
-    if not available:
-        return ()
+    # Memoize only an answer: empty means the probe itself failed (transient), and a forced MATH is retried.
+    if not available or key in _ROCM_PROBE_FORCED_MATH:
+        return available
     with _SDPA_PROBE_LOCK:
         return _SDPA_PROBE_CACHE.setdefault(key, available)
 
@@ -358,10 +470,7 @@ def _family_sdpa_kernels(target: Any, head_dims: Any = None) -> tuple[str, ...]:
 
 
 def sdpa_math_only(target: Any, head_dims: Any = None) -> bool:
-    """True only when MATH ran and every sub-quadratic backend refused.
-    ``head_dims`` (the family's; empty = unknown) narrows the shape-blind MPS answer.
-
-    A probe that answered nothing at all returns False: silence is not evidence."""
+    """True only when MATH ran and every sub-quadratic backend refused; an empty probe answer is False."""
     available = _family_sdpa_kernels(target, head_dims)
     if not available:
         return False
@@ -387,9 +496,7 @@ def warn_if_sdpa_math_only(
     logger: Any = None,
     head_dims: Any = None,
 ) -> bool:
-    """Log the math-only diagnosis at LOAD, not 70 seconds into a doomed generation.
-
-    Returns whether the warning fired, so callers can carry it into their resolved controls."""
+    """Log math-only at load, not 70 seconds into a doomed generation; returns whether it warned."""
     if not sdpa_math_only(target, head_dims):
         return False
     if logger is not None:
@@ -431,6 +538,33 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
         )
     available = _sdpa_capability(SimpleNamespace(device = device, dtype = dtype))
     return _apply_rocm_guard(available, logger)
+
+
+def guard_rocm_fused_sdpa_cards(
+    devices: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Switches are process-wide, so only kernels that ran on ALL cards stay on."""
+    from types import SimpleNamespace
+
+    if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
+        return ()
+    if dtype is None:
+        import torch
+        dtype = torch.float16  # _sdpa_capability's default
+    if str(dtype) not in ("torch.float16", "torch.bfloat16"):
+        return ()
+    answers = []
+    with read_only_sdpa_probe():
+        for device in devices:
+            available = _sdpa_capability(SimpleNamespace(device = str(device), dtype = dtype))
+            if available:
+                answers.append(available)
+    if not answers:
+        return ()
+    common = tuple(k for k in answers[0] if all(k in a for a in answers[1:]))
+    return _apply_rocm_guard(common, logger)
 
 
 def _rocm_guard_allowed() -> bool:
@@ -580,6 +714,9 @@ def select_attention_backend(
     bit-identical), and on ROCm with verified flash_attn to ``ROCM_FLASH_CANDIDATE`` (resolved by timing in
     ``apply_attention_backend``) unless speed is explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
+    if alias == "unsloth_int8":
+        alias = ATTN_AUTO
+        speed_active = True
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
         if backend == "native":
@@ -630,6 +767,318 @@ def attention_status_reason(requested: Optional[str], engaged: Optional[str]) ->
     return "requested"
 
 
+# ---------------------------------------------------------------- what an attention pick actually runs (status)
+
+# Studio's INT8 attention kernel (``diffusion_int8_attention.BACKEND``), named here so the census needs no kernel import.
+INT8_ATTENTION_BACKEND = "unsloth_int8"
+# On every DiT after ``_apply_attention_backend``: None when the backend it tried engaged, else
+# ``{"tried", "engaged", "reason"}`` (and ``status`` when the platform cannot run it at all).
+ATTENTION_DECLINE_ATTR = "_unsloth_attention_decline"
+# The first reason a fallback point gave during one ``_apply_attention_backend`` call on this thread.
+_APPLY_NOTES = threading.local()
+_STATUS_FELL_BACK = "fell_back"  # diffusion_auto_policy.RESOLVED_FELL_BACK
+_STATUS_UNSUPPORTED = "unsupported"  # diffusion_auto_policy.RESOLVED_UNSUPPORTED
+_SAGE_FP32_REASON = "SageAttention needs fp16 or bf16 and this pipeline runs in float32"
+_BACKEND_LABELS = {
+    ATTN_NATIVE: "native SDPA",
+    "sage": "SageAttention",
+    "sage_hub": "SageAttention",
+    "_native_cudnn": "cuDNN attention",
+    "_native_flash": "flash SDPA",
+    "_native_efficient": "memory-efficient SDPA",
+    "flash": "FlashAttention 2",
+    "_flash_3_hub": "FlashAttention 3",
+    "flash_4_hub": "FlashAttention 4",
+    "xformers": "xformers",
+    "aiter": "AITER",
+    INT8_ATTENTION_BACKEND: "Studio's INT8 attention",
+}
+
+
+def _note_decline(why: str) -> None:
+    """Keep the first fallback reason of the running ``_apply_attention_backend`` call."""
+    if why and getattr(_APPLY_NOTES, "why", None) is None:
+        _APPLY_NOTES.why = str(why)
+
+
+def _sage_head_dim_reason(head_dims: Any) -> str:
+    return f"SageAttention serves head_dim <= {_SAGE_MAX_HEAD_DIM} and this model uses " + ",".join(
+        str(d) for d in sorted(head_dims)
+    )
+
+
+def _guard_missing_reason(backend: str) -> str:
+    return (
+        f"this diffusers build does not expose the {backend} backend the way Studio expects, so masked attention "
+        "calls could not be routed around it"
+    )
+
+
+def _dtype_name(target: Any) -> str:
+    return str(getattr(target, "dtype", None)).replace("torch.", "")
+
+
+def _status_name(backend: Any) -> str:
+    """A dispatcher backend (name, enum, ``_AutoCudnn``, None) as the status spells it; None is native SDPA."""
+    if backend is None:
+        return ATTN_NATIVE
+    name = str(getattr(backend, "value", backend)).strip()
+    return name or ATTN_NATIVE
+
+
+def _same_backend(name: str) -> frozenset:
+    """The engaged names that honor a pick of ``name``: the kernels-hub SageAttention build is SageAttention."""
+    if name in ("sage", "sage_hub"):
+        return frozenset({"sage", "sage_hub"})
+    if name in (ATTN_NATIVE, "sdpa"):
+        return frozenset({ATTN_NATIVE})
+    return frozenset({name})
+
+
+def _backend_label(name: Any) -> str:
+    text = _status_name(name)
+    return _BACKEND_LABELS.get(text, text)
+
+
+def _stamp_decline(
+    pipe: Any,
+    declined: Optional[dict],
+    dits: bool = True,
+) -> None:
+    """``dits=False`` (status path, may run mid-render): never mutate a compiled DiT."""
+    targets = list(_attention_dits(pipe)) if pipe is not None and dits else []
+    for obj in [pipe, *targets]:
+        try:
+            setattr(obj, ATTENTION_DECLINE_ATTR, declined)
+        except Exception:  # noqa: BLE001 - a slotted object: the DiTs carry it
+            pass
+
+
+def _pipes(pipe: Any) -> list:
+    return [p for p in (list(pipe) if isinstance(pipe, (list, tuple)) else [pipe]) if p is not None]
+
+
+def attention_decline(pipe: Any) -> Optional[dict]:
+    """Why the last attention apply on ``pipe`` (or any of its views) ran something else, or None."""
+    for p in _pipes(pipe):
+        try:
+            candidates = [p, *_attention_dits(p)]
+        except Exception:  # noqa: BLE001
+            candidates = [p]
+        for obj in candidates:
+            found = getattr(obj, ATTENTION_DECLINE_ATTR, None)
+            if isinstance(found, dict):
+                return found
+    return None
+
+
+def _module_route(proc: Any) -> Optional[str]:
+    """The backend one attention processor runs: INT8 when a strided processor or the dispatch route takes it."""
+    if proc is None or not hasattr(proc, "_attention_backend"):
+        return None
+    if getattr(proc, "_unsloth_int8", False) is True:
+        return INT8_ATTENTION_BACKEND
+    backend = getattr(proc, "_attention_backend", None)
+    if type(backend).__name__ == "Int8Route":
+        return INT8_ATTENTION_BACKEND
+    return _status_name(backend)
+
+
+def attention_census(pipe: Any) -> dict[str, int]:
+    """How many attention modules of the pipeline's DiTs (or a list of views) route to each backend; {} when none do. Never raises."""
+    counts: dict[str, int] = {}
+    seen: set[int] = set()
+    for p in _pipes(pipe):
+        try:
+            dits = list(_attention_dits(p))
+        except Exception:  # noqa: BLE001
+            dits = []
+        if not dits and getattr(p, "transformer", None) is not None:
+            dits = [p.transformer]
+        for dit in dits:
+            if id(dit) in seen:
+                continue
+            seen.add(id(dit))
+            modules = getattr(dit, "modules", None)
+            if not callable(modules):
+                continue
+            try:
+                for module in modules():
+                    route = _module_route(getattr(module, "processor", None))
+                    if route is not None:
+                        counts[route] = counts.get(route, 0) + 1
+            except Exception:  # noqa: BLE001 - a census only
+                continue
+    return counts
+
+
+def _platform_name(target: Any) -> str:
+    device = str(getattr(target, "device", None) or "")
+    if device == "mps":
+        return "Apple Silicon (MPS)"
+    if device == "cuda" and _is_cuda_rocm(target):
+        return "an AMD ROCm GPU"
+    if device == "cpu" or not device:
+        return "the CPU"
+    return device
+
+
+def explicit_attention_decline(target: Any, requested: Any) -> Optional[tuple[str, str]]:
+    """``(reason, status)`` when ``select_attention_backend`` drops an explicit pick before any kernel is tried, else None."""
+    try:
+        alias = normalize_attention_backend(requested)
+    except ValueError:
+        return None
+    if alias in (ATTN_AUTO, INT8_ATTENTION_BACKEND):
+        return None
+    backend = _ALIASES[alias]
+    if backend == ATTN_NATIVE:
+        return None
+    label = _backend_label(backend)
+    if backend == "aiter":
+        if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
+            return None
+        return (
+            f"AITER is the ROCm attention kernel and this load runs on {_platform_name(target)}",
+            (_STATUS_UNSUPPORTED),
+        )
+    if not _is_cuda_nvidia(target):
+        if backend == "flash" and _is_cuda_rocm(target):
+            if _rocm_flash_attn_runs(target):
+                return None
+            return (
+                "flash_attn is not installed or did not pass its check on this ROCm GPU",
+                _STATUS_FELL_BACK,
+            )
+        return f"{label} needs an NVIDIA CUDA GPU and this load runs on {_platform_name(target)}", (
+            _STATUS_UNSUPPORTED
+        )
+    if not _backend_arch_supported(backend):
+        low, high = _ARCH_CAPABILITY[backend]
+        have = _cuda_capability()
+        span = f"sm{low[0]}{low[1]}" + (f" to below sm{high[0]}{high[1]}" if high else " or newer")
+        card = f"sm{have[0]}{have[1]}" if have else "unknown"
+        return f"{label} needs a {span} GPU and this one is {card}", _STATUS_UNSUPPORTED
+    if backend == "_native_cudnn" and not _cudnn_attention_supported():
+        return "cuDNN fused attention needs an Ampere (sm80) or newer GPU", _STATUS_UNSUPPORTED
+    return None
+
+
+def _census_note(census: dict, value: str) -> str:
+    """ "; 40 of 60 attention modules run SageAttention, 20 run native SDPA" when the modules are split, else ""."""
+    if len(census) < 2:
+        return ""
+    total = sum(census.values())
+    order = sorted(census, key = lambda k: (k != value, -census[k], k))
+    parts = [f"{census[order[0]]} of {total} attention modules run {_backend_label(order[0])}"]
+    parts += [f"{census[k]} run {_backend_label(k)}" for k in order[1:]]
+    return "; " + ", ".join(parts)
+
+
+def attention_resolved_entry(
+    requested: Any,
+    engaged: Any,
+    pipe: Any = None,
+    *,
+    target: Any = None,
+    reason: Optional[str] = None,
+) -> tuple:
+    """``(explicit, engaged, reason[, status])`` for ``build_resolved_record``, read off the modules: never names a backend
+    no module runs; an explicit pick that did not engage reads ``fell_back`` / ``unsupported``."""
+    census = attention_census(pipe) if pipe is not None else {}
+    claimed = _status_name(engaged)
+    value = claimed
+    if census and not census.get(claimed):
+        value = sorted(census, key = lambda k: (-census[k], k))[0]
+    split = _census_note(census, value)
+    try:
+        alias = normalize_attention_backend(requested)
+    except ValueError:
+        alias = None
+    if alias == ATTN_AUTO:
+        text = reason or attention_status_reason(None, None if value == ATTN_NATIVE else value)
+        if value != claimed:
+            text += f"; {_backend_label(claimed)} is set but no attention module runs it"
+        return (requested, value, text + split)
+    if alias is None:
+        return (requested, value, (reason or "requested") + split)
+    wanted = _ALIASES[alias]
+    accepted = _same_backend(_status_name(wanted))
+    if value in accepted:
+        return (requested, value, (reason or "requested") + split)
+    status = _STATUS_FELL_BACK
+    stamp = attention_decline(pipe)
+    why = None
+    if value == INT8_ATTENTION_BACKEND:
+        modules = census.get(INT8_ATTENTION_BACKEND)
+        why = "INT8 attention is On, so Studio's INT8 kernel runs " + (
+            f"{modules} attention modules" if modules else "the attention modules"
+        )
+    elif (
+        isinstance(stamp, dict)
+        and _status_name(stamp.get("tried")) in accepted
+        and stamp.get("reason")
+    ):
+        why = str(stamp["reason"])
+        status = stamp.get("status") or status
+    else:
+        declined = explicit_attention_decline(target, requested) if target is not None else None
+        if declined is not None:
+            why, status = declined
+            for view in _pipes(pipe):
+                _stamp_decline(
+                    view,
+                    {"tried": wanted, "engaged": value, "reason": why, "status": status},
+                    dits = False,
+                )
+        elif claimed in accepted:
+            why = f"no attention module routes to {_backend_label(claimed)}"
+        elif wanted == INT8_ATTENTION_BACKEND:
+            why = (
+                "Studio's INT8 attention did not pass its accuracy check on this GPU, or no attention module of "
+                "this model can take it"
+            )
+        else:
+            why = f"{_backend_label(wanted)} did not engage on this model and GPU"
+    return (requested, value, why + split, status)
+
+
+def annotate_attention_resolved(resolved: Any, pipe: Any) -> Any:
+    """Adds ``engaged``, ``modules`` (None when uncountable) and ``routed`` to the ``attention_backend`` entry."""
+    entry = resolved.get("attention_backend") if isinstance(resolved, dict) else None
+    if not isinstance(entry, dict):
+        return resolved
+    census = attention_census(pipe) if pipe is not None else {}
+    entry["engaged"] = entry.get("value")
+    entry["modules"] = int(census.get(str(entry.get("value")), 0)) if census else None
+    entry["routed"] = dict(sorted(census.items()))
+    return resolved
+
+
+def live_attention_entry(entry: Any, pipe: Any, engaged: Any) -> Any:
+    """The load-time ``attention_backend`` entry, re-read when the modules moved since. Never raises."""
+    if not isinstance(entry, dict) or "routed" not in entry or pipe is None:
+        return entry
+    try:
+        census = attention_census(pipe)
+        if census == entry.get("routed"):
+            return entry
+        from .diffusion_auto_policy import build_resolved_record
+
+        requested = entry.get("requested") if entry.get("source") == "explicit" else None
+        record = build_resolved_record(
+            {"attention_backend": attention_resolved_entry(requested, engaged, pipe)}
+        )
+        annotate_attention_resolved(record, pipe)
+        fresh = record["attention_backend"]
+        if fresh.get("value") == entry.get("value") and entry.get("source") == "auto":
+            # same backend, only the split moved: keep the load's reason
+            fresh["reason"] = entry.get("reason")
+        return {**entry, **fresh}
+    except Exception:  # noqa: BLE001 - reporting only
+        return entry
+
+
 def _is_cuda_rocm(target: Any) -> bool:
     return getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target)
 
@@ -651,6 +1100,19 @@ BLACKWELL_NATIVE_ATTN_ENV = (
     "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
 )
 _NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
+# Native flash measured faster than the cuDNN pin at every DiT/U-Net shape, bf16+fp16 (torch 2.14.1+cu130); others keep the pin.
+FLASH_FASTER_CAPABILITIES: dict[tuple[int, int], str] = {
+    (
+        8,
+        0,
+    ): "A100: cuDNN 1-44% slower than native flash (FLUX 0.92x, Lumina-2 0.74x, SD3.5 0.97x per call)",
+    (
+        8,
+        9,
+    ): "L4: cuDNN never faster than native flash (Lumina-2 0.70x per call, the rest 0.93-1.00x)",
+}
+NATIVE_FLASH_ATTN_ENV = "UNSLOTH_DIFFUSION_NATIVE_FLASH_ATTN"  # auto (default) | 0 keeps the cuDNN pin on FLASH_FASTER_CAPABILITIES cards
+_NATIVE_FLASH_CACHE: dict[tuple[str, str, int], bool] = {}
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
 # Accuracy is judged on the raw attention output (flash vs native SDPA, same inputs), not the block: the residual and
@@ -658,9 +1120,7 @@ ROCM_FLASH_MIN_GAIN = 0.03
 ROCM_FLASH_BLOCK_TOL = 2e-2  # attention output rel L1
 ROCM_FLASH_MAX_TOL = 5e-2  # attention max abs error / max abs output
 ROCM_FLASH_PROBE_TOKENS = 4096  # the load-time bucket: a 1024^2 image DiT sequence
-# Calls are gated per (query, key) length bucket pair (powers of two from 256 up, open ended): a pair is timed at its
-# lower edges on first use, so the 4096 verdict never decides a 30k-token video call, and a long-video x short-text
-# cross-attention is timed as that rectangle, not as square self-attention.
+# Gated per (query, key) length bucket pair, so a 4096 verdict never decides a 30k-token call.
 ROCM_FLASH_MIN_BUCKET = 256
 ROCM_FLASH_LONG_PROBE = (
     16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
@@ -939,9 +1399,7 @@ _ROCM_FLASH_LOCAL = threading.local()
 # (device, dtype, *geometry, query bucket, key bucket, batch bucket) -> flash serves it, filled on an eager call's
 # first use (the probe or a stored verdict). In memory: a bucket the probe rejected stays native.
 _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
-# On each hooked DiT: bucket keys whose probe could not run (no room beside the live forward, or it raised), native
-# until that DiT's next generation retries them. Never a verdict, so a transient shortfall cannot disable a working
-# kernel; per DiT, so another pipeline's generation boundary does not clear it.
+# Unrun probes defer per DiT, not verdicts; a transient shortfall cannot disable a working kernel
 ROCM_FLASH_DEFERRED_ATTR = "_unsloth_rocm_flash_deferred"
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
 # The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
@@ -1337,9 +1795,7 @@ def _rocm_flash_probe_bytes(
 
 
 def _rocm_flash_probe_fits(device: str, need: int) -> bool:
-    """Room for the probe beside the live forward: device free plus the allocator's cached-but-unused blocks, with
-    25% + 256 MiB to spare, less the user's VRAM Budget reserve (0 at the default). Unknown memory state counts as no
-    room."""
+    """Probe room: free plus idle cache, less 25% + 256 MiB and the VRAM Budget reserve; unknown is none"""
     try:
         import torch
 
@@ -1978,6 +2434,8 @@ def _sage_kernel_runs(
             error = _SAGE_PROBE_CACHE.setdefault(key, error)
         if error:
             break
+    if error:
+        _note_decline(f"SageAttention failed its check on this GPU ({error})")
     if error and logger is not None:
         logger.warning(
             "diffusion.attention: SageAttention does not run on this GPU (%s); using the default backend",
@@ -2105,11 +2563,7 @@ def _install_dispatch_guard(
     make_op: Any = None,
     ran: Any = None,
 ) -> bool:
-    """Wrap diffusers' registered ``backend`` so calls its kernel cannot take run native. Idempotent.
-
-    False when the registry is not where expected: the caller then does not engage the backend. ``make_op(fn)``
-    optionally returns an opaque op for plain (no lse, no context-parallel) calls. ``ran()`` is called for each call
-    the kernel itself takes."""
+    """Wrap the registered backend so unsupported calls run native; idempotent; False if registry moved"""
     try:
         from diffusers.models.attention_dispatch import (
             AttentionBackendName,
@@ -2405,9 +2859,7 @@ def _untrack_rocm_flash_calls(pipe: Any) -> None:
 
 
 def attention_may_run_native(pipe: Any) -> bool:
-    """Whether some attention call of this pipe can run native SDPA although flash is engaged: ROCm flash routes masked
-    calls (explicit or auto), and in auto lengths flash does not win (or could not time beside a live forward), to native. For
-    memory budgets: conservative, never from what a past run reported."""
+    """Whether a call may run native SDPA despite flash; conservative, never from past run reports"""
     return bool(_rocm_flash_dits(pipe))
 
 
@@ -2603,6 +3055,7 @@ def _sage_usable(
 ) -> bool:
     """Whether an explicit ``sage`` request may engage: not fp32, kernel passes at the DiT head dims, guard in place."""
     if target is not None and _runs_in_float32(target):
+        _note_decline(_SAGE_FP32_REASON)
         if logger is not None:
             logger.warning(
                 "diffusion.attention: SageAttention needs fp16 or bf16 and this pipeline runs in float32; "
@@ -2611,11 +3064,13 @@ def _sage_usable(
         return False
     too_old = _sage_version_too_old()
     if too_old:
+        _note_decline(too_old)
         if logger is not None:
             logger.warning("diffusion.attention: %s; using the default backend", too_old)
         return False
     head_dims = _dit_head_dims(pipe)
     if head_dims and min(head_dims) > _SAGE_MAX_HEAD_DIM:
+        _note_decline(_sage_head_dim_reason(head_dims))
         if logger is not None:
             logger.warning(
                 "diffusion.attention: SageAttention serves head_dim <= %d and this model uses %s; "
@@ -2627,6 +3082,7 @@ def _sage_usable(
     if target is not None and _sage_kernel_runs(target, logger, head_dims) is False:
         return False
     if not _install_sage_dispatch_guard():
+        _note_decline(_guard_missing_reason("sage"))
         if logger is not None:
             logger.warning(
                 "diffusion.attention: this diffusers build does not expose the sage backend the way Unsloth expects, "
@@ -2637,10 +3093,11 @@ def _sage_usable(
 
 
 # PyPI has only SageAttention 1 (diffusers refuses it), so sage uses the kernels-hub build.
-# Version 2 first: the version 1 builds diffusers asks for stop at torch 2.10.
+# Version 2 first (it also covers sm100), then 3; the model-type mirror's version 1 builds stop at torch 2.10.
 SAGE_HUB_BACKEND = "sage_hub"
 _SAGE_HUB_REPO = "kernels-community/sage-attention"
 _SAGE_HUB_VERSIONS = (2, 1)
+_SAGE_HUB_DIRECT_VERSIONS = (2, 3)
 _SAGE_HUB_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _SAGE_HUB_LOCK = threading.Lock()
 # A failed fetch, remembered so the in-lock apply does not repeat it. Cleared by a restart, like _INSTALL_ATTEMPTED.
@@ -2679,10 +3136,17 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
         if _SAGE_HUB_FAILED:
             return None, _SAGE_HUB_FAILED[0]
         try:
+            # diffusers' sage_hub backend refuses to engage without an importable kernels.
             from kernels import get_kernel
         except Exception as exc:  # noqa: BLE001
             return None, f"the kernels package is not importable ({type(exc).__name__}: {exc})"
-        errors = []
+        # Studio's own loader first: the kernels release transformers < 5.13 imports next to (0.12.3) reads only
+        # the hub's model-type mirror, which has no build for current torch.
+        fn, direct_why = _load_sage_hub_direct()
+        if callable(fn):
+            config.kernel_fn = fn
+            return fn, ""
+        errors = [f"direct: {direct_why}"]
         versions = list(_SAGE_HUB_VERSIONS)
         default = getattr(config, "version", None)
         if isinstance(default, int) and default not in versions:
@@ -2699,6 +3163,11 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
             errors.append(f"version {ver}: no sageattn in the build")
         _SAGE_HUB_FAILED.append(f"no {_SAGE_HUB_REPO} build loads here ({'; '.join(errors)})")
         return None, _SAGE_HUB_FAILED[0]
+
+
+def _load_sage_hub_direct() -> tuple[Any, str]:
+    from .diffusion_sage_hub import load_sageattn
+    return load_sageattn(_SAGE_HUB_DIRECT_VERSIONS, repo = _SAGE_HUB_REPO)
 
 
 def _sage_hub_kernel_runs(
@@ -2743,6 +3212,7 @@ def _sage_hub_backend(
     """``sage_hub`` when the hub build passes its self-check here (before any DiT is switched), else None, logged."""
 
     def _decline(why: str) -> None:
+        _note_decline(why)
         if logger is not None:
             logger.warning(
                 "diffusion.attention: SageAttention unavailable: %s. %s. Using the default backend",
@@ -2751,6 +3221,7 @@ def _sage_hub_backend(
             )
 
     if target is not None and _runs_in_float32(target):
+        _note_decline(_SAGE_FP32_REASON)
         if logger is not None:
             logger.warning(
                 "diffusion.attention: SageAttention needs fp16 or bf16 and this pipeline runs in float32; "
@@ -2759,6 +3230,7 @@ def _sage_hub_backend(
         return None
     head_dims = _dit_head_dims(pipe)
     if head_dims and min(head_dims) > _SAGE_MAX_HEAD_DIM:
+        _note_decline(_sage_head_dim_reason(head_dims))
         if logger is not None:
             logger.warning(
                 "diffusion.attention: SageAttention serves head_dim <= %d and this model uses %s; "
@@ -2769,16 +3241,21 @@ def _sage_hub_backend(
         return None
     sageattn, why = _load_sage_hub_kernel()
     if sageattn is None:
-        _decline(f"the Hugging Face kernels-hub build could not be loaded ({why})")
+        _decline(
+            "sageattention is not installed and the Hugging Face kernels-hub build could not be loaded "
+            f"({why})"
+        )
         return None
     if target is not None:
         runs, why = _sage_hub_kernel_runs(target, sageattn, head_dims)
         if runs is False:
             _decline(
-                f"the Hugging Face kernels-hub build does not run correctly on this GPU ({why})"
+                "sageattention is not installed and the Hugging Face kernels-hub build failed its check on "
+                f"this GPU ({why})"
             )
             return None
     if not _install_sage_hub_dispatch_guard():
+        _note_decline(_guard_missing_reason("sage_hub"))
         if logger is not None:
             logger.warning(
                 "diffusion.attention: this diffusers build does not expose the sage_hub backend the way Unsloth "
@@ -3141,6 +3618,9 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
     # A hidden package stays unusable until restart; skip without recording an attempt.
     if module in sys.modules and sys.modules[module] is None:
         reason = f"{module} is disabled in this process because it requires a different torch"
+        if module == "kernels":
+            from utils.kernels_compat import hidden_reason
+            reason = hidden_reason() or reason
         if logger is not None:
             logger.warning(
                 "diffusion.attention: not installing %s for backend=%s: %s; restart Unsloth "
@@ -3203,6 +3683,15 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
     _INSTALL_ATTEMPTED.add(package)
     import subprocess
 
+    requirement = package
+    previous_kernels = None
+    if package == "kernels":
+        # Unpinned, pip takes the newest kernels, which an older transformers cannot import next to.
+        from utils.kernels_compat import current_kernels_install_spec
+
+        requirement = current_kernels_install_spec()
+        previous_kernels = _dist_version("kernels")
+        display = requirement
     if logger is not None:
         logger.info(
             "diffusion.attention: installing %s for backend=%s (wheel-only)", display, backend
@@ -3218,7 +3707,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                 "--only-binary",
                 ":all:",
                 "--no-deps",
-                package,
+                requirement,
             ],
             capture_output = True,
             timeout = 600,
@@ -3228,7 +3717,11 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
         # the new wheel.
         importlib.invalidate_caches()
         if package == "kernels":
-            _refresh_diffusers_kernels_version(logger)
+            from utils.kernels_compat import check_kernels_install
+
+            # A kernels transformers cannot import breaks every later process: roll it back instead.
+            if check_kernels_install(previous_kernels, logger):
+                _refresh_diffusers_kernels_version(logger)
     except Exception as exc:  # noqa: BLE001 - no wheel / no network -> native fallback
         if logger is not None:
             # CalledProcessError.str() shows only the exit code; surface stderr so the fallback is diagnosable.
@@ -3406,6 +3899,41 @@ def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
         return False
 
 
+def _native_flash_measured_faster(pipe: Any, target: Any) -> bool:
+    """True on a ``FLASH_FASTER_CAPABILITIES`` card whose native SDPA picks FLASH for every DiT head dim; else keep the pin."""
+    if (os.environ.get(NATIVE_FLASH_ATTN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    if not _is_cuda_nvidia(target):
+        return False
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return False
+    dims = _dit_head_dims(pipe)
+    if not dims:
+        return False
+    try:
+        import torch
+        from torch.nn.attention import SDPBackend
+
+        device = _indexed_cuda_device(device)
+        if tuple(_device_capability(device)) not in FLASH_FASTER_CAPABILITIES:
+            return False
+        dtype = getattr(target, "dtype", None)
+        if dtype not in (torch.bfloat16, torch.float16):
+            return False
+        for dim in sorted(dims):
+            key = (device, str(dtype), int(dim))
+            hit = _NATIVE_FLASH_CACHE.get(key)
+            if hit is None:
+                hit = _native_sdp_choice(device, dtype, dim) == int(SDPBackend.FLASH_ATTENTION)
+                _NATIVE_FLASH_CACHE[key] = hit
+            if not hit:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - unaskable: keep the pin
+        return False
+
+
 def _cudnn_serves_pipe(
     pipe: Any,
     target: Any,
@@ -3452,14 +3980,134 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
     warn_if_sdpa_math_only(target, logger, _dit_head_dims(pipe))
 
 
+def _auto_request(requested: Any) -> bool:
+    """Whether a load left the attention pick to Studio (no request, "" or "auto")."""
+    try:
+        return normalize_attention_backend(requested) == ATTN_AUTO
+    except ValueError:
+        return False
+
+
 def apply_attention_backend(
     pipe: Any,
     backend: Optional[str],
     *,
     logger: Any = None,
     target: Any = None,
+    requested: Optional[str] = None,
+    speed_active: bool = True,
+    speed_unset_only: bool = False,
+    int8_policy: Any = None,
 ) -> Optional[str]:
-    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak)."""
+    """Sets the backend on every DiT (None means native, set explicitly so an earlier pin cannot leak).
+
+    ``requested`` is the load's own attention request: ``unsloth_int8`` (or its env switch) then routes the strided
+    processors of a native pick to the INT8 kernel, and that name is returned; with no request and the switch unset,
+    the strided processors of a family in ``AUTO_DITS`` race for it (``install_auto``). The DiTs whose processors call
+    diffusers' attention dispatch route there too (``diffusion_int8_attention_dispatch``): by name or the env switch
+    wherever the kernel is accurate, and with the switch unset for the families that race it on this card, unless
+    ``speed_active`` is False (``int8_attention_speed_active``: speed off by request stays bit-identical).
+
+    ``int8_policy`` is the load's ``diffusion_int8_attention.Int8Policy`` (or its ``int8_attention`` request): ``on``
+    forces the kernel like the name, ``off`` keeps it off every route, ``auto`` / None leave the env switch in charge.
+    An explicit attention pick (native, sage, cuDNN, flash) is never raced over automatically: only a forced kernel
+    (``on``, the name, the env switch ``1``) layers INT8 on top of it."""
+    engaged = _apply_attention_backend(pipe, backend, logger = logger, target = target)
+    try:
+        from .diffusion_int8_attention import mode as int8_mode
+        from .diffusion_int8_attention import requested as int8_requested
+        int8_forced = int8_mode(int8_policy) == "force" or int8_requested(requested)
+    except Exception:  # noqa: BLE001
+        int8_forced = False
+    if target is not None:
+        try:
+            from .diffusion_int8_attention import forget_plans
+            forget_plans()
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 plans", exc)
+    if target is not None and (engaged is None or str(engaged).startswith("_native")):
+        try:
+            from .diffusion_int8_attention import (
+                BACKEND,
+                INCUMBENT_ATTR,
+                install_auto,
+                install_requested,
+            )
+
+            try:
+                setattr(pipe, INCUMBENT_ATTR, engaged)
+            except Exception:  # noqa: BLE001 - a slotted pipeline: the status keeps the kernel's name
+                pass
+            if install_requested(pipe, requested, target, logger = logger, policy = int8_policy):
+                return BACKEND
+            # switch unset: the strided processors of a raced family (FLUX.3) race their incumbent
+            if _auto_request(requested) and install_auto(
+                pipe,
+                target,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
+                policy = int8_policy,
+            ):
+                return BACKEND
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8", exc)
+    # an explicit attention pick keeps its backend unless the kernel is forced on top of it
+    if target is not None and (int8_forced or _auto_request(requested)):
+        try:
+            from .diffusion_int8_attention import BACKEND
+            from .diffusion_int8_attention_dispatch import install as install_int8_dispatch
+            if install_int8_dispatch(
+                pipe,
+                target,
+                requested = requested,
+                logger = logger,
+                speed_active = speed_active,
+                speed_unset_only = speed_unset_only,
+                policy = int8_policy,
+            ):
+                return BACKEND
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 dispatch", exc)
+    elif target is not None:
+        try:
+            # an earlier route on these DiTs gives the explicit pick back its own backend
+            from .diffusion_int8_attention_dispatch import remove as remove_int8_dispatch
+            remove_int8_dispatch(pipe)
+        except Exception as exc:  # noqa: BLE001 - an optimisation: the engaged backend stays
+            _warn(logger, "unsloth_int8 dispatch", exc)
+    return engaged
+
+
+def _apply_attention_backend(
+    pipe: Any,
+    backend: Optional[str],
+    *,
+    logger: Any = None,
+    target: Any = None,
+) -> Optional[str]:
+    """Sets ``backend`` (or native) on every DiT and returns what engaged; a decline is recorded in ``ATTENTION_DECLINE_ATTR``."""
+    _APPLY_NOTES.why = None
+    tried = None if backend in (None, ROCM_FLASH_CANDIDATE) else str(backend)
+    try:
+        engaged = _apply_attention_backend_impl(pipe, backend, logger = logger, target = target)
+    finally:
+        why = getattr(_APPLY_NOTES, "why", None)
+        _APPLY_NOTES.why = None
+    declined = None
+    if tried is not None and _status_name(engaged) not in _same_backend(_status_name(tried)):
+        declined = {"tried": tried, "engaged": _status_name(engaged), "reason": why}
+    _stamp_decline(pipe, declined)
+    return engaged
+
+
+def _apply_attention_backend_impl(
+    pipe: Any,
+    backend: Optional[str],
+    *,
+    logger: Any = None,
+    target: Any = None,
+) -> Optional[str]:
     if target is not None:
         try:
             guard_rocm_fused_sdpa(target, logger)
@@ -3501,6 +4149,9 @@ def apply_attention_backend(
             and _is_cuda_rocm(target)
             and not _rocm_flash_attn_runs(target)
         ):
+            _note_decline(
+                f"flash_attn did not pass its check at {_dtype_name(target)} on this ROCm GPU"
+            )
             backend = None
         if (
             backend == "flash"
@@ -3509,6 +4160,7 @@ def apply_attention_backend(
             and not _install_rocm_flash_dispatch_guard()
         ):
             # An explicit request too: without the guard a masked call would raise mid-generation, not run native.
+            _note_decline(_guard_missing_reason("flash"))
             if logger is not None:
                 logger.warning(
                     "diffusion.attention: this diffusers build does not expose the flash backend the way Unsloth "
@@ -3520,6 +4172,9 @@ def apply_attention_backend(
             and target is not None
             and not _cudnn_serves_pipe(pipe, target, logger)
         ):
+            _note_decline(
+                "cuDNN attention has no kernel for this model's head_dim with this torch/cuDNN build"
+            )
             backend = None
         if backend == "_native_flash" and target is not None:
             # H3 Auto can pick flash after select(); refuse exclusive flash when this build has no kernel (#16294).
@@ -3528,6 +4183,7 @@ def apply_attention_backend(
             except Exception:  # noqa: BLE001 -- an unreadable probe must not force flash
                 kernels = ()
             if SDPA_FLASH not in kernels:
+                _note_decline("flash SDPA is not available in this torch build")
                 # A probe that answered without cuDNN keeps the default dispatch; an empty one keeps Auto's cuDNN.
                 cudnn_ok = (not kernels or SDPA_CUDNN in kernels) and _cudnn_serves_pipe(
                     pipe, target, logger
@@ -3550,9 +4206,22 @@ def apply_attention_backend(
                     BLACKWELL_NATIVE_ATTN_ENV,
                 )
             backend = None
+        if (
+            isinstance(backend, _AutoCudnn)
+            and target is not None
+            and _native_flash_measured_faster(pipe, target)
+        ):
+            if logger is not None:
+                logger.info(
+                    "diffusion.attention: auto keeps native SDPA (flash attention measured faster than the cuDNN "
+                    "pin on this card; %s=0 pins cuDNN)",
+                    NATIVE_FLASH_ATTN_ENV,
+                )
+            backend = None
         if backend is not None:
             backend = str(backend)
         if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
+            _note_decline(_guard_missing_reason("flash_4_hub"))
             if logger is not None:
                 logger.warning(
                     "diffusion.attention: this diffusers build does not expose the flash_4_hub backend the way "
@@ -3567,6 +4236,9 @@ def apply_attention_backend(
                 fn(backend)
                 engaged = True
             except Exception as exc:  # noqa: BLE001 - unavailable kernel -> restore native below
+                _note_decline(
+                    f"diffusers could not set it ({type(exc).__name__}: {str(exc)[:200]})"
+                )
                 _warn(logger, backend, exc)
         if (
             engaged
@@ -3575,6 +4247,7 @@ def apply_attention_backend(
             and _fa4_kernel_runs(target, logger, _dit_head_dims(pipe)) is False
         ):
             # set_attention_backend fetches the kernel, so probe after it and undo the pin on failure.
+            _note_decline("FlashAttention 4 did not pass its check on this GPU")
             for fn in setters:
                 try:
                     fn(ATTN_NATIVE)
@@ -3583,6 +4256,12 @@ def apply_attention_backend(
             engaged = False
         if engaged:
             _tag_dits(pipe, backend)
+            if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
+                from .diffusion_flux3_attn import install as install_flux3_strided
+                from .diffusion_qwenimage21_attn import install as install_q21_strided
+
+                install_flux3_strided(pipe, backend, target, logger)
+                install_q21_strided(pipe, backend, target, logger)
             if backend == "flash" and target is not None and _is_cuda_rocm(target):
                 _track_rocm_flash_calls(pipe)
             else:
@@ -3593,8 +4272,7 @@ def apply_attention_backend(
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
-    # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in. One reset
-    # covers every fresh DiT.
+    # No backend requested or all failed: pin native so a stale process-wide backend cannot leak in.
     _tag_dits(pipe, None)
     _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)
@@ -3674,9 +4352,7 @@ _NULL_PROCESSOR_CACHE: dict = {}
 
 
 def _set_hunyuan_null_mask(module: Any, enabled: bool) -> None:
-    """Set the null-mask flag on every block's attention of ``module``. The flag is valid ONLY for
-    the forward whose pre-hook removed the padding, so a post-hook clears it back to False after
-    each call (see the module note and _hunyuan_trim_post_hook)."""
+    """Null-mask flag on block attention, valid only for the forward whose pre-hook removed the padding."""
     for blk in getattr(module, "transformer_blocks", []):
         attn = getattr(blk, "attn", None)
         if attn is not None:
@@ -3699,7 +4375,9 @@ def _null_mask_processor_cls():
         return cached
 
     import torch
-    from diffusers.models.attention_dispatch import dispatch_attention_fn
+
+    # read at call time, as the stock processor does, so the INT8 dispatch route sees these calls too
+    from diffusers.models import attention_dispatch
     from diffusers.models.transformers.transformer_hunyuan_video15 import (
         HunyuanVideo15AttnProcessor2_0,
     )
@@ -3758,7 +4436,7 @@ def _null_mask_processor_cls():
                 key = torch.cat([key, encoder_key], dim = 1)
                 value = torch.cat([value, encoder_value], dim = 1)
 
-            hidden_states = dispatch_attention_fn(
+            hidden_states = attention_dispatch.dispatch_attention_fn(
                 query,
                 key,
                 value,
@@ -3792,9 +4470,7 @@ def _null_mask_processor_cls():
 
 
 def _trim_stream(states, mask):
-    """Drop the columns of a [B, S, D] text stream + its [B, S] mask that are padding for EVERY
-    batch element (globally invalid). Returns (states, mask, all_valid): all_valid is True when
-    the trimmed stream has NO partially-padded column left (so it needs no attention mask)."""
+    """Drops globally padded columns; all_valid (no partly padded column left) means no mask needed."""
     if states is None or mask is None or mask.dim() != 2:
         return states, mask, True  # nothing to mask -> treat as no-padding
     mb = mask.bool()
@@ -3803,8 +4479,7 @@ def _trim_stream(states, mask):
         states = states[:, keep]
         mask = mask[:, keep]
         mb = mb[:, keep]
-    # All remaining slots valid for every element (vacuously True for a 0-length stream, fine for an unused secondary
-    # stream e.g. byt5 in t2v).
+    # Vacuously True for a 0-length stream, e.g. the unused byt5 stream in t2v; all slots valid.
     all_valid = bool(mb.all().item())
     return states, mask, all_valid
 
@@ -3910,9 +4585,7 @@ def _hunyuan_trim_post_hook(module, _args, output):
 
 
 def _install_null_processors(dit: Any, logger: Any) -> bool:
-    """Swap every stock block attention processor on ``dit`` for the null-mask subclass. Only
-    touches blocks whose processor is exactly the stock class (so a diffusers change or an
-    already-installed run is a no-op). Preserves any pinned attention backend."""
+    """Swap stock block processors for the null-mask subclass; keep any pinned attention backend"""
     try:
         cls = _null_mask_processor_cls()
     except Exception as exc:  # noqa: BLE001 - diffusers moved / unavailable -> skip
@@ -3977,3 +4650,13 @@ def install_hunyuan_attention_trim(
     if engaged and logger is not None:
         logger.info("diffusion.attention: hunyuan padded-text trim engaged")
     return engaged
+
+
+# declared checkpoint attention -> Studio backend of the same arithmetic (still probe-gated)
+CHECKPOINT_ATTENTION_BACKENDS = {"int8": "sage"}
+
+
+def checkpoint_attention_backend(declared: Any) -> Optional[str]:
+    if not isinstance(declared, str):
+        return None
+    return CHECKPOINT_ATTENTION_BACKENDS.get(declared.strip().lower())

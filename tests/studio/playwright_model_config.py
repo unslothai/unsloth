@@ -17,6 +17,8 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     dump_diagnostics,
+    expand_collapsed_model_picker,
+    RUN_SETTINGS_CONTEXT_LABEL,
     evaluate_fetch,
     install_view_transition_killer,
     install_wall_clock_watchdog,
@@ -134,9 +136,8 @@ def _count(loc) -> int:
 
 
 def _as_int(value) -> int | None:
-    """Parse an input value to int, tolerating commas/whitespace. Comparisons
-    must be numeric, never substring: '40960' (a model's native default) would
-    spuriously "contain" '4096'."""
+    """Parses to int, tolerating commas and spaces; comparisons must be numeric, since '40960' would
+    spuriously contain '4096'."""
     if value is None:
         return None
     try:
@@ -259,8 +260,7 @@ with sync_playwright() as p:
         # A Load/Reload click is answered only by its /load; a flow stopping short goes quiet for 3 s.
         label = " ".join((btn.text_content() or "").split())
         expects_load = label in ("Load model", "Reload model")
-        # Snapshot after a Playwright call: request events only arrive during one, so a restore /load
-        # already sent would otherwise count as this click's.
+        # Snapshot before clicking, since requests are only seen during Playwright calls.
         started = _commits["started"]
         loads_before = len(_commits["loads"])
         clicked_at = time.monotonic()
@@ -362,8 +362,7 @@ with sync_playwright() as p:
         return [v for v in cfg.values() if isinstance(v, dict)]
 
     def entries_for_model(cfg: dict) -> list[dict]:
-        """Only entries keyed to this model and quant; all entries only if no key has the versioned
-        shape."""
+        """Entries keyed to this model and quant; all entries only if no key is versioned."""
         want = (_normalize_model_identity(GGUF_REPO), GGUF_VARIANT.strip().lower())
         recognised = [k for k in cfg if re.match(r"^v\d+:\[", str(k))]
         if not recognised:
@@ -515,11 +514,12 @@ with sync_playwright() as p:
 
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
-    GEAR_ANY = 'button[aria-label^="Inference settings for" i]'
+    GEAR_ANY = (
+        'button[aria-label^="Inference settings for" i], button[aria-label^="Run settings for" i]'
+    )
 
     def diagnose(name, selector):
-        """Capture a screenshot and JSON state on a miss, since a log line alone hides what was on
-        screen."""
+        """Screenshot and JSON state on a miss, since a log line hides what was on screen."""
         rows = []
         try:
             opts = page.locator("[data-model-picker-option]")
@@ -548,6 +548,9 @@ with sync_playwright() as p:
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
             popover = page.locator(POPOVER).first
+            popover.wait_for(state = "visible", timeout = 30_000)
+            # A loaded model opens the picker collapsed to its own row: no tabs, search or rows.
+            expand_collapsed_model_picker(popover)
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
@@ -611,7 +614,8 @@ with sync_playwright() as p:
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row. Anchor the quant at the end, or F16 matches BF16.
-        pattern = f"^Inference settings for .*{re.escape(hint)}"
+        # The header picker says "Inference settings", the composer picker "Run settings".
+        pattern = f"^(?:Inference|Run) settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
         gear = popover.get_by_role(
@@ -658,10 +662,11 @@ with sync_playwright() as p:
 
     def context_input(popover):
         for role in ("textbox", "spinbutton"):
-            loc = popover.get_by_role(role, name = "Context Length").first
+            # Exact: "Context" is a prefix of other run settings names.
+            loc = popover.get_by_role(role, name = RUN_SETTINGS_CONTEXT_LABEL, exact = True).first
             if _count(loc):
                 return loc
-        loc = popover.locator('input[aria-label="Context Length"]').first
+        loc = popover.locator(f'input[aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"]').first
         return loc if _count(loc) else None
 
     PRIMARY_BUTTON_NAMES = re.compile(r"^(Load model|Reload model|Save settings|Forget settings)$")
@@ -677,7 +682,7 @@ with sync_playwright() as p:
     popover = open_picker()
     shoot("02-picker-open")
     needles = ["bge-small-en-v1.5", "stories260"]
-    tabs = ["Recommended", "On Device", "Connected"]
+    tabs = ["Recommended", "Discover models", "Favorites", "On Device", "Connected"]
     hidden_ok = True
     # An absence check passes on an empty picker, so prove it is populated first.
     od_tab = page.get_by_role("tab", name = "On Device").first
@@ -835,9 +840,9 @@ with sync_playwright() as p:
 
     # 3. Reset clears the override (never pins context) (HARD).
     step("reset clears the per-model override", LOAD_STEP_BUDGET_S)
-    reset_btn = popover.get_by_role("button", name = "Reset").first
+    reset_btn = popover.get_by_role("button", name = "Reset all", exact = True).first
     if _count(reset_btn) == 0:
-        fail("Reset button not found in run-settings")
+        fail("Reset all button not found in run-settings")
     else:
         try:
             reset_btn.click()
@@ -902,7 +907,7 @@ with sync_playwright() as p:
         pinned = [e for e in entries if _as_int(e.get("customContextLength")) == native_default]
 
         # Not every stored context is a phantom pin: model-config-page.tsx pins the active context on purpose
-        # for a manual GPU-layer placement (pinFixedLayerContext), which includes every CPU-only runner.
+        # for a manual GPU-layer placement (fixedLayerContextPin), which includes every CPU-only runner.
         expected_pin = [
             e
             for e in pinned
@@ -979,8 +984,7 @@ with sync_playwright() as p:
     _seed_marks = [0]
 
     def seed_legacy_for_next_document(seed: dict, *, wipe_migrated: bool) -> None:
-        """Seed via an init script on the next document; seeding the live page races its server
-        write-back."""
+        """Seed via init script on the next document; seeding live races the server write-back."""
         _seed_marks[0] += 1
         mark = f"__ui_modelcfg_seed_{_seed_marks[0]}"
         page.add_init_script(
@@ -1001,8 +1005,7 @@ with sync_playwright() as p:
         )
 
     def clear_server_overrides_for_model() -> None:
-        """Also delete the server override rows: opening the panel writes them back over the
-        migrated value."""
+        """Also clear server overrides, else the panel writes them over the migrated value."""
         # Normalise model and quant separately: normalizeModelIdentity keeps a POSIX path's case.
         want_model = _normalize_model_identity(GGUF_REPO)
         want_quant = GGUF_VARIANT.strip().lower()
@@ -1017,8 +1020,7 @@ with sync_playwright() as p:
             )
 
         def rows_for_model() -> list[str] | None:
-            """Override rows for this model, or None when the read failed; a failed fetch is not an
-            empty list."""
+            """Override rows for this model; None on a failed read, never an empty list."""
             resp = evaluate_fetch(
                 page,
                 f"{BASE}/api/settings/openai-auto-switch/overrides",
@@ -1188,8 +1190,7 @@ with sync_playwright() as p:
         soft_fail(f"migration idempotency check errored: {e}")
 
     # ─────────────────────────────────────────────────────
-    # 6. Hub Run keeps its run settings on a page loaded at /hub (HARD).
-    #    Run mounts Chat there, and the new composer's autofocus used to dismiss them.
+    # Hub Run settings must survive on a /hub page; composer autofocus once dismissed them.
     # ─────────────────────────────────────────────────────
     step("Hub Run opens run settings on a page loaded at /hub")
     try:

@@ -115,13 +115,6 @@ TOOL_ERROR_PREFIXES = (
     "No query provided",
 )
 
-DUPLICATE_CALL_NUDGE = (
-    "You already made this exact call. Do not repeat the same tool "
-    "call. Try a different approach: fetch a URL from previous "
-    "results, use Python to process data you already have, or "
-    "provide your final answer now."
-)
-
 RENDER_HTML_REPEAT_NUDGE = (
     "Error: render_html was already called for this response. Do not call "
     "render_html again in this response unless the user asks for changes. "
@@ -1073,9 +1066,8 @@ def _mask_blocked_bodies(
     think: bool = False,
     mentions: bool = False,
 ) -> tuple:
-    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. With
-    mentions (display strips), a tag alone in backticks is masked so no strip arm reads it as an opener or closer.
-    Returns (masked_text, bodies), restored in order."""
+    """Reasoning is masked under think so a rehearsed call cannot execute; with mentions, backticked
+    tags are masked too."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
     if mentions:
         mention_spans = _tool_healing.tag_mention_spans(text)
@@ -2425,17 +2417,15 @@ _ONE_STRING_ARG_CALL_RE = re.compile(
     r'\{\s*"([A-Za-z_][\w\-]*)"\s*:\s*"(.*)"\s*\}\s*\}\s*\Z',
     re.DOTALL,
 )
-# A lost second argument or outer key (``", "key":``, ``", 'key':``, ``", key:``, ``"}, "key":``): the
-# value's end is no longer knowable, so it is refused.
+# A lost second argument or outer key leaves the value's end unknowable, so it is refused.
 _SECOND_KEY_RE = re.compile(
     r'"[\s}\]]*,\s*(?:"[A-Za-z_][\w\-]*"|\'[A-Za-z_][\w\-]*\'|[A-Za-z_][\w\-]*)\s*:'
 )
 
 
 def _escape_bare_quotes(raw: str) -> str:
-    """Escape the ``"`` no backslash escapes. A model that left bare quotes was not JSON-escaping quotes, so a
-    ``\\"`` it wrote next to them is the code's own escape and stays a backslash-quote; other escapes (``\\n``)
-    are JSON's. With no bare quote at all, every escape is JSON's."""
+    """Escapes bare quotes. With bare quotes present, a backslash-quote stays the code own escape
+    and other escapes are JSON; with none, every escape is JSON."""
     tokens: list[str] = []
     bare = False
     i, n = 0, len(raw)
@@ -3832,9 +3822,8 @@ def _slot_gemma_values(body: str) -> "tuple[str, list[str]]":
 
 
 def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
-    """Each ``<|"|>``-quoted value is read raw, every other value as the quote-less parser reads it (single
-    quotes, nesting). A delimiter that does not end up a whole value (a literal one inside another quoted
-    value) keeps the quote-less reading of the whole body."""
+    """Gemma-quoted values are read raw, others as the quote-less parser reads them; a delimiter not
+    ending a whole value makes the whole body quote-less."""
     if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
         return _gemma_parse_stripped_body(body)
     slotted, raw = _slot_gemma_values(body)
@@ -4146,8 +4135,10 @@ def _parse_glm_tool_calls(
     *,
     id_offset: int,
     allow_incomplete: bool = True,
+    raw_values: bool = False,
 ) -> list[dict]:
-    """GLM 4.x: back-to-back <tool_call> blocks, no envelope, each with arg_key/arg_value pairs."""
+    """GLM 4.x: back-to-back <tool_call> blocks, no envelope, each with arg_key/arg_value pairs.
+    ``raw_values`` leaves every value a string, for a caller that types them by the tool's schema."""
     out: list[dict] = []
     pos = 0
     while pos < len(content):
@@ -4204,7 +4195,7 @@ def _parse_glm_tool_calls(
             apos = ve + len(_GLM_ARG_VAL_CLOSE)
             # Keep the value raw so string whitespace survives (matches vLLM glm4_moe).
             probe = raw_val.strip()
-            if (
+            if not raw_values and (
                 probe[:1] in "{["
                 or probe in ("true", "false", "null")
                 or _GLM_JSON_NUMERIC_RE.fullmatch(probe)

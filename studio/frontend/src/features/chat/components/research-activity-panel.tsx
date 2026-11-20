@@ -884,6 +884,7 @@ export function ResearchActivityPanel({
       className={cn(
         "relative flex min-h-0 flex-col bg-background text-foreground",
         variant === "sheet" && "h-full",
+        variant === "panel" && "side-pane-lock-cover",
       )}
       style={
         variant === "panel"

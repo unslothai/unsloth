@@ -234,8 +234,7 @@ class TestGgufRuntimeBytes:
         assert ri._gguf_offloaded_layer_fraction("manual", 0, runtime.layer_count) == 0.0
 
     def test_a_recurrent_model_keeps_its_layer_count(self, tmp_path):
-        """Pure SSM models (Mamba, RWKV) have a layer count but no attention dims, so the count must
-        be kept."""
+        """SSM models like Mamba have no attention dims, so their layer count must be kept."""
         mamba = _write_gguf(
             tmp_path,
             "mamba",
@@ -287,8 +286,7 @@ class TestKvGbWrapperCompatibility:
         assert ri._estimate_gguf_kv_gb(dimless_gguf, 32768) == 0.0
 
     def test_the_guard_keeps_the_larger_context_the_panel_does_not(self, gqa_gguf):
-        """The panel quotes the smaller -c the launch runs; the guard reserves the larger context
-        instead."""
+        """The panel shows the smaller -c that launches; the guard reserves the larger one."""
         smaller = ["-c", "8192"]
         guard = ri._gguf_runtime_bytes(gqa_gguf, 131072, smaller)
         panel = ri._gguf_runtime_bytes(gqa_gguf, 131072, smaller, ctx_last_wins = True)
@@ -1019,6 +1017,22 @@ class TestEstimateMemoryRoute:
         assert resp.available is False
         assert resp.reason == "unsizable"
         assert resp.total_bytes == 0
+
+    def test_an_mlx_estimate_is_priced_with_the_vision_switch_and_prompt_cache(self, monkeypatch):
+        import core.inference.mlx_memory as mlx_memory
+
+        drops = []
+        stub = lambda *a, **kw: drops.append(
+            (mlx_memory._DROPS_VISION.get(), mlx_memory._PROMPT_CACHE_MIB.get())
+        )
+        monkeypatch.setattr(mlx_memory, "mlx_memory_breakdown", stub)
+        for vision, audio, off in ((1, None, 1), (1, None, 0), (1, "audio_vlm", 1), (0, None, 1)):
+            self._mlx_target(monkeypatch, "/models/thing", is_vision = vision, audio_type = audio)
+            mib = 256 if off else None  # the prompt cache it is priced with, too
+            _estimate(
+                model_path = "org/model", max_seq_length = 4096, disable_vision = off, cache_ram = mib
+            )
+            assert drops.pop() == (bool(vision and off and not audio), mib)
 
     def test_mlx_model_is_priced_and_itemized(self, monkeypatch, tmp_path):
         self._mlx_target(monkeypatch, "/models/thing")
@@ -1920,8 +1934,7 @@ _HYBRID_FIELDS = {
 
 
 class TestBlankDraftDepth:
-    """Blank Draft Tokens is the launcher's default depth, so pricing it as zero drops the rollback
-    state."""
+    """Blank Draft Tokens is the default depth; pricing it as zero drops the rollback state."""
 
     @pytest.fixture
     def hybrid(self, tmp_path) -> str:
@@ -2091,8 +2104,7 @@ class TestDrafterEdgeCases:
 
 
 class TestSpeculativeModeTerms:
-    """Target-side terms follow the engaged mode; defaulting to both bills DSpark/DFlash a second KV
-    copy."""
+    """Target terms follow the engaged mode, or DSpark/DFlash would bill a second KV copy."""
 
     @pytest.fixture
     def mla(self, tmp_path) -> str:
@@ -2194,8 +2206,7 @@ class TestSpeculativeModeTerms:
     def test_verification_rows_follow_the_targets_layers(
         self, mla, tmp_path, priced_files, monkeypatch
     ):
-        """They are target compute: on the GPU with the target's layers, whichever
-        device the drafter uses."""
+        """Target compute runs on the GPU with the target's layers, whichever device the drafter uses."""
         verify_rows = 7 * 1024 * 1024
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_spec_verify_rows_bytes", lambda *a, **k: verify_rows
@@ -2300,8 +2311,7 @@ class TestLaunchShapedPricing:
         assert windowed.drafter_runtime_bytes > windowed.kv_bytes - windowed.kv_checkpoint_bytes
 
     def test_a_cpu_device_selection_takes_the_weights_off_the_gpu(self, spec_config, swa):
-        """--device none keeps weights off the GPU whatever -ngl says, as the loader's residency
-        gate does."""
+        """--device none keeps weights off the GPU whatever -ngl says, like the loader's gate."""
         priced = dict(n_ctx = 32768, cache_type_kv = "f16")
         on_gpu = ri._gguf_memory_breakdown(spec_config, swa, **priced)
         for flag in (["--device", "none"], ["--device", "cpu"], ["-dev", "none"]):
@@ -2449,8 +2459,7 @@ class TestLaunchShapedPricing:
 
 
 class TestInheritedEnvironment:
-    """Inherited LLAMA_ARG_SPEC_* is scrubbed if Unsloth owns the spec block; projector path never
-    scrubs."""
+    """LLAMA_ARG_SPEC_* is scrubbed if Unsloth owns the spec; the projector path never scrubs."""
 
     @pytest.fixture
     def bare(self, gqa_gguf):
@@ -3104,8 +3113,7 @@ class TestAnAutoContextIsMarkedShrinkable:
 
     @pytest.mark.parametrize("selected_gpu_ids", [None, [0, 1]])
     def test_tensor_mode_takes_the_layer_fallback_floor(self, wide, monkeypatch, selected_gpu_ids):
-        """Tensor mode falls back to a layer split at launch; the floor is priced as that split when
-        larger."""
+        """Tensor mode falls back to a layer split; floor priced as that split when larger."""
         devices = [(0, 0, 0), (1, 0, 0)]
         monkeypatch.setattr(ri, "_cached_inference_devices", lambda: devices)
         monkeypatch.setattr(ri, "_tensor_split_possible", lambda ids: True)
@@ -3293,8 +3301,7 @@ class TestTheEmbeddedHeadIsChargedOnlyWhenItEngages:
 
     @pytest.mark.parametrize("spec", ["draft-mtp", "mtp"])
     def test_extras_asking_for_mtp_engage_the_embedded_head(self, head, spec):
-        """Extras asking for MTP engage the embedded head on a NextN GGUF; its cache must count in
-        the total."""
+        """An MTP extra engages the embedded NextN head, whose cache must count in the total."""
         out = ri._gguf_memory_breakdown(
             self._config(head, "org/Qwen3-8B"),
             head,
@@ -3596,8 +3603,7 @@ class TestFourMoreLaunchNormalizations:
         )
 
     def test_a_gpu_pin_beats_a_stale_device_flag(self, basic):
-        """A GPU pin overrides a stale --device flag, since the launch strips the flag that
-        contradicts it."""
+        """A GPU pin overrides a stale --device flag, which the launch strips as contradictory."""
         gguf, config = basic
         cpu_flag = ["--device", "none"]
         unpinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, llama_extra_args = cpu_flag)
@@ -5436,6 +5442,31 @@ class TestPricingALoad:
             os.path.getsize(path),
         )
 
+    def test_a_vision_dropping_load_prices_no_vision_weights(self, tmp_path, monkeypatch):
+        import mlx.core as mx
+        import mlx.nn as nn
+        from mlx.utils import tree_flatten
+
+        if not hasattr(pytest.importorskip("unsloth_zoo.mlx.loader"), "_detach_vision_modules"):
+            pytest.skip("this unsloth_zoo reads the vision weights")
+
+        def vlm(*_):
+            model = nn.Module()
+            model.language_model, model.vision_tower = nn.Linear(64, 64), nn.Linear(64, 32)
+            return model
+
+        monkeypatch.setattr(mm, "_whole_model", vlm)
+        monkeypatch.setattr(mm, "_builds_on_mlx_vlm", lambda config: True)
+        path = tmp_path / "model.safetensors"
+        mx.save_safetensors(str(path), dict(tree_flatten(vlm().parameters())))
+
+        def price(off, **config):
+            with mm.mlx_dropping_vision(SimpleNamespace(is_vision = True), off):
+                return mm.mlx_weight_bytes(str(tmp_path), dict(config, model_type = "toy"))
+
+        assert [price(off) // mm._runtime_dtype().size for off in (False, True)] == [6240, 4160]
+        assert price(True, quantization = {"bits": 4}) == os.path.getsize(path) - 2080 * 4
+
     def test_shards_that_name_nothing_the_architecture_has_are_not_priced_from_it(self, tmp_path):
         config = self._checkpoint(tmp_path, prefix = "draft.")
         with pytest.raises(ValueError, match = "does not supply"):
@@ -5898,3 +5929,15 @@ def test_the_drafter_picker_lists_cached_drafters_of_a_cached_target(tmp_path, m
     assert ri._mlx_cached_drafters("o/absent") == []
     monkeypatch.setattr(ri.account_access, "filter_model_rows", lambda rows: rows[1:])
     assert [row["repo_id"] for row in ri._mlx_cached_drafters("o/T")] == ["o/T-MTP"]
+
+
+def test_a_vision_off_text_route_prices_no_auto_drafter(monkeypatch):
+    from core.inference import mlx_inference, mlx_memory, mlx_speculative
+
+    monkeypatch.setattr(mlx_memory, "_loads_as_vision", lambda _config: True)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_: None)
+    monkeypatch.setattr(mlx_inference, "_text_load_drops_the_tower", lambda _model: True)
+    request = SimpleNamespace(speculative_type = "auto", spec_draft_model = None)
+    assert ri._mlx_estimate_speculates(request, "/m")
+    with mlx_memory.mlx_dropping_vision(SimpleNamespace(is_vision = True), True):
+        assert not ri._mlx_estimate_speculates(request, "/m")

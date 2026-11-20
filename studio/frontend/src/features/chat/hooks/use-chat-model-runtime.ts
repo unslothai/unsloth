@@ -12,6 +12,7 @@ import { llamaServerLoadFields } from "../lib/load-request";
 import {
   type ServerTuningValues,
   clearedServerTuningState,
+  committedMlxServerTuningState,
   committedServerTuningState,
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
@@ -33,6 +34,7 @@ import {
   notifyModelLifecycle,
   subscribeModelLifecycle,
 } from "@/lib/model-lifecycle-events";
+import { isTranslationHeldSlot } from "@/lib/translation-models";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
@@ -47,6 +49,7 @@ import {
 } from "../lib/server-wide-reload";
 import {
   type OffloadCounts,
+  expertSpillNote,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
@@ -67,6 +70,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
   isOllamaModelId,
@@ -158,8 +163,8 @@ import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
+  recommendedValuesForPick,
   resolveFitMaxSeqLength,
-  isReplayedLoadContext,
   unpinnedDefaultRequest,
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
@@ -188,10 +193,12 @@ import {
   normalizeMaxSeqLength,
   residentIsServedByMlx,
   resolveInitialConfig,
+  npuLoadFields,
   savedContextPin,
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker/model-config/per-model-config";
+import { fixedLayerContextPin } from "@/features/model-picker/model-config/estimate-context";
 import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
@@ -531,7 +538,9 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        name: modelDisplayName(resp.display_name || modelId),
+        name:
+          npuDisplayNameNow(modelId) ??
+          modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
       },
@@ -716,10 +725,11 @@ export async function syncInferenceStatusToStore(options?: {
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
     const selectionChanged = selectedCheckpoint !== selectedAtStart;
-    // Read a TTS-owned slot as empty so the eviction branch clears the stale chat pick.
+    // Read a TTS-owned or Translate-owned slot as empty so the eviction branch clears the stale chat pick.
     const chatActiveModel =
       statusRes.active_model &&
       !isSpeechOnlyStatus(statusRes) &&
+      !isTranslationHeldSlot(statusRes.active_model, selectedCheckpoint) &&
       !(statusLoading && options?.externalChatSlotLoad);
     if (
       chatActiveModel &&
@@ -1576,9 +1586,6 @@ export function useChatModelRuntime() {
                 ggufVariant,
                 isGguf: residentIsGguf,
                 customContextLength,
-                loadedContextLength: live.loadedContextLength,
-                currentCheckpoint: live.params.checkpoint,
-                activeGgufVariant: live.activeGgufVariant,
                 isMlx: isServedByMlx(
                   residentIsGguf,
                   platform.deviceType,
@@ -1591,8 +1598,6 @@ export function useChatModelRuntime() {
                         .maxSeqLength,
                 ),
                 defaultMaxSeqLength: live.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
-                presetSource: live.activePresetSource,
-                loadedContextPin: live.loadedCustomContextLength,
               });
             },
             parallelSlots: managedFlags?.defaultParallelSlots || null,
@@ -1938,6 +1943,8 @@ export function useChatModelRuntime() {
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       let offloadCounts: OffloadCounts = {};
+      // Set once the load asks for a standalone Engram table, so the download bar counts it.
+      let progressEngramPrecision: string | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -2120,7 +2127,6 @@ export function useChatModelRuntime() {
               (loadSwitchesModelOrVariant
                 ? DEFAULT_PER_MODEL_CONFIG.disableVision
                 : stateBeforeUnload.disableVision));
-          const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
             pendingLoadConfig?.gpuMemoryMode ?? stateBeforeUnload.gpuMemoryMode;
@@ -2216,6 +2222,9 @@ export function useChatModelRuntime() {
               pendingLoadConfig?.ctxCheckpoints ??
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
+            engramPrecision:
+              pendingLoadConfig?.engramPrecision ??
+              stateBeforeUnload.engramPrecision,
           };
           const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
@@ -2257,6 +2266,7 @@ export function useChatModelRuntime() {
                   pendingLoadConfig?.specDraftCacheDtype ?? null,
                 ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
                 cacheRam: pendingLoadConfig?.cacheRam ?? null,
+                engramPrecision: pendingLoadConfig?.engramPrecision ?? null,
               };
               loadKvCacheDtype = pendingLoadConfig?.kvCacheDtype ?? null;
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
@@ -2302,20 +2312,15 @@ export function useChatModelRuntime() {
               targetIsMlx,
               pinnedMaxSeqLength,
             );
-            // Pinning layers on the SAME model keeps the currently resolved context: with no explicit pin, a
-            // manual+pinned reload would send 0, which the backend's --fit off branch treats as the NATIVE
-            // context, far larger than the sheet shows when the load was fit-sized, a likely OOM.
-            // loadedContextLength is that resolved value; a model already at native reloads unchanged.
-            if (
-              isGguf &&
-              !switchingModelOrVariant &&
-              loadGpuMemoryMode === "manual" &&
-              loadGpuLayers >= 0 &&
-              loadCustomContextLength == null &&
-              (loadContextLength ?? 0) > 0
-            ) {
-              loadCustomContextLength = loadContextLength;
-            }
+            // After explicitCtxPin, so the kept resident context is not recorded as the user's.
+            loadCustomContextLength =
+              fixedLayerContextPin({
+                isGguf: isGguf && !switchingModelOrVariant,
+                gpuMemoryMode: loadGpuMemoryMode,
+                gpuLayers: loadGpuLayers,
+                customContextLength: loadCustomContextLength,
+                activeLoadedContext: loadContextLength,
+              }) ?? loadCustomContextLength;
             // A GGUF native context can exceed maxSeqLength, so sizing on raw maxSeqLength could pass
             // /validate, unload, then have /load refuse it.
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
@@ -2323,9 +2328,6 @@ export function useChatModelRuntime() {
               ggufVariant,
               isGguf,
               customContextLength: loadCustomContextLength,
-              loadedContextLength: loadContextLength,
-              currentCheckpoint,
-              activeGgufVariant: loadActiveGgufVariant,
               isMlx: targetIsMlx,
               pinnedMaxSeqLength,
               defaultMaxSeqLength: unpinnedDefaultRequest(
@@ -2333,8 +2335,6 @@ export function useChatModelRuntime() {
                 stateBeforeUnload.params.maxSeqLength,
                 DEFAULT_MAX_SEQ_LENGTH,
               ),
-              presetSource: loadActivePresetSource,
-              loadedContextPin: stateBeforeUnload.loadedCustomContextLength,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
@@ -2352,11 +2352,6 @@ export function useChatModelRuntime() {
               engine: isGguf ? "auto" : loadEngineFields.engine,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
-              max_seq_length_auto_derived: isReplayedLoadContext(
-                isGguf,
-                loadCustomContextLength,
-                loadMaxSeqLength,
-              ),
               load_in_4bit: loadEngineFields.engine === "auto" && loadIn4bitChoice,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
@@ -2383,7 +2378,7 @@ export function useChatModelRuntime() {
                   llamaExtraArgs: loadLlamaExtraArgs,
                   ...loadServerTuning,
                 },
-                { isGguf, isDiffusion: targetIsDiffusion },
+                { isGguf, isDiffusion: targetIsDiffusion, isMlx: targetIsMlx },
               ),
               tensor_parallel: loadTensorParallel,
               disable_vision: loadDisableVision,
@@ -2612,6 +2607,7 @@ export function useChatModelRuntime() {
             // Bind the request ID before the POST so an early cancel lands as a backend tombstone.
             loadRun.loadAttemptPath = loadPath;
 
+            progressEngramPrecision = loadRequest().engram_precision ?? null;
             const loadResponse = await loadModel({
               ...loadRequest(),
               load_request_id: loadRun.requestId,
@@ -2654,6 +2650,7 @@ export function useChatModelRuntime() {
                   response: loadResponse,
                   modelId,
                   presetSource: useChatRuntimeStore.getState().activePresetSource,
+                  presetEditedKeys: useChatRuntimeStore.getState().presetEditedKeys,
                   loadedContextLength: loadedFields.loadedContextLength,
                 }),
                 ...(isGguf
@@ -2704,20 +2701,24 @@ export function useChatModelRuntime() {
                 ? (loadNParallel ?? null)
                 : null;
             const committedNBatch =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNBatch ?? null)
                 : null;
             const committedNUbatch =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNUbatch ?? null)
                 : null;
             const committedServerTuning =
               (loadResponse.is_gguf ?? false) &&
               !(loadResponse.is_diffusion ?? false)
                 ? committedServerTuningState(loadServerTuning)
-                : clearedServerTuningState();
+                : (loadResponse.is_mlx ?? false)
+                  ? committedMlxServerTuningState(loadServerTuning)
+                  : clearedServerTuningState();
             // Keep the user's pin so an Auto load stays Auto; MLX pins the same way.
             const keepCustomCtx = resolveExplicitCtxPin(
               loadResponse.is_gguf || targetIsMlx ? explicitCtxPin : null,
@@ -2808,33 +2809,33 @@ export function useChatModelRuntime() {
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
               reasoningBudget:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
                   : -1,
               loadedReasoningBudget:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
                   : -1,
               reasoningBudgetMessage:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget_message ??
                     loadReasoningBudgetMessage)
                   : "",
               loadedReasoningBudgetMessage:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget_message ??
                     loadReasoningBudgetMessage)
                   : "",
               loadedReasoningBudgetRequested:
-                loadResponse.is_gguf && !loadResponse.is_diffusion
+                (loadResponse.is_gguf || loadResponse.is_mlx) && !loadResponse.is_diffusion
                   ? (loadResponse.requested_reasoning_budget ?? loadReasoningBudget)
                   : -1,
               loadedReasoningBudgetMessageRequested:
-                loadResponse.is_gguf && !loadResponse.is_diffusion
+                (loadResponse.is_gguf || loadResponse.is_mlx) && !loadResponse.is_diffusion
                   ? (loadResponse.requested_reasoning_budget_message ?? loadReasoningBudgetMessage)
                   : "",
               nBatch: committedNBatch,
@@ -2868,21 +2869,17 @@ export function useChatModelRuntime() {
             });
             noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             syncModelCapabilities(modelId, loadResponse);
-            const p = resolveQwenThinkingParams(
-              modelId,
-              nextReasoningEnabled,
+            const store = useChatRuntimeStore.getState();
+            const p = recommendedValuesForPick(
+              resolveQwenThinkingParams(modelId, nextReasoningEnabled),
+              store.activePresetSource,
+              store.presetEditedKeys,
             );
-            if (
-              p !== null &&
-              (loadResponse.supports_reasoning ?? false)
-            ) {
-              const store = useChatRuntimeStore.getState();
-              if (store.activePresetSource === "builtin-default") {
-                store.setParams({ ...store.params, ...p }, {
-                  fromModelDefaults: true,
-                  maxTokensCap: loadedContextCap,
-                });
-              }
+            if (p !== null && (loadResponse.supports_reasoning ?? false)) {
+              store.setParams({ ...store.params, ...p }, {
+                fromModelDefaults: true,
+                maxTokensCap: loadedContextCap,
+              });
             }
             await refresh({ signal: abortCtrl.signal });
             postLoadRefresh.needed = Boolean(
@@ -2966,6 +2963,7 @@ export function useChatModelRuntime() {
                   mlx_fast_verify: rollbackState.loadedMlxFastVerifyRequested,
                   mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
                   mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
+                  ...npuLoadFields(rollbackState),
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -2989,6 +2987,7 @@ export function useChatModelRuntime() {
                       rollbackState.loadedSpecDraftCacheDtype,
                     ctxCheckpoints: rollbackState.loadedCtxCheckpoints,
                     cacheRam: rollbackState.loadedCacheRam,
+                    engramPrecision: rollbackState.loadedEngramPrecision,
                   }),
                   // Explicit: the target is resident now, so an omitted field would inherit across models.
                   ...(rollbackState.loadedLlamaExtraArgs != null
@@ -3053,6 +3052,9 @@ export function useChatModelRuntime() {
                     rollbackState.loadedCtxCheckpoints ?? null,
                   cacheRam: previousServerTuning.cacheRam ?? null,
                   loadedCacheRam: rollbackState.loadedCacheRam ?? null,
+                  engramPrecision: previousServerTuning.engramPrecision ?? null,
+                  loadedEngramPrecision:
+                    rollbackState.loadedEngramPrecision ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
@@ -3198,6 +3200,7 @@ export function useChatModelRuntime() {
                       ggufVariant,
                       expectedBytes,
                       hfToken,
+                      progressEngramPrecision,
                     ),
                   ]
                 : await Promise.all(
@@ -3441,6 +3444,7 @@ export function useChatModelRuntime() {
             cpuFallbackReason,
             mmprojFallbackReason,
             offloadWarning(offloadCounts),
+            expertSpillNote(offloadCounts),
           );
           const loadedTitle = notice.title;
           const loadedDescription = notice.description;
@@ -3546,9 +3550,8 @@ export function useChatModelRuntime() {
       ) {
         return;
       }
-      const contextLength = savedContextPin(
-        reload?.config ?? resolveInitialConfig(modelPath).config,
-      );
+      const config = reload?.config ?? resolveInitialConfig(modelPath).config;
+      const contextLength = savedContextPin(config);
       if (loadingModelRef.current ?? store.loadingModelPick) {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -3564,9 +3567,9 @@ export function useChatModelRuntime() {
       }
       loadLifecycleLeaseRef.current = lease;
       const loadIntentId = ++modelSelectionIntentEpoch;
-      const displayName = modelDisplayName(
-        modelPath.slice(modelPath.indexOf(":") + 1),
-      );
+      const displayName =
+        npuDisplayNameNow(modelPath) ??
+        modelDisplayName(modelPath.slice(modelPath.indexOf(":") + 1));
       const previous = useChatRuntimeStore.getState();
       const previousCheckpoint = previous.params.checkpoint;
       const previousGgufVariant = previous.activeGgufVariant;
@@ -3628,6 +3631,7 @@ export function useChatModelRuntime() {
           model_path: modelPath,
           hf_token: null,
           max_seq_length: contextLength ?? 0,
+          ...npuLoadFields(config),
           load_in_4bit: false,
           is_lora: false,
           force_reload: reload?.forceReload === true,

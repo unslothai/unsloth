@@ -51,8 +51,7 @@ def _seed_llama_log(body: str = "llama runner line\n") -> Path:
 
 
 def _members() -> dict[str, bytes]:
-    """Build a bundle and read it back. testzip() on every call, so a member
-    left half written by a mid-read failure cannot pass unnoticed."""
+    """Reads the archive back via testzip() each time, so a half-written member cannot pass."""
     handle = debug_log_export.build_log_archive()
     try:
         with zipfile.ZipFile(handle) as archive:
@@ -90,8 +89,7 @@ def test_the_bundle_is_an_archive_the_stdlib_accepts():
 
 
 def test_a_planted_token_is_masked_in_the_archive():
-    """The whole point of reusing the viewer's redactor: what the tab would not
-    show you, the download does not carry either."""
+    """Reuses the viewer's redactor, so whatever the tab hides, the download must hide too."""
     path = _seed_server_log(
         "loading with HF_TOKEN=hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345\n"
         "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefg\n"
@@ -106,8 +104,7 @@ def test_a_planted_token_is_masked_in_the_archive():
 
 
 def test_a_source_swapped_for_a_symlink_after_enumeration_is_refused(monkeypatch, tmp_path):
-    """The enumeration walk refuses an escaping link, but that ran earlier.
-    Anything can replace the entry before the export opens it."""
+    """Enumeration refuses escaping links, but a swap before the open must be refused as well."""
     path = _seed_server_log("ordinary line\n")
     # Not named `secret`: CodeQL flags clear-text storage by local variable NAME.
     link_target = tmp_path / "id_rsa"
@@ -179,8 +176,7 @@ def test_a_file_truncated_mid_export_warns_without_naming_a_directory(monkeypatc
 
 
 def test_an_oversized_record_is_omitted_whole_rather_than_split():
-    """Splitting could cut a key away from its value, and the redactor is
-    anchored on the two being adjacent."""
+    """Splitting could cut a key from its value; the redactor needs them adjacent."""
     filler = "X" * (debug_log_export.MAX_RECORD_BYTES + 5_000)
     path = _seed_server_log(f"before\n{filler}\nafter\n")
     body = _members()[f"server/{path.name}"].decode("utf-8")
@@ -219,9 +215,8 @@ def test_a_label_can_never_become_a_path(label, expected):
 
 
 def test_duplicate_labels_are_uniquified_by_a_loop():
-    """One studio home per spelling means two families can hold the same
-    filename, and a duplicated member extracts as whichever entry the tool
-    reaches last."""
+    """One studio home per spelling means two families can hold the same filename; a duplicated
+    member extracts as whichever entry the tool reaches last."""
     used: set[str] = set()
     assert debug_log_export._member_name("server", "a.log", used) == "server/a.log"
     assert debug_log_export._member_name("server", "a.log", used) == "server/a-2.log"
@@ -334,8 +329,7 @@ def test_the_export_is_owner_gated_exactly_like_the_routes_it_sits_beside():
 
 
 def test_an_api_key_session_cannot_download_the_logs():
-    """A bundle of every log on the host is UI-operator material, exactly like
-    the single-file read next to it."""
+    """All host logs are UI-operator material; API-key sessions must not download the bundle."""
     app = FastAPI()
     app.include_router(settings_route.router, prefix = "/api/settings")
     app.dependency_overrides[settings_route.get_current_subject] = lambda: "admin"
@@ -346,8 +340,7 @@ def test_an_api_key_session_cannot_download_the_logs():
 
 
 def test_a_log_larger_than_the_tail_keeps_its_end(monkeypatch):
-    """The 10-per-family cap bounds FILES, not bytes: the session log is never
-    rotated and runs to gigabytes, so the tail is the part worth carrying."""
+    """10-per-family caps bound files, not bytes; the unrotated session log keeps its tail."""
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 512)
     path = _seed_server_log("".join(f"line {index}\n" for index in range(400)))
     assert path.stat().st_size > 512
@@ -358,8 +351,7 @@ def test_a_log_larger_than_the_tail_keeps_its_end(monkeypatch):
 
 
 def test_a_truncated_log_never_starts_in_the_middle_of_a_record(monkeypatch):
-    """A read that begins mid-record hands out a credential whose key was left
-    behind in the skipped part, which is exactly what redaction relies on."""
+    """A mid-record cut leaves a secret value without its key, which redaction cannot mask."""
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 300)
     # Sized so the cut lands inside the secret record: key before the seek point, value after.
     filler = "".join(f"padding line {index}\n" for index in range(40))
@@ -410,8 +402,7 @@ def test_a_record_cut_by_the_allowance_is_marked_not_presented_as_whole():
     assert whole and "password=" in whole[0]
     assert "SECRETVALUE12345" not in whole[0]
 
-    # An allowance landing exactly on the last byte never sees EOF, yet the record is complete;
-    # only asking the descriptor tells the two apart.
+    # Exact allowance hits no EOF; only the descriptor tells a whole record from a cut one.
     exact = directory / "server-20260101-120001-pid1.log"
     exact.write_bytes(b"a whole final record with no newline")
     handle, fd = debug_log_export._open_verified(str(exact))
@@ -436,8 +427,7 @@ def test_a_source_that_cannot_get_a_useful_tail_blames_the_budget_not_the_file(m
 
 
 def test_the_budget_is_spread_across_families_not_drained_by_one(monkeypatch):
-    """list_sources groups by family, so consuming it in order spends the whole
-    budget on the server logs and ships a bundle with no runner logs at all."""
+    """list_sources groups by family, so one in-order pass drains the budget on server logs."""
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 200)
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 100)
     _seed_server_log("server line\n" * 40)
@@ -477,8 +467,7 @@ def test_round_robin_keeps_the_newest_of_each_family_first():
 
 
 def test_one_log_with_no_record_boundary_does_not_abandon_the_rest(monkeypatch):
-    """A tail window holding no newline is a property of THAT file. Spending the
-    whole budget on it drops every later source, including ones that fit."""
+    """A newline-less tail must not spend the whole budget and drop later sources that fit."""
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 1000)
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 1000)
     _seed_server_log("header line\n" + "a" * 4000)
@@ -489,8 +478,7 @@ def test_one_log_with_no_record_boundary_does_not_abandon_the_rest(monkeypatch):
 
 
 def test_a_log_being_appended_to_is_still_bounded(monkeypatch):
-    """The seek bounds where the read STARTS. A live log has no end, so without
-    a ceiling the loop follows the writer -- on the one file both caps exist for."""
+    """A live log has no EOF, so without a ceiling the read would follow the writer forever."""
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 4096)
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 8192)
     path = _seed_server_log("start\n")
@@ -512,8 +500,7 @@ def test_a_log_being_appended_to_is_still_bounded(monkeypatch):
 
 
 def test_a_failed_read_still_spends_its_budget(monkeypatch):
-    """Bytes already redacted and written are spent whether or not the file
-    survived to EOF."""
+    """Bytes already redacted and written are spent even if the read fails before EOF."""
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 1 << 20)
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 1 << 20)
     path = _seed_server_log("kept line\n" * 200)
@@ -571,8 +558,7 @@ def test_a_tail_with_no_record_boundary_is_refused_not_read_midway(monkeypatch):
 
 
 def test_an_undecodable_filename_does_not_take_the_export_down():
-    """Path.name hands back lone surrogates via surrogateescape; zipfile cannot
-    encode them, and the raise is not an OSError so both handlers miss it."""
+    """Lone surrogates in Path.name make zipfile raise a non-OSError that both handlers miss."""
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
     try:
@@ -609,9 +595,8 @@ def test_the_warnings_member_does_not_stamp_the_host_clock(monkeypatch):
 
 
 def test_a_pathological_log_cannot_run_past_the_time_budget(monkeypatch):
-    """The byte budget assumes a throughput the redactor does not guarantee:
-    its ANSI rules backtrack quadratically, so a log of unterminated C1
-    introducers costs thousands of times what the same bytes of text do."""
+    """The byte budget assumes a throughput the redactor does not guarantee: unterminated C1
+    introducers backtrack quadratically and cost thousands of times more than text."""
     monkeypatch.setattr(debug_log_export, "MAX_BUILD_SECONDS", 0.5)
     real_redact = debug_log_export.redact_log_text
 
@@ -655,8 +640,7 @@ def test_a_fifo_in_the_log_directory_does_not_hang_the_export(monkeypatch):
 
 
 def test_a_second_export_is_refused_rather_than_queued(client, monkeypatch):
-    """The route is a sync def on a 40-thread pool shared with every other sync
-    endpoint, and a build is seconds of CPU."""
+    """The route is a sync def on a shared 40-thread pool; a build is seconds of CPU."""
     _seed_server_log("a line\n")
     settings_route._DEBUG_LOG_EXPORT_LOCK.acquire()
     try:
@@ -667,9 +651,8 @@ def test_a_second_export_is_refused_rather_than_queued(client, monkeypatch):
 
 
 def test_a_utf16_log_never_ships_its_credentials():
-    """UTF-8 replacement decoding of UTF-16 leaves a NUL between every
-    character, so every masking rule stops matching and the record is copied
-    through with the credential still perfectly readable."""
+    """UTF-8 replacement decoding of UTF-16 leaves a NUL between characters, so no masking rule
+    matches and the credential is copied through readable."""
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
     path = directory / "server-20260813-120000-utf16.log"
@@ -690,8 +673,7 @@ def test_an_invalid_utf8_record_is_refused_rather_than_replaced():
 
 
 def test_valid_non_ascii_utf8_is_kept():
-    """The refusal is for what the redactor cannot read, not for anything that
-    is merely not ASCII."""
+    """Valid non-ASCII UTF-8 is kept; refusal is only for bytes the redactor cannot read."""
     path = _seed_server_log("connexion établie vers le modèle 模型\n")
     body = _members()[f"server/{path.name}"].decode("utf-8")
     assert "établie" in body and "模型" in body
@@ -714,9 +696,8 @@ def test_a_tail_landing_exactly_on_a_boundary_keeps_that_record(monkeypatch):
 
 
 def test_the_tail_scan_does_not_follow_a_growing_log(monkeypatch):
-    """The forward scan must stop at the size taken from the descriptor. A live
-    log has no EOF: scanning to it follows the writer, which is the same
-    unbounded read the record loop is careful to avoid."""
+    """The forward tail scan must stop at the size taken from the descriptor; a live log has no EOF,
+    so scanning to it follows the writer."""
     monkeypatch.setattr(debug_log_export, "MAX_RECORD_BYTES", 512)
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 2048)
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 1 << 20)

@@ -97,9 +97,7 @@ def test_unrelated_failures_are_not_treated_as_cache_errors(error):
 
 
 def test_both_metadata_preflight_legs_consult_the_reachability_guard():
-    """Wiring contract, not behaviour: the helper tests above pass even when the guard
-    is never called, so assert both legs actually consult it. Kept deliberately narrow
-    (two call sites, both inside the preflight) so it cannot pass vacuously."""
+    """Wiring check: helper tests pass even if the guard is never called, so assert both legs consult it."""
     import inspect
 
     source = inspect.getsource(training_routes)

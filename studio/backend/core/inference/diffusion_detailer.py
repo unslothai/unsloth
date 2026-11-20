@@ -645,6 +645,9 @@ def detail_result(
     renders = list(images)
     placement = result.get("denoiser_offload")
     stop_event = threading.Event()
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    bind_generation_cancel(stop_event)
     with _active_lock:
         _active[stop_event] = account
     finished = False

@@ -285,9 +285,8 @@ def test_eval_weight_follows_dtype_conversion(monkeypatch, arch):
 
 @pytest.mark.parametrize("arch", ARCHS)
 def test_eval_weight_follows_unversioned_optimizer_step(monkeypatch, arch):
-    # FlashAdamW's Triton update writes the parameters in place without bumping their version
-    # counters (as an in-place op through `p.data` does), so eval -> train step -> eval must not
-    # serve the W + delta of the first eval.
+    # FlashAdamW's Triton update writes parameters in place without bumping version counters (as
+    # p.data does), so a second eval must not reuse the first eval's W + delta.
     model = _trained(monkeypatch, arch, ["dt_proj"])
     ids = _ids()
     first = _logits(model, ids)

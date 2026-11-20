@@ -8,6 +8,7 @@ from __future__ import annotations
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 
+import contextlib
 import gc
 import hashlib
 import io
@@ -211,6 +212,14 @@ class SttAudioDecodeError(ValueError):
 
 class SttAudioTooLongError(ValueError):
     """The decoded audio exceeds the bounded transcription duration."""
+
+
+class SttContextSizeError(ValueError):
+    """A recording cannot fit the selected context, or Auto cannot size it reliably."""
+
+
+class SttIncompleteTranscriptionError(ValueError):
+    """The server stopped at a limit instead of completing the transcription."""
 
 
 class SttLanguageError(ValueError):
@@ -505,11 +514,16 @@ def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[
     return candidates
 
 
-def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
-    """Resolve a canonical SHA below this repository's active snapshots dir."""
+def _safe_snapshot_for_revision(
+    repo: str,
+    revision: str,
+    *,
+    hub_cache: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve a canonical SHA below this repository's snapshots dir in *hub_cache* (default: the active cache)."""
     if not _HF_COMMIT_SHA.fullmatch(revision):
         return None
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     candidate = snapshots / revision
     try:
         snapshots_resolved = snapshots.resolve()
@@ -535,27 +549,36 @@ def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
 
 
 def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
-    """Find one complete local snapshot without contacting the Hub."""
+    """Find one complete local snapshot in any cache find_in_hub_caches covers, without contacting the Hub."""
     model_id = resolve_model_id(model)
     repo = resolve_model_repo(model_id)
+    from core.inference.model_cache_search import find_in_hub_caches
 
     recorded = _read_revision_record(repo)
+    return find_in_hub_caches(
+        repo, lambda hub_cache: _complete_snapshot_in(model_id, repo, recorded, hub_cache)
+    )
+
+
+def _complete_snapshot_in(
+    model_id: str, repo: str, recorded: Optional[str], hub_cache: Path
+) -> Optional[Path]:
     if recorded:
-        snapshot = _safe_snapshot_for_revision(repo, recorded)
+        snapshot = _safe_snapshot_for_revision(repo, recorded, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             return snapshot
 
-    ref = _repo_cache_dir(repo) / "refs" / "main"
+    ref = _repo_cache_dir(repo, hub_cache = hub_cache) / "refs" / "main"
     try:
         revision = ref.read_text(encoding = "utf-8").strip()
     except OSError:
         revision = ""
-    snapshot = _safe_snapshot_for_revision(repo, revision)
+    snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
     if snapshot is not None and _snapshot_usable(model_id, snapshot):
         _write_revision_record(repo, revision)
         return snapshot
 
-    snapshots = _repo_cache_dir(repo) / "snapshots"
+    snapshots = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots"
     try:
         revisions = sorted(
             (
@@ -568,7 +591,7 @@ def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
     except OSError:
         return None
     for _mtime, revision in revisions:
-        snapshot = _safe_snapshot_for_revision(repo, revision)
+        snapshot = _safe_snapshot_for_revision(repo, revision, hub_cache = hub_cache)
         if snapshot is not None and _snapshot_usable(model_id, snapshot):
             _write_revision_record(repo, revision)
             return snapshot
@@ -1007,6 +1030,60 @@ def _training_active() -> bool:
         return bool(get_training_backend().is_training_active())
     except Exception:
         return False
+
+
+def _lend_diffusion_training_vram(device: Optional[str], reason: str):
+    """A CUDA load while diffusion training runs: the trainer first gives back the GPU memory it keeps
+    only for speed (its nf4 dequant cache), and re-sizes it after the load. A no-op otherwise."""
+    if device != "cuda":
+        return contextlib.nullcontext()
+    try:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+
+        service = get_diffusion_training_service()
+        if not service.is_active():
+            return contextlib.nullcontext()
+        return service.lend_vram(reason)
+    except Exception:  # noqa: BLE001 -- coordination is best-effort; the load behaves as before
+        return contextlib.nullcontext()
+
+
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth")
+# The dictation worker's CUDA context and its first activations, beside its weights.
+_DICTATION_OVERHEAD_MIB = 512
+
+
+def _dictation_need_mib(snapshot_path: Optional[str]) -> Optional[int]:
+    """MiB a dictation load takes on the card: its weight files (an upper bound when stored wider than fp16) plus the
+    worker's context. None when the snapshot has no readable weight files."""
+    if not snapshot_path:
+        return None
+    try:
+        total = sum(
+            entry.stat().st_size
+            for entry in Path(snapshot_path).rglob("*")
+            if entry.name.endswith(_WEIGHT_SUFFIXES) and entry.is_file()
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return (total >> 20) + _DICTATION_OVERHEAD_MIB if total > 0 else None
+
+
+def _lend_image_text_encoder_vram(
+    device: Optional[str],
+    reason: str,
+    snapshot_path: Optional[str] = None,
+) -> int:
+    """A CUDA load beside an idle image model: its resident text encoders stream from the host first
+    (``diffusion_te_residency``) when the dictation model does not already fit beside them; they come back before a
+    later image encode once the render fits again."""
+    if device != "cuda":
+        return 0
+    try:
+        from core.inference.diffusion_te_residency import lend_from_loaded_engine
+        return lend_from_loaded_engine(reason, need_mib = _dictation_need_mib(snapshot_path))
+    except Exception:  # noqa: BLE001 -- coordination is best-effort; the load behaves as before
+        return 0
 
 
 def _clear_device_cache(device: Optional[str], collect: bool = True) -> None:
@@ -1516,7 +1593,13 @@ class WhisperSttSidecar:
 
                 retry_on_cpu = False
                 try:
-                    candidate = self._build_model(str(snapshot_path), device, dtype, cancel_event)
+                    _lend_image_text_encoder_vram(
+                        device, "dictation model load", str(snapshot_path)
+                    )
+                    with _lend_diffusion_training_vram(device, "dictation model load"):
+                        candidate = self._build_model(
+                            str(snapshot_path), device, dtype, cancel_event
+                        )
                     self._raise_if_load_cancelled(cancel_event)
                 except SttLoadCancelledError:
                     raise
