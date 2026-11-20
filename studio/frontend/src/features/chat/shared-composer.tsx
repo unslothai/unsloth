@@ -1715,7 +1715,7 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         throwIfCompareCancelled(compareSignal);
-        // Connected models run at the provider: select, never /load (that loader needs torch).
+        // Connected models run at the provider; /load would start the torch loader.
         const selectedId: string = sel.id;
         if (isExternalModelId(selectedId)) {
           const live = useChatRuntimeStore.getState();
