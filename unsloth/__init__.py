@@ -1527,8 +1527,9 @@ if _IS_MLX:
                 batch = one_row_batch(_mlx_detached(example))
                 try:
                     texts = formatting_func(example)
-                except Exception:
+                except (IndexError, TypeError):
                     # A batched function can fail on a row, e.g. indexing past a short string.
+                    # Other errors are the function's own validation and must surface.
                     try:
                         texts = formatting_func(batch)
                     except Exception:

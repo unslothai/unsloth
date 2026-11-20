@@ -849,6 +849,24 @@ def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
     with pytest.raises(KeyError):
         wrapped({"problem": "No answer."})
     assert wrapped(rows[1]) == ["Q: Halve 8. A: 4"]
+
+    def batched_initials(examples):
+        return [answer[0] for answer in examples["answer"]]
+
+    wrapped = formatting_func(batched_initials)
+    with pytest.raises(TypeError):
+        wrapped({"answer": 5})
+    assert wrapped(rows[0]) == ["F"]
+
+    def per_row_validated(example):
+        if not example["problem"]:
+            raise ValueError("empty problem")
+        return example["problem"] + example["answer"]
+
+    wrapped = formatting_func(per_row_validated)
+    with pytest.raises(ValueError):
+        wrapped({"problem": "", "answer": "x"})
+    assert wrapped(rows[1]) == "Halve 8.4"
     one_pass = OnePass()
     formatting_func(batched, one_pass)
     assert list(one_pass) == rows
