@@ -54,9 +54,13 @@ _MM_OUT_DTYPE = hasattr(torch.ops.aten.mm, "dtype") and getattr(torch.version, "
 _CHUNK_BYTES = 64 * 1024 * 1024
 
 
+_FP64_DEVICES = ("cuda", "cpu")
+
+
 def _rank_dtype(device):
-    # Rank-sized terms in float64: a float32 matmul may run as TF32 and round A / B to 10 bits.
-    return torch.float32 if device.type == "mps" else torch.float64
+    # Rank-sized terms in float64 on CUDA / ROCm / CPU: a float32 matmul may run as TF32 and round A / B to
+    # 10 bits. Other devices may have no float64 (MPS; Intel Arc XPUs raise "Required aspect fp64"): float32.
+    return torch.float64 if device.type in _FP64_DEVICES else torch.float32
 
 
 def _cross_term_fp32(weight, lora_A_weight):
