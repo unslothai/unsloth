@@ -52,6 +52,12 @@ def _blind_module(name):
     return type(name, (torch.nn.Module,), {})()
 
 
+def _qwen35_gdn():
+    mixer = _blind_module("Qwen3_5GatedDeltaNet")
+    mixer.conv1d = torch.nn.Conv1d(2, 2, 3)
+    return mixer
+
+
 class _Model(torch.nn.Module):
     def __init__(
         self,
@@ -72,6 +78,7 @@ def _trainer():
 @pytest.mark.parametrize(
     "model",
     [
+        _Model(_qwen35_gdn()),
         _Model(_blind_module("RecurrentGemmaRglru")),
         _Model(_blind_module("ZayaCCAProjection")),
         _Model(_blind_module("DeepseekV4CSACompressor")),
@@ -100,6 +107,27 @@ def test_ref_model_scored_first_still_protects_the_policy():
     for model in (ref, policy):
         assert model.__dict__["_unsloth_seq_packing_grad_ok"] is False
         assert model.__dict__["_unsloth_seq_packing_nograd_ok"] is False
+
+
+@pytest.mark.parametrize(
+    "leaks, scan_hit, can_pack", [(False, False, False), (None, True, False), (False, True, True)]
+)
+def test_wrapped_gdn_packing_requires_verified_boundaries(leaks, scan_hit, can_pack):
+    model = _Model(_qwen35_gdn())
+    model._unsloth_varlen_forward_wrapped = model.layer._unsloth_varlen_wrapped = True
+    model.layer._unsloth_varlen_conv_hit = True
+    model.layer._unsloth_varlen_scan_hit = scan_hit
+    check = _helper()
+    check.__globals__["_unsloth_grpo_packing_leaks"] = lambda *_: leaks
+    trainer = _trainer()
+    check(trainer, model)
+    assert getattr(model, "_unsloth_seq_packing_grad_ok", True) is can_pack
+    assert getattr(model, "_unsloth_seq_packing_nograd_ok", True) is can_pack
+
+    model.is_gradient_checkpointing = True
+    check(trainer, model)
+    assert model._unsloth_seq_packing_grad_ok is False
+    assert getattr(model, "_unsloth_seq_packing_nograd_ok", True) is can_pack
 
 
 def test_an_ordinary_model_keeps_packing():
