@@ -739,7 +739,7 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
 
 def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
     unsloth = _import_mlx_unsloth()
-    rows = [{"problem": "Add 2 and 3.", "answer": "5"}, {"problem": "Halve 8.", "answer": "4"}]
+    rows = [{"problem": "Add 2 and 3.", "answer": "Five."}, {"problem": "Halve 8.", "answer": "4"}]
 
     def batched(examples):
         return [
@@ -747,21 +747,50 @@ def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
             for i in range(len(examples["problem"]))
         ]
 
+    def batched_zip(examples):
+        return [f"Q: {q} A: {a}" for q, a in zip(examples["problem"], examples["answer"])]
+
     def per_row(example):
         return f"Q: {example['problem']} A: {example['answer']}"
 
-    def per_row_list(example):
-        return [f"Q: {example['problem']}", f"A: {example['answer']}"]
+    def batched_turns(examples):
+        turns = examples["turns"]
+        texts = []
+        for conversation in turns if isinstance(turns[0], list) else [turns]:
+            system = conversation.pop(0) if conversation[0].startswith("sys:") else "sys:default"
+            texts.append(" ".join([system, *conversation]))
+        return texts
 
-    def per_row_expand(example):
-        return [f"A: {answer}" for answer in example["answers"]]
+    def per_row_skip_blank(example):
+        return example["problem"].strip() if example["problem"] else []
+
+    def per_row_slice(example):
+        return example["problem"][:5]
+
+    def per_row_messages(example):
+        return [
+            {"role": "user", "content": example["problem"]},
+            {"role": "assistant", "content": example["answer"]},
+        ]
+
+    def per_row_dict(example):
+        return {"text": example["problem"]}
 
     def per_row_filter(example):
-        return [f"Q: {example['problem']}"] if example["keep"] else []
+        return [example["problem"], "Done."] if example["keep"] else None
 
-    class Streamed:
+    def batched_pop(examples):
+        return [text.strip() for text in examples.pop("problem")]
+
+    def per_row_last(example):
+        return str(ord(example["answer"][-1]))
+
+    class OnePass:
+        def __init__(self):
+            self.rows = iter(rows)
+
         def __iter__(self):
-            return iter(rows)
+            return self.rows
 
     def formatting_func(func, dataset = rows):
         return unsloth.UnslothTrainer(
@@ -772,14 +801,57 @@ def test_mlx_trainer_feeds_batched_formatting_func_one_row_batches():
             args = unsloth.UnslothTrainingArguments(max_steps = 1),
         ).formatting_func
 
-    assert formatting_func(batched)(rows[1]) == ["Q: Halve 8. A: 4"]
-    assert formatting_func(batched, Streamed())(rows[1]) == ["Q: Halve 8. A: 4"]
-    assert formatting_func(per_row) is per_row
-    assert formatting_func(per_row_list) is per_row_list
-    expand_rows = [{"answers": ["4", "four"]}]
-    assert formatting_func(per_row_expand, expand_rows) is per_row_expand
+    def formatted(func, examples):
+        wrapped = formatting_func(func)
+        return [wrapped(example) for example in examples]
+
+    expected = [["Q: Add 2 and 3. A: Five."], ["Q: Halve 8. A: 4"]]
+    assert formatted(batched, rows) == expected
+    assert formatted(batched_zip, rows) == expected
+    shapes = []
+
+    def batched_spy(example):
+        shapes.append(type(example["problem"]))
+        return batched(example) if shapes[-1] is list else ["raw"]
+
+    assert formatted(batched_spy, rows) == expected
+    assert shapes == [str, list, list]
+    empty_first = [{"problem": "", "answer": ""}, *rows]
+    assert formatted(batched, empty_first) == [[], *expected]
+    assert formatted(per_row_skip_blank, empty_first[:2]) == [[], "Add 2 and 3."]
+    turn_rows = [{"turns": ["sys:fr", "hi", "yo"]}, {"turns": ["sys:en", "a", "b"]}]
+    assert formatted(batched_turns, turn_rows) == [["sys:fr hi yo"], ["sys:en a b"]]
+    import io
+    from PIL import Image
+
+    png = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(png, "PNG")
+
+    def per_row_image(example):
+        example["image"].verify()
+        return {"text": example["caption"]}
+
+    image_rows = [{"image": Image.open(io.BytesIO(png.getvalue())), "caption": "dot"}]
+    assert formatted(per_row_image, image_rows) == [{"text": "dot"}]
+    for func in (per_row, per_row_slice, per_row_dict, per_row_messages):
+        assert formatted(func, rows) == [func(row) for row in rows]
+    cyclic = {**rows[0], "meta": {}}
+    cyclic["meta"]["self"] = cyclic
+    assert formatted(per_row, [cyclic]) == [per_row(cyclic)]
     filter_rows = [{"problem": "Skip.", "keep": False}, {"problem": "Halve 8.", "keep": True}]
-    assert formatting_func(per_row_filter, filter_rows) is per_row_filter
+    assert formatted(per_row_filter, filter_rows) == [None, ["Halve 8.", "Done."]]
+    assert formatted(batched_pop, [dict(row) for row in rows]) == [["Add 2 and 3."], ["Halve 8."]]
+    wrapped = formatting_func(per_row_last)
+    with pytest.raises(IndexError):
+        wrapped({"answer": ""})
+    assert wrapped(rows[0]) == "46"
+    wrapped = formatting_func(batched)
+    with pytest.raises(KeyError):
+        wrapped({"problem": "No answer."})
+    assert wrapped(rows[1]) == ["Q: Halve 8. A: 4"]
+    one_pass = OnePass()
+    formatting_func(batched, one_pass)
+    assert list(one_pass) == rows
 
 
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():
