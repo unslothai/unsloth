@@ -235,7 +235,7 @@ pub struct LaunchState {
     /// Whether this launch's web view paints on the CPU (Linux only). Fixed for the launch:
     /// "Try GPU again" only takes effect after a restart.
     pub cpu_painting: bool,
-    /// WebKitGTK before 2.54 composites with TextureMapper (Linux only); Fixed for the launch.
+    /// WebKitGTK before 2.54, which composites with TextureMapper (Linux only).
     pub legacy_compositor: bool,
     flag_cleared: AtomicBool,
 }

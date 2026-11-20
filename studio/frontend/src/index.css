@@ -7322,9 +7322,15 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
   backdrop-filter: none;
   box-shadow: none;
 }
-/* WebKitGTK before 2.54 composites with TextureMapper (webkit-legacy-compositor, main.tsx), whose backdrop-filter
-   also takes in what paints over the filtered layer, so the strip's glass haloed the sidebar logo. A surface's own
-   backdrop leaves its children out, so there the sidebar blurs for itself, over the strip's glass and with its fill. */
+/* TextureMapper (WebKitGTK < 2.54) blurs layers painted over a backdrop-filter into it, so the strip haloed the
+   sidebar logo. A surface's own backdrop leaves its children out: the sidebar takes its column's glass and the
+   strip keeps only the caption, so the column is still one layer of fill. */
+html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
+  mask:
+    linear-gradient(black 0 0) var(--sidebar-width) top / 100% var(--studio-custom-titlebar-height) no-repeat,
+    radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
+      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat;
+}
 html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));

@@ -226,9 +226,7 @@ fn paints_on_cpu(
             .is_some_and(compositing_disabled_by)
 }
 
-/// WebKitGTK composites with TextureMapper before 2.54 and with Skia from 2.54 on. TextureMapper's
-/// backdrop-filter also takes in layers painted after the filtered one, so content over a blur is
-/// haloed there (glass rules keyed on `webkit-legacy-compositor`, index.css).
+/// TextureMapper (before Skia in 2.54) blurs later layers into a backdrop-filter: index.css `webkit-legacy-compositor`.
 pub fn legacy_compositor(webkit_version: (u32, u32, u32)) -> bool {
     webkit_version < (2, 54, 0)
 }

@@ -13,6 +13,7 @@ const GATE = "html.tauri.render-linux.webkit-legacy-compositor[data-glass]";
 const MAIN = readSrc("main.tsx");
 const SIDEBAR = `${GATE}[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"]`;
 const FRAME_BEFORE = "html[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before";
+const STRIP = '[data-slot="sidebar-container"][data-windows-glass-frame]::before';
 const CLEAR =
   'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"]';
 
@@ -28,13 +29,21 @@ function decls(selector: string): Map<string, string> {
 }
 
 test("under WebKitGTK's TextureMapper compositor the pinned sidebar blurs for itself, with the strip's fill", () => {
-  // Content painted over the strip's ::before glass is blurred into it there (a halo round the logo).
   const frame = decls(FRAME_BEFORE);
   const own = decls(SIDEBAR);
   for (const prop of ["backdrop-filter", "-webkit-backdrop-filter", "background-color"]) {
     assert.ok(frame.get(prop), `the strip sets ${prop}`);
     assert.equal(own.get(prop), frame.get(prop), prop);
   }
+});
+
+test("under it the strip leaves the sidebar column to the sidebar, so the column keeps one layer of fill", () => {
+  const shared = decls(`html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] ${STRIP}`).get("mask");
+  const legacy = decls(`${GATE}[data-chat-wallpaper-workspace-ready] ${STRIP}`).get("mask");
+  assert.match(shared ?? "", /left top \/ var\(--sidebar-width\) 100%/);
+  assert.ok(legacy, "the legacy strip sets its own mask");
+  assert.doesNotMatch(legacy, /var\(--sidebar-width\) 100%/, "no sidebar column under the self-blurred sidebar");
+  assert.match(legacy, /var\(--sidebar-width\) top \/ 100% var\(--studio-custom-titlebar-height\)/);
 });
 
 test("the self blur comes after the rule that clears it and stays off every other engine", () => {
@@ -53,7 +62,6 @@ test("the self blur comes after the rule that clears it and stays off every othe
 });
 
 test("the gate follows the shell's compositor answer, not CPU painting", () => {
-  // WebKitGTK 2.54 forced onto the CPU composites with Skia and has no halo; every release before it does.
   assert.match(MAIN, /if \(status\.legacyCompositor\) \{\s*document\.documentElement\.classList\.add\("webkit-legacy-compositor"\);/);
   assert.doesNotMatch(CSS, /webkit-cpu-paint\[data-glass\][^{]*sidebar-inner/);
 });
