@@ -231,6 +231,7 @@ import {
   SECTION_LABEL,
   chooseQuant,
   dedupeRows,
+  discoverListsCheckpoints,
   discoverUsesFallback,
   downloadedQuants,
   ejectTargetId,
@@ -1929,6 +1930,11 @@ export function ComposerModelPicker({
     },
     [hubScrollRef],
   );
+  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const chatOnlyKnown = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
   const recommended = useMemo<ModelOption[]>(() => {
     // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
     const supported = (r: (typeof hubResults)[number]) =>
@@ -1953,8 +1959,13 @@ export function ComposerModelPicker({
               ) &&
               supported({ ...r, quantMethod: undefined }))) &&
           (matchesRecommendedBrowse(r, quantFormats, !hubQuery) ||
-            // A Mac also runs MLX and plain safetensors; the browse gates still apply.
-            (isMac &&
+            // The browse gates still apply.
+            (discoverListsCheckpoints(
+              isMac,
+              formatFilter,
+              chatOnly,
+              isMlxId(r.id, hasMlxCardTag(r)),
+            ) &&
               isRecommendableFormat(r.id, r.isGguf, true, r.quantMethod) &&
               matchesRecommendedBrowse(
                 { ...r, isGguf: true },
@@ -1974,7 +1985,16 @@ export function ComposerModelPicker({
       return fromHub;
     }
     return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
-  }, [hubResults, quantFormats, hubQuery, isMac, deviceType, source?.models]);
+  }, [
+    hubResults,
+    quantFormats,
+    hubQuery,
+    isMac,
+    deviceType,
+    source?.models,
+    formatFilter,
+    chatOnly,
+  ]);
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
     () =>
@@ -2623,17 +2643,40 @@ export function ComposerModelPicker({
   );
   const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
   const [deviceSortDesc, setDeviceSortDesc] = useState(DEVICE_SORT_DESC.recent);
-  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
   const sizeFilter = formatFilter === "mlx" || formatFilter === "safetensors";
   // Not shownRows: the fit filter reads these, so a hidden row would lose its size.
   const hubSizes = useHubRepoSizes(
     useMemo(
-      () => hubSizeIds(hubResults, recommended),
+      () =>
+        hubSizeIds(hubResults, recommended, (r) =>
+          isMlxId(r.id, hasMlxCardTag(r)),
+        ),
       [hubResults, recommended],
     ),
     open && viewed === RECOMMENDED_TAB,
+  );
+  // A plain checkpoint's size comes from the listing; MLX needs its file listing.
+  const hubListedSizes = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of hubResults) {
+      if (
+        !r.isGguf &&
+        r.estimatedSizeBytes &&
+        !isMlxId(r.id, hasMlxCardTag(r))
+      ) {
+        map.set(r.id.toLowerCase(), r.estimatedSizeBytes);
+      }
+    }
+    return map;
+  }, [hubResults]);
+  const hubSizeOf = useCallback(
+    (id: string): number | undefined => {
+      const key = id.toLowerCase();
+      return hubSizes.get(key) || hubListedSizes.get(key);
+    },
+    [hubSizes, hubListedSizes],
   );
   // Non-GGUF loads cannot offload: past the device is "exceeds".
   const hubCheckpointFit = useMemo(() => {
@@ -2643,7 +2686,7 @@ export function ComposerModelPicker({
         continue;
       }
       const id = r.id.toLowerCase();
-      const bytes = hubSizes.get(id);
+      const bytes = hubSizeOf(id);
       // curatedSizeBytes outranks hfModelFitsDevice's 0.4 B/param MLX estimate.
       const mlx = isMlxId(r.id, hasMlxCardTag(r));
       const fits = bytes
@@ -2671,7 +2714,7 @@ export function ComposerModelPicker({
     return map;
   }, [
     hubResults,
-    hubSizes,
+    hubSizeOf,
     hubCheckpointFits,
     gpuInfo,
     inferenceGpu,
@@ -3763,6 +3806,13 @@ export function ComposerModelPicker({
         ],
       };
     }
+    if (
+      viewed === RECOMMENDED_TAB &&
+      formatFilter === "safetensors" &&
+      chatOnlyKnown
+    ) {
+      return { title: "No models", hint: "This device runs GGUF models only." };
+    }
     return { title: "No models" };
   };
 
@@ -4182,9 +4232,7 @@ export function ComposerModelPicker({
     const paramLabel =
       row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
     const sizeBytes =
-      row.kind === "hub" && sizeFilter
-        ? hubSizes.get(row.id.toLowerCase())
-        : undefined;
+      row.kind === "hub" && sizeFilter ? hubSizeOf(row.id) : undefined;
     const sizeLabel = sizeBytes ? formatBytes(sizeBytes) : null;
     const onDisk = deviceQuants.get(row.inventoryKey ?? row.key) ?? NO_QUANTS;
     const partials = partialsOf(row);

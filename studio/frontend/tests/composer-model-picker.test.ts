@@ -445,7 +445,7 @@ test("composer search keeps Mac-native repos, as the header picker did", () => {
   );
   assert.match(
     picker,
-    /isMac &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
+    /discoverListsCheckpoints\(\s+isMac,[\s\S]{0,120}?\) &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
   );
 });
 
@@ -1870,13 +1870,13 @@ test("the Show full model list switch applies to an already loaded picker", () =
   );
 });
 
-test("a failed repo size listing is not cached, so it can retry", () => {
+test("a failed repo size listing is not cached as a size, so it can retry", () => {
   const sizes = readSrc(
     "components/assistant-ui/composer-model-picker/hub-repo-size.ts",
   );
   assert.match(
     sizes,
-    /\.then\(\(bytes\) => \{\s+sizes\.set\(key, bytes\);[\s\S]*?\}\)\s+\/\/[^\n]*\n\s+\.catch\(\(\) => null\)\s+\.finally\(\(\) => inflight\.delete\(key\)\);/,
+    /\.catch\(\(\) => \{\s+failedAt\.set\(key, Date\.now\(\)\);\s+return null;\s+\}\)\s+\.finally\(\(\) => inflight\.delete\(key\)\);/,
   );
 });
 
@@ -1890,7 +1890,7 @@ test("the fit-only filter and the row warning share the measured verdict", () =>
   );
   assert.match(
     picker,
-    /useHubRepoSizes\(\s+useMemo\(\s+\(\) => hubSizeIds\(hubResults, recommended\),/,
+    /useHubRepoSizes\(\s+useMemo\(\s+\(\) =>\s+hubSizeIds\(hubResults, recommended,/,
   );
   assert.ok(
     picker.indexOf("const hubCheckpointFit = useMemo") <
