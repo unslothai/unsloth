@@ -1007,36 +1007,76 @@ def _image_png(opened) -> bytes:
     return out.getvalue()
 
 
-def _image_text(path: str) -> tuple[str, list[int]]:
-    """The loaded vision model reads each page, else local Tesseract; returns the text and unread pages."""
+def _image_text(path: str, filename: str) -> tuple[str, str | None]:
+    """The loaded vision model reads each page, else local Tesseract; returns the text and any warning."""
     import tempfile
 
     from PIL import Image
 
     from core.rag import captioner, pdf_ocr
 
-    with Image.open(path) as opened:
+    pngs: dict[int, bytes] = {}
+    failed: dict[int, Exception] = {}
+    more = False
+    # A handle, not the path: Pillow memory-maps a path's raw strips and scrambles a rotated uncompressed TIFF.
+    with open(path, "rb") as upload, Image.open(upload) as opened:
         # TIFF frames are pages; GIF and WebP frames are animation.
-        count = opened.n_frames if opened.format == "TIFF" else 1
-        pngs = {}
-        for number in range(1, min(count, config.OCR_MAX_PAGES) + 1):
-            try:
-                opened.seek(number - 1)
-                pngs[number] = _image_png(opened)
-            except Exception:
-                if count == 1:
-                    raise
+        multipage = opened.format == "TIFF" and opened.is_animated
+        if not multipage:
+            pngs[1] = _image_png(opened)
+        else:
+            # Not n_frames: Pillow's walk over every page is quadratic, and a small TIFF can hold millions.
+            for number in range(1, config.OCR_MAX_PAGES + 1):
+                try:
+                    opened.seek(number - 1)
+                    pngs[number] = _image_png(opened)
+                except EOFError:
+                    break
+                except Exception as exc:
+                    # Pillow can still reach the pages after one it fails to set up.
+                    failed[number] = exc
+            else:
+                more = True
+                try:
+                    opened.seek(config.OCR_MAX_PAGES)
+                except EOFError:
+                    more = False
+                except Exception:
+                    pass  # a page Pillow cannot set up is still a page
+    if not pngs and failed:
+        raise next(iter(failed.values()))
     texts = captioner.ocr_pages(pngs)
-    with tempfile.TemporaryDirectory() as tmp:
-        normalized = os.path.join(tmp, "image.png")
-        for number in sorted(pngs.keys() - texts.keys()):
-            with open(normalized, "wb") as handle:
-                handle.write(pngs[number])
-            text = pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
-            if text:
-                texts[number] = text
+    if rest := sorted(pngs.keys() - texts.keys()):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                normalized = os.path.join(tmp, "image.png")
+                for number in rest:
+                    with open(normalized, "wb") as handle:
+                        handle.write(pngs[number])
+                    text = pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+                    if text:
+                        texts[number] = text
+        except OSError:
+            # A full disk costs only the pages left for Tesseract.
+            if not texts:
+                raise
     text = "\n\n".join(texts[number] for number in sorted(texts))
-    return text, [number for number in range(1, count + 1) if number not in texts]
+    if not multipage:
+        return text, None
+    notes = []
+    if failed:
+        first, error = next(iter(failed.items()))
+        cause = f"; page {first}: {error}" if len(failed) > 1 else f": {error}"
+        notes.append(
+            f"Could not read page{'s' if len(failed) > 1 else ''} {', '.join(map(str, failed))} "
+            f"of {filename}{cause}."
+        )
+    unread = sorted(pngs.keys() - texts.keys())
+    if unread:
+        notes.append(_unread_pages_warning(filename, unread))
+    if more:
+        notes.append(f"Only the first {config.OCR_MAX_PAGES} pages of {filename} were read.")
+    return text, " ".join(notes) or None
 
 
 def _scanned_page_text(path: str, pages: list) -> tuple[dict[int, str], list[int]]:
@@ -1075,7 +1115,7 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
     stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
     if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
         try:
-            text, unread = _image_text(stored_path)
+            text, warning = _image_text(stored_path, filename)
         except Exception as exc:
             raise HTTPException(
                 status_code = 422, detail = f"{filename} could not be read: {exc}"
@@ -1085,12 +1125,13 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         if not text.strip():
             raise HTTPException(
                 status_code = 422,
-                detail = f"No text could be read from {filename}. Reading images needs a vision "
+                detail = warning
+                or f"No text could be read from {filename}. Reading images needs a vision "
                 "model loaded in Chat, or Tesseract OCR installed.",
             )
         result = {"filename": filename, "text": text, "truncated": False}
-        if unread:
-            result["warning"] = _unread_pages_warning(filename, unread)
+        if warning:
+            result["warning"] = warning
         return result
     try:
         pages = parsers.parse(stored_path)
