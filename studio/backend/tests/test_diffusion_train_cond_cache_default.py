@@ -717,3 +717,49 @@ def test_h3_image_bf16_fallback_captions_never_serve_an_int8_run(
         assert len(loads) == 2, "the int8 run's own entries must serve the next int8 run"
     finally:
         te.__dict__.pop("_unsloth_te_scheme", None)
+
+
+def test_eviction_never_touches_a_user_file_named_like_a_cache_key(tmp_path):
+    from safetensors.torch import save_file
+
+    # A user's own tensors in an explicitly chosen directory, named with a cache kind prefix.
+    for name in (
+        "txt_vintage",
+        "txt_v1_my_embeddings",
+        "lat_v2_style",
+        "h3clip_v1_x",
+        "h3img_v1_y",
+    ):
+        save_file(
+            {"w": torch.ones(4096)},
+            str(tmp_path / f"{name}.safetensors"),
+            metadata = {"format": "pt"},
+        )
+    save_file(
+        {"t0": torch.ones(4096)},
+        str(tmp_path / "txt_v1_lookalike.safetensors"),
+        metadata = {"version": "1"},
+    )
+    user = sorted(p.name for p in tmp_path.iterdir())
+    cache = PersistentConditioningCache(str(tmp_path), "fam", 64, max_bytes = 1)
+    _put(cache, "txt_v1_a")
+    _put(cache, "txt_v1_b")
+    left = sorted(p.name for p in tmp_path.iterdir())
+    assert all(name in left for name in user), (user, left)
+    # The cache still evicts its own entries under the cap.
+    assert "txt_v1_a.safetensors" not in left
+
+
+def test_entries_written_before_the_owner_marker_are_still_evicted(tmp_path):
+    from safetensors.torch import save_file
+
+    # The exact metadata every entry carried before the owner marker was added.
+    legacy = {"version": "1", "family": "fam", "none_slots": "[1]", "count": "2"}
+    save_file({"t0": torch.zeros(1024)}, str(tmp_path / "txt_v1_old.safetensors"), metadata = legacy)
+    old = time.time() - 1000
+    os.utime(tmp_path / "txt_v1_old.safetensors", (old, old))
+    cache = PersistentConditioningCache(str(tmp_path), "fam", 64, max_bytes = 6000)
+    _put(cache, "txt_v1_new")
+    _put(cache, "txt_v1_newer")
+    left = {p.stem for p in tmp_path.glob("*.safetensors")}
+    assert "txt_v1_old" not in left and "txt_v1_newer" in left

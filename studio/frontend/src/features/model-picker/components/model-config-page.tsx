@@ -8,6 +8,12 @@ import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import { modelDisplayName } from "../model-config/model-identity";
+import {
+  cachedStagedDims,
+  rememberStagedDims,
+  stagedDimsLastInconclusive,
+  type StagedDims,
+} from "../model-config/staged-dims-cache";
 import { type RunSettingsNaming, RunSettingsPicker } from "./saved-run-settings-row";
 import {
   adoptRememberedRunSettings,
@@ -3121,16 +3127,12 @@ export function ModelConfigPage({
   const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
-  const [fetchedStagedDims, setFetchedStagedDims] = useState<{
-    key: string;
-    contextLength: number | null;
-    layerCount: number | null;
-    moeLayerCount: number | null;
-    isDiffusion?: boolean;
-    diffusionUnknown?: boolean;
-  } | null>(null);
+  const [fetchedStagedDims, setFetchedStagedDims] = useState<StagedDims | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
+      return;
+    }
+    if (cachedStagedDims(contextFetchKey)) {
       return;
     }
     let cancelled = false;
@@ -3161,6 +3163,7 @@ export function ModelConfigPage({
         nativePathToken,
       });
       if (!cancelled) {
+        rememberStagedDims({ key: contextFetchKey, ...dims });
         setFetchedStagedDims({ key: contextFetchKey, ...dims });
       }
     })().catch(() => {
@@ -3177,7 +3180,9 @@ export function ModelConfigPage({
     nativePathToken,
   ]);
   const stagedDims =
-    fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
+    fetchedStagedDims?.key === contextFetchKey
+      ? fetchedStagedDims
+      : cachedStagedDims(contextFetchKey);
   // Tri-state on purpose: collapsing unknown to false lets a compare pane inherit another split.
   const classifiedIsDiffusion = resolveStagedDiffusionClassification(
     isDiffusion,
@@ -3656,6 +3661,13 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // The header probe gates the request; hold the row's place while it runs.
+  const estimateAwaitingProbe =
+    memoryEstimateRequest == null &&
+    contextFetchKey != null &&
+    stagedDims == null &&
+    !isDiffusion &&
+    !stagedDimsLastInconclusive(contextFetchKey);
   // The loaded model's reason answers only the request it was given.
   const mlxOffloadNote = (
     value: MlxOffload | undefined,
@@ -3878,7 +3890,9 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  const modelName = modelDisplayName(configId);
+  // Name NPU sets after the picker's name; before the NPU list arrives, the bare id it falls back to.
+  const modelName =
+    npuName ?? (targetIsNpu ? configId.replace(/^lemonade:/, "") : modelDisplayName(configId));
   const savedSets = useSavedRunSettings(configId);
   const persistedSet = useSelectedRunSettings(configId, target.ggufVariant);
   // undefined: follow what is stored. Shared, or the other editor saves this set's values elsewhere.
@@ -3889,11 +3903,13 @@ export function ModelConfigPage({
   );
   const [naming, setNaming] = useState<RunSettingsNaming | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Until the NPU list arrives an NPU model has no name but its id, and an adopted set keeps its first name.
+  const npuNamePending = targetIsNpu && !npuCatalogListed;
   useEffect(() => {
-    if (storedRecord.remembered && persistedSet === undefined) {
+    if (storedRecord.remembered && persistedSet === undefined && !npuNamePending) {
       adoptRememberedRunSettings(configId, target.ggufVariant, storedRecord.config, modelName);
     }
-  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName]);
+  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName, npuNamePending]);
   const forSetStore = (next: PerModelConfig) =>
     normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
   const persistedEntry =
@@ -4546,10 +4562,10 @@ export function ModelConfigPage({
             once it is loaded.
           </p>
         ) : null}
-        {memoryEstimateRequest != null && !audioRuntimeGguf && (
+        {(memoryEstimateRequest != null || estimateAwaitingProbe) && !audioRuntimeGguf && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}
-            loading={memoryEstimate.loading}
+            loading={memoryEstimate.loading || estimateAwaitingProbe}
             stale={memoryEstimate.stale}
             gpuCapacityGb={memoryGpuCapacityGb}
             totalCapacityGb={memoryTotalCapacityGb}

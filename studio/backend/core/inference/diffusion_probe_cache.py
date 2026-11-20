@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ _PROBE_SOURCES = (
 
 _LOCK = threading.Lock()
 _SOURCE_DIGEST: Optional[str] = None
+_DRIVER: list = []  # [identity or None], read once per process
 
 
 def enabled() -> bool:
@@ -90,6 +92,74 @@ def _ordinal(card: str) -> Optional[int]:
     return None
 
 
+def _nvidia_driver() -> Optional[str]:
+    """The NVIDIA driver build, without a CUDA context: the kernel module's version (Linux), else the loaded user-mode
+    driver library's name, size and mtime (WSL, containers without the proc file, Windows), plus the CUDA version
+    the driver supports. None when no build identity can be read."""
+    import ctypes
+
+    parts = []
+    try:
+        lib = ctypes.CDLL("nvcuda.dll" if os.name == "nt" else "libcuda.so.1")
+        version = ctypes.c_int(0)
+        if lib.cuDriverGetVersion(ctypes.byref(version)) == 0 and version.value > 0:
+            parts.append(f"cuda{version.value}")
+    except Exception:  # noqa: BLE001
+        pass
+    build = None
+    try:
+        with open("/proc/driver/nvidia/version", encoding = "utf-8", errors = "replace") as f:
+            line = f.readline()
+        match = re.search(r"\s(\d+\.\d+(?:\.\d+)*)\s", line)
+        build = f"nvrm{match.group(1)}" if match else None
+    except OSError:
+        pass
+    if build is None:
+        paths = []
+        if os.name == "nt":
+            paths.append(
+                os.path.join(
+                    os.environ.get("SystemRoot") or r"C:\Windows", "System32", "nvcuda.dll"
+                )
+            )
+        else:
+            try:
+                with open("/proc/self/maps", encoding = "utf-8", errors = "replace") as f:
+                    paths = sorted({ln.split()[-1] for ln in f if "/libcuda.so" in ln})
+            except OSError:
+                pass
+        for path in paths:
+            try:
+                info = os.stat(path)
+                build = (
+                    f"{os.path.basename(os.path.realpath(path))}:{info.st_size}:{info.st_mtime_ns}"
+                )
+                break
+            except OSError:
+                continue
+    if build is None:
+        return None
+    return ",".join(parts + [build])
+
+
+def _rocm_driver() -> Optional[str]:
+    from .diffusion_attention import _rocm_driver_version
+    found = _rocm_driver_version()
+    return None if not found or found.endswith(":?") else found
+
+
+def _driver_identity(hip: bool) -> Optional[str]:
+    """The GPU driver this process runs on, read once per process; None when it cannot be read, so a verdict that a
+    driver update could change is never adopted on an unknown driver."""
+    if not _DRIVER:
+        try:
+            found = _rocm_driver() if hip else _nvidia_driver()
+        except Exception:  # noqa: BLE001
+            found = None
+        _DRIVER.append(found)
+    return _DRIVER[0]
+
+
 def fingerprint(card: str) -> Optional[dict[str, Any]]:
     """Everything a verdict for ``card`` depends on, or None. Creates no CUDA context."""
     if not str(card).startswith("cuda"):
@@ -105,13 +175,10 @@ def fingerprint(card: str) -> Optional[dict[str, Any]]:
         uuid = str(getattr(props, "uuid", "") or "")
         if not uuid:
             return None
-        driver = None
-        get_driver = getattr(torch._C, "_cuda_getDriverVersion", None)
-        if callable(get_driver):
-            try:
-                driver = int(get_driver())
-            except Exception:  # noqa: BLE001
-                driver = None
+        hip = getattr(torch.version, "hip", None)
+        driver = _driver_identity(bool(hip))
+        if driver is None:  # a driver change could not be seen: never persisted
+            return None
         env = {
             k: v
             for k, v in sorted(os.environ.items())
@@ -121,7 +188,7 @@ def fingerprint(card: str) -> Optional[dict[str, Any]]:
             "format": _FORMAT,
             "torch": str(torch.__version__),
             "torch_cuda": str(torch.version.cuda),
-            "hip": str(getattr(torch.version, "hip", None)),
+            "hip": str(hip),
             "torchao": _version("torchao"),
             "triton": _version("triton"),
             "driver": driver,

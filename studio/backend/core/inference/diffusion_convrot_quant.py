@@ -12,6 +12,7 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 INT8_ROTQUANT_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT"
 INT8_ROTQUANT_H16_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16"
@@ -155,6 +156,7 @@ def _triton_ok() -> bool:
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
     try:
         import triton

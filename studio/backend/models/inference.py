@@ -6521,6 +6521,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "Static step skip only: mode, schedule and the last generation's "
         "calls / computed / skipped transformer calls; null for any other cache",
     )
+    render_engagement: Optional[dict] = Field(
+        None,
+        description = "What the last generation actually ran: fbcache = {computed, skipped} head-block "
+        "decisions of First-Block-Cache (null when it is not installed). null before the first generation.",
+    )
     workflows: list[str] = Field(
         default_factory = list,
         description = "Image workflows the loaded family supports (drives UI tab gating): "
@@ -8340,6 +8345,12 @@ class VideoStatusResponse(BaseModel):
         description = "Static step skip only: the schedule (mode, head, tail, every, "
         "planned_skips) and the denoiser call counts (calls, computed, skipped) of the clip in "
         "flight, else of the last one. null for any other step cache.",
+    )
+    render_engagement: Optional[dict] = Field(
+        None,
+        description = "What the last clip actually ran: vae_decode = {untiled, tiled, wide, oom_fallback} "
+        "decodes of the untiled-when-fits VAE wrapper (null when it is not installed), fbcache = "
+        "{computed, skipped} First-Block-Cache decisions (null when it is not installed). null before the first clip.",
     )
     transformer_quant: Optional[str] = Field(
         None,

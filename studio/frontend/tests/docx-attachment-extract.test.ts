@@ -19,6 +19,7 @@ const {
   writeDocxBreaksAndCheckboxes,
   writeDocxListNumbers,
   writeDocxSuperscripts,
+  unwrapDocxRuns,
   writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
 const { mammoth, writeDocxSymbols } = await import("../src/features/chat/docx-reader.ts");
@@ -78,7 +79,7 @@ function everyRewrite(document = "word/document.xml"): Record<string, Uint8Array
 /** The archive-to-archive chain extractDocxAttachmentText ran before reading one map of parts. */
 async function chained(name: string, bytes: Uint8Array): Promise<string> {
   const repacked = repackDocxAttachmentArchive(name, bytes);
-  const marked = markDocxNotes(writeDocxSuperscripts(linearizeDocxMath(writeDocxSymbols(repacked, 10 * 1024 * 1024))));
+  const marked = markDocxNotes(writeDocxSuperscripts(linearizeDocxMath(unwrapDocxRuns(writeDocxSymbols(repacked, 10 * 1024 * 1024)))));
   const archive = writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)));
   const { value } = await mammoth.extractRawText({ buffer: Buffer.from(archive) } as never);
   return marked.label(value);
@@ -259,5 +260,34 @@ test("extractDocxAttachmentText ends a superscript at a note reference", async (
       }),
     );
     assert.match(text, /^Area 10\^6\[1\]3 m/);
+  });
+});
+
+test("extractDocxAttachmentText keeps moved, field, ruby, direction and custom XML text", async () => {
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const document =
+    `<w:document ${W}><w:body>` +
+    `<w:p><w:moveFrom w:id="1">${run("Old spot")}</w:moveFrom></w:p>` +
+    `<w:p>${run("Clause 4: ")}<w:moveTo w:id="2">${run("Payment is due in 30 days.")}</w:moveTo></w:p>` +
+    `<w:p>${run("Customer: ")}<w:fldSimple w:instr=" MERGEFIELD Name ">${run("Ada Lovelace")}</w:fldSimple></w:p>` +
+    `<w:p><w:ruby><w:rubyPr/><w:rt>${run("かんじ")}</w:rt><w:rubyBase>${run("漢字")}</w:rubyBase></w:ruby>${run("を読む")}</w:p>` +
+    `<w:p><w:dir w:val="rtl">${run("שלום")}</w:dir>${run(" and ")}<w:bdo w:val="ltr">${run("ltr text")}</w:bdo></w:p>` +
+    `<w:customXml w:element="clause"><w:p>${run("Custom block")}</w:p></w:customXml>` +
+    `<w:p><w:customXml w:element="party"><w:customXmlPr/>${run("Custom inline")}</w:customXml></w:p>` +
+    `<w:p><w:moveTo w:id="3"><w:fldSimple w:instr=" DATE ">${run("1 May 2026")}</w:fldSimple></w:moveTo></w:p>` +
+    `</w:body></w:document>`;
+  await withDocxGlobals(async () => {
+    const text = await assertSameAsChained(
+      "wrapped.docx",
+      zipSync({
+        "[Content_Types].xml": strToU8("<Types/>"),
+        "_rels/.rels": rels([["officeDocument", "word/document.xml"]]),
+        "word/document.xml": strToU8(document),
+      }),
+    );
+    assert.equal(
+      text.trim(),
+      "Clause 4: Payment is due in 30 days.\n\nCustomer: Ada Lovelace\n\n漢字を読む\n\nשלום and ltr text\n\nCustom block\n\nCustom inline\n\n1 May 2026",
+    );
   });
 });

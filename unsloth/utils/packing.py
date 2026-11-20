@@ -285,23 +285,28 @@ def _mask_padding_free_boundary_labels(batch) -> None:
     batch["labels"] = mask_packed_boundary_labels(labels, batch["packed_seq_lengths"])
 
 
-def _carry_host_lengths(before, after) -> None:
+def _host_lengths(batch):
+    """Host tuple of a CPU `packed_seq_lengths`, read before the move (BatchEncoding.to() moves in place)."""
+    if not isinstance(batch, Mapping):
+        return None
+    src = batch.get("packed_seq_lengths")
+    if not isinstance(src, torch.Tensor) or src.device.type != "cpu":
+        return None
+    try:
+        return tuple(int(x) for x in src.reshape(-1).tolist())
+    except Exception:
+        return None
+
+
+def _carry_host_lengths(host, after) -> None:
     """Attach host `packed_seq_lengths` to the moved device tensor, avoiding a blocking `.tolist()`."""
-    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+    if host is None or not isinstance(after, Mapping):
         return
-    src = before.get("packed_seq_lengths")
     dst = after.get("packed_seq_lengths")
-    if (
-        not isinstance(src, torch.Tensor)
-        or not isinstance(dst, torch.Tensor)
-        or dst is src
-        or src.device.type != "cpu"
-        or dst.device.type == "cpu"
-        or src.numel() != dst.numel()
-    ):
+    if not isinstance(dst, torch.Tensor) or dst.device.type == "cpu" or dst.numel() != len(host):
         return
     try:
-        dst._unsloth_lengths_tuple = tuple(int(x) for x in src.reshape(-1).tolist())
+        dst._unsloth_lengths_tuple = host
     except Exception:
         pass
 
@@ -317,8 +322,9 @@ def _install_host_lengths_carry() -> None:
 
     @wraps(original)
     def send_to_device(tensor, *args, **kwargs):
+        host = _host_lengths(tensor)
         moved = original(tensor, *args, **kwargs)
-        _carry_host_lengths(tensor, moved)
+        _carry_host_lengths(host, moved)
         return moved
 
     send_to_device._unsloth_host_lengths_carry = True
@@ -454,7 +460,7 @@ def _hybrid_packing_enabled() -> bool:
     return _hybrid_packing_mode() == "on"
 
 
-# Auto-packed mixers (CUDA only). MoE router aux loss is computed over the whole packed row, not per document.
+# Auto-packed mixers (CUDA, and ROCm with a working flash varlen). MoE router aux loss is computed over the whole packed row, not per document.
 _HYBRID_AUTO_KINDS = ("gated_delta", "ple")
 
 HYBRID_PACKING_STATS = {
@@ -1443,7 +1449,14 @@ def _auto_hybrid_device_ok(module) -> bool:
     if _stateful_mixer_kind(module) == "ple":
         return True
     weight = next(module.parameters(), None)
-    return torch.version.hip is None and weight is not None and weight.device.type == "cuda"
+    if weight is None or weight.device.type != "cuda":
+        return False
+    if torch.version.hip is None:
+        return True
+    # ROCm: without flash varlen the full-attention layers run a dense T x T mask and packing is a wash (#17738).
+    from .hf_packed_attention import _torch_varlen
+
+    return _torch_varlen(weight.device) is not None
 
 
 def _hybrid_opt_in_device(modules) -> Optional[str]:
@@ -1578,7 +1591,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         # Every stateful mixer, kwargs-mode ones included (transformers 5.16+ Qwen mixers move there).
         if not all(_auto_hybrid_device_ok(m) for m in hybrid_modules):
             return _hybrid_reject(
-                f"default-on only on CUDA (set {_HYBRID_PACKING_ENV_VAR}=1 to opt in on this device)"
+                f"default-on only on CUDA, or ROCm whose flash varlen passes its self-check "
+                f"(set {_HYBRID_PACKING_ENV_VAR}=1 to opt in on this device)"
             )
     rollback = _snapshot_mixers(hybrid_modules)
     if kwargs_modules or hub_short_convs:

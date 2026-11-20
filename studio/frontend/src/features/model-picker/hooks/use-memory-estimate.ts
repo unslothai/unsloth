@@ -14,6 +14,22 @@ import {
 } from "../model-config/estimate-context";
 
 const ESTIMATE_DEBOUNCE_MS = 250;
+const ESTIMATE_CACHE_LIMIT = 32;
+
+// Survives remounts (the Model dropdown remounts the page), so reopening paints the last numbers at once.
+const estimateCache = new Map<string, MemoryEstimate>();
+
+export function cachedMemoryEstimate(key: string | null): MemoryEstimate | null {
+  return key == null ? null : (estimateCache.get(key) ?? null);
+}
+
+export function rememberMemoryEstimate(key: string, estimate: MemoryEstimate): void {
+  estimateCache.delete(key);
+  estimateCache.set(key, estimate);
+  if (estimateCache.size > ESTIMATE_CACHE_LIMIT) {
+    estimateCache.delete(estimateCache.keys().next().value as string);
+  }
+}
 
 export interface MemoryEstimateState {
   estimate: MemoryEstimate | null;
@@ -74,18 +90,22 @@ export function useMemoryEstimate(
   const [state, setState] = useState<MemoryEstimateState & {
     identity: string | null;
     probeKey: string | null;
-  }>({
-    estimate: null,
-    loading: false,
-    stale: false,
-    identity: null,
-    probeKey: null,
+  }>(() => {
+    const cached = refreshMemory ? null : cachedMemoryEstimate(key);
+    return {
+      estimate: cached,
+      loading: false,
+      stale: cached != null,
+      identity: cached ? currentIdentity : null,
+      probeKey: null,
+    };
   });
   // Ref so the effect depends on the key alone; `request` is a fresh object every render.
   const latestRequest = useRef(request);
   latestRequest.current = request;
   // A model switch, including a quant switch on the same path, must clear the numbers.
-  const shownModel = useRef<string | null>(null);
+  const shownModel = useRef<string | null>(state.estimate ? currentIdentity : null);
+  const firstDispatch = useRef<string | null>(null);
 
   useEffect(() => {
     const pending = latestRequest.current;
@@ -101,12 +121,19 @@ export function useMemoryEstimate(
       pending.nativePathToken,
     );
     const modelChanged = shownModel.current !== identity;
+    const cached = refreshMemory ? null : cachedMemoryEstimate(key);
+    if (cached) shownModel.current = identity;
     setState((current) =>
-      modelChanged
-        ? { estimate: null, loading: true, stale: false, identity, probeKey: null }
-        : { ...current, loading: current.estimate == null, stale: true, identity },
+      cached
+        ? { ...current, estimate: cached, loading: false, stale: true, identity }
+        : modelChanged
+          ? { estimate: null, loading: true, stale: false, identity, probeKey: null }
+          : { ...current, loading: current.estimate == null, stale: true, identity },
     );
     const controller = new AbortController();
+    // Only a model's first request skips the debounce; edits made while it runs still settle first.
+    const immediate = modelChanged && !cached && firstDispatch.current !== identity;
+    if (immediate) firstDispatch.current = identity;
     const timer = setTimeout(() => {
       fetchMemoryEstimate(pending, controller.signal)
         .then(async (estimate) => {
@@ -117,6 +144,7 @@ export function useMemoryEstimate(
           }
           if (controller.signal.aborted) return;
           shownModel.current = identity;
+          if (estimate.available) rememberMemoryEstimate(key, estimate);
           setState({ estimate, loading: false, stale: false, identity, probeKey: refreshMemory ? key : null });
         })
         .catch(() => {
@@ -124,7 +152,7 @@ export function useMemoryEstimate(
           shownModel.current = identity;
           setState({ estimate: null, loading: false, stale: false, identity, probeKey: null });
         });
-    }, ESTIMATE_DEBOUNCE_MS);
+    }, immediate ? 0 : ESTIMATE_DEBOUNCE_MS);
     return () => {
       clearTimeout(timer);
       controller.abort();
@@ -132,7 +160,10 @@ export function useMemoryEstimate(
   }, [key, refreshMemory]);
 
   if (state.identity !== currentIdentity) {
-    return { estimate: null, loading: currentIdentity != null, stale: false };
+    const cached = refreshMemory ? null : cachedMemoryEstimate(key);
+    return cached
+      ? { estimate: cached, loading: false, stale: true }
+      : { estimate: null, loading: currentIdentity != null, stale: false };
   }
   return {
     estimate: state.estimate,

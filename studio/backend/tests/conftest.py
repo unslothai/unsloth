@@ -294,6 +294,19 @@ def _forget_hub_unreachable_verdict():
 
 
 @pytest.fixture(autouse = True)
+def _forget_hub_gguf_listings():
+    def _forget():
+        gguf = sys.modules.get("hub.utils.gguf")
+        if gguf is not None:
+            gguf._hub_listings.clear()
+            gguf._hub_rate_limited.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_mcp_discovery_state():
     # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
     # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
@@ -979,6 +992,11 @@ def _assume_bare_metal(monkeypatch):
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    monkeypatch.setattr(llama_cpp, "_metal_device_looks_paravirtual_quick", lambda: False)
+    # A test that hides MLX and torch must not reach the host's real Metal device instead.
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "_metal_framework_working_set_bytes", lambda: 0)
     # The route rebinds the detector as a module global, so patching llama_cpp alone is not enough.
     try:
         from routes import inference as routes_inference

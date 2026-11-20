@@ -93,6 +93,45 @@ def test_vae_decode_compile_stays_eager_on_windows_rocm(monkeypatch, rocm, platf
     assert S._vae_decode_compile_allowed(pipe, "default") is allowed
 
 
+def _tiny_vae(top_channels, mid_attention = True):
+    diffusers = pytest.importorskip("diffusers")
+    return diffusers.AutoencoderKL(
+        down_block_types = ("DownEncoderBlock2D", "DownEncoderBlock2D"),
+        up_block_types = ("UpDecoderBlock2D", "UpDecoderBlock2D"),
+        block_out_channels = (32, top_channels),
+        norm_num_groups = 8,
+        mid_block_add_attention = mid_attention,
+    )
+
+
+@pytest.mark.parametrize(
+    "top_channels, mid_attention, env, allowed",
+    [
+        (64, True, "", True),  # head 64: fused kernels are right, decode compiles as on Linux
+        (32, False, "", True),  # no attention at all
+        (512, True, "", False),  # head 512: routing must stay eager
+        (512, True, "1", False),  # even when the env forces a compile
+    ],
+)
+def test_windows_rocm_keeps_decode_compile_unless_the_vae_has_a_wide_head(
+    monkeypatch, rocm, top_channels, mid_attention, env, allowed
+):
+    from core.inference import diffusion_speed as S
+
+    # Built before faking win32: diffusers' lazy imports pull in Windows-only torch modules under it.
+    pipe = types.SimpleNamespace(
+        unet = _UNet2DConditionModel(), vae = _tiny_vae(top_channels, mid_attention)
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(S, "_fused_vae_planned", lambda pipe: False)
+    monkeypatch.setattr(S, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}))
+    monkeypatch.setenv(S.COMPILE_VAE_ENV, env)
+    assert S._vae_decode_compile_allowed(pipe, "default") is allowed
+    # A DiT pipe forced on by the env follows the same head rule.
+    monkeypatch.setenv(S.COMPILE_VAE_ENV, "1")
+    assert S._vae_decode_compile_allowed(types.SimpleNamespace(vae = pipe.vae), "default") is allowed
+
+
 @pytest.mark.parametrize("budget", [2**30, 2**16])
 def test_windows_rocm_fp32_wide_head_never_reaches_the_stock_kernel(monkeypatch, rocm, budget):
     # fp32 (every trainer VAE, and fp32 inference VAEs) is no half-math call, and Windows ROCm's stock dispatch still
@@ -127,6 +166,26 @@ def test_windows_rocm_fp32_wide_head_never_reaches_the_stock_kernel(monkeypatch,
             out = F.scaled_dot_product_attention(q, k, v)
     assert stock == []
     assert out.dtype == torch.float32
+    torch.testing.assert_close(out, ref)
+
+
+@pytest.mark.parametrize("budget", [2**30, 16])
+def test_windows_rocm_fp64_wide_head_keeps_fp64_precision(monkeypatch, rocm, budget):
+    # Only half dtypes upcast: fp64 scores of 1e20 operands (~2e41) are finite in fp64 and inf in fp32, so an fp64 call
+    # squeezed through fp32 turns finite stock output into NaN.
+    import torch.nn.functional as F
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        C, "fused_sdpa_available", lambda q, k, v: not C._windows_rocm_untrusted_head(q, torch)
+    )
+    q, k, v = (torch.full((1, 1, 3, 512), 1e20, dtype = torch.float64) for _ in range(3))
+    ref = F.scaled_dot_product_attention(q, k, v)
+    assert torch.isfinite(ref).all()
+    with C.chunked_attention_mode(budget) as mode:
+        out = F.scaled_dot_product_attention(q, k, v)
+    assert mode.chunked == (1 if budget < 2**30 else 0)
+    assert out.dtype == torch.float64
     torch.testing.assert_close(out, ref)
 
 

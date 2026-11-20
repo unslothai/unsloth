@@ -29,6 +29,7 @@ import re
 import secrets
 import sys
 import threading
+import weakref
 import time
 import traceback
 from dataclasses import dataclass, field, replace
@@ -399,6 +400,7 @@ from .diffusion_cache import (
     TC_STATIC,
     apply_step_cache,
     auto_static_skip_plan,
+    fbcache_counts,
     auto_step_cache_mode,
     auto_step_cache_allowed,
     skip_tier,
@@ -1005,6 +1007,35 @@ def _active_lora_pairs(pipe: Any) -> list:
         if weight:
             pairs.append((name, weight))
     return pairs
+
+
+_RENDER_ENGAGEMENT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _keep_render_engagement(pipe: Any, record: dict) -> None:
+    try:
+        _RENDER_ENGAGEMENT[pipe] = record
+    except TypeError:
+        pass
+
+
+def _record_fbcache_engagement(pipe: Any) -> None:
+    """Log and keep (on the pipe, for status) the render's FBCache computed / skipped step counts. Never raises."""
+    try:
+        counts = fbcache_counts(pipe, reset = True)
+        _keep_render_engagement(pipe, {"fbcache": counts})
+        if counts is not None:
+            logger.info("diffusion.engagement: fbcache=%s", counts)
+    except Exception as exc:  # noqa: BLE001 - diagnostics never fail a render
+        logger.debug("diffusion.engagement: not recorded (%s)", exc)
+
+
+def _render_engagement(pipe: Any) -> Optional[dict]:
+    try:
+        record = _RENDER_ENGAGEMENT.get(pipe) if pipe is not None else None
+    except TypeError:
+        record = None
+    return dict(record) if isinstance(record, dict) else None
 
 
 def _baked_lora_names(pipe: Any) -> list:
@@ -1927,6 +1958,8 @@ class _LoadingState:
     planned_blob_keys: dict[tuple[str, str], str] = field(default_factory = dict)
     # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
+    # The load published its pipeline (status() reads loaded) and only finishes its tail: encoder pins, heap trim.
+    committed: bool = False
 
 
 def _account_owned_load(method):
@@ -5859,6 +5892,9 @@ class DiffusionBackend:
         resolved once here into the load's ``Int8Policy``."""
         from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
 
+        # Offline mode: every metadata, revision and listing call on the load path (Studio's and the loaders') would
+        # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
+        local_files_only = bool(local_files_only) or hub_reachability.offline_mode()
         int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
         with self._load_cancel_lock:
             entry_token = _load_token
@@ -6568,6 +6604,24 @@ class DiffusionBackend:
             # No size estimate: report the phase with no byte claim, since `downloaded` scans what is PRESENT.
             return _progress("downloading")
         return _progress("downloading", downloaded, expected, min(downloaded / expected, 1.0))
+
+    def _publish_state_locked(self, state: Any) -> None:
+        """Publish a loaded pipeline (caller holds ``_load_cancel_lock``) and mark the in-flight load as in its tail."""
+        self._state = state
+        if self._loading is not None:
+            self._loading.committed = True
+
+    def load_tail_pending(self) -> bool:
+        """The in-flight load already published its pipeline and only finishes its tail (encoder pins, heap trim):
+        a generate can wait for it instead of being refused, since nothing swaps the pipeline out any more."""
+        with self._load_cancel_lock:
+            loading = self._loading
+            return (
+                loading is not None
+                and loading.error is None
+                and loading.committed
+                and self._state is not None
+            )
 
     def loading_repo_ids(self) -> tuple[str, ...]:
         """Repos an in-flight load downloads, incl. a swapped-in mirror and seeded denoiser (the delete guard needs them); uses only _load_cancel_lock."""
@@ -12266,7 +12320,7 @@ class DiffusionBackend:
                     # Serialize publication with cancellation.
                     with self._load_cancel_lock:
                         self._raise_if_load_cancelled(_load_token)
-                        self._state = state
+                        self._publish_state_locked(state)
                         state_committed = True
                         commit_load_budget_fraction("image")
                     try:
@@ -12479,7 +12533,7 @@ class DiffusionBackend:
         )
         with self._load_cancel_lock:
             self._raise_if_load_cancelled(load_token)
-            self._state = state
+            self._publish_state_locked(state)
             commit_load_budget_fraction("image")
         logger.info("diffusion.loaded: repo=%s family=%s %s", repo_id, fam.name, report.as_dict())
         return self.status()
@@ -16130,6 +16184,7 @@ class DiffusionBackend:
 
                 static_skip = state.transformer_cache == TC_STATIC
                 static_chunks_run = 0
+                fbcache_counts(state.pipe, reset = True)
 
                 def _publish_preview(
                     url: str,
@@ -16596,6 +16651,7 @@ class DiffusionBackend:
                     workflow = workflow,
                 )
                 _note_captured_release(state, guard_release_mib, guard_capture_gen)
+                _record_fbcache_engagement(state.pipe)
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
@@ -17118,6 +17174,7 @@ class DiffusionBackend:
             "attention_backend": attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
+            "render_engagement": _render_engagement(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
             "baked_lora_specs": _baked_lora_specs(state.pipe),
             "load_lora_specs": _load_lora_specs(state.pipe),

@@ -18,6 +18,7 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
@@ -228,6 +229,7 @@ def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Opti
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
     try:
         import triton
@@ -909,14 +911,22 @@ def _cutlass_plan(
             hit = (
                 {int(m): v for m, v in hit.items()}
                 if isinstance(hit, dict)
-                and all((v is None or v in cut.probed_tiles(index)) for v in hit.values())
+                and all(
+                    (v is None or v == _CUT_SKIPPED or v in cut.probed_tiles(index))
+                    for v in hit.values()
+                )
                 else {}
             )
             # a cache missing a fixed point (older format) races everything again
             fixed = {min(cut._RACE_M)} | (
                 {cut._RACE_M_HUGE} if cut._RACE_M_HUGE in points else set()
             )
-            entry = {m: hit[m] for m in points if m in hit} if fixed <= set(hit) else {}
+            # a point skipped for memory is raced again (only it), never read as a lost race
+            entry = (
+                {m: hit[m] for m in points if m in hit and hit[m] != _CUT_SKIPPED}
+                if fixed <= set(hit)
+                else {}
+            )
             if len(entry) == len(points):
                 plan[key] = entry
                 continue
@@ -924,12 +934,14 @@ def _cutlass_plan(
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             wsr = (torch.rand(n, generator = g) * 1e-3 + 1e-5).to(ws.dtype).to(dev)
             br = (torch.randn(n, generator = g) * 0.1).to(act).to(dev) if bias is not None else None
+            skipped = set()
             for m in points:
                 if m in entry:
                     continue
                 if m == cut._RACE_M_HUGE and not _huge_race_fits(dev, m, n, k):
                     # no room to time it: today's path at that size, never an untimed 4096-row winner
                     entry[m] = None
+                    skipped.add(m)
                     races.setdefault(skey, {})[m] = {
                         "tile": None,
                         "us": {},
@@ -956,7 +968,7 @@ def _cutlass_plan(
                     torch.cuda.synchronize(dev)
                     torch.cuda.empty_cache()
             plan[key] = entry
-            cached[skey] = {str(m): v for m, v in entry.items()}
+            cached[skey] = {str(m): (_CUT_SKIPPED if m in skipped else v) for m, v in entry.items()}
             del w, wsr, br
         if ckey:
             table = _cut_cache_read()
@@ -974,6 +986,10 @@ def _cutlass_plan(
     _CUT_FAMILY[index] = cut.family(torch.cuda.get_device_capability(index))
     _CUT_RACES[index] = races
     return plan
+
+
+# disk-cache value for a race point skipped for lack of free memory: a later load races that point again
+_CUT_SKIPPED = "skipped"
 
 
 # huge-race free memory, in (operand + output) units: today's output, cached candidate outputs, streaming slack
@@ -2443,8 +2459,13 @@ def start_early_probe_prewarm(
                 name = "unsloth-probe-prewarm-early",
                 daemon = True,
             )
+            # Start before releasing the lock: a joiner that sees the entry must find a started thread
+            # (``join()`` on an unstarted one raises and would return before the warm-up ran).
+            try:
+                thread.start()
+            except Exception:  # noqa: BLE001
+                return False
             _EARLY_PREWARM[index] = thread
-        thread.start()
         return True
     except Exception:  # noqa: BLE001
         return False

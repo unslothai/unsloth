@@ -38,6 +38,7 @@ import os
 import re
 import tempfile
 import threading
+import weakref
 from utils.account_context import account_thread, current_account_id
 import time
 import types
@@ -91,6 +92,7 @@ from .diffusion_cache import (
     apply_step_cache,
     auto_static_skip_entry,
     auto_static_skip_plan,
+    fbcache_counts,
     auto_step_cache_allowed,
     skip_tier,
     cache_breaks_graph,
@@ -6327,6 +6329,9 @@ class VideoBackend:
         resolved once here into the load's ``Int8Policy``."""
         from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
 
+        # Offline mode: every metadata, revision and listing call on the load path (Studio's and the loaders') would
+        # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
+        local_files_only = bool(local_files_only) or hub_reachability.offline_mode()
         int8_policy = resolve_policy(normalize_int8_attention(int8_attention))
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         from .diffusion_nvfp4_route import ROUTE_UNCHANGED, plan_nvfp4_route
@@ -15132,6 +15137,10 @@ class VideoBackend:
                     diffusion_cuda_graph.set_bypass(
                         graph_handles, cache_breaks_graph(state.transformer_cache)
                     )
+                from .video_vae_untiled import untiled_decode_stats
+
+                vae_stats_before = untiled_decode_stats(pipe)
+                fbcache_counts(_skip_pipe(state, pipe), reset = True)
                 if static_skip:
                     # Auto skip was measured on text-to-video only.
                     conditioned = bool(first_pil is not None or last_pil is not None or references)
@@ -15227,6 +15236,9 @@ class VideoBackend:
                     if previewer is not None:
                         previewer.finish()
                     settle_compile_fallback(state, pipe, logger)
+                    _record_render_engagement(
+                        pipe, _skip_pipe(state, pipe), vae_stats_before, logger
+                    )
                     if static_skip:
                         logger.debug(
                             "video.step_skip: %s", static_skip_stats(_skip_pipe(state, pipe))
@@ -16497,6 +16509,7 @@ class VideoBackend:
             "packed_weights": _grouped_form_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
             "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
+            "render_engagement": _render_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
@@ -16555,6 +16568,41 @@ def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
 
 _backend: Optional[VideoBackend] = None
 _backend_lock = threading.Lock()
+
+
+_RENDER_ENGAGEMENT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _keep_render_engagement(pipe: Any, record: dict) -> None:
+    try:
+        _RENDER_ENGAGEMENT[pipe] = record
+    except TypeError:
+        pass
+
+
+def _record_render_engagement(
+    pipe: Any, cache_pipe: Any, vae_before: Optional[dict], logger: Any
+) -> None:
+    """Log and keep (on the pipe, for status) the clip's VAE decode route and FBCache decisions. Host counters only."""
+    try:
+        from .video_vae_untiled import decode_stats_delta, untiled_decode_stats
+
+        vae = decode_stats_delta(vae_before, untiled_decode_stats(pipe))
+        cache = fbcache_counts(cache_pipe, reset = True)
+        record = {"vae_decode": vae, "fbcache": cache}
+        _keep_render_engagement(pipe, record)
+        if vae is not None or cache is not None:
+            logger.info("video.engagement: vae_decode=%s fbcache=%s", vae, cache)
+    except Exception as exc:  # noqa: BLE001 - diagnostics never fail a render
+        logger.debug("video.engagement: not recorded (%s)", exc)
+
+
+def _render_engagement(pipe: Any) -> Optional[dict]:
+    try:
+        record = _RENDER_ENGAGEMENT.get(pipe) if pipe is not None else None
+    except TypeError:
+        record = None
+    return dict(record) if isinstance(record, dict) else None
 
 
 def _graph_engagement(pipe: Any) -> Optional[dict]:

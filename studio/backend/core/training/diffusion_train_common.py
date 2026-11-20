@@ -363,12 +363,22 @@ def has_functional_torchao() -> bool:
         return False
 
 
+def mxfp8_training_offered(capability: tuple) -> bool:
+    """Whether the Train tab offers base_precision='mxfp8': datacenter Blackwell (sm100 / sm103) only. On an sm120
+    card (RTX PRO 6000 / RTX 50) torchao's MXFP8 linear does engage, but it re-casts the frozen weight and the
+    activations to MX blocks on every step and keeps bf16 weight storage, so it trails frozen fp8 (offered there) in
+    speed and memory, and bf16 too at 512 px (FLUX.2 klein 4B LoRA: 0.087 s/step vs fp8 0.064, bf16 0.081).
+    An explicit mxfp8 request still runs on sm100+; this only decides what is advertised."""
+    major = int(capability[0]) if capability else 0
+    return major == 10
+
+
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4 always works;
     bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/mxfp8 additionally need a
     FUNCTIONAL torchao (their explicit paths import it with no fallback, and the Windows-ROCm
-    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 needs the Blackwell tensor cores
-    (sm100+) its cuBLAS kernels target. The dense modes all train in bf16 compute, which the DiT
+    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 is offered on datacenter
+    Blackwell only (``mxfp8_training_offered``). The dense modes all train in bf16 compute, which the DiT
     trainer requires, so a non-bf16 CUDA GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise
     /info would advertise a start that evicts resident models and then fails the trainer's bf16
     guard. Never raises."""
@@ -386,7 +396,7 @@ def train_precision_modes() -> tuple[list[str], str]:
             major, minor = torch.cuda.get_device_capability()
             if not rocm and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
-            if torchao_ok and (major, minor) >= (10, 0):
+            if torchao_ok and mxfp8_training_offered((major, minor)):
                 modes.append("mxfp8")
             modes.append("auto")
             recommended = "auto"
@@ -1192,6 +1202,12 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # Compile: SDXL and DiT trainers, except where the GPU lacks bf16 or the trainer cannot compile.
                 "supports_compile": supports_compile or name == "sdxl",
+                # The DiT trainer streams a bf16 base's blocks from host RAM; block_swap is refused elsewhere.
+                "supports_block_swap": bool(
+                    name in _DIT_TRAIN_FAMILIES
+                    and "bf16" in fam_modes
+                    and not dit_fp16_fallback(name)
+                ),
                 # save_steps is refused for checkpointless families, so hide the control.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
@@ -1266,6 +1282,9 @@ class DiffusionLoraConfig:
     enable_tf32: bool = True
     # "nf4" | "bf16" | "int8" | "fp8" | "auto"; non-nf4 needs a dense base.
     base_precision: str = "nf4"
+    # bf16 only: "auto" (as few blocks as fit) or N repeated blocks kept in host RAM and streamed per step; "off" or
+    # 0 none. "" (the default) takes UNSLOTH_DIT_BLOCK_SWAP, so an explicit "off" overrides the server's env.
+    block_swap: str = ""
     # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample chance of using an empty prompt instead of the caption (CFG dropout); 0.0 disables.
@@ -1975,6 +1994,69 @@ def _latent_cache_over_budget(
     return per_variant_bytes * max(0, total_variants) > budget_bytes
 
 
+# Cards where cuDNN SDPA fwd+bwd matched fp32 as closely as flash / mem-eff at DiT training shapes:
+# A100 (sm80), L4 (sm89), RTX PRO 6000 (sm120), on torch 2.10 and 2.14.
+_MASKED_CUDNN_CAPS = frozenset({(8, 0), (8, 9), (12, 0)})
+_MASKED_CUDNN_MIN_TORCH = (2, 10)
+
+
+def _masked_cudnn_priority(torch, device: Any = None) -> Optional[list]:
+    """SDPA priority flash > cuDNN > mem-eff > rest, or None to keep cuDNN off.
+
+    Flash takes no mask, so a masked call (Krea-2 text padding, LTX-2, Qwen-Image) falls to mem-eff, which
+    cuDNN beats on fwd+bwd 1.4-1.6x on A100, 2.0-2.1x on L4 and 3.0-3.6x on RTX PRO 6000. Unmasked calls stay
+    on flash, which beats cuDNN there. Unmeasured cards (sm90 / sm100, where the FLUX crash was) keep cuDNN off.
+    ``UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA=0`` restores the old behaviour."""
+    if os.environ.get("UNSLOTH_DIFFUSION_TRAIN_CUDNN_SDPA", "").strip().lower() in (
+        "0",
+        "false",
+        "off",
+        "no",
+    ):
+        return None
+    get = getattr(torch._C, "_get_sdp_priority_order", None)
+    if get is None or not hasattr(torch._C, "_set_sdp_priority_order"):
+        return None
+    try:
+        major_minor = tuple(int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
+        if major_minor < _MASKED_CUDNN_MIN_TORCH:
+            return None
+        if not torch.cuda.is_available():
+            return None
+        # the training card, not whichever card is current
+        dev = torch.device(device) if device is not None else None
+        index = dev.index if dev is not None and dev.type == "cuda" else None
+        if tuple(torch.cuda.get_device_capability(index)) not in _MASKED_CUDNN_CAPS:
+            return None
+        from torch.nn.attention import SDPBackend
+
+        want = [
+            int(SDPBackend.FLASH_ATTENTION),
+            int(SDPBackend.CUDNN_ATTENTION),
+            int(SDPBackend.EFFICIENT_ATTENTION),
+            int(SDPBackend.MATH),
+        ]
+        current = [int(b) for b in get()]
+    except Exception:  # noqa: BLE001 -- any doubt keeps the old pin
+        return None
+    return want + [b for b in current if b not in want]
+
+
+_SDPA_CACHE_TAG = "|unsloth_train_sdpa=flash,cudnn,efficient"
+
+
+def _tag_compile_cache(torch, snap: dict) -> None:
+    """The compile caches key on the traced graph, not on the SDPA priority, so a warm cache would hand back a graph
+    whose attention op was picked under the old pin. A cache key tag keeps the two apart."""
+    cconfig = getattr(getattr(torch, "compiler", None), "config", None)
+    if cconfig is None or not hasattr(cconfig, "cache_key_tag"):
+        return
+    prev = cconfig.cache_key_tag or ""
+    snap["cache_key_tag"] = prev
+    if _SDPA_CACHE_TAG not in prev:
+        cconfig.cache_key_tag = prev + _SDPA_CACHE_TAG
+
+
 def _apply_perf_flags(
     cfg: "DiffusionLoraConfig",
     device: str,
@@ -2001,7 +2083,8 @@ def _apply_perf_flags(
             torch.set_float32_matmul_precision("highest")
         if cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
-        # cuDNN SDPA training is broken for FLUX shapes on torch 2.10 + cu130; pin flash/mem-eff.
+        # cuDNN SDPA training is broken for FLUX shapes on torch 2.10 + cu130 (B200); pin flash/mem-eff,
+        # except on the measured cards, where masked attention moves from mem-eff to cuDNN (see below).
         cuda_backends = getattr(torch.backends, "cuda", None)
         if cuda_backends is not None and hasattr(cuda_backends, "enable_cudnn_sdp"):
             try:
@@ -2009,7 +2092,13 @@ def _apply_perf_flags(
             except Exception:  # noqa: BLE001 -- flag unreadable: skip the tweak entirely
                 snap["cudnn_sdp"] = None
             if snap["cudnn_sdp"]:
-                cuda_backends.enable_cudnn_sdp(False)
+                prio = _masked_cudnn_priority(torch, device)
+                if prio is not None:
+                    snap["sdp_priority"] = list(torch._C._get_sdp_priority_order())
+                    torch._C._set_sdp_priority_order(prio)
+                    _tag_compile_cache(torch, snap)
+                else:
+                    cuda_backends.enable_cudnn_sdp(False)
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
         pass
     return snap
@@ -2028,6 +2117,10 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
 
         if snap.get("matmul_precision"):
             torch.set_float32_matmul_precision(snap["matmul_precision"])
+        if snap.get("sdp_priority"):
+            torch._C._set_sdp_priority_order(snap["sdp_priority"])
+        if snap.get("cache_key_tag") is not None:
+            torch.compiler.config.cache_key_tag = snap["cache_key_tag"]
         # Restore cudnn SDPA state; None means the flag was unreadable at apply time and was left alone.
         cuda_backends = getattr(torch.backends, "cuda", None)
         if (

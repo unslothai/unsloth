@@ -31,7 +31,7 @@ def _fake_versions(monkeypatch, installed: dict[str, str]):
 
 def _healthy(**overrides: str) -> dict[str, str]:
     """Healthy means the mlx_repair floors, so raising a floor does not break unrelated tests."""
-    return {**mr._MLX_MIN_VERSIONS, **overrides}
+    return {**{name: mr._mlx_minimum(name) for name in mr._MLX_MIN_VERSIONS}, **overrides}
 
 
 def test_a_healthy_stack_reports_no_blockers(monkeypatch):
@@ -46,7 +46,7 @@ def test_a_missing_package_is_named_with_the_version_it_needs(monkeypatch):
     monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
     blockers = mr.mlx_stack_blockers()
     assert any("mlx-vlm is not installed" in blocker for blocker in blockers)
-    assert any("0.4.4" in blocker for blocker in blockers)
+    assert any(mr._mlx_minimum("mlx-vlm") in blocker for blocker in blockers)
     assert mr.mlx_stack_available() is False
 
 
@@ -54,7 +54,31 @@ def test_a_backtracked_package_names_the_version_it_found(monkeypatch):
     _fake_versions(monkeypatch, _healthy(**{"mlx-vlm": "0.1.0"}))
     monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
     blockers = mr.mlx_stack_blockers()
-    assert blockers == ["mlx-vlm 0.1.0 is older than 0.4.4"]
+    assert blockers == [f"mlx-vlm 0.1.0 is older than {mr._mlx_minimum('mlx-vlm')}"]
+
+
+def test_the_installed_zoo_s_declared_floor_raises_the_gate(monkeypatch):
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: ">=0.6.4,<=0.8.0" if name == "mlx-vlm" else ""
+    )
+    monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
+    _fake_versions(monkeypatch, {**mr._MLX_MIN_VERSIONS, "mlx-vlm": "0.6.3"})
+    assert mr.mlx_stack_blockers() == ["mlx-vlm 0.6.3 is older than 0.6.4"]
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: ">=0.4.4,<=0.7.12" if name == "mlx-vlm" else ""
+    )
+    assert mr.mlx_stack_blockers() == []
+    # An exact pin counts as a floor.
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "==0.32.4" if name == "mlx" else ""
+    )
+    _fake_versions(monkeypatch, {**mr._MLX_MIN_VERSIONS, "mlx": "0.32.2"})
+    assert mr.mlx_stack_blockers() == ["mlx 0.32.2 is older than 0.32.4"]
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: ">=0.31.3,<=0.32.2" if name == "mlx-lm" else ""
+    )
+    _fake_versions(monkeypatch, {**mr._MLX_MIN_VERSIONS, "mlx-lm": "0.31.2"})
+    assert mr.mlx_stack_blockers() == ["mlx-lm 0.31.2 is older than 0.31.3"]
 
 
 def test_every_bad_package_is_listed_not_just_the_first(monkeypatch):
@@ -87,7 +111,7 @@ def test_versions_are_checked_before_imports(monkeypatch):
         raise AssertionError("imported a package the version check already rejected")
 
     monkeypatch.setattr(mr.importlib, "import_module", never)
-    assert mr.mlx_stack_blockers() == ["mlx-vlm 0.1.0 is older than 0.4.4"]
+    assert mr.mlx_stack_blockers() == [f"mlx-vlm 0.1.0 is older than {mr._mlx_minimum('mlx-vlm')}"]
 
 
 def test_the_detail_line_never_raises_and_stays_short(monkeypatch):
