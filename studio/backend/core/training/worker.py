@@ -4036,7 +4036,7 @@ def _run_mlx_training(
         warmup_ratio = warmup_ratio if warmup_uses_ratio else None,
         eval_steps_ratio = eval_steps_ratio,
     )
-    # A step-0 stop may remove only a folder this run created, never a user-supplied one.
+    # A step-0 stop may remove only a folder this run created, never one that already existed.
     owns_output_dir = not os.path.exists(output_dir)
     _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)
 
