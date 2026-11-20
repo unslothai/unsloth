@@ -15,8 +15,11 @@ logger = get_logger(__name__)
 
 SETTING_KEY = "network_firewall"
 MODES = ("open", "ask", "allowlist")
-MAX_SITES = 100
+MAX_SITES = 200
+# Allowed until the owner edits the list. An entry covers its subdomains, so brands that host anyone's content
+# (google.com, microsoft.com) are named by the one host that is meant, and github.io and readthedocs are left out.
 DEFAULT_ALLOWED_SITES = (
+    # packages and code
     "pypi.org",
     "files.pythonhosted.org",
     "download.pytorch.org",
@@ -25,6 +28,70 @@ DEFAULT_ALLOWED_SITES = (
     "huggingface.co",
     "hf.co",
     "registry.npmjs.org",
+    "www.npmjs.com",
+    "crates.io",
+    # search
+    "www.google.com",
+    "www.bing.com",
+    "duckduckgo.com",
+    # reference
+    "wikipedia.org",
+    "wikimedia.org",
+    "wikidata.org",
+    "wiktionary.org",
+    "www.britannica.com",
+    "openlibrary.org",
+    "www.openstreetmap.org",
+    # documentation
+    "python.org",
+    "developer.mozilla.org",
+    "developer.apple.com",
+    "learn.microsoft.com",
+    "docs.docker.com",
+    "pytorch.org",
+    "tensorflow.org",
+    "numpy.org",
+    "pandas.pydata.org",
+    "scipy.org",
+    "scikit-learn.org",
+    "matplotlib.org",
+    "fastapi.tiangolo.com",
+    "starlette.io",
+    # research
+    "arxiv.org",
+    "scholar.google.com",
+    "openreview.net",
+    "semanticscholar.org",
+    "biorxiv.org",
+    "medrxiv.org",
+    "ncbi.nlm.nih.gov",
+    # questions and answers
+    "stackoverflow.com",
+    "stackexchange.com",
+    "askubuntu.com",
+    "superuser.com",
+    "serverfault.com",
+    # standards
+    "www.w3.org",
+    "tools.ietf.org",
+    "datatracker.ietf.org",
+    "www.rfc-editor.org",
+    # news
+    "www.bbc.com",
+    "www.bbc.co.uk",
+    "www.reuters.com",
+    "apnews.com",
+    "www.nature.com",
+    "www.science.org",
+    # public data
+    "data.gov",
+    "www.census.gov",
+    "nasa.gov",
+    "www.cdc.gov",
+    "www.nih.gov",
+    "www.who.int",
+    "api.weather.gov",
+    "worldtimeapi.org",
 )
 _CACHE_SECONDS = 2.0
 CHECKPOINT_FAILED = (

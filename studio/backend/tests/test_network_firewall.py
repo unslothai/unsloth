@@ -96,6 +96,30 @@ def test_a_fresh_install_is_open_with_the_package_hosts_ready_to_allow(store):
     assert firewall.decide("anything.example") == "allow"
 
 
+def test_the_shipped_allowed_websites_cover_the_usual_sources_but_not_shared_hosts(store):
+    firewall.set_network_firewall(mode = "ask")
+    assert len(firewall.DEFAULT_ALLOWED_SITES) <= firewall.MAX_SITES
+    for host in (
+        "en.wikipedia.org",
+        "export.arxiv.org",
+        "docs.python.org",
+        "pubmed.ncbi.nlm.nih.gov",
+        "math.stackexchange.com",
+        "cdn-lfs.huggingface.co",
+    ):
+        assert firewall.decide(host) == "allow", host
+    for host in (
+        "someone.github.io",
+        "evil.readthedocs.io",
+        "docs.google.com",
+        "google.com",
+        "bbc.com.evil.org",
+    ):
+        assert firewall.decide(host) == "ask", host
+    firewall.set_network_firewall(allowed_sites = list(firewall.DEFAULT_ALLOWED_SITES))
+    assert firewall.get_network_firewall()["allowed_sites"] == list(firewall.DEFAULT_ALLOWED_SITES)
+
+
 @pytest.mark.parametrize(
     "mode, host, verdict",
     [

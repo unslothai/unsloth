@@ -58,7 +58,7 @@ function SitesRow({
         aria-label={label}
         placeholder="example.com"
         onChange={(event) => onChange(event.target.value)}
-        className={cn(LIST_CLASS, "font-mono text-xs")}
+        className={cn(LIST_CLASS, "max-h-[calc(13rem*var(--ui-space-scale,1))] overflow-y-auto font-mono text-xs")}
       />
     </SettingsRow>
   );
