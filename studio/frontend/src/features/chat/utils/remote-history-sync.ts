@@ -24,7 +24,6 @@ export type RemoteHistorySyncDeps = {
   isVisible: () => boolean;
 };
 
-/** Revisions read inside one of this tab's write transactions, before and after it. */
 export type OwnHistoryWrite = {
   threadId: string;
   thread: readonly [before: number, after: number];

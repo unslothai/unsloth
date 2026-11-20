@@ -97,7 +97,6 @@ def test_each_chat_write_reports_the_revisions_around_it(client):
 
 def test_a_write_from_elsewhere_shows_as_a_gap_between_spans(client):
     _, mine = _span(client.post("/api/chat/threads", json = _thread()))
-    # Another device writes the same chat between this tab's two writes.
     studio_db.upsert_chat_message(_message("other", 1_700_000_000_005))
     before, _ = _span(
         client.put("/api/chat/threads/t1/messages/m1", json = _message("m1", 1_700_000_000_006))
@@ -125,7 +124,6 @@ def test_an_unchanged_resave_moves_no_revision(client):
     response = client.put("/api/chat/threads/t1/messages", json = {"messages": messages})
     assert response.status_code == 200
     assert _revisions(client) == before
-    # A real change still moves it.
     messages[1] = _message("m2", 1_700_000_000_002, text = "edited", parent = "m1")
     client.put("/api/chat/threads/t1/messages", json = {"messages": messages})
     assert _revisions(client)[0] > before[0]

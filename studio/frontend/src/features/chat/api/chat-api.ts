@@ -85,7 +85,6 @@ export type ChatHistoryUpdatedDetail = {
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
 
-/** Thread and history revisions read inside a chat write's transaction. */
 export type OwnChatHistoryWrite = {
   threadId: string;
   thread: readonly [before: number, after: number];
@@ -97,7 +96,6 @@ const ownChatHistoryWriteListeners = new Set<
   (write: OwnChatHistoryWrite) => void
 >();
 
-/** Lets the remote-history poll tell this tab's writes from another device's. */
 export function subscribeOwnChatHistoryWrites(
   listener: (write: OwnChatHistoryWrite) => void,
 ): () => void {
@@ -111,7 +109,6 @@ function publishOwnChatHistoryWrite(
   response: Response,
   affected: readonly string[] | null,
 ): void {
-  // An older server sends no header: the poll then re-reads as before.
   const header = response.ok
     ? response.headers?.get(CHAT_REVISION_HEADER)
     : null;

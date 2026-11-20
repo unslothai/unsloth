@@ -823,7 +823,6 @@ CHAT_REVISION_HEADER = "X-Unsloth-Chat-Revision"
 
 
 def _set_revision_header(response: Optional[Response], probe: dict) -> None:
-    # FastAPI always passes the response; a direct caller (tests, other routes) may not.
     span = chat_revision_span(probe)
     if response is not None and span is not None:
         (thread_before, history_before), (thread_after, history_after) = span
