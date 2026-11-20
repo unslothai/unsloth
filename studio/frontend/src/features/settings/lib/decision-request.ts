@@ -376,7 +376,9 @@ export function choiceCriterion(
 export function scoreLevels(
   answer: Extract<DecisionAnswer, { type: "score" }>,
 ): { keys: string[]; top: string; max: number } {
-  const keys = Object.keys(answer.legend).sort((a, b) => Number(a) - Number(b));
+  const keys = Object.keys(answer.legend ?? {}).sort(
+    (a, b) => Number(a) - Number(b),
+  );
   const distance = (key: string) => Math.abs(Number(key) - answer.score);
   const nearest = keys.reduce(
     (best, key) => (distance(key) < distance(best) ? key : best),

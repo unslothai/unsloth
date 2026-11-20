@@ -3352,6 +3352,121 @@ html[data-chat-font] .aui-root {
 		background-color: var(--card);
 	}
 
+	/* Decision drawer: the wide composer narrows into the drawer through two
+	   concave (inverted-radius) fillets, so the outline is one continuous shape. */
+	[data-decision-drawer="open"] {
+		--decision-inset: 48px;
+		--decision-fillet: 16px;
+		--decision-corner: 24px;
+		--decision-surface: #ffffff;
+	}
+
+	.dark [data-decision-drawer="open"] {
+		--decision-surface: var(--card);
+	}
+
+	[data-decision-drawer="open"] .unsloth-composer-surface {
+		box-shadow: none;
+		border: 1px solid var(--border);
+		border-radius: var(--decision-corner);
+	}
+
+	[data-decision-panel] {
+		position: relative;
+		margin-inline: var(--decision-inset);
+		border: 1px solid var(--border);
+		background-color: var(--decision-surface);
+	}
+
+	[data-decision-panel][data-placement="bottom"] {
+		margin-top: var(--decision-fillet);
+		border-top: 0;
+		border-radius: 0 0 var(--decision-corner) var(--decision-corner);
+	}
+
+	[data-decision-panel][data-placement="top"] {
+		margin-bottom: var(--decision-fillet);
+		border-bottom: 0;
+		border-radius: var(--decision-corner) var(--decision-corner) 0 0;
+	}
+
+	/* The neck bridges the composer and drawer above z-10 so it erases only the
+	   middle of the composer's border, leaving its 24px corners intact. */
+	[data-decision-panel] .decision-neck {
+		position: absolute;
+		left: 0;
+		right: 0;
+		z-index: 20;
+		height: calc(var(--decision-fillet) + 2px);
+		background-color: var(--decision-surface);
+		pointer-events: none;
+	}
+
+	[data-decision-panel][data-placement="bottom"] .decision-neck {
+		top: calc(-1 * var(--decision-fillet) - 1px);
+	}
+
+	[data-decision-panel][data-placement="top"] .decision-neck {
+		bottom: calc(-1 * var(--decision-fillet) - 1px);
+	}
+
+	/* Each fillet clips a 2R circle with an outer box-shadow fill, drawing both the
+	   concave surface fill and the 1px border arc with zero seams. */
+	[data-decision-panel] .decision-fillet {
+		position: absolute;
+		z-index: 20;
+		width: var(--decision-fillet);
+		height: calc(var(--decision-fillet) + 1px);
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	[data-decision-panel] .decision-fillet::before {
+		content: "";
+		position: absolute;
+		width: calc(var(--decision-fillet) * 2);
+		height: calc(var(--decision-fillet) * 2);
+		border-radius: 50%;
+		border: 1px solid var(--border);
+		box-shadow: 0 0 0 24px var(--decision-surface);
+	}
+
+	[data-decision-panel][data-placement="bottom"] .decision-fillet {
+		top: calc(-1 * var(--decision-fillet) - 1px);
+	}
+
+	[data-decision-panel][data-placement="top"] .decision-fillet {
+		bottom: calc(-1 * var(--decision-fillet) - 1px);
+	}
+
+	[data-decision-panel] .decision-fillet-left {
+		left: calc(-1 * var(--decision-fillet));
+	}
+
+	[data-decision-panel] .decision-fillet-right {
+		right: calc(-1 * var(--decision-fillet));
+	}
+
+	[data-decision-panel][data-placement="bottom"] .decision-fillet-left::before {
+		top: 0;
+		left: calc(-1 * var(--decision-fillet));
+	}
+
+	[data-decision-panel][data-placement="bottom"] .decision-fillet-right::before {
+		top: 0;
+		right: calc(-1 * var(--decision-fillet));
+	}
+
+	[data-decision-panel][data-placement="top"] .decision-fillet-left::before {
+		bottom: 0;
+		left: calc(-1 * var(--decision-fillet));
+	}
+
+	[data-decision-panel][data-placement="top"] .decision-fillet-right::before {
+		bottom: 0;
+		right: calc(-1 * var(--decision-fillet));
+	}
+
 	/* A width transition makes getComputedStyle().width lag a frame, so autosize leaves a blank row. */
 	.unsloth-composer-line,
 	.unsloth-composer-line .unsloth-composer-input,

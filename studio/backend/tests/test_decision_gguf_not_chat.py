@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decision-only GGUFs (e.g. lfm3-d1) are refused for chat, and llama-server's 501 keeps its message."""
+"""Decision-only GGUFs (e.g. lfm3-d1) load as decision models, and llama-server's 501 keeps its message."""
 
 from __future__ import annotations
 
@@ -42,17 +42,28 @@ def _local_refusal(tmp_path: Path, arch: str, decision_type: str | None):
     return LlamaCppBackend._non_chat_gguf_refusal_for_path(str(gguf), "owner/model")
 
 
+def _probe(tmp_path: Path, arch: str, decision_type: str | None):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(_gguf_bytes(arch, decision_type))
+    probe = object.__new__(LlamaCppBackend)
+    probe._model_identifier = "owner/model"
+    probe._read_gguf_metadata(str(gguf))
+    return probe
+
+
 @pytest.mark.parametrize("decision_type", ["lfm3-d1", "lfm2-d1", "clef", "openjev"])
-def test_a_decision_only_gguf_is_refused_for_chat(tmp_path, decision_type):
-    message = _local_refusal(tmp_path, "lfm3", decision_type)
-    assert message is not None
-    assert "decision model" in message
-    assert "Decision API" in message
+def test_a_decision_only_gguf_loads_as_a_decision_model(tmp_path, decision_type):
+    # Not a refusal any more: the Decision console answers it on /v1/systemone.
+    assert _local_refusal(tmp_path, "lfm3", decision_type) is None
+    probe = _probe(tmp_path, "lfm3", decision_type)
+    assert probe.is_decision is True
+    assert probe._decision_type == decision_type
 
 
 @pytest.mark.parametrize("decision_type", [None, "granite-switch", "someorg-future"])
-def test_chat_capable_ggufs_still_load(tmp_path, decision_type):
+def test_chat_capable_ggufs_are_not_decision_models(tmp_path, decision_type):
     assert _local_refusal(tmp_path, "lfm3", decision_type) is None
+    assert _probe(tmp_path, "lfm3", decision_type).is_decision is False
 
 
 def test_a_remote_header_prefix_is_enough(monkeypatch):
@@ -69,7 +80,7 @@ def test_a_remote_header_prefix_is_enough(monkeypatch):
         hf_token = None,
         model_identifier = "AtomicChat/d1-2B-GGUF",
     )
-    assert message is not None and "decision model" in message
+    assert message is None
 
 
 def test_llama_server_501_reaches_the_user():

@@ -244,6 +244,10 @@ export interface LoadModelResponse {
   is_lora: boolean;
   is_gguf?: boolean;
   is_local_model?: boolean;
+  /** Decision-only GGUF: llama-server serves it on /v1/systemone, so Studio shows the Decision console. */
+  is_decision?: boolean;
+  /** The GGUF's `<arch>.decision.type`, e.g. "lfm3-d1". */
+  decision_type?: string | null;
   /** Unknown-typed so an older backend cannot render "undefined GB"; see parseCarveoutAdvice. */
   carveout_advice?: unknown;
   memory_warning?: string | null;
@@ -374,6 +378,10 @@ export interface InferenceStatusResponse {
   is_gguf?: boolean;
   is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** Decision-only GGUF: llama-server serves it on /v1/systemone, so Studio shows the Decision console. */
+  is_decision?: boolean;
+  /** The GGUF's `<arch>.decision.type`, e.g. "lfm3-d1". */
+  decision_type?: string | null;
   /** Requested ngl when it differs from applied (a shim without --ngl reports -1). */
   diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;

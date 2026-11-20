@@ -2725,10 +2725,14 @@ export function useChatModelRuntime() {
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
-            const supportsReasoning = loadResponse.supports_reasoning ?? false;
+            const supportsReasoning =
+              !loadedFields.loadedIsDecision &&
+              (loadResponse.supports_reasoning ?? false);
             const supportsPreserveThinking =
               loadResponse.supports_preserve_thinking ?? false;
-            const supportsTools = loadResponse.supports_tools ?? false;
+            const supportsTools =
+              !loadedFields.loadedIsDecision &&
+              (loadResponse.supports_tools ?? false);
             const reasoningEffortLevels =
               loadResponse.reasoning_effort_levels &&
               loadResponse.reasoning_effort_levels.length > 0

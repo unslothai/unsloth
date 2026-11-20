@@ -463,6 +463,13 @@ import {
   createOpenAIContainer,
   listOpenAIContainers,
 } from "./openai-containers";
+import { runLoadedDecision } from "./decision-api";
+import { formatDecisionResult } from "../lib/decision-result";
+import {
+  decisionQuestionReady,
+  decisionQuestionToWire,
+  useDecisionConfigStore,
+} from "../stores/decision-config-store";
 import { isProviderKeyRotationError } from "./providers-api";
 import {
   beginExternalResearchFollow,
@@ -623,6 +630,50 @@ interface ResponseDetailsMetadata {
 }
 
 type RunMessages = Parameters<ChatModelAdapter["run"]>[0]["messages"];
+
+/** The newest user message: a decision turn evaluates only this message, never earlier turns. */
+function lastUserMessage(messages: RunMessages): RunMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") return message;
+  }
+  return undefined;
+}
+
+/** The newest user message's images as data URLs: /v1/systemone takes base64 data URLs. */
+function userMessageImageDataUrls(message: RunMessage | undefined): string[] {
+  if (!message) return [];
+  const visible = modelVisibleMessage(message);
+  if (!visible) return [];
+  const parts = [
+    ...(visible.content ?? []),
+    ...("attachments" in visible
+      ? (visible.attachments ?? []).flatMap(
+          (attachment) => attachment.content ?? [],
+        )
+      : []),
+  ];
+  const urls: string[] = [];
+  for (const part of parts) {
+    if (part.type !== "image" || !("image" in part)) continue;
+    const image = part.image;
+    if (typeof image !== "string" || !image) continue;
+    urls.push(
+      image.startsWith("data:") ? image : `data:image/png;base64,${image}`,
+    );
+  }
+  return urls;
+}
+
+/** The text of the newest user message: the state a decision model decides on. */
+function userMessageText(message: RunMessage | undefined): string {
+  if (!message) return "";
+  return (message.content ?? [])
+    .filter((part) => part.type === "text")
+    .map((part) => (part as { text?: string }).text ?? "")
+    .join("\n")
+    .trim();
+}
 type RunMessage = RunMessages[number];
 
 type OpenAIStreamAdapterOptions = {
@@ -4647,6 +4698,69 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // A decision-only GGUF answers /v1/systemone, never /v1/chat/completions:
+      // the composer text is the state and the configured question is sent as-is.
+      if (useChatRuntimeStore.getState().loadedIsDecision) {
+        const newestUser = lastUserMessage(rawMessages);
+        const state = userMessageText(newestUser);
+        if (!state) {
+          throw new Error(
+            "Type the text the model should decide on, then send again.",
+          );
+        }
+        const question = useDecisionConfigStore.getState().question;
+        if (!decisionQuestionReady(question)) {
+          const needs =
+            question.type === "choice"
+              ? "instructions and at least two options"
+              : question.type === "score"
+                ? "instructions and at least one level"
+                : "instructions";
+          throw new Error(
+            `This decision question needs ${needs}. Edit it in the composer, then send again.`,
+          );
+        }
+        const wire = decisionQuestionToWire(question);
+        const images = userMessageImageDataUrls(newestUser);
+        const labels =
+          question.type === "choice" &&
+          wire.body.criteria &&
+          typeof wire.body.criteria === "object" &&
+          !Array.isArray(wire.body.criteria)
+            ? (wire.body.criteria as Record<string, string>)
+            : undefined;
+        const response = await runLoadedDecision(
+          {
+            state,
+            questions: { [wire.name]: wire.body },
+            ...(images.length > 0 ? { images } : {}),
+          },
+          abortSignal,
+        );
+        const tokens = response.usage?.input_tokens ?? 0;
+        const ms =
+          typeof response.latency_ms === "number" ? response.latency_ms : 0;
+        yield {
+          content: [
+            { type: "text" as const, text: formatDecisionResult(response) },
+          ],
+          // The card renders from this; the text above keeps history, search and copy working.
+          metadata: {
+            custom: {
+              decision: {
+                type: question.type,
+                answers: response.answers ?? {},
+                labels,
+                usage: response.usage,
+                latency_ms: ms,
+                model: response.model ?? null,
+                native: response,
+              },
+            },
+          },
+        };
+        return;
+      }
       // Read before the first await: later awaits make the store unreliable for the project.
       const creationClaim = unstable_threadId
         ? readThreadCreationClaim(unstable_threadId)
