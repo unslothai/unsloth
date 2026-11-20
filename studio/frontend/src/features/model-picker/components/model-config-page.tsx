@@ -3838,7 +3838,8 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  const modelName = modelDisplayName(configId);
+  // An NPU id is "lemonade:<id>-FLM"; name its sets after the model the picker shows.
+  const modelName = npuName ?? modelDisplayName(configId);
   const savedSets = useSavedRunSettings(configId);
   const persistedSet = useSelectedRunSettings(configId, target.ggufVariant);
   // undefined: follow what is stored. Shared, or the other editor saves this set's values elsewhere.
