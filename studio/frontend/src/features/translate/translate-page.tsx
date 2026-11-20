@@ -91,6 +91,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { cn } from "@/lib/utils";
 import {
   AiTranslateIcon,
@@ -293,6 +294,7 @@ function LanguagePicker({
   const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const listFade = useScrollFades();
   const [active, setActive] = useState(value);
   const languages = useMemo(
     () =>
@@ -396,7 +398,14 @@ function LanguagePicker({
               className="h-full min-w-0 flex-1 cursor-text! bg-transparent text-ui-14 outline-hidden placeholder:text-muted-foreground"
             />
           </div>
-          <CommandList className="hover-scrollbar max-h-[min(24rem,calc(var(--radix-popover-content-available-height)-3rem))] p-2 **:[[cmdk-list-sizer]]:columns-[10.5rem] **:[[cmdk-list-sizer]]:gap-x-1">
+          <CommandList
+            ref={listFade.attach}
+            onScroll={listFade.onScroll}
+            className={cn(
+              "hover-scrollbar panel-scroll-fade-action max-h-[min(28rem,calc(var(--radix-popover-content-available-height)-3rem))] p-2 **:[[cmdk-list-sizer]]:columns-[10.5rem] **:[[cmdk-list-sizer]]:gap-x-1",
+              listFade.className,
+            )}
+          >
             {!showAuto && shown.length === 0 && (
               <CommandEmpty>{t("translate.noLanguages")}</CommandEmpty>
             )}
