@@ -422,9 +422,7 @@ def install_untiled_decode(
 
 
 def untiled_decode_stats(pipe: Any) -> Optional[dict]:
-    """Decodes the installed wrapper has run since load: ``untiled`` (ran untiled), ``tiled`` (did not fit; of those,
-    ``wide`` took the wide tiles), ``oom_fallback`` (an untiled or wide attempt ran out of memory and re-decoded).
-    None when the wrapper was never installed. A copy; never raises."""
+    """Copy of decode-route counts since load (``wide`` is a subset of ``tiled``); None if not installed."""
     stats = getattr(getattr(pipe, "vae", None), "_unsloth_untiled_stats", None)
     return dict(stats) if isinstance(stats, dict) else None
 

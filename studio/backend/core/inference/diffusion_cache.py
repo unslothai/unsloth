@@ -406,7 +406,7 @@ def install_fbcache_length_guard() -> bool:
         return False
     if getattr(original, "_unsloth_length_guard", False):
         return True
-    # A counter already installed stays outermost: guard what it wraps, then count over the guard.
+    # An installed counter stays outermost over the guard.
     counted = getattr(original, "_unsloth_fbc_counter", False)
     if counted:
         original = getattr(original, "_unsloth_fbc_inner", original)
@@ -437,9 +437,7 @@ _FBC_COUNTS_ATTR = "_unsloth_fbc_counts"
 
 
 def install_fbcache_counter() -> bool:
-    """Count FBCache's per-step decision (remaining blocks computed vs skipped) on each head hook. diffusers already
-    decides on the host (a Python bool from ``.item()``), so counting adds no sync; it runs inside the decision's
-    ``torch.compiler.disable``, so it adds no graph break either. Process-wide and idempotent."""
+    """Count FBCache computed vs skipped decisions; host-side bool, inside compiler.disable: no sync, no graph break."""
     try:
         from diffusers.hooks.first_block_cache import FBCHeadBlockHook
     except Exception:  # noqa: BLE001 - no FBCache in this diffusers
@@ -502,8 +500,7 @@ def _fbcache_head_hooks(pipe: Any) -> list:
 
 
 def fbcache_counts(pipe: Any, *, reset: bool = False) -> Optional[dict]:
-    """Summed head-hook decisions ``{"computed", "skipped"}`` on the pipe's DiT(s) since the last reset (a CFG pass
-    that runs the DiT twice per step counts twice); None when no FBCache head hook is installed. Never raises."""
+    """Summed ``{"computed", "skipped"}`` since reset (CFG counts twice per step); None without FBCache."""
     try:
         hooks = _fbcache_head_hooks(pipe)
         if not hooks:
@@ -844,7 +841,6 @@ def apply_step_cache(
                 transformer._unsloth_step_cache = None
             except Exception:  # noqa: BLE001 - marker is best-effort
                 pass
-    # Outermost over the length guard, so its recomputes count as computed.
     install_fbcache_counter()
     # Before the engage: afterwards partial and foreign installs look identical.
     hooked_before = _first_block_cache_is_hooked(transformer)

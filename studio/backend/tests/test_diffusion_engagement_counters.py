@@ -43,7 +43,6 @@ def test_untiled_stats_per_clip(monkeypatch):
     assert pipe.vae.decode(Z) == ("tiled",)
     delta = U.decode_stats_delta(before, U.untiled_decode_stats(pipe))
     assert delta == {"untiled": 1, "tiled": 1, "wide": 0, "oom_fallback": 0}
-    # A copy: callers cannot move the live counters.
     U.untiled_decode_stats(pipe)["untiled"] = 99
     assert U.untiled_decode_stats(pipe)["untiled"] == 1
 
@@ -87,7 +86,6 @@ def test_fbcache_counts_computed_and_skipped():
     assert C.install_fbcache_counter()  # idempotent: no double count below
     transformer.enable_cache(FirstBlockCacheConfig(threshold = 0.5))
     with torch.no_grad(), transformer.cache_context("cond"):
-        # Same input every call: the first computes, the rest reuse the tail residual.
         for _ in range(4):
             transformer(**_flux_inputs(1.0))
     assert C.fbcache_counts(pipe, reset = True) == {"computed": 1, "skipped": 3}
@@ -146,7 +144,6 @@ def test_video_render_engagement_recorded(monkeypatch):
         "fbcache": None,
     }
     assert lines and "untiled': 1" in lines[0]
-    # Held beside the pipe, never written onto it.
     assert set(vae_pipe.__dict__) == keys
 
 
@@ -161,7 +158,6 @@ class _FluxPipe:
 
 
 def test_apply_step_cache_counts_each_decision_on_the_head_hook():
-    # Through the loader's own entry point: the engaged FBCache records its per-step decisions.
     transformer = _tiny_flux()
     pipe = _FluxPipe(transformer)
     assert C.apply_step_cache(pipe, mode = C.TC_FBCACHE, threshold = 0.5) == C.TC_FBCACHE
@@ -189,8 +185,7 @@ def test_install_untiled_decode_exposes_counters_on_the_vae(monkeypatch):
 
 @pytest.mark.parametrize("order", ["counter_first", "guard_first"])
 def test_guard_recomputes_are_counted_in_either_install_order(monkeypatch, order):
-    # A shape change makes the length guard return True itself; that evaluation must still be counted, whichever of
-    # the two was installed first in the process.
+    # The guard's own shape-change True must be counted, whichever was installed first.
     from diffusers.hooks.first_block_cache import FBCHeadBlockHook
 
     monkeypatch.setattr(FBCHeadBlockHook, "_should_compute_remaining_blocks", lambda self, r: False)
@@ -201,6 +196,6 @@ def test_guard_recomputes_are_counted_in_either_install_order(monkeypatch, order
     assert fn._unsloth_fbc_counter and fn._unsloth_length_guard
     state = types.SimpleNamespace(head_block_residual = torch.zeros(1, 4), tail_block_residuals = None)
     hook = types.SimpleNamespace(state_manager = types.SimpleNamespace(get_state = lambda: state))
-    assert fn(hook, torch.zeros(1, 8)) is True  # shape changed: the guard recomputes
-    assert fn(hook, torch.zeros(1, 4)) is False  # same shape: the cache decides (skip)
+    assert fn(hook, torch.zeros(1, 8)) is True
+    assert fn(hook, torch.zeros(1, 4)) is False
     assert hook.__dict__[C._FBC_COUNTS_ATTR] == {"computed": 1, "skipped": 1}

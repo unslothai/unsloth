@@ -15134,7 +15134,6 @@ class VideoBackend:
                     diffusion_cuda_graph.set_bypass(
                         graph_handles, cache_breaks_graph(state.transformer_cache)
                     )
-                # Per-clip engagement: untiled vs tiled VAE decodes, FBCache computed vs skipped steps.
                 from .video_vae_untiled import untiled_decode_stats
 
                 vae_stats_before = untiled_decode_stats(pipe)
@@ -16568,14 +16567,13 @@ _backend: Optional[VideoBackend] = None
 _backend_lock = threading.Lock()
 
 
-# Last render's engagement per pipe, held weakly: nothing is written onto the pipeline itself.
 _RENDER_ENGAGEMENT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
 def _keep_render_engagement(pipe: Any, record: dict) -> None:
     try:
         _RENDER_ENGAGEMENT[pipe] = record
-    except TypeError:  # not weak-referenceable: status just reports nothing
+    except TypeError:
         pass
 
 

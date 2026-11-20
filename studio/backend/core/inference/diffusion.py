@@ -1009,14 +1009,13 @@ def _active_lora_pairs(pipe: Any) -> list:
     return pairs
 
 
-# Last render's engagement per pipe, held weakly: nothing is written onto the pipeline itself.
 _RENDER_ENGAGEMENT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
 def _keep_render_engagement(pipe: Any, record: dict) -> None:
     try:
         _RENDER_ENGAGEMENT[pipe] = record
-    except TypeError:  # not weak-referenceable: status just reports nothing
+    except TypeError:
         pass
 
 
@@ -16162,7 +16161,6 @@ class DiffusionBackend:
 
                 static_skip = state.transformer_cache == TC_STATIC
                 static_chunks_run = 0
-                # The FBCache head hook counts computed vs skipped steps on the host; read once after the render.
                 fbcache_counts(state.pipe, reset = True)
 
                 def _publish_preview(
