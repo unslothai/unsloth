@@ -83,7 +83,15 @@ _BF16_BLOCK_N = int(os.environ.get("PG_FLEX_BF16_BLOCK_N", "64"))
 # flex on sm75, so on T4 GRPO steps are 40% slower for Qwen3-0.6B and 3% faster for Qwen3-1.7B.
 _SMALL_SMEM_BELOW_BYTES = 98304
 _SMALL_SMEM_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_SMALL_SMEM", "0")
-_SMALL_SMEM_OPT_IN = _SMALL_SMEM_ENV.lower() in ("1", "true", "yes", "on")
+
+
+def _small_smem_opt_in(env, torch_version) -> bool:
+    # The fwd_ / bwd_ kernel_options keys are read from torch 2.10 on; older releases keep the opt-in off.
+    version = tuple(int(x) for x in re.findall(r"\d+", torch_version.split("+")[0])[:2])
+    return env.lower() in ("1", "true", "yes", "on") and version >= (2, 10)
+
+
+_SMALL_SMEM_OPT_IN = _small_smem_opt_in(_SMALL_SMEM_ENV, torch.__version__)
 # T4 sweep (head_dim 128, fp16): forward 64 / 64 needs 65536 B even with one stage; 32 / 32 is the
 # fastest forward that fits; backward 32 / 32 with 8 warps beats the 16 / 16 default (37 vs 86 ms).
 _SMALL_SMEM_16BIT_OPTIONS = {

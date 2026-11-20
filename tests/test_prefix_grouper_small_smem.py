@@ -229,3 +229,12 @@ def test_user_tile_overrides_go_through_the_compile_check(kernel, monkeypatch):
     monkeypatch.setattr(kernel, "_BF16_BLOCK_M", 32)
     monkeypatch.setattr(kernel, "_BF16_BLOCK_N", 32)
     assert kernel._small_smem_skip_reason(q) is None
+
+
+def test_opt_in_needs_torch_2_10_pass_prefixed_options(kernel):
+    # Older torch ignores fwd_ / bwd_ kernel_options: the opt-in stays off there, so the skip still applies.
+    assert kernel._small_smem_opt_in("1", "2.10.0+cu128") is True
+    assert kernel._small_smem_opt_in("1", "2.14.1") is True
+    assert kernel._small_smem_opt_in("1", "2.9.1") is False
+    assert kernel._small_smem_opt_in("1", "2.7.0a0") is False
+    assert kernel._small_smem_opt_in("0", "2.14.1") is False
