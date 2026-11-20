@@ -114,6 +114,7 @@ export function studioBackupProjects(backup: Dict): ProjectRecord[] {
       name,
       // Dropped like systemPrompt: project instructions are injected as a system message.
       instructions: "",
+      ...(str(project.parentId) ? { parentId: str(project.parentId) } : {}),
       archived: project.archived === true,
       createdAt,
       updatedAt: num(project.updatedAt) ?? createdAt,
