@@ -132,6 +132,8 @@ import {
 import { repinExportedGgufAfterDelete } from "@/features/model-picker/components/model-selector/repin-exported-gguf";
 import { isCapableCheckpointQuant } from "@/features/model-picker/components/model-selector/recommended-fit";
 import {
+  NPU_CATALOG_TAG,
+  NPU_TAG_TEXT,
   type NpuModel,
   NpuSetupNotice,
   npuDeleteDescription,
@@ -4364,6 +4366,14 @@ export function ComposerModelPicker({
                     {sizeLabel}
                   </span>
                 ) : null}
+              </span>
+            ) : null}
+            {row.kind === "npu" &&
+            !npuProgress &&
+            !(row.section === "npu" && listSections.includes("npu")) ? (
+              // Under the NPU header the header says it; Exported and Favorites have no such header.
+              <span className="shrink-0 text-ui-12 text-muted-foreground">
+                {NPU_TAG_TEXT[NPU_CATALOG_TAG]}
               </span>
             ) : null}
             {npuProgress || (npuOffer && row.npu?.size_gb != null) ? (

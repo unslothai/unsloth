@@ -86,14 +86,14 @@ test("an unread FastFlowLM or converter, or no architecture, gives no tag", () =
   assert.equal(npuFit(FLM_1_0_12, null, "x").tag, null);
 });
 
-test("the Hub tags each FastFlowLM catalog row; the composer picker leaves it to its NPU section", () => {
+test("the Hub tags each FastFlowLM catalog row; the composer picker tags only rows outside its NPU section", () => {
   assert.match(
     readSrc("features/hub/catalog/npu-catalog-list.tsx"),
     /NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/,
   );
-  assert.doesNotMatch(
+  assert.match(
     readSrc("components/assistant-ui/composer-model-picker/composer-model-picker.tsx"),
-    /NPU_TAG_TEXT/,
+    /listSections\.includes\("npu"\)\) \? \([\s\S]{0,200}NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/,
   );
 });
 

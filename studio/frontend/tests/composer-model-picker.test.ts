@@ -283,13 +283,17 @@ test("Run settings open inside the composer picker, not the header picker", () =
   );
 });
 
-test("NPU rows carry a Q4NX chip, and no text the section header already says", () => {
+test("NPU rows carry a Q4NX chip, and say Runs on NPU only where no NPU header does", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /const NPU_QUANT = "Q4NX";/);
   assert.match(picker, /row\.kind === "npu" \? \(\s+<QuantPill quant=\{NPU_QUANT\} \/>/);
-  assert.doesNotMatch(picker, /NPU_TAG_TEXT|"Converted"/);
+  assert.match(
+    picker,
+    /!\(row\.section === "npu" && listSections\.includes\("npu"\)\) \? \([\s\S]{0,200}NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/,
+  );
+  assert.doesNotMatch(picker, /"Converted"/);
 });
 
 test("exported GGUFs and Q4NX models converted on the Export page share an Exported section", () => {
