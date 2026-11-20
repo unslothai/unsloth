@@ -52357,7 +52357,8 @@ async def generate_diffusion_image(
     if request.provider_id:
         return await _external_image_generation(request, http_request)
     # A run admitted mid-switch renders the old model with the new pick's settings, or is cancelled by the swap.
-    if await asyncio.to_thread(_image_load_in_flight):
+    # A load that already published its pipeline only finishes its tail (encoder pins): wait that out instead.
+    if await asyncio.to_thread(_image_load_in_flight) and not await _wait_image_load_tail():
         raise HTTPException(
             status_code = 409,
             detail = IMAGE_LOAD_IN_FLIGHT_MSG,
@@ -53850,6 +53851,32 @@ def _image_load_in_flight() -> bool:
         )
     except Exception:  # noqa: BLE001 -- no readable load state: the engine's own guards decide
         return False
+
+
+# Cap on the wait for a published load's tail; the encoder pins it waits for take seconds, not minutes.
+IMAGE_LOAD_TAIL_WAIT_S = 300.0
+_IMAGE_LOAD_TAIL_POLL_S = 0.1
+
+
+def _image_load_tail_only() -> bool:
+    """The image load in flight already published its pipeline (status reads loaded) and only finishes its tail."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    try:
+        tail = getattr(get_active_diffusion_engine(), "load_tail_pending", None)
+        return bool(tail()) if callable(tail) else False
+    except Exception:  # noqa: BLE001 -- unreadable: refuse as before
+        return False
+
+
+async def _wait_image_load_tail() -> bool:
+    """True once the in-flight image load is over, when all that was left was its tail. False (refuse with 409, as
+    before) for a load or switch that has not published its pipeline yet, or a tail that outlasts the cap."""
+    deadline = time.monotonic() + IMAGE_LOAD_TAIL_WAIT_S
+    while await asyncio.to_thread(_image_load_in_flight):
+        if time.monotonic() >= deadline or not await asyncio.to_thread(_image_load_tail_only):
+            return False
+        await asyncio.sleep(_IMAGE_LOAD_TAIL_POLL_S)
+    return True
 
 
 def _image_load_preparing_progress() -> Optional[DiffusionLoadProgressResponse]:
