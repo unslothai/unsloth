@@ -141,3 +141,40 @@ def test_video_render_engagement_recorded(monkeypatch):
         "fbcache": None,
     }
     assert lines and "untiled': 1" in lines[0]
+
+
+class _FluxPipe:
+    def __init__(self, transformer):
+        self.transformer = transformer
+
+    def __call__(self, steps):
+        for _ in range(steps):
+            with self.transformer.cache_context("cond"):
+                self.transformer(**_flux_inputs(1.0))
+
+
+def test_apply_step_cache_counts_each_decision_on_the_head_hook():
+    # Through the loader's own entry point: the engaged FBCache records its per-step decisions.
+    transformer = _tiny_flux()
+    pipe = _FluxPipe(transformer)
+    assert C.apply_step_cache(pipe, mode = C.TC_FBCACHE, threshold = 0.5) == C.TC_FBCACHE
+    with torch.no_grad():
+        pipe(5)
+    from diffusers.hooks.first_block_cache import _FBC_LEADER_BLOCK_HOOK
+
+    heads = [
+        m._diffusers_hook.hooks[_FBC_LEADER_BLOCK_HOOK]
+        for m in transformer.modules()
+        if _FBC_LEADER_BLOCK_HOOK in getattr(getattr(m, "_diffusers_hook", None), "hooks", {})
+    ]
+    assert len(heads) == 1
+    assert heads[0].__dict__["_unsloth_fbc_counts"] == {"computed": 1, "skipped": 4}
+    transformer.disable_cache()
+
+
+def test_install_untiled_decode_exposes_counters_on_the_vae(monkeypatch):
+    pipe = types.SimpleNamespace(vae = _VAE())
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    assert U.install_untiled_decode(pipe, "wan2.2-ti2v-5b")
+    pipe.vae.decode(Z)
+    assert pipe.vae._unsloth_untiled_stats["untiled"] == 1
