@@ -423,8 +423,95 @@ def install_fbcache_length_guard() -> bool:
         return original(self, hidden_states_residual)
 
     _should_compute_remaining_blocks._unsloth_length_guard = True
+    _should_compute_remaining_blocks._unsloth_fbc_counter = getattr(
+        original, "_unsloth_fbc_counter", False
+    )
     FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
     return True
+
+
+_FBC_COUNTS_ATTR = "_unsloth_fbc_counts"
+
+
+def install_fbcache_counter() -> bool:
+    """Count FBCache's per-step decision (remaining blocks computed vs skipped) on each head hook. diffusers already
+    decides on the host (a Python bool from ``.item()``), so counting adds no sync; it runs inside the decision's
+    ``torch.compiler.disable``, so it adds no graph break either. Process-wide and idempotent."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCHeadBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    original = getattr(FBCHeadBlockHook, "_should_compute_remaining_blocks", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_fbc_counter", False):
+        return True
+    import torch
+
+    @torch.compiler.disable
+    def _should_compute_remaining_blocks(self, hidden_states_residual):
+        compute = original(self, hidden_states_residual)
+        counts = self.__dict__.get(_FBC_COUNTS_ATTR)
+        if counts is None:
+            counts = {"computed": 0, "skipped": 0}
+            self.__dict__[_FBC_COUNTS_ATTR] = counts
+        # A non-bool decision is not coerced: that would sync on a device tensor.
+        if compute is True:
+            counts["computed"] += 1
+        elif compute is False:
+            counts["skipped"] += 1
+        return compute
+
+    _should_compute_remaining_blocks._unsloth_fbc_counter = True
+    _should_compute_remaining_blocks._unsloth_length_guard = getattr(
+        original, "_unsloth_length_guard", False
+    )
+    FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    return True
+
+
+def _fbcache_head_hooks(pipe: Any) -> list:
+    try:
+        from diffusers.hooks.first_block_cache import _FBC_LEADER_BLOCK_HOOK
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return []
+    hooks, seen = [], set()
+    for name in ("transformer", "transformer_2"):
+        transformer = getattr(pipe, name, None)
+        if transformer is None or id(transformer) in seen:
+            continue
+        seen.add(id(transformer))
+        try:
+            modules = list(transformer.modules())
+        except Exception:  # noqa: BLE001
+            continue
+        for module in modules:
+            registry = getattr(module, "_diffusers_hook", None)
+            table = getattr(registry, "hooks", None) if registry is not None else None
+            hook = table.get(_FBC_LEADER_BLOCK_HOOK) if isinstance(table, dict) else None
+            if hook is not None:
+                hooks.append(hook)
+    return hooks
+
+
+def fbcache_counts(pipe: Any, *, reset: bool = False) -> Optional[dict]:
+    """Summed head-hook decisions ``{"computed", "skipped"}`` on the pipe's DiT(s) since the last reset (a CFG pass
+    that runs the DiT twice per step counts twice); None when no FBCache head hook is installed. Never raises."""
+    try:
+        hooks = _fbcache_head_hooks(pipe)
+        if not hooks:
+            return None
+        total = {"computed": 0, "skipped": 0}
+        for hook in hooks:
+            counts = hook.__dict__.get(_FBC_COUNTS_ATTR)
+            if counts:
+                total["computed"] += counts["computed"]
+                total["skipped"] += counts["skipped"]
+                if reset:
+                    counts["computed"] = counts["skipped"] = 0
+        return total
+    except Exception:  # noqa: BLE001 - counters are diagnostics only
+        return None
 
 
 def _register_layer_split_blocks(transformer: Any) -> bool:
@@ -750,6 +837,8 @@ def apply_step_cache(
                 transformer._unsloth_step_cache = None
             except Exception:  # noqa: BLE001 - marker is best-effort
                 pass
+    # Outermost over the length guard, so its recomputes count as computed.
+    install_fbcache_counter()
     # Before the engage: afterwards partial and foreign installs look identical.
     hooked_before = _first_block_cache_is_hooked(transformer)
     try:
