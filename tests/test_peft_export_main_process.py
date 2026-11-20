@@ -56,7 +56,11 @@ def _counted_merge(monkeypatch):
     return calls
 
 
-def _fake_ddp(monkeypatch, rank, world = 2):
+def _fake_ddp(
+    monkeypatch,
+    rank,
+    world = 2,
+):
     import torch.distributed as dist
 
     monkeypatch.setattr(dist, "is_available", lambda: True)
@@ -109,9 +113,7 @@ def test_push_to_hub_merged_uploads_from_rank0_only(monkeypatch, tmp_path, rank)
 
 
 @pytest.mark.parametrize("rank", [0, 1])
-def test_save_pretrained_merged_under_ddp_pushes_from_rank0_only(
-    monkeypatch, tmp_path, rank
-):
+def test_save_pretrained_merged_under_ddp_pushes_from_rank0_only(monkeypatch, tmp_path, rank):
     calls = _counted_merge(monkeypatch)
     _fake_ddp(monkeypatch, rank)
     model = _tiny_peft_model()
@@ -180,18 +182,14 @@ def test_push_to_hub_gguf_uploads_from_rank0_only(monkeypatch, tmp_path, rank):
 
 def test_save_pretrained_gguf_skips_everything_off_main(monkeypatch, tmp_path):
     ran = []
-    monkeypatch.setattr(
-        unsloth_save, "unsloth_generic_save", lambda **kwargs: ran.append(kwargs)
-    )
+    monkeypatch.setattr(unsloth_save, "unsloth_generic_save", lambda **kwargs: ran.append(kwargs))
     out = unsloth_save.unsloth_save_pretrained_gguf(
         _tiny_peft_model(), str(tmp_path / "gguf"), object(), is_main_process = False
     )
     assert out is None and ran == []
 
 
-def test_save_pretrained_gguf_inside_fsdp2_gather_ignores_the_flag(
-    monkeypatch, tmp_path
-):
+def test_save_pretrained_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, tmp_path):
     """The same flag gate must yield to an FSDP2 gather already in progress."""
     monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
     monkeypatch.setattr(unsloth_save, "_gguf_remote_code_approved", lambda *a, **k: True)
