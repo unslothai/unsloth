@@ -3791,7 +3791,6 @@ export function ComposerModelPicker({
     row: Row,
   ): Promise<ModelSelectorChangeMeta | null> => {
     const target = quantTarget(row);
-    // As a pick: an MLX repo with no precision folder listed configures as one checkpoint.
     const mlxRepo =
       (row.kind === "hub" && !row.hub?.isGguf) ||
       (row.kind === "cached" && row.format === "mlx");
