@@ -9,7 +9,8 @@ import postcss from "postcss";
 import { readSrc } from "./helpers/kit.ts";
 
 const CSS = readSrc("index.css");
-const GATE = "html.tauri.render-linux.webkit-cpu-paint[data-glass]";
+const GATE = "html.tauri.render-linux.webkit-legacy-compositor[data-glass]";
+const MAIN = readSrc("main.tsx");
 const SIDEBAR = `${GATE}[data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"]`;
 const FRAME_BEFORE = "html[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before";
 const CLEAR =
@@ -26,7 +27,7 @@ function decls(selector: string): Map<string, string> {
   return out;
 }
 
-test("under WebKitGTK CPU painting the pinned sidebar blurs for itself, with the strip's fill", () => {
+test("under WebKitGTK's TextureMapper compositor the pinned sidebar blurs for itself, with the strip's fill", () => {
   // Content painted over the strip's ::before glass is blurred into it there (a halo round the logo).
   const frame = decls(FRAME_BEFORE);
   const own = decls(SIDEBAR);
@@ -46,7 +47,13 @@ test("the self blur comes after the rule that clears it and stays off every othe
       rule.walkDecls(/backdrop-filter$/, (d) => {
         if (d.value !== "none") blur = true;
       });
-      if (blur) assert.ok(selector.startsWith(GATE), `${selector} blurs outside the CPU-paint gate`);
+      if (blur) assert.ok(selector.startsWith(GATE), `${selector} blurs outside the legacy compositor gate`);
     }
   });
+});
+
+test("the gate follows the shell's compositor answer, not CPU painting", () => {
+  // WebKitGTK 2.54 forced onto the CPU composites with Skia and has no halo; every release before it does.
+  assert.match(MAIN, /if \(status\.legacyCompositor\) \{\s*document\.documentElement\.classList\.add\("webkit-legacy-compositor"\);/);
+  assert.doesNotMatch(CSS, /webkit-cpu-paint\[data-glass\][^{]*sidebar-inner/);
 });

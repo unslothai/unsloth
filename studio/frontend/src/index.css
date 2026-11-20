@@ -7322,10 +7322,10 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
   backdrop-filter: none;
   box-shadow: none;
 }
-/* WebKitGTK before 2.54 (webkit-cpu-paint) blurs whatever paints over a backdrop-filter layer into it, so the
-   strip's glass haloed the sidebar logo. A surface's own backdrop leaves its children out, so there the sidebar
-   blurs for itself, over the strip's glass and with its fill. */
-html.tauri.render-linux.webkit-cpu-paint[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
+/* WebKitGTK before 2.54 composites with TextureMapper (webkit-legacy-compositor, main.tsx), whose backdrop-filter
+   also takes in what paints over the filtered layer, so the strip's glass haloed the sidebar logo. A surface's own
+   backdrop leaves its children out, so there the sidebar blurs for itself, over the strip's glass and with its fill. */
+html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
