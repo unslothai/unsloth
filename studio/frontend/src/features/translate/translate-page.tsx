@@ -184,12 +184,9 @@ const OPEN_FILE_EXTENSIONS = `${TEXT_FILE_EXTENSIONS},${SERVER_FILE_EXTENSIONS}`
 
 function readsInBrowser(file: File): boolean {
   const name = file.name.toLowerCase();
-  if (SERVER_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))) {
-    return false;
-  }
   return (
-    file.type.startsWith("text/") ||
-    TEXT_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
+    file.type.startsWith("text/") &&
+    !OPEN_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
   );
 }
 
