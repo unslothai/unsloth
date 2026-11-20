@@ -39,7 +39,7 @@ test("the collapsed rail opens the Images and Audio workflows from their icons",
 
 test("the rail flyout lists every workflow and greys out what the model cannot do", () => {
   const images = block(SIDEBAR, "function ImagesRailFlyout(", "function AudioRailFlyout(");
-  assert.match(images, /tabs=\{WORKFLOW_TABS\}/);
+  assert.match(images, /tabs=\{imageWorkflowTabs\(unifiedEdit\)\}/);
   assert.match(images, /enabled=\{\(id\) => isWorkflowEnabled\(id, supported\)\}/);
   assert.match(
     images,
