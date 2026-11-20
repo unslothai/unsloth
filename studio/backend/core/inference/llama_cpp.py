@@ -6020,6 +6020,26 @@ def _target_failed_before_drafter(output: str, drafter_path: Optional[str]) -> b
     )
 
 
+# A context Studio picked that still runs out of memory is halved, down to this floor.
+_CTX_HALVE_FLOOR = _FIT_MIN_CTX
+_CTX_HALVE_MAX = 8
+
+
+def _halved_ctx_after_oom(cmd: Sequence[str], output: str, is_memory_failure) -> Optional[int]:
+    """Half of the launched -c when the context could not be created for lack of GPU memory;
+    None when there is no -c, the failure is something else, or half drops below the floor."""
+    if "-c" not in cmd or "failed to create context with model" not in output:
+        return None
+    if not is_memory_failure(output):
+        return None
+    try:
+        ctx = int(cmd[list(cmd).index("-c") + 1])
+    except (IndexError, ValueError):
+        return None
+    half = (ctx // 2) // 256 * 256
+    return half if half >= _CTX_HALVE_FLOOR else None
+
+
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
     """Last occurrence wins across both spellings; --no-mmproj-offload keeps the projector in host RAM."""
     if not extra_args:
@@ -32003,6 +32023,12 @@ class LlamaCppBackend:
                         "max_total_s": max(floor, ceiling),
                     }
 
+                # Studio's own context (Auto, or filled in by the UI from the model), never a typed one.
+                _studio_chose_ctx = ctx_override is None and (
+                    requested_ctx <= 0
+                    or bool(getattr(intent, "max_seq_length_auto_derived", False))
+                )
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -32015,7 +32041,7 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
-                    nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib
+                    nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib, effective_ctx
                     # Single revocation point for the tensor-spill plan; label is empty only on the first spawn.
                     if label:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
@@ -32030,7 +32056,8 @@ class LlamaCppBackend:
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
-                    for _spawn_attempt in (0, 1, 2, 3):
+                    _ctx_halvings = 0
+                    for _spawn_attempt in range(4 + _CTX_HALVE_MAX):
                         if _spawn_attempt:
                             run_cmd = self._drop_managed_lazy_mode(run_cmd, "startup")
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -32662,6 +32689,40 @@ class LlamaCppBackend:
                                     )
                                 self._record_memory_state(run_cmd, env)
                             _did_fit_retry = True
+                            continue
+                        # Studio picked this context and it still does not fit (an estimate
+                        # that ran low): halve it rather than fail the load or drop the drafter.
+                        _half_ctx = (
+                            _halved_ctx_after_oom(
+                                run_cmd,
+                                "\n".join(self._stdout_lines[-200:]),
+                                self._is_gpu_memory_start_failure,
+                            )
+                            if (
+                                _studio_chose_ctx
+                                and _startup_crashed
+                                and not _capability_crash
+                                and _ctx_halvings < _CTX_HALVE_MAX
+                                and not _load_cancelled()
+                            )
+                            else None
+                        )
+                        if _half_ctx is not None:
+                            _ctx_was = run_cmd[run_cmd.index("-c") + 1]
+                            logger.warning(
+                                "llama-server could not allocate its context at %s tokens; "
+                                "Studio chose that length, retrying at %d. Crash log: %s",
+                                _ctx_was,
+                                _half_ctx,
+                                self._llama_log_path,
+                            )
+                            run_cmd = list(run_cmd)
+                            run_cmd[run_cmd.index("-c") + 1] = str(_half_ctx)
+                            effective_ctx = _half_ctx
+                            self._effective_context_length = self._max_context_length = _half_ctx
+                            self._vram_fit_context_length = None
+                            self._record_memory_state(run_cmd, env)
+                            _ctx_halvings += 1
                             continue
                         return False
 
