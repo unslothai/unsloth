@@ -134,9 +134,10 @@ test("a new picture revision replaces the old object URL instead of leaking it",
   assert.doesNotMatch(images, /const resolved = new Map/);
 });
 
-test("the sidebar re-reads the chat index only when another tab changes chats", () => {
+test("the sidebar re-reads the chat index when another tab changes chats or this tab forks one", () => {
   const mark = read("features/characters/sidebar-mark.tsx");
-  assert.doesNotMatch(mark, /subscribeChatHistoryUpdated/);
+  // Same-tab saves are not re-read; only a fork of an indexed chat is, since the server copied its cast.
+  assert.match(mark, /!coalesce && thread && from && from in chatIndex && !\(thread\.id in chatIndex\)\) refreshSoon\(\)/);
   assert.match(mark, /event\.key === CHAT_HISTORY_REVISION_KEY\) refreshSoon\(\)/);
   assert.match(mark, /store\.status === "idle" \|\| store\.status === "error"/);
 });

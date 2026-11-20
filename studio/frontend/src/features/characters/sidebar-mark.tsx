@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
-import { CHAT_HISTORY_REVISION_KEY } from "@/features/chat/api/chat-api";
+import { CHAT_HISTORY_REVISION_KEY, subscribeChatHistoryUpdated } from "@/features/chat/api/chat-api";
 import { useEffect } from "react";
 import { Portrait } from "./components/portrait";
 import { useCharactersStore } from "./store";
@@ -30,13 +30,20 @@ function refreshSoon(): void {
   }, 400);
 }
 
-/** Loads the chat index once per sign-in, then again when another tab changes chats (this tab updates the store itself). */
+/** Loads the chat index once per sign-in, then again when another tab changes chats or this tab forks one
+ *  (this tab updates the store itself for everything else). */
 function watchChatIndex(): void {
   if (typeof window === "undefined") return;
   if (!subscribed) {
     subscribed = true;
     window.addEventListener("storage", (event) => {
       if (event.key === CHAT_HISTORY_REVISION_KEY) refreshSoon();
+    });
+    // The server copies a fork's cast; without its index row the fork would show as a plain chat.
+    subscribeChatHistoryUpdated(({ thread, coalesce }) => {
+      const from = thread?.forkedFromThreadId;
+      const { chatIndex } = useCharactersStore.getState();
+      if (!coalesce && thread && from && from in chatIndex && !(thread.id in chatIndex)) refreshSoon();
     });
     window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
       loaded = false;
