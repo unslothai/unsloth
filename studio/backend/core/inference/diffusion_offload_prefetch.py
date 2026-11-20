@@ -1513,8 +1513,7 @@ def stream_module_list(
         kept_bytes = sum(int(_group_nbytes(reuse[id(b)])) for b in streamed if id(b) in reuse)
         budget = _pin_budget_mib()
         replaced = need if replaces_counted and pin_replaces_host_enabled() else 0
-        # only where the credit is what lets the pin fit (that owner streamed pageable before): pinned owners keep
-        # their cache as they did
+        # Only where the credit lets the pin fit; pinned owners keep their cache as before.
         release_after_forward = bool(
             release_after_forward
             and replaced

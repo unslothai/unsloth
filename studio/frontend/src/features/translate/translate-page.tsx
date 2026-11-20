@@ -91,6 +91,7 @@ import { StopIcon } from "@/lib/media-control-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { cn } from "@/lib/utils";
 import {
   AiTranslateIcon,
@@ -293,6 +294,7 @@ function LanguagePicker({
   const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const listFade = useScrollFades();
   const [active, setActive] = useState(value);
   const languages = useMemo(
     () =>
@@ -396,7 +398,14 @@ function LanguagePicker({
               className="h-full min-w-0 flex-1 cursor-text! bg-transparent text-ui-14 outline-hidden placeholder:text-muted-foreground"
             />
           </div>
-          <CommandList className="hover-scrollbar max-h-[min(24rem,calc(var(--radix-popover-content-available-height)-3rem))] p-2 **:[[cmdk-list-sizer]]:columns-[10.5rem] **:[[cmdk-list-sizer]]:gap-x-1">
+          <CommandList
+            ref={listFade.attach}
+            onScroll={listFade.onScroll}
+            className={cn(
+              "hover-scrollbar panel-scroll-fade-action max-h-[min(28rem,calc(var(--radix-popover-content-available-height)-3rem))] p-2 **:[[cmdk-list-sizer]]:columns-[10.5rem] **:[[cmdk-list-sizer]]:gap-x-1",
+              listFade.className,
+            )}
+          >
             {!showAuto && shown.length === 0 && (
               <CommandEmpty>{t("translate.noLanguages")}</CommandEmpty>
             )}
@@ -1234,11 +1243,18 @@ export function TranslatePage() {
           ? t("translate.model.chat")
           : (attempt?.customName ?? prefs.customModel?.name ?? "")));
 
+  const downloadedRef = useRef(downloaded);
+  useEffect(() => {
+    downloadedRef.current = downloaded;
+  }, [downloaded]);
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
     for (const model of DEDICATED_TRANSLATE_MODELS) {
-      void translateModelDownloaded(model, abort.signal).then((onDisk) => {
+      // After every run: the disk shows a finished download, so the Hub is asked only before it is known missing.
+      void translateModelDownloaded(model, abort.signal, {
+        remote: downloadedRef.current[model.id] !== false,
+      }).then((onDisk) => {
         if (onDisk === null || abort.signal.aborted) return;
         setDownloaded((prev) => ({ ...prev, [model.id]: onDisk }));
       });
@@ -1326,12 +1342,18 @@ export function TranslatePage() {
     // Read-only meanwhile; a swap or history pick still wins.
     const before = useTranslateStore.getState().source;
     try {
-      const { text } = await extractDocumentText(file);
+      const { text, warning } = await extractDocumentText(
+        file,
+        undefined,
+        TRANSLATE_SOURCE_MAX_CHARS,
+      );
       if (useTranslateStore.getState().source !== before) {
         return;
       }
-      if (text.trim()) loadText(text);
-      else toast.error(t("translate.fileNotText"));
+      if (text.trim()) {
+        loadText(text);
+        if (warning) toast.warning(warning);
+      } else toast.error(t("translate.fileNotText"));
     } catch (error) {
       toast.error(
         error instanceof Error && error.message
@@ -1343,9 +1365,8 @@ export function TranslatePage() {
     }
   };
 
-  // The page scrolls inside the layout's <main>. Mark that element while Translate is mounted so its
-  // stable gutter needs no main:has(.translate-page), which Chromium re-matched across the whole chat
-  // thread on every keystroke.
+  // Marking main on mount spares main:has(.translate-page), which Chromium re-matched per
+  // keystroke.
   useLayoutEffect(() => {
     const host = document
       .querySelector(".translate-page")

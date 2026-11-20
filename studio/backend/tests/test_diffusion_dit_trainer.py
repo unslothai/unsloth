@@ -52,10 +52,12 @@ def test_specs_cover_the_dit_families():
         "qwen-image-2.1",
         "z-image",
         "krea-2",
+        "moss-image",
         "flux.2-klein",
         "flux.2-dev",
         "flux.3-klein-base",
         "ltx-2",
+        "ltx-2.5",
         "wan2.2-ti2v-5b",
     }
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
@@ -466,10 +468,26 @@ def test_train_precision_modes_ada_has_fp8_without_mxfp8(monkeypatch):
     assert "mxfp8" not in modes
 
 
-def test_train_precision_modes_newer_blackwell_has_mxfp8(monkeypatch):
-    _patch_capability(monkeypatch, (12, 0))
+def test_train_precision_modes_sm103_has_mxfp8(monkeypatch):
+    _patch_capability(monkeypatch, (10, 3))
     modes, _ = train_precision_modes()
     assert "mxfp8" in modes
+
+
+@pytest.mark.parametrize("capability", [(12, 0), (12, 1)])
+def test_train_precision_modes_sm120_offers_fp8_not_mxfp8(monkeypatch, capability):
+    # Measured on a G4 (sm120): mxfp8 engages but trails frozen fp8 in speed and memory, so only fp8 is offered.
+    _patch_capability(monkeypatch, capability)
+    modes, _ = train_precision_modes()
+    assert "fp8" in modes
+    assert "mxfp8" not in modes
+
+
+def test_explicit_mxfp8_still_preflights_on_sm120(monkeypatch):
+    # Not advertised there, but an explicit request (API, saved preset) is not refused: it runs.
+    from core.training.diffusion_train_common import training_precision_preflight_error
+    _patch_capability(monkeypatch, (12, 0))
+    assert training_precision_preflight_error("flux.2-klein", "mxfp8") is None
 
 
 def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
@@ -487,18 +505,19 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "capability, lowp",
+    "capability, lowp, offered",
     [
-        ((7, 5), set()),
-        ((8, 0), set()),
-        ((8, 6), set()),
-        ((8, 9), {"fp8"}),
-        ((9, 0), {"fp8"}),
-        ((10, 0), {"fp8", "mxfp8"}),
-        ((12, 0), {"fp8", "mxfp8"}),
+        ((7, 5), set(), set()),
+        ((8, 0), set(), set()),
+        ((8, 6), set(), set()),
+        ((8, 9), {"fp8"}, {"fp8"}),
+        ((9, 0), {"fp8"}, {"fp8"}),
+        ((10, 0), {"fp8", "mxfp8"}, {"fp8", "mxfp8"}),
+        # sm120 runs an explicit mxfp8, but only fp8 is offered (mxfp8 trails it there).
+        ((12, 0), {"fp8", "mxfp8"}, {"fp8"}),
     ],
 )
-def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
+def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp, offered):
     # fp8 only on sm89+, mxfp8 only on sm100+, refused by the child and the pre-eviction preflight alike.
     import core.training.diffusion_train_common as dtc
     from core.training.diffusion_train_common import training_precision_preflight_error
@@ -507,7 +526,8 @@ def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
     monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda _f: None)
     monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda _f: None)
     modes, _ = train_precision_modes()
-    assert {m for m in modes if m in ("fp8", "mxfp8")} == (lowp if capability >= (8, 0) else set())
+    assert {m for m in modes if m in ("fp8", "mxfp8")} == offered
+    assert offered <= lowp
     for mode, floor in (("fp8", "sm89"), ("mxfp8", "Blackwell")):
         cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
         reason = training_precision_preflight_error("flux.1", mode)

@@ -31,8 +31,7 @@ export function imageBox(
 	return { x: ((w - dw) * px) / 100, y: ((h - dh) * py) / 100, w: dw, h: dh };
 }
 
-// After imageBox and scale(zoom) around the position, the image's leading edge on an axis is
-// p * (box - drawn * zoom), with p the position as a 0-1 fraction.
+// Leading edge on an axis is p * (box - drawn * zoom), with p the position as a 0-1 fraction.
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
 /** The position fraction that moves the image by `delta` px from where `p` put it. */

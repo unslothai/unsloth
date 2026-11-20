@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Eager DiT LoRA forward without PEFT's per-call casts, plus a budgeted nf4 dequant cache.
+"""Eager DiT LoRA forward without PEFT's per-call casts, plus a budgeted dequant cache for nf4 and int8 bases.
 
 Matches PEFT bit for bit per LoRA linear (same GEMMs, roundings and add); a folded ``addmm`` gained nothing.
-Kill switches: ``UNSLOTH_DIFFUSION_FAST_LORA=0``, ``UNSLOTH_DIFFUSION_DEQUANT_CACHE=0``
-(``UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB=N`` pins the budget).
+The int8 entries hold the cast int8 values torchao rebuilds per call (not ``q * scale``), so its GEMM, scale and
+bias add run unchanged and the result is bit-identical.
+Kill switches: ``UNSLOTH_DIFFUSION_FAST_LORA=0``, ``UNSLOTH_DIFFUSION_DEQUANT_CACHE=0``,
+``UNSLOTH_DIFFUSION_INT8_DEQUANT_CACHE=0`` (int8 only); ``UNSLOTH_DIFFUSION_DEQUANT_CACHE_GB=N`` pins the budget.
 """
 
 from __future__ import annotations
@@ -34,6 +36,10 @@ def fast_lora_enabled() -> bool:
 
 def dequant_cache_enabled() -> bool:
     return not _env_off("UNSLOTH_DIFFUSION_DEQUANT_CACHE")
+
+
+def int8_dequant_cache_enabled() -> bool:
+    return dequant_cache_enabled() and not _env_off("UNSLOTH_DIFFUSION_INT8_DEQUANT_CACHE")
 
 
 class _LoraProduct(torch.autograd.Function):
@@ -121,6 +127,43 @@ def _is_bnb4(base) -> bool:
     return getattr(w, "quant_state", None) is not None and type(w).__name__ == "Params4bit"
 
 
+def _int8_parts(w):
+    """``(qdata, scale)`` of a torchao weight-only per-row int8 weight whose linear is ``mm(x, q.t().to(x.dtype)) *
+    scale + bias`` (torchao 0.14-0.17 ``AffineQuantizedTensor`` plain layout, 0.18+ ``Int8Tensor``), else None."""
+    name = type(w).__name__
+    try:
+        if name == "Int8Tensor":
+            q, scale = w.qdata, w.scale
+            if (
+                getattr(w, "act_quant_kwargs", None) is not None
+                or getattr(w, "act_pre_scale", None) is not None
+                or int(w.block_size[-1]) != int(q.shape[-1])
+            ):
+                return None
+        elif name == "AffineQuantizedTensor":
+            impl = w.tensor_impl
+            if type(getattr(w, "_layout", None)).__name__ != "PlainLayout":
+                return None
+            if str(getattr(w, "zero_point_domain", "INT")).rsplit(".", 1)[-1] != "INT":
+                return None
+            q, scale = impl.int_data, impl.scale
+            if tuple(int(b) for b in w.block_size) != (1, int(q.shape[-1])):
+                return None
+        else:
+            return None
+    except Exception:  # noqa: BLE001 -- an unknown torchao layout keeps torchao's own forward
+        return None
+    if q.dtype != torch.int8 or q.dim() != 2 or not isinstance(scale, torch.Tensor):
+        return None
+    if scale.numel() not in (1, int(q.shape[0])):
+        return None
+    return q, scale
+
+
+def _is_int8_wo(mod) -> bool:
+    return _int8_parts(getattr(mod, "weight", None)) is not None
+
+
 def _fast_forward(self, x, *args, **kwargs):
     orig = self.__dict__["_unsloth_orig_forward"]
     adapters = self.active_adapters
@@ -175,6 +218,43 @@ def _nf4_forward(self, x, *args, **kwargs):
     return out.to(x.dtype)
 
 
+def _int8_scale(self, dtype: torch.dtype) -> torch.Tensor:
+    cached = self.__dict__.get("_unsloth_int8_scale")
+    if cached is not None and cached[0] == dtype:
+        return cached[1]
+    scale = _int8_parts(self.weight)[1].to(dtype).flatten()
+    self.__dict__["_unsloth_int8_scale"] = (dtype, scale)
+    return scale
+
+
+def _int8_cached_linear(self, x, w_t):
+    """torchao's weight-only int8 linear with the cast weight ``w_t`` (``q.t().to(x.dtype)``) taken from the cache."""
+    m = torch.mm(x.reshape(-1, x.shape[-1]), w_t)
+    y = m * _int8_scale(self, m.dtype)
+    y = y.reshape(*x.shape[:-1], y.shape[-1])
+    if self.bias is not None:
+        y += self.bias
+    return y
+
+
+def _int8_forward(self, x, *args, **kwargs):
+    orig = self.__dict__["_unsloth_orig_forward"]
+    if args or kwargs or not x.is_floating_point():
+        return orig(x, *args, **kwargs)
+    dtype = x.dtype
+    dev = x.device.type
+    bias = self.bias
+    # Only where torchao's GEMM runs in x's dtype: an fp32 input under bf16 autocast keeps torchao.
+    if (torch.is_autocast_enabled(dev) and torch.get_autocast_dtype(dev) != dtype) or (
+        bias is not None and bias.dtype != dtype
+    ):
+        return orig(x, *args, **kwargs)
+    w_t = self.__dict__["_unsloth_dequant"].get(self, dtype)
+    if w_t is None:
+        return orig(x, *args, **kwargs)
+    return _int8_cached_linear(self, x, w_t)
+
+
 def _lora_linear_classes():
     classes = []
     try:
@@ -190,14 +270,28 @@ def _lora_linear_classes():
     return tuple(classes)
 
 
-def install_fast_lora(model, dequant_cache: Optional["Nf4DequantCache"] = None) -> int:
-    """Route plain LoRA linears (dense or nf4 base) through ``_fast_forward``; returns the count patched."""
+def _is_fp32_island(mod) -> bool:
+    # Patching an fp32 island root (diffusion_dit_fp16) would run it under fp16 autocast.
+    return bool(mod.__dict__.get("_unsloth_fp32_island", False))
+
+
+def install_fast_lora(
+    model,
+    dequant_cache: Optional["Nf4DequantCache"] = None,
+    int8: bool = False,
+) -> int:
+    """Route plain LoRA linears (dense or nf4 base) through ``_fast_forward``; returns the count patched.
+    ``int8``: the cache also takes torchao weight-only int8 linears (``int8_dequant_cache_enabled`` gates it)."""
     classes = _lora_linear_classes()
     if not classes:
         return 0
     n = 0
     for mod in model.modules():
-        if type(mod) not in classes or "_unsloth_orig_forward" in mod.__dict__:
+        if (
+            type(mod) not in classes
+            or "_unsloth_orig_forward" in mod.__dict__
+            or _is_fp32_island(mod)
+        ):
             continue
         base = getattr(mod, "base_layer", None)
         bnb4 = _is_bnb4(base)
@@ -208,15 +302,23 @@ def install_fast_lora(model, dequant_cache: Optional["Nf4DequantCache"] = None) 
         mod.forward = types.MethodType(_fast_forward, mod)
         n += 1
     if dequant_cache is not None:
-        # Every nf4 linear, LoRA base or not (FLUX.2's untargeted feed-forwards dequantise every call too).
+        int8 = int8 and int8_dequant_cache_enabled()
+        # Every nf4 / int8 linear, LoRA base or not (FLUX.2's untargeted feed-forwards dequantise every call too).
         for mod in model.modules():
-            if "_unsloth_orig_forward" in mod.__dict__ or not _is_bnb4(mod):
+            if "_unsloth_orig_forward" in mod.__dict__ or _is_fp32_island(mod):
                 continue
             if not isinstance(mod, torch.nn.Linear):
                 continue
+            if _is_bnb4(mod):
+                fwd = _nf4_forward
+            elif int8 and _is_int8_wo(mod):
+                fwd = _int8_forward
+                dequant_cache.int8_layers += 1
+            else:
+                continue
             mod.__dict__["_unsloth_orig_forward"] = mod.forward
             mod.__dict__["_unsloth_dequant"] = dequant_cache
-            mod.forward = types.MethodType(_nf4_forward, mod)
+            mod.forward = types.MethodType(fwd, mod)
             dequant_cache.layers += 1
     return n
 
@@ -226,7 +328,13 @@ def uninstall_fast_lora(model) -> int:
     for mod in model.modules():
         if "_unsloth_orig_forward" in mod.__dict__:
             del mod.__dict__["forward"]
-            for k in ("_unsloth_orig_forward", "_unsloth_bnb4", "_unsloth_dequant", "_unsloth_lp"):
+            for k in (
+                "_unsloth_orig_forward",
+                "_unsloth_bnb4",
+                "_unsloth_dequant",
+                "_unsloth_lp",
+                "_unsloth_int8_scale",
+            ):
                 mod.__dict__.pop(k, None)
             n += 1
     return n
@@ -271,14 +379,14 @@ def plan_dequant_cache(
         allocated = torch.cuda.memory_allocated()
         reserved = torch.cuda.memory_reserved()
     except Exception:  # noqa: BLE001 -- no probe: only a pinned budget caches
-        cache.plan(pinned or 0)
+        cache.plan(pinned or 0, pinned = pinned is not None)
         return
     opt_state = max(0, allocated - pre_opt_alloc)
     transient = int(max(0, step_peak - pre_opt_alloc) * max(1.0, act_scale))
     cache.transient = transient
     cache.margin = max(_MARGIN_MIN_BYTES, int(total * _MARGIN_FRAC))
     if pinned is not None:
-        cache.plan(pinned)
+        cache.plan(pinned, pinned = True)
         return
     need = pre_opt_alloc + transient + opt_state
     cache.plan(dequant_budget_bytes(free = free, reserved = reserved, peak_alloc = need, total = total))
@@ -362,7 +470,7 @@ def cache_vram_handler(cache: "Nf4DequantCache"):
 
 
 class Nf4DequantCache:
-    """Dequantised (frozen) nf4 base weights kept while they fit in ``budget`` bytes."""
+    """Dequantised (frozen) nf4 and int8 base weights kept while they fit in ``budget`` bytes."""
 
     def __init__(self, budget: int = 0):
         self.budget = int(budget)
@@ -372,23 +480,46 @@ class Nf4DequantCache:
         self.hits = 0
         self.misses = 0
         self.full = False
-        self.layers = 0  # nf4 linears routed through the cache
+        self.layers = 0  # nf4 + int8 linears routed through the cache
+        self.int8_layers = 0
+        # None until the first int8 entry is checked against torchao's own forward; False turns int8 caching off.
+        self.int8_exact: Optional[bool] = None
         self.paused = False  # preview render
         self.lent = False  # another Studio GPU load asked for the room
         self.cap = int(budget)  # the step-1 plan: rebalancing never grows past it
         self.transient = 0  # the next step's activations, from step 1
         self.margin = _MARGIN_MIN_BYTES
         self.extra_reserved = 0  # bytes another planner keeps for itself (see ``reserve``)
+        self.planned = int(budget)  # the step-1 plan before any reservation
+        self.pinned = False
         self.shrinks = 0
 
-    def plan(self, budget: int) -> None:
+    def plan(
+        self,
+        budget: int,
+        pinned: bool = False,
+    ) -> None:
         self.budget = max(0, int(budget))
         self.cap = self.budget
+        self.planned = self.budget
+        self.pinned = bool(pinned)
         self.full = self.used >= self.budget
 
-    def reserve(self, nbytes: int) -> None:
-        """Bytes held on top of step 1's activations from step 2 on (budgeted checkpointing)."""
+    def reserve(
+        self,
+        nbytes: int,
+        from_plan: bool = False,
+    ) -> int:
+        """Bytes budgeted checkpointing holds from step 2 on. ``from_plan``: re-plan to the plan less our share of
+        them (never for a pinned budget). Returns the bytes evicted."""
         self.extra_reserved = max(0, int(nbytes))
+        if not from_plan or self.pinned:
+            return 0
+        self.cap = max(0, self.planned - int(self.extra_reserved * _BUDGET_FRAC))
+        self.budget = min(self.budget, self.cap)
+        evicted = self._evict(self.used - self.budget) if self.used > self.budget else 0
+        self.full = self.used >= self.budget
+        return evicted
 
     def _evict(self, nbytes: int) -> int:
         freed = 0
@@ -440,16 +571,32 @@ class Nf4DequantCache:
             self.misses += 1
             return None
         weight = base.weight
-        shape = weight.quant_state.shape
+        int8 = None if _is_bnb4(base) else _int8_parts(weight)
+        if int8 is None and not _is_bnb4(base):
+            self.misses += 1
+            return None
+        if int8 is not None and self.int8_exact is False:
+            self.misses += 1
+            return None
+        shape = weight.quant_state.shape if int8 is None else int8[0].shape
         nbytes = int(shape[0]) * int(shape[1]) * torch.empty((), dtype = dtype).element_size()
         if self.used + nbytes > self.budget:
             self.full = True
             self.misses += 1
             return None
         try:
-            import bitsandbytes.functional as bnbF
             with torch.no_grad():
-                w = bnbF.dequantize_4bit(weight.data, weight.quant_state).to(dtype)
+                if int8 is None:
+                    import bitsandbytes.functional as bnbF
+                    w = bnbF.dequantize_4bit(weight.data, weight.quant_state).to(dtype)
+                else:
+                    # Exactly the tensor torchao builds per call: the transposed int8 view cast to the input dtype.
+                    w = int8[0].t().to(dtype)
+                    if self.int8_exact is None:
+                        self.int8_exact = _int8_matches_torchao(base, w, dtype)
+                        if not self.int8_exact:
+                            self.misses += 1
+                            return None
         except torch.OutOfMemoryError:
             self.full = True
             self.misses += 1
@@ -483,9 +630,27 @@ class Nf4DequantCache:
             "budget_gib": round(self.budget / GIB, 3),
             "cached_gib": round(self.used / GIB, 3),
             "cached_layers": len(self.entries),
-            "nf4_layers": self.layers,
+            "nf4_layers": self.layers - self.int8_layers,
+            "int8_layers": self.int8_layers,
+            "int8_exact": self.int8_exact,
             "hits": self.hits,
             "misses": self.misses,
             "shrinks": self.shrinks,
             "lent": self.lent,
+            "reserved_gib": round(self.extra_reserved / GIB, 3),
         }
+
+
+def _int8_matches_torchao(base, w_t, dtype) -> bool:
+    """One small forward through torchao and through the cached path; anything but bit equality (a torchao layout
+    this module does not mirror) turns int8 caching off for the run."""
+    try:
+        with torch.no_grad():
+            # Its own generator: the training noise draws must not shift.
+            gen = torch.Generator(device = w_t.device).manual_seed(0)
+            x = torch.randn(8, w_t.shape[0], device = w_t.device, dtype = dtype, generator = gen)
+            ref = base.__dict__["_unsloth_orig_forward"](x)
+            got = _int8_cached_linear(base, x, w_t)
+        return ref.dtype == got.dtype and ref.shape == got.shape and bool(torch.equal(ref, got))
+    except Exception:  # noqa: BLE001 -- an unprovable path stays on torchao
+        return False

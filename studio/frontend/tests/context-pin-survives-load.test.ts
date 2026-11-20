@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // An explicitly set Context Length survives a load in every GPU Memory mode, while Auto stays
-// Auto across same-model reloads even when a positive n_ctx goes on the wire.
+// Auto across same-model reloads and asks the server to fit the context again.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -32,10 +32,8 @@ const WIRE_AS_PIN =
 const CLEARED = { customContextLength: null, loadedCustomContextLength: null };
 
 const MODEL = "unsloth/Some-Huge-MoE-GGUF";
-const OTHER_MODEL = "unsloth/Something-Else-GGUF";
 const VARIANT = "UD-Q4_K_XL";
 const REQUESTED = 262144;
-const PRESET_SOURCES = ["builtin-default", "custom", "modified"] as const;
 
 const WRITERS = [
   ["applier", APPLIER],
@@ -54,19 +52,11 @@ function sentNCtx(
   {
     mode = "auto",
     gpuLayers = -1,
-    residentCtx = 0,
     modelId = MODEL,
-    currentCheckpoint = MODEL,
-    presetSource = "builtin-default",
-    loadedPin = null,
   }: {
-    loadedPin?: number | null;
     mode?: Mode;
     gpuLayers?: number;
-    residentCtx?: number;
     modelId?: string;
-    currentCheckpoint?: string;
-    presetSource?: (typeof PRESET_SOURCES)[number];
   } = {},
 ): number {
   return policy.resolveFitMaxSeqLength(
@@ -79,13 +69,8 @@ function sentNCtx(
       ggufVariant: VARIANT,
       isGguf: true,
       customContextLength,
-      loadedContextLength: residentCtx,
-      currentCheckpoint,
-      activeGgufVariant: VARIANT,
       pinnedMaxSeqLength: null,
       defaultMaxSeqLength: 4096,
-      presetSource,
-      loadedContextPin: loadedPin,
     }),
   );
 }
@@ -118,11 +103,7 @@ test("a completed load keeps the context it was invoked with, in every mode", ()
 
 test("the next load still sends the user's number", () => {
   const pin = pinAfterLoad(REQUESTED);
-  assert.equal(
-    sentNCtx(pin, { residentCtx: REQUESTED }),
-    REQUESTED,
-    "the reload reverted to Auto",
-  );
+  assert.equal(sentNCtx(pin), REQUESTED, "the reload reverted to Auto");
   assert.equal(pinAfterLoad(pin), REQUESTED);
 });
 
@@ -149,7 +130,7 @@ test("an Auto load still clears the pin and stays Auto", () => {
   assert.equal(sentAuto, 0);
   const pinAfterAutoLoad = pinAfterLoad(null);
   assert.equal(pinAfterAutoLoad, null);
-  assert.equal(sentNCtx(pinAfterAutoLoad, { residentCtx: 8192 }), 0);
+  assert.equal(sentNCtx(pinAfterAutoLoad), 0);
   assert.equal(policy.resolveExplicitCtxPin(0), null);
   assert.equal(policy.resolveExplicitCtxPin(null), null);
   assert.equal(policy.resolveExplicitCtxPin(undefined), null);
@@ -173,10 +154,6 @@ test("a model change does not carry the old pin across", () => {
   });
   assert.deepEqual(seed({ remembered: 8192 }), CLEARED);
   assert.deepEqual(seed({ isGguf: false }), CLEARED);
-  assert.equal(
-    sentNCtx(null, { modelId: OTHER_MODEL, currentCheckpoint: MODEL }),
-    0,
-  );
   assert.match(RUNTIME, /customContextLength: null,\s*\n\s*\}\);/);
   assert.match(
     APPLIER,
@@ -215,53 +192,11 @@ test("a poll landing mid-load cannot plant the outgoing model's context", () => 
   );
 });
 
-test("choosing Auto after a pinned load asks the server to size itself again", () => {
-  // Resending the resident size for Auto made the resident check read the reload as a no-op,
-  // so a model loaded at a set context could never go back to Auto.
-  for (const presetSource of PRESET_SOURCES) {
-    assert.equal(
-      sentNCtx(null, { presetSource, residentCtx: 8192, loadedPin: 8192 }),
-      0,
-      presetSource,
-    );
-  }
-  // A context the user sets is still sent as is over a pinned resident.
-  assert.equal(sentNCtx(16384, { presetSource: "modified", residentCtx: 8192, loadedPin: 8192 }), 16384);
-  // Another model ignores the resident pin: cross-model Auto is 0 already.
-  assert.equal(
-    sentNCtx(null, { presetSource: "modified", residentCtx: 8192, loadedPin: 8192, currentCheckpoint: OTHER_MODEL }),
-    0,
-  );
-});
-
-test("each same-model resolver call hands over the resident pin", () => {
-  // One call sizes both /validate and /load; the other decides whether the resident already matches.
-  assert.equal(RUNTIME.match(/loadedContextPin: (?:live|stateBeforeUnload)\.loadedCustomContextLength,/g)?.length, 2);
-});
-
-test("Auto stays Auto across a same-model reload, under every preset source", () => {
-  // Same-model Auto reloads outside builtin-default send the resolved context; it is not a pin.
-  assert.equal(policy.getPresetSource("Default"), "builtin-default");
-  assert.equal(policy.getPresetSource("My Preset"), "custom");
-  const onTheWire = Object.fromEntries(
-    PRESET_SOURCES.map((presetSource) => [
-      presetSource,
-      sentNCtx(null, { presetSource, residentCtx: REQUESTED }),
-    ]),
-  );
-  assert.deepEqual(onTheWire, {
-    "builtin-default": 0,
-    custom: REQUESTED,
-    modified: REQUESTED,
-  });
-  for (const presetSource of PRESET_SOURCES) {
-    const pin = pinAfterLoad(null);
-    assert.equal(pin, null, `${presetSource} turned Auto into a pin`);
-    assert.equal(
-      sentNCtx(pin, { presetSource, residentCtx: REQUESTED }),
-      onTheWire[presetSource],
-    );
-  }
+test("Auto on a same-model reload asks the server to size the context again", () => {
+  const pin = pinAfterLoad(null);
+  assert.equal(pin, null, "Auto turned into a pin");
+  assert.equal(sentNCtx(pin), 0);
+  assert.equal(sentNCtx(16384), 16384);
   assert.deepEqual(
     resolveCtxPinSeed({
       incoming: REQUESTED,
@@ -281,7 +216,7 @@ test("Auto stays Auto across a same-model reload, under every preset source", ()
 test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // The pin is captured before performLoad substitutes the resolved context for Auto.
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadRequestContextPin(");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
+  const clamp = RUNTIME.indexOf("isGguf: isGguf && !switchingModelOrVariant,");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
@@ -323,7 +258,7 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   assert.match(COMPOSER, /const effectiveCustomContextLength = ownConfig\.customContextLength;/);
   assert.match(
     ADAPTER,
-    /customContextLength: config\.customContextLength,\s*\n\s*loadedContextLength: null,/,
+    /customContextLength: config\.customContextLength,\s*\n\s*isMlx: isServedByMlx\(/,
   );
 });
 

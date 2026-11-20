@@ -113,7 +113,7 @@ from core.inference.sd_cpp_engine import (
     owning_managed_root,
     runtime_env,
 )
-from core.inference.sd_cpp_server import SdCppServer
+from core.inference.sd_cpp_server import SdCppLatentFormatError, SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
@@ -528,6 +528,52 @@ def _explicit_threads() -> Optional[int]:
     return None
 
 
+# Last sd.cpp start / install failure, so a refusal can name the fix. win-cpu-x64 needs the MSVC runtime but ships none.
+NATIVE_FAILURE_DLL = "dll"
+NATIVE_FAILURE_EXEC = "exec"
+NATIVE_FAILURE_INSTALL = "install"
+_native_start_failure: Optional[tuple[str, str]] = None
+
+_WINDOWS_LOADER_STATUS_NAMES = {
+    0xC0000135: "STATUS_DLL_NOT_FOUND",
+    0xC0000139: "STATUS_ENTRYPOINT_NOT_FOUND",
+    0xC0000142: "STATUS_DLL_INIT_FAILED",
+}
+
+
+def note_native_start_failure(kind: str, detail: str) -> None:
+    global _native_start_failure
+    _native_start_failure = (kind, str(detail))
+
+
+def last_native_start_failure() -> Optional[tuple[str, str]]:
+    return _native_start_failure
+
+
+def clear_native_start_failure() -> None:
+    global _native_start_failure
+    _native_start_failure = None
+
+
+def classify_start_status(binary: str, returncode: int) -> Optional[tuple[str, str]]:
+    """``(kind, detail)`` when ``returncode`` from a ``--help`` probe means the executable never started, else None."""
+    name = os.path.basename(str(binary))
+    code = returncode + (1 << 32) if returncode < 0 and returncode < -(1 << 16) else returncode
+    if code in _WINDOWS_IMAGE_LOAD_FAILURE_STATUSES:
+        return (
+            NATIVE_FAILURE_DLL,
+            f"{name} exited 0x{code:08X} ({_WINDOWS_LOADER_STATUS_NAMES.get(code, 'loader failure')})",
+        )
+    if code in (126, 127):
+        return (
+            NATIVE_FAILURE_EXEC,
+            f"{name} exited {code} (a shared library or the loader is missing)",
+        )
+    if code < 0:
+        return NATIVE_FAILURE_EXEC, f"{name} was killed by signal {-code}"
+    return None
+
+
 def _server_binary_runnable(binary: str) -> bool:
     """Probes runnability with the server's env before a multi-GB asset download; only OSError or exit 126/127/0xC0000135 means unrunnable."""
     import subprocess
@@ -541,11 +587,16 @@ def _server_binary_runnable(binary: str) -> bool:
                 env = runtime_env(binary),
                 **windows_hidden_subprocess_kwargs(),
             )
-    except OSError:
-        return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
+    except OSError as exc:
+        # cannot exec at all (wrong arch / no execute bit / missing loader)
+        note_native_start_failure(NATIVE_FAILURE_EXEC, f"{os.path.basename(str(binary))}: {exc}")
+        return False
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
         return True
     # Negative = signal death (e.g. SIGILL); Windows loader failures are large positive codes.
+    failure = classify_start_status(binary, proc.returncode)
+    if failure is not None:
+        note_native_start_failure(*failure)
     return (
         proc.returncode >= 0
         and proc.returncode not in (126, 127)
@@ -2856,10 +2907,17 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-cli installer import failed: %s", exc)
+            note_native_start_failure(
+                NATIVE_FAILURE_INSTALL, f"the sd-cli installer could not be imported: {exc}"
+            )
             return fallback
         # Claim for the whole install incl. download, or a generation is overwritten mid-run.
         with _tree_claimed_for_install() as claimed:
             if not claimed:
+                note_native_start_failure(
+                    NATIVE_FAILURE_INSTALL,
+                    "the native engine folder is in use by a running generation, so it was not installed yet",
+                )
                 return fallback  # something is running in there; retry on a later load
             try:
                 path, _used = _install_down_the_ladder(_install, accelerator)
@@ -2867,6 +2925,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-cli auto-install failed: %s", exc)
+                note_native_start_failure(NATIVE_FAILURE_INSTALL, str(exc))
                 if _incomplete_tree_replacement(exc):
                     # Partial sweep may have removed the fallback; re-find via the usability gate, since a fresh POSIX copy lacks its exec bit until _make_executable runs.
                     refound = find_sd_cpp_binary()
@@ -2904,14 +2963,22 @@ def ensure_sd_server_binary(
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-server installer import failed: %s", exc)
+            note_native_start_failure(
+                NATIVE_FAILURE_INSTALL, f"the sd-server installer could not be imported: {exc}"
+            )
             return fallback
         with _tree_claimed_for_install() as claimed:
             if not claimed:
+                note_native_start_failure(
+                    NATIVE_FAILURE_INSTALL,
+                    "the native engine folder is in use by a running generation, so it was not installed yet",
+                )
                 return fallback  # something is running in there; retry on a later load
             try:
                 _path, accelerator = _install_down_the_ladder(_install, accelerator)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
+                note_native_start_failure(NATIVE_FAILURE_INSTALL, str(exc))
                 # Also when only the CLI survives: the following ensure_sd_cpp_binary probe would re-download.
                 if _incomplete_tree_replacement(exc):
                     # The fallback may name a copy the partial sweep removed; a fresh extract skipped _make_executable.
@@ -5161,10 +5228,61 @@ class SdCppDiffusionBackend:
 
         from PIL import Image
 
-        from core.inference import diffusion_lora
+        from core.inference import diffusion_lora, sd_cpp_torch_vae
 
         assert state.server is not None
         total = max(1, int(batch_size))
+        # CPU-only FLUX.2 renders: the server returns the final latent and torch decodes it (sd_cpp_torch_vae).
+        out_w, out_h = hires_plan.target if hires_plan is not None else (int(width), int(height))
+        torch_vae = {
+            "on": sd_cpp_torch_vae.applies(state, layers = layers)
+            and sd_cpp_torch_vae.fits_host_ram(out_w, out_h)
+        }
+
+        def _torch_decoder_ready() -> bool:
+            # Load (or reuse) the decoder before asking for a latent: a missing diffusers class or an unreadable
+            # file then costs nothing, where a failure after the render would cost a second render.
+            try:
+                sd_cpp_torch_vae.prepare(state.files.vae)
+                return True
+            except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
+                torch_vae["on"] = False
+                sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")
+                return False
+
+        def _render(server: Any, payload: dict, timeout: float) -> list:
+            """One chunk's PIL images, from torch's decode of the server's latents when that applies."""
+            accepts = getattr(server, "img_gen_accepts", None)
+            if (
+                torch_vae["on"]
+                and callable(accepts)
+                and accepts((sd_cpp_torch_vae.SERVER_FEATURE,))
+                and _torch_decoder_ready()
+            ):
+                latents = None
+                try:
+                    latents = server.img_gen_latents(
+                        payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
+                    )
+                    return sd_cpp_torch_vae.decode(
+                        latents, state.files.vae, threads = state.threads, cancel_event = cancel
+                    )
+                except SdCppCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
+                    # A failed, timed-out or dead render re-raises; only latents this client cannot use fall back.
+                    if latents is None and not isinstance(exc, SdCppLatentFormatError):
+                        raise
+                    torch_vae["on"] = False
+                    sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")
+                    if cancel.is_set():
+                        raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                    timeout = max(deadline - time.monotonic(), 1.0)
+            blobs = server.img_gen(
+                payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
+            )
+            return [Image.open(io.BytesIO(b)) for b in blobs]
+
         # sd.cpp's image seed is signed int64; mask base and derived seeds to that range.
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
@@ -5264,12 +5382,7 @@ class SdCppDiffusionBackend:
                     extra_sample_args = _request_extra_sample_args(state),
                 )
                 try:
-                    blobs = state.server.img_gen(
-                        payload,
-                        on_step = self._on_log,
-                        cancel_event = cancel,
-                        total_timeout = max(deadline - time.monotonic(), 1.0),
-                    )
+                    rendered = _render(state.server, payload, max(deadline - time.monotonic(), 1.0))
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
@@ -5333,11 +5446,8 @@ class SdCppDiffusionBackend:
                             hires_payload = _stage_hires(server)
                             payload["hires"] = dict(hires_payload)
                         try:
-                            blobs = server.img_gen(
-                                payload,
-                                on_step = self._on_log,
-                                cancel_event = cancel,
-                                total_timeout = max(deadline - time.monotonic(), 1.0),
+                            rendered = _render(
+                                server, payload, max(deadline - time.monotonic(), 1.0)
                             )
                             break
                         except RuntimeError as retry_exc:
@@ -5345,14 +5455,12 @@ class SdCppDiffusionBackend:
                 device_losses = 0
                 # All-or-nothing per chunk; a layered generation decodes layers + 1 images.
                 expected = count * ((layers + 1) if layers else 1)
-                if not cancel.is_set() and len(blobs) != expected:
+                if not cancel.is_set() and len(rendered) != expected:
                     raise RuntimeError(
-                        f"sd-server returned {len(blobs)} of {expected} requested images in the batch."
+                        f"sd-server returned {len(rendered)} of {expected} requested images in the batch."
                     )
-                kept = _keep_layers(blobs, layers or 0)
-                images.extend(
-                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in kept
-                )
+                kept = _keep_layers(rendered, layers or 0)
+                images.extend(_native_output_image(state.family, im) for im in kept)
                 # sd.cpp advances the seed per generation; every layer of one carries that seed.
                 per = len(kept) // count if count else 1
                 seeds.extend(
@@ -5832,6 +5940,9 @@ class SdCppDiffusionBackend:
         # Wait for a signalled generation to exit: callers treat return as "device is free".
         with self._generate_lock:
             pass
+        from core.inference import sd_cpp_torch_vae
+
+        sd_cpp_torch_vae.release()
         return self.status()
 
     def status(self) -> dict[str, Any]:

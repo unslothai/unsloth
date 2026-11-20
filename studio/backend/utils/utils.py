@@ -368,6 +368,17 @@ def force_hf_offline_active() -> bool:
     return _force_offline_depth > 0
 
 
+def hf_user_offline() -> bool:
+    """The offline mode the user or operator asked for (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE), read from the
+    values saved before any open force_hf_offline window: such a window is one short operation's, so it must not
+    make an unrelated load that starts inside it cache-only. Lock-free, like force_hf_offline_active."""
+    env = _force_offline_saved_env if _force_offline_depth > 0 else os.environ
+    return any(
+        str(env.get(var) or "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for var in _OFFLINE_ENV_KEYS
+    )
+
+
 def force_hf_offline_state() -> tuple[bool, bool]:
     """Return guard ownership and env presence under one lock."""
     with _force_offline_lock:

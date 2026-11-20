@@ -49,7 +49,9 @@ from core.training.diffusion_h3_clips import (
     H3_AUDIO_CHANNELS,
     H3_AUDIO_LATENT_CHANNELS,
     H3_AUDIO_TAG,
+    H3_AUDIO_SAMPLING_RATE,
     H3_CANVAS_MULTIPLE,
+    H3_FPS,
     H3_FRAMES_PER_CHUNK,
     H3_LATENTS_PER_CHUNK,
     H3_PIXEL_MEAN,
@@ -66,6 +68,11 @@ from core.training.diffusion_h3_clips import (
     h3_packed_sequence_length,
     h3_train_canvas,
     h3_video_latent_frames,
+)
+from core.training.diffusion_gc_budget import (
+    OUT_OF_MEMORY,
+    BudgetedSteps,
+    enable_budgeted_checkpointing,
 )
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
@@ -502,6 +509,229 @@ def run_h3_lora_training(
         _restore_perf_flags(perf_snap)
 
 
+# Bump when what a clip entry holds (or how it is encoded) changes.
+_H3_CLIP_CACHE_VERSION = "1"
+
+
+def _open_h3_cache(cfg, on_event):
+    """The persistent conditioning cache for this run, or None (switched off, or unusable: never fatal)."""
+    from core.training.diffusion_train_extras import (
+        PersistentConditioningCache,
+        compact_cache_namespace,
+        effective_cond_cache_dir,
+        source_revision,
+    )
+
+    root = effective_cond_cache_dir(getattr(cfg, "cond_cache_dir", None))
+    if not root:
+        return None
+    try:
+        # The conditioner, both VAEs and the tokenizer all come from the base pipeline, so its revision covers them.
+        namespace = compact_cache_namespace(
+            cfg.resolved_family, cfg.base_model, source_revision(cfg.base_model)
+        )
+        return PersistentConditioningCache(
+            root,
+            namespace,
+            cfg.resolution,
+            text_encoder = f"qwen3vl-hs{_H3_TEXT_ENCODER_LAYER}",
+        )
+    except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
+        _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
+        return None
+
+
+def _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents) -> Optional[str]:
+    """Everything that changes a clip's (video mean, video std, audio) entry: canvas, frame count, fps, the audio
+    layout, and the clip's own bytes. None (uncached) when there is no cache or the clip cannot be read."""
+    if pcache is None:
+        return None
+    try:
+        return pcache.entry_key(
+            "h3clip",
+            _H3_CLIP_CACHE_VERSION,
+            str(path),
+            f"{width}x{height}",
+            f"f{num_frames}",
+            f"fps{H3_FPS}",
+            f"sr{H3_AUDIO_SAMPLING_RATE}",
+            f"ch{H3_AUDIO_CHANNELS}",
+            f"a{num_audio_latents}",
+        )
+    except OSError:
+        # decode_clip raises the real error for an unreadable clip.
+        return None
+
+
+def _cache_get(pcache, key):
+    if pcache is None or key is None:
+        return None
+    try:
+        return pcache.get(key)
+    except Exception:  # noqa: BLE001 -- an unreadable entry is a miss
+        return None
+
+
+def _cache_put(pcache, key, tensors) -> None:
+    if pcache is None or key is None:
+        return
+    try:
+        pcache.put(key, tensors)
+    except Exception:  # noqa: BLE001 -- disk-full etc.: the run still trains
+        pass
+
+
+def _check_h3_cache_budget(entry, n_clips: int, width: int, height: int) -> None:
+    """Both VAEs are freed before the transformer loads, so an over-budget cache cannot fall back."""
+    if _latent_cache_forced():
+        return
+    from core.training import diffusion_train_common as _train_common
+
+    per_clip = int(sum(t.numel() * t.element_size() for t in entry))
+    if _latent_cache_over_budget(per_clip, n_clips):
+        budget = _train_common._LATENT_CACHE_BUDGET_BYTES
+        raise ValueError(
+            f"{n_clips} clips at {width}x{height} need about "
+            f"{per_clip * n_clips / 1024**3:.1f} GiB of host memory for the "
+            f"MiniMax-H3 latent cache, over the {budget / 1024**3:.0f} GiB budget. Train "
+            f"on fewer clips or at a lower resolution, or set "
+            f"UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE=1 to cache them anyway."
+        )
+
+
+def _prepare_h3_conditioning(
+    cfg,
+    clip_paths,
+    captions,
+    device,
+    on_event,
+    _check_stop,
+    *,
+    width: int,
+    height: int,
+    num_frames: int,
+    num_audio_latents: int,
+):
+    """(caption_embeds, per-clip (video_a, video_b, audio)), or None on a stop request. A warm persistent cache
+    serves both without loading the conditioner or the VAEs; otherwise the misses are encoded and written back.
+
+    The loads and encodes run RNG-isolated, so a warm run and a cold run hand the same training streams on."""
+    import torch
+
+    from core.training.diffusion_samples import isolated_sampling
+
+    to_encode = sorted(set(captions))
+    pcache = _open_h3_cache(cfg, on_event)
+    caption_embeds: dict = {}
+    clip_entries: dict = {}
+    if pcache is not None:
+        for cap in to_encode:
+            hit = _cache_get(pcache, pcache.text_key(cap))
+            if hit is not None:
+                caption_embeds[cap] = hit[0]
+        for i, path in enumerate(clip_paths):
+            key = _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents)
+            hit = _cache_get(pcache, key)
+            if hit is not None:
+                if not clip_entries:
+                    # Every clip shares one canvas, so the first hit sizes the cache: refuse before holding the rest.
+                    _check_h3_cache_budget(hit, len(clip_paths), width, height)
+                clip_entries[i] = tuple(hit)
+    warm = len(caption_embeds) == len(to_encode) and len(clip_entries) == len(clip_paths)
+
+    if warm:
+        _emit(
+            on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode)
+        )
+        cache = [clip_entries[i] for i in range(len(clip_paths))]
+        _check_h3_cache_budget(cache[0], len(clip_paths), width, height)
+        _emit(
+            on_event,
+            "preparing",
+            stage = "cache_latents",
+            done = len(clip_paths),
+            total = len(clip_paths),
+        )
+        return caption_embeds, cache
+
+    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner is resident here and nowhere else.
+    with isolated_sampling(device, False):
+        pipe = _load_conditioners(cfg, device)
+        # The load can move the revision (a first run read "unresolved", or the fetch pulled a newer snapshot):
+        # what was served under the old namespace is dropped and everything is read and written under the new one.
+        if pcache is not None:
+            fresh = _open_h3_cache(cfg, on_event)
+            if fresh is not None and fresh.family != pcache.family:
+                pcache = fresh
+                caption_embeds.clear()
+                clip_entries.clear()
+                for cap in to_encode:
+                    hit = _cache_get(pcache, pcache.text_key(cap))
+                    if hit is not None:
+                        caption_embeds[cap] = hit[0]
+        for cap in to_encode:
+            if cap not in caption_embeds:
+                caption_embeds[cap] = _encode_prompt(pipe, cap, device)
+                if pcache is not None:
+                    _cache_put(pcache, pcache.text_key(cap), (caption_embeds[cap],))
+    caption_embeds = {cap: caption_embeds[cap] for cap in to_encode}
+    _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
+    pipe.text_encoder = None
+    if getattr(pipe, "processor", None) is not None:
+        pipe.processor = None
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
+    for attr in _H3_VAE_COMPONENTS:
+        module = getattr(pipe, attr, None)
+        if module is not None:
+            module.to(device)
+
+    # Phase 2: clip latents.
+    cache: list[tuple[Any, Any, Any]] = []
+    for i, path in enumerate(clip_paths):
+        key = _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents)
+        entry = clip_entries.get(i)
+        if entry is None:
+            # A namespace the load moved to may already hold this clip.
+            hit = _cache_get(pcache, key)
+            entry = tuple(hit) if hit is not None else None
+        if entry is None:
+            frames, waveform = decode_clip(
+                path,
+                num_frames = num_frames,
+                width = width,
+                height = height,
+                # Latents are cached from the opening window, so longer sources train only their first seconds.
+                on_note = lambda message: _emit(on_event, "warning", message = message),
+            )
+            with isolated_sampling(device, False):
+                video_a, video_b = _encode_video_stats(pipe.vae, frames, device)
+                audio = _encode_audio_latents(pipe.audio_vae, waveform, device)
+            if audio.shape[-1] != num_audio_latents:
+                raise ValueError(
+                    f"{Path(path).name} encoded to {audio.shape[-1]} audio latents, but the packed "
+                    f"layout reserves {num_audio_latents} rows per channel."
+                )
+            entry = (video_a, video_b, audio)
+            _cache_put(pcache, key, entry)
+        if i == 0:
+            _check_h3_cache_budget(entry, len(clip_paths), width, height)
+        cache.append(entry)
+        _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(clip_paths))
+        if _check_stop():
+            return None
+    del pipe
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
+    return caption_embeds, cache
+
+
 def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _save_on_stop):
     import torch
     import torch.nn.functional as F
@@ -525,77 +755,33 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     latent_frames = h3_video_latent_frames(num_frames)
     num_audio_latents = h3_audio_latent_count(num_frames)
 
-    to_encode = sorted(set(captions))
-
-    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner is resident here and nowhere else.
-    pipe = _load_conditioners(cfg, device)
-    caption_embeds = {cap: _encode_prompt(pipe, cap, device) for cap in to_encode}
-    _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
-    pipe.text_encoder = None
-    if getattr(pipe, "processor", None) is not None:
-        pipe.processor = None
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
-    elif device == "xpu":
-        torch.xpu.empty_cache()
-    for attr in _H3_VAE_COMPONENTS:
-        module = getattr(pipe, attr, None)
-        if module is not None:
-            module.to(device)
-
+    # Phases 1 and 2: caption embeddings and clip latents, served from the persistent cache when warm.
     # One canvas from the FIRST clip's aspect ratio; other clips are cover-cropped onto it.
     width, height = _dataset_canvas(clip_paths[0], cfg.resolution)
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
-    cache: list[tuple[Any, Any, Any]] = []
-    for i, path in enumerate(clip_paths):
-        frames, waveform = decode_clip(
-            path,
-            num_frames = num_frames,
-            width = width,
-            height = height,
-            # Latents are cached from the opening window, so longer sources train only their first seconds.
-            on_note = lambda message: _emit(on_event, "warning", message = message),
+    prepared = _prepare_h3_conditioning(
+        cfg,
+        clip_paths,
+        captions,
+        device,
+        on_event,
+        _check_stop,
+        width = width,
+        height = height,
+        num_frames = num_frames,
+        num_audio_latents = num_audio_latents,
+    )
+    if prepared is None:
+        _emit(
+            on_event,
+            "complete",
+            output_dir = str(out_dir),
+            lora_path = None,
+            stopped = True,
+            steps_run = 0,
         )
-        video_a, video_b = _encode_video_stats(pipe.vae, frames, device)
-        audio = _encode_audio_latents(pipe.audio_vae, waveform, device)
-        if audio.shape[-1] != num_audio_latents:
-            raise ValueError(
-                f"{Path(path).name} encoded to {audio.shape[-1]} audio latents, but the packed "
-                f"layout reserves {num_audio_latents} rows per channel."
-            )
-        entry = (video_a, video_b, audio)
-        if i == 0 and not _latent_cache_forced():
-            # Both VAEs are freed before the transformer loads, so an over-budget cache cannot fall back.
-            from core.training import diffusion_train_common as _train_common
-            per_clip = int(sum(t.numel() * t.element_size() for t in entry))
-            if _latent_cache_over_budget(per_clip, len(clip_paths)):
-                budget = _train_common._LATENT_CACHE_BUDGET_BYTES
-                raise ValueError(
-                    f"{len(clip_paths)} clips at {width}x{height} need about "
-                    f"{per_clip * len(clip_paths) / 1024**3:.1f} GiB of host memory for the "
-                    f"MiniMax-H3 latent cache, over the {budget / 1024**3:.0f} GiB budget. Train "
-                    f"on fewer clips or at a lower resolution, or set "
-                    f"UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE=1 to cache them anyway."
-                )
-        cache.append(entry)
-        _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(clip_paths))
-        if _check_stop():
-            _emit(
-                on_event,
-                "complete",
-                output_dir = str(out_dir),
-                lora_path = None,
-                stopped = True,
-                steps_run = 0,
-            )
-            return str(out_dir)
-    del pipe
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
-    elif device == "xpu":
-        torch.xpu.empty_cache()
+        return str(out_dir)
+    caption_embeds, cache = prepared
 
     # Phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
@@ -623,8 +809,12 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             target_modules = targets,
         )
     )
+    gc_budget = None
     if cfg.gradient_checkpointing:
-        enable_diffusion_gradient_checkpointing(transformer)
+        # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        if gc_budget is None:
+            enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if not lora_params:
@@ -691,10 +881,45 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_steady = None
     done = 0
     reset_training_peak_memory(device)
+    budget_steps = BudgetedSteps(
+        gc_budget,
+        device,
+        optimizer,
+        warn = lambda message: _emit(on_event, "warning", message = message),
+    )
+
+    def _forward_backward(
+        video_rows, audio_rows, embeds, timestep, timestep_indices, num_text, targets
+    ):
+        # The layout is looked up, not recorded: its device tensors are shared by every step.
+        layout = layouts[num_text][1]
+        target_video, target_audio = targets
+        with autocast:
+            pred_video, pred_audio = transformer(
+                hidden_states = video_rows[None],
+                audio_hidden_states = audio_rows[None],
+                encoder_hidden_states = embeds,
+                timestep = timestep,
+                timestep_indices = timestep_indices,
+                token_tags = layout["token_tags"],
+                position_ids = layout["position_ids"],
+                video_indices = layout["video_indices"],
+                audio_indices = layout["audio_indices"],
+                text_indices = layout["text_indices"],
+                return_dict = False,
+            )
+            loss_video = F.mse_loss(pred_video[0].float(), target_video.float())
+            loss_audio = F.mse_loss(pred_audio[0].float(), target_audio.float())
+            # Unweighted: both streams share every adapted matrix.
+            loss = loss_video + loss_audio
+        (loss / cfg.gradient_accumulation_steps).backward()
+        return loss, loss_video, loss_audio
+
     compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_acc = video_acc = audio_acc = None
+        budget_steps.start_step()
         for _ in range(cfg.gradient_accumulation_steps):
             index = index_sampler.next_batch(1)[0]
             video_a, video_b, audio_latents = cache[index]
@@ -747,29 +972,33 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             )
             timestep = timestep.to(device, non_blocking = True)
             timestep_indices = timestep_indices.to(device, non_blocking = True)
-            with autocast:
-                pred_video, pred_audio = transformer(
-                    hidden_states = video_rows[None],
-                    audio_hidden_states = audio_rows[None],
-                    encoder_hidden_states = embeds,
-                    timestep = timestep,
-                    timestep_indices = timestep_indices,
-                    token_tags = layout["token_tags"],
-                    position_ids = layout["position_ids"],
-                    video_indices = layout["video_indices"],
-                    audio_indices = layout["audio_indices"],
-                    text_indices = layout["text_indices"],
-                    return_dict = False,
-                )
-                loss_video = F.mse_loss(pred_video[0].float(), target_video.float())
-                loss_audio = F.mse_loss(pred_audio[0].float(), target_audio.float())
-                # Unweighted: both streams share every adapted matrix.
-                loss = loss_video + loss_audio
-            (loss / cfg.gradient_accumulation_steps).backward()
             ga = cfg.gradient_accumulation_steps
-            step_acc = accumulate_loss(step_acc, loss, ga)
-            video_acc = accumulate_loss(video_acc, loss_video, ga)
-            audio_acc = accumulate_loss(audio_acc, loss_audio, ga)
+            out = budget_steps.forward_backward(
+                _forward_backward,
+                (
+                    video_rows,
+                    audio_rows,
+                    embeds,
+                    timestep,
+                    timestep_indices,
+                    num_text_tokens,
+                    (target_video, target_audio),
+                ),
+            )
+            if out is OUT_OF_MEMORY:
+                # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
+                out = video_rows = audio_rows = embeds = timestep = timestep_indices = None
+                target_video = target_audio = clean_video = clean_audio = None
+                noise_video = noise_audio = noisy_video = noisy_audio = video_a = video_b = None
+                step_acc = video_acc = audio_acc = None
+                outs = budget_steps.rerun(_forward_backward)
+            else:
+                outs = [out]
+            for loss, loss_video, loss_audio in outs:
+                step_acc = accumulate_loss(step_acc, loss, ga)
+                video_acc = accumulate_loss(video_acc, loss_video, ga)
+                audio_acc = accumulate_loss(audio_acc, loss_audio, ga)
+            outs = out = None
 
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
@@ -777,8 +1006,10 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         step_loss = loss_value(step_acc)
         step_video = loss_value(video_acc)
         step_audio = loss_value(audio_acc)
+        budget_steps.before_update()
         optimizer.step()
         lr_sched.step()
+        budget_steps.after_update()
         if ema is not None:
             ema.update(transformer)
 

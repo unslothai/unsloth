@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from .diffusion_autoopt.patches import source_digest
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 EAGER_FAST_ENV = "UNSLOTH_DIFFUSION_Q21_EAGER_FAST"
 
@@ -79,6 +80,7 @@ def _rocm() -> bool:
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernel() -> Any:
     import triton
     import triton.language as tl

@@ -43,6 +43,9 @@ _ADMITTED_MEDIA_TYPES = frozenset(
         "application/vnd.ollama.image.license",
         "application/vnd.ollama.image.template",
         "application/vnd.ollama.image.params",
+        # A pull's downgrade anchor (ollama.py's _OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES).
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.ollama.manifest.list.v2+json",
     }
 )
 # Drafters ride in the same tensor set (Gemma4's assistant, Qwen3.6's MTP head).

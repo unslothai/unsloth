@@ -77,7 +77,7 @@ function NpuEnableCard({ catalog }: { catalog: NpuCatalog }) {
         <span className="text-muted-foreground">
           {status.runtime_installed
             ? "Finishes setup and checks the NPU driver."
-            : "One-time setup: downloads about 47 MB and checks the NPU driver."}
+            : "One-time setup: downloads about 40 to 50 MB and checks the NPU driver."}
         </span>
         <Button size="sm" onClick={() => void enable()} disabled={enabling}>
           {enabling ? <Spinner className="size-3.5" /> : null}
