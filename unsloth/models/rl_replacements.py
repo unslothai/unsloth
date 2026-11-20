@@ -1882,6 +1882,10 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
         # children's own, leaving every module in its saved mode.
         for module, training in was_training or ():
             module.train(training)
+        # modules() yields a child shared by two parents once, so a later parent's recursive train() can flip it
+        # again: set every saved flag directly (each module's own train() side effects already ran above).
+        for module, training in was_training or ():
+            module.training = training
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
@@ -2669,6 +2673,15 @@ def _unsloth_rollout_scope(trainer):
     if not getattr(trainer, "use_vllm", False) or not getattr(trainer, "tools", None):
         return contextlib.nullcontext()
     if getattr(trainer, "rollout_func", None) is not None:
+        return contextlib.nullcontext()
+    # An async tool runs on TRL's event-loop thread while _generate blocks on its result. The held fold keeps the
+    # merged-rollout lock, so an async tool that calls a vLLM engine would wait on it forever: fold per call instead.
+    import inspect
+
+    async_tools = any(bool(d) for d in (getattr(trainer, "_async_tool_dicts", None) or ())) or any(
+        inspect.iscoroutinefunction(t) for t in (getattr(trainer, "tools", None) or ())
+    )
+    if async_tools:
         return contextlib.nullcontext()
     llm = getattr(getattr(trainer, "vllm_generation", None), "llm", None)
     if llm is None:
