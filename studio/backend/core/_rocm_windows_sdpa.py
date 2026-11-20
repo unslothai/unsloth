@@ -47,12 +47,17 @@ def _math_off() -> None:
 
 
 def _wide_cuda_head(query: Any) -> bool:
+    # Device first, and size(-1) for a nested query: a strided NestedTensor raises on ``.shape`` (its ragged sizes),
+    # which would fail a call the stock dispatch takes.
+    if getattr(getattr(query, "device", None), "type", None) != "cuda":
+        return False
+    if getattr(query, "is_nested", False):
+        try:
+            return int(query.size(-1)) > WIDEST_FUSED_HEAD_DIM
+        except Exception:  # noqa: BLE001 -- a ragged head dim: no fixed width to judge
+            return False
     shape = getattr(query, "shape", None) or ()
-    return (
-        len(shape) > 0
-        and int(shape[-1]) > WIDEST_FUSED_HEAD_DIM
-        and getattr(getattr(query, "device", None), "type", None) == "cuda"
-    )
+    return len(shape) > 0 and int(shape[-1]) > WIDEST_FUSED_HEAD_DIM
 
 
 _ORIGINALS: dict = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)

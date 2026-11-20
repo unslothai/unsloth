@@ -275,6 +275,7 @@ def test_claude_keeps_the_conversation_and_drops_the_harness(claude_home):
     assert t.messages[0]["createdAt"] == 1785578400000
 
 
+JPEG = "/9j/4AAQSkZJRg=="
 PNG = "iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAIAAADRv8uKAAAAK0lEQVR4nO3NMQ0AAAgDsCmZfynIQgYcTfo3056IWCwWi8VisVgsFov/xgvk2cL9h1Oh3gAAAABJRU5ErkJggg=="
 
 
@@ -354,6 +355,90 @@ def test_claude_keeps_command_requests_and_pasted_images(claude_home):
     ]
     ids = [m["id"] for m in messages]
     assert [m["parentId"] for m in messages] == [None, *ids[:-1]]
+
+
+def _read_image(claude_home, content):
+    return _session(
+        claude_home,
+        records = [
+            c_user("u1", "What's wrong in ./shot.png?"),
+            c_asst(
+                "a1",
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Read",
+                        "input": {"file_path": "shot.png"},
+                    }
+                ],
+                parent = "u1",
+            ),
+            c_user(
+                "r1",
+                [{"type": "tool_result", "tool_use_id": "t1", "content": content}],
+                parent = "a1",
+            ),
+            c_asst("a2", [{"type": "text", "text": "The disk is full."}], parent = "r1"),
+        ],
+    )
+
+
+IMAGE_RESULT = {
+    "type": "image",
+    "source": {"type": "base64", "media_type": "image/png", "data": PNG},
+}
+PNG_IMAGE = {"data": PNG, "mimeType": "image/png"}
+JPEG_RESULT = {
+    "type": "image",
+    "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/"},
+}
+
+
+@pytest.mark.parametrize(
+    "content, text, images",
+    [
+        ([IMAGE_RESULT], "", [PNG_IMAGE]),
+        (
+            [
+                {"type": "text", "text": "Page 1"},
+                IMAGE_RESULT,
+                {"type": "image", "source": "malformed"},
+                JPEG_RESULT,
+            ],
+            "Page 1",
+            [PNG_IMAGE, {"data": "/9j/", "mimeType": "image/jpeg"}],
+        ),
+    ],
+)
+def test_claude_keeps_images_a_tool_returned(claude_home, content, text, images):
+    _read_image(claude_home, content)
+    run_import(claude.SOURCE)
+
+    call = _messages(claude.SOURCE, "s1")[1]["content"][0]
+    assert call["result"] == {"text": text, "images": images}
+
+
+def test_claude_parallel_tool_images_reach_their_own_calls(claude_home):
+    def use(tool_id):
+        return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {}}
+
+    def result(tool_id, image):
+        return {"type": "tool_result", "tool_use_id": tool_id, "content": [image]}
+
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "Compare them"),
+            c_asst("a1", [use("t1"), use("t2")], parent = "u1"),
+            c_user("r1", [result("t2", JPEG_RESULT), result("t1", IMAGE_RESULT)], parent = "a1"),
+        ],
+    )
+    calls = claude.read_transcript(path, "t", "s1").messages[1]["content"]
+    assert {c["toolCallId"]: c["result"]["images"][0]["mimeType"] for c in calls} == {
+        "t1": "image/png",
+        "t2": "image/jpeg",
+    }
 
 
 def test_claude_rewinds_keep_their_branch(claude_home):
@@ -837,6 +922,40 @@ def test_a_tool_result_that_arrives_later_reaches_the_stored_call(claude_home):
     assert call["result"] == "out"
 
 
+@pytest.mark.parametrize(
+    "content, legacy",
+    [([IMAGE_RESULT], ""), ([{"type": "text", "text": "Page 1"}, IMAGE_RESULT], "Page 1")],
+)
+def test_a_chat_imported_before_tool_images_were_kept_gets_them_on_reimport(
+    claude_home, content, legacy
+):
+    _read_image(claude_home, content)
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    _, call, answer = _messages(claude.SOURCE, "s1")
+    emptied = {**call, "content": [{**call["content"][0], "result": legacy}]}
+    edited = {**answer, "content": [{"type": "text", "text": "edited"}]}
+    studio_db.sync_chat_messages(tid, [emptied, edited], prune_missing = False)
+
+    assert run_import(claude.SOURCE).messages == 1
+    rows = _messages(claude.SOURCE, "s1")
+    assert rows[1]["content"][0]["result"]["images"] == [{"data": PNG, "mimeType": "image/png"}]
+    assert rows[2]["content"] == [{"type": "text", "text": "edited"}]
+    assert run_import(claude.SOURCE).messages == 0
+
+
+def test_reimport_keeps_a_tool_result_that_differs_from_the_new_text(claude_home):
+    _read_image(claude_home, [{"type": "text", "text": "Page 1"}, IMAGE_RESULT])
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    call = _messages(claude.SOURCE, "s1")[1]
+    kept = {**call, "content": [{**call["content"][0], "result": "Page 1 (edited)"}]}
+    studio_db.sync_chat_messages(tid, [kept], prune_missing = False)
+
+    run_import(claude.SOURCE)
+    assert _messages(claude.SOURCE, "s1")[1]["content"][0]["result"] == "Page 1 (edited)"
+
+
 def test_an_interrupted_import_is_retried(claude_home):
     _session(claude_home)
     transcript = claude.read_transcript(
@@ -1261,6 +1380,120 @@ def test_codex_reimport_after_images_keeps_studio_edits(codex_home):
     assert run_import(codex.SOURCE).messages == 1
 
 
+def _tool_images_rollout(
+    home,
+    generated = True,
+    pasted = True,
+):
+    def call(call_id, name, output):
+        return [
+            x_line(
+                "response_item",
+                {"type": "function_call", "name": name, "arguments": "{}", "call_id": call_id},
+            ),
+            x_line(
+                "response_item",
+                {"type": "function_call_output", "call_id": call_id, "output": output},
+            ),
+        ]
+
+    body = [
+        *_pasted("", pasted),
+        _completed("AgentMessage", "Taking a look."),
+        *call(
+            "c1",
+            "view_image",
+            [{"type": "input_image", "image_url": f"data:application/octet-stream;base64,{PNG}"}],
+        ),
+        *call(
+            "c2",
+            "mcp__playwright__browser_take_screenshot",
+            [
+                {"type": "input_text", "text": "Took the screenshot"},
+                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{JPEG}"},
+            ],
+        ),
+        _completed("AgentMessage", "A login form. Here is an icon for it."),
+        x_line(
+            "response_item",
+            {
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "revised_prompt": "A flat login icon",
+                "result": PNG,
+            },
+        ),
+        _completed("AgentMessage", "Done."),
+    ]
+    if not generated:
+        # A skipped record, so later records keep their ordinals and message ids.
+        body = [
+            x_line("response_item", {"type": "reasoning"})
+            if line["payload"]["type"] == "image_generation_call"
+            else line
+            for line in body
+        ]
+    return _rollout(home, sid = "tools", history_mode = "paginated", body = body)
+
+
+def test_codex_keeps_images_tools_viewed_and_generated(codex_home):
+    shot = {"data": PNG, "mimeType": "image/png"}
+    messages = codex.read_transcript(_tool_images_rollout(codex_home), "t", "s1").messages
+    calls = [m["content"][0] for m in messages if m["content"][0]["type"] == "tool-call"]
+
+    assert [(c["toolName"], c["result"]) for c in calls] == [
+        ("view_image", {"text": "", "images": [shot]}),
+        (
+            "mcp__playwright__browser_take_screenshot",
+            {"text": "Took the screenshot", "images": [{"data": JPEG, "mimeType": "image/jpeg"}]},
+        ),
+        ("image_generation", {"image_b64": PNG, "image_mime": "image/png"}),
+    ]
+    assert calls[2]["args"] == {"prompt": "A flat login icon", "_server_tool": True}
+    assert messages[-1]["content"] == [{"type": "text", "text": "Done."}]
+
+
+# Without the pasted image the first import is marked ":items", with it ":images".
+@pytest.mark.parametrize("pasted", [True, False])
+def test_codex_reimport_after_generated_images_keeps_studio_edits(codex_home, pasted):
+    _tool_images_rollout(codex_home, generated = False, pasted = pasted)
+    assert run_import(codex.SOURCE).messages == 5 + pasted
+    tid = thread_id_for(codex.SOURCE, "tools")
+    reply = next(
+        m for m in _messages(codex.SOURCE, "tools") if m["content"][0].get("text") == "Done."
+    )
+    edited = [{"type": "text", "text": "Done, edited in Studio"}]
+    # Results as stored before tool images were kept: text only.
+    legacy = [
+        {**m, "content": [{**m["content"][0], "result": m["content"][0]["result"]["text"]}]}
+        for m in _messages(codex.SOURCE, "tools")
+        if isinstance(m["content"][0].get("result"), dict)
+    ]
+    studio_db.sync_chat_messages(tid, [{**reply, "content": edited}, *legacy], prune_missing = False)
+
+    path = _tool_images_rollout(codex_home, pasted = pasted)
+    _append(path, [_completed("UserMessage", "Continued in Codex")])
+    assert run_import(codex.SOURCE).messages == 3
+    assert "Continued in Codex" in _texts("tools")
+    stored = {m["id"]: m for m in _messages(codex.SOURCE, "tools")}
+    restored = {
+        stored[m["id"]]["content"][0]["toolName"]: stored[m["id"]]["content"][0]["result"]
+        for m in legacy
+    }
+    assert restored == {
+        "view_image": {"text": "", "images": [{"data": PNG, "mimeType": "image/png"}]},
+        "mcp__playwright__browser_take_screenshot": {
+            "text": "Took the screenshot",
+            "images": [{"data": JPEG, "mimeType": "image/jpeg"}],
+        },
+    }
+    assert stored[reply["id"]]["content"] == edited
+
+    _append(path, [_completed("UserMessage", "One more")])
+    assert run_import(codex.SOURCE).messages == 1
+
+
 def _image_revert(
     home,
     cut,
@@ -1295,6 +1528,10 @@ def _texts(sid):
     [
         (True, [_completed("UserMessage", "Try again")]),
         (False, [*_pasted("")]),
+        (
+            False,
+            [x_line("response_item", {"type": "image_generation_call", "id": "ig", "result": PNG})],
+        ),
     ],
 )
 def test_codex_revert_across_image_turns_leaves_a_deleted_turn_deleted(codex_home, image, tail):

@@ -117,6 +117,7 @@ class LemonadeServer:
         self.port: Optional[int] = None
         self.api_key: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
+        self.last_returncode: Optional[int] = None
         self._tail: deque[str] = deque(maxlen = 200)
         # Never reset, so a mark taken before a restart still counts the new lines.
         self._lines_seen = 0
@@ -314,7 +315,13 @@ class LemonadeServer:
                             "Unsloth is shutting down; not starting Lemonade."
                         )
                     continue
-                raise LemonadeUnavailable(f"Lemonade did not start. Last output:\n{tail}")
+                if self.last_returncode is None and not self._stop_requested.is_set():
+                    message = f"Lemonade did not answer its health check within {timeout:g} s."
+                else:
+                    message = "Lemonade did not start."
+                error = LemonadeUnavailable(f"{message} Last output:\n{tail}")
+                error.returncode = self.last_returncode
+                raise error
 
     def _start_once(self, timeout: float) -> bool:
         """Spawn lemond on a fresh port and wait for it; False (with the child gone) if it never got ready."""
@@ -379,6 +386,8 @@ class LemonadeServer:
         )
         self._drain_thread.start()
         if not self._wait_ready(timeout):
+            # Before the kill, which would replace a real exit status with its own signal.
+            self.last_returncode = proc.poll()
             # After the kill, which joins the drain thread, so the tail has the last lines.
             self._kill_locked()
             return False

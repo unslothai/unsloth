@@ -5744,16 +5744,26 @@ def _extra_args_requests_dflash(
     return "draft-dflash" in _accumulated_spec_types(extra_args, env)
 
 
+def _paravirtual_metal_allowed() -> bool:
+    return os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _names_look_virtual(names: str) -> bool:
+    # VMM-x86_64 is the Intel-guest hw.model; "virtual" covers Paravirtual and VirtualMac.
+    low = names.lower()
+    return "virtual" in low or "vmm-" in low
+
+
 @functools.lru_cache(maxsize = 1)
 def _metal_device_is_paravirtual() -> bool:
     """Virtualised Apple GPU can corrupt offload; UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1 overrides. Probe hw.model before SPDisplaysDataType (empty on headless VMs)."""
     if sys.platform != "darwin":
         return False
-    if os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
+    if _paravirtual_metal_allowed():
         logger.info("UNSLOTH_ALLOW_PARAVIRTUAL_METAL set: keeping Metal offload.")
         return False
     name = ""
@@ -5783,8 +5793,7 @@ def _metal_device_is_paravirtual() -> bool:
             if any(m in _out for m in _match):
                 name = f"{name} {probe.stdout}".strip()
                 break
-    _low = name.lower()
-    if "paravirtual" in _low or "virtual" in _low or "vmm-" in _low:
+    if _names_look_virtual(name):
         logger.warning(
             "Metal device looks virtualised (%s). Offload can return corrupt output on "
             "paravirtual Apple GPUs, so GGUF inference will run on CPU. MLX is "
@@ -5793,6 +5802,52 @@ def _metal_device_is_paravirtual() -> bool:
         )
         return True
     return False
+
+
+@functools.lru_cache(maxsize = 1)
+def _metal_device_looks_paravirtual_quick() -> bool:
+    """_metal_device_is_paravirtual for the polled /api/system: no MLX import (parks on a broken stack), no system_profiler (seconds)."""
+    if sys.platform != "darwin" or _paravirtual_metal_allowed():
+        return False
+    names = []
+    mx = sys.modules.get("mlx.core")
+    if mx is not None:
+        try:
+            names.append(str(mx.device_info().get("device_name") or ""))
+        except Exception:
+            pass
+    try:
+        probe = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+            encoding = "utf-8",
+            errors = "replace",
+        )
+        names.append(probe.stdout or "")
+    except Exception:
+        pass
+    return _names_look_virtual(" ".join(names))
+
+
+def _metal_devices_env_hides_all(env: Optional[Mapping[str, str]] = None) -> bool:
+    """ggml-metal registers atoi(GGML_METAL_DEVICES) devices when it is set, so below 1 llama-server runs on the CPU."""
+    value = (os.environ if env is None else env).get("GGML_METAL_DEVICES")
+    if value is None:
+        return False
+    # re.ASCII: atoi stops at a full-width digit or a no-break space.
+    match = re.match(r"\s*([+-]?\d+)", value, re.ASCII)
+    return (int(match.group(1)) if match else 0) < 1
+
+
+def _metal_offload_forced_off_for_polling() -> bool:
+    """The paravirtual CPU pin without slow probes: a load's full answer once cached (catches VMs hidden from hw.model), else the quick one."""
+    full = _metal_device_is_paravirtual
+    cache_info = getattr(full, "cache_info", None)
+    if cache_info is not None and cache_info().currsize:
+        return bool(full())
+    return _metal_device_looks_paravirtual_quick()
 
 
 def _paravirtual_probe_answered(server_caps: Mapping[str, object]) -> bool:
@@ -11909,6 +11964,25 @@ class LlamaCppBackend:
             if any(name == stem or name.startswith(stem + ".") for name in files):
                 backends.add(backend)
         return frozenset(backends)
+
+    @staticmethod
+    def _build_has_metal(binary: Optional[str] = None) -> bool:
+        """Whether llama.cpp was built with Metal: ggml libraries without libggml-metal are setup.sh's -DGGML_METAL=OFF fallback; a static build defers to the prebuilt marker."""
+        from utils.llama_cpp_path_settings import binary_gpu_backends
+
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        # The libraries sit beside the binary a wrapper script execs.
+        backends = binary_gpu_backends(_resolve_llama_binary(binary))
+        if backends is not None:
+            return "metal" in backends
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.llama_backend import marker_backend
+            return marker_backend(read_install_marker(binary)) == "metal"
+        except Exception:
+            return False
 
     def _record_memory_state(
         self,
@@ -38804,6 +38878,7 @@ class LlamaCppBackend:
         website_policy: Optional[dict] = None,
         live_permissions = None,
         chat_template_kwargs: Optional[dict] = None,
+        mcp_match_exchange: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -38968,6 +39043,19 @@ class LlamaCppBackend:
         _auto_satisfies_forced_choice = bool(_auto) and (
             tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
+        # After the message, so the tool block heading the cached prompt stays put; a forced tool keeps its first call.
+        if (
+            mcp_match_exchange
+            and mcp_match_exchange.get("messages")
+            and tool_choice != "none"
+            and not initial_forced_name
+            and not (
+                continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+            )
+        ):
+            for _ev in mcp_match_exchange["events"]:
+                yield _ev
+            conversation.extend(mcp_match_exchange["messages"])
 
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -39176,6 +39264,7 @@ class LlamaCppBackend:
             deduplicate_tool_calls = deduplicate_tool_calls,
             session_id = session_id,
             thread_id = thread_id,
+            loaded_mcp_tools = (mcp_match_exchange or {}).get("names", ()),
         )
 
         def _tool_succeeded(tool_name: str) -> bool:

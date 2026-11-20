@@ -22,7 +22,9 @@ const api = loadWithStubs<typeof NpuApi>(
     "./runtime-versions": runtimeVersions,
   },
 );
-const { npuMarkOwner, npuPickerRows } = loadWithStubs<typeof NpuRows>(
+const { npuMarkOwner, npuNoticeShown, npuPickerRows } = loadWithStubs<
+  typeof NpuRows
+>(
   new URL(
     "../src/components/assistant-ui/composer-model-picker/npu-rows.ts",
     import.meta.url,
@@ -147,4 +149,14 @@ test("an NPU row is marked by its repo's Hugging Face org, not a letter", () => 
     "FastFlowLM",
   );
   assert.equal(npuMarkOwner({ kind: "hub", id: "unsloth/Qwen3-4B-GGUF" }), null);
+});
+
+test("Discover keeps the NPU notice when a ready runtime fails to list its models", () => {
+  assert.equal(npuNoticeShown(null), false);
+  assert.equal(npuNoticeShown({ ready: false, listError: null }), true);
+  assert.equal(npuNoticeShown({ ready: true, listError: null }), false);
+  assert.equal(
+    npuNoticeShown({ ready: true, listError: "Listing NPU models failed" }),
+    true,
+  );
 });
