@@ -457,6 +457,11 @@ def run_diffusion_lora_training(
         for m in (unet, vae, *text_encoders):
             m.requires_grad_(False)
         vae.to(device, dtype = torch.float32)
+        # ROCm: the VAE's single-head attention (head dim 512) takes the routed exact path inference uses; Windows
+        # ROCm's fused kernels return garbage there, which would encode every training latent wrong.
+        from core.inference.diffusion_vae_attn_chunked import install as _route_vae_attention
+
+        _route_vae_attention(vae)
         for m in (unet, *text_encoders):
             m.to(device, dtype = weight_dtype)
 
