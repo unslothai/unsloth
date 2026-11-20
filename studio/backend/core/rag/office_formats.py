@@ -294,7 +294,7 @@ _FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
 
 def _format_tokens(code: str) -> list[tuple[str, str]] | None:
     """("lit" | "ph" | "exp" | "sep", text) tokens of a number format, or None if unsupported."""
-    tokens, i = [], 0
+    tokens, i, separators = [], 0, 0
     while i < len(code):
         ch = code[i]
         if ch == '"':
@@ -326,6 +326,9 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             i += 2
         elif ch == ";":
             tokens.append(("sep", ";"))
+            separators += 1
+            if separators == 3:  # the fourth section formats text, not numbers
+                break
             i += 1
         elif ch in _FORMAT_LITERALS:
             tokens.append(("lit", ch))
@@ -431,7 +434,7 @@ def _apply_section(value: float, plan) -> str | None:
 
 
 def _number_plan(code: str):
-    """Each section of a numeric format read once (with whether it has tokens), or None if unsupported."""
+    """Each section of a numeric format read once, or None if unsupported."""
     tokens = _format_tokens(code) if code else None
     if not tokens:
         return None
@@ -441,17 +444,17 @@ def _number_plan(code: str):
             sections.append([])
         else:
             sections[-1].append(token)
-    return [(bool(section), _section_plan(section)) for section in sections]
+    return [_section_plan(section) for section in sections]
 
 
 def _apply_number(value: float, plan) -> str | None:
     if plan is None:
         return None
-    if value < 0 and len(plan) > 1 and plan[1][0]:
-        return _apply_section(-value, plan[1][1])
-    if value == 0 and len(plan) > 2 and plan[2][0]:
-        return _apply_section(0.0, plan[2][1])
-    text = _apply_section(abs(value), plan[0][1])
+    if value < 0 and len(plan) > 1:
+        return _apply_section(-value, plan[1])
+    if value == 0 and len(plan) > 2:
+        return _apply_section(0.0, plan[2])
+    text = _apply_section(abs(value), plan[0])
     return None if text is None else ("-" + text if value < 0 else text)
 
 

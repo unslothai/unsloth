@@ -682,6 +682,10 @@ def test_ods_reads_typed_values_without_text(tmp_path):
         (123, "000000", "000123"),
         (-1234.5, "#,##0.00", "-1,234.50"),
         (-1234.5, "#,##0.00;(#,##0.00)", "(1,234.50)"),
+        (0, "0;-0;;@", ""),
+        (-5, "0;;", ""),
+        (-5, "0;;0", ""),
+        (5, "0;;", "5"),
         (12345.678, "0.00E+00", "1.23E+04"),
         (12345.678, "##0.0E+0", "12.3E+3"),
         (1234.5, '"$"#,##0', "$1,235"),
@@ -708,7 +712,7 @@ def test_xlsx_shows_numbers_as_formatted(tmp_path, serial, number_format, expect
             "xl/worksheets/sheet1.xml": f'<worksheet {S}><sheetData><row r="1"><c r="A1" s="1"><v>{serial}</v></c></row></sheetData></worksheet>',
         },
     )
-    assert _text(path) == f"Sheet: T\n{expected}"
+    assert _text(path) == (f"Sheet: T\n{expected}" if expected else "")
 
 
 def test_xlsx_reads_each_number_format_once_per_workbook(tmp_path, monkeypatch):
