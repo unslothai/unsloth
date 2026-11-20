@@ -2,8 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """CPU tests: the checkpointing budget runs alongside DiT block swap. Swapped blocks stay checkpointed and are never
-planned, resident blocks are planned into the room left, the pool's auto growth is held back, and an out-of-memory
-rerun starts from a clean slot pool."""
+planned, resident blocks are planned into the room left, and an out-of-memory rerun starts from a clean slot pool."""
 
 from __future__ import annotations
 
@@ -127,64 +126,20 @@ def test_install_marks_only_the_swapped_blocks(monkeypatch):
     assert marked == [i for i in info["swapped"]["blocks"]] and len(marked) == 2
 
 
-class _FakeBlock:
-    def __init__(self, nbytes):
-        self._n = nbytes
-
-    def nbytes(self):
-        return self._n
-
-
 class _FakeSwapper:
-    def __init__(
-        self,
-        depth,
-        settled,
-        sizes,
-        sigs = 1,
-    ):
-        self._auto = True
-        self._settled = settled
-        self.depth = depth
-        self.blocks = [_FakeBlock(n) for n in sizes]
-        self.free = {i: [] for i in range(sigs)}
+    def __init__(self):
         self.resets = 0
 
     def reset(self):
         self.resets += 1
 
 
-def test_pool_growth_is_reserved_until_auto_depth_settles(monkeypatch):
-    zoo = types.ModuleType("unsloth_zoo.block_swap")
-    zoo._AUTO_MAX_DEPTH = 4
-    pkg = sys.modules.get("unsloth_zoo") or types.ModuleType("unsloth_zoo")
-    monkeypatch.setitem(sys.modules, "unsloth_zoo", pkg)
-    monkeypatch.setitem(sys.modules, "unsloth_zoo.block_swap", zoo)
-    monkeypatch.setattr(pkg, "block_swap", zoo, raising = False)
-    model = _Model(2)
-    model._unsloth_block_swaps = [
-        _FakeSwapper(2, False, [GIB // 2, GIB // 4]),
-        _FakeSwapper(3, True, [GIB]),
-    ]
-    assert bs.swap_pool_growth_bytes(model) == 2 * (GIB // 2)
-    assert bs.swap_pool_growth_bytes(_Model(2)) == 0
-
-
 def test_rerun_resets_the_swap_pools():
     model = _Model(2)
-    swappers = [_FakeSwapper(2, True, [1]), _FakeSwapper(2, True, [1])]
+    swappers = [_FakeSwapper(), _FakeSwapper()]
     model._unsloth_block_swaps = swappers
     assert bs.reset_block_swaps(model) == 2
     assert [s.resets for s in swappers] == [1, 1]
-
-
-def test_plan_holds_back_the_swap_pool_growth(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(
-        dit, "_plan_gc_budget", lambda *a, held_bytes = 0, **k: seen.setdefault("held", held_bytes)
-    )
-    dit._plan_after_first_step(object(), None, 0, 0, swap_pool_bytes = 3 * GIB)
-    assert seen["held"] == 3 * GIB
 
 
 def test_trainer_keeps_the_budget_with_block_swap():

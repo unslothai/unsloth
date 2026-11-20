@@ -332,27 +332,6 @@ def compile_swapped_blocks(
     return n
 
 
-def swap_pool_growth_bytes(transformer) -> int:
-    """Device bytes the swappers' slot pools may still grow by (prefetch_depth "auto" adds a slot per signature while
-    copies stall, up to zoo's max depth): the checkpointing budget leaves this room free. 0 once settled or unknown."""
-    total = 0
-    try:
-        from unsloth_zoo import block_swap as zoo_swap
-        max_depth = int(getattr(zoo_swap, "_AUTO_MAX_DEPTH", 4))
-    except Exception:  # noqa: BLE001 -- no zoo: nothing installed
-        return 0
-    for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
-        try:
-            if not getattr(s, "_auto", False) or getattr(s, "_settled", True):
-                continue
-            grow = max(0, max_depth - int(s.depth))
-            slot = max((b.nbytes() for b in s.blocks), default = 0)
-            total += grow * slot * max(1, len(getattr(s, "free", {}) or {}))
-        except Exception:  # noqa: BLE001 -- unreadable swapper: reserve nothing for it
-            continue
-    return int(total)
-
-
 def reset_block_swaps(transformer) -> int:
     """After an out-of-memory error mid-step: give every slot back and arm the first blocks, so the rerun starts from
     a clean pool (no block left resident or marked as held by the failed graph). Returns the swappers reset."""
