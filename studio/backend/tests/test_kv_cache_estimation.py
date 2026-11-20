@@ -240,8 +240,6 @@ class TestGGUFParserNewFields:
         assert b._feed_forward_length == 12288
 
     def test_per_layer_head_count_kept_without_setting_the_scalar(self):
-        # Inkling 2 stores head_count per layer; the scalar stays unset so other estimates keep
-        # their existing fallbacks.
         b = _backend_from_gguf("inkling2", {"block_count": 3, "attention.head_count": [24, 24, 32]})
         assert b._n_heads_by_layer == [24, 24, 32]
         assert b._n_heads is None

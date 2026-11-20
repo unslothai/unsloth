@@ -8832,9 +8832,8 @@ class LlamaCppBackend:
         self._n_kv_heads: Optional[int] = None
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
-        # Per-layer query heads when head_count is an array; _n_heads stays unset for those GGUFs.
+        # head_count array; _n_heads stays unset so other estimates keep their fallbacks.
         self._n_heads_by_layer: Optional[list[int]] = None
-        # Layers per residual block of block attention residuals (Inkling 2), else None.
         self._attn_res_block_size: Optional[int] = None
         self._embedding_length: Optional[int] = None
         # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
@@ -18707,12 +18706,8 @@ class LlamaCppBackend:
     _INKLING_CTX_COMPUTE_BYTES_PER_TOK = 8192  # per token at ub=512
     # Dense relative-bias fallback (quantized KV disables the banded path): ~402 KiB/tok measured.
     _INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK = 402470  # per token at ub=512
-    # Inkling 2 has no banded path: every layer gathers its relative-position bias as a dense f32
-    # [n_kv, ubatch, n_head] tensor and permutes it into a second copy (llama.cpp models/inkling2.cpp),
-    # plus an i32 [n_kv, ubatch] distance index. Both rates are bytes per cell and micro-batch token.
-    # Measured CUDA0 compute buffer, Inkling-2-Mini (24 heads), f16 cache, 4 slots, b12568:
-    # ub=512 6523 / 12859 MiB at 64k / 128k, 77531 MiB at 800k; ub=256 / 1024 scale linearly; q8_0
-    # cache and experts or layers on CPU keep the same 101376 B/tok slope (512 * (8 * 24 + 4 + 2 mask)).
+    # Inkling 2 (llama.cpp models/inkling2.cpp) has no banded path: a dense f32 [n_kv, ub, n_head]
+    # relative bias plus its permuted copy, and an i32 [n_kv, ub] index. Bytes per cell per ub token.
     _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
     _INKLING2_REL_INDEX_BYTES = 4
 
@@ -18746,8 +18741,7 @@ class LlamaCppBackend:
             conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
             widths.append(4 * conv_in)
         per_layer_input = dim("_embedding_length_per_layer_input") * dim("_n_layers")
-        # Block attention residuals (Inkling 2) keep every block's output live, and each depth mix
-        # holds three (blocks + 1)-wide copies: the concatenation, its norm and its transpose.
+        # Attention residuals keep every block output live; a depth mix holds 3 (blocks + 1) copies.
         res_blocks = 0
         block_size = dim("_attn_res_block_size")
         if block_size > 0 and dim("_n_layers") > 0:
@@ -18900,9 +18894,7 @@ class LlamaCppBackend:
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
         if getattr(self, "_architecture", None) == "inkling2":
-            # Dense relative-position bias (see constants), sized by the full-attention layers: the
-            # sliding layers' smaller bias reuses the same allocation. No dequant copy: q8_0
-            # measures the same as f16.
+            # Sliding layers' smaller bias reuses this allocation; q8_0 measures as f16 (no dequant).
             n_head = self._inkling2_bias_heads()
             per_tok = (
                 mask_rate

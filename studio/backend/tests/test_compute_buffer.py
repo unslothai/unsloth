@@ -1563,13 +1563,9 @@ class TestOutputRowsByBuild:
 
 
 class TestComputeBufferInkling2:
-    """Inkling 2 gathers a dense f32 relative-position bias on every layer, so its compute
-    buffer grows ~99 KiB per context token. Measured CUDA0 compute buffers (MiB), Inkling-2-Mini
-    UD-Q4_K_XL, RTX 6000 Ada, bundled llama.cpp b12568, 4 slots, --kv-unified, f16 cache unless
-    noted. The 800k figure is the buffer the server failed to allocate at Studio's chosen context."""
+    """Measured CUDA0 MiB: Inkling-2-Mini UD-Q4_K_XL, b12568, 4 slots, --kv-unified, RTX 6000 Ada."""
 
     _MEASURED = [
-        # (n_ctx, ubatch, cache type, flash attention, MiB)
         (65536, 512, "f16", True, 6523.02),
         (131072, 512, "f16", True, 12859.02),
         (262144, 512, "f16", True, 25531.02),
@@ -1616,7 +1612,6 @@ class TestComputeBufferInkling2:
         assert per_tok == 512 * (8 * 24 + 4 + 2) == 101376
 
     def test_generic_path_underestimated_the_failed_load(self):
-        # Before inkling2 had its own branch it took the generic rate, ~1% of the real buffer.
         b = self._inkling2_mini(arch = "llama")
         assert self._total_mib(b, 800000, 512, "f16", True) < 77530.77 * 0.02
 
