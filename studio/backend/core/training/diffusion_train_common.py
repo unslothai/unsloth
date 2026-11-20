@@ -1981,7 +1981,7 @@ _MASKED_CUDNN_CAPS = frozenset({(8, 0), (8, 9), (12, 0)})
 _MASKED_CUDNN_MIN_TORCH = (2, 10)
 
 
-def _masked_cudnn_priority(torch) -> Optional[list]:
+def _masked_cudnn_priority(torch, device: Any = None) -> Optional[list]:
     """SDPA priority flash > cuDNN > mem-eff > rest, or None to keep cuDNN off.
 
     Flash takes no mask, so a masked call (Krea-2 text padding, LTX-2, Qwen-Image) falls to mem-eff, which
@@ -2002,10 +2002,12 @@ def _masked_cudnn_priority(torch) -> Optional[list]:
         major_minor = tuple(int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
         if major_minor < _MASKED_CUDNN_MIN_TORCH:
             return None
-        if (
-            not torch.cuda.is_available()
-            or tuple(torch.cuda.get_device_capability()) not in _MASKED_CUDNN_CAPS
-        ):
+        if not torch.cuda.is_available():
+            return None
+        # the training card, not whichever card is current
+        dev = torch.device(device) if device is not None else None
+        index = dev.index if dev is not None and dev.type == "cuda" else None
+        if tuple(torch.cuda.get_device_capability(index)) not in _MASKED_CUDNN_CAPS:
             return None
         from torch.nn.attention import SDPBackend
 
@@ -2071,7 +2073,7 @@ def _apply_perf_flags(
             except Exception:  # noqa: BLE001 -- flag unreadable: skip the tweak entirely
                 snap["cudnn_sdp"] = None
             if snap["cudnn_sdp"]:
-                prio = _masked_cudnn_priority(torch)
+                prio = _masked_cudnn_priority(torch, device)
                 if prio is not None:
                     snap["sdp_priority"] = list(torch._C._get_sdp_priority_order())
                     torch._C._set_sdp_priority_order(prio)

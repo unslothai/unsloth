@@ -847,3 +847,18 @@ def test_cudnn_sdpa_kill_switch(monkeypatch):
     finally:
         _restore_perf_flags(snap)
     assert _sdp_state() == before
+
+
+def test_masked_cudnn_checks_the_training_card_not_the_current_one(monkeypatch):
+    # Training on cuda:1 (an unmeasured sm90) while cuda:0 (an A100) is current keeps cuDNN off.
+    if not hasattr(torch._C, "_get_sdp_priority_order"):
+        pytest.skip("needs the SDPA priority API")
+    from core.training import diffusion_train_common as T
+
+    monkeypatch.setattr(torch, "__version__", "2.14.1+cu130")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    caps = {0: (8, 0), 1: (9, 0), None: (8, 0)}
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: caps[index])
+    assert T._masked_cudnn_priority(torch, "cuda:1") is None
+    assert T._masked_cudnn_priority(torch, "cuda:0") is not None
+    assert T._masked_cudnn_priority(torch, "cuda") is not None
