@@ -611,6 +611,35 @@ def test_a_bucket_verdict_of_this_load_keeps_a_used_clipped_sink_path(monkeypatc
     I.forget_plans()
 
 
+@pytest.mark.parametrize("own_race", [True, False])
+def test_a_sink_path_rejected_on_accuracy_is_never_kept_for_repeatability(monkeypatch, own_race):
+    """The race rejected the sink path because its error was non-finite: even with used clipped sink-path outputs,
+    the load takes the race's verdict (numerical safety over a repeated seed), for this plan and later plans of the
+    bucket."""
+    import contextlib
+
+    I.forget_plans()
+    plan = _fake_plan(mode = I.MODE_RACE)
+    monkeypatch.setattr(I, "_outside_capture", lambda: contextlib.nullcontext(True))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(I, "_drop_routes", lambda plan: None)
+
+    def race():
+        plan["sink_error"] = {"sinks": float("nan"), "plain": 0.01}
+        return False
+
+    if own_race:
+        assert _decide_at(plan, race, live = True) is False and plan["sinks"] is False
+    else:
+        assert _decide_at(plan, race, live = False) is False
+        later = _fake_plan(mode = I.MODE_RACE)
+        assert (
+            _decide_at(later, lambda: pytest.fail("a known verdict: no race"), live = True) is False
+        )
+    I.forget_plans()
+    assert not I._sink_unsafe()
+
+
 def test_a_bucket_verdict_after_thrown_away_clips_is_taken_as_before(monkeypatch):
     """A clip only in thrown-away graph warm-ups is not a used output: the bucket's verdict is taken as on main."""
     import contextlib

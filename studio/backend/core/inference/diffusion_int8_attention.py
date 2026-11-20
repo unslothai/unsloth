@@ -626,6 +626,14 @@ def _decisions() -> dict:
     return found
 
 
+def _sink_unsafe() -> set:
+    """``plan["decision"]`` keys whose race rejected the sink path on accuracy (a non-finite error): never pinned."""
+    found = _LOADED.get("sink_unsafe")
+    if found is None:
+        found = _LOADED["sink_unsafe"] = set()
+    return found
+
+
 # Set once a CUDA graph records a sink-route call: no later race or route change, the graph replays what it recorded.
 _GRAPHED = [False]
 # (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
@@ -878,6 +886,7 @@ def forget_plans() -> None:
     """Drop launch plans, sink decisions and routes: a new pipeline decides again."""
     _plans().clear()
     _decisions().clear()
+    _sink_unsafe().clear()
     _ROUTES.clear()
     _GRAPHED[0] = False
 
@@ -1014,12 +1023,15 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                     verdict = known if known is not None else (True if race is None else race())
                     if fresh:
                         _decisions()[key] = verdict
+                        if not math.isfinite((plan.get("sink_error") or {}).get("sinks", 0.0)):
+                            _sink_unsafe().add(key)
                     if verdict == "native" and fresh and _routes_used(plan):
                         # moving the routes would put another plan's used INT8 calls on torch's attention next render
                         verdict = True
-                    if verdict is not True and plan.get("live_seen"):
+                    if verdict is not True and plan.get("live_seen") and key not in _sink_unsafe():
                         # a render already used this plan's sink-path outputs where V clipped: keep the path for the
-                        # load (the next render repeats the seed); the bucket keeps the verdict for later plans
+                        # load (the next render repeats the seed); the bucket keeps the verdict for later plans. Not
+                        # where the race rejected the sink path on accuracy: numerical safety wins over repeating
                         verdict = True
                     plan["sinks"] = verdict
                     if verdict == "native" and fresh:
