@@ -564,6 +564,27 @@ def test_the_proxy_refuses_a_host_with_a_nul_byte_before_the_gate(asking, monkey
     assert dialled == []
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "the egress proxy backs the POSIX sandboxes")
+def test_the_proxy_checks_the_name_the_resolver_dials(asking, monkeypatch):
+    from core.inference import sandbox_egress
+
+    monkeypatch.setattr(
+        firewall,
+        "_policy",
+        lambda: ("allowlist", ("githubusercontent.com",), ("raw.githubusercontent.com",)),
+    )
+    dialled = []
+    monkeypatch.setattr(sandbox_egress, "_dial", lambda host, port: dialled.append(host))
+    proxy = sandbox_egress.EgressProxy(gate = _gate(_Chat("deny")))
+    try:
+        with socket.create_connection(("127.0.0.1", proxy.port), timeout = 10) as sock:
+            sock.sendall(b"CONNECT ra\xadw.githubusercontent.com:443 HTTP/1.1\r\n\r\n")
+            assert sock.recv(4096).startswith(b"HTTP/1.1 403")
+    finally:
+        proxy.close()
+    assert dialled == []
+
+
 def test_closing_the_proxy_ends_a_waiting_question(asking):
     from core.inference import sandbox_egress
 

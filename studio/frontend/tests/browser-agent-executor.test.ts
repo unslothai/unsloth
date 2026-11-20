@@ -6,7 +6,7 @@ import { register } from "node:module";
 import { test } from "node:test";
 
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
-const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
+const { parseBrowserAction, runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const globals = globalThis as Record<string, unknown>;
@@ -109,4 +109,11 @@ test("a page that navigates away during the read is not read again", async () =>
   assert.equal(result.ok, false);
   assert.equal(result.text, undefined);
   assert.equal(reads, 1);
+});
+
+test("the installation's blocked sites survive a chat that blocks 100 sites", () => {
+  const chat = Array.from({ length: 100 }, (_, i) => `chat${i}.example`);
+  const owner = Array.from({ length: 100 }, (_, i) => `owner${i}.example`);
+  const action = parseBrowserAction({ id: "a1", op: "click", allowed_domains: [], blocked_domains: [...chat, ...owner] });
+  assert.deepEqual(action?.policy.blockedDomains, [...chat, ...owner]);
 });
