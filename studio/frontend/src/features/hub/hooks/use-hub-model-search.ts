@@ -384,7 +384,6 @@ async function* mergedModelIterator(
       }) as AsyncGenerator<unknown>,
     signal,
   );
-  // Requested alongside the Unsloth listing: one Hub round trip before the first page, not two.
   const general = prefetchListing(
     (generalSignal) =>
       mergeTaskIterators(
@@ -536,7 +535,6 @@ async function* priorityThenListingIterator(
       }),
     ),
   );
-  // The listing's first page loads while the priority lookups (a few at a time) finish.
   const listing = prefetchListing(
     (listingSignal) =>
       mergeTaskIterators(
@@ -782,7 +780,6 @@ function createChannelIterator(
     signal: AbortSignal;
     parameterFilter?: string;
     task?: PipelineType;
-    /** Rows the caller reads at most; the Hub then sends no more than that. */
     limit?: number;
   },
 ): AsyncGenerator<unknown> {

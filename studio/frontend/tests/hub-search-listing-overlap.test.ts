@@ -198,7 +198,6 @@ test("a typed search requests the general listing before the Unsloth one answers
   const iter = load(hub).open("coder");
   const first = iter.next();
   await ticks();
-  // Both listings are on the wire, the Unsloth one first, and neither has answered yet.
   assert.deepEqual(hub.requests.map(kind), ["unsloth", "general"]);
   assert.equal(hub.requests[0].settled, false);
   hub.requests[1].release();
@@ -206,7 +205,6 @@ test("a typed search requests the general listing before the Unsloth one answers
   hub.requests[0].release();
   const rows = [nameOf((await first).value)];
   for await (const row of iter) rows.push(nameOf(row));
-  // Order and dedupe as before: three Unsloth rows, then the general listing without repeats.
   assert.deepEqual(rows, [
     "unsloth/Coder-A",
     "unsloth/Coder-B",
