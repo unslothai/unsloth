@@ -701,7 +701,6 @@ test("the open picker has one fixed height on every tab, whatever each tab lists
     css,
     /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 420px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
   );
-  // #18074 let it grow toward 540px with the tab's row count, so switching tabs resized it.
   assert.doesNotMatch(css, /--composer-picker-max-h/);
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
@@ -718,7 +717,6 @@ test("the picker height follows the screen: 400px short landscape, 420px most wi
   assert.equal(pickerMinHeight(1920, 1080, 1), 420);
   assert.equal(pickerMinHeight(1728, 1000, 1), 420);
   assert.equal(pickerMinHeight(390, 844, 1), 420);
-  // Above a 1080px-tall window it rises with the screen, reaching 540px at 1380px.
   assert.equal(pickerMinHeight(2560, 1230, 1), 480);
   assert.equal(pickerMinHeight(2560, 1380, 1), 540);
   assert.equal(pickerMinHeight(2560, 1600, 1), 540);

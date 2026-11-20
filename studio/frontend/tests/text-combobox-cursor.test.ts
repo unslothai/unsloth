@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Compare composer's textarea carries role="combobox"; it must keep the text cursor, not the hand.
+// The Compare composer's textarea has role="combobox" and must keep the text cursor.
 
 import assert from "node:assert/strict";
 import test from "node:test";

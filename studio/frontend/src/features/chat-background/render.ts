@@ -57,7 +57,7 @@ export function acquireRender(
 					);
 					void canvasBlob(canvas).then(resolve, reject);
 				};
-				// A worker that fails to start (e.g. a tab on the previous build gets a 404) runs here instead.
+				// A worker that fails to start (a stale build's 404) runs here instead.
 				const onMainThread = () => {
 					worker?.terminate();
 					if (cancelled) return;

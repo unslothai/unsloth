@@ -7,10 +7,7 @@ export function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 		),
 	);
 }
-/**
- * Loads `url` into `image`. decode() may reject while the image itself still loads (the HTML spec
- * lets a browser give up on an early decode), so only an image that really failed to load rejects.
- */
+/** decode() may reject while the image still loads (the spec allows it): only a failed load rejects. */
 export async function loadImage(image: HTMLImageElement, url: string): Promise<void> {
 	const loaded = new Promise<void>((resolve, reject) => {
 		image.addEventListener("load", () => resolve(), { once: true });

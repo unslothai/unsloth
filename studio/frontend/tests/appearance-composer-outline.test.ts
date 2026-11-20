@@ -86,7 +86,6 @@ test("the composer appearance rows live only in Chat's Customization section", (
     assert.ok(section.includes(`<${control} />`), `${control} is in Customization`);
     assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes(control));
   }
-  // Sent attachments moved to Chat defaults; it is still Chat-only.
   assert.ok(chat.includes("<SentAttachmentsSelect />"));
   assert.ok(!readSrc("features/settings/tabs/appearance-tab.tsx").includes("SentAttachmentsSelect"));
 });

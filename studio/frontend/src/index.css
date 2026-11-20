@@ -2892,8 +2892,7 @@ html[data-chat-font] .aui-root {
 		padding-top: 0;
 	}
 
-	/* Disabled ones (native, aria-disabled, Radix data-disabled) keep the default cursor. A text field
-	   with role="combobox" (the Compare composer) keeps its text cursor. */
+	/* Disabled ones (native, aria-disabled, Radix data-disabled) keep the default cursor. */
 	button:not(:disabled):not([aria-disabled="true"]),
 	summary,
 	label[for],
@@ -3436,7 +3435,7 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
 	}
 
-	/* New chat: 8px less gap above the bottom row, taken off the frame's height (minEditorHeight). */
+	/* Pairs with minEditorHeight's 8px new chat trim. */
 	.unsloth-composer-line .unsloth-composer-editor[data-new-chat] .unsloth-composer-input {
 		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1) - 8px);
 	}
@@ -6955,13 +6954,13 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* Fade out just under the composer's top edge (vars from ThreadComposerDock): no text shows through it. */
+/* Fades out just under the composer's top edge (vars from ThreadComposerDock). */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-image:
     linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), rgb(0 0 0 / .15) calc(100% - var(--thread-composer-clip, 0px) + .3 * var(--thread-composer-fade, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px) + var(--thread-composer-fade, 0px))),
     linear-gradient(#000, #000);
 }
-/* Wash the unmasked root, not the masked viewport, so the header strip matches the thread's shade. */
+/* On the root, not the masked viewport, so the header strip gets the same shade. */
 html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
@@ -7017,7 +7016,7 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   height: 150px;
   background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
 }
-/* Without glass a conversation's header sits on the thread's own wash; a second darkening sets it apart. */
+/* Without glass the header already sits on the thread's wash. */
 html:not([data-glass], [data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):not([data-wallpaper-route="page"]) > .chat-wallpaper::after {
   content: none;
 }

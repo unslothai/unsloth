@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Could not render the effect" must mean the image or effect really failed, not a transient step.
+// "Could not render the effect" only for a real image or effect failure.
 
 import assert from "node:assert/strict";
 import test from "node:test";

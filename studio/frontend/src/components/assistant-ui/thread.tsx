@@ -1887,7 +1887,6 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
 // Gap between last message and floating composer, added to the bottom spacer height.
 const COMPOSER_SCROLL_GAP_PX = 24;
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
-// Wallpaper CSS masks the thread from the composer's top edge (clip) over the fade.
 const THREAD_COMPOSER_CLIP_VAR = "--thread-composer-clip";
 const THREAD_COMPOSER_FADE_VAR = "--thread-composer-fade";
 // After a run start, composer shrinks apply immediately: the run-start pin owns the bottom.
@@ -3366,7 +3365,7 @@ const Composer: FC<{
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
   const threadEmpty = useAuiState(({ thread }) => thread.isEmpty);
-  // Only the new chat page (its welcome is up), not an empty chat elsewhere such as the floating one.
+  // Empty saved chats and the floating chat have no welcome.
   const welcomeShown = useChatWelcomeShown();
   const newChatPage = threadEmpty && welcomeShown;
   const minEditorHeight = Math.round(

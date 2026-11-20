@@ -171,7 +171,6 @@ test("the composer's two-row floor is two rows at any size", () => {
     /\(16 \+ 24 \* \(threadEmpty \? COMPOSER_MIN_ROWS : 1\) - \(newChatPage \? 8 : 0\)\) \*\s+uiSpaceScale/,
     "a conversation's composer is not one row",
   );
-  // Only the new chat page is 8px shorter, all of it from the gap above the bottom row.
   assert.match(readSrc("components/assistant-ui/thread.tsx"), /const newChatPage = threadEmpty && welcomeShown;/);
   assert.match(readSrc("components/assistant-ui/thread.tsx"), /data-new-chat=\{newChatPage \|\| undefined\}/);
   assert.match(

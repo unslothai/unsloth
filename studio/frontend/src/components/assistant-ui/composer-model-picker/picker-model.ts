@@ -470,7 +470,7 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
-/** From the window only, never a tab's row count; on-screen px: 420 up to 1080 tall, 540 from 1380. */
+/** From the window, never a tab's row count, in on-screen px. */
 export function pickerMinHeight(
   innerWidth: number,
   innerHeight: number,
