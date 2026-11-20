@@ -1023,6 +1023,13 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                     verdict = known if known is not None else (True if race is None else race())
                     if fresh:
                         _decisions()[key] = verdict
+                        if not math.isfinite((plan.get("sink_error") or {}).get("sinks", 0.0)):
+                            _sink_unsafe().add(key)
+                    if verdict == "native" and fresh and _routes_used(plan):
+                        # moving the routes would put another plan's used INT8 calls on torch's attention next render
+                        verdict = True
+                    if verdict is not True and plan.get("live_seen") and key not in _sink_unsafe():
+                        # a render already used this plan's sink-path outputs where V clipped: keep the path for the
                         # load (the next render repeats the seed); the bucket keeps the verdict for later plans. Not
                         # where the race rejected the sink path on accuracy: numerical safety wins over repeating
                         verdict = True
