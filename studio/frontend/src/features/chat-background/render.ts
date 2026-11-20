@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { renderEffect } from "./effects";
 import { canvasBlob, decodeImage } from "./image";
 import type { BackgroundEffect } from "./model";
 
@@ -42,16 +43,40 @@ export function acquireRender(
 					decoded.close();
 				}
 				if (cancelled) return;
-				const pixels = ctx!.getImageData(
-					0,
-					0,
-					canvas.width,
-					canvas.height,
-				).data;
-				worker = new Worker(new URL("./worker.ts", import.meta.url), {
-					type: "module",
-				});
-				worker.onerror = () => reject(new Error("effect"));
+				const read = () =>
+					ctx!.getImageData(0, 0, canvas.width, canvas.height).data;
+				const finish = (pixels: Uint8ClampedArray) => {
+					ctx!.putImageData(
+						new ImageData(
+							new Uint8ClampedArray(pixels),
+							canvas.width,
+							canvas.height,
+						),
+						0,
+						0,
+					);
+					void canvasBlob(canvas).then(resolve, reject);
+				};
+				// The worker can fail to start, e.g. a tab still on the previous build asks for a worker
+				// file the new build replaced (404). Run the same transform here rather than fail.
+				const onMainThread = () => {
+					worker?.terminate();
+					if (cancelled) return;
+					try {
+						finish(renderEffect(read(), canvas.width, canvas.height, effect, light));
+					} catch {
+						reject(new Error("effect"));
+					}
+				};
+				try {
+					worker = new Worker(new URL("./worker.ts", import.meta.url), {
+						type: "module",
+					});
+				} catch {
+					onMainThread();
+					return;
+				}
+				worker.onerror = onMainThread;
 				worker.onmessage = ({
 					data,
 				}: MessageEvent<{ pixels?: Uint8ClampedArray; error?: boolean }>) => {
@@ -61,17 +86,9 @@ export function acquireRender(
 						reject(new Error("effect"));
 						return;
 					}
-					ctx!.putImageData(
-						new ImageData(
-							new Uint8ClampedArray(data.pixels),
-							canvas.width,
-							canvas.height,
-						),
-						0,
-						0,
-					);
-					void canvasBlob(canvas).then(resolve, reject);
+					finish(data.pixels);
 				};
+				const pixels = read();
 				worker.postMessage(
 					{ pixels, width: canvas.width, height: canvas.height, effect, light },
 					[pixels.buffer],

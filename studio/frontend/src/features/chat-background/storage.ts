@@ -126,6 +126,11 @@ export function useChatBackground() {
 export function setBackgroundError(error: BackgroundError) {
 	useBackgroundStore.setState({ error });
 }
+/** A later render that succeeds clears its own stale failure, never another kind of error. */
+export function clearBackgroundError(error: BackgroundError) {
+	if (useBackgroundStore.getState().error === error)
+		useBackgroundStore.setState({ error: null });
+}
 async function persist(
 	value: ChatBackgroundValue | null,
 	optimistic: boolean,
