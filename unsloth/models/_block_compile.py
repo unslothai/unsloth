@@ -1730,6 +1730,10 @@ def _sdpa_alignment_without_guard():
     The memory-efficient backward keeps torch's guard where it needs it (_efficient_backward_keeps_guard).
     UNSLOTH_BLOCK_SDPA_ALIGN_GUARD=1 keeps torch's guards."""
     if os.environ.get("UNSLOTH_BLOCK_SDPA_ALIGN_GUARD", "0") == "1":
+        if _efficient_backward_keeps_guard():
+            # Stock lowering, but the same cache key as a run without the guard before the tag existed:
+            # tag it too, or that run's faulting efficient backward is served again.
+            _tag_efficient_backward_cache()
         return False
     try:
         import torch._inductor.lowering as lowering
