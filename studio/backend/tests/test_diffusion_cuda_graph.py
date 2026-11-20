@@ -1710,6 +1710,27 @@ def test_real_warmup_branch_seen_briefly_still_records_after_the_scope_seals(
     assert handle.stats["length_eager"] == 1, "a new prompt length after the seal still runs eager"
 
 
+@pytest.mark.parametrize("runs", [1, 2, 3])
+def test_real_warmup_branch_ending_the_first_render_records_on_the_next(
+    stub_torch, monkeypatch, runs
+):
+    """A branch that closes the first render after 1-3 real warm-ups (3 = all of them, the render ended before its
+    recording step) records on the second render, as the side-stream warm-up recorded it on the first."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    module = _len_dit("QwenImageTransformer2DModel")
+    branch = {"v": "a"}
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, lambda: branch["v"])
+    handle = _armed(module, max_graphs = 8)
+    flags = ("a",) * 5 + ("b",) * runs
+    for _ in range(2):
+        for i, flag in enumerate(flags):
+            branch["v"] = flag
+            _step(handle, 3, value = float(i))
+        cg.seal_lengths((handle,))
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+
+
 class _RefDiT(_LenDiT):
     def forward(
         self,

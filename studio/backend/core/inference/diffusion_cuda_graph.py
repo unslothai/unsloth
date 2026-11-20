@@ -2919,12 +2919,13 @@ def seal_lengths(handles: Any) -> None:
         try:
             real = getattr(handle, "_real_warm", None)
             if real:
-                # A key that ran fewer real warm-ups than a capture needs before the render ended records the
-                # side-stream way next time, as it did before real warm-ups (renders 2+ of a 1-step render replay).
+                # A key whose real warm-ups the render ended before its capture records next time, as it did before
+                # real warm-ups: the side-stream way when it ran fewer than a capture needs (renders 2+ of a 1-step
+                # render replay), at once when it ran them all and the render ended before the recording step.
                 handle._real_warm_closed.update(
                     key
                     for key, n in real.items()
-                    if 0 < n < handle.warmup and key not in handle.cache
+                    if 0 < n <= handle.warmup and key not in handle.cache
                 )
         except Exception:  # noqa: BLE001 - optimisation only
             pass
