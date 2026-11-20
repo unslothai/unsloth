@@ -81,9 +81,7 @@ FACTORIES = {
     "routes.characters:PATCH:/{persona_id}": Factory(
         "persona", {"description": EDITED}, fragment = EDITED, absent = PERSONA
     ),
-    "routes.characters:DELETE:/{persona_id}": Factory(
-        "persona", success = 204, absent = PERSONA
-    ),
+    "routes.characters:DELETE:/{persona_id}": Factory("persona", success = 204, absent = PERSONA),
     "routes.characters:GET:/{persona_id}/avatar": Factory("persona"),
     "routes.characters:PUT:/{persona_id}/avatar": Factory(
         "persona", {}, success = 400, reason = _IMAGE

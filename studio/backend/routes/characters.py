@@ -206,10 +206,7 @@ def create_character(payload: CharacterCreate):
 
 
 @router.post("/import", status_code = 201)
-async def import_character(
-    request: Request,
-    filename: str = Query("", max_length = 255),
-):
+async def import_character(request: Request, filename: str = Query("", max_length = 255)):
     data = await read_limited_body(request, cards.MAX_CARD_BYTES, _TOO_LARGE)
     try:
         parsed = await asyncio.to_thread(cards.parse_card_file, data, filename)
@@ -244,10 +241,7 @@ def get_character(character_id: str):
 
 
 @router.patch("/{character_id}")
-def update_character(
-    character_id: str,
-    payload: CharacterUpdate,
-):
+def update_character(character_id: str, payload: CharacterUpdate):
     fields = payload.model_dump(exclude_none = True, exclude = {"clear"})
     for cleared in payload.clear:
         fields[cleared] = None
@@ -290,10 +284,7 @@ def get_character_avatar(character_id: str):
 
 
 @router.put("/{character_id}/avatar")
-async def put_character_avatar(
-    character_id: str,
-    request: Request,
-):
+async def put_character_avatar(character_id: str, request: Request):
     _character_or_404(character_id)
     data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
     data, media_type = await asyncio.to_thread(_checked_avatar, data)
@@ -317,10 +308,7 @@ def _download_name(name: str, extension: str) -> str:
 
 
 @router.get("/{character_id}/export")
-def export_character(
-    character_id: str,
-    format: Literal["png", "json"] = Query("png"),
-):
+def export_character(character_id: str, format: Literal["png", "json"] = Query("png")):
     character = _character_or_404(character_id)
     disposition = attachment_disposition(
         _download_name(character["name"], format), f"character.{format}"
@@ -367,10 +355,7 @@ def create_persona(payload: PersonaCreate):
 
 
 @personas_router.patch("/{persona_id}")
-def update_persona(
-    persona_id: str,
-    payload: PersonaUpdate,
-):
+def update_persona(persona_id: str, payload: PersonaUpdate):
     updated = db.update_persona(persona_id, payload.model_dump(exclude_none = True))
     if updated is None:
         raise HTTPException(status_code = 404, detail = _PERSONA_NOT_FOUND)
@@ -394,10 +379,7 @@ def get_persona_avatar(persona_id: str):
 
 
 @personas_router.put("/{persona_id}/avatar")
-async def put_persona_avatar(
-    persona_id: str,
-    request: Request,
-):
+async def put_persona_avatar(persona_id: str, request: Request):
     _persona_or_404(persona_id)
     data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
     data, media_type = await asyncio.to_thread(_checked_avatar, data)
@@ -445,10 +427,7 @@ def get_chat_scene(thread_id: str):
 
 
 @chats_router.put("/{thread_id}")
-def update_chat_scene(
-    thread_id: str,
-    payload: SceneUpdate,
-):
+def update_chat_scene(thread_id: str, payload: SceneUpdate):
     try:
         scene = db.update_chat_scene(
             thread_id,

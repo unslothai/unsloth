@@ -31,6 +31,7 @@ MAX_PERSONAS = 200
 MAX_CAST = 16
 MAX_ID_CHARS = 64
 
+
 class CharacterLimitReached(Exception):
     """An account's character or persona limit, or a chat's cast limit."""
 
@@ -224,7 +225,9 @@ def create_character(
                     return None
             (count,) = conn.execute("SELECT COUNT(*) FROM characters").fetchone()
             if count >= MAX_CHARACTERS:
-                raise CharacterLimitReached(f"An account can hold up to {MAX_CHARACTERS} characters.")
+                raise CharacterLimitReached(
+                    f"An account can hold up to {MAX_CHARACTERS} characters."
+                )
             columns = ", ".join(values)
             conn.execute(
                 f"INSERT INTO characters ({columns}) VALUES ({', '.join('?' for _ in values)})",

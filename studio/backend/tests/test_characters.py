@@ -564,7 +564,8 @@ def test_a_chat_needs_known_characters(client):
 
 def test_fill_names_handles_both_macro_spellings():
     assert (
-        chats.fill_names("{{char}} & <USER> & {{ User }}", "Ann", "Pat\\1") == "Ann & Pat\\1 & Pat\\1"
+        chats.fill_names("{{char}} & <USER> & {{ User }}", "Ann", "Pat\\1")
+        == "Ann & Pat\\1 & Pat\\1"
     )
 
 
@@ -1068,7 +1069,8 @@ def test_reading_a_portrait_does_not_recreate_the_folder(client):
 def test_a_portrait_is_served_as_the_type_its_bytes_say(client):
     character = _character(client)
     assert (
-        client.put(f"/api/characters/{character['id']}/avatar", content = _tiny_png()).status_code == 200
+        client.put(f"/api/characters/{character['id']}/avatar", content = _tiny_png()).status_code
+        == 200
     )
     gif = b"GIF89a" + b"\x00" * 20
     db.write_avatar("characters", character["id"], gif)

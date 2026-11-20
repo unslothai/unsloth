@@ -1101,9 +1101,7 @@ def test_a_run_without_a_speaker_hashes_as_before():
         assistant_message_id = "assistant-1",
         request_payload = _request(),
     )
-    assert runs_db.canonical_request(**args) == runs_db.canonical_request(
-        **args, roleplay = None
-    )
+    assert runs_db.canonical_request(**args) == runs_db.canonical_request(**args, roleplay = None)
     assert (
         runs_db.canonical_request(**args)[1]
         != runs_db.canonical_request(**args, roleplay = {"speakerId": "m"})[1]

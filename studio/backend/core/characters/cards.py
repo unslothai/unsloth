@@ -215,7 +215,6 @@ def to_png(image: Optional[bytes], name: str = "") -> bytes:
         return strip_png_text(image)
     if image:
         from PIL import Image, ImageOps
-
         try:
             with Image.open(io.BytesIO(image)) as source:
                 source.load()
