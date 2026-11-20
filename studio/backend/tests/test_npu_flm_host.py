@@ -283,7 +283,7 @@ def installer(tmp_path, monkeypatch):
     import install_lemonade_prebuilt as inst
 
     blob = _zip()
-    pins = json.loads((studio / "lemonade_prebuilt_pins.json").read_text())
+    pins = json.loads((studio / "lemonade_prebuilt_pins.json").read_text(encoding = "utf-8"))
     key = "windows-x64" if sys.platform == "win32" else "linux-x64"
     pins["fastflowlm"]["assets"][key]["sha256"] = hashlib.sha256(blob).hexdigest()
     pins_path = tmp_path / "pins.json"
