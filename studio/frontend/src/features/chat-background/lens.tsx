@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppliedMaterial, useGlassStrength, useMaterialStore } from "./material";
+import { GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR } from "./glass-motion";
 import { LENS_CLEAR_HOSTS, LENS_HOSTS, LENS_SCALE, lensDrawn } from "./model";
 
 const HOST_FLAG = "data-glass-lens-host";
@@ -22,7 +23,7 @@ function glassLayer(el: HTMLElement): CSSStyleDeclaration | null {
 function drawsGlass(el: HTMLElement): boolean {
   const { width, height } = el.getBoundingClientRect();
   if (width < 8 || height < 8) return false;
-  return el.hasAttribute("data-glass-moving") || glassLayer(el) !== null;
+  return el.hasAttribute(GLASS_MOVING_ATTR) || glassLayer(el) !== null;
 }
 
 const PREVIEW_HOSTS = ".wallpaper-preview-composer";
@@ -137,7 +138,8 @@ function Lens({
         copy.style.transformOrigin = `${h.left - w.left + h.width / 2}px ${h.top - w.top + h.height / 2}px`;
         copy.style.transform = `scale(${scale})`;
       }
-      if (fillCopy) fillCopy.style.filter = blur;
+      // A moving host drops its backdrop filter (glass-motion.ts); the copy drops its blur with it instead of the CSS fallback.
+      if (fillCopy) fillCopy.style.filter = blur || "none";
       if (wash) {
         const fills: string[] = [];
         for (
@@ -174,6 +176,8 @@ function Lens({
     const resize = new ResizeObserver(place);
     resize.observe(host);
     resize.observe(wallpaper);
+    const motion = new MutationObserver(place);
+    motion.observe(host, { attributes: true, attributeFilter: [GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR] });
     const mutations = new MutationObserver(recopy);
     mutations.observe(wallpaper, {
       childList: true,
@@ -186,6 +190,7 @@ function Lens({
       host.removeAttribute(HOST_FLAG);
       host.removeEventListener("animationend", place);
       resize.disconnect();
+      motion.disconnect();
       mutations.disconnect();
       window.clearInterval(poll);
       window.removeEventListener("resize", place);

@@ -548,7 +548,7 @@ test("the glass lens draws into every glass surface, not only the composer", asy
 	assert.match(lens, /for \(const pseudo of \[null, "::before"\]\)/);
 	assert.match(lens, /const fill = glass \?\? getComputedStyle\(host\);/);
 	// The copy blurs as much as the surface it sits in, not the shared --glass-blur.
-	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur;/);
+	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| "none";/);
 	// Outside the workspace the wash stops at <body>, whose opaque fill would hide the copy.
 	assert.match(lens, /node && node !== workspace && node !== document\.body;/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
@@ -643,4 +643,11 @@ test("at glass strength 0% the lens stays on the composer only, as on main", () 
 	assert.match(lens, /\.filter\(\(h\) => drawsGlass\(h\) && \(!clear \|\| h\.matches\(LENS_CLEAR_HOSTS\)\)\)/);
 	assert.ok(LENS_HOSTS.split(", ").includes(".unsloth-composer-surface"));
 	assert.equal(LENS_CLEAR_HOSTS, ".unsloth-composer-surface, .wallpaper-preview-composer");
+});
+
+test("a lens copy drops its blur while its host is moving, instead of falling back to the CSS blur", () => {
+	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
+	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| "none";/);
+	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR\] \}\);/);
+	assert.match(lens, /motion\.disconnect\(\);/);
 });
