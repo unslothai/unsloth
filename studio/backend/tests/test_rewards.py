@@ -512,3 +512,36 @@ def test_json_schema_scoring_stays_fast_on_an_unclosed_fence():
     start = time.perf_counter()
     assert score_rule(rule, "```json\n" + " " * 65000) == 0.0
     assert time.perf_counter() - start < 1.0
+
+
+def test_deeply_nested_yaml_is_a_400_not_a_500(client):
+    raw = _md("deep", "type: length\nmax_chars: 10\nscore: {over: 0, under: 1}\nx: " + "[" * 400)
+    with pytest.raises(rewards.RewardError, match = "invalid YAML"):
+        rewards.parse_reward_markdown(raw)
+    response = client.post("/api/rewards", json = {"markdown": raw})
+    assert response.status_code == 400, response.text
+
+
+def test_a_currency_sign_does_not_cost_a_correct_answer(user_root):
+    specs = {r["name"]: r for r in rewards.list_rewards()}
+    numeric, exact = specs["numeric-close"]["rule"], specs["exact-answer"]["rule"]
+    gsm8k = "Each costs $9, so 2 cost $18.\n#### 18"
+    assert rewards.score_rule(numeric, "<answer>$18</answer>", gsm8k) == 3.0
+    assert rewards.score_rule(exact, "<answer>$18</answer>", gsm8k) == 2.0
+    # A wrong number with a thousands separator still scores below the right one.
+    assert rewards.score_rule(numeric, "<answer>1,800</answer>", gsm8k) == -1.0
+    assert rewards.score_rule(numeric, "<answer>18</answer>", "$1,800") == -1.0
+    assert rewards.score_rule(numeric, "<answer>€1,800</answer>", "1800") == 3.0
+
+
+def test_export_names_the_reward_as_the_library_lists_it(client, user_root):
+    response = client.get("/api/rewards/Exact-Answer/export")
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "exact-answer"
+
+
+def test_a_merge_key_of_an_inline_mapping_parses():
+    spec = rewards.parse_reward_markdown(
+        _md("merged", "type: length\nmax_chars: 9\nscore: {<<: {over: -1}, under: 1}")
+    )
+    assert spec["rule"]["score"] == {"over": -1.0, "under": 1.0}

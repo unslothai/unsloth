@@ -7,6 +7,6 @@ type: exact_match
 extract: {between: ['<answer>', '</answer>']}
 compare_to: answer
 reference_extract: {regex: '####\s*(.+?)\s*$'}
-normalize: [strip, remove_commas, lower]
+normalize: [strip, remove_commas, remove_currency, lower]
 score: {match: 2.0, miss: 0.0}
 missing: 0.0

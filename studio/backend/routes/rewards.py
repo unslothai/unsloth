@@ -17,6 +17,7 @@ from core.training.rewards import (
     get_reward,
     import_reward,
     list_rewards,
+    normalize_reward_name,
     parse_reward_markdown,
     preview_scores,
 )
@@ -126,7 +127,7 @@ def export_reward_route(
     name: str, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
     try:
-        return {"name": name, "markdown": export_reward(name)}
+        return {"name": normalize_reward_name(name), "markdown": export_reward(name)}
     except RewardError as exc:
         raise _http_error(exc) from exc
 

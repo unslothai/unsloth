@@ -38,7 +38,9 @@ MAX_PATTERN_CHARS = 2_000
 # regex compiles {n} repeats by unrolling them, nested counts multiplying.
 MAX_PATTERN_EXPANSION = 10_000
 RULE_TYPES = ("regex", "exact_match", "numeric", "json_schema", "length")
-NORMALIZERS = ("strip", "lower", "remove_commas", "collapse_spaces")
+NORMALIZERS = ("strip", "lower", "remove_commas", "remove_currency", "collapse_spaces")
+# GSM8K-style answers often carry a unit sign ("$18"); it must not decide the score.
+_CURRENCY_RE = re.compile(r"[$\u00a2-\u00a5\u20a0-\u20bf]")
 
 _BUNDLED_ROOT = Path(__file__).with_name("bundled_rewards")
 _MANAGED_DIR = "rewards"
@@ -90,7 +92,7 @@ def _split_markdown(raw: str) -> tuple[dict, dict]:
         if isinstance(meta, dict) and meta.get("kind") == "python":
             raise RewardError("Python rewards are not supported yet; only rule rewards can run.")
         rule = yaml.load(body.lstrip("-\n"), Loader = _NoAliasLoader) or {}
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, RecursionError) as exc:  # deep [[[ nesting overflows the composer
         raise RewardError("REWARD.md contains invalid YAML.") from exc
     if not isinstance(meta, dict) or not isinstance(rule, dict):
         raise RewardError("REWARD.md frontmatter and body must both be mappings.")
@@ -98,11 +100,12 @@ def _split_markdown(raw: str) -> tuple[dict, dict]:
 
 
 class _NoAliasLoader(yaml.SafeLoader):
-    """Aliases (and the merge keys built on them) let a few hundred bytes expand without bound."""
+    """Aliases let a few hundred bytes expand without bound. A merge key (<<) of an inline mapping
+    still parses; one that merges an alias is refused with the alias."""
 
     def compose_node(self, parent, index):
         if self.check_event(yaml.events.AliasEvent):
-            raise RewardError("REWARD.md cannot use YAML aliases (*name) or merge keys.")
+            raise RewardError("REWARD.md cannot use YAML aliases (*name), including merge keys built on them.")
         return super().compose_node(parent, index)
 
 
@@ -487,6 +490,8 @@ def _normalize(value: str, norms: list[str]) -> str:
             value = value.lower()
         elif norm == "remove_commas":
             value = value.replace(",", "")
+        elif norm == "remove_currency":
+            value = _CURRENCY_RE.sub("", value)
         elif norm == "collapse_spaces":
             value = " ".join(value.split())
     return value
@@ -494,24 +499,22 @@ def _normalize(value: str, norms: list[str]) -> str:
 
 def _to_float(value: Any) -> Optional[float]:
     try:
-        number = float(str(value).replace(",", "").strip())
+        number = float(_CURRENCY_RE.sub("", str(value).replace(",", "")).strip())
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
-
-
-def _reject_constant(name: str):
-    # NaN / Infinity are not JSON (RFC 8259 section 6); json.loads accepts them by default.
-    raise ValueError(f"{name} is not valid JSON")
 
 
 _JSON_TYPES = {"object": dict, "array": list, "string": str, "number": (int, float)}
 
 
 def _json_matches(text: str, schema: dict) -> bool:
+    from core.inference.relaxed_json import _reject_constant
+
     # No \s* before the body: with .*? it backtracks quadratically on an unclosed fence.
     fenced = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
     try:
+        # NaN / Infinity are not JSON (RFC 8259 section 6); json.loads accepts them by default.
         value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
     except (ValueError, TypeError, RecursionError):
         return False
