@@ -37,6 +37,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { usePinnedChatsSync } from "@/features/chat/hooks/use-pinned-chats-sync";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
+import { OnboardingMount } from "@/features/onboarding";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom";
 import {
@@ -718,6 +719,7 @@ function RootLayout() {
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
+      {!isAuthFlowRoute && <OnboardingMount />}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       {hfTokenWarningDialog}
       {remoteCodeConsentDialog}

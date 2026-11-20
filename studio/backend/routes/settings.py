@@ -73,6 +73,11 @@ from utils.device_sync_settings import (
     save_background_image,
     update_client_preferences,
 )
+from utils.onboarding_settings import (
+    account_has_chat_history,
+    get_onboarding,
+    update_onboarding,
+)
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
@@ -5534,6 +5539,47 @@ def update_client_preferences_settings(
 ) -> ClientPreferencesResponse:
     changes = payload.model_dump(exclude_none = True)
     return _client_preferences_response(update_client_preferences(changes))
+
+
+_OnboardingPageId = Annotated[str, Field(pattern = r"^[a-z0-9-]{1,40}$")]
+
+
+class OnboardingPayload(BaseModel):
+    pages: list[_OnboardingPageId] = Field(default_factory = list, max_length = 32)
+    completed: bool = False
+
+
+class OnboardingResponse(BaseModel):
+    saved: bool = False
+    pages: list[str] = Field(default_factory = list)
+    completedAt: Optional[int] = None
+    hasChatHistory: bool = False
+
+
+def _onboarding_response(stored: dict, *, history: bool = False) -> OnboardingResponse:
+    pages = stored.get("pages")
+    completed_at = stored.get("completedAt")
+    return OnboardingResponse(
+        saved = bool(stored),
+        pages = [p for p in pages if isinstance(p, str)] if isinstance(pages, list) else [],
+        completedAt = completed_at if isinstance(completed_at, int) else None,
+        hasChatHistory = history,
+    )
+
+
+@_account_settings_router.get("/onboarding", response_model = OnboardingResponse)
+def get_onboarding_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> OnboardingResponse:
+    stored = get_onboarding()
+    return _onboarding_response(stored, history = not stored and account_has_chat_history())
+
+
+@_account_settings_router.put("/onboarding", response_model = OnboardingResponse)
+def update_onboarding_settings(
+    payload: OnboardingPayload, current_subject: str = Depends(get_current_subject)
+) -> OnboardingResponse:
+    return _onboarding_response(update_onboarding(payload.pages, payload.completed))
 
 
 class ChatBackgroundImageMeta(BaseModel):

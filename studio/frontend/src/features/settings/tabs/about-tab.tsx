@@ -5,6 +5,7 @@ import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
+import { openOnboarding } from "@/features/onboarding/store";
 import { removeTrainingUnloadGuard } from "@/features/training";
 import { hardwareGpuMemoryGb } from "@/hooks/gpu-vram";
 import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
@@ -14,6 +15,7 @@ import {
   ArrowUpRight01Icon,
   Book03Icon,
   Cancel01Icon,
+  Compass01Icon,
   MessageNotification01Icon,
   NewReleasesIcon,
 } from "@hugeicons/core-free-icons";
@@ -219,6 +221,22 @@ export function AboutTab() {
       ) : null}
 
       <SettingsSection title={t("settings.about.help")}>
+        <SettingsRow
+          label={t("onboarding.settingsLabel")}
+          description={t("onboarding.settingsDescription")}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              useSettingsDialogStore.getState().closeDialog();
+              openOnboarding();
+            }}
+            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <HugeiconsIcon icon={Compass01Icon} className="size-3.5" />
+            {t("onboarding.settingsOpen")}
+          </button>
+        </SettingsRow>
         <SettingsRow label={t("settings.about.documentation")}>
           <a
             href="https://unsloth.ai/docs"
