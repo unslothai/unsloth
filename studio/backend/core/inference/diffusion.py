@@ -16433,6 +16433,8 @@ class DiffusionBackend:
                             cuda_graph.set_bypass(
                                 state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
                             )
+                            # Real-step graph warm-ups only where this render has the steps to finish them.
+                            cuda_graph.note_render_steps(state.cuda_graphs, denoise_steps)
                         if static_skip:
                             # Auto skip was measured on txt2img only; explicit "static" applies to every workflow.
                             auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(
