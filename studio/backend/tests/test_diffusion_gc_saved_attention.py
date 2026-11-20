@@ -7,6 +7,8 @@ the env switch turns it off and an out-of-memory fall back drops the kept output
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -78,25 +80,33 @@ def _run(checkpoint, tokens = 1024):
 
 
 def _supported():
-    return gb.save_attention_context_fn() is not None
+    import torch.utils.checkpoint as ck
+    ignores = getattr(
+        getattr(ck, "_CachingTorchDispatchMode", None), "ignore_compile_internals", None
+    )
+    return callable(ignores) and bool(ignores())
 
 
 def test_budget_checkpoint_reuses_long_attention_outputs(monkeypatch):
-    monkeypatch.delenv(gb.SAVE_ATTENTION_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GC_SAVE_ATTENTION", raising = False)
     if not _supported():
         pytest.skip("this torch has no compile-safe selective checkpointing")
     budget = gb.BudgetedCheckpoint()
     budget.probing = False  # planned, nothing kept: every block checkpointed
     budget.planned = True
     reruns, grads = _run(budget)
+    plain_reruns, plain_grads = _run(
+        lambda fn, *a, **k: torch.utils.checkpoint.checkpoint(
+            functools.partial(fn, **k), *a, use_reentrant = False
+        )
+    )
+    assert plain_reruns == 2
     # Only the 8-key cross-attention reruns in the backward; the 1024-key self-attention comes from the first pass.
     assert reruns == 1
+    assert all(torch.equal(a, b) for a, b in zip(grads, plain_grads))
     assert budget.base.saved_attention == 1
     # Output [1, 2, 1024, 8] fp32 plus an fp32 logsumexp per query row.
     assert budget.base.saved_attention_bytes == 1 * 2 * 1024 * 8 * 4 + 1 * 2 * 1024 * 4
-    plain_reruns, plain_grads = _run(gb._Checkpoint())
-    assert plain_reruns == 2
-    assert all(torch.equal(a, b) for a, b in zip(grads, plain_grads))
     assert budget.can_retry
 
 
