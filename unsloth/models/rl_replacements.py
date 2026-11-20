@@ -1942,6 +1942,21 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
             module.training = training
 
 
+def _unsloth_grpo_enable_packed_varlen(self, unwrapped):
+    """Packed GRPO forwards on the transformers modeling path (FastModel, e.g. Qwen3-MoE) otherwise run SDPA
+    over a dense [T, T] block mask. Qwen3-30B-A3B 4-bit, 8 rows of 641 tokens on an A100: no-grad 0.55 s packed
+    vs 0.29 s padded, fwd+bwd 2.59 s vs 1.32 s. The varlen wrapper SFT packing installs runs each document on
+    its own (0.29 s and 1.13 s); calls without packed_seq_lengths are passed through unchanged."""
+    if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() in ("0", "false", "no", "off"):
+        return
+    try:
+        from unsloth.utils.packing import _enable_hf_packed_attention
+        _enable_hf_packed_attention(unwrapped, self)
+    except Exception as e:
+        if UNSLOTH_ENABLE_LOGGING:
+            print(f"Unsloth: GRPO packed varlen attention not enabled: {e!r}", flush = True)
+
+
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
     """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
     recurrences mix packed rows (packing_boundary_blocker), or whose attention lets packed documents see each other
@@ -1961,6 +1976,7 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
     if blocker is None and _unsloth_grpo_packing_leaks(self, unwrapped) is True:
         blocker = "packing_leak_probe"
     if blocker is None:
+        _unsloth_grpo_enable_packed_varlen(self, unwrapped)
         return
     unwrapped._unsloth_seq_packing_nograd_ok = False
     unwrapped._unsloth_seq_packing_grad_ok = False
@@ -5822,6 +5838,7 @@ grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_packing_leaks))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_enable_packed_varlen))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_rank_local_forwards))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))

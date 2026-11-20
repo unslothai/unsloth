@@ -303,3 +303,67 @@ def test_tiny_qwen3_moe_leak_fails_and_routing_flips_pass():
     flipped = torch.cat([flipped, ref[2:]])
     assert float((flipped - ref).abs().max()) >= 0.7
     assert noise(model, flipped, ref, cm) is True
+
+
+# Packed forwards on the transformers path get the varlen attention wrapper SFT packing installs.
+
+
+def _boundary_namespace(
+    monkeypatch,
+    calls,
+    blocker = None,
+):
+    import ast
+    import os
+    import types
+
+    tree = ast.parse(harness._SOURCE.read_text(encoding = "utf-8"))
+    names = ("_unsloth_grpo_refuse_boundary_blind_packing", "_unsloth_grpo_enable_packed_varlen")
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    ns = {"os": os, "torch": torch, "UNSLOTH_ENABLE_LOGGING": False}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), str(harness._SOURCE), "exec"), ns)
+    ns["_unsloth_grpo_packing_leaks"] = lambda self, unwrapped: False
+    packing = types.ModuleType("unsloth.utils.packing")
+    packing.packing_boundary_blocker = lambda model, model_types: blocker
+    packing._enable_hf_packed_attention = lambda model = None, trainer = None: calls.append(
+        (model, trainer)
+    )
+    for name in ("unsloth", "unsloth.utils"):
+        if name not in sys.modules:
+            stub = types.ModuleType(name)
+            stub.__path__ = []
+            monkeypatch.setitem(sys.modules, name, stub)
+    monkeypatch.setitem(sys.modules, "unsloth.utils.packing", packing)
+    return ns["_unsloth_grpo_refuse_boundary_blind_packing"]
+
+
+def _grpo_trainer():
+    return SimpleNamespace(
+        accelerator = SimpleNamespace(unwrap_model = lambda m, keep_fp32_wrapper = False: m)
+    )
+
+
+@pytest.mark.parametrize("env", [None, "0"], ids = ["packing-on", "packing-off"])
+def test_packing_enables_hf_varlen_attention_once(monkeypatch, env):
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_GRPO_SEQ_PACKING", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_GRPO_SEQ_PACKING", env)
+    calls = []
+    refuse = _boundary_namespace(monkeypatch, calls)
+    model = torch.nn.Linear(2, 2)
+    model.config = SimpleNamespace(model_type = "qwen3_moe")
+    trainer = _grpo_trainer()
+    refuse(trainer, model)
+    refuse(trainer, model)
+    assert calls == ([(model, trainer)] if env is None else [])
+
+
+def test_blocked_packing_does_not_enable_varlen_attention(monkeypatch):
+    calls = []
+    refuse = _boundary_namespace(monkeypatch, calls, blocker = "RecurrentGemmaRglru")
+    model = torch.nn.Linear(2, 2)
+    model.config = SimpleNamespace(model_type = "recurrent_gemma")
+    refuse(_grpo_trainer(), model)
+    assert calls == []
+    assert model._unsloth_seq_packing_nograd_ok is False
