@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import collections
+import contextvars
 import hashlib
 import http.client
 import io
@@ -296,6 +297,26 @@ _MIN_GPU_LAYERS = 4
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
 _CACHE_ENTRIES = 128
+
+# "1": a generate's upsampler may start with only part of the model on the GPU (the old behaviour). By default a
+# generate skips the upsampler (prompt as typed, status "unavailable") when the image model leaves too little free
+# memory for the whole GGUF: the CPU layers decode so slowly that one caption took minutes (Qwen3.5-9B thinking for
+# MiniMax-H3-Image ran into the 600 s request timeout on an 8-16 GB card) for a ~7 s render.
+ENV_ALLOW_PARTIAL_OFFLOAD = "UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD"
+# Set by enhance_for_generation: the start (or reuse) has to hold every layer on the accelerator.
+_GENERATE_NEEDS_FULL_OFFLOAD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "flux3_prompt_upsampler_generate_needs_full_offload", default = False
+)
+
+
+def _partial_offload_allowed() -> bool:
+    return (os.environ.get(ENV_ALLOW_PARTIAL_OFFLOAD) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
 
 STATUS_APPLIED = "applied"
 STATUS_OFF = "off"
@@ -1281,6 +1302,8 @@ class PromptUpsamplerSidecar:
         self._api_key: Optional[str] = None
         self._key: Optional[tuple] = None
         self._gpu_layers: Optional[int] = None
+        # The running server sits partly (or wholly) on the CPU although an accelerator holds the image model.
+        self._split_on_accelerator = False
         self._penalize_prompt_supported = False
         self._loading = False
         self._starting_process: Optional[subprocess.Popen] = None
@@ -1353,6 +1376,7 @@ class PromptUpsamplerSidecar:
             self._api_key = None
             self._key = None
             self._gpu_layers = None
+            self._split_on_accelerator = False
             self._penalize_prompt_supported = False
             self._context_tokens = None
 
@@ -1498,6 +1522,13 @@ class PromptUpsamplerSidecar:
             cpu_only,
             overhead_mib = _overhead_mib(context_tokens),
         )
+        split = not cpu_only and device == "cuda" and free_mib is not None and layers != 99
+        if split and _GENERATE_NEEDS_FULL_OFFLOAD.get() and not _partial_offload_allowed():
+            raise UpsamplerUnavailableError(
+                f"{Path(model).name} does not fit in the {free_mib} MiB the image model leaves free on the GPU "
+                f"(-ngl {layers} of {_NUM_LAYERS}); a partly CPU caption takes minutes, so this render skips it. "
+                f"{ENV_ALLOW_PARTIAL_OFFLOAD}=1 runs it anyway"
+            )
         sock, port = MtmdSttSidecar._reserve_free_port()
         cmd = [
             binary,
@@ -1592,6 +1623,7 @@ class PromptUpsamplerSidecar:
                 self._penalize_prompt_supported = penalize_prompt_supported
                 self._key = (binary, model, mmproj)
                 self._gpu_layers = layers
+                self._split_on_accelerator = split
                 self._gpu_ordinal = ordinal
                 self._context_tokens = context_tokens
                 self._generation += 1
@@ -1636,6 +1668,17 @@ class PromptUpsamplerSidecar:
                 # Claimed under the same lock: an idle callback already waiting on it then sees the request.
                 self._active_requests += 1
             try:
+                if (
+                    self.loaded
+                    and self._split_on_accelerator
+                    and _GENERATE_NEEDS_FULL_OFFLOAD.get()
+                    and not _partial_offload_allowed()
+                ):
+                    # Started split by a preview or an opt-in: as slow for this render as a fresh split start.
+                    raise UpsamplerUnavailableError(
+                        f"the running server holds only -ngl {self._gpu_layers} of {_NUM_LAYERS} layers on the GPU; "
+                        f"{ENV_ALLOW_PARTIAL_OFFLOAD}=1 uses it anyway"
+                    )
                 if not self.loaded:
                     if not _image_model_owns_gpu():
                         # Chat or video took the GPU after this request read the FLUX.3 status: starting now would
@@ -2291,6 +2334,7 @@ def enhance_for_generation(
     bind_generation_cancel(cancel_event)
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
+    full_offload = _GENERATE_NEEDS_FULL_OFFLOAD.set(True)
     # On every exit, a Stop included: a retry with enhancement off must not denoise beside a tight server.
     try:
         with _tracking(len(distinct), cancel_event) as tracked:
@@ -2343,6 +2387,7 @@ def enhance_for_generation(
                     break
                 _advance(tracked)
     finally:
+        _GENERATE_NEEDS_FULL_OFFLOAD.reset(full_offload)
         with suppress(Exception):
             sidecar.release_if_tight()
     if outcome.statuses and not outcome.captions:
