@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FastFlowLM run settings an NPU load passes to Lemonade as its ``flm_args`` recipe option.
-
-Bounds mirror lemonade's flm_arg_resolver.cpp at the pinned v2026.44.1, which refuses anything else.
-"""
+"""FastFlowLM run settings passed to Lemonade as the flm_args recipe option; bounds mirror
+flm_arg_resolver.cpp at pinned v2026.44.1, which refuses anything else."""
 
 from __future__ import annotations
 

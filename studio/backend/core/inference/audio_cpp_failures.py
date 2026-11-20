@@ -219,9 +219,7 @@ def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
 
 
 def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
-    """Resident GPU memory for an audio.cpp package: weights plus graph and cache buffers.
-    A measured family uses its own profile; a package past the sizes measured for it gets the
-    larger of that profile and the generic one."""
+    """Resident GPU memory; a package past its measured sizes gets the larger of its profile and generic."""
     weights_gb = size_bytes / (1024**3)
     backend = _runtime_backend()
 

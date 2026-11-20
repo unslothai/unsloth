@@ -218,8 +218,7 @@ _CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _CLAUDE_COMPACT_BUFFER = 3_000
 # claude 2.1 ignores a smaller CLAUDE_CODE_AUTO_COMPACT_WINDOW and warns about it on every launch.
 _CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000
-# Headroom for the agent's token estimate running low: 10% of the window, so a 1M window keeps
-# ~33k free (96%, near Claude Code's own ~967K) instead of 100k.
+# Headroom in case the agent's token estimate runs low: 10% of the window, capped at 32_768.
 _CLAUDE_COMPACT_HEADROOM_MAX = 32_768
 
 

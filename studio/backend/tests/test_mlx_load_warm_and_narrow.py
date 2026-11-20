@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import mlx_inference, orchestrator
+from core.inference import mlx_inference, orchestrator, worker
 from core.inference.mlx_inference import MLXInferenceBackend
 from core.inference.runtime_context import runtime_context_length
 
@@ -100,6 +100,8 @@ def _narrowing(**entry):
         _kv_context_budget = None,
         _resume_files = (("w.safetensors", 1, 1),),
         _resume_weight_files = lambda: (("w.safetensors", 1, 1),),
+        _memory_limits_applied = {},
+        _prompt_cache_mib = 512,
         cleared = 0,
     )
     backend._clear_prompt_cache = lambda: setattr(backend, "cleared", backend.cleared + 1)
@@ -146,6 +148,29 @@ def test_a_load_a_fresh_one_could_plan_differently_is_not_narrowed(size, entry, 
     assert backend._served_context == backend._model.max_seq_length == 8192 and backend.cleared == 0
 
 
+@pytest.mark.parametrize("cache, taken", [(256, True), (0, True), (1024, False), (None, False)])
+def test_budgets_batch_and_a_smaller_prompt_cache_are_applied_to_the_held_model(cache, taken):
+    backend = _narrowing()
+    backend._vision_batch_is_available = lambda: backend._reasoning_budget < 0
+    fields = backend.retune(None, 64, "Done.", 1024, cache)
+    if not taken:  # a larger cache takes memory the load gave its context
+        assert fields is None and "_reasoning_budget" not in vars(backend) and backend.cleared == 0
+        return
+    assert list(fields.values()) == [64, "Done.", 1024, cache, False]
+    assert backend.models["org/m"]["cache_ram"] == backend._prompt_cache_mib == cache
+    assert backend._served_context == 8192 and backend.cleared == 1
+    assert backend.retune(4096, prompt_cache_mib = cache)["context_length"] == 4096
+    backend._resume_files = (("w.safetensors", 9, 9),)  # replaced on disk since the load
+    assert backend.retune(None, 32, "", None, cache) is None
+
+
+def test_the_worker_reports_whether_the_retuned_model_still_batches():
+    held = SimpleNamespace(retune = lambda *_, **__: {}, resident_unavailable_reason = len)
+    sent = []
+    worker._handle_retune(held, {}, SimpleNamespace(put = sent.append))
+    assert sent[0]["fields"] == {"can_batch": False}
+
+
 def _held(fields = {"context_length": 4096}, **settings):
     proc, sent = SimpleNamespace(is_alive = lambda: True), []
     config = dict(
@@ -181,10 +206,22 @@ def _held(fields = {"context_length": 4096}, **settings):
 
 def test_the_held_worker_takes_a_smaller_context_and_the_parent_mirrors_it():
     backend, config, sent = _held()
-    assert backend._narrow_context_in_place(config, "org/m", 1) is True
-    assert sent == ["idle", {"type": "narrow_context", "max_seq_length": 4096}]
+    assert backend._retune_in_place(config, "org/m", 1) is True
+    retunable = dict.fromkeys(orchestrator._RETUNABLE.values())
+    assert sent == ["idle", {"type": "retune", "max_seq_length": 4096, **retunable}]
     assert backend.models["org/m"]["context_length"] == 4096 and backend.load_generation == 1
     assert backend._worker_reserved_for is None and not backend._gen_lock.locked()
+
+
+def test_the_held_worker_takes_a_retunable_setting_at_the_context_it_serves():
+    backend, config, sent = _held(fields = {"reasoning_budget": 64}, max_seq_length = 8192)
+    backend.models["org/m"]["requested_context_length"] = 8192
+    config.update(reasoning_budget = 64, mlx_prompt_cache_mib = 0)
+    assert backend._retune_in_place(config, "org/m", 1) is True
+    assert sent[-1]["max_seq_length"] is None and sent[-1]["prompt_cache_mib"] == 0
+    assert backend._worker_load_settings[1] == orchestrator._load_settings(config)
+    config.update(max_seq_length = 16384, reasoning_budget = 32)  # a wider context loads fresh
+    assert backend._retune_in_place(config, "org/m", 1) is False
 
 
 @pytest.mark.parametrize("outcome", ["declined", "event", "withdrawn"])
@@ -198,7 +235,7 @@ def test_a_load_declined_or_cancelled_meanwhile_is_not_published(outcome):
         return answer(kind, timeout)
 
     backend._wait_response = answered
-    assert backend._narrow_context_in_place(config, "org/m", 1, event) is False
+    assert backend._retune_in_place(config, "org/m", 1, event) is False
     assert backend.models["org/m"]["context_length"] == 8192 and backend.load_generation == 0
 
 
@@ -216,11 +253,11 @@ def test_a_load_declined_or_cancelled_meanwhile_is_not_published(outcome):
 def test_any_other_change_spawns_fresh(change):
     backend, config, sent = _held()
     change(backend, config)
-    assert backend._narrow_context_in_place(config, "org/m", 1) is False
+    assert backend._retune_in_place(config, "org/m", 1) is False
     assert not [cmd for cmd in sent if cmd != "idle"]
 
 
 @pytest.mark.parametrize("settings", [{"device_backend": "cuda"}, {"mlx_distributed": True}])
 def test_only_a_single_mlx_worker_narrows(settings):
     backend, config, sent = _held(**settings)
-    assert backend._narrow_context_in_place(config, "org/m", 1) is False and sent == []
+    assert backend._retune_in_place(config, "org/m", 1) is False and sent == []

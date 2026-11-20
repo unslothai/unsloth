@@ -243,8 +243,7 @@ def _still_running(result: Any) -> bool:
 
 
 def _watch_turn(cancel_event: Any, ticket: GenerationTicket) -> None:
-    """Stops a video still rendering after its call when the chat is stopped: only a Stop or an aborted
-    turn sets this per-request event."""
+    """Stops a still-rendering video when chat stops; only a Stop or aborted turn sets it."""
     if not callable(getattr(cancel_event, "wait", None)):
         return
 

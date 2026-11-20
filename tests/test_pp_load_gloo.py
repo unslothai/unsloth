@@ -201,8 +201,7 @@ def _case_load(
     placeholders = _placeholders(model)
     model = _peft(model, **peft)
     peft_bytes = _storage_bytes(model)
-    # Weight-reading inits (PiSSA, OLoRA, MiCA, ...) leave every placeholder storage-free: same tensors, still
-    # zero-stride, none replaced.
+    # Weight-reading inits (PiSSA, OLoRA, MiCA, ...) leave placeholders storage-free and unreplaced.
     after = _placeholders(model)
     placeholders_kept = (
         len(placeholders) > 0

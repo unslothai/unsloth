@@ -236,3 +236,49 @@ test("browser_tabs lists files by name and web pages by site, and switches by nu
   assert.equal(switched.ok, true);
   assert.equal(switched.file, "links.html");
 });
+
+test("a workspace file the server sends opens as a file tab, its preview is read, and a reopen shows the new bytes", async () => {
+  endBrowserAgentRun(RUN);
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000 } };
+    return { installed: true, result: { ok: true, text: "canvas 320x200", links: [] } };
+  };
+  const b64 = (text: string) => Buffer.from(text).toString("base64");
+  const fields = { name: "draw.html", path: "out/draw.html", contentType: "text/html" };
+  const opened = await act("open_file", { ...fields, data: b64("<canvas></canvas>") });
+  assert.equal(opened.ok, true, opened.error);
+  assert.equal(opened.file, "draw.html");
+  assert.equal(opened.text, "canvas 320x200");
+  assert.match(opened.note ?? "", /Opened out\/draw\.html from the workspace/);
+  assert.equal(await shownText(), "<canvas></canvas>");
+
+  const tabs = useBrowserStore.getState().tabs.length;
+  const again = await act("open_file", { ...fields, data: b64("<canvas id=x></canvas>") });
+  assert.equal(again.ok, true, again.error);
+  assert.equal(useBrowserStore.getState().tabs.length, tabs);
+  assert.equal(await shownText(), "<canvas id=x></canvas>");
+
+  // Same length, other bytes: the reopen must not read the old file.
+  const same = await act("open_file", { ...fields, data: b64("<canvas id=y></canvas>") });
+  assert.equal(same.ok, true, same.error);
+  assert.equal(await shownText(), "<canvas id=y></canvas>");
+
+  const broken = await act("open_file", { ...fields, data: "%%%" });
+  assert.equal(broken.ok, false);
+});
+
+test("a workspace file for a chat that is off screen is refused before any tab opens", async () => {
+  endBrowserAgentRun(RUN);
+  globals.__native = true;
+  globals.__panel = false;
+  try {
+    const tabs = useBrowserStore.getState().tabs.length;
+    const result = await act("open_file", { name: "x.html", path: "x.html", contentType: "text/html", data: Buffer.from("<p>x</p>").toString("base64") });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /only runs while the chat is open here/);
+    assert.equal(useBrowserStore.getState().tabs.length, tabs);
+  } finally {
+    globals.__native = undefined;
+    globals.__panel = undefined;
+  }
+});

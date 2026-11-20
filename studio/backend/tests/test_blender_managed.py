@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import json
+import os
+import shutil
 import sqlite3
+import types
 from unittest.mock import AsyncMock
 
 import pytest
@@ -161,3 +164,117 @@ def test_long_blender_names_dispatch_with_approval(monkeypatch):
     call.reset_mock()
     assert "disabled" in tools.execute_tool(specs[0]["function"]["name"], {})
     call.assert_not_called()
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "path discovery needs POSIX ownership")
+@pytest.mark.asyncio
+async def test_a_connected_blender_off_path_has_its_executable_kept(monkeypatch, tmp_path):
+    """An unpacked Linux tarball is not on PATH: CLI tools failed with "Blender executable not found"."""
+    monkeypatch.setattr(service, "ensure_runtime", lambda: None)
+    monkeypatch.setattr(
+        service, "list_tools_async", AsyncMock(return_value = [{"name": "execute_blender_code"}])
+    )
+    executable = tmp_path / "blender-5.3.0-linux-x64" / "blender"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    executable = str(executable)
+    monkeypatch.setattr(service, "_bridge_version", AsyncMock(return_value = executable))
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
+    from integrations import installed
+
+    monkeypatch.setattr(installed, "_connected", set())
+    await routes.setup_blender(BlenderSetup(is_enabled = False, consent = True))
+    result = await routes.test_blender(BlenderTest())
+    assert result.blender_ready and result.blender_path == executable
+    row = db.list_servers()[0]
+    assert service.settings_for(row).blender_path == executable
+    assert json.loads(service.resolve_server(row)["headers_json"])["BLENDER_PATH"] == executable
+    assert installed.is_installed("blender") is True
+    again = await routes.test_blender(BlenderTest(blender_path = executable))
+    assert again.blender_path is None  # configured now: nothing to report
+    monkeypatch.setattr(service.shutil, "which", lambda name: "/usr/bin/blender")
+    assert (
+        await service.probe(service.BlenderSettings())
+    ).blender_path is None  # on PATH: "blender" works
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+@pytest.mark.parametrize(
+    "case",
+    ["world_writable", "not_blender", "missing", "relative", "link_to_other", "writable_parent"],
+)
+def test_a_reported_executable_that_could_be_planted_is_not_kept(tmp_path, case):
+    folder = tmp_path / "dir"
+    folder.mkdir()
+    path = folder / ("tool" if case == "not_blender" else "blender")
+    if case == "link_to_other":
+        path.symlink_to(shutil.which("true") or "/bin/true")  # root-owned target, swappable link
+    elif case != "missing":
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o777 if case == "world_writable" else 0o755)
+    if case == "writable_parent":
+        folder.chmod(0o777)
+    reported = "blender" if case == "relative" else str(path)
+    assert service._own_blender(reported) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+def test_a_kept_executable_is_its_canonical_path(tmp_path):
+    real = tmp_path / "blender-5.3.0-linux-x64" / "blender"
+    real.parent.mkdir()
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    link = tmp_path / "blender"
+    link.symlink_to(real)
+    assert service._own_blender(str(real)) == os.path.realpath(real)
+    assert service._own_blender(str(link)) == os.path.realpath(real)
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+@pytest.mark.parametrize("private", [True, False])
+def test_group_write_is_trusted_only_for_a_private_group(monkeypatch, tmp_path, private):
+    real = tmp_path / "blender"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o775)  # umask 002
+    monkeypatch.setattr(service, "_private_group", lambda gid: private)
+    assert (service._own_blender(str(real)) is not None) is private
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX groups")
+def test_a_shared_primary_group_is_not_private(monkeypatch):
+    import grp, pwd  # noqa: E401
+
+    me = pwd.getpwuid(os.getuid())
+    service._private_group.cache_clear()
+    monkeypatch.setattr(grp, "getgrgid", lambda gid: types.SimpleNamespace(gr_mem = []))
+    monkeypatch.setattr(pwd, "getpwall", lambda: [me, types.SimpleNamespace(pw_gid = 20, pw_uid = 501)])
+    try:
+        assert service._private_group(20) is False  # another user's primary group too (macOS staff)
+        assert service._private_group(999999) is True
+    finally:
+        service._private_group.cache_clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX file ownership")
+async def test_probe_does_not_report_a_planted_executable(monkeypatch, tmp_path):
+    planted = tmp_path / "blender"
+    planted.write_text("#!/bin/sh\n")
+    planted.chmod(0o777)
+    monkeypatch.setattr(service, "ensure_runtime", lambda: None)
+    monkeypatch.setattr(
+        service, "list_tools_async", AsyncMock(return_value = [{"name": "execute_blender_code"}])
+    )
+    monkeypatch.setattr(service, "_bridge_version", AsyncMock(return_value = str(planted)))
+    monkeypatch.setattr(service.shutil, "which", lambda name: None)
+    result = await service.probe(service.BlenderSettings())
+    assert result.blender_ready and result.blender_path is None
+
+
+def test_no_reported_path_is_adopted_without_posix_ownership(monkeypatch, tmp_path):
+    real = tmp_path / "blender.exe"
+    real.write_text("")
+    real.chmod(0o755)
+    monkeypatch.delattr(service.os, "getuid", raising = False)
+    assert service._own_blender(str(real)) is None

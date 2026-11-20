@@ -69,8 +69,7 @@ def transformers_accepts_strict_kernels(transformers_version: Optional[str]) -> 
 def kernels_install_spec(
     transformers_version: Optional[str] = None, hub_version: Optional[str] = None
 ) -> str:
-    """Pip requirement for the ``--no-deps`` install. Exact below 5.13: 0.14.x needs ``kernels-data``, which
-    ``--no-deps`` leaves out."""
+    """Pip spec for --no-deps; exact below 5.13, as 0.14.x needs kernels-data that --no-deps skips."""
     hub = _release(hub_version)
     if not transformers_accepts_strict_kernels(transformers_version) or (
         hub is not None and hub[:2] < _KERNELS_HUB_FLOOR
@@ -80,8 +79,7 @@ def kernels_install_spec(
 
 
 def _sidecar_transformers_versions() -> list[str]:
-    """transformers in Studio's sidecars (.venv_t5_*, .venv_t4_*, ...): installed --no-deps over this env, so they
-    import its kernels too."""
+    """Studio sidecar transformers installed --no-deps over this env, so they import its kernels too."""
     try:
         from utils.paths.storage_roots import studio_root
         dirs = [d for d in studio_root().glob(".venv_*") if d.is_dir()]

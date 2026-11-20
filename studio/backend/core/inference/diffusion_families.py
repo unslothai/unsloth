@@ -480,6 +480,7 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
 MINIMAX_H3_IMAGE_FAMILY_NAME = "minimax-h3-image"
 ANIMA_FAMILY_NAME = "anima"
+ANIMA_TURBO_KEY = "anima-turbo"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
 _MOSS_IMAGE_CONVROT_SUFFIXES = (
@@ -1502,6 +1503,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             quant_names = ("moss-image-base",),
             # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
+            # fp8 trails int8 at inference, so it is no training base.
+            train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
@@ -1548,6 +1551,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
         sd_cpp_scheduler = "simple",
+        trainable = True,
+        train_base_repos = ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"),
     ),
     # MiniMax-H3-Image: 33B H3 DiT without audio plus per-step PDD heads, conditioned by Qwen3-VL-32B. diffusers has
     # no class yet, so diffusion_minimax_h3_image loads, converts, quantizes and places it itself.
@@ -2364,6 +2369,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image", 25, 3.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
     ("lumina", 50, 4.0),
+    # HunyuanImage 2.1 distilled: 8 steps, guidance 3.25 (tencent/HunyuanImage-2.1 README).
+    ("hunyuanimage-2.1-distilled", 8, 3.25),
+    ("hunyuanimage2.1-distilled", 8, 3.25),
     # Listed though older than the 0.35 baseline: an unconstrained diffusers install can satisfy the pin, and a later floor is the wrong remedy
     ("hunyuanimage", 50, 3.25),
     # HiDream-I1 upstream: Full 50 steps / guidance 5; the distilled Dev (28) and Fast (16) run guidance-free.
@@ -2385,8 +2393,14 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
+    # Anima-Turbo card: CFG 1, 8-12 steps. Must precede the base repo key.
+    (ANIMA_TURBO_KEY, 10, 1.0),
     # Keyed by base repo: a bare "anima" would match Animagine XL (SDXL) files first.
     ("circlestone-labs/anima", 30, 4.0),
+    # Chroma1-Flash: publisher's heun 8 steps CFG 1; 16 Euler steps match heun's 15 evaluations.
+    ("chroma1-hd-flash", 16, 1.0),
+    ("chroma1-flash", 16, 1.0),
+    ("chroma-flash", 16, 1.0),
     ("chroma", 26, 3.5),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
@@ -2484,6 +2498,16 @@ def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, 
     """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     row = _generation_defaults_row(*identifiers)
     return (row[1], row[2]) if row is not None else None
+
+
+def anima_turbo_named(filename: Optional[str], repo_id: Optional[str] = None) -> bool:
+    """Only asked of Anima loads, whose base repo key would otherwise give Turbo the base recipe. A selected file
+    naming Anima or Turbo decides alone (a Turbo repo or folder can also hold the base / aesthetic files); a file
+    naming neither (a diffusers component, a renamed merge) leaves it to the repo / folder name."""
+    name = PurePosixPath((filename or "").replace("\\", "/")).name.lower()
+    if "turbo" in name or "anima" in name:
+        return "turbo" in name
+    return "turbo" in model_identity(repo_id).lower()
 
 
 _KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})

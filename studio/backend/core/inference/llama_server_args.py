@@ -1831,11 +1831,8 @@ def resolve_effective_load_state(
     *,
     auto_unmapped: bool = False,
 ) -> tuple[bool, bool, bool]:
-    """``(mlock, reserves_ram, direct_io)``. Every branch that resolves the mode
-    assigns all three, so the DirectIO bit cannot fall out of step with the pair.
-
-    ``auto_unmapped``: a device lacks ``mmap_support`` (an iGPU), so ``auto`` is ``none``
-    (``load_tensors``), not mmap."""
+    """Returns (mlock, reserves_ram, direct_io); every branch sets all three so DirectIO cannot
+    drift; auto_unmapped (iGPU lacking mmap_support) makes auto none (load_tensors), not mmap."""
     mlock, reserves_ram, direct_io, auto = _resolve_load_state(argv, env)
     if auto and auto_unmapped:
         return False, True, False
@@ -1845,8 +1842,7 @@ def resolve_effective_load_state(
 def load_mode_left_auto(
     argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """Whether nothing selects a mode other than ``auto``. Legacy flags count: only builds
-    without ``auto`` accept them."""
+    """Nothing selects a mode but auto; legacy flags count, as only non-auto builds take them."""
     return _resolve_load_state(argv, env)[3]
 
 

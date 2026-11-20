@@ -228,7 +228,6 @@ function ChatMenuItems({
       return;
     }
     requestThreadCompaction(menu.item.id);
-    toast.info(t("chatMenu.compactQueued"));
   };
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),

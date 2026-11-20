@@ -27,8 +27,7 @@ if str(_BACKEND) not in sys.path:
 import core.inference.diffusion_moss_image as moss  # noqa: E402
 import core.inference.diffusion_small_host as sh  # noqa: E402
 
-# OpenMOSS-Team/MOSS-Image-SFT safetensors headers: Qwen3.5-9B encoder (vision tower included, 248320 x 4096 token
-# embedding) and the 5B DiT, bf16.
+# From OpenMOSS-Team/MOSS-Image-SFT safetensors headers: Qwen3.5-9B encoder, 5B DiT, bf16.
 MOSS_SFT = {
     "text_encoder": sh.StoredComponent(
         "text_encoder", 16013, "bfloat16", 0, "transformers", embed_mib = 1940

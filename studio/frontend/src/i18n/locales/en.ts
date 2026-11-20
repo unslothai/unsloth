@@ -188,6 +188,7 @@ export const en = {
       add: "Add",
       cancel: "Cancel",
       removeSite: "Remove {site}",
+      hostOnly: "This host only, not its subdomains",
       permissionsNote: "Only sites with their own permissions appear here. Actions are sign-ins, form posts, and buttons that buy, send, or delete.",
       siteInvalid: "Enter a site like example.com or *.example.com.",
     },
@@ -885,7 +886,6 @@ export const en = {
     copy: "Copy",
     addScheduledTask: "Add scheduled task…",
     compact: "Compact conversation",
-    compactQueued: "Compaction requested for the next message",
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
@@ -1715,6 +1715,12 @@ export const en = {
       levelFullAccessNote: "Full access turns the sandbox off. This setting applies again when you pick another level.",
       learnMore: "Learn more",
       managedNote: "The owner of this Unsloth server sets up the OS sandbox.",
+      trustedFoldersTitle: "Trusted folders",
+      trustedFoldersLabel: "Run without asking",
+      trustedFoldersDescription: "Python and Terminal may read and run files in these folders without asking for approval, in your own chats only. Writing to them still asks. One folder per line.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Could not load the trusted folders.",
+      trustedFoldersSaveError: "Could not save the trusted folders.",
     },
     debugging: {
       description: "Read the Unsloth logs without leaving the app.",
@@ -3163,7 +3169,7 @@ export const en = {
         title: "Model selection",
         expandQuantizations: "Expand quantizations",
         expandQuantizationsDescription:
-          "Show GGUF quantizations in On Device without opening each model.",
+          "Open each GGUF's quantization list in On Device by default. Opening or closing one model's list is remembered for that model.",
         showAllQuantizations: "All quantizations",
         showAllQuantizationsDescription:
           "Include quantizations that are not downloaded in On Device.",
@@ -3173,6 +3179,12 @@ export const en = {
         fitOnDeviceOnly: "Only show models that fit",
         fitOnDeviceOnlyDescription:
           "Hide models too large for this device's GPU memory and RAM in the model picker and Hub. Downloaded models stay visible.",
+        pickerExpandLoaded: "Show full model list",
+        pickerExpandLoadedDescription:
+          "Open the model picker on the full list while a model is loaded, instead of just the loaded model. Expanding or collapsing the picker changes this too.",
+        pickerMonochromeIcons: "Monochrome model icons",
+        pickerMonochromeIconsDescription:
+          "Show model and provider logos in black, white and grey in the model picker.",
       },
       menu: {
         title: "Chat menu",

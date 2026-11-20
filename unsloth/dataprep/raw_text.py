@@ -362,8 +362,8 @@ class TextPreprocessor:
     # closer group), which keeps the scan linear and its memory constant.
     _STRUCTURE_PATTERN = re.compile(
         r"^([^\S\n]*)```+[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n"
-        r"(?=(?s:.*?)\n(?:([^\S\n]*```+[^\S\n]*$)|[^\S\n]*```+[^\S\n]*[^\s`][^\n`]*$))"
-        r"(?(3)((?s:.*?))\n\3$)"
+        r"(?=(?s:.*?)^(?:([^\S\n]*```+[^\S\n]*$)|[^\S\n]*```+[^\S\n]*[^\s`][^\n`]*$))"
+        r"(?(3)(?:\3$|((?s:.*?))\n\3$))"
         r"|^(#{1,3}) (.+)$",
         re.MULTILINE,
     )
@@ -397,7 +397,7 @@ class TextPreprocessor:
                 return f"<|{name}|>{match[6]}<|/{name}|>"
             if match[3] is None:
                 return match[0]
-            return f"{match[1]}<|code|{match[2]}|>{match[4]}<|/code|>"
+            return f"{match[1]}<|code|{match[2]}|>{match[4] or ''}<|/code|>"
 
         return self._STRUCTURE_PATTERN.sub(tag, text)
 

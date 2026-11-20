@@ -6168,8 +6168,7 @@ def _merge_settings_updates(current: dict[str, Any], updates: dict[str, Any]) ->
         if isinstance(held, dict) and any(held.values()):
             merged["presetEditedKeys"] = {key: False for key in PRESET_EDITED_KEYS}
     elif "activePresetSource" in updates and "presetEditedKeys" not in updates:
-        # Current clients send the map with every source change, so this `modified` comes from an
-        # older client or a legacy import, where it kept every key.
+        # Current clients send the map each time; a legacy modified flag keeps every key.
         merged["presetEditedKeys"] = {key: True for key in PRESET_EDITED_KEYS}
     return merged
 

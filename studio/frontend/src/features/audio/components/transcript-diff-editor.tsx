@@ -74,6 +74,7 @@ export function TranscriptDiffEditor({
         disabled={disabled}
         aria-describedby={`${hintId} ${diffId}`}
         onChange={(event) => onChange(event.target.value)}
+        placeholder={disabled && !transcript.trim() ? EDIT_COPY.changesPlaceholder : undefined}
         className="min-h-16"
       />
       {segments && changes ? (

@@ -2392,6 +2392,29 @@ function Get-RocmPinStaleTags {
     }
 }
 
+# UNSLOTH_HNSW_PREFETCH=1 only: by default the backend fetches the pair when a knowledge base needs
+# it. A skipped (current) Python stack leaves it unchecked; --check-only is offline.
+function Invoke-HnswBackfill {
+    $_hnswInstaller = Join-Path $PSScriptRoot "install_hnsw_prebuilt.py"
+    if (@('1', 'true', 'yes', 'on') -notcontains "$env:UNSLOTH_HNSW_PREFETCH".Trim().ToLower() -or
+        @('0', 'false', 'no', 'off') -contains "$env:RAG_VEC_ANN_AUTO_INSTALL".Trim().ToLower() -or
+        -not (Test-Path -LiteralPath $_hnswInstaller)) {
+        return
+    }
+    $_hnswStatus = ""
+    try {
+        $_hnswStatus = ((& python $_hnswInstaller --check-only --json 2>$null | Select-Object -Last 1) | ConvertFrom-Json).status
+    } catch {}
+    if ($_hnswStatus -and @('already', 'disabled', 'unsupported', 'offline') -notcontains $_hnswStatus) {
+        $_hnswResult = "failed"
+        try {
+            $_hnswResult = ((& python $_hnswInstaller --json --timeout 300 2>$null | Select-Object -Last 1) | ConvertFrom-Json).status
+        } catch {}
+        if ($_hnswResult -eq "ready") { step "HNSW search" "ready" } else { step "HNSW search" "$_hnswResult" "Yellow" }
+    }
+    $global:LASTEXITCODE = 0
+}
+
 # Bounded python -c probe: a wedged torch import or Intel driver init would hang forever.
 # Both streams drain async; .Error keeps stderr since callers decide venv fate on it. Mirrors install.ps1.
 function Invoke-BoundedPythonProbe {
@@ -4431,7 +4454,7 @@ if (-not $HasNvidiaSmi) {
                 @{ P = "9060|RX 9050";                                        A = "gfx1200" }  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
                 @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                 @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]|Z2 Extreme"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-                @{ P = "820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330";       A = "gfx1153" }  # RDNA 3.5 (Krackan Point 2: Radeon 820M)
+                @{ P = "820M|Krackan Point 2|Krackan Point2|KrackanPoint 2|KrackanPoint2|Krackan 2|Krackan2|AI 5 PRO 330|AI 5 330"; A = "gfx1153" }  # RDNA 3.5 (Krackan Point 2: Radeon 820M)
                 @{ P = "860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35"; A = "gfx1152" }  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
                 @{ P = "RX 7900|PRO W7900|PRO W7800";                         A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
                 @{ P = "RX 7800|RX 7700(?!S)|PRO W7700|PRO V710";             A = "gfx1101" }  # RDNA 3 (Navi 32)
@@ -8259,10 +8282,28 @@ if ($ROCmIndexUrl) {
         $_rocmKeptActive = $false
     }
     if ($torchInstallExit -ne 0) {
-        Write-StudioLine "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Yellow
-        $ROCmIndexUrl = $null
-        $ROCmCpuFallback = $true
+        $_rocmReason = (@((Redact-InstallOutput $output) -split '\r?\n' |
+            Where-Object { $_.Trim() }) | Select-Object -Last 6) -join " | "
+        if (-not $_rocmReason) { $_rocmReason = "installer output was streamed above, not captured" }
+        $_rocmWanted = (@($_rocmTrio) -join " ")
+        Write-StudioLine ""
+        Write-StudioLine "[ERROR] AMD ROCm PyTorch could not be installed for $ROCmGfxArch (exit code $torchInstallExit)." -ForegroundColor Red
+        Write-StudioLine "        index:  $(Get-IndexIdentity $ROCmIndexUrl)" -ForegroundColor Red
+        Write-StudioLine "        wanted: $_rocmWanted" -ForegroundColor Red
+        Write-StudioLine "        reason: $_rocmReason" -ForegroundColor Red
+        if ($output) { Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red }
+        if (@("1", "true", "yes", "on") -contains "$($env:UNSLOTH_ALLOW_CPU_TORCH_FALLBACK)".Trim().ToLowerInvariant()) {
+            Write-StudioLine "[WARN] UNSLOTH_ALLOW_CPU_TORCH_FALLBACK is set: installing CPU-only PyTorch instead." -ForegroundColor Red
+            Write-StudioLine "       This is NOT a GPU install: training and GPU inference will run on CPU, not on $ROCmGfxArch." -ForegroundColor Red
+            $ROCmIndexUrl = $null
+            $ROCmCpuFallback = $true
+        } else {
+            Write-StudioLine "        This machine needs ROCm PyTorch, so setup stops here instead of installing a CPU build." -ForegroundColor Red
+            Write-StudioLine "        Check the network or proxy for the index above and re-run the installer." -ForegroundColor Red
+            Write-StudioLine "        To accept CPU-only PyTorch anyway, set UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 and re-run." -ForegroundColor Red
+            # Desktop shows only this line, so it carries the opt-in too.
+            Exit-SetupFailure "AMD ROCm PyTorch install failed for $ROCmGfxArch (exit code $torchInstallExit): $_rocmReason. Re-run once the index is reachable, or set UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 to accept CPU-only PyTorch."
+        }
     } else {
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
         try {
@@ -8325,7 +8366,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
-    if ($XpuCpuFallback) {
+    # A GPU-route fallback keeps the supported window, like install.ps1's own CPU base, not the newest CPU torch.
+    if ($XpuCpuFallback -or $ROCmCpuFallback) {
         $cpuTorchSpec  = "torch>=2.4,<2.12.0"
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
@@ -8859,6 +8901,7 @@ if (Test-SetupScriptReplaced) {
 
 } else {
     step "python" "dependencies up to date"
+    Invoke-HnswBackfill
     $ErrorActionPreference = $prevEAP
 }
 Complete-FrontendBuildBackground -IfDone

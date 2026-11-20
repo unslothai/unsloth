@@ -80,7 +80,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check")
+    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check", "_mm_rope_index")
 
     def __init__(
         self,
@@ -91,9 +91,12 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
         self._padding_free = bool(padding_free)
+        self._mm_rope_index = None
         if self._padding_free:
             from unsloth.utils.mm_packing import prepare_packed_multimodal_model
-            prepare_packed_multimodal_model(args[0] if args else kwargs.get("model"))
+            self._mm_rope_index = prepare_packed_multimodal_model(
+                args[0] if args else kwargs.get("model")
+            )
 
     @property
     def padding_free(self):
@@ -113,7 +116,11 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
                 _UnslothVisionDataCollatorBase, "_check_supervised"
             ):
                 self._check_supervised(*_stack_rows(docs))
-            return pack_multimodal_documents(docs, ignore_index = self.ignore_index)
+            return pack_multimodal_documents(
+                docs,
+                ignore_index = self.ignore_index,
+                rope_index = getattr(self, "_mm_rope_index", None),
+            )
         return self._collate_unpacked(examples)
 
     def _check_supervised(
@@ -2164,9 +2171,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
             is_ring_context_parallel = cp_backend == "ring"
-            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
-            # automatic padding-free choice would fail the first CP step.
-            # A deferred (string) model is classified by its resolved config's model types.
+            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses refuse packed batches (auto
+            # padding-free would fail); string models are classified by their config's model types.
             if cp_backend == "ulysses":
                 from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
                 ulysses_packing_blocker = _ulysses_packing_blocker(

@@ -246,8 +246,7 @@ export function ConnectionModelList({
       </div>
       {card
         ? createPortal(
-            // One card for the whole list, drawn outside it and deaf to the pointer: a tooltip per row
-            // sat under the cursor and fought the row for hover.
+            // One card outside, deaf to pointer: per-row tooltips fought their row for hover.
             <div
               role="tooltip"
               style={{ left: card.left, top: card.top }}

@@ -55,8 +55,9 @@ from .diffusion_int8_attention import resolve_policy as int8_attention_policy
 from .diffusion_int8_attention import resolved_entry as int8_resolved_entry
 from .diffusion_attention import (
     SDPA_MATH_ONLY_MESSAGE,
+    annotate_attention_resolved,
     apply_attention_backend,
-    attention_status_reason,
+    attention_resolved_entry,
     install_hunyuan_attention_trim,
     sdpa_math_only,
     _dit_head_dims,
@@ -130,8 +131,10 @@ from .diffusion_multigpu import (
     install_cfg_parallel,
     multigpu_mode,
     is_split as multigpu_is_split,
+    note_default_request,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
+    video_default_tokens,
     set_cfg_parallel_fallback,
     uninstall_cfg_parallel,
     with_load_selection,
@@ -569,6 +572,88 @@ def _h3_single_file_task(
     from .video_minimax_h3_comfy import h3_comfy_task
 
     return h3_task or h3_comfy_task(gguf_filename)
+
+
+def _modelopt_planned_gb(
+    scan: Any,
+    fam: Any,
+    base: str,
+    target: Any,
+    *,
+    keep: bool,
+    dtype_scale: float = 1.0,
+) -> float:
+    """Planning size of a ModelOpt FP8 DiT: its fp8 bytes where a resident fp8 GEMM keeps the codes, else the bf16
+    model it dequantizes to (repriced as stored fp8 once a plan streams it, ``_modelopt_offload_keeps_fp8``). Always
+    a number, so the planner never re-plans it for a runtime quant that does not follow."""
+    from .diffusion_modelopt_fp8 import modelopt_runtime, runtime_keeps_fp8
+
+    runtime = modelopt_runtime(
+        target,
+        keep = keep,
+        fp8_backend = comfy_fp8_backend(target, getattr(fam, "name", None), base, offload = False),
+    )
+    return scan.resident_bytes(runtime_keeps_fp8(runtime)) * dtype_scale / 1000.0**3
+
+
+def _modelopt_offload_keeps_fp8(fam: Any, base: str, target: Any, *, keep: bool) -> bool:
+    """Whether a streamed ModelOpt FP8 DiT keeps its fp8 codes on this card (static GEMM or fp8 storage)."""
+    from .diffusion_modelopt_fp8 import modelopt_runtime, runtime_keeps_fp8
+
+    name = getattr(fam, "name", None)
+    return runtime_keeps_fp8(
+        modelopt_runtime(
+            target,
+            keep = keep,
+            fp8_backend = comfy_fp8_backend(target, name, base, offload = True),
+            fp8_storage = _video_fp8_storage(fam, target, True),
+        )
+    )
+
+
+def _modelopt_load_runtime(
+    fam: Any,
+    base: str,
+    target: Any,
+    plan: Any,
+    bf16_plan: Any = None,
+    *,
+    keep: bool = True,
+    priced_offload: bool = False,
+) -> str:
+    """The ModelOpt FP8 runtime for this card and plan, by the rules Studio's pre-quantized fp8 layers follow: the fp8
+    GEMM where it runs, fp8 storage where the plan streams, else dequantized."""
+    from .diffusion_modelopt_fp8 import modelopt_runtime
+
+    backends = _video_comfy_backends(
+        fam, base, target, plan, bf16_plan, keep = keep, priced_offload = priced_offload
+    )
+    return modelopt_runtime(
+        target,
+        keep = keep,
+        fp8_backend = backends.get("fp8_backend"),
+        fp8_storage = bool(backends.get("fp8_storage")),
+    )
+
+
+def _modelopt_info(transformer: Any) -> dict:
+    from .diffusion_modelopt_fp8 import MODELOPT_ATTR
+    return dict(getattr(transformer, MODELOPT_ATTR, None) or {})
+
+
+def _modelopt_source(info: Optional[dict], repo: Any) -> str:
+    """The ``resolved`` precision source of a ModelOpt FP8 load."""
+    info = info or {}
+    runtime = {
+        "static": "W8A8 fp8 GEMMs with the checkpoint's static input scales",
+        "dynamic": "W8A8 fp8 GEMMs with dynamic per-row activation scales",
+        "stored": "fp8 weights widened per layer (weight-only)",
+        "dequant": "dequantized to bf16 at load (weight-only)",
+    }.get(str(info.get("runtime")), str(info.get("runtime")))
+    return (
+        f"NVIDIA ModelOpt FP8 checkpoint ({str(repo).rstrip('/').rsplit('/', 1)[-1]}): "
+        f"{info.get('fp8', 0)} fp8 Linears kept, {info.get('dequantized', 0)} dequantized; {runtime}"
+    )
 
 
 def _video_comfy_resident(plan: Any, bf16_plan: Any = None) -> bool:
@@ -5230,6 +5315,22 @@ def _video_sidecar_card_reserve_mib(pipe: Any, plan: Any = None) -> Optional[dic
         return None
 
 
+def _note_video_default_request(fam: Any, pipe: Any) -> None:
+    try:
+        guidance = float(fam.default_guidance)
+        width, height = fam.resolution_presets[0]
+        tokens = video_default_tokens(pipe, int(width), int(height), int(fam.default_num_frames))
+        note_default_request(
+            pipe,
+            guided = guidance > 1.0,
+            steps = int(fam.default_steps),
+            tokens = tokens,
+            why = f"default guidance {guidance:g}",
+        )
+    except Exception:  # noqa: BLE001 - unknown: the placement keeps its split-first order
+        note_default_request(pipe, guided = None)
+
+
 def _video_refine_for_multigpu(
     fam: Any,
     pipe: Any,
@@ -5665,8 +5766,7 @@ def _failure_reason(exc: BaseException) -> str:
 
 
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
-    """A user-facing reason for a failed generation: fixed text for known classes, else the
-    redacted exception class and first line."""
+    """User-facing failure reason: fixed text for known classes, else redacted class and line."""
     try:
         from .video_minimax_h3 import H3NativeMemoryRefusal
 
@@ -9932,6 +10032,37 @@ class VideoBackend:
         comfy_keep = (
             transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
         )
+        # ModelOpt FP8 Cosmos3 builds: Studio's loader reads the DiT (diffusers cannot), priced at the bytes it keeps.
+        modelopt_scan = None
+        modelopt_dit_gb: Optional[float] = None
+        modelopt_priced_offload = False
+        # LoRAs bake into dense weights, so the codes dequantize to bf16.
+        modelopt_keep = comfy_keep and not baked_loras
+        if kind == "pipeline" and fam.name in COSMOS3_FAMILIES:
+            from .diffusion_modelopt_fp8 import modelopt_fp8_error, scan_modelopt_fp8
+
+            modelopt_scan = scan_modelopt_fp8(_base_local_dir or repo_id)
+            if modelopt_scan is None and not _base_local_dir and "fp8" in str(repo_id).lower():
+                # a direct load_pipeline call with a hub id (no staged folder): read the transformer config first
+                from .diffusion_modelopt_fp8 import hub_modelopt_root
+                modelopt_scan = scan_modelopt_fp8(
+                    hub_modelopt_root(
+                        fetch_base,
+                        token = hf_token,
+                        cache_dir = hub_cache_dir(),
+                        local_files_only = local_files_only,
+                        revision = _base_fetch_revision,
+                    )
+                )
+            modelopt_problem = modelopt_fp8_error(
+                modelopt_scan, str(display_repo_id or repo_id).rstrip("/\\").rsplit("/", 1)[-1]
+            )
+            if modelopt_problem:
+                raise ValueError(modelopt_problem)
+            if modelopt_scan is not None:
+                modelopt_dit_gb = _modelopt_planned_gb(
+                    modelopt_scan, fam, base, target, keep = modelopt_keep, dtype_scale = dtype_scale
+                )
         partner_path: Optional[Path] = None
         partner_scan = None
         # LTX-2.3 variant read from the weights; outranks the file name in recipe lookups (None: the name decides).
@@ -10061,6 +10192,9 @@ class VideoBackend:
             denoiser_gb: Optional[float] = None,
         ) -> tuple[Any, Any, bool]:
             """``(plan, bf16_plan, quant_replanned)``; ``denoiser_gb`` prices a SEEDED DiT (peak == steady)."""
+            if denoiser_gb is None:
+                # a ModelOpt FP8 DiT is built as priced (no runtime quant follows)
+                denoiser_gb = modelopt_dit_gb
             text_encoder_gb = components[1] * scale if components is not None else 0.0
             # vae_force_fp32 VAE is already counted at fp32; scaling it double-counts (2.8 GB on Wan TI2V-5B).
             vae_gb = components[2] if components is not None else 0.0
@@ -10212,7 +10346,11 @@ class VideoBackend:
             )
 
         denoiser_seed_scheme: Optional[str] = None
-        if kind == "pipeline" and _video_auto_denoiser_planned != DENOISER_SEED_DECLINED:
+        if (
+            kind == "pipeline"
+            and _video_auto_denoiser_planned != DENOISER_SEED_DECLINED
+            and modelopt_scan is None
+        ):
             denoiser_seed_scheme = _video_auto_denoiser_planned or _video_auto_denoiser_scheme(
                 fam,
                 target = target,
@@ -10322,6 +10460,17 @@ class VideoBackend:
                 if repriced != transformer_mib:
                     transformer_mib = repriced
                     plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        if (
+            modelopt_scan is not None
+            and not plan_keeps_transformer_resident(plan)
+            and _modelopt_offload_keeps_fp8(fam, base, target, keep = modelopt_keep)
+        ):
+            # Streamed and no fp8 GEMM here: the fp8 codes stay stored (widened per layer), so price those bytes.
+            stored_gb = modelopt_scan.resident_bytes(True) * dtype_scale / 1000.0**3
+            if modelopt_dit_gb is None or stored_gb < modelopt_dit_gb:
+                modelopt_dit_gb = stored_gb
+                modelopt_priced_offload = True
+                plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         # The DiT as planned: a resident load that would widen it into under the host reserve stores fp8 instead.
         comfy_widened_mib = transformer_mib if comfy_scan is not None else None
         settled_te_scale = te_scale
@@ -10517,8 +10666,11 @@ class VideoBackend:
                 kind = kind,
                 source_dir = _base_local_dir or repo_id,
             )
-            # A LoRA load quantises its merged weights, never a cached build of the bare ones.
-            if kind == "pipeline" and not denoiser_injected and not baked_loras
+            # LoRA loads quantise merged weights; a ModelOpt FP8 DiT is read from its own checkpoint.
+            if kind == "pipeline"
+            and not denoiser_injected
+            and not baked_loras
+            and modelopt_scan is None
             else None
         )
         native_config_kwargs: dict[str, Any] = (
@@ -10608,6 +10760,25 @@ class VideoBackend:
         if kind == "pipeline" and fam.name in COSMOS3_FAMILIES:
             from .video_cosmos3 import pipeline_kwargs as cosmos3_pipeline_kwargs
             pipe_kwargs.update(cosmos3_pipeline_kwargs(str(repo_id)))
+        if modelopt_scan is not None:
+            from .diffusion_modelopt_fp8 import load_modelopt_fp8_transformer
+            pipe_kwargs["transformer"] = load_modelopt_fp8_transformer(
+                getattr(diffusers, fam.transformer_class),
+                modelopt_scan.folder,
+                scan = modelopt_scan,
+                dtype = dtype,
+                runtime = _modelopt_load_runtime(
+                    fam,
+                    base,
+                    target,
+                    plan,
+                    bf16_plan,
+                    keep = modelopt_keep,
+                    priced_offload = modelopt_priced_offload,
+                ),
+                logger = logger,
+            )
+            self._raise_if_video_load_superseded(_load_token)
         cast_writes = None
         native_writes = None
         if kind == "pipeline":
@@ -10984,6 +11155,13 @@ class VideoBackend:
         comfy_scheme = (
             TQ_INT8 if comfy_info.get("int8") else TQ_FP8 if comfy_info.get("fp8") else None
         )
+        modelopt_info = (
+            _modelopt_info(getattr(pipe, "transformer", None))
+            if modelopt_scan is not None
+            else None
+        )
+        if modelopt_info and modelopt_info.get("fp8"):
+            comfy_scheme = TQ_FP8
         native_scheme = (
             native_quant_scheme(
                 target,
@@ -11086,7 +11264,11 @@ class VideoBackend:
             # Ask the helper: on ROCm and the Windows torchao stub it knows a truer reason.
             transformer_quant_decline = dense_transformer_unsupported_reason(target)
             transformer_quant_decline_status = RESOLVED_UNSUPPORTED
-        if comfy_scheme is not None:
+        if modelopt_scan is not None and comfy_scheme is not None:
+            transformer_quant_engaged = comfy_scheme
+            transformer_quant_source = _modelopt_source(modelopt_info, display_repo_id or repo_id)
+            logger.info("video.transformer_quant: %s", transformer_quant_source)
+        elif comfy_scheme is not None:
             transformer_quant_engaged = comfy_scheme
             transformer_quant_source = (
                 f"ComfyUI-quantized checkpoint ({Path(str(checkpoint_path)).name}"
@@ -11382,6 +11564,7 @@ class VideoBackend:
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
         video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
+        _note_video_default_request(fam, pipe)
         split_expected = _layer_split_expected(pipe, plan, video_refine)
         # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower.
         quant_forces_compile = transformer_quant_engaged is not None and (
@@ -11776,10 +11959,8 @@ class VideoBackend:
                         if speed_mode is None
                         else "requested",
                     ),
-                    "attention_backend": (
-                        attention_backend,
-                        attention_engaged or "native",
-                        attention_status_reason(attention_backend, attention_engaged),
+                    "attention_backend": attention_resolved_entry(
+                        attention_backend, attention_engaged, views, target = target
                     ),
                     "int8_attention": int8_resolved_entry(
                         int8_policy,
@@ -11860,6 +12041,7 @@ class VideoBackend:
                 }
             )
             int8_annotate_resolved(resolved, int8_policy, views)
+            annotate_attention_resolved(resolved, views)
             # The optimizer's per-step audit, beside the speed_mode entry (same record as the image backend).
             autoopt.record_load_steps(
                 load_audit,
@@ -13187,8 +13369,7 @@ class VideoBackend:
                 "forced" if int8_forced else "raced" if int8_auto else "not eligible",
                 h3_int8_modules,
             )
-            # FlashInfer SM120 H3 block kernels (opt-in, UNSLOTH_H3_FLASHINFER=1): resident fp8 / nvfp4 blocks, before
-            # the regional compile traces them
+            # Opt-in via UNSLOTH_H3_FLASHINFER=1: SM120 kernels before regional compile traces.
             if effective_speed != SPEED_OFF:
                 try:
                     from .video_minimax_h3_flashinfer import install_h3_flashinfer
@@ -13451,10 +13632,8 @@ class VideoBackend:
                         else "lossless optimisations only; the denoiser is in the CPU-offload rotation"
                     ),
                 ),
-                "attention_backend": (
-                    attention_backend,
-                    attention_engaged or "native",
-                    attention_status_reason(attention_backend, attention_engaged),
+                "attention_backend": attention_resolved_entry(
+                    attention_backend, attention_engaged, speed_view, target = umem_target
                 ),
                 "int8_attention": int8_resolved_entry(
                     int8_policy,
@@ -13500,6 +13679,7 @@ class VideoBackend:
             }
         )
         int8_annotate_resolved(resolved, int8_policy, speed_view)
+        annotate_attention_resolved(resolved, speed_view)
         autoopt.record_load_steps(
             h3_audit,
             attention = attention_engaged,

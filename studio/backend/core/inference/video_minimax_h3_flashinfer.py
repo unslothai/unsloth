@@ -1,25 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 FlashInfer SM120 block kernels (``flashinfer.diffusion_ops``, FlashInfer >= 0.7.3), opt-in.
-
-UNSLOTH_H3_FLASHINFER=1 swaps each resident FP8 / NVFP4 H3 block's forward for FlashInfer's fused SM120 operators:
-pre-attention (norm1 + adaLN + QKV GEMM + q/k RMSNorm + RoPE), the out-projection with its gated residual and the MLP
-(norm2 + adaLN + FC1 + SwiGLU + FC2 + gated residual). Attention stays on SDPA. Per-lever kill switches, each on by
-default under the master switch: UNSLOTH_H3_FI_PRE, UNSLOTH_H3_FI_OUT, UNSLOTH_H3_FI_MLP.
-
-Gate: CUDA sm_120 (the operators raise elsewhere), flashinfer >= 0.7.3 importable with the ops, H3 dimensions, a
-resident denoiser, torchao Float8Tensor (per-row) or NVFP4Tensor weights. The operators JIT-compile on first use
-(nvcc >= 12.8 and ninja; FlashInfer's jit-cache wheel does not carry them), hence opt-in. Weights are repacked from
-Studio's own quantized tensors, bit-exact, into buffers on each block (they follow the module and die with it); the
-replaced projections' own weights are then released (UNSLOTH_H3_FI_KEEP_STOCK=1 keeps them). NVFP4 pre-attention
-needs one per-tensor scale for to_q / to_k / to_v (a prequant built with a shared QKV scale); other files keep the
-stock pre-attention. A probe self-check against the stock block runs at install; any failure keeps the stock forward.
-
-NVFP4 activation global scales: a1 / a2 / attention output from their amax per call (torchao's dynamic recipe);
-the SwiGLU output y, which the fused MLP quantizes in-kernel, from its amax on the block's first call at each sequence
-length, x UNSLOTH_H3_FI_NV_Y_MARGIN (default 4).
-"""
+"""Opt-in via UNSLOTH_H3_FLASHINFER=1 for SM120 FP8/NVFP4 H3 blocks (flashinfer >= 0.7.3, CUDA
+sm_120, nvcc >= 12.8, ninja); probe-checked, any failure keeps stock; UNSLOTH_H3_FI_PRE,
+UNSLOTH_H3_FI_OUT, UNSLOTH_H3_FI_MLP kill switches; NVFP4 pre-attention needs one per-tensor QKV
+scale."""
 
 from __future__ import annotations
 
@@ -45,10 +30,7 @@ SELF_CHECK_TOL = {"fp8": 0.10, "nvfp4": 0.25}
 _BUF = "_h3fi_"
 _NS = "unsloth_h3fi"
 _LOCK = threading.Lock()
-# Host-side facts of each installed block's operands, keyed by the operand buffer's data pointer: the NVFP4 global
-# weight scale (the kernels take alpha as a host float) and the calibrated y scale per sequence length. Ops read them
-# inside the opaque op, so nothing per block reaches the traced graph: all 50 blocks share one compiled graph (the
-# block buffers are graph inputs), with no recompile per block.
+# Host-side NVFP4 scales keyed by buffer pointer; read in the opaque op so blocks share one graph.
 _HOST: dict = {}
 _CAL: dict = {}
 # The installed model's switches, the same for every block (read by the traced forward; constants for dynamo).

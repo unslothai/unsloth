@@ -190,6 +190,17 @@ def merge_qkv(transformer: Any, logger: Any = None) -> int:
     return count
 
 
+def is_replica_record(key: str, value: Any) -> bool:
+    """The merged QKV buffer lives outside the module tree, so a deep copy would leave it on the source card."""
+    return key == _QKV_ATTR
+
+
+def rebuild_replica(source: Any, replica: Any) -> int:
+    if not fused_qkv_count(source):
+        return 0
+    return merge_qkv(replica)
+
+
 def fused_qkv_count(transformer: Any) -> int:
     if transformer is None:
         return 0
@@ -414,7 +425,12 @@ def _f3_block_ready(block: Any) -> bool:
         return False
     proc = getattr(attn, "processor", None)
     return (
-        (type(proc) is _CLS.get("Flux3AttnProcessor") or is_qk_processor(proc))
+        (
+            type(proc) is _CLS.get("Flux3AttnProcessor")
+            or is_qk_processor(proc)
+            # the strided cuDNN / INT8 processor takes the projections (diffusion_flux3_attn)
+            or getattr(proc, "_unsloth_projected_attention", False)
+        )
         and type(attn) is _CLS.get("Flux3Attention")
         and not _gemm._hooked(attn)
         and type(ff) is _CLS.get("Flux3FeedForward")
@@ -428,7 +444,8 @@ def _f3_block_ready(block: Any) -> bool:
 
 def _f3_attn_ff(block: Any, x: Any, image_rotary_emb: Any, mod: Any) -> Optional[tuple]:
     """(attention output, MLP output) of ``x`` with Q / K / V and the MLP input on one rotation + act quant; None:
-    the caller runs the stock modules. Mirrors ``Flux3AttnProcessor.__call__`` below the projections."""
+    the caller runs the stock modules. Below the projections: the strided processor's own method when it takes the
+    call, else a mirror of ``Flux3AttnProcessor.__call__``."""
     if not _f3_block_ready(block):
         return None
     attn, ff = block.attn, block.ff
@@ -438,6 +455,12 @@ def _f3_attn_ff(block: Any, x: Any, image_rotary_emb: Any, mod: Any) -> Optional
     _count("block")
     query, key, value, h = parts
     proc = attn.processor
+    if getattr(proc, "_unsloth_projected_attention", False):
+        out = proc.unsloth_projected_attention(
+            attn, query, key, value, x.shape[1], image_rotary_emb
+        )
+        if out is not None:
+            return out, _ff_tail(ff, h)
     query = query.unflatten(-1, (attn.heads, -1))
     key = key.unflatten(-1, (attn.heads, -1))
     value = value.unflatten(-1, (attn.heads, -1))
@@ -677,6 +700,14 @@ def _arm_cards(transformer: Any, logger: Any = None) -> list:
             cards,
         )
     return cards
+
+
+def producer_probe_expected(transformer: Any) -> bool:
+    """``install`` will arm (and probe) ``rotq_h16x`` for this denoiser."""
+    return not flux_convrot_fused_disabled() and type(transformer).__name__ in (
+        "Flux2Transformer2DModel",
+        "Flux3Transformer2DModel",
+    )
 
 
 def install(transformer: Any, logger: Any = None) -> dict:

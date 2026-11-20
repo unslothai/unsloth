@@ -179,6 +179,7 @@ export const vi = {
       add: "Thêm",
       cancel: "Hủy",
       removeSite: "Xóa {site}",
+      hostOnly: "Chỉ máy chủ này, không gồm tên miền phụ",
       permissionsNote:
         "Chỉ những trang web có quyền riêng mới xuất hiện ở đây. Hành động gồm đăng nhập, gửi biểu mẫu và các nút mua, gửi hoặc xóa.",
       siteInvalid: "Nhập một trang web như example.com hoặc *.example.com.",
@@ -979,7 +980,6 @@ export const vi = {
     copy: "Sao chép",
     addScheduledTask: "Thêm tác vụ đã lên lịch…",
     compact: "Thu gọn cuộc trò chuyện",
-    compactQueued: "Sẽ thu gọn ở tin nhắn tiếp theo",
     compactEmpty: "Chưa có gì để thu gọn",
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",
@@ -1870,6 +1870,12 @@ export const vi = {
       learnMore: "Tìm hiểu thêm",
       managedNote:
         "Chủ sở hữu máy chủ Unsloth này thiết lập sandbox hệ điều hành.",
+      trustedFoldersTitle: "Thư mục tin cậy",
+      trustedFoldersLabel: "Chạy không cần hỏi",
+      trustedFoldersDescription: "Python và Terminal có thể đọc và chạy tệp trong các thư mục này mà không cần xin phê duyệt, chỉ trong các cuộc trò chuyện của riêng bạn. Ghi vào các thư mục này vẫn cần hỏi. Mỗi dòng một thư mục.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Không thể tải các thư mục tin cậy.",
+      trustedFoldersSaveError: "Không thể lưu các thư mục tin cậy.",
     },
     debugging: {
       description: "Đọc nhật ký Unsloth mà không cần rời khỏi ứng dụng.",
@@ -3398,6 +3404,10 @@ export const vi = {
         fitOnDeviceOnly: "Chỉ hiện mô hình vừa với máy",
         fitOnDeviceOnlyDescription:
           "Ẩn các mô hình quá lớn so với bộ nhớ GPU và RAM của thiết bị này trong trình chọn mô hình và Hub. Mô hình đã tải xuống vẫn hiển thị.",
+        pickerExpandLoaded: "Hiển thị toàn bộ danh sách mô hình",
+        pickerExpandLoadedDescription: "Mở trình chọn mô hình ở danh sách đầy đủ khi đã tải một mô hình, thay vì chỉ mô hình đã tải. Mở rộng hoặc thu gọn trình chọn cũng thay đổi cài đặt này.",
+        pickerMonochromeIcons: "Biểu tượng mô hình đơn sắc",
+        pickerMonochromeIconsDescription: "Hiển thị logo mô hình và nhà cung cấp bằng màu đen, trắng và xám trong trình chọn mô hình.",
       },
       menu: {
         title: "Menu trò chuyện",

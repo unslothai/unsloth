@@ -179,6 +179,7 @@ export const tr = {
       add: "Ekle",
       cancel: "İptal",
       removeSite: "Kaldır: {site}",
+      hostOnly: "Yalnızca bu ana bilgisayar, alt alan adları hariç",
       permissionsNote:
         "Burada yalnızca kendi izinleri olan siteler görünür. Eylemler; oturum açma, form gönderme ve satın alan, gönderen veya silen düğmelerdir.",
       siteInvalid: "example.com veya *.example.com gibi bir site girin.",
@@ -973,7 +974,6 @@ export const tr = {
     copy: "Kopyala",
     addScheduledTask: "Zamanlanmış görev ekle…",
     compact: "Konuşmayı sıkıştır",
-    compactQueued: "Sıkıştırma bir sonraki mesaj için istendi",
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",
@@ -1862,6 +1862,12 @@ export const tr = {
       learnMore: "Daha fazla bilgi",
       managedNote:
         "İşletim sistemi korumalı alanını bu Unsloth sunucusunun sahibi ayarlar.",
+      trustedFoldersTitle: "Güvenilen klasörler",
+      trustedFoldersLabel: "Sormadan çalıştır",
+      trustedFoldersDescription: "Python ve Terminal bu klasörlerdeki dosyaları onay istemeden okuyabilir ve çalıştırabilir, yalnızca kendi sohbetlerinizde. Bu klasörlere yazmak yine onay ister. Her satıra bir klasör.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Güvenilen klasörler yüklenemedi.",
+      trustedFoldersSaveError: "Güvenilen klasörler kaydedilemedi.",
     },
     debugging: {
       description: "Unsloth günlüklerini uygulamadan çıkmadan okuyun.",
@@ -3397,6 +3403,10 @@ export const tr = {
         fitOnDeviceOnly: "Yalnızca sığan modelleri göster",
         fitOnDeviceOnlyDescription:
           "Model seçicide ve Hub'da bu cihazın GPU belleği ve RAM'i için çok büyük modelleri gizleyin. İndirilen modeller görünür kalır.",
+        pickerExpandLoaded: "Tam model listesini göster",
+        pickerExpandLoadedDescription: "Bir model yüklüyken model seçiciyi yalnızca yüklü model yerine tam listeyle aç. Seçiciyi genişletmek veya daraltmak da bu ayarı değiştirir.",
+        pickerMonochromeIcons: "Tek renkli model simgeleri",
+        pickerMonochromeIconsDescription: "Model seçicide model ve sağlayıcı logolarını siyah, beyaz ve gri olarak göster.",
       },
       menu: {
         title: "Sohbet menüsü",
