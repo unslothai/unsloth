@@ -2199,6 +2199,7 @@ app.add_middleware(
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
+        "X-Unsloth-Chat-Revision",
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
