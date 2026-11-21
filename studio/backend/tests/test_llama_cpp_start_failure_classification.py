@@ -218,6 +218,13 @@ class TestOllamaAndFallback:
                 "gguf_init_from_reader: failed to read tensor info\n",
                 "quantization type 43",
             ),
+            # #18722, fine-tuned Q5_K_M GGUF containing a tensor in removed slot 36 (IQ4_NL_4_4).
+            (
+                "gguf_init_from_reader: tensor 'blk.0.ffn_down.weight' of type 36 ((null)) has "
+                "4096 elements per row, not a multiple of block size (0)\n"
+                "gguf_init_from_reader: failed to read tensor info\n",
+                "quantization type 36 (IQ4_NL_4_4)",
+            ),
             # #11259 report: a group-128 Q2_0 tensor where the build defines group-64 Q2_0.
             (
                 "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
@@ -241,6 +248,7 @@ class TestOllamaAndFallback:
         assert "download it again" in msg
         assert "not a memory problem" in msg
         assert "another quant" in msg
+        assert "--allow-requantize" in msg
         assert "GGUF file is valid" not in msg
 
     def test_truncated_gguf_explains_how_to_check_the_download(self):
