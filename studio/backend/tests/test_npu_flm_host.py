@@ -288,9 +288,7 @@ def test_the_model_list_ignores_text_flm_prints_around_it(tmp_path, monkeypatch,
 
     Done.stdout, Done.stderr = stdout, stderr
     monkeypatch.setattr(fh.subprocess, "run", lambda *a, **k: Done())
-    assert [r["id"] for r in flm.catalog()] == [
-        fh.catalog_row(e)["id"] for e in CATALOG["models"]
-    ]
+    assert [r["id"] for r in flm.catalog()] == [fh.catalog_row(e)["id"] for e in CATALOG["models"]]
 
 
 def test_a_model_list_without_json_names_flms_output(tmp_path, monkeypatch):
