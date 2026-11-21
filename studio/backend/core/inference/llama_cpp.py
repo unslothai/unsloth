@@ -26157,6 +26157,12 @@ class LlamaCppBackend:
                         gpus
                         and not (gpu_memory_mode == "manual" and gpu_layers < 0)
                         and not self._sysmem_fallback_risk(binary)
+                        and not self._fit_trim_host_has_shared_memory_gpu(
+                            binary,
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = [int(_idx) for _idx, _free in gpus],
+                            planner_integrated = _integrated_gpus,
+                        )
                     ):
                         _base_delta_by_idx = {
                             int(_idx): (_fit_target_delta_by_idx or {}).get(
@@ -30377,6 +30383,7 @@ class LlamaCppBackend:
                 _integrity_flags = self._ctx_integrity_flags(
                     *_integrity_args,
                     fit_target_delta_mib = _fit_target_delta_mib,
+                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                 )
                 # From the flags, not the inputs: --fit off, an older server without
                 # the capability and a budget at the default all leave the child
@@ -30399,6 +30406,7 @@ class LlamaCppBackend:
                     _integrity_flags = self._ctx_integrity_flags(
                         *_integrity_args,
                         fit_target_delta_mib = _fit_target_delta_mib,
+                        fit_target_delta_by_idx = _fit_target_delta_by_idx,
                         fit_target_floor_mib = _metal_fit_target_floor_mib,
                         # The reserve rides on the spawn's trailing pair, which retry cleanup must
                         # tell apart from a user's value.
@@ -32282,6 +32290,7 @@ class LlamaCppBackend:
                                 self._ctx_integrity_flags(
                                     *_integrity_args,
                                     fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
@@ -33871,6 +33880,7 @@ class LlamaCppBackend:
                                 self._ctx_integrity_flags(
                                     *_integrity_args,
                                     fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
@@ -34081,6 +34091,7 @@ class LlamaCppBackend:
                         _fb_integrity = self._ctx_integrity_flags(
                             *_integrity_args,
                             fit_target_delta_mib = _fit_target_delta_mib,
+                            fit_target_delta_by_idx = _fit_target_delta_by_idx,
                             fit_target_floor_mib = _metal_fit_target_floor_mib,
                         )
                         fallback_cmd = _drop_sidecar_margins(
@@ -37693,6 +37704,41 @@ class LlamaCppBackend:
         }
 
     @staticmethod
+    def _fit_trim_host_has_shared_memory_gpu(
+        binary: Optional[str],
+        *,
+        is_vulkan_backend: bool,
+        gpu_indices: Iterable[int],
+        planner_integrated: Iterable[int] = (),
+    ) -> bool:
+        """Whether the Auto fit-margin trim must stay off because a card may be host RAM.
+
+        The discrete-first planner only classifies integrated devices on unpinned
+        multi-GPU loads, so a lone Jetson, an AMD APU or an explicitly picked iGPU
+        is checked here directly. Any integrated device on the host counts, since
+        its ids may not line up with the probed rows: a missed trim only keeps
+        today's margin.
+        """
+        if any(True for _ in planner_integrated):
+            return True
+        try:
+            if LlamaCppBackend._rocm_unified_memory_gpu_ids():
+                return True
+            # The CUDA memory probe already filled this for the mask; a Vulkan load never
+            # ran it, so it reads only a settled answer instead of initialising CUDA here.
+            if (
+                not is_vulkan_backend or LlamaCppBackend._integrated_cuda_probe_is_free()
+            ) and LlamaCppBackend._integrated_cuda_gpu_ids():
+                return True
+            if is_vulkan_backend and LlamaCppBackend._vulkan_targets_are_igpus(
+                binary, list(gpu_indices) or None
+            ):
+                return True
+        except Exception:
+            return True
+        return False
+
+    @staticmethod
     def _fit_target_per_device_ok(
         *,
         is_vulkan_backend: bool,
@@ -37864,10 +37910,12 @@ class LlamaCppBackend:
         fit_target_delta_mib: float = 0.0,
         fit_target_floor_mib: float = 0.0,
         fit_target_reserve_mib: int = 0,
+        fit_target_delta_by_idx: Optional[Mapping[int, float]] = None,
     ) -> list[str]:
         """Explicit --parallel drops the --kv-unified default and splits -c per slot; restore the
         shared pool. ``fit_target_reserve_mib`` is added on top for a sidecar the fitter cannot
-        measure."""
+        measure. Per-card deltas that differ always emit the flag, even when the broadcast
+        value restates the default, so the spawn can spell it per device."""
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
             flags.append("--kv-unified")
@@ -37889,7 +37937,10 @@ class LlamaCppBackend:
             _target += max(0, fit_target_reserve_mib)
             # The legacy path stays silent when it would only restate llama.cpp's
             # own default, so an untouched slider leaves the command unchanged.
-            if auto_fit or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
+            _per_device = bool(fit_target_delta_by_idx) and (
+                len({float(v) for v in fit_target_delta_by_idx.values()}) > 1
+            )
+            if auto_fit or _per_device or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
                 flags.extend(["--fit-target", str(int(_target))])
         return flags
 
