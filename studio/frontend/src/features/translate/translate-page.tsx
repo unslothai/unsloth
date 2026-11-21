@@ -182,12 +182,38 @@ const SERVER_FILE_EXTENSIONS = [
 ].join(",");
 const OPEN_FILE_EXTENSIONS = `${TEXT_FILE_EXTENSIONS},${SERVER_FILE_EXTENSIONS}`;
 
-function readsInBrowser(file: File): boolean {
+const TEXT_READ_BYTES = TRANSLATE_SOURCE_MAX_CHARS * 4 + 4;
+
+function isTextFile(file: File): boolean {
   const name = file.name.toLowerCase();
+  if (SERVER_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))) {
+    return false;
+  }
   return (
-    file.type.startsWith("text/") &&
-    !OPEN_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
+    file.type.startsWith("text/") ||
+    TEXT_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
   );
+}
+
+// null: not UTF-8 (Latin-1, UTF-16, ...), so the server detects the charset.
+async function readUtf8Prefix(file: File): Promise<string | null> {
+  const bytes = await file.slice(0, TEXT_READ_BYTES).arrayBuffer();
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+      stream: true,
+    });
+    return text.includes("\u0000") ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+function serverUpload(file: File): File {
+  return isTextFile(file)
+    ? new File([file.slice(0, TEXT_READ_BYTES)], file.name, {
+        type: file.type,
+      })
+    : file;
 }
 
 const IS_MAC =
@@ -1321,17 +1347,21 @@ export function TranslatePage() {
   const [readingFile, setReadingFile] = useState<string | null>(null);
   const openFile = async (file: File | undefined) => {
     if (!file) return;
-    if (readsInBrowser(file)) {
+    if (isTextFile(file)) {
+      let text: string | null;
       try {
-        loadText(
-          await file.slice(0, TRANSLATE_SOURCE_MAX_CHARS * 4 + 4).text(),
-        );
+        text = await readUtf8Prefix(file);
       } catch {
         toast.error(t("translate.fileNotText"));
+        return;
       }
-      return;
+      if (text !== null) {
+        loadText(text);
+        return;
+      }
     }
-    if (file.size > MAX_SERVER_DOCUMENT_BYTES) {
+    const upload = serverUpload(file);
+    if (upload.size > MAX_SERVER_DOCUMENT_BYTES) {
       toast.error(t("translate.fileNotText"));
       return;
     }
@@ -1340,7 +1370,7 @@ export function TranslatePage() {
     const before = useTranslateStore.getState().source;
     try {
       const { text, warning } = await extractDocumentText(
-        file,
+        upload,
         undefined,
         TRANSLATE_SOURCE_MAX_CHARS,
       );

@@ -9,43 +9,69 @@ import { SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS } from "../src/features/chat/open
 
 import { readSrc } from "./helpers/kit.ts";
 
+const MAX_CHARS = 50_000;
+const READ_BYTES = MAX_CHARS * 4 + 4;
+
 const page = readSrc("features/translate/translate-page.tsx");
 const fileHelpers = page.slice(
   page.indexOf("const TEXT_FILE_EXTENSIONS"),
   page.indexOf("const IS_MAC"),
 );
-const readsInBrowser = new Function(
+const { readUtf8Prefix, serverUpload } = new Function(
   "SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS",
+  "TRANSLATE_SOURCE_MAX_CHARS",
   `${
     ts.transpileModule(fileHelpers, {
       compilerOptions: { target: ts.ScriptTarget.ES2020 },
     }).outputText
-  }; return readsInBrowser;`,
-)(SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS) as (file: File) => boolean;
+  }; return { readUtf8Prefix, serverUpload };`,
+)(SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS, MAX_CHARS) as {
+  readUtf8Prefix: (file: File) => Promise<string | null>;
+  serverUpload: (file: File) => File;
+};
 
-test("text files opened in Translate are decoded by the server, in the encoding they were saved in", () => {
+test("text files not saved as UTF-8 go to the server to detect their encoding", async () => {
   const files = [
     new File([Buffer.from("Réunion du 12 décembre", "latin1")], "notes.txt", {
       type: "text/plain",
     }),
     new File([new Uint8Array([0x89, 0xef, 0x8b, 0x63])], "subs.srt"),
     new File(
-      [Buffer.from("\ufeffName\tCity\r\nJosé\tMünchen", "utf16le")],
+      [Buffer.from("﻿Name\tCity\r\nJosé\tMünchen", "utf16le")],
       "export.txt",
-      {
-        type: "text/plain",
-      },
+      { type: "text/plain" },
     ),
-    new File(["<p>Berlin</p>"], "Berlin.html", { type: "text/html" }),
+    new File([Buffer.from("Name\tCity", "utf16le")], "plain16.txt"),
   ];
   for (const file of files) {
-    assert.equal(readsInBrowser(file), false, file.name);
+    assert.equal(await readUtf8Prefix(file), null, file.name);
   }
 });
 
-test("a text file of a type the server does not parse is still read in the browser", () => {
-  assert.equal(
-    readsInBrowser(new File(["notes"], "README", { type: "text/plain" })),
-    true,
-  );
+test("UTF-8 text files load exactly as saved", async () => {
+  const cases: [string, string][] = [
+    ["code.md", "    first\n    second\n"],
+    ["table.tsv", "\tA\tB\r\n0\tx\ty\n"],
+    ["Berlin.html", "<p>Berlin</p>"],
+    ["README", "notes"],
+  ];
+  for (const [name, text] of cases) {
+    const file = new File([text], name, { type: "text/plain" });
+    assert.equal(await readUtf8Prefix(file), text, name);
+  }
+});
+
+test("a UTF-8 character split by the read limit stays on the UTF-8 path", async () => {
+  const text = `${"a".repeat(READ_BYTES - 1)}é`;
+  const read = await readUtf8Prefix(new File([text], "long.txt"));
+  assert.equal(read, "a".repeat(READ_BYTES - 1));
+});
+
+test("only a bounded prefix of a large text file is uploaded", () => {
+  const big = new File([new Uint8Array(READ_BYTES * 3).fill(0xe9)], "big.log");
+  const upload = serverUpload(big);
+  assert.equal(upload.size, READ_BYTES);
+  assert.equal(upload.name, "big.log");
+  const pdf = new File([new Uint8Array(READ_BYTES * 3)], "scan.pdf");
+  assert.equal(serverUpload(pdf), pdf);
 });
