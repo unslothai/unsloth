@@ -55,6 +55,12 @@ test("a character turn refuses a speech-only model instead of reading the prompt
   assert.match(audio, /options\.requireText \? \{ "X-Unsloth-Require-Text": "1" \}/);
 });
 
+test("ordinary chats keep main's thread scaffolding", () => {
+  const thread = read("components/assistant-ui/thread.tsx");
+  assert.match(thread, /inCharacterChat && "aui-thread-bottom-spacer",/);
+  assert.doesNotMatch(thread, /"aui-thread-bottom-spacer shrink-0"/);
+});
+
 test("a send re-reads the cast and personas, not only the scene", () => {
   const runtime = read("features/characters/chat-runtime.ts");
   assert.match(runtime, /if \(args\.revalidate\) await revalidateParticipants\(scene\);/);

@@ -2481,7 +2481,9 @@ export const Thread: FC<{
             <div
               ref={spacerRef}
               className={cn(
-                "aui-thread-bottom-spacer shrink-0",
+                // Hooked only in character chats (novel view), so ordinary chats keep main's markup.
+                inCharacterChat && "aui-thread-bottom-spacer",
+                "shrink-0",
                 hideComposer
                   ? "h-16"
                   : composerHeight == null
