@@ -46,7 +46,8 @@ _TABLE = [
     ("wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors", "wan2.2-t2v-a14b"),
     ("Wan2_2-T2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.safetensors", "wan2.2-t2v-a14b"),
     ("Wan-AI/Wan2.2-I2V-A14B-Diffusers", None),
-    ("FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", None),
+    # The dense-attention DMD student (video_dmd); the sparse FastWan releases below stay refused.
+    ("FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", "wan2.2-ti2v-5b"),
     ("Lightricks/LTX-2", "ltx-2"),
     ("Lightricks/LTX-2.3", "ltx-2"),
     ("unsloth/LTX-2.3-GGUF", "ltx-2"),

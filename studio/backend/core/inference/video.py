@@ -14469,6 +14469,31 @@ class VideoBackend:
                 if not fam.supports_cfg:
                     guidance = float(fam.default_guidance)
                     negative_prompt = None
+                from .video_dmd import dmd_timesteps
+
+                dmd_ts = dmd_timesteps(
+                    state.variant_id,
+                    state.gguf_filename,
+                    state.display_repo_id,
+                    state.repo_id,
+                )
+                if dmd_ts is not None:
+                    if state.engine != "diffusers":
+                        raise ValueError(
+                            "This FastWan checkpoint is a DMD few-step student, which only the Diffusers engine "
+                            "samples; load the Diffusers repo instead of a GGUF file."
+                        )
+                    # A DMD student is distilled at fixed timesteps, without CFG: other counts or a CFG scale
+                    # would sample a model it was never trained to be.
+                    if steps != len(dmd_ts) or guidance != 1.0:
+                        logger.info(
+                            "video.dmd: %d steps / CFG %s requested; this DMD student runs its trained %d "
+                            "steps at CFG 1",
+                            steps,
+                            guidance,
+                            len(dmd_ts),
+                        )
+                    steps, guidance, negative_prompt = len(dmd_ts), 1.0, None
                 if state.engine == "sd_cpp":
                     return self._generate_h3_native(
                         state = state,
@@ -15086,6 +15111,11 @@ class VideoBackend:
                             stack.enter_context(h3_render_scope(pipe, logger))
                         if float_seeds is not None:
                             stack.enter_context(_seed_before_first_forward(float_seeds))
+                        if dmd_ts is not None:
+                            from .video_dmd import dmd_sampling
+                            stack.enter_context(
+                                dmd_sampling(pipe, dmd_ts, int(seed), logger = logger)
+                            )
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # NaN / inf pixels are refused at the decode, before a clamp or PIL / uint8 cast hides them.
