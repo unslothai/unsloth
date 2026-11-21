@@ -63,3 +63,38 @@ def test_flash_is_a_trusted_full_pipeline_pick():
     # Full pipelines load only from trusted repos; Flash is a curated variant, so its pipeline pick is allowed.
     assert diffusion_mod._is_trusted_diffusion_repo(FLASH)
     assert not diffusion_mod._is_trusted_diffusion_repo("someone/qwen-image-flash-copy")
+
+
+@pytest.mark.parametrize(
+    "family_id, repo_id, tag, expected, own_fp8",
+    [
+        # Turbo is a distill of 2.1 whose card tags 2.1: a non-pipeline pick (GGUF / single file / planner) now
+        # resolves to Turbo and Turbo's own FP8 build, not 2.1's.
+        (
+            "Qwen/Qwen-Image-2.1",
+            "/models/qwen_image_2.1_turbo",
+            "Qwen/Qwen-Image-2.1",
+            "Qwen/Qwen-Image-2.1-Turbo",
+            "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        ),
+        # MOSS-Image-Base (a named variant, excluded from the SFT artifacts) tagged as the SFT model: its own FP8.
+        (
+            "OpenMOSS-Team/MOSS-Image-SFT",
+            "/models/moss_image_base",
+            "OpenMOSS-Team/MOSS-Image-SFT",
+            "OpenMOSS-Team/MOSS-Image-Base",
+            "unsloth/MOSS-Image-Base-FP8",
+        ),
+    ],
+)
+def test_a_named_variant_tagged_as_its_teacher_resolves_to_its_own_weights(
+    monkeypatch, family_id, repo_id, tag, expected, own_fp8
+):
+    family = df.detect_family(family_id)
+    monkeypatch.setattr(diffusion_mod, "_hf_base_model", lambda *a, **k: tag)
+    monkeypatch.setattr(diffusion_mod, "_remember_companion_base", lambda *a, **k: None)
+    base = diffusion_mod._resolve_base_repo(repo_id, None, family, None)
+    assert base == expected
+    assert df.family_prequant_repo(family, "fp8", base_repo = base) == own_fp8
+    # The teacher itself still resolves to itself.
+    assert diffusion_mod._resolve_base_repo(family_id, None, family, None) == family_id
