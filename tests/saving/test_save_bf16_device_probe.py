@@ -75,12 +75,12 @@ def _torch():
 def test_save_py_asks_the_device_aware_probe_for_bf16():
     for name in _BF16_CHECKED_FUNCTIONS:
         source = _function_source(name)
-        assert "torch.cuda.is_bf16_supported" not in source, (
-            f"{name} still asks torch.cuda whether bf16 is supported"
-        )
-        assert "is_bfloat16_supported(" in source, (
-            f"{name} must consult the device-aware is_bfloat16_supported()"
-        )
+        assert (
+            "torch.cuda.is_bf16_supported" not in source
+        ), f"{name} still asks torch.cuda whether bf16 is supported"
+        assert (
+            "is_bfloat16_supported(" in source
+        ), f"{name} must consult the device-aware is_bfloat16_supported()"
     assert "is_bfloat16_supported" in _SOURCE
 
 
@@ -104,7 +104,11 @@ class _StopConversion(Exception):
 def _save_to_gguf_namespace(bf16, observed):
     printed = []
 
-    def _choose_first_conversion(quantization_methods, model_dtype, has_imatrix = False):
+    def _choose_first_conversion(
+        quantization_methods,
+        model_dtype,
+        has_imatrix = False,
+    ):
         observed["model_dtype"] = model_dtype
         return "bf16"
 
@@ -121,9 +125,7 @@ def _save_to_gguf_namespace(bf16, observed):
         check_llama_cpp = lambda: ("llama-quantize", "convert.py"),
         # check_llama_cpp's bare `except:` swallows a sentinel raise; the staging call is past
         # everything under test and stops the function before real llama.cpp work starts.
-        _gguf_conversion_staging = lambda directory: (_ for _ in ()).throw(
-            _StopConversion()
-        ),
+        _gguf_conversion_staging = lambda directory: (_ for _ in ()).throw(_StopConversion()),
     )
     return namespace, printed
 
