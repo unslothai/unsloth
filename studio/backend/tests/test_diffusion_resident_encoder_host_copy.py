@@ -157,9 +157,7 @@ def test_tied_partners_rebuild_one_shared_copy():
 
 @pytest.mark.parametrize("pin_budget", [None, 0])
 def test_cuda_dropped_encoder_streams_bit_identical_after_an_eviction(monkeypatch, pin_budget):
-    """Real diffusers leaf-level group offload on CUDA: the deferred encoder pin drops every resident group's host
-    copy, an oversized release copies them back in one registered slab, the streamed forward and the restored one
-    match the reference bit for bit."""
+    """After eviction, streamed and restored CUDA forwards match the reference bit for bit."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA-only: diffusers group offloading with a copy stream")
     pytest.importorskip("diffusers.hooks")

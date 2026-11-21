@@ -62,8 +62,7 @@ def test_stages_largest_first_until_the_rest_fits():
 
 def test_card_too_small_for_the_encoder_stages_it_split():
     plan = VS.plan_stage(WAN13, available_mib = 10100, reserve_mib = 3072, device_free_mib = 11000)
-    # the encoder does not fit the card: the card takes what fits, host RAM the 2.5 GB rest, and the DiT then
-    # converts densely beside it
+    # The card takes what fits of the encoder, host RAM the 2.5 GB rest; the DiT converts densely.
     assert plan.stage == ("text_encoder",)
     assert plan.split == {"text_encoder": 11000 - VS._DEVICE_MARGIN_MIB}
 
@@ -275,9 +274,7 @@ def test_non_cuda_device_never_stages(pipe_dir, monkeypatch):
     assert calls == []
 
 
-# HunyuanVideo-1.5 on a Kaggle T4 (31 GB host, 15 GB card): the fp32 DiT converts to fp16 (18.4 GiB, a cast-cache
-# miss) while the bf16 Qwen2.5-VL-7B converts to fp16 beside it (15.6 GiB, not a cast candidate). Pricing the DiT
-# alone let every load through and the host ran out of RAM (rc -9).
+# HunyuanVideo-1.5 on a T4: pricing the DiT alone let fp16 casts overrun host RAM (rc -9).
 HV15_T4 = {"transformer": 18827}
 HV15_TE_MIB = 15600
 
@@ -382,9 +379,8 @@ def test_source_cast_respects_the_kill_switch(pipe_dir, monkeypatch):
 
 
 def test_a_split_plan_casts_from_the_source_shards_instead(pipe_dir, monkeypatch):
-    """A DiT a little over the card was split card / host through accelerate's cpu offload, whose host share loads
-    as meta tensors (nothing to write, on the Kaggle T4 the dense load then ran out of host RAM): it is cast from
-    its source shards instead, without touching the card."""
+    """A DiT a little over the card is split via accelerate cpu offload; it is cast from source
+    shards without touching the card, since the dense load ran out of Kaggle T4 host RAM."""
     from core.inference import video as V
 
     sizes = {"text_encoder": 100, "transformer": 16000}

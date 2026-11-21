@@ -81,33 +81,33 @@ test("a partial download shows no size: its bytes are what arrived", () => {
   );
 });
 
-test("Discover rows: the Hub estimate reads as approximate, never for a GGUF repo", () => {
+test("Discover rows show the repo's weights, never a GGUF repo's", () => {
   assert.deepEqual(
     rowSizeMeta({
       kind: "hub",
       id: "unsloth/Qwen3-8B",
       format: "checkpoint",
-      estimatedBytes: 16.4 * GB,
+      sizeBytes: 16.4 * GB,
       hubParams: "8.2B",
     }),
-    { params: "8.2B", size: "~16 GB" },
+    { params: "8.2B", size: "16 GB" },
   );
-  // A GGUF repo has no dtype-summed estimate, so none shows.
+  // A GGUF repo holds several quants, so it has no one size.
   assert.deepEqual(
     rowSizeMeta({
       kind: "hub",
       id: "unsloth/Qwen3-8B-GGUF",
       format: "gguf",
-      estimatedBytes: 16.4 * GB,
+      sizeBytes: 16.4 * GB,
       hubParams: "8B",
     }),
     { params: "8B", size: null },
   );
-  // Discover takes params from the search result only, not from the row's bytes on disk.
-  assert.deepEqual(
-    rowSizeMeta({ kind: "hub", id: "a/b", sizeBytes: 4 * GB }),
-    { params: null, size: null },
-  );
+  // Discover takes params from the search result only, not from the id.
+  assert.deepEqual(rowSizeMeta({ kind: "hub", id: "a/Qwen3-8B" }), {
+    params: null,
+    size: null,
+  });
 });
 
 test("a favorite quant row sizes that quant, and only that quant", () => {
@@ -177,7 +177,10 @@ test("rows only draw the columns when the setting is on", () => {
     picker,
     /const hubHasSizes = useMemo\(\s*\(\) =>\s*showModelSizes &&\s*shownRows\.some\(\s*\(row\) =>\s*row\.kind === "hub" &&\s*rowSizeMeta\(/,
   );
-  assert.match(picker, /\[showModelSizes, shownRows, hubSizes\]/);
+  // The same sizes main's MLX and Safetensors filters show (hub-repo-size).
+  assert.match(picker, /sizeBytes: hubSizeOf\(row\.id\),/);
+  assert.match(picker, /\[showModelSizes, shownRows, hubSizeOf\]/);
+  assert.match(picker, /\{sizeLabel && !sizeMeta \? \(/);
   // A favorited quant is looked up on disk once, for every row kind, local GGUF folders too.
   assert.match(
     picker,
@@ -186,7 +189,7 @@ test("rows only draw the columns when the setting is on", () => {
   assert.match(picker, /row\.favoriteQuant\s*\?\s*favoriteOnDisk\s*:/);
   assert.match(
     picker,
-    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,[\s\S]*?row\.sizeBytes \?\?\s*\(row\.lora\?\.source === "local" \? row\.lora\.sizeBytes : undefined\),\s*\)/,
+    /sizeBytes: rowOwnBytes\(\s*row\.favoriteQuant,\s*favoriteOnDisk \? quantBytes\(favoriteOnDisk\) : null,\s*onDisk\.length === 1 \? quantBytes\(onDisk\[0\]\) : null,\s*row\.kind === "hub"\s*\?\s*hubBytes\s*:\s*\(row\.sizeBytes \?\?\s*\(row\.lora\?\.source === "local" \? row\.lora\.sizeBytes : undefined\)\),\s*\)/,
   );
 });
 
@@ -265,6 +268,11 @@ test("composer fit marks carry the estimate on Discover rows and quant rows", ()
   // The same smallest-quant bytes the verdict was reached with.
   assert.match(picker, /map\.set\(id, fitOf\(smallestQuantBytes\(r\)\)\);/);
   assert.match(picker, /map\.set\(r\.id\.toLowerCase\(\), requiredGgufMemoryGb\(bytes\)\);/);
+  // A checkpoint cannot offload: its weights are the figure.
+  assert.match(
+    picker,
+    /const needGb = offering\s*\?\s*hubNeedGb\.get\(row\.id\.toLowerCase\(\)\)\s*:\s*fit\s*\?\s*\(hubSizeOf\(row\.id\) \?\? 0\) \/ 1024 \*\* 3/,
+  );
   assert.match(picker, /<FitBadge\s+status=\{fit\}\s+needGb=\{needGb\}\s+gpuGb=\{inferenceGpu\.memoryTotalGb\}/);
   assert.match(
     picker,

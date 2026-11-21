@@ -254,6 +254,55 @@ def _caller_sampling_only(model, kwargs):
     return {**kwargs, "generation_config": generation_config, "use_model_defaults": False}
 
 
+def _loss_only_eval_keeps_nothing(trainer, prediction_loss_only) -> bool:
+    args = getattr(trainer, "args", None)
+    if args is None:
+        return False
+    if prediction_loss_only is None:
+        prediction_loss_only = getattr(args, "prediction_loss_only", False)
+    if not prediction_loss_only or getattr(args, "batch_eval_metrics", False):
+        return False
+    return "inputs" not in (getattr(args, "include_for_metrics", None) or ())
+
+
+def _patch_loss_only_eval_flush(trainer_class) -> None:
+    """Skip the eval_accumulation_steps empty_cache() flush for loss-only eval (nothing to offload)."""
+    original = getattr(trainer_class, "evaluation_loop", None)
+    if original is None or getattr(original, "_unsloth_loss_only_no_flush", False):
+        return
+    try:
+        parameters = inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        return
+    if "prediction_loss_only" not in parameters:
+        return
+    names = list(parameters)
+
+    @functools.wraps(original)
+    def evaluation_loop(self, *args, **kwargs):
+        if "prediction_loss_only" in kwargs:
+            prediction_loss_only = kwargs["prediction_loss_only"]
+        else:
+            index = names.index("prediction_loss_only") - 1
+            prediction_loss_only = args[index] if len(args) > index else None
+        train_args = getattr(self, "args", None)
+        saved = getattr(train_args, "eval_accumulation_steps", None)
+        if (
+            saved is None
+            or os.environ.get("UNSLOTH_EVAL_EMPTY_CACHE", "0") == "1"
+            or not _loss_only_eval_keeps_nothing(self, prediction_loss_only)
+        ):
+            return original(self, *args, **kwargs)
+        train_args.eval_accumulation_steps = None
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            train_args.eval_accumulation_steps = saved
+
+    evaluation_loop._unsloth_loss_only_no_flush = True
+    trainer_class.evaluation_loop = evaluation_loop
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -457,6 +506,7 @@ def PatchRL(FastLanguageModel):
     if ppo_module is not None and hasattr(ppo_module, unwrap):
         setattr(ppo_module, unwrap, unsloth_unwrap_model_for_generation)
     Trainer.prediction_step = unsloth_prediction_step
+    _patch_loss_only_eval_flush(Trainer)
 
 
 grpo_selective_log_softmax = RL_REPLACEMENTS["grpo_selective_log_softmax"]
@@ -3370,6 +3420,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
+    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "try:\n"
+            "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+            "except ImportError:\n"
+            "    _unsloth_install_image_dedup = None\n"
+            "if _unsloth_install_image_dedup is not None:\n"
+            "    _unsloth_install_image_dedup(getattr(self, 'model', None))\n"
+            "pass\n"
+        )
+
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
             "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
@@ -3512,9 +3574,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += learning_rate_check
 
-    # optim = 'adamw_8bit' is kept under FSDP2: native FSDP2 (fsdp2_native._swap_bnb_optimizer) and
-    # accelerate's FSDP2 (fsdp2._localize_or_refuse_bnb after Accelerator._prepare_fsdp2) step bitsandbytes
-    # Adam / AdamW on each rank's local shard, and refuse the bitsandbytes optimizers that cannot (unsloth#3551).
+    # optim 'adamw_8bit' is kept under FSDP2: bitsandbytes Adam/AdamW step on each local shard;
+    # other bitsandbytes optimizers are refused (unsloth#3551).
     if "optim" in call_args:
         extra_args += (
             "_unsloth_flash_adamw = str(getattr(optim, 'value', optim)).strip().lower() == 'adamw_flash'\n"
@@ -5152,9 +5213,124 @@ def _packing_honored(
     return bool(torch.isfinite(leak)) and bool(control > 0) and bool(leak <= 0.2 * control)
 
 
+# Prefix-trie rows on fast backbones: "tree_attention" ran the trie as is, "unrolled" expanded it per sample.
+_ASYNC_GRPO_TREE_COUNTS = {
+    "tree_attention": 0,
+    "unrolled": 0,
+    "unrolled_tokens": 0,
+    "unique_tokens": 0,
+}
+_ASYNC_GRPO_TREE_WARNED = []
+
+
+def _prefix_grouper_kernel():
+    from ..utils import prefix_grouper_kernel
+    return prefix_grouper_kernel
+
+
+def _tree_attention_eligible(model, device):
+    # Needs every decoder layer to apply prefix_seg_info, plain causal softmax attention and per-token MLPs.
+    if os.environ.get("UNSLOTH_ASYNC_GRPO_TREE_ATTENTION", "1").lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    if device is None or device.type != "cuda":
+        return False
+    cached = getattr(model, "_unsloth_tree_attention_eligible", None)
+    if cached is None:
+        cached = False
+        try:
+            from ..utils.prefix_grouper import prefix_seg_info_applied
+            from ..utils.prefix_grouper_kernel import TORCH_SUPPORTS_PREFIX_GROUPER
+            from .dpo_prefix_share import _SSM_MOE_ATTRS, _length_dependent_rope
+
+            config = model.config
+            cached = bool(
+                TORCH_SUPPORTS_PREFIX_GROUPER
+                and config.get_text_config() is config
+                and not getattr(config, "attn_logit_softcapping", None)
+                and not getattr(config, "attention_dropout", 0)
+                and not any(getattr(config, a, None) is not None for a in _SSM_MOE_ATTRS)
+                and not _length_dependent_rope(config)
+                and not any(type(p).__name__ == "DTensor" for p in model.parameters())
+                and prefix_seg_info_applied(model)
+            )
+        except Exception:
+            cached = False
+        try:
+            model._unsloth_tree_attention_eligible = cached
+        except Exception:
+            pass
+    if not cached:
+        return False
+    try:
+        from ..context_parallel import get_cp_manager
+        from ..utils.prefix_grouper_kernel import compile_check_failed
+        return compile_check_failed() is None and get_cp_manager() is None
+    except Exception:
+        return False
+
+
+def _async_grpo_tree_seg_info(model, f_kwargs):
+    parents = f_kwargs.get("tree_segment_parents")
+    position_ids = f_kwargs.get("position_ids")
+    if (
+        parents is None
+        or position_ids is None
+        or position_ids.dim() != 2
+        or position_ids.shape[0] != 1
+    ):
+        return None
+    if not _tree_attention_eligible(model, position_ids.device):
+        return None
+    parents = parents.cpu()
+    if bool((parents < 0).all()):
+        return None  # nothing shared: plain packing, which the varlen kernels run faster
+    config = model.config
+    window = getattr(config, "sliding_window", None)
+    if (
+        isinstance(window, int)
+        and window > 0
+        and getattr(config, "use_sliding_window", True) is not False
+        and int(f_kwargs.get("tree_max_seqlen_k") or 0) > window
+    ):
+        return None
+    try:
+        offsets = f_kwargs["tree_cu_seqlens_q"].cpu().long()
+        seg = _prefix_grouper_kernel().build_tree_seg_info(offsets, parents, position_ids.device)
+        # Same trie TRL's tree attention gathers: each segment's K/V path is its parent's plus its own tokens.
+        lengths = (offsets[1:] - offsets[:-1]).tolist()
+        path = []
+        for length, parent in zip(lengths, parents.tolist()):
+            path.append(length + (path[parent] if parent >= 0 else 0))
+        cu_k = f_kwargs["tree_cu_seqlens_k"].cpu().long()
+        if (cu_k[1:] - cu_k[:-1]).tolist() != path or seg.T != position_ids.shape[1]:
+            return None
+    except Exception:
+        return None
+    return seg
+
+
+def _forward_tree_attention(head_forward, f_args, f_kwargs, seg):
+    # One forward over the unique tokens; the FlexAttention mask shows each segment its root-to-segment path.
+    compile_error = _prefix_grouper_kernel().PrefixGrouperCompileError
+    tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
+    f_kwargs["prefix_seg_info"] = seg
+    try:
+        outputs = head_forward(*f_args, **f_kwargs)
+    except compile_error:
+        f_kwargs.pop("prefix_seg_info", None)
+        f_kwargs.update(tree)
+        return _forward_tree_unrolled(head_forward, f_args, f_kwargs)
+    _ASYNC_GRPO_TREE_COUNTS["tree_attention"] += 1
+    return outputs
+
+
 def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
-    # TRL >= 1.17 prefix-trie rows need tree attention, which Unsloth lacks: unroll each root-to-leaf path into its
-    # own packed sequence and read each trie position back from one copy (exact; shared prefixes forwarded per sample).
+    # Unroll each root-to-leaf path into its own packed sequence; read each trie position back from one copy.
     tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
     position_ids = f_kwargs.get("position_ids")
     parents = tree["tree_segment_parents"]
@@ -5172,6 +5348,17 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
         torch.arange(parents.numel(), device = device), path_lengths.to(device)
     )
     index = kv_index[leaf.to(device)[segment_of]]
+    _ASYNC_GRPO_TREE_COUNTS["unrolled"] += 1
+    _ASYNC_GRPO_TREE_COUNTS["unrolled_tokens"] += index.numel()
+    _ASYNC_GRPO_TREE_COUNTS["unique_tokens"] += length
+    if not _ASYNC_GRPO_TREE_WARNED and index.numel() >= 2 * length:
+        _ASYNC_GRPO_TREE_WARNED.append(True)
+        print(
+            f"Unsloth: AsyncGRPOTrainer unrolled a prefix-trie row of {length} unique tokens into "
+            f"{index.numel()} tokens ({index.numel() / length:.2f}x): this model cannot run tree attention, "
+            "so peak memory follows the unrolled length. Lower the token budget if training runs out of memory.",
+            flush = True,
+        )
     # Every trie node lies on a sample's path and every sample ends on a leaf, so each position gets a copy.
     source = torch.empty(length, dtype = torch.long, device = device)
     source[index] = torch.arange(index.numel(), device = device)
@@ -5206,7 +5393,7 @@ def _unsloth_async_grpo_lm_head(
         head_forward = target.forward
         unroll_tree = False
         if _is_unsloth_fast_backbone(getattr(target, "base_model", None)):
-            # Unsloth attention ignores TRL's tree attention and position_ids resets, so unroll prefix-trie rows.
+            # Unsloth attention ignores TRL's tree attention and position_ids resets.
             unroll_tree = True
 
             def packed_kwargs(f_kwargs):
@@ -5265,6 +5452,9 @@ def _unsloth_async_grpo_lm_head(
         def forward(*f_args, **f_kwargs):
             if flag is None or f_kwargs.get(flag):
                 if unroll_tree and "tree_kv_index" in f_kwargs:
+                    seg = _async_grpo_tree_seg_info(target, f_kwargs)
+                    if seg is not None:
+                        return _forward_tree_attention(head_forward, f_args, f_kwargs, seg)
                     return _forward_tree_unrolled(head_forward, f_args, f_kwargs)
                 packed_kwargs(f_kwargs)
             return head_forward(*f_args, **f_kwargs)
@@ -5632,9 +5822,10 @@ def patch_trl_async_grpo():
                 # nearly idle; let the engine batch as many as it can schedule.
                 config.max_inflight_tasks = server.max_num_seqs
         # TRL unfreezes a VLM's whole text model and LM head; under LoRA that is full fine-tuning of the base (and,
-        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set.
+        # with fast_inference, of the weights vLLM serves from), so keep the adapter-only trainable set. By name:
+        # native FSDP2 shards inside Trainer.__init__, replacing every parameter with a new DTensor one.
         trainable = (
-            {id(p) for p in model.parameters() if p.requires_grad}
+            {name for name, p in model.named_parameters() if p.requires_grad}
             if isinstance(model, torch.nn.Module) and hasattr(model, "peft_config")
             else None
         )
@@ -5655,8 +5846,8 @@ def patch_trl_async_grpo():
                 restore_requires_grad()
                 restore_text_config()
             if trainable is not None:
-                for p in model.parameters():
-                    if p.requires_grad and id(p) not in trainable:
+                for name, p in model.named_parameters():
+                    if p.requires_grad and name not in trainable:
                         p.requires_grad_(False)
             if server is not None:
                 if not getattr(self, "_lora_sync", False):

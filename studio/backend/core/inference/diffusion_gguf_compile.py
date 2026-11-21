@@ -60,14 +60,9 @@ _forward_patched = False
 
 
 def _q8_0_blocks_dequant_cast(raw: Any, dtype: Any) -> Any:
-    """Q8_0 bytes (any shape, ``n_blocks * 34`` bytes) -> ``(n_blocks, 32)`` weight in ``dtype``. Same ops and order
-    as diffusers' ``dequantize_blocks_Q8_0`` (fp16 scale * int8 code -> fp16) followed by ``.to(dtype)``; the dtype
-    views are taken on the contiguous byte tensor before slicing, so no slice is materialised.
-
-    Inductor computes a fused fp16 product in fp32 and would round it once to ``dtype`` (bf16: a different result
-    than fp16 round then bf16 round, and no fp16 overflow to inf). The int16 bitcast forces the fp16 store rounding
-    inside the kernel; the ``& -1`` keeps inductor from folding the bitcast pair away. Eager it is a no-op. The
-    result stays in the block layout: a reshape to the symbolic row width inside the graph costs a second copy."""
+    """Q8_0 bytes (n_blocks*34) become (n_blocks, 32) in dtype; Inductor fuses the fp16 product,
+    rounding once to dtype (no fp16 overflow to inf); int16 bitcast forces fp16 store rounding; &
+    -1 stops folding; eager no-op."""
     import torch  # noqa: PLC0415
 
     blocks = raw.reshape(-1, _Q8_0_TYPE_SIZE)

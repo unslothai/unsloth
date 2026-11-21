@@ -42,6 +42,7 @@ import {
   translateMessages,
   translatePromptModel,
 } from "./models";
+import { quantOnDisk } from "./quant-on-disk";
 import {
   type TranslatePromptOptions,
   restoreChunkWhitespace,
@@ -115,23 +116,21 @@ type LocalModel = {
   sizeBytes: number;
 };
 
+/** Disk first: a quant already on disk needs no Hub listing. `remote: false` never asks the Hub. */
 export async function translateModelDownloaded(
   model: LocalModel,
   signal?: AbortSignal,
+  options?: { remote?: boolean },
 ): Promise<boolean | null> {
   const quant = model.variant?.toLowerCase();
   if (!quant) return null;
-  try {
-    const listing = await listGgufVariants(model.repo, undefined, { signal });
-    const variant = listing.variants.find(
-      (entry) => entry.quant?.toLowerCase() === quant,
-    );
-    return variant
-      ? variant.downloaded === true && variant.partial !== true
-      : null;
-  } catch {
-    return null;
-  }
+  return quantOnDisk(
+    quant,
+    async (localOnly) =>
+      (await listGgufVariants(model.repo, undefined, { signal, localOnly }))
+        .variants,
+    { remote: options?.remote !== false, signal },
+  );
 }
 
 async function downloadModel(

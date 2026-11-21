@@ -225,10 +225,9 @@ def test_generate_scope_turns_graphs_on(runtime):
 @rl_default
 @pytest.mark.parametrize("keep", ["0", "1"])
 def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path, keep):
-    """A real GRPOTrainer step: its generate() runs graphed with the variable unset, completions
-    match the eager rollout, and the decode buffers are gone before the loss is computed (keep=0).
-    keep=1: the graphs and their store stay through training (only the attention attributes go), and
-    the second step replays without a capture."""
+    """Real GRPOTrainer step: generate() runs graphed with the variable unset and matches the eager
+    rollout; keep=0 frees decode buffers before the loss, keep=1 keeps graphs and their store
+    (only attention attributes go), so the second step replays without capture."""
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
@@ -278,9 +277,8 @@ def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path, keep):
 
 @rl_default
 def test_out_of_memory_in_the_graph_path_redoes_the_call_eagerly(runtime):
-    """A real CUDA allocator OOM raised only while graphs are on (the first graph-mode buffer
-    allocation asks for 1 PiB): generate() frees the graphs, redoes the call eagerly once, counts it,
-    warns once, and returns the eager tokens and logits."""
+    """A real CUDA OOM only with graphs on (first graph buffer asks for 1 PiB): generate() frees
+    graphs, redoes it eagerly once, counts it, warns once, returns eager tokens and logits."""
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
     model, tok = _load()
@@ -313,9 +311,8 @@ def test_out_of_memory_in_the_graph_path_redoes_the_call_eagerly(runtime):
 @rl_default
 @pytest.mark.parametrize("vmm", ["0", "1"])
 def test_training_forward_without_for_training_frees_generate_memory(runtime, vmm):
-    """Sampling in a trainer callback: generate() on an inference-mode model, then training resumes
-    with model.train() only. The first training forward frees the decode caches (and, without VMM, the
-    graphs); with VMM the graphs replay on the next generate()."""
+    """Sampling in a trainer callback, then model.train() alone: the first training forward frees
+    decode caches (and graphs without VMM); with VMM graphs replay on the next generate()."""
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
     _vmm(runtime, vmm)

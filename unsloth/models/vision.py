@@ -283,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._frozen_prefix import install_frozen_prefix_skip
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -5160,6 +5161,9 @@ class FastBaseModel:
                     )
 
                 llm = load_vllm(**load_vllm_kwargs)
+                if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+                    from unsloth.utils.run_report import report_memory
+                    report_memory("vLLM init", llm)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,
@@ -5683,6 +5687,7 @@ class FastBaseModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            install_frozen_prefix_skip(model)
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
@@ -6177,6 +6182,7 @@ class FastBaseModel:
         enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        install_frozen_prefix_skip(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)
@@ -6371,6 +6377,10 @@ class FastBaseModel:
             )
         _tensor_parallel_for_inference(model)
         restore_fp8_lora_for_inference(model)
+        # Training's NF4 dequant cache (kernels/dequant_cache.py) would hold memory generation may need.
+        from ..kernels.dequant_cache import clear_dequant_cache
+
+        clear_dequant_cache()
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):

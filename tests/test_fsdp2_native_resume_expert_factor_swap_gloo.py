@@ -22,6 +22,7 @@ from test_tp_native_gloo import _free_port  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODES = ("noswap", "swap", "legacy")
+CROSS_MODES = ("legacy_to_default", "legacy_no_config")
 
 
 def _build(mode, seed):
@@ -75,15 +76,20 @@ def _case(rank, world, tmp, mode):
     from torch.distributed.fsdp import fully_shard
     from torch.distributed.tensor import DTensor
 
-    if mode == "legacy":
+    cross = mode in CROSS_MODES  # saved grouped_by_expert, resumed with the override unset
+    if mode == "legacy" or cross:
         os.environ["UNSLOTH_MOE_LORA_B_LAYOUT"] = "grouped_by_expert"
     checkpoint = os.path.join(tmp, "checkpoint")
-    trained = _build(mode, seed = 1)
+    trained = _build("legacy" if cross else mode, seed = 1)
     want = {n: p.detach().clone() for n, p in trained.named_parameters() if "lora_" in n}
     if rank == 0:
         trained.save_pretrained(checkpoint)
+        if mode == "legacy_no_config":
+            os.remove(os.path.join(checkpoint, "adapter_config.json"))
     dist.barrier()
-    model = _build(mode, seed = 2)
+    if cross:
+        os.environ.pop("UNSLOTH_MOE_LORA_B_LAYOUT")
+    model = _build("swap" if cross else mode, seed = 2)
     fully_shard(model, mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",)))
     setattr(model, fsdp2_native._NATIVE_FLAG, True)
     try:
@@ -121,8 +127,7 @@ def _worker(rank, world, port, tmp, mode):
         dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_native_resume_restores_expert_lora_saved_in_vanilla_layout(mode):
+def _run(mode):
     ctx = multiprocessing.get_context("spawn")
     port, world = _free_port(), 2
     with tempfile.TemporaryDirectory() as tmp:
@@ -140,8 +145,54 @@ def test_native_resume_restores_expert_lora_saved_in_vanilla_layout(mode):
         ]
     if "skip" in results[0]:
         pytest.skip(reason = f"unsloth_zoo without the expert factor swap: {results[0]['skip']}")
+    return results
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_native_resume_restores_expert_lora_saved_in_vanilla_layout(mode):
+    results = _run(mode)
     for rank, res in enumerate(results):
         assert "error" not in res, (rank, res["error"])
         assert sorted(res["got"]) == sorted(res["want"])
         for name, want in res["want"].items():
             torch.testing.assert_close(res["got"][name], want, rtol = 0, atol = 0, msg = name)
+
+
+def _expert_deltas(
+    params,
+    rank_major,
+    num_experts = 4,
+):
+    """{lora_B name: [E, out, in]} per-expert B_e @ A_e; lora_B column is e*r+j grouped, j*E+e rank_major."""
+    out = {}
+    for name, b in params.items():
+        if ".lora_B." not in name:
+            continue
+        a = params[name.replace(".lora_B.", ".lora_A.")]
+        a = a.reshape(num_experts, -1, a.shape[1])
+        rank = a.shape[1]
+        if rank_major:
+            b = b.reshape(b.shape[0], rank, num_experts).permute(2, 0, 1)
+        else:
+            b = b.reshape(b.shape[0], num_experts, rank).permute(1, 0, 2)
+        out[name] = b.double() @ a.double()
+    return out
+
+
+def test_native_resume_repacks_grouped_by_expert_lora_b_without_override():
+    results = _run("legacy_to_default")
+    for rank, res in enumerate(results):
+        assert "error" not in res, (rank, res["error"])
+        assert sorted(res["got"]) == sorted(res["want"])
+        want = _expert_deltas(res["want"], rank_major = False)
+        got = _expert_deltas(res["got"], rank_major = True)
+        assert want
+        for name in want:
+            torch.testing.assert_close(got[name], want[name], rtol = 0, atol = 0, msg = name)
+
+
+def test_native_resume_refuses_expert_lora_without_layout_marker_file():
+    results = _run("legacy_no_config")
+    for rank, res in enumerate(results):
+        assert "error" in res, rank
+        assert "adapter_config.json" in res["error"], (rank, res["error"])

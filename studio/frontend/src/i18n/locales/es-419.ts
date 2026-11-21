@@ -180,6 +180,7 @@ export const es419 = {
       add: "Agregar",
       cancel: "Cancelar",
       removeSite: "Quitar {site}",
+      hostOnly: "Solo este host, no sus subdominios",
       permissionsNote:
         "Aquí solo aparecen los sitios con permisos propios. Las acciones son inicios de sesión, envíos de formularios y botones que compran, envían o eliminan.",
       siteInvalid: "Escribe un sitio como example.com o *.example.com.",
@@ -810,6 +811,7 @@ export const es419 = {
     failed:
       "No se pudo instalar el motor. Vuelve a intentarlo o usa el motor predeterminado.",
     details: "Detalles técnicos",
+    lastAttempt: "Último intento: {time}",
     cancelled: "Instalación cancelada. Puedes volver a intentarlo.",
     scope:
       "Chat de texto e imagen en GPU NVIDIA. La primera carga puede tardar más.",
@@ -984,7 +986,6 @@ export const es419 = {
     copy: "Copiar",
     addScheduledTask: "Agregar tarea programada…",
     compact: "Compactar conversación",
-    compactQueued: "Se solicitó la compactación para el siguiente mensaje",
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
@@ -1880,6 +1881,12 @@ export const es419 = {
       learnMore: "Más información",
       managedNote:
         "El propietario de este servidor de Unsloth configura el sandbox del sistema.",
+      trustedFoldersTitle: "Carpetas de confianza",
+      trustedFoldersLabel: "Ejecutar sin preguntar",
+      trustedFoldersDescription: "Python y la Terminal pueden leer y ejecutar archivos de estas carpetas sin pedir aprobación, solo en tus propios chats. Escribir en ellas sigue pidiendo aprobación. Una carpeta por línea.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "No se pudieron cargar las carpetas de confianza.",
+      trustedFoldersSaveError: "No se pudieron guardar las carpetas de confianza.",
     },
     debugging: {
       description: "Lee los registros de Unsloth sin salir de la aplicación.",
@@ -2758,6 +2765,54 @@ export const es419 = {
     appearance: {
       title: "Apariencia",
       description: "Cómo se ve Unsloth en este dispositivo.",
+      themeFile: {
+        title: "Archivo de tema",
+        importLabel: "Importar un tema",
+        import: "Importar",
+        exportLabel: "Exportar tu tema",
+        export: "Exportar",
+        exportTitle: "Exportar tema",
+        exportName: "Nombre del tema",
+        exportNamePlaceholder: "Mi tema",
+        exportIncludeLayout: "Incluir diseño de la barra lateral",
+        exportIncludeAssets: "Incluir fuentes importadas e imagen de fondo",
+        exportAction: "Descargar",
+        exported: "Tema guardado como {name}",
+        exportFailed: "No se pudo exportar el tema.",
+        exportBackgroundOmitted: "La imagen de fondo era muy grande para incluirla, así que el archivo se guardó sin ella.",
+        importTitle: "Importar tema",
+        importApplyLayout: "Aplicar también el diseño de la barra lateral",
+        importApplyAssets: "Aplicar también las fuentes y la imagen de fondo",
+        importApply: "Aplicar tema",
+        changesTitle: "Qué cambiará",
+        noChanges: "Este tema coincide con tu apariencia actual.",
+        warningsTitle: "Advertencias",
+        applied: "Tema “{name}” aplicado",
+        undo: "Deshacer",
+        undone: "Se restauró la apariencia anterior",
+        undoneWithoutBackground: "Se restauró el aspecto anterior, pero no se pudo recuperar la imagen de fondo.",
+        fileTooLarge: "Este archivo es demasiado grande para ser un tema.",
+        fileInvalid: "Este archivo no es un tema válido de Unsloth.",
+        change: {
+          palette: "Tema de color",
+          colors: "Colores y contraste",
+          typography: "Fuentes y tamaño de texto",
+          code: "Visualización de código",
+          chat: "Ancho del chat y del editor",
+          glass: "Vidrio",
+          layout: "Diseño de la barra lateral",
+          fonts: "Fuentes importadas",
+          background: "Imagen de fondo",
+        },
+        warning: {
+          newerVersion: "Creado con una versión más reciente de Unsloth. Se omitieron los ajustes que esta versión no reconoce.",
+          unknownPalette: "Tema de color desconocido “{palette}”; se usará Estándar en su lugar.",
+          unknown: "Se omitió un ajuste desconocido: {path}",
+          invalid: "Se reemplazó un valor no válido: {path}",
+          backgroundSkipped: "No se pudo usar la imagen de fondo de este archivo.",
+          more: "Y {count} más",
+        },
+      },
       gpuRendering: {
         sectionTitle: "Renderizado",
         label: "Renderizado por GPU",
@@ -3393,6 +3448,7 @@ export const es419 = {
       groups: {
         replies: { title: "Respuestas" },
         thinkingTools: { title: "Razonamiento y herramientas" },
+        customization: { title: "Personalización" },
         conversations: {
           title: "Conversaciones",
         },
@@ -3447,6 +3503,10 @@ export const es419 = {
         fitOnDeviceOnly: "Mostrar solo modelos que caben",
         fitOnDeviceOnlyDescription:
           "Oculta en el selector de modelos y en el Hub los modelos demasiado grandes para la memoria de GPU y la RAM de este dispositivo. Los modelos descargados siguen visibles.",
+        pickerExpandLoaded: "Mostrar la lista completa de modelos",
+        pickerExpandLoadedDescription: "Abre el selector de modelos en la lista completa mientras hay un modelo cargado, en lugar de solo el modelo cargado. Expandir o contraer el selector también cambia esta opción.",
+        pickerMonochromeIcons: "Iconos de modelos monocromáticos",
+        pickerMonochromeIconsDescription: "Muestra los logotipos de modelos y proveedores en negro, blanco y gris en el selector de modelos.",
       },
       menu: {
         title: "Menú del chat",

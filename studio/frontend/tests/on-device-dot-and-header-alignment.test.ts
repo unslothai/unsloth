@@ -421,7 +421,7 @@ test("each fit verdict is an info mark that explains itself", () => {
   assert.ok(PICKERS_AND_VERDICTS.includes("aria-label={verdict.label}"));
   assert.ok(
     PICKERS_AND_VERDICTS.includes(
-      "`Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`",
+      "`Needs ~${formatGiB(estGb)} memory (GPU: ${formatGiB(gpuGb)})`",
     ),
   );
   assert.ok(

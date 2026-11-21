@@ -395,9 +395,7 @@ def _supported(arch: int) -> bool:
 @pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
 @pytest.mark.parametrize("capability", sorted(I.KERNEL_CONFIGS), ids = lambda c: f"sm{c[0]}{c[1]}")
 def test_nvrtc_makes_the_images_from_the_same_ptx(capability):
-    """The fallback PTX is compiled for compute_XY: byte for byte the PTX NVRTC gives for sm_XY (what the loader
-    used before). The machine code is NVRTC's for sm_XY, with the register cap given to its PTX compiler alone: the
-    PTX of that compile is the uncapped PTX too, and the cap changes the machine code."""
+    """Fallback PTX equals NVRTC's sm_XY PTX; the register cap changes only the machine code."""
     arch = 10 * capability[0] + capability[1]
     if not _supported(arch):
         pytest.skip(f"NVRTC {K.nvrtc_version()} cannot target sm_{arch}")

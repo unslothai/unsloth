@@ -4,6 +4,8 @@
 """Computer use: call dialects, picture-to-desktop mapping, whole calls on the drawn desktop."""
 
 import asyncio
+import inspect
+import math
 import threading
 import time
 import types
@@ -15,7 +17,9 @@ from core.inference.computer_use import actions as actions_mod
 from core.inference.computer_use import backends, keys, policy, screen
 from core.inference.computer_use.backends import Display, FrontWindow
 from core.inference.computer_use.backends import virtual
-from core.inference.mcp_images import _png_data_url, is_image_tool, split_images
+from core.inference.computer_use.budget import ImageBudget
+from core.inference.mcp_images import content_parts, is_image_tool, promote_history, split_images
+from core.inference.tool_loop_controller import ToolCallCompletion
 from state import computer_use as state
 from state import tool_policy
 from utils import host_policy
@@ -70,6 +74,23 @@ def at(x, y):
 BUTTON = (640, 450)
 FIELD = (400, 320)
 OUTSIDE = (1100, 700)
+
+
+def _mtmd(cell, cap):
+    # Image tokens as llama.cpp counts them: rounded cells, shrunk into the cap, two delimiters.
+    def count(width, height):
+        cols, rows = max(1, round(width / cell)), max(1, round(height / cell))
+        shrink = min(1.0, math.sqrt(cap / (cols * rows)))
+        return int(cols * shrink) * int(rows * shrink) + 2
+
+    return count
+
+
+QWEN, GEMMA = _mtmd(32, 4096), _mtmd(48, 1120)
+
+
+def sized(count = GEMMA, context = 32768):
+    state.set_coordinates(state.session_key(SESSION), "pixels", ImageBudget(count, lambda: context))
 
 
 @pytest.mark.parametrize(
@@ -268,6 +289,163 @@ def test_the_picture_fits_the_vision_grid_and_the_shared_image_cap(size):
     assert abs(width / height - size[0] / size[1]) < 0.06
 
 
+@pytest.mark.parametrize(
+    "count, context, display, tokens",
+    [
+        (QWEN, 8192, (2560, 1440), 1100),
+        (QWEN, 4400, (2560, 1440), 1100),  # a quarter of the context just holds the floor
+        (QWEN, 16384, (1080, 1920), 2048),
+        (QWEN, 131072, (1280, 800), 4096),
+        (_mtmd(28, 1536), 16384, (2560, 1440), 1538),  # a cap that clips the larger probe
+        (GEMMA, 32768, (5120, 1440), 1122),
+        (GEMMA, 32768, (1080, 1920), 1122),
+    ],
+)
+def test_a_screenshot_fills_the_models_image_token_target(count, context, display, tokens):
+    size = screen.fit_size(*display, ImageBudget(count, lambda: context))
+    assert 0.92 * tokens <= count(*size) <= tokens
+    assert abs(size[0] / size[1] / (display[0] / display[1]) - 1) <= 0.05
+
+
+@pytest.mark.parametrize(
+    "count, context",
+    [
+        (QWEN, 4396),
+        (lambda w, h: 258, 32768),
+        (lambda w, h: None, 32768),
+        (lambda w, h: max(1026, QWEN(w, h)), 8192),  # an --image-min-tokens floor
+        (lambda w, h: 900 if (w, h) == (2688, 1536) else QWEN(w, h), 32768),  # counts short
+    ],
+)
+def test_without_room_or_a_size_responsive_encoder_the_default_stays(count, context):
+    default = screen.fit_size(2560, 1440)
+    assert screen.fit_size(2560, 1440, ImageBudget(count, lambda: context)) == default
+
+
+@pytest.mark.parametrize(
+    "pixels, tokens",
+    [((3840, 2160), 4096), ((1920, 1080), 2048), ((1024, 768), 1100), ((3024, 1964), 4096)],
+)
+def test_a_screenshot_is_never_upscaled_past_the_precision_floor(pixels, tokens):
+    budget = ImageBudget(QWEN, lambda: 131072)
+    size = screen.fit_size(*pixels, budget, pixels)
+    assert 0.92 * tokens <= QWEN(*size) <= tokens
+    if tokens > 1100:
+        assert size[0] <= pixels[0] + 32 and size[1] <= pixels[1] + 32
+
+
+def test_the_size_follows_a_context_that_shrank_and_zoom_is_sent_as_counted():
+    from PIL import Image
+
+    context = [32768]
+    budget = ImageBudget(QWEN, lambda: context[0])
+    size = budget.size(2560, 1440)
+    frame = screen.Frame(Display(1, 0, 0, 2560, 1440, True), *size)
+    shot = screen.Shot(frame, None, Image.new("RGB", (2560, 1440)))
+    assert screen.zoom(shot, (0, 0, *size), budget).size == size
+    context[0] = 4096
+    assert budget.size(2560, 1440) is None
+
+
+def test_only_a_local_engine_sizes_the_screenshots(desktop, monkeypatch):
+    from routes import inference as routes
+
+    monkeypatch.setattr(routes, "_enabled_agent_skills", lambda: [])
+    payload = routes.ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
+    payload.enabled_tools, payload.thread_id = ["computer"], SESSION
+    engine = types.SimpleNamespace(context_length = 32768, image_tokens = GEMMA)
+    for local, encoder in ((engine, ""), (None, None)):
+        offer = routes._select_request_tools(
+            payload, tools_on = True, supports_vision = True, engine = local, encoder = encoder,
+            mcp_allowed = False,
+        )  # fmt: skip
+        assert asyncio.run(offer)[0]["function"]["name"] == "computer"
+        session = state.session(state.session_key(SESSION))
+        assert (session.budget and session.budget.size(2560, 1440)) == (local and (2112, 1200))
+        assert session.coordinates == ("grid" if local else "pixels")
+
+
+def test_a_worker_engine_counts_a_screenshot_once_per_load_and_never_waits(monkeypatch):
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch.models, orch.active_model_name = {"m": {"context_length": 8192}}, "m"
+    orch.load_generation = 1
+    orch._gen_lock, orch._mailbox_lock, orch._mailboxes = threading.Lock(), threading.Lock(), {}
+    orch._worker_released, orch._worker_reserved_for = threading.Condition(), None
+    replies, sent = [{"tokens": 1100}, {"error": "busy"}, {}, {"tokens": 900}], []
+    orch._direct_reader = lambda _id: (None, None, lambda: None)
+    orch._send_cmd = sent.append
+    orch._await_reply = lambda *_a: replies.pop(0)
+
+    assert orch.context_length == 8192
+    assert [orch.image_tokens(64, 64), orch.image_tokens(64, 64)] == [1100, 1100]
+    with orch._gen_lock:
+        assert orch.image_tokens(32, 32) is None
+    orch._mailboxes = {"streaming": None}
+    assert orch.image_tokens(32, 32) is None and len(sent) == 1
+    orch._mailboxes = {}
+    assert [orch.image_tokens(32, 32) for _ in range(3)] == [None] * 3
+    orch.load_generation = 2
+    assert orch.image_tokens(64, 64) == 900
+    assert [(c["width"], c["height"]) for c in sent] == [(64, 64), (32, 32), (32, 32), (64, 64)]
+
+
+def test_a_screenshot_count_holds_the_worker_against_dispatched_chats():
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch.models, orch.active_model_name = {"m": {"context_length": 8192}}, "m"
+    orch.load_generation = 1
+    orch._gen_lock, orch._mailbox_lock, orch._mailboxes = threading.Lock(), threading.Lock(), {}
+    orch._worker_released, orch._worker_reserved_for = threading.Condition(), None
+    held = []
+    orch._direct_reader = lambda _id: (None, None, lambda: None)
+    orch._send_cmd = lambda _cmd: held.append(orch._worker_reserved_for)
+    orch._await_reply = lambda *_a: {"tokens": 1100}
+
+    assert orch.image_tokens(64, 64) == 1100
+    assert held[0] and orch._worker_reserved_for is None
+    orch._worker_reserved_for = "audio generation is in progress"
+    assert orch.image_tokens(32, 32) is None and len(held) == 1
+
+
+def test_the_encoder_is_read_only_when_computer_use_is_asked_for(desktop, monkeypatch):
+    from routes import inference as routes
+
+    monkeypatch.setattr(routes, "_enabled_agent_skills", lambda: [])
+    reads = []
+    encoder = lambda: reads.append(1) or "qwen2_5_vl"
+    payload = routes.ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}])
+    payload.thread_id = SESSION
+    for tools, expected in (([], 0), (["computer"], 1)):
+        payload.enabled_tools = tools
+        asyncio.run(routes._select_request_tools(
+            payload, tools_on = True, supports_vision = True, encoder = encoder, mcp_allowed = False,
+        ))  # fmt: skip
+        assert len(reads) == expected
+    assert state.session(state.session_key(SESSION)).coordinates == "pixels"
+
+
+def test_each_capture_takes_its_display_shape_and_zoom_maps_by_desktop(desktop, monkeypatch):
+    portrait = Display(2, 1280, 0, 800, 1280, False)
+    monkeypatch.setattr(desktop, "displays", lambda: [Display(1, 0, 0, 1280, 800, True), portrait])
+    sized()
+    look()
+    seen, asked = state.session(state.session_key(SESSION)).frame, []
+    zoom = lambda shot, region, budget = None: asked.append((shot.frame, region)) or shot.image
+    monkeypatch.setattr(screen, "zoom", zoom)
+    state.set_coordinates(state.session_key(SESSION), "pixels")  # the next capture is smaller
+    run({"action": "zoom", "region": [300, 200, 500, 300]})
+    frame, region = asked[0]
+    assert frame.to_desktop(*region[:2]) == pytest.approx(seen.to_desktop(300, 200), abs = 2)
+    assert frame.to_desktop(*region[2:]) == pytest.approx(seen.to_desktop(500, 300), abs = 2)
+    sized()
+    run({"action": "screenshot", "display": 2})
+    frame = state.session(state.session_key(SESSION)).frame
+    assert frame.display == portrait and frame.height > frame.width > 1008
+
+
 def test_a_frame_maps_picture_points_onto_a_second_display():
     frame = screen.Frame(Display(2, -1920, 100, 1920, 1080), 1008, 560)
     assert frame.to_desktop(0, 0) == (-1920, 100)
@@ -277,19 +455,36 @@ def test_a_frame_maps_picture_points_onto_a_second_display():
 
 
 def test_the_picture_reaches_the_model_at_the_size_the_frame_says(desktop):
+    sized()
     result = look()
     text, images = split_images(result)
     frame = state.session(state.session_key(SESSION)).frame
+    frame_size = (frame.width, frame.height)
     assert f"{frame.width}x{frame.height} pixels" in text
     assert images[0]["mimeType"] == "image/jpeg"
     from PIL import Image
     import base64, io
 
-    sent = _png_data_url(images[0]["data"])
-    decoded = Image.open(io.BytesIO(base64.b64decode(sent.split(",", 1)[1])))
-    # No second resize downstream, or the model's pixels would stop being the frame's.
-    assert decoded.size == (frame.width, frame.height)
+    def size(part):
+        url = part["image_url"]["url"]
+        return Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))).size
+
+    def delivered(name, content = result):
+        replayed = promote_history(
+            [{"role": "tool", "name": name, "content": content}], vision = True
+        )
+        return size(replayed[-1]["content"][1])
+
+    # No second resize downstream, live or replayed, or the model's pixels would stop being the frame's.
+    live = ToolCallCompletion(types.SimpleNamespace(tool_name = "computer"), result, executed = True)
+    assert size(content_parts(live.mcp_images())[0]) == delivered("computer") == frame_size
+    forged = result.replace('"mimeType"', '"as_taken": true, "mimeType"')
+    assert max(delivered("mcp__shots__grab", forged)) <= 1024
     assert is_image_tool(computer_use.COMPUTER_TOOL_NAME)
+    assert max(frame_size) > 1024
+    run({"action": "click", **at(*BUTTON)})
+    _kind, x, y, *_rest = desktop.events[-1]
+    assert abs(x - BUTTON[0]) < 2 and abs(y - BUTTON[1]) < 2
 
 
 def test_the_first_call_needs_the_users_go_ahead(desktop):
@@ -663,6 +858,36 @@ def test_the_coordinate_rule_follows_the_models_family(model, mode):
     assert policy.coordinate_mode(model) == mode
     rule = computer_use.computer_tool(mode)["function"]["description"]
     assert ("0 to 1000" in rule) == (mode == "grid")
+
+
+def test_a_local_model_gets_the_grid_unless_its_encoder_answers_in_pixels(desktop):
+    for model, encoder, mode in (
+        ("Nemotron-3.5-Bolt-74B-IQ2_XXS.gguf", "nemotron_v2_vl", "grid"), ("my-finetune", "", "grid"),
+        ("Qwen2.5-VL-7B-Instruct-GGUF", "qwen2.5vl_merger", "pixels"), ("ft", "qwen2_5_vl", "pixels"),
+        ("UI-TARS-7B-SFT", "qwen2_vl", "grid"), ("claude-sonnet-4-5", None, "pixels"),
+    ):  # fmt: skip
+        assert policy.coordinate_mode(model, encoder) == mode
+    desktop.chosen["coordinates"] = "pixels"
+    assert policy.coordinate_mode("my-finetune", "") == "pixels"
+
+
+def test_the_local_encoder_is_the_checkpoint_the_worker_loaded(tmp_path, monkeypatch):
+    from core.inference import worker
+    from core.inference.orchestrator import _mirrored_model_entry
+    from routes.inference import _loaded_model_type
+
+    assert '_loaded_model_type(_entry.get("model"))' in inspect.getsource(worker._handle_load)
+    loaded = types.SimpleNamespace(
+        config = {}, _config = types.SimpleNamespace(model_type = "qwen2_5_vl")
+    )
+    entry = _mirrored_model_entry({"model_type": worker._loaded_model_type(loaded)}, "org/adapter")
+    assert _loaded_model_type("org/adapter", entry) == "qwen2_5_vl"
+    (tmp_path / "config.json").write_text('{"model_type": "qwen2_5_vl"}')
+    assert _loaded_model_type(str(tmp_path)) == "qwen2_5_vl"
+    monkeypatch.setattr(
+        "utils.paths.normalize_path", lambda p: str(tmp_path) if p == "C:\\m" else p
+    )
+    assert _loaded_model_type("C:\\m") == "qwen2_5_vl"
 
 
 def test_zoom_enlarges_without_moving_the_frame(desktop):

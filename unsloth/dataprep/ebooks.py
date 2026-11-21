@@ -224,9 +224,19 @@ def _read_epub(path, chapter_markers):
             item = items.get(ref.get("idref"))
             if item is None:
                 raise ValueError("EPUB reading order references a missing manifest item")
-            if "nav" in item.get("properties", "").split():
-                continue
-            if item.get("media-type") not in {"application/xhtml+xml", "text/html"}:
+            # A foreign spine item can point to a text version through manifest fallback IDs.
+            seen = set()
+            while item is not None and item.get("media-type") not in {
+                "application/xhtml+xml",
+                "text/html",
+            }:
+                fallback = item.get("fallback")
+                if not fallback or fallback in seen:
+                    item = None
+                    break
+                seen.add(fallback)
+                item = items.get(fallback)
+            if item is None or "nav" in item.get("properties", "").split():
                 continue
             name = _archive_path(base, item.get("href", ""))
             if name in encrypted:

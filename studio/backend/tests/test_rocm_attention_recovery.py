@@ -400,10 +400,55 @@ def test_forced_math_reads_as_math_only_and_is_retried(monkeypatch):
 
 
 def test_unanswered_read_only_probe_leaves_the_flags(monkeypatch):
+    """A candidate card reads as math-only, like a direct probe, but the running card's switches stay as they are."""
     monkeypatch.setattr(att, "_rocm_device_arch", lambda device: "gfx1103")
     _record_children(monkeypatch, fused = "timeout")
     with att.read_only_sdpa_probe():
-        assert att._probe_rocm_sdpa_kernels("cuda:1", torch.bfloat16) == ()
+        assert att._probe_rocm_sdpa_kernels("cuda:1", torch.bfloat16) == ("math",)
+    assert torch.backends.cuda.flash_sdp_enabled()
+    assert torch.backends.cuda.mem_efficient_sdp_enabled()
+
+
+def _split_cards(monkeypatch, secondary_arch):
+    monkeypatch.setattr(att, "_is_cuda_rocm", lambda t: True)
+    monkeypatch.setattr(
+        att, "_rocm_device_arch", lambda device: "gfx1151" if device == "cuda:0" else secondary_arch
+    )
+
+    def children(device, dtype):
+        return ("math", "flash", "mem_efficient") if device == "cuda:0" else ()
+
+    monkeypatch.setattr(att, "_run_rocm_sdpa_children", children)
+    monkeypatch.setattr(att, "_probe_sdpa_kernels", att._probe_rocm_sdpa_kernels)
+
+
+def test_split_guard_disables_fused_for_an_unanswered_unverified_card(monkeypatch):
+    """An unanswered card whose experimental kernels are unverified would run them unconfirmed: it counts as math-only."""
+    _split_cards(monkeypatch, "gfx1103")
+    disabled = att.guard_rocm_fused_sdpa_cards(["cuda:0", "cuda:1"], torch.bfloat16)
+    assert set(disabled) == {"flash", "mem_efficient"}
+    assert not torch.backends.cuda.flash_sdp_enabled()
+    assert not torch.backends.cuda.mem_efficient_sdp_enabled()
+
+
+def test_read_only_timeout_keeps_math_through_the_retry_backoff(monkeypatch):
+    """A direct check inside the backoff after a read-only timeout must not read as unknown and keep the fused flags."""
+    _split_cards(monkeypatch, "gfx1103")
+    with att.read_only_sdpa_probe():
+        assert att._sdpa_capability(SimpleNamespace(device = "cuda:1", dtype = torch.bfloat16)) == (
+            "math",
+        )
+    assert torch.backends.cuda.flash_sdp_enabled()
+    assert att._sdpa_capability(SimpleNamespace(device = "cuda:1", dtype = torch.bfloat16)) == ("math",)
+    assert not torch.backends.cuda.flash_sdp_enabled()
+    assert not torch.backends.cuda.mem_efficient_sdp_enabled()
+    assert att._SDPA_PROBE_CACHE.get(("cuda:1", "torch.bfloat16")) is None
+
+
+def test_split_guard_keeps_fused_for_an_unanswered_verified_card(monkeypatch):
+    """A verified arch's opt-in is measured: an unanswered probe stays unknown and the answering cards decide."""
+    _split_cards(monkeypatch, "gfx1100")
+    assert att.guard_rocm_fused_sdpa_cards(["cuda:0", "cuda:1"], torch.bfloat16) == ()
     assert torch.backends.cuda.flash_sdp_enabled()
     assert torch.backends.cuda.mem_efficient_sdp_enabled()
 

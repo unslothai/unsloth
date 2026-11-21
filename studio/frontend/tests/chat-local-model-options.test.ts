@@ -49,6 +49,20 @@ test("Ollama rows are offered under their own label", () => {
   assert.equal(localGgufKindFor(option, true), "direct");
 });
 
+test("an Ollama MLX tag is offered as a checkpoint, not a GGUF file", () => {
+  const [option] = chatLocalModelOptions([
+    row({
+      id: "/home/u/.ollama/models/.studio_links/0c918e29a9/mlx/gemma4-e4b-mlx",
+      path: "/home/u/.ollama/models/manifests/registry.ollama.ai/library/gemma4/e4b-mlx",
+      source: "ollama",
+      model_format: "safetensors",
+    }),
+  ]);
+  assert.ok(option);
+  assert.equal(option.isDirectGguf, undefined);
+  assert.equal(option.isGguf, undefined);
+});
+
 test("Hermes downloads are offered under their own label", () => {
   const options = chatLocalModelOptions([
     row({

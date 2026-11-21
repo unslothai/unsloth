@@ -4641,7 +4641,7 @@ export function HubModelPicker({
       // Downloaded weights keep their row.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
-      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
+      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass, hit.group) : true;
     },
     [catalog, downloadedSet, hostClass],
   );
@@ -8506,9 +8506,10 @@ export function HubModelPicker({
                         renderLocalDeviceRow(
                           m,
                           "custom-folder",
-                          // An Ollama manifest names one blob, so it loads directly.
+                          // An Ollama GGUF manifest names one blob, so it loads directly.
                           m.path.toLowerCase().endsWith(".gguf") ||
-                            m.source === "ollama",
+                            (m.source === "ollama" &&
+                              m.model_format !== "safetensors"),
                         ),
                       )}
                     {!customFoldersCollapsed &&

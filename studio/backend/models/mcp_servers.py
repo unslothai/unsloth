@@ -102,6 +102,17 @@ class EditorTest(EditorSettings):
     consent: bool = Field(default = False, strict = True)
 
 
+class UnrealToolsInstall(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project_path: StrictStr = Field(..., min_length = 1, max_length = 4096, pattern = r"^[^\x00]*$")
+
+
+class UnrealToolsInstallResult(BaseModel):
+    files: list[str]
+    restart_required: bool = True
+
+
 class EditorSetup(EditorSettings):
     is_enabled: bool
     consent: bool = False
@@ -140,6 +151,7 @@ class McpServerProbeResult(BaseModel):
     error: Optional[str] = None
     blender_ready: Optional[bool] = None
     blender_error: Optional[str] = None
+    blender_path: Optional[str] = None
     editor_ready: Optional[bool] = None
     editor_error: Optional[str] = None
 

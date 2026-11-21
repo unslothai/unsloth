@@ -162,7 +162,7 @@ import { isTauri } from "@/lib/api-base";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
-import { Folder02Icon } from "@/lib/folder-icons";
+import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { classifyVariantFitOnCard, requiredGgufMemoryGb } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -170,6 +170,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   BotIcon,
+  CancelCircleIcon,
   CloudIcon,
   DashboardCircleIcon,
   Download01Icon,
@@ -204,6 +205,7 @@ import {
 import { useAnimatedListHeight } from "./animated-height";
 import { useComposerModelPickerSource } from "./context";
 import { useCustomFolders } from "./custom-folders";
+import { useHubRepoSizes } from "./hub-repo-size";
 import { EffortSlider } from "./effort-slider";
 import { ListScrollbar } from "./list-scrollbar";
 import {
@@ -223,7 +225,6 @@ import {
   PICKER_GAP,
   pickerDropOffset,
   pickerMinHeight,
-  pickerRoomBelow,
   pickerWidth,
   pickerZoomOut,
   type PickerRow,
@@ -231,11 +232,13 @@ import {
   SECTION_LABEL,
   chooseQuant,
   dedupeRows,
+  discoverListsCheckpoints,
   discoverUsesFallback,
   downloadedQuants,
   ejectTargetId,
   filterRows,
   findChosenRow,
+  hubSizeIds,
   isChatTask,
   isTestFixtureRepo,
   localSection,
@@ -254,7 +257,7 @@ import {
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
-import { npuMarkOwner, npuPickerRows } from "./npu-rows";
+import { npuMarkOwner, npuNoticeShown, npuPickerRows } from "./npu-rows";
 import { useComposerReasoning } from "./use-composer-reasoning";
 
 interface Row extends PickerRow {
@@ -319,39 +322,32 @@ function writeExpanded(expanded: boolean): void {
   }
 }
 
-// Expand choice per resident model, cleared on eject.
-const MODEL_EXPANDED_KEY = "unsloth_composer_picker_model_expanded";
-const MODEL_EXPANDED_MAX = 20;
+const QUANTS_OPEN_KEY = "unsloth_composer_picker_quants_open";
+const QUANTS_OPEN_MAX = 200;
 
-function readModelExpanded(): Record<string, boolean> {
+function readQuantsOpen(): ReadonlyMap<string, boolean> {
   try {
-    const raw = JSON.parse(localStorage.getItem(MODEL_EXPANDED_KEY) ?? "{}");
+    const raw = JSON.parse(localStorage.getItem(QUANTS_OPEN_KEY) ?? "{}");
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      return {};
+      return new Map();
     }
-    return Object.fromEntries(
-      Object.entries(raw).filter(([, v]) => typeof v === "boolean"),
-    ) as Record<string, boolean>;
+    return new Map(
+      Object.entries(raw).filter(
+        (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
+      ),
+    );
   } catch {
-    return {};
+    return new Map();
   }
 }
 
-function writeModelExpanded(model: string, expanded: boolean | null): void {
+function writeQuantsOpen(map: ReadonlyMap<string, boolean>): void {
   try {
-    const map = readModelExpanded();
-    delete map[model];
-    if (expanded !== null) {
-      map[model] = expanded;
-    }
-    const keys = Object.keys(map);
-    for (const key of keys.slice(
-      0,
-      Math.max(0, keys.length - MODEL_EXPANDED_MAX),
-    )) {
-      delete map[key];
-    }
-    localStorage.setItem(MODEL_EXPANDED_KEY, JSON.stringify(map));
+    const entries = [...map].slice(-QUANTS_OPEN_MAX);
+    localStorage.setItem(
+      QUANTS_OPEN_KEY,
+      JSON.stringify(Object.fromEntries(entries)),
+    );
   } catch {
     // Storage blocked.
   }
@@ -698,9 +694,10 @@ function MakerMark({
       ? `${base}provider-logos/google-g.svg`
       : `${base}${provider.logoPath.slice(1)}`;
   const fit = useLogoFit(src);
+  const mono = useChatRuntimeStore((s) => s.pickerMonochromeIcons);
   const k = OPTICAL_SCALE[provider.id];
   const transform = k ? `scale(${k}) ${fit ?? ""}`.trim() : fit;
-  if (provider.treatment !== "original") {
+  if (provider.treatment !== "original" || mono) {
     const url = `url(${src})`;
     return (
       <span
@@ -1002,6 +999,9 @@ const CURRENT_ROW_BG =
 const DIM_CLASS =
   "opacity-55 transition-opacity group-hover/row:opacity-100 dark:opacity-50";
 
+// FastFlowLM's NPU2 builds and Export page conversions are all Q4NX files.
+const NPU_QUANT = "Q4NX";
+
 function QuantPill({ quant }: { quant: string }) {
   return (
     <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-[calc(100px*var(--ui-space-scale,1))] shrink-0 items-center truncate rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
@@ -1054,6 +1054,7 @@ function RowSizeColumns({
 
 const JUMP_LABEL: Partial<Record<ListSection, string>> = {
   other: "Go to other models",
+  exported: "Go to exported models",
   fineTuned: "Go to trained models",
   custom: "Go to custom folders",
 };
@@ -1405,6 +1406,13 @@ const SECTION_ICON: Partial<Record<ListSection, ReactNode>> = {
       className={SECTION_GLYPH}
     />
   ),
+  exported: (
+    <HugeiconsIcon
+      icon={FolderExportIcon}
+      strokeWidth={1.75}
+      className={SECTION_GLYPH}
+    />
+  ),
   fineTuned: (
     <HugeiconsIcon
       icon={TrainIcon}
@@ -1546,28 +1554,45 @@ function SearchField({
     return () => window.clearTimeout(id);
   }, [draft]);
   return (
-    <input
-      ref={inputRef}
-      {...rest}
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      onKeyDown={(event) => {
-        const key = event.key;
-        if (event.nativeEvent.isComposing || event.keyCode === 229) {
-          return;
-        }
-        if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Enter") {
-          return;
-        }
-        event.preventDefault();
-        if (draft !== committed.current) {
-          commit(draft);
-          window.setTimeout(() => onNavKey(key), 0);
-          return;
-        }
-        onNavKey(key);
-      }}
-    />
+    <>
+      <input
+        ref={inputRef}
+        {...rest}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          const key = event.key;
+          if (event.nativeEvent.isComposing || event.keyCode === 229) {
+            return;
+          }
+          if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Enter") {
+            return;
+          }
+          event.preventDefault();
+          if (draft !== committed.current) {
+            commit(draft);
+            window.setTimeout(() => onNavKey(key), 0);
+            return;
+          }
+          onNavKey(key);
+        }}
+      />
+      {draft ? (
+        <button
+          type="button"
+          aria-label="Clear search"
+          // Keeps focus in the search box.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            setDraft("");
+            commit("");
+          }}
+          className="grid size-4 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <HugeiconsIcon icon={CancelCircleIcon} className="size-4" />
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -1609,6 +1634,7 @@ export function ComposerModelPicker({
   const runtimeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const runtimeVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const runtimeLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const monoIcons = useChatRuntimeStore((s) => s.pickerMonochromeIcons);
   const checkpoint = pane ? pane.id : runtimeCheckpoint;
   const activeVariant = pane ? pane.ggufVariant : runtimeVariant;
   const modelLoading = pane ? pane.loading === true : runtimeLoading;
@@ -1670,10 +1696,23 @@ export function ComposerModelPicker({
   const setExpanded = useCallback((next: boolean) => {
     setExpandedState(next);
     writeExpanded(next);
-    if (residentKeyRef.current) {
-      writeModelExpanded(residentKeyRef.current, next);
-    }
   }, []);
+  const expandLoaded = useChatRuntimeStore((s) => s.pickerExpandLoaded);
+  useEffect(() => {
+    if (residentKeyRef.current) {
+      setExpanded(expandLoaded);
+    }
+  }, [expandLoaded, setExpanded]);
+  // Only user toggles set the global preference; automatic expands do not.
+  const toggleExpanded = useCallback(
+    (next: boolean) => {
+      setExpanded(next);
+      if (residentKeyRef.current) {
+        useChatRuntimeStore.getState().setPickerExpandLoaded(next);
+      }
+    },
+    [setExpanded],
+  );
   const [tab, setTabState] = useState<string | null>(null);
   const [lastTab, setLastTab] = useState(readTab);
   const setTab = useCallback((next: string) => {
@@ -1697,9 +1736,6 @@ export function ComposerModelPicker({
   const [devicePartials, setDevicePartials] = useState<
     ReadonlyMap<string, GgufVariantDetail[]>
   >(() => new Map());
-  const [foldedQuants, setFoldedQuants] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
   const [offer, setOffer] = useState<{
     key: string;
     quants: GgufVariantDetail[] | null;
@@ -1711,11 +1747,6 @@ export function ComposerModelPicker({
     target?: QuantTarget;
   } | null>(null);
   const offerAbort = useRef<AbortController | null>(null);
-  const [quants, setQuants] = useState<{
-    key: string;
-    list: GgufVariantDetail[];
-  } | null>(null);
-  const [quantsOpen, setQuantsOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   // State as well as the ref: the panel mounts after this render, and the glide must attach then.
@@ -1817,6 +1848,9 @@ export function ComposerModelPicker({
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  const [quantsOpenByRow, setQuantsOpenByRow] = useState(readQuantsOpen);
+  const quantsOpenFor = (key: string) =>
+    quantsOpenByRow.get(key) ?? expandQuantizations;
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   const showMemoryBar = useChatRuntimeStore((s) => s.showMemoryBar);
@@ -1920,21 +1954,18 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults, gpuInfo, inferenceGpu, budgetFraction]);
-  const hubSizes = useMemo(
-    () =>
-      new Map(
-        hubResults.map((r) => [
-          r.id.toLowerCase(),
-          {
-            params: r.totalParams
-              ? formatParamCount(r.totalParams)
-              : extractParamLabel(r.id),
-            estimate: r.estimatedSizeBytes,
-          },
-        ]),
-      ),
-    [hubResults],
-  );
+  const hubParams = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of hubResults) {
+      const label = r.totalParams
+        ? formatParamCount(r.totalParams)
+        : extractParamLabel(r.id);
+      if (label) {
+        map.set(r.id.toLowerCase(), label);
+      }
+    }
+    return map;
+  }, [hubResults]);
   const noGpu = !(inferenceGpu.memoryTotalGb > 0);
   const { scrollRef: hubScrollRef, sentinelRef: hubSentinelRef } =
     useHubInfiniteScroll(hubSearch.fetchMore, hubSearch.scannedCount, {
@@ -1950,6 +1981,11 @@ export function ComposerModelPicker({
       setListEl(node);
     },
     [hubScrollRef],
+  );
+  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const chatOnlyKnown = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const recommended = useMemo<ModelOption[]>(() => {
     // The header picker's runtime gate; vLLM loads compressed-tensors checkpoints the gate refuses.
@@ -1975,8 +2011,13 @@ export function ComposerModelPicker({
               ) &&
               supported({ ...r, quantMethod: undefined }))) &&
           (matchesRecommendedBrowse(r, quantFormats, !hubQuery) ||
-            // A Mac also runs MLX and plain safetensors; the browse gates still apply.
-            (isMac &&
+            // The browse gates still apply.
+            (discoverListsCheckpoints(
+              isMac,
+              formatFilter,
+              chatOnly,
+              isMlxId(r.id, hasMlxCardTag(r)),
+            ) &&
               isRecommendableFormat(r.id, r.isGguf, true, r.quantMethod) &&
               matchesRecommendedBrowse(
                 { ...r, isGguf: true },
@@ -1996,7 +2037,16 @@ export function ComposerModelPicker({
       return fromHub;
     }
     return (source?.models ?? []).filter((m) => !isHiddenModelId(m.id));
-  }, [hubResults, quantFormats, hubQuery, isMac, deviceType, source?.models]);
+  }, [
+    hubResults,
+    quantFormats,
+    hubQuery,
+    isMac,
+    deviceType,
+    source?.models,
+    formatFilter,
+    chatOnly,
+  ]);
   // Hub results marked MLX only by their card, which the ModelOption rows drop.
   const mlxTaggedHub = useMemo(
     () =>
@@ -2645,9 +2695,83 @@ export function ComposerModelPicker({
   );
   const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
   const [deviceSortDesc, setDeviceSortDesc] = useState(DEVICE_SORT_DESC.recent);
-  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
+  const sizeFilter = formatFilter === "mlx" || formatFilter === "safetensors";
+  // Not shownRows: the fit filter reads these, so a hidden row would lose its size.
+  const hubSizes = useHubRepoSizes(
+    useMemo(
+      () =>
+        hubSizeIds(hubResults, recommended, (r) =>
+          isMlxId(r.id, hasMlxCardTag(r)),
+        ),
+      [hubResults, recommended],
+    ),
+    open && viewed === RECOMMENDED_TAB,
+  );
+  // A plain checkpoint's size comes from the listing; MLX needs its file listing.
+  const hubListedSizes = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of hubResults) {
+      if (
+        !r.isGguf &&
+        r.estimatedSizeBytes &&
+        !isMlxId(r.id, hasMlxCardTag(r))
+      ) {
+        map.set(r.id.toLowerCase(), r.estimatedSizeBytes);
+      }
+    }
+    return map;
+  }, [hubResults]);
+  const hubSizeOf = useCallback(
+    (id: string): number | undefined => {
+      const key = id.toLowerCase();
+      return hubSizes.get(key) || hubListedSizes.get(key);
+    },
+    [hubSizes, hubListedSizes],
+  );
+  // Non-GGUF loads cannot offload: past the device is "exceeds".
+  const hubCheckpointFit = useMemo(() => {
+    const map = new Map<string, PickerFitStatus>();
+    for (const r of hubResults) {
+      if (r.isGguf) {
+        continue;
+      }
+      const id = r.id.toLowerCase();
+      const bytes = hubSizeOf(id);
+      // curatedSizeBytes outranks hfModelFitsDevice's 0.4 B/param MLX estimate.
+      const mlx = isMlxId(r.id, hasMlxCardTag(r));
+      const fits = bytes
+        ? searchRowFitsDevice(
+            {
+              id: r.id,
+              totalParams: r.totalParams,
+              estimatedSizeBytes: bytes,
+              curatedSizeBytes: mlx ? bytes : undefined,
+              quantMethod: r.quantMethod,
+            },
+            {
+              isGguf: false,
+              gpu: gpuInfo,
+              inferenceGpu,
+              taskScoped: false,
+              budgetFraction,
+            },
+          )
+        : hubCheckpointFits.get(id);
+      if (fits === false) {
+        map.set(id, "exceeds");
+      }
+    }
+    return map;
+  }, [
+    hubResults,
+    hubSizeOf,
+    hubCheckpointFits,
+    gpuInfo,
+    inferenceGpu,
+    budgetFraction,
+  ]);
   const foundRows = useMemo(() => {
     // Discover rows are the Hub's answer to this very query ("google" finds unsloth/gemma-*).
     const hubAnswered =
@@ -2675,9 +2799,8 @@ export function ComposerModelPicker({
         ) {
           return true;
         }
-        const checkpointFits = hubCheckpointFits.get(row.id.toLowerCase());
-        if (checkpointFits !== undefined) {
-          return checkpointFits;
+        if (hubCheckpointFits.has(row.id.toLowerCase())) {
+          return !hubCheckpointFit.has(row.id.toLowerCase());
         }
         const fit = hubFit.get(row.id.toLowerCase());
         return !isOverBudget(fit) || (fit === "ram" && noGpu);
@@ -2719,6 +2842,7 @@ export function ComposerModelPicker({
     fitOnDeviceOnly,
     hubFit,
     hubCheckpointFits,
+    hubCheckpointFit,
     noGpu,
     chosenId,
   ]);
@@ -2765,7 +2889,7 @@ export function ComposerModelPicker({
     if (viewed === RECOMMENDED_TAB && npuCatalog) {
       const npuShown =
         foundRows.some((row) => row.section === "npu") ||
-        (!npuCatalog.ready && !query);
+        (npuNoticeShown(npuCatalog) && !query);
       return npuShown ? ["npu", "recommended"] : [];
     }
     return [];
@@ -2815,10 +2939,10 @@ export function ComposerModelPicker({
             kind: row.kind,
             id: row.id,
             format: row.format,
-            estimatedBytes: hubSizes.get(row.id.toLowerCase())?.estimate,
+            sizeBytes: hubSizeOf(row.id),
           }).size !== null,
       ),
-    [showModelSizes, shownRows, hubSizes],
+    [showModelSizes, shownRows, hubSizeOf],
   );
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
@@ -2874,43 +2998,12 @@ export function ComposerModelPicker({
   }, [noThinking, expanded, setExpanded]);
   useAnimatedListHeight(listEl);
 
-  const chosenTarget =
-    // The Quantization row switches GGUF quants; an MLX precision is picked from its row.
-    chosen && chosen.kind !== "hub" && chosen.kind !== "cached"
-      ? quantTarget(chosen)
-      : null;
-  const chosenTargetRef = useRef(chosenTarget);
-  chosenTargetRef.current = chosenTarget;
-  const chosenQuantKey = chosenTarget ? chosen?.key : undefined;
-  useEffect(() => {
-    const target = chosenTargetRef.current;
-    if (!(open && target && chosenQuantKey)) {
-      return;
-    }
-    let live = true;
-    rowQuants(target)
-      .then(({ quants: list }) => {
-        if (live) {
-          setQuants({ key: chosenQuantKey, list });
-        }
-      })
-      .catch(() => {
-        if (live) {
-          setQuants(null);
-        }
-      });
-    return () => {
-      live = false;
-    };
-  }, [open, chosenQuantKey]);
-
   const resetView = useCallback(() => {
     offerAbort.current?.abort();
     offerAbort.current = null;
     setTabState(null);
     setOffer(null);
     setQuery("");
-    setQuantsOpen(false);
   }, []);
 
   // Before the inventory lands there is no row: trust residency, since an image load can release the model.
@@ -2952,14 +3045,11 @@ export function ComposerModelPicker({
     }
     residentKeyRef.current = residentKey;
     if (residentKey !== null) {
-      setExpanded(
-        (fresh ? undefined : readModelExpanded()[residentKey]) ?? false,
-      );
+      setExpanded(useChatRuntimeStore.getState().pickerExpandLoaded);
       if (fresh) {
         closeIfNoThinking.current();
       }
     } else if (prev && !(checkpoint && isExternalModelId(checkpoint))) {
-      writeModelExpanded(prev, null);
       setExpanded(true);
     }
   }, [residentKey, modelLoading, loadingFresh, checkpoint, setExpanded]);
@@ -3256,7 +3346,7 @@ export function ComposerModelPicker({
         row.kind === "gguf" &&
         !row.favoriteQuant &&
         variantCount(row) > 1 &&
-        expandQuantizations !== foldedQuants.has(row.key) &&
+        quantsOpenFor(row.key) &&
         updatesReadAt.current.get(row.key) !== quantsEpoch,
     );
     if (queue.length === 0) {
@@ -3328,8 +3418,8 @@ export function ComposerModelPicker({
     open,
     shownRows,
     deviceQuants,
-    foldedQuants,
     expandQuantizations,
+    quantsOpenByRow,
     quantsEpoch,
   ]);
 
@@ -3367,11 +3457,12 @@ export function ComposerModelPicker({
       return;
     }
     if (!row.favoriteQuant && variantCount(row) > 1) {
-      setFoldedQuants((prev) => {
-        const next = new Set(prev);
-        if (!next.delete(row.key)) {
-          next.add(row.key);
-        }
+      setQuantsOpenByRow((prev) => {
+        const next = new Map(prev);
+        const open = next.get(row.key) ?? expandQuantizations;
+        next.delete(row.key);
+        next.set(row.key, !open);
+        writeQuantsOpen(next);
         return next;
       });
       return;
@@ -3457,14 +3548,6 @@ export function ComposerModelPicker({
     togglePinned(row.id, quant ?? undefined);
   };
 
-  const pickQuant = (variant: GgufVariantDetail) => {
-    setQuantsOpen(false);
-    if (source && chosen) {
-      supersede();
-      source.onPick(chosen.id, ggufMeta(chosen, variant, true));
-    }
-  };
-
   const configResident =
     configTarget !== null &&
     modelConfigTargetIsResident({
@@ -3478,10 +3561,9 @@ export function ComposerModelPicker({
   const [openSide, setOpenSide] = useState(side);
   const [alignOffset, setAlignOffset] = useState(0);
   const [pickerZoomOutState, setPickerZoomOutState] = useState(1);
-  const [pickerMinBase, setPickerMinBase] = useState(420);
+  const [pickerMinBase, setPickerMinBase] = useState(440);
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
   const [dropOffset, setDropOffset] = useState(PICKER_GAP);
-  const [roomBelow, setRoomBelow] = useState<number | null>(null);
   const dropsDown = openSide === "bottom";
   // Layout effect: the first painted frame must already have the measured offset.
   useLayoutEffect(() => {
@@ -3491,7 +3573,6 @@ export function ComposerModelPicker({
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (rect) {
-        setRoomBelow(pickerRoomBelow(rect.bottom, window.innerHeight));
         setDropOffset(
           pickerDropOffset(rect.bottom, panel.offsetHeight, window.innerHeight),
         );
@@ -3544,14 +3625,8 @@ export function ComposerModelPicker({
       // Here, not in onOpenChange: the shortcut, tour and the Hub's Run open it from outside.
       const trigger = triggerRef.current;
       const rect = trigger?.getBoundingClientRect() ?? null;
-      const nextSide = pickerSide(side, rect, window.innerHeight);
-      setOpenSide(nextSide);
+      setOpenSide(pickerSide(side, rect, window.innerHeight));
       setDropOffset(PICKER_GAP);
-      setRoomBelow(
-        nextSide === "bottom" && rect
-          ? pickerRoomBelow(rect.bottom, window.innerHeight)
-          : null,
-      );
       const scale = trigger
         ? Number.parseFloat(
             getComputedStyle(trigger).getPropertyValue("--ui-space-scale"),
@@ -3692,15 +3767,10 @@ export function ComposerModelPicker({
   );
 
   const expand = () => {
-    setExpanded(true);
+    toggleExpanded(true);
     requestAnimationFrame(() => searchRef.current?.focus());
   };
 
-  const quantChoices =
-    quants && chosen && quants.key === chosen.key
-      ? pickerOrderedGgufVariants(quants.list, null, quantBudget).ordered
-      : [];
-  const showQuantRow = quantChoices.length > 1;
   const showEffort = !pane && reasoning.isEffort && reasoning.levels.length > 1;
   const showThinkingSwitch =
     !pane && reasoning.supportsReasoning && !showEffort;
@@ -3708,11 +3778,7 @@ export function ComposerModelPicker({
   const showPreserve = !pane && reasoning.supportsPreserve;
   const reasoningChip = pane ? null : reasoning.chipLabel;
   const hasFoot =
-    showQuantRow ||
-    showThinkingSwitch ||
-    showPreserve ||
-    showEffort ||
-    showFastSwitch;
+    showThinkingSwitch || showPreserve || showEffort || showFastSwitch;
 
   const connectFrom = (providerType?: string) => {
     setOpen(false);
@@ -3808,6 +3874,13 @@ export function ComposerModelPicker({
         ],
       };
     }
+    if (
+      viewed === RECOMMENDED_TAB &&
+      formatFilter === "safetensors" &&
+      chatOnlyKnown
+    ) {
+      return { title: "No models", hint: "This device runs GGUF models only." };
+    }
     return { title: "No models" };
   };
 
@@ -3839,37 +3912,57 @@ export function ComposerModelPicker({
     row: Row,
   ): Promise<ModelSelectorChangeMeta | null> => {
     const target = quantTarget(row);
+    const mlxRepo =
+      (row.kind === "hub" && !row.hub?.isGguf) ||
+      (row.kind === "cached" && row.format === "mlx");
     if (target) {
-      const {
-        quants: list,
-        defaultVariant,
-        mlx,
-        hasVision,
-      } = await rowQuants(
-        // As a pick: a pinned quant is resolved even once it is gone from disk.
-        row.favoriteQuant && row.kind === "gguf"
-          ? { ...target, remote: true, everyQuant: true }
-          : target,
-      );
-      const favorite = row.favoriteQuant?.toLowerCase();
-      const quant =
-        (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
-        chooseQuant(list, [
-          row.loadedQuant,
-          row.id === chosen?.id ? activeVariant : null,
-          defaultVariant,
-        ]);
-      if (quant && (mlx || row.kind !== "cached")) {
-        return ggufMeta(
-          row,
-          quant,
-          target.local || quant.downloaded === true,
-          !mlx,
-          hasVision ?? row.gguf?.has_vision,
-        );
+      const listed = (t: QuantTarget) =>
+        rowQuants(t).catch((err: unknown) => {
+          if (mlxRepo) {
+            return null;
+          }
+          throw err;
+        });
+      // A complete cached snapshot with no precision folder on disk is one checkpoint: skip the Hub listing.
+      let listing =
+        row.kind === "cached" && !row.partial && !row.favoriteQuant
+          ? await listed({ ...target, remote: false, everyQuant: false })
+          : undefined;
+      if (listing === undefined || listing?.mlx) {
+        listing =
+          (await listed(
+            // As a pick: a pinned quant is resolved even once it is gone from disk; Discover lists every precision.
+            (row.favoriteQuant && row.kind === "gguf") ||
+              (row.kind === "hub" && mlxRepo)
+              ? { ...target, remote: true, everyQuant: true }
+              : target,
+          )) ?? listing;
       }
-      if (row.kind !== "cached") {
+      if (listing) {
+        const { quants: list, defaultVariant, mlx, hasVision } = listing;
+        const favorite = row.favoriteQuant?.toLowerCase();
+        const quant =
+          (favorite && list.find((v) => v.quant.toLowerCase() === favorite)) ||
+          chooseQuant(list, [
+            row.loadedQuant,
+            row.id === chosen?.id ? activeVariant : null,
+            defaultVariant,
+          ]);
+        if (quant && (mlx || row.kind !== "cached")) {
+          return ggufMeta(
+            row,
+            quant,
+            target.local || quant.downloaded === true,
+            !mlx,
+            hasVision ?? row.gguf?.has_vision,
+          );
+        }
+      }
+      if (!mlxRepo) {
         return null;
+      }
+      if (row.kind === "hub") {
+        return wholeHubMeta(row);
       }
     }
     if (row.kind === "local" && row.lora) {
@@ -4196,15 +4289,24 @@ export function ComposerModelPicker({
         : null;
     const quiet = (row.kind === "hub" && !row.onDevice) || npuOffer;
     const offering = row.kind === "hub" && quiet && Boolean(row.hub?.isGguf);
-    const fit = offering ? hubFit.get(row.id.toLowerCase()) : null;
-    const needGb = offering ? hubNeedGb.get(row.id.toLowerCase()) : undefined;
+    const fit = offering
+      ? hubFit.get(row.id.toLowerCase())
+      : quiet && row.kind === "hub"
+        ? (hubCheckpointFit.get(row.id.toLowerCase()) ?? null)
+        : null;
+    // A checkpoint cannot offload, so its file size is what it needs.
+    const needGb = offering
+      ? hubNeedGb.get(row.id.toLowerCase())
+      : fit
+        ? (hubSizeOf(row.id) ?? 0) / 1024 ** 3
+        : undefined;
     // No GPU: every load runs from RAM, so `ram` is no overage.
     const dimmed = isOverBudget(fit) && !(fit === "ram" && noGpu) && !isChosen;
     const offerOpen = offer?.key === row.key;
     const paramLabel =
-      row.kind === "hub"
-        ? (hubSizes.get(row.id.toLowerCase())?.params ?? null)
-        : null;
+      row.kind === "hub" ? (hubParams.get(row.id.toLowerCase()) ?? null) : null;
+    const hubBytes = row.kind === "hub" ? hubSizeOf(row.id) : undefined;
+    const sizeLabel = sizeFilter && hubBytes ? formatBytes(hubBytes) : null;
     const onDisk = deviceQuants.get(row.inventoryKey ?? row.key) ?? NO_QUANTS;
     const partials = partialsOf(row);
     const manyQuants = onDisk.length + partials.length > 1;
@@ -4233,10 +4335,11 @@ export function ComposerModelPicker({
         row.favoriteQuant,
         favoriteOnDisk ? quantBytes(favoriteOnDisk) : null,
         onDisk.length === 1 ? quantBytes(onDisk[0]) : null,
-        row.sizeBytes ??
-          (row.lora?.source === "local" ? row.lora.sizeBytes : undefined),
+        row.kind === "hub"
+          ? hubBytes
+          : (row.sizeBytes ??
+              (row.lora?.source === "local" ? row.lora.sizeBytes : undefined)),
       ),
-      estimatedBytes: hubSizes.get(row.id.toLowerCase())?.estimate,
       hubParams: paramLabel,
     });
     const sizeMeta = showModelSizes ? rowSize : null;
@@ -4251,11 +4354,8 @@ export function ComposerModelPicker({
     const savedTarget = savedMeta
       ? modelConfigTarget(row.id, savedMeta, row.label)
       : undefined;
-    // `foldedQuants` holds the rows toggled away from the "Expand quantizations" setting.
     const quantsOpen =
-      !row.favoriteQuant &&
-      manyQuants &&
-      expandQuantizations !== foldedQuants.has(row.key);
+      !row.favoriteQuant && manyQuants && quantsOpenFor(row.key);
     // Discover GGUFs star by quant; a multi-quant device row stars the repo.
     const canStar = !(
       quiet ||
@@ -4291,6 +4391,7 @@ export function ComposerModelPicker({
           chatModels,
           row.npu ? npuCatalog : null,
           paramLabel,
+          sizeLabel,
           showModelSizes,
           rowSize.params,
           rowSize.size,
@@ -4403,7 +4504,7 @@ export function ComposerModelPicker({
             {soleQuant ? <QuantPill quant={soleQuant} /> : null}
             {row.kind === "hub" ? (
               <span className="-ml-[calc(2.75px*var(--ui-space-scale,1))] flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]">
-                {offering ? (
+                {fit ? (
                   <FitBadge
                     status={fit}
                     needGb={needGb}
@@ -4417,9 +4518,22 @@ export function ComposerModelPicker({
                     <ParamChip label={paramLabel} />
                   </span>
                 ) : null}
+                {sizeLabel && !sizeMeta ? (
+                  <span
+                    className={cn(
+                      "min-w-[calc(40px*var(--ui-space-scale,1))] text-right font-mono text-ui-10 tabular-nums text-muted-foreground",
+                      dimmed && DIM_CLASS,
+                    )}
+                  >
+                    {sizeLabel}
+                  </span>
+                ) : null}
               </span>
             ) : null}
-            {row.kind === "npu" && !npuProgress ? (
+            {row.kind === "npu" &&
+            !npuProgress &&
+            !(row.section === "npu" && listSections.includes("npu")) ? (
+              // Under the NPU header the header says it; Exported and Favorites have no such header.
               <span className="shrink-0 text-ui-12 text-muted-foreground">
                 {NPU_TAG_TEXT[NPU_CATALOG_TAG]}
               </span>
@@ -4429,7 +4543,7 @@ export function ComposerModelPicker({
                 {npuProgress ?? npuSizeLabel(row.npu?.size_gb ?? null)}
               </span>
             ) : row.kind === "npu" ? (
-              <QuantPill quant="NPU" />
+              <QuantPill quant={NPU_QUANT} />
             ) : null}
             {sizeMeta && row.kind !== "external" ? (
               <RowSizeColumns
@@ -5230,7 +5344,7 @@ export function ComposerModelPicker({
         section === "npu" &&
         viewed === RECOMMENDED_TAB &&
         npuCatalog &&
-        !npuCatalog.ready
+        npuNoticeShown(npuCatalog)
       ) {
         out.push(<NpuSetupNotice key="npu-setup" catalog={npuCatalog} />);
       }
@@ -5304,6 +5418,7 @@ export function ComposerModelPicker({
                   "unsloth-thinking-pill composer-model-chip group/chip",
                   !(chosenName || modelLoading || pending) &&
                     "composer-model-chip-empty",
+                  monoIcons && "picker-mono",
                 )}
                 data-pill-label={chipLabel}
                 data-pill-detail={chipDetail}
@@ -5382,6 +5497,7 @@ export function ComposerModelPicker({
               "unsloth-thinking-pill composer-model-chip group/chip",
               !(chosenName || modelLoading || pending) &&
                 "composer-model-chip-empty",
+              monoIcons && "picker-mono",
             )}
             data-pill-label={chipLabel}
             data-tour={pane ? undefined : "chat-model-selector"}
@@ -5456,9 +5572,6 @@ export function ComposerModelPicker({
           {
             "--picker-zoom-out": pickerZoomOutState,
             "--picker-min-base": `${pickerMinBase}px`,
-            ...(roomBelow === null
-              ? {}
-              : { "--picker-room": `${roomBelow}px` }),
           } as CSSProperties
         }
         data-tour="chat-model-selector-popover"
@@ -5472,14 +5585,13 @@ export function ComposerModelPicker({
             : undefined
         }
         className={cn(
+          monoIcons && "picker-mono",
           "unsloth-plus-menu composer-model-picker relative w-(--composer-picker-w) gap-0 overflow-hidden p-2",
           openSide !== "bottom" &&
             "[--picker-floor:var(--radix-popover-content-available-height)]",
-          configTarget
+          configTarget || isExpanded
             ? "h-(--composer-picker-min-h) max-h-[var(--picker-floor,calc(100dvh-16px))]"
-            : isExpanded
-              ? "min-h-(--composer-picker-min-h) max-h-(--composer-picker-max-h)"
-              : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
+            : "max-h-[var(--picker-floor,calc(100dvh-16px))]",
           configTarget &&
             "has-[[role=switch][aria-checked=true][aria-label*=advanced]]:h-[calc(640px*var(--ui-space-scale,1))]",
         )}
@@ -5490,12 +5602,6 @@ export function ComposerModelPicker({
             requestAnimationFrame(() => searchRef.current?.focus());
           } else {
             event.preventDefault();
-          }
-        }}
-        onEscapeKeyDown={(event) => {
-          if (quantsOpen) {
-            event.preventDefault();
-            setQuantsOpen(false);
           }
         }}
       >
@@ -5625,7 +5731,7 @@ export function ComposerModelPicker({
                     type="button"
                     aria-label="Collapse the model list"
                     aria-expanded={true}
-                    onClick={() => setExpanded(false)}
+                    onClick={() => toggleExpanded(false)}
                     className="grid size-[calc(26px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground max-md:size-9"
                   >
                     <HugeiconsIcon
@@ -5910,7 +6016,7 @@ export function ComposerModelPicker({
               aria-label={`${chosenName}: show all models`}
               onClick={expand}
               // 1px up, matching the gap above the first control below the line.
-              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pb-[calc(2px*var(--ui-space-scale,1))] pl-3 text-left text-ui-14"
+              className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pr-3 pb-[calc(2px*var(--ui-space-scale,1))] pl-3 text-left text-ui-14"
             >
               {pending || modelLoading ? (
                 <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
@@ -5964,66 +6070,6 @@ export function ComposerModelPicker({
                 : "mt-[calc(6px*var(--ui-space-scale,1))] border-t border-border pt-[calc(4px*var(--ui-space-scale,1))]",
             )}
           >
-            {showQuantRow ? (
-              <Popover open={quantsOpen} onOpenChange={setQuantsOpen}>
-                <PopoverTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="flex h-[calc(32px*var(--ui-space-scale,1))] items-center gap-2 rounded-full px-3 max-md:h-10 text-left text-ui-14 transition-colors hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent"
-                  >
-                    <span className="flex-1">Quantization</span>
-                    <span className="max-w-[calc(120px*var(--ui-space-scale,1))] truncate text-muted-foreground">
-                      {activeVariant ?? quantChoices[0]?.quant}
-                    </span>
-                    <HugeiconsIcon
-                      icon={ChevronDownStandardIcon}
-                      strokeWidth={1.5}
-                      className="size-4 -rotate-90 text-muted-foreground"
-                    />
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent
-                  side={smallScreen ? "top" : "right"}
-                  align={smallScreen ? "end" : "start"}
-                  sideOffset={smallScreen ? 4 : 12}
-                  className="unsloth-plus-menu w-[calc(240px*var(--ui-space-scale,1))] gap-0.5 p-2"
-                >
-                  {quantChoices.map((variant) => (
-                    <button
-                      key={variant.quant}
-                      type="button"
-                      onClick={() => pickQuant(variant)}
-                      className="flex h-[calc(28px*var(--ui-space-scale,1))] items-center max-md:h-10 gap-2 rounded-full px-3 text-left transition-colors hover:bg-sidebar-accent"
-                    >
-                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                        <span className="truncate font-mono text-xs">
-                          {ggufVariantPickerLabel(variant)}
-                        </span>
-                        {variant.update_available ? (
-                          <StatusTag
-                            tone="amber"
-                            label="Update"
-                            hint={UPDATE_HINT}
-                          />
-                        ) : null}
-                      </span>
-                      <span className="font-mono text-ui-10 tabular-nums text-muted-foreground">
-                        {formatBytes(quantBytes(variant))}
-                      </span>
-                      <HugeiconsIcon
-                        icon={Tick02Icon}
-                        strokeWidth={2}
-                        className={cn(
-                          "size-4",
-                          variant.quant.toLowerCase() !==
-                            (activeVariant ?? "").toLowerCase() && "opacity-0",
-                        )}
-                      />
-                    </button>
-                  ))}
-                </PopoverContent>
-              </Popover>
-            ) : null}
             {showThinkingSwitch ? (
               <SwitchRow
                 label="Thinking"

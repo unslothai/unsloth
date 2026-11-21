@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import threading
 import uuid
 import weakref
@@ -120,18 +121,71 @@ def next_run_for(task: dict, after_ms: int) -> Optional[int]:
     )
 
 
-def system_prompt(task: dict, now_ms: int) -> str:
+def _local_time(task: dict, now_ms: int) -> datetime:
     try:
         zone = resolve_timezone(task["timezone"])
     except ValueError:
         zone = timezone.utc
-    local = datetime.fromtimestamp(now_ms / 1000, tz = zone)
+    return datetime.fromtimestamp(now_ms / 1000, tz = zone)
+
+
+def system_prompt(task: dict, now_ms: int) -> str:
+    local = _local_time(task, now_ms)
     when = f"{local:%A}, {local:%B} {local.day}, {local.year} at {local:%H:%M}"
     return (
         f"This is a scheduled task the user set up in Unsloth Studio, running on {when} "
         f"({task['timezone']}). The user is not watching this chat and will read your reply "
         "later, so complete the task directly and do not ask follow-up questions."
     )
+
+
+_PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
+
+
+def _reject_json_constant(name: str) -> Any:
+    # NaN and Infinity are not JSON to Chat's JSON.parse, which then drops the whole map.
+    raise ValueError(name)
+
+
+def _resolve_prompt_variables(prompt: str, variables_raw: Any, task: dict, now_ms: int) -> str:
+    # Mirrors resolveSystemPromptVariables in chat-adapter.ts, using the task timezone.
+    local = _local_time(task, now_ms)
+    offset = local.strftime("%z")
+    builtins = {
+        "$date": f"{local:%Y-%m-%d}",
+        "$time": f"{local:%H:%M:%S}",
+        "$now": f"{local:%Y-%m-%dT%H:%M:%S}{offset[:3]}:{offset[3:]}",
+    }
+    try:
+        custom = (
+            json.loads(variables_raw, parse_constant = _reject_json_constant)
+            if isinstance(variables_raw, str) and variables_raw.strip()
+            else {}
+        )
+    except ValueError:
+        custom = {}
+    if not isinstance(custom, dict):
+        custom = {}
+
+    def replace(match: re.Match) -> str:
+        key = match.group(1).strip()
+        if key in builtins:
+            return builtins[key]
+        current: Any = custom
+        parts = [part.strip() for part in key.split(".") if part.strip()]
+        if not parts:
+            return match.group(0)
+        for part in parts:
+            if not isinstance(current, dict) or part not in current:
+                return match.group(0)
+            current = current[part]
+        if current is None:
+            return ""
+        if isinstance(current, str):
+            return current
+        return json.dumps(current, ensure_ascii = False, separators = (",", ":"))
+
+    return _PROMPT_VARIABLE.sub(replace, prompt)
 
 
 def _run_instructions(task: dict, now_ms: int) -> str:
@@ -141,9 +195,19 @@ def _run_instructions(task: dict, now_ms: int) -> str:
     project = studio_db.get_chat_project(task["projectId"]) if task.get("projectId") else None
     agents_md = agents_md_text(project).strip()
     instructions = project["instructions"].strip() if project and not project["archived"] else ""
+    chat_settings = (_target_chat(task) or {}).get("settings")
+    # Read as Chat does: a snapshot or prompt of the wrong type is absent.
+    chat_settings = chat_settings if isinstance(chat_settings, dict) else {}
+    chat_prompt = chat_settings.get("systemPrompt")
     parts = [
         f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
         f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
+        _resolve_prompt_variables(
+            chat_prompt if isinstance(chat_prompt, str) else "",
+            chat_settings.get("systemVariables"),
+            task,
+            now_ms,
+        ).strip(),
         system_prompt(task, now_ms),
     ]
     return "\n\n".join(part for part in parts if part)
@@ -337,13 +401,22 @@ def _speech_only(llama: Any, orchestrator: Any) -> bool:
     return bool(info.get("is_audio"))
 
 
+# Translate's models (frontend lib/translation-models.ts): Chat reads their slot as empty, so a run does too.
+_TRANSLATION_ONLY_REPOS = frozenset({"unsloth/hy-mt2-1.8b-gguf", "unsloth/hy-mt2-7b-gguf"})
+
+
+def _translation_only(name: Optional[str]) -> bool:
+    return (name or "").strip().lower() in _TRANSLATION_ONLY_REPOS
+
+
 def _slot_model(slot: Any) -> Optional[str]:
     if _speech_only(slot.llama, slot.orchestrator):
         return None
     if getattr(slot.llama, "is_loaded", False) and getattr(slot.llama, "model_identifier", None):
-        return str(slot.llama.model_identifier)
-    name = getattr(slot.orchestrator, "active_model_name", None)
-    return str(name) if name else None
+        name = slot.llama.model_identifier
+    else:
+        name = getattr(slot.orchestrator, "active_model_name", None)
+    return str(name) if name and not _translation_only(name) else None
 
 
 def _sole_kept_model() -> Optional[str]:
@@ -359,6 +432,7 @@ def _sole_kept_model() -> Optional[str]:
             account_access.managed_account() and account_access.resident_hidden("chat", primary)
         )
         and not _speech_only(get_llama_cpp_backend(), _peek_inference_backend())
+        and not _translation_only(primary)
     ):
         return None
     names = [name for name in map(_slot_model, model_slots.visible()) if name]
@@ -643,6 +717,7 @@ async def generate_answer(
     from models.inference import ChatCompletionRequest
     from routes.inference import (
         _chat_completion_from_connection_stream,
+        _loaded_slot_ident,
         _relay_split_thinking,
         allow_model_switch_for_request,
         load_alongside_for_request,
@@ -702,6 +777,8 @@ async def generate_answer(
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
+            elif not task.get("model") and _translation_only(_loaded_slot_ident()):
+                raise RunFailed("no_model")
             # A project folder on a stalled mount must not keep the scheduler from every other task.
             try:
                 instructions, (history, chat_parent_id) = await asyncio.wait_for(
