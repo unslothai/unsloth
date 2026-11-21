@@ -44,7 +44,10 @@ def dmd_timesteps(*identifiers: Optional[str]) -> Optional[tuple[int, ...]]:
     for identifier in identifiers:
         if not identifier:
             continue
-        name = re.split(r"[/\\]", _normalise(identifier).rstrip("/\\"))[-1]
+        from .family_name_match import model_identity
+
+        # The same identity the family / defaults matchers read: an HF cache snapshot path names its repo.
+        name = re.split(r"[/\\]", _normalise(model_identity(identifier)).rstrip("/\\"))[-1]
         for pattern, timesteps in _DMD_RECIPES:
             if re.search(pattern, name):
                 return timesteps

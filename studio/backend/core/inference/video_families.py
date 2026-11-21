@@ -1893,7 +1893,8 @@ def validate_video_reference_conditioning(
 # (steps, guidance) per variant, matched by substring, most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # FastWan DMD students: their trained 3 timesteps, no CFG (video_dmd enforces both). Before every Wan key.
-    ("fastwan", 3, 1.0),
+    ("fastwan2.2-ti2v-5b-fullattn", 3, 1.0),
+    ("fastwan2.1-t2v-1.3b", 3, 1.0),
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
     # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3

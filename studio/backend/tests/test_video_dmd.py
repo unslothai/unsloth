@@ -250,3 +250,64 @@ def test_renoise_stream_is_independent_of_the_initial_latent_noise(seed):
     assert abs(float(torch.corrcoef(torch.stack([noise.flatten(), initial.flatten()]))[0, 1])) < 0.2
     # Still deterministic per request seed (an OOM retry redraws the same noise).
     assert video_dmd.renoise_seed(seed) == video_dmd.renoise_seed(seed) != seed
+
+
+def test_a_student_opened_from_its_hf_cache_snapshot_gets_the_dmd_recipe():
+    """Family detection and the defaults table read model_identity(); the recipe matcher reads the same identity, so a
+    snapshot path (models--Org--Name/snapshots/<rev>) is the student, not stock UniPC at 3 steps."""
+    from core.inference import video_dmd
+
+    snap = "/hf/hub/models--FastVideo--FastWan2.2-TI2V-5B-FullAttn-Diffusers/snapshots/0123abcd"
+    assert video_dmd.dmd_timesteps(snap) == (1000, 757, 522)
+    assert vf.default_video_generation_params(
+        snap, fallback = (20, 5.0), family = "wan2.2-ti2v-5b"
+    ) == (3, 1.0)
+    base = "/hf/hub/models--Wan-AI--Wan2.2-TI2V-5B-Diffusers/snapshots/0123abcd"
+    assert video_dmd.dmd_timesteps(base) is None
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "DanielMarius/Wan2_2-TI2V-5B-FastWanFullAttn_bf16.safetensors",
+        "someone/fastwan-experiments",
+        "FastVideo/FastWan2.1-T2V-14B-Diffusers",
+    ],
+)
+def test_only_the_two_students_take_the_3_step_defaults(identifier):
+    """The defaults keys are the exact student names: a FastWan-named file with no DMD recipe keeps its family's
+    defaults instead of running 3 steps at CFG 1 on the stock scheduler."""
+    from core.inference import video_dmd
+
+    assert video_dmd.dmd_timesteps(identifier) is None
+    assert vf.default_video_generation_params(
+        identifier, fallback = (20, 5.0), family = "wan2.2-ti2v-5b"
+    ) != (3, 1.0)
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        _FULLATTN,
+        "someone/FastWan2.2-TI2V-5B-FullAttn-Diffusers",
+        "/models/FastWan2.2-TI2V-5B-FullAttn-Diffusers",
+        "FastVideo/FastWan2.1-T2V-1.3B-Diffusers",
+    ],
+)
+def test_no_copy_of_a_student_takes_the_base_hosted_denoiser(monkeypatch, repo):
+    from core.inference import diffusion_prequant
+    from core.inference import video_denoiser_prequant as vdp
+
+    calls = []
+
+    def fake_source(fam, scheme, **kwargs):
+        calls.append(kwargs.get("base_repo"))
+        return object()
+
+    monkeypatch.setattr(diffusion_prequant, "resolve_prequant_source", fake_source)
+    fam = vf.detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    for scheme in ("int8", "fp8"):
+        assert vdp.denoiser_prequant_sources(fam, scheme, repo) is None
+    assert calls == []
+    # The base keeps its hosted build (the resolver is consulted).
+    assert vdp.denoiser_prequant_sources(fam, "fp8", "Wan-AI/Wan2.2-TI2V-5B-Diffusers") is not None
