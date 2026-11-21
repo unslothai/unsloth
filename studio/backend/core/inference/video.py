@@ -12306,6 +12306,11 @@ class VideoBackend:
             for attr, label, files in targets
         )
         video_lora.mark_baked(pipe, tuple(e[:3] for e in baked), specs)
+        # The publisher's sampler (lightx2v Wan2.2 pairs: first-order Euler on the shift-5 grid). Set in the loaded
+        # scheduler's config, so the later static-shift rebuild (from_config) keeps it; steps / CFG stay request-led.
+        sampler = video_lora.recommended_scheduler(pipe)
+        if sampler:
+            apply_scheduler_overrides(pipe, sampler, logger)
         logger.info(
             "video.lora_bake: %d adapter(s), %d layer(s) merged into the bf16 %s",
             len(baked),

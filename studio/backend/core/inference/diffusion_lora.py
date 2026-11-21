@@ -57,6 +57,8 @@ class LoraCatalogEntry:
     # Step-distilled adapters: the publisher's (steps, guidance), applied as the generation defaults when picked.
     recommended_steps: Optional[int] = None
     recommended_guidance: Optional[float] = None
+    # The publisher's sampler as scheduler config overrides on the loaded scheduler (empty = keep it).
+    recommended_scheduler: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen = True)
@@ -96,8 +98,10 @@ def _distill_lora(
     *,
     weight_name_2: Optional[str] = None,
     entry_id: Optional[str] = None,
+    scheduler: tuple[tuple[str, Any], ...] = (),
 ) -> LoraCatalogEntry:
-    """A step-distilled adapter (CFG-free): picking it sets ``steps`` at guidance 1 as the defaults."""
+    """A step-distilled adapter (CFG-free): picking it sets ``steps`` at guidance 1 as the defaults, and
+    ``scheduler`` (config overrides) as the sampler when the loaded scheduler differs from the publisher's."""
     return LoraCatalogEntry(
         id = entry_id or f"{repo_id}:{weight_name}",
         display_name = display_name,
@@ -109,7 +113,18 @@ def _distill_lora(
         weight_name_2 = weight_name_2,
         recommended_steps = steps,
         recommended_guidance = 1.0,
+        recommended_scheduler = scheduler,
     )
+
+
+# First-order Euler on the Wan scheduler's own grid: UniPC at order 1 with the corrector off is the flow Euler step
+# x - (sigma - sigma_next) * v (data-prediction DDIM == Euler for a linear flow path), on the same shift-5 grid
+# [1, .9375, .833, .625] the lightx2v recipes sample (LightX2V WanStepDistillScheduler, sample_shift 5; the
+# Lightning V1.1 workflow's euler / simple at shift 5). The base Wan2.2 scheduler is 2nd-order UniPC with corrector.
+_WAN_EULER: tuple[tuple[str, Any], ...] = (
+    ("solver_order", 1),
+    ("disable_corrector", tuple(range(64))),
+)
 
 
 # lightx2v step-distill adapters (Apache-2.0). Wan2.2-A14B pairs: high-noise file -> transformer, low-noise ->
@@ -123,6 +138,7 @@ _DISTILL: tuple[LoraCatalogEntry, ...] = (
         4,
         weight_name_2 = "wan2.2_t2v_A14b_low_noise_lora_rank64_lightx2v_4step_1217.safetensors",
         entry_id = "lightx2v/Wan2.2-Distill-Loras",
+        scheduler = _WAN_EULER,
     ),
     _distill_lora(
         "lightx2v/Wan2.2-Lightning",
@@ -132,6 +148,7 @@ _DISTILL: tuple[LoraCatalogEntry, ...] = (
         4,
         weight_name_2 = "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors",
         entry_id = "lightx2v/Wan2.2-Lightning",
+        scheduler = _WAN_EULER,
     ),
     _distill_lora(
         "lightx2v/Qwen-Image-Lightning",
@@ -446,6 +463,16 @@ def list_loras(
 
 def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
+
+
+def recommended_scheduler(lora_ids: Any) -> tuple[tuple[str, Any], ...]:
+    """The publisher's scheduler overrides of the first curated adapter in ``lora_ids`` that has any, else ()."""
+    curated = {e.id: e for e in _CURATED if e.recommended_scheduler}
+    for lora_id in lora_ids or ():
+        entry = curated.get(str(lora_id))
+        if entry is not None:
+            return entry.recommended_scheduler
+    return ()
 
 
 def recommended_params(lora_ids: Any) -> Optional[tuple[int, float]]:

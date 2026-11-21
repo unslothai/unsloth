@@ -229,3 +229,82 @@ def test_the_lora_listing_route_carries_the_preset(monkeypatch):
     row = next(r for r in body["loras"] if r["id"] == PAIR)
     assert row["recommended_steps"] == 4 and row["recommended_guidance"] == 1.0
     assert row["expert_pair"] is True
+
+
+def _wan22_unipc():
+    from diffusers import UniPCMultistepScheduler
+
+    # Wan-AI/Wan2.2-T2V-A14B-Diffusers scheduler/scheduler_config.json
+    return UniPCMultistepScheduler(
+        beta_end = 0.02,
+        beta_schedule = "linear",
+        beta_start = 0.0001,
+        flow_shift = 3.0,
+        lower_order_final = True,
+        num_train_timesteps = 1000,
+        predict_x0 = True,
+        prediction_type = "flow_prediction",
+        solver_order = 2,
+        solver_type = "bh2",
+        use_flow_sigmas = True,
+    )
+
+
+@pytest.mark.parametrize("pair", [PAIR, LIGHTNING])
+def test_a_baked_pair_samples_with_the_publishers_euler(tmp_path, pair):
+    """lightx2v's recipes (LightX2V WanStepDistillScheduler, the Lightning V1.1 workflow) step first-order Euler on the
+    shift-5 grid; the base Wan scheduler is 2nd-order UniPC with corrector. The bake sets the preset sampler, the
+    family's static-shift rebuild keeps it, and its 4 steps equal the Euler update exactly."""
+    from core.inference.diffusion_flow_shift import apply_comfy_flow_shift
+    from core.inference.video import VideoBackend
+
+    high, low = _WanLike().to(torch.bfloat16), _WanLike().to(torch.bfloat16)
+    _write_native(tmp_path / "h.safetensors", high, seed = 1)
+    _write_native(tmp_path / "l.safetensors", low, seed = 2)
+    pipe = types.SimpleNamespace(transformer = high, transformer_2 = low, scheduler = _wan22_unipc())
+    fam = detect_video_family("", override = "wan2.2-t2v-a14b")
+    VideoBackend._bake_video_loras(
+        pipe,
+        (("pair", str(tmp_path / "h.safetensors"), 1.0, str(tmp_path / "l.safetensors")),),
+        [{"id": pair, "weight": 1.0}],
+        fam = fam,
+    )
+    assert pipe.scheduler.config.solver_order == 1
+    # The load's later static shift rebuild (ComfyUI 5 for the A14B) keeps the sampler.
+    apply_comfy_flow_shift(pipe, 5.0)
+    sched = pipe.scheduler
+    assert sched.config.solver_order == 1 and sched.config.flow_shift == 5.0
+    sched.set_timesteps(4)
+    sigmas = [float(s) for s in sched.sigmas]
+    assert sigmas == pytest.approx([1.0, 0.9375, 0.8333, 0.625, 0.0], abs = 1e-3)
+    assert [int(t) for t in sched.timesteps] == [999, 937, 833, 625]
+
+    w = torch.randn(8, 8, dtype = torch.float64, generator = torch.Generator().manual_seed(0)) * 0.3
+
+    def velocity(x, s):
+        return torch.tanh(x @ w) + s
+
+    x = torch.randn(2, 8, dtype = torch.float64, generator = torch.Generator().manual_seed(1))
+    euler = x.clone()
+    for i, t in enumerate(sched.timesteps):
+        x = sched.step(velocity(x, sigmas[i]).float(), t, x.float()).prev_sample.double()
+        euler = euler + (sigmas[i + 1] - sigmas[i]) * velocity(euler, sigmas[i])
+    torch.testing.assert_close(x, euler, rtol = 0, atol = 1e-5)
+
+
+def test_a_plain_bake_keeps_the_loaded_scheduler(tmp_path):
+    from core.inference.video import VideoBackend
+
+    module = _WanLike().to(torch.bfloat16)
+    path = tmp_path / "w.safetensors"
+    _write_native(path, module, seed = 1)
+    pipe = types.SimpleNamespace(transformer = module, scheduler = _wan22_unipc())
+    before = pipe.scheduler
+    VideoBackend._bake_video_loras(
+        pipe,
+        (("w", str(path), 1.0, None),),
+        [{"id": "someone/wan-lora", "weight": 1.0}],
+        fam = detect_video_family("", override = "wan2.2-ti2v-5b"),
+    )
+    assert pipe.scheduler is before and before.config.solver_order == 2
+    assert video_lora.recommended_scheduler(pipe) == {}

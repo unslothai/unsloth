@@ -227,6 +227,17 @@ def _is_pair(lora_id: str) -> bool:
     return any(e.id == lora_id and e.weight_name_2 for e in diffusion_lora._CURATED)
 
 
+def recommended_scheduler(pipe: Any) -> dict:
+    """Scheduler config overrides a baked step-distilled adapter asks for (lists where diffusers configs hold
+    lists), else ``{}``."""
+    from core.inference import diffusion_lora
+
+    rows = diffusion_lora.recommended_scheduler(
+        i for (i, _w) in getattr(pipe, BAKED_SPECS_ATTR, ()) or ()
+    )
+    return {k: list(v) if isinstance(v, tuple) else v for k, v in rows}
+
+
 def recommended_params(pipe: Any) -> Optional[tuple[int, float]]:
     """``(steps, guidance)`` a baked step-distilled adapter asks for (its catalog preset), else None."""
     from core.inference import diffusion_lora
