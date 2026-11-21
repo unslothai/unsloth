@@ -5087,6 +5087,17 @@ def _visual_server_splits_gpus(visual_bin: Optional[str]) -> bool:
 
 
 @functools.lru_cache(maxsize = 16)
+def _binary_has_any_marker(path: str, _mtime_ns: int, _size: int, markers: tuple) -> bool:
+    """One read of ``path`` for several markers."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+    return any(marker in data for marker in markers)
+
+
+@functools.lru_cache(maxsize = 16)
 def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> bool:
     try:
         with open(path, "rb") as f:
@@ -5095,14 +5106,21 @@ def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> 
         return False
 
 
-# No --help flag or build number announces it: read the trace string the new fit path compiles in.
-_FIT_MEASURES_BORROWED_DRAFT_MARKER = (
-    b"measuring the extra model next to an allocation-free target context"
+# No --help flag or build number announces it: read what the new fit path compiles in. The
+# first fork version logged this trace string; the one shipped since (b12588 and later)
+# measures every borrowed draft up front in common_fit_draft_target, which logs nothing of
+# its own, so its symbol name in the common library is the only trace.
+_FIT_MEASURES_BORROWED_DRAFT_MARKERS = (
+    b"measuring the extra model next to an allocation-free target context",
+    b"common_fit_draft_target",
 )
 _LLAMA_COMMON_LIB_NAMES = (
     "libllama-common.so.0",
+    # The soname moved to 1 with the shared-library version bump the prebuilds ship.
+    "libllama-common.so.1",
     "libllama-common.so",
     "libllama-common.0.dylib",
+    "libllama-common.1.dylib",
     "libllama-common.dylib",
     "llama-common.dll",
 )
@@ -5261,8 +5279,8 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
             st = candidate.stat()
         except OSError:
             continue
-        if _binary_has_marker(
-            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKER
+        if _binary_has_any_marker(
+            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKERS
         ):
             return True
     return False
