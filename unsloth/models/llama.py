@@ -5921,6 +5921,9 @@ class FastLlamaModel:
             restore_use_cache(model)
         except ImportError:
             pass
+        # Returning hidden states must be disabled for GRPO: a "1" left by an interrupted logprob pass
+        # would make later forwards hand pre-lm_head hidden states back as .logits (same as vision.py).
+        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         return model
 
     @staticmethod
