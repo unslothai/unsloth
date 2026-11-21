@@ -23,6 +23,7 @@ __all__ = [
     "install_sync_report",
 ]
 
+import functools
 import os
 import traceback
 import warnings
@@ -446,4 +447,18 @@ def install_sync_report(trainer):
             finish()
 
     trainer.add_callback(_UnslothSyncReportCallback())
+
+    # on_train_end never runs when train() raises or is interrupted: restore the sync-debug mode and warning hooks
+    # there too, so a notebook does not keep counting into an abandoned report.
+    original_train = getattr(trainer, "train", None)
+    if callable(original_train):
+
+        @functools.wraps(original_train)
+        def train(*args, **kwargs):
+            try:
+                return original_train(*args, **kwargs)
+            finally:
+                counter.stop()
+
+        trainer.train = train
     return True

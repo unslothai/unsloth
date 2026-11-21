@@ -447,6 +447,30 @@ def test_sync_report_ignores_a_step_that_never_ran(monkeypatch, tmp_path, capsys
     assert len(totals) == trainer.state.global_step and all(v == 1 for v in totals.values()), totals
 
 
+def test_sync_report_restores_hooks_when_train_raises(monkeypatch, tmp_path):
+    # on_train_end never runs on an exception: the train() wrapper must still restore the warning hooks.
+    import warnings
+
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "16")
+    original_start = rr.SyncCounter.start
+    monkeypatch.setattr(
+        rr.SyncCounter, "start", lambda self, use_cuda = True: original_start(self, False)
+    )
+    trainer = _tiny_trainer(tmp_path)
+    show_before = warnings.showwarning
+    assert rr.install_sync_report(trainer)
+
+    def training_step(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    trainer.training_step = training_step
+    with pytest.raises(KeyboardInterrupt):
+        trainer.train()
+    assert not trainer._unsloth_sync_report.active
+    assert warnings.showwarning is show_before
+    assert not any(rr._is_sync_filter(f) for f in warnings.filters)
+
+
 def test_sync_report_wiring():
     assert "install_sync_report" in _calls_in(
         ROOT / "unsloth" / "trainer.py", "_backwards_compatible_trainer"
