@@ -139,26 +139,32 @@ async def _call(
                     raise RuntimeError("MCP server was updated or removed while connecting")
                 result = await client.call_tool(name, args, raise_on_error = False)
                 if follow_until is not None:
-                    result = await _follow_video(caller, result, follow_until)
+                    result = await _follow(caller, _FOLLOWED[name], result, follow_until)
                 return result
     finally:
         reset_caller(token)
 
 
-async def _follow_video(caller: Any, created: Any, follow_until: float) -> Any:
-    """Follows a chat's video to the end inside its call, as the built-in tool does, so Stop reaches it;
-    read directly (Settings can turn get_job off), and left running past the call's limit."""
+# Tools a chat follows to the end inside the call, with the get_job kind of their job.
+_FOLLOWED = {"generate_video": "video", "load_model": "load"}
+
+
+async def _follow(caller: Any, kind: str, created: Any, follow_until: float) -> Any:
+    """Follows a chat's video or model load to the end inside its call, so Stop reaches it and no job
+    outlives the call's key; read directly (Settings can turn get_job off)."""
     from studio_mcp import jobs
     from studio_mcp.loading import WAIT_S_LIMIT
 
     job = getattr(created, "structured_content", None)
-    job_id = job.get("id") if isinstance(job, dict) else None
+    job_id = job.get("job_id" if kind == "load" else "id") if isinstance(job, dict) else None
     if getattr(created, "is_error", False) or not job_id:
+        return created
+    if kind == "load" and job.get("status") != "loading":
         return created
     result = created
     while (left := follow_until - time.monotonic()) >= 1:
         try:
-            read = await jobs.follow(caller, "video", job_id, wait_s = int(min(left, WAIT_S_LIMIT)))
+            read = await jobs.follow(caller, kind, job_id, wait_s = int(min(left, WAIT_S_LIMIT)))
         except Exception:  # noqa: BLE001 - a failed read still leaves the job reference to answer
             return result
         result = read
@@ -264,6 +270,17 @@ def _stop(future: Any, ticket: Any) -> None:
     future.cancel()
 
 
+def _stop_scoped_loads(loop: Any, key: str) -> None:
+    """Ends the load jobs this call's key started, before the key is revoked."""
+    from studio_mcp.loading import stop_scoped_loads
+    try:
+        asyncio.run_coroutine_threadsafe(stop_scoped_loads(key), loop).result(timeout = _STOP_WAIT_S)
+    except Exception:  # noqa: BLE001 - the job then fails on its revoked key
+        logger.warning(
+            "Could not stop the loads of an Unsloth Studio chat tools call", exc_info = True
+        )
+
+
 def call(
     name: str,
     args: dict,
@@ -321,6 +338,7 @@ def call(
             studio_app = app,
             hf_token = None,
             profile = CHAT,
+            may_load = account.load_policy != "never",
         )
         # Empty context: another request's fastmcp HTTP request on this thread would outrank the bound caller.
         ticket = GenerationTicket()
@@ -337,11 +355,7 @@ def call(
                     args,
                     ticket,
                     config_check,
-                    **(
-                        {"follow_until": deadline - _FOLLOW_MARGIN_S}
-                        if name == "generate_video"
-                        else {}
-                    ),
+                    **({"follow_until": deadline - _FOLLOW_MARGIN_S} if name in _FOLLOWED else {}),
                 ),
             ),
             loop,
@@ -368,4 +382,5 @@ def call(
     finally:
         # Here, not on the loop: a cancelled or timed-out call still loses its key at once.
         forget_counted_parent(row["id"])
+        _stop_scoped_loads(loop, key)
         _revoke(row["id"])

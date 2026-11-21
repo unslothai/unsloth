@@ -209,12 +209,14 @@ def _media_studio(
     load_answer = None,
     plan = None,
     chat_statuses = None,
+    catalog = None,
 ):
     """``progress`` and ``statuses`` are consumed in order; the last one repeats."""
     prefix = "/api/inference/images" if kind == "image" else "/api/inference/video"
     return fake_studio(
         {
             **({STATUS_ROUTE: sequence(*chat_statuses)} if chat_statuses else {}),
+            **({("GET", "/api/inference/media/catalog"): catalog} if catalog is not None else {}),
             ("GET", "/api/hub/gguf-variants"): {
                 "repo_id": FLUX_GGUF,
                 "default_variant": "Q4_K_S",
@@ -1535,3 +1537,59 @@ def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(mon
     sent = bodies(studio, "/api/inference/video/unload")
     assert sent.count({"expected_load_id": "A"}) == 2 and {"expected_load_id": "B"} in sent
     assert unloaded.unloaded is True
+
+
+# Kind inference: a catalog row or the /v1/models task picks the route; otherwise llm.
+FLUX2 = "unsloth/FLUX.2-klein-4B"
+TTS_ID = "unsloth/Kokoro-82M"
+MEDIA_CATALOG = ("GET", "/api/inference/media/catalog")
+CATALOGS = {
+    MEDIA_CATALOG: {"models": [{"id": FLUX2, "kind": "image"}]},
+    ("GET", "/api/inference/audio/catalog"): {"models": [{"id": TTS_ID, "task": "tts"}]},
+    ("GET", "/v1/models"): {"data": []},
+}
+
+
+def test_a_catalog_image_id_loads_as_an_image_without_a_kind(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image",
+        catalog = CATALOGS[MEDIA_CATALOG],
+        progress = [READY],
+        statuses = [{"loaded": True, "repo_id": FLUX2}],
+    )
+    result, studio = run_tool(monkeypatch, studio, "load_model", {"model": FLUX2})
+    assert result["structuredContent"]["kind"] == "image", result
+    assert len(media_load_bodies(studio, "/api/inference/images/load")) == 1
+    assert bodies(studio, "/api/inference/load") == []
+
+
+def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(monkeypatch):
+    args = {"model": FLUX2, "kind": "llm"}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
+    text = result["content"][0]["text"]
+    assert result["isError"] is True and f"call load_model(model='{FLUX2}', kind='image')" in text
+    assert bodies(studio, "/api/inference/load") == []
+
+
+# An explicit llm load of a tts row goes through; a bare name keeps its variant.
+@pytest.mark.parametrize(
+    "model, kind, sent",
+    [(TTS_ID, "llm", TTS_ID), ("Kokoro-82M:Q4_K_M", "tts", f"{TTS_ID}:Q4_K_M")],
+)
+def test_a_catalog_tts_row_loads_through_the_llm_route(monkeypatch, fast_polls, model, kind, sent):
+    args = {"model": model, "kind": kind}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
+    assert result["isError"] is False, json.dumps(result)
+    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [sent]
+
+
+def test_an_autoconfig_failure_gets_the_kind_hint(monkeypatch):
+    failed = JSONResponse({"detail": f"Unrecognized model in {LLM}."}, status_code = 500)
+    routes = {**PAYLOADS, **CATALOGS, LOAD: failed}
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    text = result["content"][0]["text"]
+    assert (
+        result["isError"] is True
+        and "pass kind" in text
+        and "list_models(source='catalog')" in text
+    )

@@ -223,6 +223,55 @@ def _cached_pick(repo: str, filename: Optional[str]) -> Optional[str]:
     return None
 
 
+def _prequant_transformer_sizes(fam: Any, request: Any, dirs: list) -> Optional[dict[str, int]]:
+    """The cached transformer files of the prequantized repo an int8 or fp8 load seeds from, for a base pipeline
+    without its own transformer. None when the load reads the base transformer (bf16, a LoRA) or either side
+    is not on disk."""
+    from core.inference.diffusion import DiffusionBackend as DB
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    quant = str(getattr(request, "transformer_quant", None) or "auto").strip().lower()
+    repos = dict(getattr(fam, "prequant_repos", ()) or ())
+    if quant not in ("auto", "int8", "fp8") or not repos or getattr(request, "loras", None):
+        return None
+    if not any(
+        local_pipeline_components_are_complete(
+            d, "model_index.json", excluded_components = ("transformer",)
+        )
+        for d in dirs
+    ):
+        return None
+    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+
+    scheme = "int8" if quant == "auto" else quant
+    try:
+        source = resolve_prequant_source(
+            fam, scheme, base_repo = getattr(request, "model_path", None)
+        )
+    except Exception:  # noqa: BLE001 - unresolved: unpriced, as before
+        source = None
+    location = (
+        getattr(source, "location", None) if getattr(source, "kind", None) == "repo" else None
+    )
+    location = location or repos.get(scheme)
+    # A root file the loader reads (int8 ConvRot or fp8), or anything under transformer/.
+    names = set(candidate_filenames_of(source)) if source is not None else set()
+    sizes: dict[str, int] = {}
+
+    def grab(d):
+        found = {
+            (rel if rel.startswith("transformer/") else f"transformer/{rel}"): size
+            for rel, size in DB._local_dir_weight_sizes(d, exclude_transformer = False).items()
+            if rel.split("/", 1)[0] == "transformer" or rel in names
+        }
+        sizes.update(found)
+        return found
+
+    if location:
+        DB._union_over_cached_revs(location, grab)
+    return sizes or None
+
+
 def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int, int]]:
     """(weights MiB, headroom MiB) for a diffusers image load, the way DiffusionBackend._plan_memory prices it."""
     from core.inference.diffusion import (
@@ -292,7 +341,10 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         DB._union_over_cached_revs(prefer_ungated_mirror(repo), grab)
         # A partial download would be priced as the whole pipeline.
         if not any(local_pipeline_components_are_complete(d, "model_index.json") for d in dirs):
-            return None
+            prequant = _prequant_transformer_sizes(fam, request, dirs)
+            if prequant is None:
+                return None
+            files.update(prequant)
         weights = (resident_bytes_from_declared(repo, files.items()) or 0) // mib
     else:
         path = _cached_pick(repo, name)
@@ -1023,9 +1075,10 @@ def coreside_locked(
     evict_first: bool,
     acting: Optional[str],
     evicted: Optional[list],
+    spare_chat: bool = False,
 ) -> None:
     """Makes room for owner under When they fit / Always; under When they fit, unpriceable residents
-    are evicted first."""
+    are evicted first. ``spare_chat`` refuses with GpuOwnerBusyError(CHAT) where a chat model would go."""
     target = (
         arb.physical_gpu_ids(gpu_ids)
         if gpu_ids is not None
@@ -1057,6 +1110,8 @@ def coreside_locked(
             )
         if not allow_evict:
             raise arb.GpuOwnerBusyError(names[-1])
+        if spare_chat and arb.CHAT in names:
+            raise arb.GpuOwnerBusyError(arb.CHAT)
         for name in names:
             _evict_resident(name, acting, evicted, [])
             kept.remove(name)
@@ -1099,11 +1154,12 @@ def coreside_locked(
         evicted,
         need_mib = need_mib,
         acting = acting,
-        media_only = owner == arb.CHAT and _on_metal(),
+        media_only = spare_chat or (owner == arb.CHAT and _on_metal()),
     )
     if not can_load_alongside(owner, need_mib)[0]:
         # Still short: unload the rest on these GPUs, as Off does, and let the planner offload.
-        for name in [
-            n for n, gpus in arb._view().items() if n != owner and _overlaps(gpus, target)
-        ]:
+        rest = [n for n, gpus in arb._view().items() if n != owner and _overlaps(gpus, target)]
+        if spare_chat and arb.CHAT in rest:
+            raise arb.GpuOwnerBusyError(arb.CHAT)
+        for name in rest:
             _evict_resident(name, acting, evicted, [])

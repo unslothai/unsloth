@@ -83,6 +83,20 @@ def caller_tools() -> frozenset[str]:
     return frozenset() if disabled is None else surface(profile) - disabled
 
 
+def loads_kind(kind: Optional[str], tools: frozenset[str]) -> bool:
+    """Whether the caller's load_model takes ``kind`` (a chat loads only image, video and speech-to-text)."""
+    if "load_model" not in tools:
+        return False
+    from studio_mcp.caller import current_caller
+
+    try:
+        allowed = current_caller().profile.load_kinds
+    except RuntimeError:
+        return True
+    load_kind = "llm" if kind in (None, "llm", "chat") else LOAD_KINDS.get(kind, kind)
+    return allowed is None or load_kind in allowed
+
+
 def _ask_user_load(kind: str, model: Optional[str] = None) -> str:
     page = PAGES.get(kind, "Chat")
     what = f"'{model}'" if model else f"a {WHAT.get(kind, 'model')}"
@@ -99,7 +113,7 @@ def download_hint(kind: str, model: Optional[str], tools: frozenset[str]) -> str
 
 
 def load_hint(kind: str, tools: frozenset[str]) -> str:
-    if "load_model" not in tools:
+    if not loads_kind(kind, tools):
         return _ask_user_load(kind)
     if kind in ("llm", "chat"):
         return "Load a chat model with load_model first; list_models shows the downloaded ones."
@@ -110,7 +124,7 @@ def load_hint(kind: str, tools: frozenset[str]) -> str:
 
 def unload_hint(kind: Optional[str], tools: frozenset[str]) -> str:
     unload = UNLOAD_KINDS.get(kind or "")
-    if "unload_model" in tools:
+    if "unload_model" in tools and (unload is None or loads_kind(unload, tools | {"load_model"})):
         if unload is None:
             return (
                 "Call unload_model(kind=…) for the model it names to free the GPU; "
@@ -154,7 +168,7 @@ def audio_hint(code: str, smaller_variants: list[str], tools: frozenset[str]) ->
         return _UPDATE_AUDIO_RUNTIME
     if code == "file_incomplete":
         return "Download the model again, or load another variant."
-    loads = "load_model" in tools
+    loads = loads_kind("tts", tools)
     if code == "runtime_stopped":
         if loads:
             return (

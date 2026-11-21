@@ -21,6 +21,7 @@ from fastmcp.exceptions import ToolError
 from core.inference import model_identity
 from studio_mcp import job_store
 from studio_mcp import placement as place
+from studio_mcp import problems
 from studio_mcp.caller import Caller
 from studio_mcp.errors import raise_for_route, tool_error
 from studio_mcp.forward import forward
@@ -87,6 +88,8 @@ class LoadJob(job_store.Job):
     post: Optional[asyncio.Future] = field(default = None, repr = False)
     # The media load's load_token: an unload naming it ends this load only, even if its POST is still out.
     load_token: Optional[str] = None
+    # A chat tool call's key fingerprint: only that call follows the job, which stops with it.
+    scoped: Optional[str] = None
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -125,10 +128,28 @@ def _same_id(left: str, right: str) -> bool:
     return model_identity.same_repo(left, right, probe = True)
 
 
+def _fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _scope_of(caller: Caller) -> Optional[str]:
+    return _fingerprint(caller.token) if caller.call_scoped else None
+
+
+async def stop_scoped_loads(token: str) -> int:
+    """Ends the jobs of the loads a call-scoped key started; a media load already posted still finishes."""
+    jobs = [job for job in LOADS.running() if job.scoped == _fingerprint(token)]
+    for job in jobs:
+        job_store.mark_cancelled(job)
+    return len(jobs)
+
+
 def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
     for job in LOADS.running(caller.account_id):
         if (
-            job.slot == asked.slot
+            # Another call's key is revoked when that call ends.
+            job.scoped == asked.scoped
+            and job.slot == asked.slot
             and _same(job.model, asked.model)
             and model_identity.same_variant(job.variant, asked.variant)
             and job.options == asked.options
@@ -211,6 +232,7 @@ async def start_load(
         model = model,
         variant = variant,
         options = (options, hashlib.sha256(token.encode()).hexdigest()[:16] if token else None),
+        scoped = _scope_of(caller),
     )
 
     async def drive(job: LoadJob) -> LoadResult:
@@ -354,6 +376,23 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     return poll
 
 
+# The llm route's words for a model it cannot read.
+_NOT_LLM_MARKERS = ("autoconfig", "model_type", "unrecognized model")
+
+
+def _wrong_kind_hint(message: str) -> Optional[str]:
+    """A note on kind for a model the llm route could not read; None for any other failure."""
+    if not any(marker in message.lower() for marker in _NOT_LLM_MARKERS):
+        return None
+    tools = problems.caller_tools()
+    if "load_model" not in tools:
+        return None
+    hint = "If this is an image, video or speech-to-text model, pass kind"
+    if "list_models" in tools:
+        hint += "; list_models(source='catalog') shows each catalog model's kind"
+    return hint + "."
+
+
 async def load_llm(
     caller: Caller,
     ctx: Optional[Context],
@@ -402,12 +441,18 @@ async def load_llm(
                 gpu_layers = gpu_layers,
             )
         )
-        payload = await with_progress(
-            None,
-            route_json("POST", "/api/inference/load", caller = caller, json_body = body),
-            _llm_poll(caller, model),
-            job,
-        )
+        try:
+            payload = await with_progress(
+                None,
+                route_json("POST", "/api/inference/load", caller = caller, json_body = body),
+                _llm_poll(caller, model),
+                job,
+            )
+        except ToolError as error:
+            hint = _wrong_kind_hint(str(error))
+            if hint is None:
+                raise
+            raise tool_error(str(error), hint) from error
         if not isinstance(payload, dict):
             raise ToolError("Unsloth Studio did not confirm the load")
         loaded = opt_text(payload.get("model")) or model

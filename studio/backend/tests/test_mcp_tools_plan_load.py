@@ -559,3 +559,13 @@ def test_an_mlx_precision_listing_is_no_gguf_for_cpu_placement(monkeypatch):
         asyncio.run(placement.require_cpu_gguf(None, "llm", "org/model-mlx", None, "cpu"))
     with pytest.raises(Exception, match = "gpu_layers is only for GGUF"):
         asyncio.run(placement.require_cpu_gguf(None, "llm", "org/model-mlx", None, None, 0))
+
+
+def test_plan_load_infers_an_image_kind_from_the_media_catalog(monkeypatch, fast_polls):
+    from .test_mcp_tools_loading import CATALOGS, FLUX2
+
+    world = {**_world("off", []), **CATALOGS}
+    result, studio = run_tool(monkeypatch, world, "plan_load", {"model": FLUX2}, fallback = {})
+    assert result["structuredContent"]["kind"] == "image", result
+    (body,) = bodies(studio, "/api/inference/images/download-plan")
+    assert body["model_path"] == FLUX2
