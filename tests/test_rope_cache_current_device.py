@@ -787,3 +787,50 @@ def test_compiled_gemma_stock_cuda_preserves_cpu_timescale(kind, dtype):
     torch.testing.assert_close(sin, ref_sin, rtol = tolerance, atol = tolerance)
     ((cos + sin) * x).sum().backward()
     assert torch.isfinite(x.grad).all()
+
+
+@pytest.mark.parametrize("family", ["gemma", "gemma2"])
+@pytest.mark.parametrize(
+    "key", ["type", "rope_type", None], ids = ["loader", "rope_type", "unscaled"]
+)
+def test_gemma_rotary_applies_config_linear_scaling(family, key):
+    # Since transformers 4.48 GemmaModel builds this rotary from the config, so patch_linear_scaling
+    # never installs the scaled class: the loader's linear extension must be read from the config.
+    from transformers import Gemma2Config, GemmaConfig
+    from transformers.models.gemma.modeling_gemma import GemmaRotaryEmbedding
+    from transformers.models.gemma2.modeling_gemma2 import Gemma2RotaryEmbedding
+
+    Config, Stock = {
+        "gemma": (GemmaConfig, GemmaRotaryEmbedding),
+        "gemma2": (Gemma2Config, Gemma2RotaryEmbedding),
+    }[family]
+    helpers = _load(LLAMA, list(_HELPERS) + ["_get_rope_theta", "_rope_scaling_as_dict"])
+    ns = _load(
+        GEMMA, ["GemmaFixedRotaryEmbedding", "GemmaFixedLinearScalingRotaryEmbedding"], helpers
+    )
+    factor = 1.0 if key is None else 4.0
+    scaling = None
+    config = Config(head_dim = DIM, max_position_embeddings = 1024)
+    if key is not None:
+        scaling = {"rope_type": "linear", "factor": factor, "rope_theta": float(BASE)}
+        # What the loader's from_pretrained(rope_scaling = ...) leaves on the config.
+        config.rope_scaling = {key: "linear", "factor": factor, "rope_theta": float(BASE)}
+    stock = Stock(Config(head_dim = DIM, max_position_embeddings = 1024, rope_scaling = scaling))
+    rope = ns["GemmaFixedRotaryEmbedding"](config)
+    # The explicitly scaled class is the bit-exact reference; factor 1.0 is the unscaled table.
+    explicit = ns["GemmaFixedLinearScalingRotaryEmbedding"](
+        dim = DIM, max_position_embeddings = 1024, base = BASE, scaling_factor = factor
+    )
+    x, positions = torch.zeros(1), torch.arange(1024)[None]
+    want = [t[0] for t in stock(x, positions)]
+    # The per-device table the fast forward and decode loops read, then the compiled path.
+    for got, exact in (
+        (rope.get_cached(1024, 0), explicit.get_cached(1024, 0)),
+        (
+            rope._compiled_position_embeddings(x, positions),
+            explicit._compiled_position_embeddings(x, positions),
+        ),
+    ):
+        for g, e, w in zip(got, exact, want):
+            torch.testing.assert_close(g.squeeze(0), w, rtol = 0, atol = 1e-4)
+            assert torch.equal(g, e)
