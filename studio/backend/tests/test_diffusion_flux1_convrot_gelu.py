@@ -275,22 +275,27 @@ def test_rotq_h16x_gelu_source_contract():
 
 
 def test_gelu_entry_keeps_the_stock_path_below_the_card_min_rows(monkeypatch):
-    """Short activations (FLUX.1's text-stream MLP, small renders) measured slower fused: the caller keeps stock."""
+    """Short activations (FLUX.1's text-stream MLP, small renders) and, on RTX PRO 6000, the prefix-free FF measured
+    slower fused: the caller keeps stock there."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_convrot_quant as cq
 
     calls = []
     monkeypatch.setattr(cq, "_GELU_HANDLE", lambda *a: calls.append(a) or ("q", "s"))
     monkeypatch.setitem(cq._GELU_DEVICE, None, True)  # noqa: SLF001 - CPU tensors carry device index None
-    monkeypatch.setitem(cq._GELU_DEVICE_MIN_ROWS, None, 2048)  # noqa: SLF001
     monkeypatch.setattr(cq, "producer_layout_ok", lambda *a: True)
     small, big = (
         torch.empty(256, 512, dtype = torch.bfloat16),
         torch.empty(4096, 512, dtype = torch.bfloat16),
     )
+    pre = torch.empty(1, 4096, 2, 128, dtype = torch.bfloat16)
+    monkeypatch.setitem(cq._GELU_DEVICE_MIN_ROWS, None, cq._GELU_MIN_ROWS[(8, 9)])  # noqa: SLF001
     assert cq.convrot_gelu_act_quant(None, small, 256, True) is None and not calls
     assert cq.convrot_gelu_act_quant(None, big, 256, True) == ("q", "s") and len(calls) == 1
-    assert cq._GELU_MIN_ROWS[(12, 0)] == 2048 and cq._GELU_MIN_ROWS[(8, 9)] == 1024  # noqa: SLF001
+    monkeypatch.setitem(cq._GELU_DEVICE_MIN_ROWS, None, cq._GELU_MIN_ROWS[(12, 0)])  # noqa: SLF001
+    assert cq.convrot_gelu_act_quant(None, big, 256, True) is None and len(calls) == 1
+    assert cq.convrot_gelu_act_quant(pre, big, 256, True) == ("q", "s") and len(calls) == 2
+    assert cq.convrot_gelu_act_quant(pre[:, :256], small, 256, True) is None
 
 
 def test_gelu_verdict_is_persisted_and_a_later_load_skips_the_probe(monkeypatch):

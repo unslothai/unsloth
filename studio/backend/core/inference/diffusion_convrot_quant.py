@@ -2380,10 +2380,12 @@ _GELU_PROBE_SHAPES = (
 # the compiled GELU + concat + rotq_h16 until measured. ``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED=1`` arms it on any card
 # whose probe passes, ``0`` turns it off.
 _GELU_ARCHS = ((8, 9), (12, 0))
-# Fewest rows where the fused kernel beat the compiled GELU + concat + rotq_h16 (quant stage, FLUX.1 shapes): L4 wins
-# from 1280 rows (1.29x), RTX PRO 6000 only at 4096+ (1.24-1.54x; 0.83x at 1280, 0.84x at 256). Others: 2048.
-_GELU_MIN_ROWS = {(8, 9): 1024, (12, 0): 2048}
-_GELU_MIN_ROWS_DEFAULT = 2048
+# Fewest rows where the fused kernel beat the compiled GELU (+ concat) + rotq_h16 (quant stage, FLUX.1 shapes), as
+# (with the attention prefix, without it); None = never. L4 wins from 1280 rows with or without the prefix (1.22-1.50x);
+# RTX PRO 6000 wins with the prefix at 4352 rows (1.28x) but not at 1280 (0.76x), and never without it (FF at 4096
+# rows 0.94x, text FF 0.63x). Other cards: 2048 / 2048.
+_GELU_MIN_ROWS = {(8, 9): (1024, 1024), (12, 0): (2048, None)}
+_GELU_MIN_ROWS_DEFAULT = (2048, 2048)
 _GELU_DEVICE_MIN_ROWS: dict = {}  # device index -> min rows, set when armed
 GELU_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED"
 # GELU's non-monotonic tail (min near -0.75), saturation and tiny / zero inputs
@@ -2503,7 +2505,8 @@ def convrot_gelu_act_quant(prefix: Any, gate: Any, group: int, v2: bool) -> Opti
     and its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
     if group != 256 or not gelu_armed(gate.device.index):
         return None
-    if gate.shape[0] < _GELU_DEVICE_MIN_ROWS.get(gate.device.index, _GELU_MIN_ROWS_DEFAULT):
+    rows = _GELU_DEVICE_MIN_ROWS.get(gate.device.index, _GELU_MIN_ROWS_DEFAULT)[prefix is None]
+    if rows is None or gate.shape[0] < rows:
         return None
     if not producer_layout_ok(prefix, gate, gate):
         return None
