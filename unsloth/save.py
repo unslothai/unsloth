@@ -3594,23 +3594,43 @@ def upload_to_huggingface(
     if file_location is not None:
         hf_api = HfApi(token = token)
 
-        if "/" in file_location:
-            uploaded_location = file_location[file_location.rfind("/") + 1 :]
+        uploaded_location = os.path.basename(file_location)
+
+        import fnmatch
+
+        if os.path.isdir(file_location):
+            tfevents_dir = file_location
         else:
-            uploaded_location = file_location
+            tfevents_dir = os.path.dirname(file_location)
 
-        import glob
-
-        ftevent_files = glob.glob("*out.tfevents*", recursive = True)
+        if tfevents_dir == "":
+            tfevents_dir = "."
+            ftevent_files = sorted(
+                os.path.join(tfevents_dir, filename)
+                for filename in os.listdir(tfevents_dir)
+                if os.path.isfile(os.path.join(tfevents_dir, filename))
+                and fnmatch.fnmatch(filename, "*out.tfevents*")
+            )
+        else:
+            ftevent_files = []
+            for root, dirnames, filenames in os.walk(tfevents_dir):
+                dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+                ftevent_files.extend(
+                    os.path.join(root, filename)
+                    for filename in filenames
+                    if fnmatch.fnmatch(filename, "*out.tfevents*")
+                )
+            ftevent_files.sort()
         if len(ftevent_files) > 0:
             print(
                 "Unsloth: Uploading tensorboard files... Please wait...",
-                file_location + "*out.tfevents*",
+                os.path.join(tfevents_dir, "*out.tfevents*"),
             )
             for ftevent_file in ftevent_files:
+                path_in_repo = os.path.relpath(ftevent_file, tfevents_dir).replace(os.sep, "/")
                 hf_api.upload_file(
                     path_or_fileobj = ftevent_file,
-                    path_in_repo = ftevent_file.replace(file_location, ""),
+                    path_in_repo = path_in_repo,
                     repo_id = save_directory,
                     repo_type = "model",
                     commit_message = "(Trained with Unsloth)",
@@ -3625,18 +3645,25 @@ def upload_to_huggingface(
         )
 
         if create_config:
-            import json
-
-            with open("_temporary_unsloth_config.json", "w", encoding = "utf-8") as file:
-                json.dump({"model_type": model.config.model_type}, file, indent = 4)
-            hf_api.upload_file(
-                path_or_fileobj = "_temporary_unsloth_config.json",
-                path_in_repo = "config.json",
-                repo_id = save_directory,
-                repo_type = "model",
-                commit_message = "(Trained with Unsloth)",
+            import tempfile
+            temp_config = tempfile.NamedTemporaryFile(
+                mode = "w", encoding = "utf-8", suffix = ".json", delete = False
             )
-            os.remove("_temporary_unsloth_config.json")
+            try:
+                with temp_config as file:
+                    json.dump({"model_type": model.config.model_type}, file, indent = 4)
+                hf_api.upload_file(
+                    path_or_fileobj = temp_config.name,
+                    path_in_repo = "config.json",
+                    repo_id = save_directory,
+                    repo_type = "model",
+                    commit_message = "(Trained with Unsloth)",
+                )
+            finally:
+                try:
+                    os.remove(temp_config.name)
+                except OSError:
+                    pass
     return username
 
 
