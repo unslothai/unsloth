@@ -208,7 +208,6 @@ test("auto-load keeps cached non-GGUF models while detection is deferred", () =>
   assert.equal(runsHere(safetensors), false);
   assert.equal(runsHere({ id: "org/model-GGUF", path: "/models/m.gguf" }), true);
 
-  // A Chat only Mac keeps its MLX models only when the backend reports MLX inference.
   usePlatformStore.setState({ deviceType: "mac", mlxInference: true });
   assert.equal(cachedModelRuns(mlxRepo), true);
   assert.equal(cachedModelRuns({ repo_id: "org/model" }), false);

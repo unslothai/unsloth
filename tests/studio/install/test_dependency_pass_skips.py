@@ -1350,7 +1350,6 @@ def mlx(monkeypatch):
 
 
 def test_a_no_torch_install_reports_mlx_for_chat_not_training(mlx, monkeypatch) -> None:
-    # unsloth_zoo's MLX trainer imports torch, so a Chat only Mac's MLX stack serves chat only.
     _, steps, _, _ = mlx
     monkeypatch.setattr(stack, "NO_TORCH", True)
     stack._report_mlx_stack_health(skipped = False)

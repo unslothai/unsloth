@@ -639,7 +639,6 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
         False,
     )
 
-    # The MLX bit comes from the same guarded read as the verdict beside it.
     monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.MLX, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "no_torch", raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", None, raising = False)

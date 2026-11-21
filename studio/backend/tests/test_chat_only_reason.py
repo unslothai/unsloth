@@ -279,7 +279,6 @@ def test_a_declined_settle_does_not_mark_the_epoch(monkeypatch):
 
 
 def test_apple_silicon_no_torch_install_with_usable_mlx_chats_on_mlx_without_training(monkeypatch):
-    # unsloth_zoo's MLX trainer and export import torch, so a Chat only Mac serves chat on MLX only.
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)

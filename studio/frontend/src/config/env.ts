@@ -46,8 +46,7 @@ interface PlatformState {
   videoCpuOptIn: boolean;
   // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
   cpuTraining: boolean;
-  // authed /api/health mlx_inference: the detected backend is MLX, so MLX models load. Null on an
-  // older backend that does not send it; MLX checks then fall back to chatOnlyReason.
+  // authed /api/health mlx_inference; null on an older backend, where MLX checks use chatOnlyReason.
   mlxInference: boolean | null;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
@@ -359,8 +358,7 @@ async function readHealth(
             : data.video_cpu_opt_in === true,
         cpuTraining:
           data.cpu_training === undefined ? previous.cpuTraining : data.cpu_training === true,
-        // A settled reply without the field is an older backend, so reset to null and let the
-        // reason answer; a provisional or deferred reply keeps the stored value.
+        // Absent from a settled reply = older backend: null, so the reason answers.
         mlxInference:
           isProvisionalVerdict(data) || isDetectionDeferred(data)
             ? previous.mlxInference

@@ -387,7 +387,6 @@ function loraFormat(lora: LoraModelOption): FormatTone {
   if (lora.source !== "local" && lora.exportType !== "merged") {
     return "adapter";
   }
-  // localRowIsMlx is what the Hub inventory and chat auto-load use; it also counts an oMLX source.
   return MLX_PATH_SEGMENT.test(lora.id) ||
     localRowIsMlx({ id: lora.id, display_name: lora.name, source: lora.localSource })
     ? "mlx"

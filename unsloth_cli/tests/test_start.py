@@ -11825,7 +11825,6 @@ def test_require_gguf_for_agent_accepts_an_mlx_model(monkeypatch, capsys):
             {"device_type": "mac", "apple_silicon": True, "chat_only_reason": "mlx_unavailable"},
             False,
         ),
-        # A Chat only Mac: the same no_torch reason with and without a working MLX stack.
         (
             {
                 "device_type": "mac",

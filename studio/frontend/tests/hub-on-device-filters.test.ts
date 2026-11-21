@@ -172,7 +172,6 @@ test("the MLX format finds MLX folders, which the scan reports as safetensors", 
 
 test("the inspector classifies a local MLX folder as its inventory row does", async () => {
   const { namedOrTaggedMlx } = await import("../src/features/hub/lib/format-filters.ts");
-  // A custom folder has no hubRepoId; its path and title are what mark it MLX.
   assert.equal(
     namedOrTaggedMlx({ names: ["/Users/me/models/Qwen3-8B-MLX", "Qwen3-8B-MLX", "Qwen3-8B-MLX"] }),
     true,

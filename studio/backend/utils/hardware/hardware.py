@@ -1844,8 +1844,6 @@ def _detect_hardware_locked() -> DeviceType:
         chip = platform.machine() or "arm64"
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
         if _installed_without_torch():
-            # A Chat only install still gets MLX, so MLX models chat here, but unsloth_zoo's MLX
-            # trainer and export import torch: Train/Export stay off, as on any --no-torch host.
             CHAT_ONLY_REASON = "no_torch"
             logger.info(
                 "Apple Silicon installed --no-torch (Chat only); MLX serves chat, Train/Export "

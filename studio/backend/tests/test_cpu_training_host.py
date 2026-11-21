@@ -107,7 +107,6 @@ def test_health_reports_cpu_training_only_beside_its_verdicts(
     "device, expected", [(hw.DeviceType.MLX, True), (hw.DeviceType.CPU, False)]
 )
 def test_health_reports_mlx_inference_from_the_detected_backend(monkeypatch, device, expected):
-    # A Chat only Mac reports no_torch with and without a working MLX stack; the backend differs.
     body = _health(monkeypatch, reason = "no_torch", established = None, device = device)
     assert body["chat_only_reason"] == "no_torch"
     assert body["mlx_inference"] is expected

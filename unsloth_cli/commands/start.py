@@ -2942,8 +2942,7 @@ def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
     _fail(message)
 
 
-# Mirrors the frontend's NO_MLX_REASONS: an Apple Silicon host that still cannot load MLX. Only for
-# a server that does not send mlx_inference; one that does is answered by it.
+# Mirrors the frontend's NO_MLX_REASONS; only for a server that does not send mlx_inference.
 _NO_MLX_REASONS = frozenset(
     {"mlx_unavailable", "no_torch", "intel_mac", "rosetta", "detection_failed"}
 )
@@ -2983,7 +2982,6 @@ def _server_loads_mlx(base: str, key: str) -> bool:
         and health.get("apple_silicon") is True
     ):
         return False
-    # The detected backend: a Chat only Mac serves MLX only when its MLX stack works.
     if isinstance(health.get("mlx_inference"), bool):
         return health["mlx_inference"]
     return health.get("chat_only_reason") not in _NO_MLX_REASONS

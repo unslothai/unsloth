@@ -485,7 +485,6 @@ export const ModelInspector = memo(function ModelInspector({
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
-  // A Chat only Mac still runs MLX models when its MLX stack works.
   const mlxInference = usePlatformStore((s) => s.mlxInference);
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;

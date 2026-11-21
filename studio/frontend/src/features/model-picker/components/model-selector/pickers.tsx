@@ -3767,7 +3767,6 @@ function localModelMatchesFormat(
     m.model_id ?? m.display_name ?? m.id,
     localModelIsGguf(m),
     filter,
-    // An oMLX folder or one whose path alone says MLX, as the Hub inventory reads it.
     localModelIsMlx(m),
   );
 }
@@ -4471,7 +4470,7 @@ export function HubModelPicker({
   );
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  // A Chat only Mac loads MLX only when its MLX stack works; null is an older backend.
+  // null is an older backend.
   const mlxInference = usePlatformStore((s) => s.mlxInference);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
@@ -5626,8 +5625,7 @@ export function HubModelPicker({
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
-  // Empty-state logic must use this or the picker can go blank. A Chat only Mac whose MLX stack
-  // works still lists its cached MLX repos.
+  // Empty-state logic must use this or the picker can go blank.
   const visibleCachedModelRows =
     chatOnly && !task
       ? isMac && mlxInference === true

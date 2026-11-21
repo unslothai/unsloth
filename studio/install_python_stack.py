@@ -10490,7 +10490,6 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
     """Advisory only, and must not be silent: names what keeps Train off on Apple Silicon; runs out
     of process since a half-installed mlx can abort; recorded verdict stands only if MLX was
     skipped, nothing installed, and the last run was healthy."""
-    # A --no-torch install gets MLX for chat only: unsloth_zoo's MLX trainer imports torch.
     ready = "chat stack ready" if NO_TORCH else "training stack ready"
     fingerprint = _mlx_health_fingerprint()
     recorded = (_PASS_EVIDENCE or {}).get("mlx_health")
@@ -12049,9 +12048,8 @@ def install_python_stack() -> int:
     if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
-    # macOS arm64: not keyed off skip_base (fresh installs still need MLX), and on --no-torch too:
-    # MLX needs no torch, and without it a Chat only Mac cannot run MLX models. Pins align with
-    # utils/mlx_repair.py and unsloth-zoo. None when the MLX step did not run.
+    # macOS arm64: not keyed off skip_base (fresh installs still need MLX); --no-torch too, MLX needs no
+    # torch. Pins align with utils/mlx_repair.py and unsloth-zoo. None when the MLX step did not run.
     _mlx_vlm_spec_used: Optional[str] = None
     _mlx_lm_spec_used: Optional[str] = None
     if IS_MAC_ARM:

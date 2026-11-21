@@ -68,7 +68,6 @@ export function isMlxId(id: string, hintedIsMlx?: boolean): boolean {
   return MLX_NAME_RE.test(leaf);
 }
 
-/** A cached repo is MLX by name, card tag or library; the picker and chat auto-load both ask this. */
 export function cachedRepoIsMlx(repo: {
   repo_id: string;
   tags?: readonly string[] | null;
@@ -80,7 +79,6 @@ export function cachedRepoIsMlx(repo: {
   );
 }
 
-/** A local folder or Hub selection is MLX by any name it carries, its card or an oMLX source. */
 export function namedOrTaggedMlx(model: {
   names: readonly string[];
   tags?: readonly string[] | null;
@@ -94,8 +92,6 @@ export function namedOrTaggedMlx(model: {
   );
 }
 
-/** A local model row (/api/models/local) is MLX by any name it carries or an oMLX source, as the Hub
- * inventory classifies the same folder; picker and chat auto-load both ask this. */
 export function localRowIsMlx(row: {
   id: string;
   display_name?: string | null;

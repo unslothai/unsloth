@@ -3032,8 +3032,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
   );
 }
 
-/** On a chat-only install the picker lists no cached non-GGUF repo, except MLX ones on a Mac whose
- * MLX stack works; same wait-for-the-server rule as above. */
+/** Chat-only lists no cached non-GGUF repo except MLX on an MLX-serving Mac; same wait-for-the-server rule as above. */
 function cachedModelRunsOnThisPlatform(repo: CachedModelRepo): boolean {
   const platform = usePlatformStore.getState();
   if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;

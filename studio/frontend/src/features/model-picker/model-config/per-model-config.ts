@@ -183,8 +183,7 @@ const NO_MLX_REASONS = new Set([
   "detection_failed",
 ]);
 
-/** `!isGguf` alone would show MLX controls to CUDA users. `mlxInference` is /api/health's
- * detected backend: a Chat only Mac loads MLX only when its MLX stack works, under one reason. */
+/** `!isGguf` alone would show MLX controls to CUDA users. */
 export function isServedByMlx(
   isGguf: boolean,
   deviceType: string | null | undefined,
