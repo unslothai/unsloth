@@ -82,6 +82,25 @@ def cut_row_flags(trainer, completion_ids):
     return flags
 
 
+def _innermost(fn, name = "_generate_and_score_completions"):
+    """Follow Unsloth's method wrappers (closures over the original method, or __wrapped__) to the source body."""
+    for _ in range(8):
+        inner = getattr(fn, "__wrapped__", None)
+        if inner is None:
+            for cell in getattr(fn, "__closure__", None) or ():
+                try:
+                    value = cell.cell_contents
+                except ValueError:
+                    continue
+                if callable(value) and getattr(value, "__name__", "") == name and value is not fn:
+                    inner = value
+                    break
+        if inner is None:
+            return fn
+        fn = inner
+    return fn
+
+
 def _masking_site_patched(trainer_class):
     """The trainer's truncation mask goes through _unsloth_grpo_is_truncated (TRL 0.24+ source shape)."""
     cached = trainer_class.__dict__.get("_unsloth_tail_cut_supported", None)
@@ -90,16 +109,13 @@ def _masking_site_patched(trainer_class):
     import inspect
 
     supported = False
-    for klass in trainer_class.__mro__:
-        fn = klass.__dict__.get("_generate_and_score_completions", None)
-        if fn is None:
-            continue
+    fn = getattr(trainer_class, "_generate_and_score_completions", None)
+    if fn is not None:
         try:
-            source = inspect.getsource(fn)
+            source = inspect.getsource(_innermost(fn))
+            supported = "_unsloth_grpo_is_truncated(self, completion_ids_list" in source
         except (OSError, TypeError):
-            break
-        supported = "_unsloth_grpo_is_truncated(self, completion_ids_list" in source
-        break
+            supported = False
     try:
         setattr(trainer_class, "_unsloth_tail_cut_supported", supported)
     except Exception:

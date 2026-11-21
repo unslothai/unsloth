@@ -270,3 +270,26 @@ def test_scope_installs_and_restores(monkeypatch):
     with tc.rollout_tail_cut_scope(trainer):
         run_engine(engine, len(lengths), SamplingParams(max_tokens = 500))
     assert engine.aborted == []
+
+
+def test_masking_site_gate_sees_through_method_wrappers():
+    def _generate_and_score_completions(self):
+        return _unsloth_grpo_is_truncated(self, completion_ids_list, prompt_ids_list, eos_and_pad)  # noqa: F821
+
+    def wrap(original):  # the shape of rl.py's _wrap_grpo_generate_and_score
+        def wrapped(self, *a, **k):
+            return original(self, *a, **k)
+
+        return wrapped
+
+    class Patched:
+        pass
+
+    Patched._generate_and_score_completions = wrap(_generate_and_score_completions)
+    assert tc._masking_site_patched(Patched)
+
+    class Stock:
+        def _generate_and_score_completions(self):
+            return [ids[-1] not in eos_and_pad for ids in completion_ids_list]  # noqa: F821
+
+    assert not tc._masking_site_patched(Stock)
