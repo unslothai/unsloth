@@ -2377,258 +2377,283 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     assert type(input_ids) is torch.Tensor
     bsz = input_ids.shape[0]
 
-    FastBaseModel.for_inference(self)
-    dtype = _get_dtype(dtype_from_config(self.config))
-    do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
-    if do_bfloat16_mixed_precision:
-        dtype = torch.bfloat16
+    restore_training_mode = getattr(self, "training", False)
+    use_gradient_checkpointing = False
+    if restore_training_mode:
+        # Snapshot the real GC mode (e.g. unsloth) before for_inference clears it, as llama does.
+        use_gradient_checkpointing = next(
+            (v for v in (getattr(m, "gradient_checkpointing", False) for m in self.modules()) if v),
+            False,
+        )
+    try:
+        FastBaseModel.for_inference(self)
+        dtype = _get_dtype(dtype_from_config(self.config))
+        do_bfloat16_mixed_precision = os.environ.get("UNSLOTH_BFLOAT16_MIXED_PRECISION", "0") == "1"
+        if do_bfloat16_mixed_precision:
+            dtype = torch.bfloat16
 
-    # A core built from a sub-config (Qwen3-Omni's thinker) carries no architectures.
-    architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
-    is_vlm = any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
-    )
-    is_vlm = is_vlm or hasattr(self.config, "vision_config")
-    arch = architectures[0]
+        # A core built from a sub-config (Qwen3-Omni's thinker) carries no architectures.
+        architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
+        is_vlm = any(
+            x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
+        )
+        is_vlm = is_vlm or hasattr(self.config, "vision_config")
+        arch = architectures[0]
 
-    # Removing token_type_ids is WRONG for Gemma 3, which uses bidirectional attention.
-    if hasattr(self, "generate") and hasattr(self, "forward"):
-        keys = inspect.signature(self.forward).parameters.keys()
-        if "token_type_ids" not in keys:
-            kwargs.pop("token_type_ids", None)
+        # Removing token_type_ids is WRONG for Gemma 3, which uses bidirectional attention.
+        if hasattr(self, "generate") and hasattr(self, "forward"):
+            keys = inspect.signature(self.forward).parameters.keys()
+            if "token_type_ids" not in keys:
+                kwargs.pop("token_type_ids", None)
 
-    # Vision processors emit mm_token_type_ids that generate() rejects (Qwen3-VL); unlike logits_to_keep it is an incoming kwarg, so drop it when generate does not accept it.
-    if "mm_token_type_ids" in kwargs and not _unsloth_generate_accepts_kwarg(
-        self, "mm_token_type_ids"
-    ):
-        kwargs.pop("mm_token_type_ids", None)
+        # Vision processors emit mm_token_type_ids that generate() rejects (Qwen3-VL); unlike logits_to_keep it is an incoming kwarg, so drop it when generate does not accept it.
+        if "mm_token_type_ids" in kwargs and not _unsloth_generate_accepts_kwarg(
+            self, "mm_token_type_ids"
+        ):
+            kwargs.pop("mm_token_type_ids", None)
 
-    # VLMs do not allow logits_to_keep, and transformers >= 5.0 sets it itself in generate(), so pre-injecting there is redundant and the arch walk below can pick a key the top-level model rejects. The sentinel is the plain release: this Version() keeps only the leading numeric run and appends ".1" for a suffix, so a "5.0.0.dev0" sentinel would normalize to 5.0.0.1 and send 5.0.0 FINAL down the legacy branch. Prereleases still gate correctly.
-    if Version(transformers_version) < Version("5.0.0"):
-        global NUM_LOGITS_TO_KEEP
-        if arch not in NUM_LOGITS_TO_KEEP:
-            m = self
-            while hasattr(m, "model"):
-                if hasattr(m, "forward"):
-                    keys = inspect.signature(m.forward).parameters.keys()
-                    if "num_logits_to_keep" in keys:
-                        NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
-                        break
-                    elif "logits_to_keep" in keys:
-                        NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
-                        break
-                m = m.model
+        # VLMs do not allow logits_to_keep, and transformers >= 5.0 sets it itself in generate(), so pre-injecting there is redundant and the arch walk below can pick a key the top-level model rejects. The sentinel is the plain release: this Version() keeps only the leading numeric run and appends ".1" for a suffix, so a "5.0.0.dev0" sentinel would normalize to 5.0.0.1 and send 5.0.0 FINAL down the legacy branch. Prereleases still gate correctly.
+        if Version(transformers_version) < Version("5.0.0"):
+            global NUM_LOGITS_TO_KEEP
             if arch not in NUM_LOGITS_TO_KEEP:
-                NUM_LOGITS_TO_KEEP[arch] = None
-        key = NUM_LOGITS_TO_KEEP[arch]
-        if key is not None and key not in kwargs and _unsloth_generate_accepts_kwarg(self, key):
-            kwargs[key] = 1
-    else:
-        # v5's own injection is guarded by `"logits_to_keep" not in model_kwargs`, so it is a DEFAULT: an explicit caller value survives, and popping unconditionally would rewrite logits_to_keep=0 (full sequence) into 1. Strip only what the strict validator raises on: num_logits_to_keep everywhere (renamed away in v5), and logits_to_keep on the VLMs whose top-level forward does not take it.
-        for _logits_kwarg in ("logits_to_keep", "num_logits_to_keep"):
-            if _logits_kwarg in kwargs and not _unsloth_generate_accepts_kwarg(self, _logits_kwarg):
-                kwargs.pop(_logits_kwarg, None)
+                m = self
+                while hasattr(m, "model"):
+                    if hasattr(m, "forward"):
+                        keys = inspect.signature(m.forward).parameters.keys()
+                        if "num_logits_to_keep" in keys:
+                            NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
+                            break
+                        elif "logits_to_keep" in keys:
+                            NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
+                            break
+                    m = m.model
+                if arch not in NUM_LOGITS_TO_KEEP:
+                    NUM_LOGITS_TO_KEEP[arch] = None
+            key = NUM_LOGITS_TO_KEEP[arch]
+            if key is not None and key not in kwargs and _unsloth_generate_accepts_kwarg(self, key):
+                kwargs[key] = 1
+        else:
+            # v5's own injection is guarded by `"logits_to_keep" not in model_kwargs`, so it is a DEFAULT: an explicit caller value survives, and popping unconditionally would rewrite logits_to_keep=0 (full sequence) into 1. Strip only what the strict validator raises on: num_logits_to_keep everywhere (renamed away in v5), and logits_to_keep on the VLMs whose top-level forward does not take it.
+            for _logits_kwarg in ("logits_to_keep", "num_logits_to_keep"):
+                if _logits_kwarg in kwargs and not _unsloth_generate_accepts_kwarg(
+                    self, _logits_kwarg
+                ):
+                    kwargs.pop(_logits_kwarg, None)
 
-    model_eos_token_id = getattr(self.config, "eos_token_id", None)
-    if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
-        model_eos_token_id = model_eos_token_id[0]
+        model_eos_token_id = getattr(self.config, "eos_token_id", None)
+        if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
+            model_eos_token_id = model_eos_token_id[0]
 
-    # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
-    default_pad_token_id = model_eos_token_id
-    config_pad_token_id = getattr(self.config, "pad_token_id", None)
-    is_dia = getattr(self.config, "model_type", None) == "dia"
-    if is_dia:
-        # Dia's audio pad fills its delay pattern; EOS there breaks the DAC decode (#2560). transformers 5 moved it to decoder_config.
-        decoder_pad_token_id = getattr(
-            getattr(self.config, "decoder_config", None), "pad_token_id", None
-        )
-        if decoder_pad_token_id is not None:
-            config_pad_token_id = decoder_pad_token_id
-    if (is_dia or _is_text_seq2seq_config(self.config)) and config_pad_token_id is not None:
-        default_pad_token_id = config_pad_token_id
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
+        # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
+        default_pad_token_id = model_eos_token_id
+        config_pad_token_id = getattr(self.config, "pad_token_id", None)
+        is_dia = getattr(self.config, "model_type", None) == "dia"
+        if is_dia:
+            # Dia's audio pad fills its delay pattern; EOS there breaks the DAC decode (#2560). transformers 5 moved it to decoder_config.
+            decoder_pad_token_id = getattr(
+                getattr(self.config, "decoder_config", None), "pad_token_id", None
+            )
+            if decoder_pad_token_id is not None:
+                config_pad_token_id = decoder_pad_token_id
+        if (is_dia or _is_text_seq2seq_config(self.config)) and config_pad_token_id is not None:
+            default_pad_token_id = config_pad_token_id
+        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
-    try:
-        kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
-    except:
-        pass
-    try:
-        kwargs["pixel_values_videos"] = kwargs["pixel_values_videos"].to(dtype)
-    except:
-        pass
-
-    # Mixed precision autocast. Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a later load would otherwise decide this model's rollouts.
-    forced_float32 = getattr(self, "_unsloth_forced_float32", None)
-    if forced_float32 is None:
-        forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
-    if forced_float32:
-        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
-        dtype = torch.float16
-    else:
-        # CUDA autocast does not validate its dtype like the CPU/XPU/MPS paths, so autocast(dtype=torch.float32) enters ENABLED instead of becoming a no-op and the compiled graph returns inf/NaN logits. A float32 model has nothing to autocast to, so disable.
-        autocaster = torch.autocast(
-            device_type = DEVICE_TYPE_TORCH,
-            dtype = dtype,
-            enabled = dtype in (torch.float16, torch.bfloat16),
-        )
-    # Prepare LoRA
-
-    # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
-    _clear_generation_caches(self)
-    # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
-    # Inline, not a helper: tests exec this function's source with a hand-built namespace.
-    unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
-    rejects_cache_fields = (
-        isinstance(unsupported_fields, dict) and "cache_implementation" in unsupported_fields
-    )
-    if _uses_flash_attention_for_generation(self.config):
-        # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
-        if kwargs.get("past_key_values") is None and not rejects_cache_fields:
-            kwargs["cache_implementation"] = "dynamic"
         try:
+            kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
+        except:
+            pass
+        try:
+            kwargs["pixel_values_videos"] = kwargs["pixel_values_videos"].to(dtype)
+        except:
+            pass
+
+        # Mixed precision autocast. Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a later load would otherwise decide this model's rollouts.
+        forced_float32 = getattr(self, "_unsloth_forced_float32", None)
+        if forced_float32 is None:
+            forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+        if forced_float32:
+            autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
+            dtype = torch.float16
+        else:
+            # CUDA autocast does not validate its dtype like the CPU/XPU/MPS paths, so autocast(dtype=torch.float32) enters ENABLED instead of becoming a no-op and the compiled graph returns inf/NaN logits. A float32 model has nothing to autocast to, so disable.
+            autocaster = torch.autocast(
+                device_type = DEVICE_TYPE_TORCH,
+                dtype = dtype,
+                enabled = dtype in (torch.float16, torch.bfloat16),
+            )
+        # Prepare LoRA
+
+        # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
+        _clear_generation_caches(self)
+        # Custom-code generate (LFM3) raises on any cache field it lists as unsupported; leave them unset.
+        # Inline, not a helper: tests exec this function's source with a hand-built namespace.
+        unsupported_fields = getattr(self, "_generation_fields_unsupported", None)
+        rejects_cache_fields = (
+            isinstance(unsupported_fields, dict) and "cache_implementation" in unsupported_fields
+        )
+        if _uses_flash_attention_for_generation(self.config):
+            # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
+            if kwargs.get("past_key_values") is None and not rejects_cache_fields:
+                kwargs["cache_implementation"] = "dynamic"
+            try:
+                with (
+                    _get_inference_mode_context_manager(self),
+                    autocaster,
+                    _lora_fold_generate(self, args, kwargs),
+                ):
+                    return self._old_generate(*args, **kwargs)
+            finally:
+                _clear_generation_caches(self)
+
+        torch._dynamo.mark_static(input_ids, 0)
+        torch._dynamo.mark_dynamic(input_ids, 1)
+        if "attention_mask" in kwargs:
+            torch._dynamo.mark_static(kwargs["attention_mask"], 0)
+            torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
+        if "token_type_ids" in kwargs:
+            torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
+            torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
+
+        # Fix generation_config: use hybrid if a sliding window was seen, otherwise try static.
+        cache_implementation = getattr(self.config, "cache_implementation", None)
+        if getattr(self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)):
+            if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
+                cache_implementation = "static"
+            elif Version(transformers_version) < Version("4.56.0.dev0"):
+                cache_implementation = None
+            else:
+                cache_implementation = "static"
+        else:
+            cache_implementation = None
+        if cache_implementation is not None:
+            swa = getattr(getattr(self.config, "text_config", self.config), "sliding_window", None)
+            if (swa == 0 or type(swa) is not int) and (
+                getattr(self, "_can_compile_fullgraph", True) is True
+            ):
+                cache_implementation = "static"
+            else:
+                if Version(transformers_version) < Version("4.56.0.dev0"):
+                    cache_implementation = "hybrid"
+                else:
+                    cache_implementation = "static"
+        if do_bfloat16_mixed_precision:
+            cache_implementation = None
+        # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
+        generation_config = kwargs.get("generation_config") or getattr(
+            self, "generation_config", None
+        )
+        if kwargs.get("past_key_values") is not None or any(
+            (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
+            for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
+        ):
+            cache_implementation = None
+        # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
+        force_dynamic_cache = kwargs.get(
+            "past_key_values"
+        ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+        # A static cache is sized for the longest reply up front, so on a tight or unified memory
+        # device it can OOM where a growing cache would not (#2590).
+        if not force_dynamic_cache and cache_implementation is not None:
+            force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
+        if force_dynamic_cache:
+            cache_implementation = None
+            dynamic_implementation = _dynamic_cache_choice(kwargs)
+        if rejects_cache_fields:
+            cache_implementation = None
+            force_dynamic_cache = False
+
+        compile_decode = (
+            cache_implementation == "static"
+            and not force_dynamic_cache
+            and _compiles_decode(self)
+            # transformers compiles only on these devices; elsewhere a bucketed cache only costs memory.
+            and getattr(getattr(self, "device", None), "type", None) == "cuda"
+            and not kwargs.get(
+                "disable_compile", getattr(generation_config, "disable_compile", False)
+            )
+            and hasattr(self, "_prepare_static_cache")
+            and hasattr(self, "_valid_auto_compile_criteria")
+            and "_prepare_static_cache" not in self.__dict__
+        )
+        compile_config = _decode_compile_config if compile_decode else _compile_config
+        if _is_decode_compile_model(self):
+            _match_compiled_call(self, compile_decode)
+        if "generation_config" in kwargs:
+            kwargs["generation_config"].cache_implementation = (
+                dynamic_implementation if force_dynamic_cache else cache_implementation
+            )
+            # kwargs are applied after the config merge, so an explicit value survives.
+            if force_dynamic_cache:
+                kwargs["cache_implementation"] = dynamic_implementation
+            if cache_implementation is not None:
+                kwargs["generation_config"].compile_config = compile_config
+        else:
+            kwargs["cache_implementation"] = (
+                dynamic_implementation if force_dynamic_cache else cache_implementation
+            )
+            if cache_implementation is not None:
+                kwargs["compile_config"] = compile_config
+
+        decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
+
+        def _eager_scope():
+            return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
+
+        def _run(scope, plan):
             with (
+                _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
+                decode_scope,
+                scope,
+                _decode_graphs.plan_scope(plan),
                 _get_inference_mode_context_manager(self),
                 autocaster,
                 _lora_fold_generate(self, args, kwargs),
             ):
-                return self._old_generate(*args, **kwargs)
+                out = self._old_generate(*args, **kwargs)
+                if isinstance(scope, _GraphDecodeSteps):
+                    scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
+                return out
+
+        try:
+            with _decode_graphs.generate_scope():
+                if (
+                    cache_implementation == "static"
+                    and not force_dynamic_cache
+                    and not compile_decode
+                ):
+                    plan = _generic_decode_graphs.plan(self, args, kwargs, input_ids)
+                else:
+                    plan = _generic_decode_graphs.ineligible(self)
+                if plan != "graph":
+                    output = _run(_eager_scope(), "eager")
+                else:
+                    rng = _generic_decode_graphs.rng_state(input_ids.device)
+                    out_of_memory = False
+                    try:
+                        output = _run(_GraphDecodeSteps(self), "graph")
+                    except torch.cuda.OutOfMemoryError:
+                        if not _generic_decode_graphs.replayable(kwargs):
+                            raise
+                        out_of_memory = True
+                    if out_of_memory:
+                        # Outside the handler: its traceback holds the failed call's frames (cache, graph
+                        # buffers), which would stay allocated through the redo.
+                        _generic_decode_graphs.redo_eagerly(self)
+                        _clear_generation_caches(self)
+                        _generic_decode_graphs.set_rng_state(rng)
+                        with _decode_graphs.eager_scope():
+                            output = _run(_eager_scope(), "eager")
         finally:
             _clear_generation_caches(self)
 
-    torch._dynamo.mark_static(input_ids, 0)
-    torch._dynamo.mark_dynamic(input_ids, 1)
-    if "attention_mask" in kwargs:
-        torch._dynamo.mark_static(kwargs["attention_mask"], 0)
-        torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
-    if "token_type_ids" in kwargs:
-        torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
-        torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
-
-    # Fix generation_config: use hybrid if a sliding window was seen, otherwise try static.
-    cache_implementation = getattr(self.config, "cache_implementation", None)
-    if getattr(self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)):
-        if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
-            cache_implementation = "static"
-        elif Version(transformers_version) < Version("4.56.0.dev0"):
-            cache_implementation = None
-        else:
-            cache_implementation = "static"
-    else:
-        cache_implementation = None
-    if cache_implementation is not None:
-        swa = getattr(getattr(self.config, "text_config", self.config), "sliding_window", None)
-        if (swa == 0 or type(swa) is not int) and (
-            getattr(self, "_can_compile_fullgraph", True) is True
-        ):
-            cache_implementation = "static"
-        else:
-            if Version(transformers_version) < Version("4.56.0.dev0"):
-                cache_implementation = "hybrid"
-            else:
-                cache_implementation = "static"
-    if do_bfloat16_mixed_precision:
-        cache_implementation = None
-    # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
-    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
-    if kwargs.get("past_key_values") is not None or any(
-        (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
-        for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
-    ):
-        cache_implementation = None
-    # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
-    force_dynamic_cache = kwargs.get(
-        "past_key_values"
-    ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
-    # A static cache is sized for the longest reply up front, so on a tight or unified memory
-    # device it can OOM where a growing cache would not (#2590).
-    if not force_dynamic_cache and cache_implementation is not None:
-        force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
-    if force_dynamic_cache:
-        cache_implementation = None
-        dynamic_implementation = _dynamic_cache_choice(kwargs)
-    if rejects_cache_fields:
-        cache_implementation = None
-        force_dynamic_cache = False
-
-    compile_decode = (
-        cache_implementation == "static"
-        and not force_dynamic_cache
-        and _compiles_decode(self)
-        # transformers compiles only on these devices; elsewhere a bucketed cache only costs memory.
-        and getattr(getattr(self, "device", None), "type", None) == "cuda"
-        and not kwargs.get("disable_compile", getattr(generation_config, "disable_compile", False))
-        and hasattr(self, "_prepare_static_cache")
-        and hasattr(self, "_valid_auto_compile_criteria")
-        and "_prepare_static_cache" not in self.__dict__
-    )
-    compile_config = _decode_compile_config if compile_decode else _compile_config
-    if _is_decode_compile_model(self):
-        _match_compiled_call(self, compile_decode)
-    if "generation_config" in kwargs:
-        kwargs["generation_config"].cache_implementation = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        # kwargs are applied after the config merge, so an explicit value survives.
-        if force_dynamic_cache:
-            kwargs["cache_implementation"] = dynamic_implementation
-        if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = compile_config
-    else:
-        kwargs["cache_implementation"] = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        if cache_implementation is not None:
-            kwargs["compile_config"] = compile_config
-
-    decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
-
-    def _eager_scope():
-        return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
-
-    def _run(scope, plan):
-        with (
-            _NonFlexGenerate(self, flex_decode = not _wants_attentions(self, kwargs)),
-            decode_scope,
-            scope,
-            _decode_graphs.plan_scope(plan),
-            _get_inference_mode_context_manager(self),
-            autocaster,
-            _lora_fold_generate(self, args, kwargs),
-        ):
-            out = self._old_generate(*args, **kwargs)
-            if isinstance(scope, _GraphDecodeSteps):
-                scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
-            return out
-
-    try:
-        with _decode_graphs.generate_scope():
-            if cache_implementation == "static" and not force_dynamic_cache and not compile_decode:
-                plan = _generic_decode_graphs.plan(self, args, kwargs, input_ids)
-            else:
-                plan = _generic_decode_graphs.ineligible(self)
-            if plan != "graph":
-                output = _run(_eager_scope(), "eager")
-            else:
-                rng = _generic_decode_graphs.rng_state(input_ids.device)
-                out_of_memory = False
-                try:
-                    output = _run(_GraphDecodeSteps(self), "graph")
-                except torch.cuda.OutOfMemoryError:
-                    if not _generic_decode_graphs.replayable(kwargs):
-                        raise
-                    out_of_memory = True
-                if out_of_memory:
-                    # Outside the handler: its traceback holds the failed call's frames (cache, graph
-                    # buffers), which would stay allocated through the redo.
-                    _generic_decode_graphs.redo_eagerly(self)
-                    _clear_generation_caches(self)
-                    _generic_decode_graphs.set_rng_state(rng)
-                    with _decode_graphs.eager_scope():
-                        output = _run(_eager_scope(), "eager")
+        return output
     finally:
-        _clear_generation_caches(self)
-
-    return output
+        if restore_training_mode:
+            FastBaseModel.for_training(
+                self,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+            )
 
 
 def unsloth_nested_fast_generate(self, *args, **kwargs):
