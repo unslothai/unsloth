@@ -456,7 +456,8 @@ class TestCheckpointsNeverReachAVramFigure:
         # +1: the drafter probe's one-slot fit (#8872)
         # Per subset (incl. the drafter's slot search): a discrete-tier subset pays none.
         # The context ceiling (best_cap) prices per subset too.
-        assert source.count("ctx_checkpoints = _placement_ctx_checkpoints,") == 2
+        # +1: the slot reduction re-priced without the embedded MTP head before --fit on.
+        assert source.count("ctx_checkpoints = _placement_ctx_checkpoints,") == 3
         assert source.count("ctx_checkpoints = _subset_ckpts(") == 4
         assert source.count("_kv_bytes(effective_ctx, _effective_ctx_checkpoints)") == 1
 
