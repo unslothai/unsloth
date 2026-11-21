@@ -116,3 +116,27 @@ def test_auto_fp8_kill_switch(monkeypatch):
     assert dit._auto_fp8_enabled() is False
     monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "1")
     assert dit._auto_fp8_enabled() is True
+
+
+@pytest.mark.parametrize(
+    "family, expected", [("qwen-image", "int8"), ("moss-image", "int8"), ("z-image", "fp8")]
+)
+def test_auto_fp8_respects_the_family_train_deny(monkeypatch, family, expected):
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(1.3 * dit._SPECS[family].dense_bf16_gb * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (8, 9)
+
+    monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(dit, "repo_is_prequantized", lambda repo: False)
+    spec = dit._SPECS[family]
+    cfg = types.SimpleNamespace(
+        base_precision = "auto", base_model = "some/dense-base", mixed_precision = "bf16"
+    )
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == expected

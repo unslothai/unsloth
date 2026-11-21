@@ -770,6 +770,18 @@ def _auto_fp8_enabled() -> bool:
     return os.environ.get(AUTO_FP8_ENV, "1").strip().lower() not in ("0", "off", "false", "no")
 
 
+def _auto_fp8_family_ok(spec, base_model) -> bool:
+    """Auto never picks fp8 for a family whose explicit fp8 training is refused (qwen-image, moss-image)."""
+    family = getattr(spec, "family", None)
+    if not family:
+        return False
+    try:
+        from core.inference.diffusion_transformer_quant import _family_train_denied
+        return not _family_train_denied(family, "fp8", base_model)
+    except Exception:  # noqa: BLE001 -- unknown: keep the previous picks
+        return False
+
+
 def _pick_auto_precision(
     prequant,
     device,
@@ -968,6 +980,7 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 and not torch_is_rocm()
                 and not is_stubbed("torchao")
                 and _auto_fp8_enabled()
+                and _auto_fp8_family_ok(spec, cfg.base_model)
             )
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
