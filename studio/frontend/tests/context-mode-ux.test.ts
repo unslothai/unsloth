@@ -55,6 +55,11 @@ test("the Auto number editor opens at the fitted or safe offload context", () =>
     panelCode,
     /activeLoadedContext \?\? AUTO_OFFLOAD_CONTEXT_LENGTH/,
   );
+  // A changed setting refits at load, so the loaded window stops standing in for Auto.
+  assert.match(
+    panelCode,
+    /const autoLoadedContext = atBaseline \? activeLoadedContext : fixedLayerPin;/,
+  );
   assert.match(panelCode, /const AUTO_OFFLOAD_CONTEXT_LENGTH = 8192;/);
 });
 
