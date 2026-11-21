@@ -99,3 +99,25 @@ def test_trimmed_forward_matches_the_padded_masked_forward():
         )
     assert got.shape == ref.shape
     assert (got - ref).abs().max().item() < 1e-10
+
+
+def test_cached_text_keeps_the_512_row_form_an_older_build_can_read(monkeypatch):
+    """The persistent caption cache is shared across Studio builds: entries stay in the padded 512-row form, which an
+    older build's collate concatenates at batch 2 as-is; this build trims at collate time."""
+    lengths = iter([40, 17])
+
+    class _Pipe:
+        def encode_prompt(self, prompt, device, num_images_per_prompt, max_sequence_length):
+            pe, mask = _entry(next(lengths), total = max_sequence_length, hole = False)
+            return pe, mask
+
+    monkeypatch.setattr(dit, "_encoders_to_device", lambda pipe, device: None)
+    entries = dit._krea2_encode_prompts(_Pipe(), ["a long caption", "short"], "cpu")
+    assert [pe.shape[1] for pe, _ in entries] == [512, 512]
+    assert [m.shape[1] for _, m in entries] == [512, 512]
+    # The older collate: a plain cat of the cached tensors, which needs one row count across the batch.
+    old_pe = torch.cat([pe for pe, _ in entries])
+    old_mask = torch.cat([m for _, m in entries])
+    assert old_pe.shape[:2] == (2, 512) and old_mask.shape == (2, 512)
+    pe_b, mask_b = dit._krea2_collate(entries, "cpu", torch.float32)
+    assert pe_b.shape[1] == 40 and mask_b[1].sum() == 17

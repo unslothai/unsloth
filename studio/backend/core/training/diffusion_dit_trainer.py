@@ -1318,14 +1318,15 @@ def _krea2_encode_prompts(pipe, captions, device):
     out = []
     with torch.no_grad():
         for cap in captions:
-            # encode_prompt pads to max_sequence_length ([1, 512] mask); only the valid rows are kept (_krea2_text_rows).
+            # encode_prompt pads to max_sequence_length ([1, 512] mask). Kept padded: the persistent text cache is
+            # shared with older builds, whose collate concatenates fixed 512-row entries; _krea2_collate trims.
             pe, mask = pipe.encode_prompt(
                 prompt = cap,
                 device = device,
                 num_images_per_prompt = 1,
                 max_sequence_length = 512,
             )
-            out.append(_krea2_text_rows(pe.cpu(), mask.cpu()))
+            out.append((pe.cpu(), mask.cpu()))
     return out
 
 
