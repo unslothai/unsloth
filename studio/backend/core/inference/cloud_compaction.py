@@ -30,15 +30,14 @@ SUMMARY_MIN_TOKENS = 1_024
 # A slow but streaming provider (a local server, a large backlog) is waited for; one that goes
 # silent is not. The total cap only bounds a stream that never ends.
 SUMMARY_IDLE_TIMEOUT_S = 120.0
-# A self-hosted server sends nothing while it reads the prompt: the chat stream's own read timeout.
+# Self-hosted servers are silent while reading the prompt; same as the chat stream's read timeout.
 SUMMARY_FIRST_LINE_TIMEOUT_S = 300.0
 SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8
 # One tool result or pasted file must not crowd the rest of the transcript out of the summary call.
 _TRANSCRIPT_MESSAGE_CHARS = 12_000
 _TRANSCRIPT_TOOL_CHARS = 3_000
-# Thinking can spend the summary's token cap before any text. Off is a no-op on these servers for a
-# model that cannot think; a cloud provider may reject it, so it keeps its default.
+# Thinking can spend the whole summary cap; off is a no-op here without it, cloud may reject it.
 _THINKING_OFF_PROVIDERS = frozenset({"ollama", "llama_cpp", "vllm", "custom"})
 
 COMPACTING_SSE_LINE = 'data: {"type":"generation_progress","phase":"compacting"}'
@@ -437,7 +436,7 @@ async def collect_summary(stream: AsyncIterator[str]) -> str:
                     _next_limit(SUMMARY_FIRST_LINE_TIMEOUT_S)
                 ) as scope:
                     await _read(lambda: scope.reschedule(_next_limit()))
-            else:  # Python < 3.11: the whole call within the first-line limit.
+            else:  # Python < 3.11
                 await asyncio.wait_for(_read(), timeout = SUMMARY_FIRST_LINE_TIMEOUT_S)
         finally:
             aclose = getattr(stream, "aclose", None)

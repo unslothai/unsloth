@@ -89,7 +89,6 @@ export const COMPACTION_NOTICE_TEXT: Record<CompactionNoticeKind, string> = {
     "A summary of the older messages could not be written, so the oldest were dropped from the model's context instead.",
 };
 
-/** Why a cloud connection's summary for /compact was not written (`cloud_compaction.failure_reason`). */
 export type CompactionFailureReason = "cut_off" | "timed_out" | "empty" | "error";
 
 export function isCompactionFailureReason(

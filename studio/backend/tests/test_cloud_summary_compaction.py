@@ -511,12 +511,10 @@ def test_an_auto_summary_failure_sends_no_compact_failure(monkeypatch):
 @pytest.mark.parametrize(
     "provider_type, fields, off",
     [
-        # Ollama maps reasoning_effort "none" to think=false and rejects only think=true on a model
-        # without thinking (ollama openai/openai.go ThinkingFromReasoningEffort, server/routes.go).
+        # Ollama: "none" is think=false, refused only as true (openai/openai.go, server/routes.go).
         ("ollama", {}, {"reasoning_effort": "none"}),
         ("llama_cpp", {}, {"chat_template_kwargs": {"enable_thinking": False}}),
         ("vllm", {}, {"chat_template_kwargs": {"enable_thinking": False}}),
-        # A custom endpoint only gets the dialect its connection configured.
         (
             "custom",
             {"provider_reasoning_config": {"enabled": True, "style": "reasoning_effort"}},
