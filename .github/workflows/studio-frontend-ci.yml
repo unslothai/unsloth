@@ -170,7 +170,7 @@ jobs:
       # A release published mid-run puts an update card over the controls the scripts click.
       UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     # Must stay above the browser install step's own 33m bound so the step timeout fires first.
-    timeout-minutes: 40
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: studio/frontend
