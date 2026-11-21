@@ -2269,6 +2269,7 @@ def _resident_reload_payload(status: dict, payload: dict) -> dict:
     # A sent gpu_ids makes the server drop the caller's own --device / --main-gpu (_strip_device_extra_args).
     if "gpu_ids" in carried and _selects_device(payload.get("llama_extra_args")):
         carried.pop("gpu_ids")
+        carried.pop("tensor_split", None)
     # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
     for name in _fields_extras_override(status.get("requested_llama_extra_args"), carried):
         carried.pop(name, None)

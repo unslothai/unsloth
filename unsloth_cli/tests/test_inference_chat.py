@@ -1890,16 +1890,22 @@ def test_http_backend_load_keeps_a_resident_gguf_file_loaded(monkeypatch):
 
 @pytest.mark.parametrize(
     ("extras", "gpu_ids"),
-    [(None, [0]), (["--device", "CUDA1"], None), (["--main-gpu=1"], None)],
+    [(None, [0, 1]), (["--device", "CUDA1,CUDA0"], None), (["--main-gpu=1"], None)],
 )
 def test_http_backend_load_lets_typed_device_extras_beat_the_resident_gpu_pin(
     monkeypatch, extras, gpu_ids
 ):
-    status = {**_RESIDENT_Q8, "requested_gpu_ids": [0]}
+    status = {
+        **_RESIDENT_Q8,
+        "requested_gpu_ids": [0, 1],
+        "tensor_split": [3.0, 1.0],
+        "gpu_memory_mode": "manual",
+    }
 
     payload = _untyped_load_payload(monkeypatch, status, llama_extra_args = extras)
 
     assert payload.get("gpu_ids") == gpu_ids
+    assert payload.get("tensor_split") == (gpu_ids and [3.0, 1.0])
 
 
 def test_chat_leaves_untyped_tensor_parallel_to_the_server():
