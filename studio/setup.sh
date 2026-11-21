@@ -1118,6 +1118,131 @@ _llama_build_jobs() {
         "$(_usable_ram_mb)"
 }
 
+# "ggml-rpc-server", "rpc-server" on older trees, nothing when the tree has no RPC tool.
+_llama_rpc_server_target() {
+    local _cml
+    for _cml in "$1/tools/rpc/CMakeLists.txt" "$1/examples/rpc/CMakeLists.txt"; do
+        [ -f "$_cml" ] || continue
+        if grep -q 'ggml-rpc-server' "$_cml"; then
+            printf '%s' 'ggml-rpc-server'
+        elif grep -q 'rpc-server' "$_cml"; then
+            printf '%s' 'rpc-server'
+        fi
+        return 0
+    done
+    return 0
+}
+
+_has_local_rpc_server() {
+    local _d _n
+    for _d in "$1/build/bin" "$1/build/bin/Release" "$1/bin" "$1"; do
+        for _n in ggml-rpc-server rpc-server; do
+            if [ -x "$_d/$_n" ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# 0 when $1/build was configured in ${LLAMA_CPP_DIR}.build.$$ and moved here: cmake refuses that cache.
+_llama_build_relocated() {
+    local _cache="$1/build/CMakeCache.txt" _was _here
+    [ -f "$_cache" ] || return 1
+    _was="$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "$_cache" | head -n 1)"
+    [ -n "$_was" ] || return 1
+    _here="$(CDPATH= cd -P -- "$1/build" 2>/dev/null && pwd -P)" || return 1
+    # The recorded path may name this directory through a symlink.
+    [ -d "$_was" ] && _was="$(CDPATH= cd -P -- "$_was" 2>/dev/null && pwd -P)"
+    [ "$_was" != "$_here" ]
+}
+
+# 0 when a moved reused build never enabled RPC (and did not turn it off on purpose): only a rebuild adds it.
+_llama_rpc_needs_rebuild() {
+    local _dir=$1
+    _has_local_rpc_server "$_dir" && return 1
+    [ -n "$(_llama_rpc_server_target "$_dir")" ] || return 1
+    _llama_build_relocated "$_dir" || return 1
+    [ -f "$_dir/build/.unsloth_rpc_disabled" ] && return 1
+    ! grep -q '^GGML_RPC:BOOL=ON' "$_dir/build/CMakeCache.txt"
+}
+
+# An install made before this tree built ggml-rpc-server has llama-server and nothing else new.
+_backfill_local_rpc_server() {
+    local _dir=$1 _target _jobs
+    if _has_local_rpc_server "$_dir"; then
+        return 0
+    fi
+    _target="$(_llama_rpc_server_target "$_dir")"
+    if [ -z "$_target" ]; then
+        verbose_substep "no RPC server target in this llama.cpp tree; skipping"
+        return 0
+    fi
+    if [ ! -f "$_dir/build/CMakeCache.txt" ]; then
+        substep "the reused build has no $_target and no configured build directory to add it to; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "$C_WARN"
+        return 0
+    fi
+    if _llama_build_relocated "$_dir"; then
+        substep "the reused build has no $_target and was configured in another directory, so it cannot be added in place; re-run with UNSLOTH_LLAMA_FORCE_COMPILE=1 for RPC support" "$C_WARN"
+        return 0
+    fi
+    substep "the reused build has no $_target; building it in place..."
+    # NCPU is assigned in the source-build section, which the reuse path never enters.
+    _jobs="$(_llama_build_jobs)"
+    # No RPC target until reconfigured with GGML_RPC; cmake keeps every other cached option.
+    if ! grep -q '^GGML_RPC:BOOL=ON' "$_dir/build/CMakeCache.txt"; then
+        run_quiet_no_exit "enable GGML_RPC (existing install)" cmake -S "$_dir" -B "$_dir/build" -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF || true
+    fi
+    if run_quiet_no_exit "build $_target (existing install)" cmake --build "$_dir/build" --config Release --target "$_target" -j"$_jobs"; then
+        if _has_local_rpc_server "$_dir"; then
+            step "rpc-server" "built ($_target)"
+            return 0
+        fi
+    fi
+    substep "could not add $_target to the reused build; RPC serving will be unavailable" "$C_WARN"
+    return 0
+}
+
+# macOS only: 1 when the cache lost -DGGML_RPC_RDMA=OFF or something under $1/bin links librdma.
+_llama_macos_rdma_gate_ok() {
+    local _build=$1 _linked=""
+    grep -qE '^GGML_RPC_RDMA:(BOOL|UNINITIALIZED)=OFF$' "$_build/CMakeCache.txt" 2>/dev/null || return 1
+    if command -v otool >/dev/null 2>&1; then
+        _linked="$(find "$_build/bin" -type f -print0 2>/dev/null | xargs -0 otool -L 2>/dev/null | grep -i 'librdma' || true)"
+    fi
+    [ -z "$_linked" ]
+}
+
+# Best-effort: a missing tool or a failed link never fails the build.
+_llama_build_rpc_server() {
+    local _label=$1 _target _args
+    _target="$(_llama_rpc_server_target "$_BUILD_TMP")"
+    if [ -n "$_target" ]; then
+        run_quiet_no_exit "build $_target$_label" cmake --build "$_BUILD_TMP/build" --config Release --target "$_target" -j"$NCPU" || true
+    else
+        verbose_substep "no RPC server target in this llama.cpp tree; skipping"
+    fi
+    [ "$_HOST_SYSTEM" = "Darwin" ] || return 0
+    _llama_macos_rdma_gate_ok "$_BUILD_TMP/build" && return 0
+    substep "the build links librdma (GGML_RPC_RDMA=OFF was not honoured); rebuilding without GGML_RPC..." "$C_WARN"
+    if [ "$_TRY_METAL_CPU_FALLBACK" = true ]; then _args="$CMAKE_ARGS"; else _args="$CPU_FALLBACK_CMAKE_ARGS"; fi
+    rm -rf "$_BUILD_TMP/build"
+    if run_quiet_no_exit "cmake llama.cpp (no rpc)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $_args -DGGML_RPC=OFF; then
+        # A later setup run must not rebuild this tree to add the RPC server it turned off.
+        : > "$_BUILD_TMP/build/.unsloth_rpc_disabled" 2>/dev/null || true
+        run_quiet_no_exit "build llama-server (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+        if [ "$BUILD_OK" = true ]; then
+            run_quiet_no_exit "build llama-quantize (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # The rebuild wiped the Metal memory probe built before it; macOS is the only host here.
+            run_quiet_no_exit "build llama-fit-params (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-fit-params -j"$NCPU" || true
+            run_quiet_no_exit "build diffusion visual server (no rpc)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+        fi
+    else
+        BUILD_OK=false
+    fi
+    return 0
+}
+
 # Opt-in: llama-server's first GPU pass JIT-compiles CUDA kernels and stalls installs.
 _staged_validation_enabled() {
     local _raw="${UNSLOTH_LLAMA_STAGED_VALIDATION:-}"
@@ -4562,6 +4687,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if _has_local_llama_server "$LLAMA_CPP_DIR"; then
             substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
             _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+            _backfill_local_rpc_server "$LLAMA_CPP_DIR"
             _LOCAL_LLAMA_CPP_LINKED=true
             _NEED_LLAMA_SOURCE_BUILD=false
             _SKIP_PREBUILT_INSTALL=true
@@ -4760,6 +4886,13 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && [ -d "$LLAMA_CPP_DIR" ]; then
         || _LLAMA_REUSE_EXISTING=false
 fi
 
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && [ "$_LLAMA_REUSE_EXISTING" = true ] && \
+   [ "$_LLAMA_FORCE_COMPILE" != "1" ] && [ -z "$_LLAMA_PR" ] && \
+   _llama_rpc_needs_rebuild "$LLAMA_CPP_DIR"; then
+    substep "the existing source build predates ggml-rpc-server; rebuilding once to add it"
+    _LLAMA_REUSE_EXISTING=false
+fi
+
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ "$_LLAMA_FORCE_COMPILE" != "1" ] && \
    [ -z "$_LLAMA_PR" ] && \
@@ -4768,6 +4901,8 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
    [ -x "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
     step "llama.cpp" "existing source build found; skipping rebuild"
     ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+    # The source-build section that builds the RPC server is skipped from here on.
+    _backfill_local_rpc_server "$LLAMA_CPP_DIR"
     if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
@@ -4961,6 +5096,7 @@ else
                 && [[ "$_RESOLVED_SOURCE_REF" =~ ^b([0-9]+)$ ]]; then
                 CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_BUILD_NUMBER=${BASH_REMATCH[1]}"
             fi
+            CMAKE_ARGS="$CMAKE_ARGS -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF"
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
             _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
@@ -5248,6 +5384,7 @@ else
             fi
             # Best-effort: the target exists only on llama.cpp trees carrying the diffusion example.
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+            _llama_build_rpc_server ""
             run_quiet_no_exit "build llama-bench" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
         fi
 
@@ -5278,6 +5415,7 @@ else
                         if [ "$BUILD_OK" = true ]; then
                             run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
                             run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+                            _llama_build_rpc_server " (cpu fallback)"
                             run_quiet_no_exit "build llama-bench (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
                         fi
                     else
@@ -5326,6 +5464,11 @@ else
         if [ "$BUILD_OK" = true ] && [ -f "$LLAMA_SERVER_BIN" ]; then
             step "llama.cpp" "built"
             [ -f "$LLAMA_CPP_DIR/llama-quantize" ] && step "llama-quantize" "built"
+            for _rpc_name in ggml-rpc-server rpc-server; do
+                if [ -x "$LLAMA_CPP_DIR/build/bin/$_rpc_name" ]; then
+                    step "rpc-server" "built ($_rpc_name)"
+                fi
+            done
         elif [ "$BUILD_OK" = true ]; then
             step "llama.cpp" "binary not found after build" "$C_WARN"
             _LLAMA_CPP_DEGRADED=true
