@@ -126,6 +126,9 @@ const useSkillsSwitchStore: any = { getState: () => ({ on: null }) };
 async function prepareCharacterRun(_args: any): Promise<any> {
   return null;
 }
+async function prepareCharacterCountRun(_raw: any, _threadId: any, _messages: any): Promise<any> {
+  return null;
+}
 function isKnownCharacterChat(_threadId: any): boolean {
   return false;
 }
