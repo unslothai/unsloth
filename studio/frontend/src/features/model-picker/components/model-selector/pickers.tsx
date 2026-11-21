@@ -261,6 +261,7 @@ import {
   hfModelFitsDevice,
   isMlxId,
   isCapableCheckpointQuant,
+  localRowIsMlx,
   isMobileVariant,
   isRecommendableFormat,
   loadScopedGpu,
@@ -3755,7 +3756,7 @@ function cachedRepoHasMlxTag(c: CachedModelRepo): boolean {
 
 /** MLX runs on Mac only, so callers gate visibility on the host. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
-  return isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "");
+  return localRowIsMlx(m);
 }
 
 function localModelMatchesFormat(
@@ -3766,6 +3767,8 @@ function localModelMatchesFormat(
     m.model_id ?? m.display_name ?? m.id,
     localModelIsGguf(m),
     filter,
+    // An oMLX folder or one whose path alone says MLX, as the Hub inventory reads it.
+    localModelIsMlx(m),
   );
 }
 

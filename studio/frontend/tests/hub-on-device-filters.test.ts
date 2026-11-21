@@ -187,6 +187,24 @@ test("the inspector classifies a local MLX folder as its inventory row does", as
   assert.match(inspector, /const mlxRunsHere =\s*runsAsMlx && deviceType === "mac" && mlxInference === true;/);
 });
 
+test("the picker and chat auto-load read a local oMLX folder as MLX, as the Hub does", async () => {
+  const { localRowIsMlx } = await import("../src/features/hub/lib/format-filters.ts");
+  const { matchesFormatFilter } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  const omlx = { id: "Qwen3-8B-4bit", display_name: "Qwen3-8B-4bit", path: "/omlx/Qwen3-8B-4bit", source: "omlx" };
+  assert.equal(localRowIsMlx(omlx), true);
+  assert.equal(localRowIsMlx({ ...omlx, source: "custom" }), false);
+  assert.equal(localRowIsMlx({ ...omlx, source: "custom", path: "/models/Qwen3-8B-MLX" }), true);
+  assert.equal(matchesFormatFilter(omlx.id, false, "mlx", localRowIsMlx(omlx)), true);
+  assert.equal(matchesFormatFilter(omlx.id, false, "safetensors", localRowIsMlx(omlx)), false);
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  assert.match(pickers, /function localModelIsMlx\(m: LocalModelInfo\): boolean \{\s*return localRowIsMlx\(m\);/);
+  assert.match(pickers, /localModelIsGguf\(m\),\s*filter,\s*(?:\/\/[^\n]*\n\s*)?localModelIsMlx\(m\),\s*\);/);
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /platform\.mlxInference !== false &&\s*localRowIsMlx\(row\)/);
+});
+
 test("each Hub visit rescans Studio's trained and exported models", () => {
   const inventory = readSrc("features/hub/inventory/use-hub-inventory.ts");
   assert.match(inventory, /if \(unslothModelsEnabled\) \{\s*refreshUnslothModelInventory\(\)/);

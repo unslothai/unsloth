@@ -94,6 +94,21 @@ export function namedOrTaggedMlx(model: {
   );
 }
 
+/** A local model row (/api/models/local) is MLX by any name it carries or an oMLX source, as the Hub
+ * inventory classifies the same folder; picker and chat auto-load both ask this. */
+export function localRowIsMlx(row: {
+  id: string;
+  display_name?: string | null;
+  model_id?: string | null;
+  path?: string | null;
+  source?: string | null;
+}): boolean {
+  return namedOrTaggedMlx({
+    names: [row.id, row.display_name ?? "", row.model_id ?? "", row.path ?? ""],
+    omlx: row.source === "omlx",
+  });
+}
+
 export function detectResultFormat(result: {
   id: string;
   isGguf: boolean;

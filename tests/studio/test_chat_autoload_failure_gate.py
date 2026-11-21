@@ -691,6 +691,12 @@ async function fetchDeviceType(options?: any) {
 function isMlxId(value: string) {
   return typeof value === "string" && value.toLowerCase().includes("mlx");
 }
+function localRowIsMlx(row: any) {
+  return (
+    row?.source === "omlx" ||
+    [row?.id, row?.display_name, row?.model_id, row?.path].some((name) => isMlxId(name ?? ""))
+  );
+}
 function cachedRepoIsMlx(repo: any) {
   return (
     isMlxId(repo?.repo_id) ||
@@ -1655,6 +1661,22 @@ def test_a_chat_only_mac_that_serves_mlx_auto_loads_its_cached_mlx_repo(repo_id,
         f"scenario({{ chatOnly: true, deviceType: 'mac', mlxInference: true, modelRepos: [{repo}] }})"
     )
     assert _loaded_paths(out) == [repo_id]
+
+
+@pytest.mark.parametrize("mlx_inference, loads_it", [("true", True), ("false", False)])
+def test_a_chat_only_mac_auto_loads_an_omlx_folder_with_a_plain_name(mlx_inference, loads_it):
+    """The Hub marks an oMLX folder MLX by its source; a plain name must not send auto-load to the
+    default GGUF download instead."""
+    omlx = (
+        "{ ...LOCAL_GGUF, id: 'Qwen3-8B-4bit', display_name: 'Qwen3-8B-4bit',"
+        " load_id: '/omlx/Qwen3-8B-4bit', path: '/omlx/Qwen3-8B-4bit',"
+        " model_format: 'safetensors', source: 'omlx' }"
+    )
+    out = _run(
+        f"scenario({{ chatOnly: true, deviceType: 'mac', mlxInference: {mlx_inference},"
+        f" localModels: [{omlx}] }})"
+    )
+    assert _loaded_paths(out) == (["/omlx/Qwen3-8B-4bit"] if loads_it else [DEFAULT_MODEL])
 
 
 def test_a_chat_only_mac_without_mlx_skips_its_cached_mlx_repo():

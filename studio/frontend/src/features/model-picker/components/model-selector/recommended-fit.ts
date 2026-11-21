@@ -29,6 +29,7 @@ export {
   cachedRepoIsMlx,
   hasMlxCardTag,
   isMlxId,
+  localRowIsMlx,
 } from "../../../hub/lib/format-filters.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;

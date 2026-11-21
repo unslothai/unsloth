@@ -52,7 +52,7 @@ import {
 } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedRepoIsMlx,
-  isMlxId,
+  localRowIsMlx,
 } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
@@ -3028,9 +3028,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
     platform.deviceType === "mac" &&
     // null is an older backend that does not report it.
     platform.mlxInference !== false &&
-    (isMlxId(row.id) ||
-      isMlxId(row.display_name ?? "") ||
-      isMlxId(row.model_id ?? ""))
+    localRowIsMlx(row)
   );
 }
 

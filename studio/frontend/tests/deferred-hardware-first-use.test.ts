@@ -32,7 +32,7 @@ globalThis.fetch = (async (url: string) => {
 }) as unknown as typeof fetch;
 
 const { fetchDeviceType, forgetMeasuredVerdict, usePlatformStore } = await import("../src/config/env.ts");
-const { cachedRepoIsMlx, isMlxId } = await import("../src/features/hub/lib/format-filters.ts");
+const { cachedRepoIsMlx, localRowIsMlx } = await import("../src/features/hub/lib/format-filters.ts");
 const { routeNeedsHardware } = await import("../src/config/hardware-verdict.ts");
 
 function reset() {
@@ -181,16 +181,16 @@ test("auto-load keeps cached non-GGUF models while detection is deferred", () =>
     return new Function(
       "usePlatformStore",
       "isGgufLocalRow",
-      "isMlxId",
       "cachedRepoIsMlx",
+      "localRowIsMlx",
       param,
       match[1],
     ).bind(
       null,
       usePlatformStore,
       (row: { path: string }) => row.path.endsWith(".gguf"),
-      isMlxId,
       cachedRepoIsMlx,
+      localRowIsMlx,
     );
   };
   const cachedModelRuns = lift("cachedModelRunsOnThisPlatform", "repo");
@@ -217,9 +217,14 @@ test("auto-load keeps cached non-GGUF models while detection is deferred", () =>
   const taggedRepo = { repo_id: "FluidVoice-Labs/Qwen3.5-9B-4bit", tags: ["mlx"] };
   assert.equal(cachedModelRuns(taggedRepo), true);
   assert.equal(cachedModelRuns({ repo_id: taggedRepo.repo_id, library_name: "mlx" }), true);
+  // An oMLX folder with a plain name is MLX by its source, as the Hub inventory reads it.
+  const omlxRow = { id: "Qwen3-8B-4bit", display_name: "Qwen3-8B-4bit", path: "/omlx/Qwen3-8B-4bit", source: "omlx" };
+  assert.equal(runsHere(omlxRow), true);
+  assert.equal(runsHere({ ...omlxRow, source: "custom" }), false);
   usePlatformStore.setState({ mlxInference: false });
   assert.equal(cachedModelRuns(mlxRepo), false);
   assert.equal(runsHere(mlxRow), false);
+  assert.equal(runsHere(omlxRow), false);
   // An older backend sends no mlx_inference: local MLX rows stay, cached ones stay hidden.
   usePlatformStore.setState({ mlxInference: null });
   assert.equal(cachedModelRuns(mlxRepo), false);
