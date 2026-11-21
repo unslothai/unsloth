@@ -3916,11 +3916,9 @@ def _train_dit(
         _int8_quantize_base(transformer, cfg.resolved_family, device = device)
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
-    if base_precision == "fp8" and not _apply_fp8_training(
-        transformer, on_event, cfg.resolved_family, device = device
-    ):
-        base_precision = "bf16"
-    if base_precision in ("bf16", "fp8"):
+    if base_precision == "fp8":
+        if not _apply_fp8_training(transformer, on_event, cfg.resolved_family, device = device):
+            base_precision = "bf16"
         # Re-collect: a host-resident fp8 load just moved, so the optimizer must not hold host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "mxfp8" and not _apply_mxfp8_training(
