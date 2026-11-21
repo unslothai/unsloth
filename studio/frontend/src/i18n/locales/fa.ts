@@ -5584,6 +5584,7 @@ export const fa = {
       roleUser: "کاربر",
       roleAssistant: "دستیار",
       stopStrings: "توقف در: {list}",
+      earlierMessages: "پیام‌های قبلی که آن‌ها هم ارسال می‌شوند و اینجا نمایش داده نمی‌شوند: {count}",
       copyFailed: "کپی در کلیپ‌بورد ممکن نشد",
     },
     plusMenu: "گفتگو با یک شخصیت",

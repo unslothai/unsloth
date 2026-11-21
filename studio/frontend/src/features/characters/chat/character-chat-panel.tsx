@@ -93,7 +93,8 @@ export function CharacterChatPanel({ threadId }: { threadId: string }) {
                   {muted ? <span className="ml-1.5 text-ui-12 font-normal text-nav-fg-muted">{t("characters.panel.muted")}</span> : null}
                 </button>
                 {isGroup ? (
-                  <>
+                  // Hidden until hovered so names fit; always shown on touch, where hidden buttons still take taps.
+                  <span className="hidden shrink-0 items-center group-focus-within/member:flex group-hover/member:flex pointer-coarse:flex">
                     <IconAction
                       label={t("characters.chat.replyNow", { name: character.name })}
                       icon={BubbleChatIcon}
@@ -112,7 +113,7 @@ export function CharacterChatPanel({ threadId }: { threadId: string }) {
                       disabled={leavesNoSpeaker(members.filter((m) => m.characterId !== character.id))}
                       onClick={() => void patch({ remove: [character.id] })}
                     />
-                  </>
+                  </span>
                 ) : muted ? (
                   // A group cut down to one muted member: it must still be possible to unmute it.
                   <IconAction
@@ -249,7 +250,7 @@ function IconAction({
           aria-label={label}
           onClick={onClick}
           disabled={disabled}
-          className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-nav-fg-muted opacity-0 transition-opacity hover:bg-background hover:text-nav-fg focus-visible:opacity-100 group-hover/member:opacity-100 disabled:cursor-default disabled:text-nav-fg-muted/40 disabled:hover:bg-transparent"
+          className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-nav-fg-muted hover:bg-background hover:text-nav-fg disabled:cursor-default disabled:text-nav-fg-muted/40 disabled:hover:bg-transparent"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
         </button>

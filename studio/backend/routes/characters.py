@@ -163,7 +163,16 @@ def _without_card(character: dict) -> dict:
 def _with_normalized_book(fields: dict) -> dict:
     # Same shape as an imported book, so the prompt builder and export never see a raw one.
     if fields.get("characterBook"):
-        return {**fields, "characterBook": cards.normalize_book(fields["characterBook"])}
+        # normalize_book reads extensions.position/depth before the top-level ones the editor sets;
+        # the round trip also turns NaN and Infinity, which cannot be served, into null.
+        book = fields["characterBook"]
+        if isinstance(book.get("entries"), list):
+            book = cards._export_book(book)
+        try:
+            book = cards._json_loads(json.dumps(book))
+        except cards.CardError as exc:
+            raise HTTPException(status_code = 422, detail = str(exc)) from None
+        return {**fields, "characterBook": cards.normalize_book(book)}
     return fields
 
 
@@ -174,8 +183,6 @@ def _avatar_response(data: bytes, media_type: Optional[str]) -> Response:
         media_type = sniff_image_type(data) or media_type or "application/octet-stream",
         headers = {
             "Cache-Control": "private, max-age=31536000, immutable",
-            # The browser cache is shared by every account signed in on it.
-            "Vary": "Authorization",
             "X-Content-Type-Options": "nosniff",
         },
     )

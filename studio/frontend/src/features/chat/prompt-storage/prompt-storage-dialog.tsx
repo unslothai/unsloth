@@ -262,6 +262,8 @@ async function loadConversationMessages(
     includeSiblings?: boolean;
     includeInstructions?: boolean;
     liveBranch?: string[] | null;
+    /** Training formats: a chat template must see user and assistant turns alternate. */
+    alternating?: boolean;
   } = {},
 ) {
   const {
@@ -269,6 +271,7 @@ async function loadConversationMessages(
     includeSiblings = true,
     includeInstructions = true,
     liveBranch = liveThreadBranch(threadId),
+    alternating = false,
   } = options;
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
@@ -287,7 +290,7 @@ async function loadConversationMessages(
       }) as typeof raw)
     : raw;
   // A character chat never sent the chat's instructions: its prompt was built from the cards.
-  return characterChatTranscript(ordered) ?? [...instructions, ...ordered];
+  return characterChatTranscript(ordered, alternating) ?? [...instructions, ...ordered];
 }
 
 async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
@@ -504,6 +507,7 @@ export async function exportConversationShareGPT(
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings("sharegpt"),
     liveBranch,
+    alternating: true,
   });
   if (!messages) return;
 
@@ -548,6 +552,7 @@ async function exportConversationJsonl(
       layout === "training" ? "jsonl-raw" : "jsonl-messages",
     ),
     liveBranch,
+    alternating: true,
   });
   if (!messages) return;
 

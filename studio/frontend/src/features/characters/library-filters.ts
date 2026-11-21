@@ -67,7 +67,9 @@ export function filterCharacters(characters: readonly Character[], filter: Libra
       (!needle ||
         character.name.toLowerCase().includes(needle) ||
         character.tags.some((value) => value.toLowerCase().includes(needle)) ||
-        character.creator.toLowerCase().includes(needle)),
+        character.creator.toLowerCase().includes(needle) ||
+        character.creatorNotes.toLowerCase().includes(needle) ||
+        character.description.toLowerCase().includes(needle)),
   );
 }
 

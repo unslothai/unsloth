@@ -96,7 +96,7 @@ export function CharacterSpeakerBar() {
         </button>
       ) : (
         <>
-          <span className="mr-1 shrink-0 text-ui-12 font-medium text-muted-foreground">{t("characters.chat.nextReply")}</span>
+          <span className="mr-1 shrink-0 text-ui-12 font-medium text-muted-foreground max-sm:hidden">{t("characters.chat.nextReply")}</span>
           {/* Only the chips scroll, so Write my reply stays in reach however long the names are. */}
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)] [scrollbar-width:none]">
           {thread.cast.map((character) => {

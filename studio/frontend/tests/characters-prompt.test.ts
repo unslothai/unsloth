@@ -14,7 +14,7 @@ import {
 } from "../src/features/characters/prompt/build.ts";
 import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
 import { applyMacros, applyNameMacros } from "../src/features/characters/prompt/macros.ts";
-import { hiddenRoleplayTurnKind } from "../src/features/characters/meta.ts";
+import { alternatingTurns, hiddenRoleplayTurnKind } from "../src/features/characters/meta.ts";
 import { tidyCharacterDisplay } from "../src/features/characters/prompt/display.ts";
 import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
 import { mentionedIds, planReplies, seededRandom, shortName } from "../src/features/characters/prompt/speakers.ts";
@@ -283,6 +283,8 @@ test("a card's own wrapper tags are hidden on screen so the block inside renders
   const text = "Look.\n\n<stats>\n```\nHP: 10\n```\n</stats>\n<details>\nkept\n</details>";
   assert.equal(tidyCharacterDisplay(text), "Look.\n\n\n```\nHP: 10\n```\n\n<details>\nkept\n</details>");
   assert.equal(tidyCharacterDisplay("a <b>bold</b> line"), "a <b>bold</b> line");
+  const audio = 'Here.\n\n<audio-player src="data:audio/wav;base64,UklGRg==" />';
+  assert.equal(tidyCharacterDisplay(audio), audio, "an audio-output reply keeps its player");
 });
 
 test("opening retries keep the first member, notes skip a trailing reply, code keeps its tags", () => {
@@ -578,6 +580,45 @@ test("over budget, higher priority stays; what stays is placed by insertion orde
     { token_budget: 12 },
   );
   assert.deepEqual(activateLorebook(lore, ["x"]).fired.map((f) => f.id), ["mid", "high"]);
+});
+
+test("SillyTavern exports match as SillyTavern does: regex only in slashes, substrings by default", () => {
+  // These exports set use_regex on every entry and match_whole_words: null.
+  const st = (keys: string[], extensions: Record<string, unknown> = {}) =>
+    entry({ keys, use_regex: true, content: "c", extensions: { position: 0, display_index: 0, match_whole_words: null, ...extensions } });
+  const fires = (e: LorebookEntry, text: string) => activateLorebook(book([e]), [text]).fired.length === 1;
+  assert.equal(fires(st(["[Mira]"]), "Hello there."), false, "a bracketed name is not a character class");
+  assert.equal(fires(st(["[Mira]"]), "Have you met [Mira]?"), true);
+  assert.equal(fires(st(["C++"]), "The ship runs C++ code."), true);
+  assert.equal(fires(st(["dragon"]), "The dragons attacked."), true, "substring match by default");
+  assert.equal(fires(st(["dragon"], { match_whole_words: true }), "The dragons attacked."), false);
+  assert.equal(fires(st(["/wyrm|drake/i"]), "A DRAKE lands"), true, "a slashed key is still a regex");
+});
+
+test("recursive scanning reads always-on lore, except entries that opt out", () => {
+  const setting = (extensions = {}) => entry({ id: 0, constant: true, content: "The valley is guarded by a dragon.", extensions });
+  const dragon = (extensions = {}) => entry({ id: 1, keys: ["dragon"], content: "The dragon is named Vex.", extensions });
+  const fired = (entries: LorebookEntry[], recursive: boolean) =>
+    activateLorebook(book(entries, { recursive_scanning: recursive }), ["hello"]).fired.map((f) => f.id);
+  assert.deepEqual(fired([setting(), dragon()], true), [0, 1]);
+  assert.deepEqual(fired([setting(), dragon()], false), [0]);
+  assert.deepEqual(fired([setting({ prevent_recursion: true }), dragon()], true), [0]);
+  assert.deepEqual(fired([setting(), dragon({ exclude_recursion: true })], true), [0]);
+});
+
+test("a chat whose characters were all deleted still alternates roles", () => {
+  const rp = (kind: string) => ({ roleplay: { kind, speakerId: "a", speakerName: "Ann" } });
+  const chat = [
+    { id: "o", role: "user", metadata: rp("opening") },
+    { id: "g1", role: "assistant", metadata: rp("reply") },
+    { id: "t", role: "user", metadata: rp("turn") },
+    { id: "g2", role: "assistant", metadata: rp("reply") },
+    { id: "u", role: "user" },
+    { id: "r", role: "assistant", metadata: rp("reply") },
+    { id: "stale", role: "user", metadata: rp("turn") },
+    { id: "u2", role: "user" },
+  ];
+  assert.deepEqual(alternatingTurns(chat).map((m) => m.id), ["o", "g1", "t", "g2", "u", "r", "u2"]);
 });
 
 test("one lore budget covers the whole cast", () => {

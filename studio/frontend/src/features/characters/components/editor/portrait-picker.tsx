@@ -55,7 +55,7 @@ export function PortraitPicker({
         <button
           type="button"
           onClick={() => openFilePicker(AVATAR_ACCEPT, ([file]) => choose(file))}
-          className="absolute inset-0 flex cursor-pointer flex-col items-center justify-end gap-1 bg-gradient-to-t from-black/60 via-black/0 to-transparent pb-4 text-white opacity-0 transition-opacity focus-visible:opacity-100 focus-visible:outline-none group-hover/avatar:opacity-100"
+          className="absolute inset-0 flex cursor-pointer flex-col items-center justify-end gap-1 bg-gradient-to-t from-black/60 via-black/0 to-transparent pb-4 text-white opacity-0 transition-opacity focus-visible:opacity-100 focus-visible:outline-none group-hover/avatar:opacity-100 pointer-coarse:opacity-100"
         >
           <HugeiconsIcon icon={ImageUpload01Icon} strokeWidth={1.6} className="size-6" />
           <span className="text-ui-13 font-medium">

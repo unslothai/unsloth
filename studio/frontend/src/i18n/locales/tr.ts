@@ -5603,6 +5603,7 @@ export const tr = {
       roleUser: "Kullanıcı",
       roleAssistant: "Asistan",
       stopStrings: "Şurada durur: {list}",
+      earlierMessages: "Burada gösterilmeyen, yine gönderilen önceki mesajlar: {count}",
       copyFailed: "Panoya kopyalanamadı",
     },
     plusMenu: "Bir karakterle sohbet et",

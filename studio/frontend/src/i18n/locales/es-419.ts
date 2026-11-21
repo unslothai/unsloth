@@ -5694,6 +5694,7 @@ export const es419 = {
       roleUser: "Usuario",
       roleAssistant: "Asistente",
       stopStrings: "Se detiene en: {list}",
+      earlierMessages: "Mensajes anteriores, también enviados, que no se muestran aquí: {count}",
       copyFailed: "No se pudo copiar al portapapeles",
     },
     plusMenu: "Chatear con un personaje",

@@ -5287,6 +5287,7 @@ export const en = {
       roleUser: "User",
       roleAssistant: "Assistant",
       stopStrings: "Stops at: {list}",
+      earlierMessages: "Earlier messages, also sent, not shown here: {count}",
       copyFailed: "Couldn't copy to the clipboard",
     },
     plusMenu: "Chat with a character",

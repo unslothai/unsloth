@@ -5907,6 +5907,8 @@ export function createOpenAIStreamAdapter(
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
             runSignal,
+            // A speech model would read the user's line or a turn instruction aloud as the reply.
+            { requireText: Boolean(characterRun) },
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;

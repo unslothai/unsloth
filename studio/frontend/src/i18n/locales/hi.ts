@@ -5274,6 +5274,7 @@ export const hi = {
       roleUser: "उपयोगकर्ता",
       roleAssistant: "सहायक",
       stopStrings: "यहाँ रुकता है: {list}",
+      earlierMessages: "पिछले संदेश, जो भी भेजे जाते हैं, यहाँ नहीं दिखाए गए: {count}",
       copyFailed: "क्लिपबोर्ड पर कॉपी नहीं हो सका",
     },
     plusMenu: "किसी किरदार से चैट करें",

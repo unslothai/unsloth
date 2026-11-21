@@ -5263,6 +5263,7 @@ export const ar = {
       roleUser: "المستخدم",
       roleAssistant: "المساعد",
       stopStrings: "يتوقف عند: {list}",
+      earlierMessages: "رسائل سابقة مُرسلة أيضًا ولا تظهر هنا: {count}",
       copyFailed: "تعذّر النسخ إلى الحافظة",
     },
     plusMenu: "تحدث مع شخصية",

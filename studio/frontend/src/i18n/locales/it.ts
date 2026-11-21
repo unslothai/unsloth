@@ -5332,6 +5332,7 @@ export const it = {
       roleUser: "Utente",
       roleAssistant: "Assistente",
       stopStrings: "Si ferma a: {list}",
+      earlierMessages: "Messaggi precedenti, anch'essi inviati, non mostrati qui: {count}",
       copyFailed: "Impossibile copiare negli appunti",
     },
     plusMenu: "Chatta con un personaggio",

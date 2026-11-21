@@ -5654,6 +5654,7 @@ export const pl = {
       roleUser: "Użytkownik",
       roleAssistant: "Asystent",
       stopStrings: "Zatrzymuje się na: {list}",
+      earlierMessages: "Wcześniejsze wiadomości, również wysyłane, niepokazane tutaj: {count}",
       copyFailed: "Nie udało się skopiować do schowka",
     },
     plusMenu: "Rozmawiaj z postacią",

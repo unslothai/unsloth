@@ -5337,6 +5337,7 @@ export const de = {
       roleUser: "Benutzer",
       roleAssistant: "Assistent",
       stopStrings: "Stoppt bei: {list}",
+      earlierMessages: "Frühere Nachrichten, die ebenfalls gesendet werden, hier nicht angezeigt: {count}",
       copyFailed: "Kopieren in die Zwischenablage fehlgeschlagen",
     },
     plusMenu: "Mit einem Charakter chatten",

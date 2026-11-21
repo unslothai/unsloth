@@ -5601,6 +5601,7 @@ export const vi = {
       roleUser: "Người dùng",
       roleAssistant: "Trợ lý",
       stopStrings: "Dừng tại: {list}",
+      earlierMessages: "Các tin nhắn trước đó, cũng được gửi đi, không hiển thị ở đây: {count}",
       copyFailed: "Không thể sao chép vào bộ nhớ tạm",
     },
     plusMenu: "Trò chuyện với nhân vật",

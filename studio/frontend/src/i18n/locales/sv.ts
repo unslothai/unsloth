@@ -5478,6 +5478,7 @@ export const sv = {
       roleUser: "Användare",
       roleAssistant: "Assistent",
       stopStrings: "Stoppar vid: {list}",
+      earlierMessages: "Tidigare meddelanden som också skickas, visas inte här: {count}",
       copyFailed: "Det gick inte att kopiera till urklipp",
     },
     plusMenu: "Chatta med en karaktär",

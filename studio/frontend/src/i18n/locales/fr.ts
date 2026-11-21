@@ -5347,6 +5347,7 @@ export const fr = {
       roleUser: "Utilisateur",
       roleAssistant: "Assistant",
       stopStrings: "S'arrête à : {list}",
+      earlierMessages: "Messages précédents, également envoyés, non affichés ici : {count}",
       copyFailed: "Impossible de copier dans le presse-papiers",
     },
     plusMenu: "Discuter avec un personnage",

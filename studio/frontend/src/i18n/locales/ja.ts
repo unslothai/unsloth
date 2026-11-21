@@ -5212,6 +5212,7 @@ export const ja = {
       roleUser: "ユーザー",
       roleAssistant: "アシスタント",
       stopStrings: "停止文字列: {list}",
+      earlierMessages: "ここに表示されていない、同じく送信される以前のメッセージ: {count}",
       copyFailed: "クリップボードにコピーできませんでした",
     },
     plusMenu: "キャラクターとチャット",

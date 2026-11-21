@@ -135,6 +135,8 @@ def test_prefers_the_v3_chunk_over_v2():
     parsed = cards.parse_card_file(png, "x.png")
     assert parsed.fields["name"] == "Mira V3"
     assert parsed.spec == "chara_card_v3"
+    # Carrying both is how V3 cards are written, so it is not worth a note on import.
+    assert parsed.warnings == []
 
 
 def test_reads_a_v1_json_card():
@@ -288,7 +290,6 @@ def test_import_list_edit_export_and_delete(client):
     assert patched.json()["name"] == "Mira II" and patched.json()["characterBook"] is None
 
     avatar = client.get(f"/api/characters/{character_id}/avatar")
-    assert avatar.headers["vary"] == "Authorization"
     assert avatar.status_code == 200 and avatar.headers["content-type"] == "image/png"
 
     exported = client.get(f"/api/characters/{character_id}/export?format=json")
@@ -463,6 +464,35 @@ def test_a_group_chat_chains_each_members_greeting_through_a_turn_marker(client)
     assert path[2]["metadata"]["roleplay"]["speakerId"] == b["id"]
     assert path[3]["content"][0]["text"] == "Bo here."
     assert studio_db.get_chat_thread(body["threadId"])["title"] == "Ann, Bo & Cy"
+
+
+def test_a_swiped_group_greeting_keeps_the_members_after_it(client):
+    a = client.post(
+        "/api/characters",
+        json = {"name": "Ann", "firstMes": "Ann here.", "alternateGreetings": ["Ann again."]},
+    ).json()
+    b = client.post(
+        "/api/characters",
+        json = {"name": "Bo", "firstMes": "Bo here.", "alternateGreetings": ["Bo again."]},
+    ).json()
+    body = client.post(
+        "/api/characters/chats", json = {"characterIds": [a["id"], b["id"]], "userName": "Pat"}
+    ).json()
+    messages = _messages(body["threadId"])
+    by_id = {m["id"]: m for m in messages}
+
+    def texts_below(message_id):
+        return [m["content"][0]["text"] for m in messages if m["parentId"] == message_id]
+
+    alternate = next(m for m in messages if m["content"][0]["text"] == "Ann again.")
+    (marker,) = [m for m in messages if m["parentId"] == alternate["id"]]
+    assert marker["metadata"]["roleplay"] == {"kind": "turn", "speakerId": b["id"]}
+    assert texts_below(marker["id"]) == ["Bo here."]
+    # The main path still opens the chat, and only it carries Bo's alternates.
+    head = by_id[body["headId"]]
+    assert head["content"][0]["text"] == "Bo here."
+    assert sorted(texts_below(head["parentId"])) == ["Bo again.", "Bo here."]
+    assert max(messages, key = lambda m: m["createdAt"])["id"] == body["headId"]
 
 
 def test_scene_updates_cast_persona_and_settings(client):
@@ -982,6 +1012,50 @@ def test_a_book_sent_by_the_editor_is_normalized_like_an_import(client):
     assert entry["keys"] == ["fern"] and entry["content"] == "7"
 
 
+def test_editing_an_imported_entrys_placement_sticks(client):
+    def entry(key, position, ext_position):
+        return {
+            "keys": [key],
+            "content": key,
+            "position": position,
+            "extensions": {"position": ext_position, "depth": 4},
+        }
+
+    card = {
+        "spec": "chara_card_v2",
+        "spec_version": "2.0",
+        "data": {
+            "name": "Ivo",
+            "character_book": {
+                "entries": [entry("deck", "before_char", 0), entry("hold", "before_char", 4)]
+            },
+        },
+    }
+    imported = client.post(
+        "/api/characters/import?filename=ivo.json", content = json.dumps(card).encode()
+    ).json()["character"]
+    book = imported["characterBook"]
+    assert [e["position"] for e in book["entries"]] == ["before_char", "at_depth"]
+    book["entries"][0]["position"] = "after_char"
+    book["entries"][1]["depth"] = 2
+    patched = client.patch(f"/api/characters/{imported['id']}", json = {"characterBook": book})
+    assert patched.status_code == 200
+    stored = client.get(f"/api/characters/{imported['id']}").json()["characterBook"]["entries"]
+    assert [(e["position"], e["depth"]) for e in stored] == [("after_char", 4), ("at_depth", 2)]
+
+
+def test_a_non_finite_number_in_a_book_is_stored_as_null(client):
+    created = _character(client)
+    response = client.patch(
+        f"/api/characters/{created['id']}",
+        content = b'{"characterBook": {"entries": [{"keys": ["a"], "content": "x", "priority": NaN}]}}',
+        headers = {"content-type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["characterBook"]["entries"][0]["priority"] is None
+    assert client.get("/api/characters").status_code == 200
+
+
 def test_a_character_deleted_while_a_chat_is_made_is_a_404_and_leaves_no_chat(client, monkeypatch):
     character = _character(client)
     before = {t["id"] for t in studio_db.list_chat_threads()}
@@ -1029,7 +1103,8 @@ def test_a_large_group_opens_in_a_handful_of_connections(client, monkeypatch):
     assert response.status_code == 201
     assert len(opened) < 20
     messages = studio_db.list_chat_messages(response.json()["threadId"])
-    assert len(messages) == 1 + 15 + 16 * 65
+    # The main path, plus the bounded copies of later greetings under alternates.
+    assert 1 + 15 + 16 * 65 < len(messages) <= 1 + 15 + 16 * 65 + chats.MAX_GREETING_COPY_ROWS
 
 
 def test_a_greeting_records_its_index_in_the_card(client):

@@ -2307,7 +2307,8 @@ export async function completeChat(
   const response = await authFetch("/api/inference/chat/completions", {
     method: "POST",
     signal: options.signal,
-    headers: { "Content-Type": "application/json" },
+    // A speech model would echo the prompt back as content; refuse instead.
+    headers: { "Content-Type": "application/json", "X-Unsloth-Require-Text": "1" },
     body: JSON.stringify({ ...payload, stream: false }),
   });
   if (!response.ok) throw new Error(await readFastApiError(response, options.failure));
@@ -2318,10 +2319,14 @@ export async function completeChat(
 export async function generateAudio(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  options: { requireText?: boolean } = {},
 ): Promise<AudioGenerationResponse> {
   const response = await authFetch("/api/inference/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.requireText ? { "X-Unsloth-Require-Text": "1" } : {}),
+    },
     body: JSON.stringify({ ...payload, stream: false }),
     signal,
   });

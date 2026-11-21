@@ -41,6 +41,20 @@ test("the library is fetched for the sidebar only once a character chat exists",
   assert.match(mark, /Object\.keys\(store\.chatIndex\)\.length > 0\)/);
 });
 
+test("a reply draft refuses a speech model's echoed prompt", () => {
+  const api = read("features/chat/api/chat-api.ts");
+  const complete = api.slice(api.indexOf("export async function completeChat"), api.indexOf("export async function generateAudio"));
+  assert.match(complete, /"X-Unsloth-Require-Text": "1"/);
+});
+
+test("a character turn refuses a speech-only model instead of reading the prompt aloud", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /runSignal,\s*(\/\/[^\n]*\n\s*)*\{ requireText: Boolean\(characterRun\) \},\s*\);/);
+  const api = read("features/chat/api/chat-api.ts");
+  const audio = api.slice(api.indexOf("export async function generateAudio"));
+  assert.match(audio, /options\.requireText \? \{ "X-Unsloth-Require-Text": "1" \}/);
+});
+
 test("a send re-reads the cast and personas, at most once per chat in a short window", () => {
   const runtime = read("features/characters/chat-runtime.ts");
   assert.match(runtime, /if \(args\.revalidate\) await revalidateParticipants\(scene\);/);
@@ -86,12 +100,12 @@ test("a saved chat keeps who it speaks as when a default persona appears later",
   assert.equal(pickPersona(null, []), null);
 });
 
-test("a chat with no cast left drops hidden turns, and audio replies keep the speaker", () => {
+test("a chat with no cast left goes through the ordinary fallback, and audio replies keep the speaker", () => {
   const adapter = read("features/chat/api/chat-adapter.ts");
   // The send and the token count both go through characterOutbound.
   assert.match(adapter, /characterOutbound\(characterRun, renderedMessages\)/);
   assert.match(adapter, /characterOutbound\(characterRun, survivingMessages\)/);
   const runtime = read("features/characters/chat-runtime.ts");
-  assert.match(runtime, /: messages\.filter\(\(m\) => !isHiddenRoleplayTurn\(m\)\)/);
+  assert.match(runtime, /: alternatingTurns\(messages\)/);
   assert.equal((adapter.match(/\.\.\.audioMetadata,/g) ?? []).length, 2);
 });

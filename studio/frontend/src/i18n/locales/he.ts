@@ -5345,6 +5345,7 @@ export const he = {
       roleUser: "משתמש",
       roleAssistant: "עוזר",
       stopStrings: "עוצר ב: {list}",
+      earlierMessages: "הודעות קודמות שנשלחות גם הן ואינן מוצגות כאן: {count}",
       copyFailed: "לא ניתן היה להעתיק ללוח",
     },
     plusMenu: "צ'אט עם דמות",

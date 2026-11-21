@@ -65,6 +65,7 @@ export function useCharacterDraft(characterId: string | null) {
     if (!draft) return;
     if (!draft.name.trim()) {
       setShowErrors(true);
+      document.getElementById("character-name")?.focus();
       return;
     }
     setSaving(true);

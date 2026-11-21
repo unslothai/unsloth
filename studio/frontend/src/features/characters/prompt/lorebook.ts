@@ -86,11 +86,20 @@ function keyMatcher(key: string, options: KeyOptions): Matcher | null {
   return matcher;
 }
 
+/** Exports with these fields set use_regex on every entry but mean regex only for /pattern/ keys,
+ *  and substring matches unless whole words is on. */
+function fromSillyTavern(entry: LorebookEntry): boolean {
+  const ext = entry.extensions;
+  return Boolean(ext) && ("match_whole_words" in ext! || "display_index" in ext!);
+}
+
 function keyOptions(entry: LorebookEntry): KeyOptions {
+  const sillyTavern = fromSillyTavern(entry);
+  const wholeWords = entry.extensions?.match_whole_words;
   return {
     caseSensitive: Boolean(entry.case_sensitive),
-    useRegex: Boolean(entry.use_regex),
-    wholeWords: entry.extensions?.match_whole_words !== false,
+    useRegex: Boolean(entry.use_regex) && !sillyTavern,
+    wholeWords: sillyTavern ? wholeWords === true : wholeWords !== false,
   };
 }
 
@@ -190,16 +199,22 @@ export function activateLorebook(
   const live = book.entries.filter((entry) => entry.enabled !== false && entry.content?.trim());
   const candidates = new Map<LorebookEntry, "constant" | "keyword">();
   for (const entry of live) if (entry.constant) candidates.set(entry, "constant");
-  let lore = "";
+  // Recursion reads always-on lore too; the first pass reads only the chat, as exclude_recursion expects.
+  let lore = book.recursive_scanning
+    ? live
+        .filter((entry) => entry.constant && !entry.extensions?.prevent_recursion)
+        .map((entry) => `\n${entry.content}`)
+        .join("")
+    : "";
   for (let pass = 0; pass <= (book.recursive_scanning ? MAX_RECURSION : 0); pass += 1) {
-    const text = `${chat}${lore}`.slice(-MAX_SCAN_CHARS);
+    const text = `${chat}${pass > 0 ? lore : ""}`.slice(-MAX_SCAN_CHARS);
     const found = live.filter(
       (entry) =>
         !candidates.has(entry) &&
         !(pass > 0 && entry.extensions?.exclude_recursion) &&
         entryHits(entry, text, budget.regexSteps),
     );
-    if (found.length === 0) break;
+    if (found.length === 0 && (pass > 0 || !lore)) break;
     for (const entry of found) candidates.set(entry, "keyword");
     // A recursive pass also reads the lore that just fired, except entries that opt out.
     lore += found

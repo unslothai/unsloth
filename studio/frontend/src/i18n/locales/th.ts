@@ -5377,6 +5377,7 @@ export const th = {
       roleUser: "ผู้ใช้",
       roleAssistant: "ผู้ช่วย",
       stopStrings: "หยุดที่: {list}",
+      earlierMessages: "ข้อความก่อนหน้าที่ส่งไปด้วยแต่ไม่แสดงที่นี่: {count}",
       copyFailed: "คัดลอกไปยังคลิปบอร์ดไม่ได้",
     },
     plusMenu: "แชทกับตัวละคร",
