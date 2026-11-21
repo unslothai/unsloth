@@ -76,6 +76,19 @@ def test_samples_are_drawn_by_seed():
     assert token_preview_worker._sample(texts[:2], 3, 1) == texts[:2]
 
 
+def test_recommend_max_seq_length_picks_smallest_covering_bucket():
+    assert token_preview_worker._recommend_max_seq_length([]) is None
+    assert token_preview_worker._recommend_max_seq_length([120, 340]) == 512
+    assert token_preview_worker._recommend_max_seq_length([512]) == 512
+    assert token_preview_worker._recommend_max_seq_length([513, 900]) == 1024
+    assert token_preview_worker._recommend_max_seq_length([1450]) == 2048
+    assert token_preview_worker._recommend_max_seq_length([3100]) == 4096
+    capped_tok = types.SimpleNamespace(model_max_length = 2048)
+    assert token_preview_worker._recommend_max_seq_length([3100], capped_tok) == 2048
+    sentinel_tok = types.SimpleNamespace(model_max_length = int(1e30))
+    assert token_preview_worker._recommend_max_seq_length([3100], sentinel_tok) == 4096
+
+
 def test_continued_pretraining_trains_every_token(captured):
     _call_route(
         TokenPreviewRequest(
