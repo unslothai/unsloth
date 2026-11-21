@@ -254,8 +254,11 @@ test("a fit mark's tooltip gives the memory it was judged with", () => {
     "~9.2 GiB memory. Might be slower with RAM offloading.",
   );
   assert.equal(fitMemoryText("tight", 22, 24), "~22 GiB VRAM (tight fit on 24 GiB)");
-  // Marginal is over the VRAM Budget, not a tight fit.
-  assert.match(fitMemoryText("marginal", 22, 24) ?? "", /^~22 GiB memory, over your VRAM Budget \(GPU: 24 GiB\)/);
+  // Marginal is over a budget (VRAM, or Apple's unified load), not a tight fit on the card.
+  assert.equal(
+    fitMemoryText("marginal", 22, 24),
+    "~22 GiB memory, near this device's limit (GPU: 24 GiB)",
+  );
   // Streamed keeps its disk caveat; the size counts tables that stay on disk.
   assert.match(fitMemoryText("streamed", 40, 24) ?? "", /lookup tables streamed from disk/);
   // No GPU or no estimate: the generic hint stays.

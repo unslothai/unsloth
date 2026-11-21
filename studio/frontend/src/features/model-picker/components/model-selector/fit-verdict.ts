@@ -87,8 +87,9 @@ export function fitMemoryText(
   if (status === "offload") {
     return `~${formatGiB(estGb)} memory. Might be slower with RAM offloading.`;
   }
+  // Over the VRAM Budget, or over Apple's unified load budget: either way, near the limit.
   if (status === "marginal") {
-    return `~${formatGiB(estGb)} memory, over your VRAM Budget (GPU: ${formatGiB(gpuGb)}). Raising the budget can keep it resident.`;
+    return `~${formatGiB(estGb)} memory, near this device's limit (GPU: ${formatGiB(gpuGb)})`;
   }
   if (status === "tight") {
     return `~${formatGiB(estGb)} VRAM (tight fit on ${formatGiB(gpuGb)})`;
