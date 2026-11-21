@@ -372,6 +372,8 @@ def _idle_state() -> dict[str, Any]:
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # block_swap as resolved by the trainer (blocks swapped, host / pinned GiB); None when it did not run.
+        "block_swap": None,
         # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
         "checkpoint_path": None,
         "checkpoint_step": None,
@@ -1223,6 +1225,13 @@ class DiffusionTrainingService:
                         else f"Preparing ({stage})..."
                     ),
                 )
+            elif etype == "block_swap":
+                swap = {
+                    k: ev.get(k)
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                    if _finite_or_none(ev.get(k)) is not None
+                }
+                s["block_swap"] = swap or None
             elif etype == "warning":
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))

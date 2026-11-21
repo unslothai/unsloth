@@ -1294,6 +1294,10 @@ def LlamaDecoderLayer_fast_forward(
     return outputs
 
 
+# Its training MLP output only feeds residual + mlp(x): block compile may skip the down projection in a replay.
+LlamaDecoderLayer_fast_forward._unsloth_mlp_output_unread = True
+
+
 # See unslothai/unsloth#404 (comment 2323473452).
 __DTYPE_MAP = {
     "float32": torch.float32,

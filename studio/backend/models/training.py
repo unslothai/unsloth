@@ -1118,6 +1118,17 @@ class DiffusionTrainingStartRequest(BaseModel):
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
         ),
     )
+    block_swap: Optional[Union[Literal["off", "auto"], Annotated[int, Field(ge = 0, le = 1024)]]] = (
+        Field(
+            None,
+            description = (
+                "DiT families with base_precision='bf16' only: repeated transformer blocks kept in host RAM and "
+                "streamed to the GPU each step, so a bf16 base larger than the card trains at bf16 accuracy. "
+                "'auto' swaps as few as fit, a number swaps that many, 'off' or 0 none. Needs gradient "
+                "checkpointing and a discrete CUDA / ROCm GPU. null keeps the server default (UNSLOTH_DIT_BLOCK_SWAP)."
+            ),
+        )
+    )
     # DiT-only lever: undeclared, model_dump() silently dropped it. Defaults match DiffusionLoraConfig.
     ema_decay: float = Field(
         0.0, ge = 0.0, lt = 1.0, description = "EMA of the LoRA weights; 0 disables it"
@@ -1282,6 +1293,8 @@ class DiffusionTrainingStatusResponse(BaseModel):
     # Live throughput + peak VRAM (from the trainer's progress events).
     samples_per_second: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # What block_swap resolved to once the base loaded: swapped_blocks, total_blocks, host_gib, pinned_gib.
+    block_swap: Optional[Dict[str, float]] = None
     # Newest bundle and step, why it could not be written (Resume tooltip), and where a resume started.
     checkpoint_path: Optional[str] = None
     checkpoint_step: Optional[int] = None
@@ -1373,6 +1386,8 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
+    # block_swap is refused outside the DiT trainer and without bf16, so the panel offers it only here.
+    supports_block_swap: bool = False
     # save_steps is refused for checkpointless families; True keeps old payloads.
     supports_checkpoints: bool = True
     supports_samples: bool = False

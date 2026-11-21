@@ -534,6 +534,39 @@ def disarm_mlp_output_unread():
     _SKIP_DOWN_TLS.armed = None
 
 
+# Block compile (torch >= 2.11) traces the decoder layer, where the thread-local token above cannot be read.
+# The block's eager wrapper instead sets this plain global around a replay of a layer that qualifies
+# (block_skip_down_eligible); the traced LoRA_MLP reads it, so dynamo guards on it: the replay (grad mode)
+# graph is compiled with the skip and the forward (no grad) graph without, the same two graphs as before.
+_BLOCK_SKIP_DOWN = False
+
+
+def set_block_skip_down(value):
+    global _BLOCK_SKIP_DOWN
+    previous = _BLOCK_SKIP_DOWN
+    _BLOCK_SKIP_DOWN = bool(value)
+    return previous
+
+
+def block_skip_down_eligible(layer, layer_forward):
+    """True when a compiled replay of `layer` may skip its down projection: the layer runs a forward whose
+    MLP output only feeds `residual + mlp(x)`, its MLP's own `forward` is the fused SwiGLU LoRA (no
+    accelerate hook or tiled MLP around it), and no forward hook could read an output. The caller still
+    checks that the checkpoint replays exactly this layer (_replay_module)."""
+    if not (_SKIP_DOWN_ENABLED and TRACE_LORA_FUNCTIONS):
+        return False
+    if not getattr(layer_forward, "_unsloth_mlp_output_unread", False):
+        return False
+    mlp = getattr(layer, "mlp", None)
+    slots = getattr(mlp, "__dict__", {})
+    if "_hf_hook" in slots or "_unsloth_forward" in slots:
+        return False
+    if getattr(slots.get("forward"), "__func__", None) is not apply_lora_mlp_swiglu:
+        return False
+    # LoRA dropout / bias take LoRA_MLP's other branch, which always runs the down projection.
+    return _no_forward_hooks(layer, mlp)
+
+
 def _take_skip_down(mlp):
     # One shot, and re-checked against the live replay so a token left by an exception never fires elsewhere.
     if _is_compiling():
@@ -639,13 +672,21 @@ class LoRA_MLP(torch.autograd.Function):
                 X, upW, upW_quant, upA, upB, upS, XA = upXA, fused = fused, fused_checked = checked
             )
             del gateXA, upXA
-            if not _is_compiling() and getattr(_SKIP_DOWN_TLS, "active", False):
+            if _is_compiling():
+                skip_down = _BLOCK_SKIP_DOWN  # guarded: set around a compiled block replay
+            else:
+                skip_down = getattr(_SKIP_DOWN_TLS, "active", False)
+                if skip_down:
+                    _SKIP_DOWN_TLS.active = False
+                    MLP_DOWN_SKIP_STATS["skipped"] += 1
+            if skip_down:
                 # Checkpoint replay of a layer whose output nothing reads: backward needs only X, e, g.
-                _SKIP_DOWN_TLS.active = False
-                MLP_DOWN_SKIP_STATS["skipped"] += 1
-                i = X.new_empty(X.shape)
-                if _SKIPPED_FILL is not None:
-                    i.fill_(_SKIPPED_FILL)
+                # Out of place: an ATen fill_ on a returned fresh tensor compiles a wrong gradient (#14712).
+                i = (
+                    X.new_empty(X.shape)
+                    if _SKIPPED_FILL is None
+                    else X.new_full(X.shape, _SKIPPED_FILL)
+                )
             else:
                 h = _forward_function(e, g)
                 i = matmul_lora(

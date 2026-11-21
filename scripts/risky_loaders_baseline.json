@@ -567,8 +567,8 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "59e72c01edb14c86",
-      "count": 4,
-      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
+      "count": 5,
+      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES, the transformers symbol homes and the two literal tokenizer owners of _patch_mistral_regex); remote code can only name an attribute, which resolves inside an already installed transformers module."
     },
     {
       "file": "unsloth/import_fixes.py",
