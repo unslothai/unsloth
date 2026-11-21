@@ -8523,7 +8523,7 @@ def unsloth_compile_transformers(
             f"You have Torch version {torch_version}. Please upgrade your Torch version by visiting https://pytorch.org/\n"
             "For now your models will not get optimized, but will still work for now!"
         )
-        return
+        return model_types, False
     if trust_remote_code and unsloth_force_compile == False:
         print(
             "Unsloth: We can't trace models if `trust_remote_code = True`, "
