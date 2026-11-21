@@ -8,6 +8,7 @@ at batch 2, with identical replicas and rank 1 reading the conditioning warm."""
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import subprocess
@@ -117,7 +118,15 @@ def _cpu_patches(dit, precision = "bf16"):
 
 
 def _child_train(
-    rank: int, world: int, port: int, out: str, pipe: str, data: str, batch: str, steps: str
+    rank: int,
+    world: int,
+    port: int,
+    out: str,
+    pipe: str,
+    data: str,
+    batch: str,
+    steps: str,
+    cache: str = "1",
 ) -> None:
     import core.inference.diffusion_lora as dl
     from core.training import diffusion_dit_trainer as dit
@@ -143,7 +152,20 @@ def _child_train(
 
     spec.load_transformer = load_transformer
     spec.load_conditioners = load_conditioners
-    tag = f"w{world}_b{batch}_r{rank}"
+    encode, load_px = spec.encode_latents, dit._load_pixel_tensor
+    seen["encoded"], seen["decoded"] = [], 0
+
+    def encode_latents(vae, px):
+        seen["encoded"].append(int(px.shape[0]))
+        return encode(vae, px)
+
+    def load_pixel_tensor(*a, **k):
+        seen["decoded"] += 1
+        return load_px(*a, **k)
+
+    spec.encode_latents = encode_latents
+    dit._load_pixel_tensor = load_pixel_tensor
+    tag = f"w{world}_b{batch}_r{rank}" + ("" if cache == "1" else "_nocache")
     events = []
     cfg = DiffusionLoraConfig(
         base_model = pipe,
@@ -156,6 +178,8 @@ def _child_train(
         learning_rate = 1e-2,
         lora_rank = 4,
         cache_variants = 2,
+        cache_latents = cache == "1",
+        center_crop = cache == "1",
         cfg_dropout = 0.25,
         cond_cache_dir = str(root / f"cond_w{world}"),
         seed = 0,
@@ -169,6 +193,8 @@ def _child_train(
             "lora": lora,
             "events": json.loads(json.dumps(events, default = str)),
             "conditioners": seen["conditioners"],
+            "encoded": seen["encoded"],
+            "decoded": seen["decoded"],
         },
         root / f"train_{tag}.pt",
     )
@@ -383,6 +409,113 @@ def test_two_ranks_at_batch_one_train_the_one_process_batch_two_run(tmp_path, ti
     assert r1["conditioners"] == 0 and r0["conditioners"] == 1
     assert Path(done["lora_path"]).exists()
     assert not (tmp_path / "out_w2_b1_r1").exists()
+
+
+@pytest.mark.allow_network
+def test_two_ranks_without_a_latent_cache_encode_only_their_slice(tmp_path, tiny_pipe_dir):
+    """No latent cache: each rank decodes and VAE-encodes its own image only (it encoded the whole global batch), the
+    replicas stay identical, and the noise and crop streams stay shared."""
+    from PIL import Image
+
+    data = tmp_path / "data"
+    data.mkdir()
+    for i in range(5):
+        # Non-square: the random crop draws an offset, so a skipped image must still advance the shared stream.
+        Image.new("RGB", (96 + 8 * i, 64), (200, 30 * i, 40)).save(data / f"img{i}.png")
+        (data / f"img{i}.txt").write_text(f"a red tile {i}")
+    steps = 3
+    _spawn("train", 2, str(tmp_path), tiny_pipe_dir, str(data), "1", str(steps), "0")
+    r0 = torch.load(tmp_path / "train_w2_b1_r0_nocache.pt")
+    r1 = torch.load(tmp_path / "train_w2_b1_r1_nocache.pt")
+    for r in (r0, r1):
+        assert r["encoded"] == [1] * steps
+        assert r["decoded"] == steps
+    for k in r0["lora"]:
+        assert torch.equal(r0["lora"][k], r1["lora"][k]), k
+    losses = [e["loss"] for e in r0["events"] if e["type"] == "progress"]
+    assert len(losses) == steps and all(math.isfinite(x) for x in losses)
+
+
+def test_skipping_an_image_advances_the_crop_stream_like_loading_it(tmp_path):
+    """A rank skips the images outside its slice from the header alone; its stream must match a rank that decoded
+    them, including an EXIF-rotated image whose crop range follows the rotated size."""
+    import random
+
+    from PIL import Image
+
+    import core.training.diffusion_dit_trainer as dit
+
+    paths = []
+    for i, (w, h) in enumerate([(96, 64), (64, 160), (300, 200)]):
+        img = Image.new("RGB", (w, h), (10, 20 * i, 30))
+        path = tmp_path / f"img{i}.jpg"
+        if i == 2:
+            exif = Image.Exif()
+            exif[0x0112] = 6  # rotate 90: the oriented size is 200 x 300
+            img.save(path, exif = exif)
+        else:
+            img.save(path)
+        paths.append(str(path))
+    for center_crop in (False, True):
+        for flip in (False, True):
+            for res in (64, (64, 96)):
+                a, b = random.Random(3), random.Random(3)
+                for p in paths:
+                    dit._load_pixel_tensor(p, res, center_crop, flip, a)
+                    dit._skip_pixel_draws(p, res, center_crop, flip, b)
+                    assert a.getstate() == b.getstate(), (p, center_crop, flip, res)
+
+
+def test_a_rank_private_generator_leaves_the_shared_stream():
+    import core.training.diffusion_dit_trainer as dit
+
+    torch.manual_seed(0)
+    ref = torch.randn(4)
+    torch.manual_seed(0)
+    with dit._rank_private_rng("cpu", 11):
+        own = torch.randn(4)
+    with dit._rank_private_rng("cpu", 12):
+        other = torch.randn(4)
+    assert torch.equal(torch.randn(4), ref)
+    assert not torch.equal(own, other)
+
+
+def test_ranks_pin_nccl_to_loopback_unless_the_user_chose(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    env = {}
+    diffusion_ddp._pin_loopback(env)
+    assert env == {"NCCL_SOCKET_IFNAME": "lo"}
+    env = {"NCCL_SOCKET_IFNAME": "eth0"}
+    diffusion_ddp._pin_loopback(env)
+    assert env == {"NCCL_SOCKET_IFNAME": "eth0"}
+
+
+def test_a_checkpoint_resumes_only_at_its_gpu_count():
+    """Every rank draws train_batch_size images, so a 2-GPU bundle continued on 1 GPU would train at half the global
+    batch on a different sampler stream: refused, like a batch-size change."""
+    from core.training.diffusion_checkpoint import CheckpointIdentity, with_world_size
+
+    base = CheckpointIdentity(
+        family = FAMILY,
+        base_model = "m",
+        lora_target_modules = ("to_q",),
+        lora_rank = 4,
+        lora_alpha = 4,
+        precision = "bf16",
+        base_precision = "bf16",
+        resolution = 64,
+        train_batch_size = 1,
+    )
+    two, one = with_world_size(base, 2), with_world_size(base, 1)
+    assert "GPU count (2 vs 1)" in two.mismatch_reason(one)
+    assert one.mismatch_reason(two) is not None
+    assert two.mismatch_reason(with_world_size(base, 2)) is None
+    # The route's preflight knows no world yet: cannot tell, not a mismatch.
+    assert two.mismatch_reason(base) is None
+    # A bundle from before the field trained on one GPU.
+    assert base.mismatch_reason(one) is None
+    assert base.mismatch_reason(two) is not None
+    assert CheckpointIdentity.from_dict(two.as_dict()).world_size == 2
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ import math
 import os
 import random
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -102,6 +102,7 @@ from core.training.diffusion_checkpoint import (
     identity_for_config,
     with_cache_mode,
     with_resolved_base_precision,
+    with_world_size,
     with_resolved_dit,
     with_resolved_revision,
     preflight_resume,
@@ -120,6 +121,7 @@ from core.training.diffusion_train_extras import (
     accumulate_loss,
     cover_resize_dims,
     loss_value,
+    oriented_image_size,
     PersistentConditioningCache,
     save_ema_adapter,
 )
@@ -2959,6 +2961,37 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
     return _to_unit_tensor(img)
 
 
+def _skip_pixel_draws(path, resolution, center_crop, random_flip, rng):
+    """Advance ``rng`` exactly as ``_load_pixel_tensor`` would, from the image header alone: a data-parallel rank
+    skips decoding the images outside its slice and every rank's stream stays in step."""
+    if center_crop and not random_flip:
+        return
+    cw, ch = _canvas(resolution)
+    if not center_crop:
+        rw, rh = cover_resize_dims(*oriented_image_size(path), cw, ch)
+        rng.randint(0, max(0, rw - cw))
+        rng.randint(0, max(0, rh - ch))
+    if random_flip:
+        rng.random()
+
+
+@contextmanager
+def _rank_private_rng(device, seed):
+    """Run the block on a private generator seeded ``seed``; the shared stream every rank draws from is left as it was."""
+    import torch
+
+    dev = torch.device(device)
+    if dev.type == "cuda":
+        index = dev.index if dev.index is not None else torch.cuda.current_device()
+        with torch.random.fork_rng(devices = [index]), torch.cuda.device(index):
+            torch.cuda.manual_seed(seed)
+            yield
+    else:
+        with torch.random.fork_rng(devices = []):
+            torch.manual_seed(seed)
+            yield
+
+
 def _load_pixel_tensor_planned(
     path,
     resolution,
@@ -3512,6 +3545,7 @@ def run_dit_lora_training(
         dataset_pairs = pairs,
         resolved_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets),
     )
+    identity = with_world_size(identity, ddp.world if ddp is not None else world)
     if cfg.resume_from_checkpoint:
         preflight_resume(
             cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
@@ -4293,24 +4327,43 @@ def _train_dit(
                 latents = _sample_cached_latents(
                     latent_cache, idxs, variant_rng, device, weight_dtype
                 )
+                if ddp is not None:
+                    latents = latents[ddp.batch_slice(batch_size)]
             else:
-                px = torch.stack(
-                    [
-                        _load_pixel_tensor(
+                # Data parallel: only this rank's slice is decoded and encoded; the rest only advance the crop / flip
+                # stream, which every rank shares.
+                own = (
+                    range(len(idxs))
+                    if ddp is None
+                    else range(len(idxs))[ddp.batch_slice(batch_size)]
+                )
+                px = []
+                for j, i in enumerate(idxs):
+                    load = _load_pixel_tensor if j in own else _skip_pixel_draws
+                    px.append(
+                        load(
                             image_paths[i],
                             cfg.resolution if canvases is None else canvases[i],
                             cfg.center_crop,
                             cfg.random_flip,
                             rng,
                         )
-                        for i in idxs
-                    ]
-                ).to(device)
-                latents = spec.encode_latents(vae, px).to(weight_dtype)
+                    )
+                px = torch.stack([px[j] for j in own]).to(device)
+                if ddp is None:
+                    latents = spec.encode_latents(vae, px).to(weight_dtype)
+                else:
+                    # The posterior sample draws a rank-private stream, so the shared one (noise, timesteps) stays in
+                    # step across ranks and no two ranks reuse one posterior draw.
+                    with _rank_private_rng(device, rng.getrandbits(62) + ddp.rank):
+                        latents = spec.encode_latents(vae, px).to(weight_dtype)
 
-            noise = torch.randn_like(latents)
+            # Noise and timesteps are drawn for the whole global batch (1 GPU: the batch), then sliced to this rank.
+            noise = torch.randn(
+                (draw_size, *latents.shape[1:]), dtype = latents.dtype, device = latents.device
+            )
             timesteps, t_indices = _sample_timesteps(
-                scheduler, latents.shape[0], device, spec.timestep_density
+                scheduler, draw_size, device, spec.timestep_density
             )
             sigmas = _gather_sigmas(sigma_table, t_indices, device, weight_dtype, latents.ndim)
             if shift_active:
@@ -4322,8 +4375,6 @@ def _train_dit(
                     .flatten()
                     * num_train_ts
                 )
-            noisy = (1.0 - sigmas) * latents + sigmas * noise
-
             picked = [
                 caption_embeds[""]
                 if cfg_dropout > 0 and rng.random() < cfg_dropout
@@ -4332,10 +4383,9 @@ def _train_dit(
             ]
             if ddp is not None:
                 mine = ddp.batch_slice(batch_size)
-                latents, noise, timesteps, sigmas, noisy = (
-                    t[mine] for t in (latents, noise, timesteps, sigmas, noisy)
-                )
+                noise, timesteps, sigmas = (t[mine] for t in (noise, timesteps, sigmas))
                 picked = picked[mine]
+            noisy = (1.0 - sigmas) * latents + sigmas * noise
             embeds = spec.collate(
                 picked,
                 device,

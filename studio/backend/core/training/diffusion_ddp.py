@@ -332,6 +332,13 @@ def _config_payload(cfg) -> str:
     return json.dumps(data)
 
 
+def _pin_loopback(env) -> None:
+    """Every rank runs on this host, so NCCL's bootstrap sockets need only loopback, not every interface; a user's own
+    NCCL_SOCKET_IFNAME wins."""
+    if sys.platform.startswith("linux"):
+        env.setdefault("NCCL_SOCKET_IFNAME", "lo")
+
+
 def _backend_dir() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -351,6 +358,8 @@ def launch(
     store, port = _loopback_store(world)
     ctx = DistContext(0, world, store)
     payload = _config_payload(cfg)
+    # Before the ranks' env is copied and before this process creates its communicator.
+    _pin_loopback(os.environ)
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([_backend_dir(), *filter(None, [env.get("PYTHONPATH")])])
     for rank in range(1, world):
