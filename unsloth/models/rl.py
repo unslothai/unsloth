@@ -3670,11 +3670,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += num_proc_check
 
+    # TRL >= 1.16 defaults pad_to_multiple_of to "auto" (None off Neuron after __post_init__), so it counts as unset.
     if "pad_to_multiple_of" in call_args:
         pad_to_multiple_of = (
             "if os.environ.get('UNSLOTH_ENABLE_FLEX_ATTENTION', '0') == '1':\n"
             "    from unsloth_zoo.flex_attention import HAS_FLEX_ATTENTION\n"
-            "    if HAS_FLEX_ATTENTION and pad_to_multiple_of is None:\n"
+            "    if HAS_FLEX_ATTENTION and (pad_to_multiple_of is None or pad_to_multiple_of == 'auto'):\n"
             "        from unsloth_zoo.flex_attention import FLEX_ATTENTION_BLOCK_SIZE\n"
             "        pad_to_multiple_of = FLEX_ATTENTION_BLOCK_SIZE\n"
             "\n"
