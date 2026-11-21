@@ -80,7 +80,7 @@ export const nl = {
     materialMenusDescription: "Ook dropdowns, menu's en kiezers gebruiken glas.",
     materialStrength: "Glassterkte",
     lens: "Glaslens",
-    lensDescription: "Buigt de afbeelding onder het invoerveld als echt glas.",
+    lensDescription: "Buigt de afbeelding onder elk glasoppervlak als echt glas.",
     lensOff: "Uit",
     lensMagnify: "Vergroten",
     lensShrink: "Verkleinen",

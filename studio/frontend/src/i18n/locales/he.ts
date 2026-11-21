@@ -80,7 +80,7 @@ export const he = {
     materialMenusDescription: "גם תפריטים נפתחים, תפריטים ובוררים משתמשים בזכוכית.",
     materialStrength: "עוצמת הזכוכית",
     lens: "עדשת זכוכית",
-    lensDescription: "מעקמת את התמונה מתחת לתיבת הכתיבה כמו זכוכית אמיתית.",
+    lensDescription: "מעקמת את התמונה מתחת לכל משטח זכוכית כמו זכוכית אמיתית.",
     lensOff: "כבוי",
     lensMagnify: "הגדלה",
     lensShrink: "הקטנה",

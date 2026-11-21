@@ -80,7 +80,7 @@ export const pl = {
     materialMenusDescription: "Listy rozwijane, menu i selektory też używają szkła.",
     materialStrength: "Siła szkła",
     lens: "Soczewka szklana",
-    lensDescription: "Zakrzywia obraz pod polem tekstowym jak prawdziwe szkło.",
+    lensDescription: "Zakrzywia obraz pod każdą szklaną powierzchnią jak prawdziwe szkło.",
     lensOff: "Wyłączone",
     lensMagnify: "Powiększ",
     lensShrink: "Pomniejsz",

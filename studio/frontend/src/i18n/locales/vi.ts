@@ -80,7 +80,7 @@ export const vi = {
     materialMenusDescription: "Danh sách thả xuống, menu và bộ chọn cũng dùng kính.",
     materialStrength: "Độ mạnh của kính",
     lens: "Thấu kính kính",
-    lensDescription: "Bẻ cong hình ảnh bên dưới khung soạn thảo như kính thật.",
+    lensDescription: "Bẻ cong hình ảnh bên dưới mọi bề mặt kính như kính thật.",
     lensOff: "Tắt",
     lensMagnify: "Phóng to",
     lensShrink: "Thu nhỏ",

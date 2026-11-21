@@ -80,7 +80,7 @@ export const cs = {
     materialMenusDescription: "Rozbalovací seznamy, nabídky a výběry také používají sklo.",
     materialStrength: "Síla skla",
     lens: "Skleněná čočka",
-    lensDescription: "Ohýbá obraz pod polem pro psaní jako skutečné sklo.",
+    lensDescription: "Ohýbá obraz pod každou skleněnou plochou jako skutečné sklo.",
     lensOff: "Vypnuto",
     lensMagnify: "Zvětšit",
     lensShrink: "Zmenšit",

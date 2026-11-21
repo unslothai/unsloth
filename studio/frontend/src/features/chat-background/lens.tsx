@@ -3,19 +3,44 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useAppliedMaterial, useMaterialStore } from "./material";
-import { LENS_SCALE, lensDrawn } from "./model";
+import { useAppliedMaterial, useGlassStrength, useMaterialStore } from "./material";
+import { GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR } from "./glass-motion";
+import { LENS_CLEAR_HOSTS, LENS_HOSTS, LENS_SCALE, lensDrawn } from "./model";
 
-const COMPOSER = ".unsloth-composer-surface";
+const HOST_FLAG = "data-glass-lens-host";
 
-/** A wallpaper copy, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit). */
-export function ComposerGlassLenses({
+// The style drawing a surface's glass: its own, or its ::before (the Desktop sidebar frame, layered panels).
+function glassLayer(el: HTMLElement): CSSStyleDeclaration | null {
+  for (const pseudo of [null, "::before"]) {
+    const style = getComputedStyle(el, pseudo);
+    const filter = style.backdropFilter || style.getPropertyValue("-webkit-backdrop-filter");
+    if (filter && filter !== "none") return style;
+  }
+  return null;
+}
+
+// Only surfaces drawing glass right now: Glass menus off, an opaque sheet or a split card has no backdrop filter.
+function drawsGlass(el: HTMLElement): boolean {
+  const { width, height } = el.getBoundingClientRect();
+  if (width < 8 || height < 8) return false;
+  return el.hasAttribute(GLASS_MOVING_ATTR) || glassLayer(el) !== null;
+}
+
+const PREVIEW_HOSTS = ".wallpaper-preview-composer";
+
+/** A wallpaper copy in every glass surface, since backdrop-filter cannot scale and SVG backdrop filters are Chromium only (not WebKit).
+ * `preview` keeps it to a settings preview's own sample composers, over that preview's wallpaper. */
+export function GlassLenses({
   wallpaper,
+  preview = false,
 }: {
   wallpaper: HTMLElement | null;
+  preview?: boolean;
 }) {
   const material = useAppliedMaterial();
   const lens = useMaterialStore((s) => s.lens);
+  const menus = useMaterialStore((s) => s.menus);
+  const clear = useGlassStrength() === 0;
   const [hosts, setHosts] = useState<HTMLElement[]>([]);
   const workspace = wallpaper?.parentElement ?? null;
   const on = Boolean(workspace) && lensDrawn(material, lens);
@@ -25,7 +50,10 @@ export function ComposerGlassLenses({
     const scan = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const found = [...workspace.querySelectorAll<HTMLElement>(COMPOSER)];
+        // Menus, popovers and sheets are portaled to <body>, outside the workspace.
+        const found = [
+          ...(preview ? workspace : document).querySelectorAll<HTMLElement>(preview ? PREVIEW_HOSTS : LENS_HOSTS),
+        ].filter((h) => drawsGlass(h) && (!clear || h.matches(LENS_CLEAR_HOSTS)));
         setHosts((prev) =>
           prev.length === found.length && prev.every((h, i) => h === found[i])
             ? prev
@@ -33,15 +61,25 @@ export function ComposerGlassLenses({
         );
       });
     };
+    // Menus and sheets portal to <body>, and app-level toasts mount anywhere under the root, not only in the workspace.
     const observer = new MutationObserver(scan);
-    observer.observe(workspace, { childList: true, subtree: true });
+    observer.observe(preview ? workspace : document.body, { childList: true, subtree: true });
+    // A host only moving (glass-motion) counts as glass; once the flag clears, one with no glass at rest drops out.
+    const motion = new MutationObserver(scan);
+    motion.observe(preview ? workspace : document.body, { attributes: true, subtree: true, attributeFilter: [GLASS_MOVING_ATTR] });
+    // A panel opening or a menu's open animation settling changes which hosts draw glass.
+    document.addEventListener("transitionend", scan, true);
+    document.addEventListener("animationend", scan, true);
     scan();
     return () => {
       observer.disconnect();
+      motion.disconnect();
+      document.removeEventListener("transitionend", scan, true);
+      document.removeEventListener("animationend", scan, true);
       cancelAnimationFrame(frame);
       setHosts([]);
     };
-  }, [workspace, on]);
+  }, [workspace, on, material, menus, preview, clear]);
   if (!wallpaper || !on) return null;
   return hosts.map((host, i) =>
     createPortal(
@@ -66,6 +104,7 @@ function Lens({
     const el = root.current;
     if (!el) return;
     const copies = [...el.querySelectorAll<HTMLElement>("[data-lens-copy]")];
+    const fillCopy = el.querySelector<HTMLElement>(".glass-lens-fill [data-lens-copy]");
     const wash = el.querySelector<HTMLElement>("[data-lens-wash]");
     const tint = el.querySelector<HTMLElement>("[data-lens-tint]");
     const workspace = wallpaper.parentElement;
@@ -74,7 +113,10 @@ function Lens({
       const w = wallpaper.getBoundingClientRect();
       const h = host.getBoundingClientRect();
       const opacity = getComputedStyle(wallpaper).opacity;
-      const fill = getComputedStyle(host);
+      const glass = glassLayer(host);
+      const fill = glass ?? getComputedStyle(host);
+      // The copy takes the surface's own blur: menus and dialogs blur more than the shared --glass-blur.
+      const blur = glass ? glass.backdropFilter || glass.getPropertyValue("-webkit-backdrop-filter") : "";
       const key = [
         w.left,
         w.top,
@@ -87,6 +129,7 @@ function Lens({
         opacity,
         fill.backgroundColor,
         fill.backgroundImage,
+        blur,
       ].join();
       if (key === last) return;
       last = key;
@@ -99,11 +142,13 @@ function Lens({
         copy.style.transformOrigin = `${h.left - w.left + h.width / 2}px ${h.top - w.top + h.height / 2}px`;
         copy.style.transform = `scale(${scale})`;
       }
+      // A moving host drops its backdrop filter (glass-motion.ts); the copy drops its blur with it instead of the CSS fallback.
+      if (fillCopy) fillCopy.style.filter = blur || "none";
       if (wash) {
         const fills: string[] = [];
         for (
           let node = host.parentElement;
-          node && node !== workspace;
+          node && node !== workspace && node !== document.body;
           node = node.parentElement
         ) {
           const color = getComputedStyle(node).backgroundColor;
@@ -129,9 +174,14 @@ function Lens({
       frame = requestAnimationFrame(copy);
     };
     copy();
+    // The lens paints at z-index -1, so the host becomes its stacking context (index.css).
+    host.setAttribute(HOST_FLAG, getComputedStyle(host).position === "static" ? "static" : "");
+    host.addEventListener("animationend", place);
     const resize = new ResizeObserver(place);
     resize.observe(host);
     resize.observe(wallpaper);
+    const motion = new MutationObserver(place);
+    motion.observe(host, { attributes: true, attributeFilter: [GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR] });
     const mutations = new MutationObserver(recopy);
     mutations.observe(wallpaper, {
       childList: true,
@@ -141,7 +191,10 @@ function Lens({
     const poll = window.setInterval(place, 300);
     window.addEventListener("resize", place);
     return () => {
+      host.removeAttribute(HOST_FLAG);
+      host.removeEventListener("animationend", place);
       resize.disconnect();
+      motion.disconnect();
       mutations.disconnect();
       window.clearInterval(poll);
       window.removeEventListener("resize", place);

@@ -80,7 +80,7 @@ export const fa = {
     materialMenusDescription: "منوهای کشویی، منوها و انتخابگرها هم از شیشه استفاده می‌کنند.",
     materialStrength: "شدت شیشه",
     lens: "عدسی شیشه",
-    lensDescription: "تصویر زیر کادر نوشتن را مانند شیشه واقعی خم می‌کند.",
+    lensDescription: "تصویر زیر هر سطح شیشه‌ای را مانند شیشه واقعی خم می‌کند.",
     lensOff: "خاموش",
     lensMagnify: "بزرگ‌نمایی",
     lensShrink: "کوچک‌نمایی",

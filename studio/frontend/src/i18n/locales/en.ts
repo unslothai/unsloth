@@ -77,7 +77,7 @@ export const en = {
     materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
     materialStrength: "Glass strength",
     lens: "Glass lens",
-    lensDescription: "Bends the image under the composer like real glass.",
+    lensDescription: "Bends the image under every glass surface like real glass.",
     lensOff: "Off",
     lensMagnify: "Magnify",
     lensShrink: "Shrink",

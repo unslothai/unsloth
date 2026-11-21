@@ -80,7 +80,7 @@ export const ar = {
     materialMenusDescription: "تستخدم القوائم المنسدلة والقوائم وأدوات الاختيار الزجاج أيضًا.",
     materialStrength: "قوة الزجاج",
     lens: "عدسة الزجاج",
-    lensDescription: "تحني الصورة تحت مربع الكتابة كالزجاج الحقيقي.",
+    lensDescription: "تحني الصورة تحت كل سطح زجاجي كالزجاج الحقيقي.",
     lensOff: "إيقاف",
     lensMagnify: "تكبير",
     lensShrink: "تصغير",
