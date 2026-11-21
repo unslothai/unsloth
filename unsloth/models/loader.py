@@ -1240,6 +1240,7 @@ _VLLM_ENGINE_KWARGS = (
     "max_num_batched_tokens",
     "return_args",
     "training",
+    "speculative_config",
 )
 
 
