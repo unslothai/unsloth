@@ -172,7 +172,12 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
 def _segments_of(batch, total):
     lengths = batch.get("packed_seq_lengths")
     if isinstance(lengths, torch.Tensor):
-        lengths = [int(x) for x in lengths.tolist()]
+        # The host tuple the packing collators attach (packing._carry_host_lengths): no device read.
+        host = getattr(lengths, "_unsloth_lengths_tuple", None)
+        if isinstance(host, tuple) and len(host) == lengths.numel():
+            lengths = list(host)
+        else:
+            lengths = [int(x) for x in lengths.tolist()]
         return lengths if sum(lengths) == total else None
     position_ids = batch.get("position_ids")
     if not isinstance(position_ids, torch.Tensor) or tuple(position_ids.shape) != (1, total):
@@ -223,6 +228,8 @@ def _split_padding_free(batch, budget):
         for key, value in batch.items():
             if key == "packed_seq_lengths":
                 chunk[key] = torch.tensor(group, dtype = value.dtype, device = value.device)
+                # Each chunk's forward reads its lengths from this tuple instead of the device.
+                chunk[key]._unsloth_lengths_tuple = tuple(group)
             elif isinstance(value, torch.Tensor):
                 chunk[key] = value[:, start:stop]
             else:
