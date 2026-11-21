@@ -4560,10 +4560,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 # Env gates hoisted to module level (mirrored via RL_PRE_ITEMS). vLLM still runs the old-policy logprob forward, so PG helps.
                 _pg_engage = (
                     UNSLOTH_GRPO_PREFIX_GROUPER_ON
-                    and (UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(self, "use_vllm", False))
+                    and (
+                        UNSLOTH_GRPO_PREFIX_GROUPER_VLLM_ON or not getattr(self, "use_vllm", False)
+                    )
                     # Its extract_logps always projects with lm_head.weight.
                     and not _unsloth_head_hooked
-                    and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
+                    and not getattr(
+                        unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False
+                    )
                 )
                 if _pg_engage:
                     try:
@@ -4667,10 +4671,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pg_T = int(_pg_layout.flat_ids.shape[1])
                             _pg_maxseg = int(_pg_layout.position_ids.max()) + 1
                             _pg_env = (
-                                _pg_verified.get(_pg_sig) if isinstance(_pg_verified, dict) else None
+                                _pg_verified.get(_pg_sig)
+                                if isinstance(_pg_verified, dict)
+                                else None
                             )
                             if (not _pg_verify_on()) or (
-                                _pg_env is not None and _pg_T <= _pg_env[0] and _pg_maxseg <= _pg_env[1]
+                                _pg_env is not None
+                                and _pg_T <= _pg_env[0]
+                                and _pg_maxseg <= _pg_env[1]
                             ):
                                 # Trusted shape: run PG now and skip the full-row forward below.
                                 _pg_result = _pg_run_forward()
@@ -4729,7 +4737,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_sw = getattr(
                             getattr(unwrapped_model, "config", None), "sliding_window", None
                         )
-                        _pk_sw_ok = not (isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw)
+                        _pk_sw_ok = not (
+                            isinstance(_pk_sw, int) and _pk_sw > 0 and _pk_maxseg > _pk_sw
+                        )
                         # Skip the packed forward entirely at known-unsafe lengths, avoiding a wasted pass or OOM.
                         _pk_unsafe = getattr(
                             unwrapped_model, "_unsloth_seq_packing_nograd_unsafe_T", None
@@ -4748,7 +4758,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pk_flat = input_ids[_pk_keep].unsqueeze(0)
                             # Per-row completion mask (same as the loss); prompt-only rows count as inactive.
                             _pk_cmask = create_completion_attention_mask(
-                                input_ids[:, -_pk_W:], left_pad_tokens_per_prompt, max_left_pad, _pk_pad
+                                input_ids[:, -_pk_W:],
+                                left_pad_tokens_per_prompt,
+                                max_left_pad,
+                                _pk_pad,
                             )
                             _pk_active = int(_pk_cmask.any(dim = 1).sum())
                         if _pk_fits and (_pk_ok is True or _pk_active >= 2):
@@ -4759,8 +4772,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             )  # [T, 2] = (row, col), row-major
                             _pk_within = _pk_nz_idx[1:, 0] == _pk_nz_idx[:-1, 0]  # [T-1]
                             # Per-row completion start after left-packing, matching create_completion_attention_mask.
-                            _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
-                            _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
+                            _pk_cstart = (
+                                _pk_L - logits_to_keep
+                            ) - left_pad_tokens_per_prompt  # [rows]
+                            _pk_ctgt = (
+                                _pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]
+                            ) & _pk_within
                             _pk_in_packed = True
                             with torch.no_grad():
                                 with torch.amp.autocast(
@@ -4817,10 +4834,14 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pk_in_packed = False
                             # Re-verify when T or the longest segment grows past the verified envelope; a LongRoPE cache switch can change the result.
                             _pk_vT = int(
-                                getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0)
+                                getattr(
+                                    unwrapped_model, "_unsloth_seq_packing_nograd_verified_T", 0
+                                )
                             )
                             _pk_vS = int(
-                                getattr(unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0)
+                                getattr(
+                                    unwrapped_model, "_unsloth_seq_packing_nograd_verified_seg", 0
+                                )
                             )
                             # Debug: hand-edit this condition to force re-verify every step.
                             if _pk_ok is True and _pk_T <= _pk_vT and _pk_maxseg <= _pk_vS:
@@ -4853,16 +4874,18 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             if _unsloth_grpo_returns_hidden_states(
                                                 unwrapped_model, _pk_rout, lm_head
                                             ):
-                                                _pk_rsel = chunked_hidden_states_selective_log_softmax(
-                                                    _pk_rout,
-                                                    lm_head,
-                                                    _pk_real[:, 1:],
-                                                    1,
-                                                    logit_scale_multiply,
-                                                    logit_scale_divide,
-                                                    logit_softcapping,
-                                                    temperature,
-                                                )[0]
+                                                _pk_rsel = (
+                                                    chunked_hidden_states_selective_log_softmax(
+                                                        _pk_rout,
+                                                        lm_head,
+                                                        _pk_real[:, 1:],
+                                                        1,
+                                                        logit_scale_multiply,
+                                                        logit_scale_divide,
+                                                        logit_softcapping,
+                                                        temperature,
+                                                    )[0]
+                                                )
                                             else:
                                                 # Model returned logits directly: scaling/softcapping already applied by the model forward.
                                                 _pk_rsel = chunked_selective_log_softmax(
@@ -4871,9 +4894,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                                     temperature,
                                                     1,
                                                 )[0]
-                                            _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(1)[
-                                                1:
-                                            ] - (_pk_L - _pk_W)
+                                            _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(
+                                                1
+                                            )[1:] - (_pk_L - _pk_W)
                                             _pk_rkeep = _pk_rcols >= 0
                                             _pk_ref[_pk_i, _pk_rcols[_pk_rkeep]] = _pk_rsel[
                                                 _pk_rkeep
@@ -4895,11 +4918,11 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                     # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
                                     if _pk_active >= 2:
-                                        unwrapped_model._unsloth_seq_packing_nograd_verified_T = max(
-                                            _pk_vT, _pk_T
+                                        unwrapped_model._unsloth_seq_packing_nograd_verified_T = (
+                                            max(_pk_vT, _pk_T)
                                         )
-                                        unwrapped_model._unsloth_seq_packing_nograd_verified_seg = max(
-                                            _pk_vS, _pk_maxseg
+                                        unwrapped_model._unsloth_seq_packing_nograd_verified_seg = (
+                                            max(_pk_vS, _pk_maxseg)
                                         )
                                     _pk_ok = True
                                     _pk_use = True
@@ -4907,7 +4930,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     _pk_use = False
                                     # A verified layout survives one narrow bf16 outlier (this batch falls back); broad or repeated mismatches keep the old rule.
                                     _pk_vd = _unsloth_seq_packing_verify_verdict(
-                                        unwrapped_model, "nograd", _pk_diff, _pk_result, _pk_ref, _pk_cm
+                                        unwrapped_model,
+                                        "nograd",
+                                        _pk_diff,
+                                        _pk_result,
+                                        _pk_ref,
+                                        _pk_cm,
                                     )
                                     if _pk_vd == "skip":
                                         pass
@@ -5037,7 +5065,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     _pk_hidden = _pk_sel = _pk_result = _pk_ref = None
                     # Index buffers of a declined packed batch would otherwise live through the padded loop.
                     _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
-                    _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
+                    _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = (
+                        None
+                    )
 
                 with torch.no_grad():
                     for (

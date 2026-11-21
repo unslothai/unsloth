@@ -51,7 +51,12 @@ def _eager_hidden_logprobs(
     return torch.concat(parts).reshape(hidden_states.shape[0], hidden_states.shape[1])
 
 
-def _eager_raw_logprobs(logits, index, temperature = 1.0, chunks = 4):
+def _eager_raw_logprobs(
+    logits,
+    index,
+    temperature = 1.0,
+    chunks = 4,
+):
     flat_logits = logits.reshape(-1, logits.shape[-1]).to(torch.float32)
     flat_index = index.reshape(-1)
     parts = []
@@ -96,7 +101,12 @@ class _ScoringModel(torch.nn.Module):
     def get_output_embeddings(self):
         return self.head
 
-    def forward(self, input_ids = None, attention_mask = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        **kwargs,
+    ):
         self.seen_env = os.environ.get(ENV)
         if self.error is not None:
             raise self.error
@@ -137,9 +147,7 @@ def _trainer(model):
         _autocast_enabled = False,
         _autocast_dtype = torch.float32,
         temperature = 1.0,
-        accelerator = SimpleNamespace(
-            unwrap_model = lambda m, keep_fp32_wrapper = False: m
-        ),
+        accelerator = SimpleNamespace(unwrap_model = lambda m, keep_fp32_wrapper = False: m),
         args = SimpleNamespace(
             unsloth_grpo_mini_batch = 1,
             unsloth_logit_chunk_multiplier = 1,
@@ -191,7 +199,12 @@ def _batch():
     return input_ids, attention_mask
 
 
-def _run(function, model, trainer, globals_overrides = None):
+def _run(
+    function,
+    model,
+    trainer,
+    globals_overrides = None,
+):
     input_ids, attention_mask = _batch()
     globals_ = _globals(model, trainer)
     if globals_overrides:
@@ -288,9 +301,7 @@ def _env_assigns(function_source, name):
     """Every ``os.environ[ENV] = ...`` write inside a def, mapped to whether a try/finally guards it."""
     tree = ast.parse(textwrap.dedent(function_source))
     (function,) = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == name
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == name
     ]
     guarded = []
     for node in ast.walk(function):
