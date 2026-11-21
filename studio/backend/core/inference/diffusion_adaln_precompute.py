@@ -333,8 +333,7 @@ def _host_copy(mod: Any) -> Any:
         for n, t in mod._parameters.items()
     }
     clone._buffers = {
-        n: (None if t is None else t.detach().to("cpu", copy = True))
-        for n, t in mod._buffers.items()
+        n: (None if t is None else t.detach().to("cpu", copy = True)) for n, t in mod._buffers.items()
     }
     clone._modules = {n: (None if c is None else _host_copy(c)) for n, c in mod._modules.items()}
     return clone

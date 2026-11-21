@@ -838,7 +838,10 @@ def _gguf_q8(model, match):
                 continue
             q = gguf.quantize(child.weight.detach().float().numpy(), gguf.GGMLQuantizationType.Q8_0)
             lin = utils.GGUFLinear(
-                child.in_features, child.out_features, bias = child.bias is not None, compute_dtype = dtype
+                child.in_features,
+                child.out_features,
+                bias = child.bias is not None,
+                compute_dtype = dtype,
             )
             lin.weight = utils.GGUFParameter(
                 torch.from_numpy(q), quant_type = gguf.GGMLQuantizationType.Q8_0
@@ -918,7 +921,12 @@ def test_gguf_qwen_edit_streamed_render_matches_stock(fallback):
         cuda = []
         for kw in calls:
             kw = dict(kw)
-            for k in ("hidden_states", "encoder_hidden_states", "encoder_hidden_states_mask", "timestep"):
+            for k in (
+                "hidden_states",
+                "encoder_hidden_states",
+                "encoder_hidden_states_mask",
+                "timestep",
+            ):
                 kw[k] = kw[k].to("cuda")
             cuda.append(kw)
         return model, cuda
