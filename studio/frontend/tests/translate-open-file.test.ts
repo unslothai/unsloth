@@ -61,6 +61,11 @@ test("UTF-8 text files load exactly as saved", async () => {
   }
 });
 
+test("a Latin-1 file ending in an accented letter goes to the server", async () => {
+  const file = new File([Buffer.from("café", "latin1")], "menu.txt");
+  assert.equal(await readUtf8Prefix(file), null);
+});
+
 test("a UTF-8 character split by the read limit stays on the UTF-8 path", async () => {
   const text = `${"a".repeat(READ_BYTES - 1)}é`;
   const read = await readUtf8Prefix(new File([text], "long.txt"));

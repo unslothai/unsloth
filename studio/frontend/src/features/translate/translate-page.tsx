@@ -200,7 +200,7 @@ async function readUtf8Prefix(file: File): Promise<string | null> {
   const bytes = await file.slice(0, TEXT_READ_BYTES).arrayBuffer();
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
-      stream: true,
+      stream: file.size > TEXT_READ_BYTES,
     });
     return text.includes("\u0000") ? null : text;
   } catch {
