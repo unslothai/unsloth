@@ -145,6 +145,23 @@ def test_definition_lists_and_figures_do_not_merge_words(ebooks):
 
 
 @pytest.mark.parametrize(
+    "marker",
+    [
+        '<span epub:type="pagebreak" id="p12">12</span>',
+        '<span role="doc-pagebreak" id="p12">12</span>',
+        '<a epub:type="pagebreak" role="doc-pagebreak" id="p12" title="12"/>',
+    ],
+)
+def test_print_page_numbers_are_not_inlined_into_the_text(ebooks, marker):
+    html = (
+        '<html xmlns:epub="http://www.idpf.org/2007/ops"><body><p>The quick '
+        + marker
+        + 'brown fox.</p><div epub:type="pagebreak">13</div><p>Next.</p></body></html>'
+    )
+    assert ebooks._html_text(html.encode()) == "The quick brown fox.\n\nNext."
+
+
+@pytest.mark.parametrize(
     "ruby",
     [
         "<ruby>東<rt>とう</rt>京<rt>きょう</rt></ruby>",
