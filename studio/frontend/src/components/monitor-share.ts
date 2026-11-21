@@ -110,8 +110,10 @@ export function memorySegments(
   breakdown: ModelBreakdown | null,
   /** False on VRAM: the rest may be Unsloth's own KV cache or a training run, not other apps. */
   restIsOtherApps = true,
+  /** Detailed VRAM: show the engine's rest as "Unsloth app" even with no model rows (training only). */
+  appOnly = false,
 ): MemorySegment[] {
-  const parts = breakdown && breakdown.models.length > 0
+  const parts = breakdown && (breakdown.models.length > 0 || (appOnly && breakdown.app !== null))
     ? [
         ...breakdown.models.map((model) => ({
           id: `model:${model.id}`,
@@ -213,9 +215,10 @@ export function poolSplit(input: PoolSplitInput): PoolSplit {
       : showBreakdown
         ? { models: vramModels, app: null }
         : null;
+  const vramAppOnly = measuredGb !== null && input.vramDetail === true;
   return {
     ram: ramShare && memorySegments(ramShare, ramBreakdown),
-    vram: vramShare && memorySegments(vramShare, vramBreakdown, measuredGb !== null),
+    vram: vramShare && memorySegments(vramShare, vramBreakdown, measuredGb !== null, vramAppOnly),
     noModels: showBreakdown && input.entries.length === 0,
   };
 }

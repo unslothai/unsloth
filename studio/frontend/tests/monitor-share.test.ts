@@ -107,7 +107,7 @@ test("on VRAM the rest is unattributed: Unsloth's KV cache and training land the
     ["unsloth", "unattributed", "free"],
   );
   // Unless the backend measured Unsloth's own VRAM per process (covered by the poolSplit tests below).
-  assert.match(readSrc("components/monitor-share.ts"), /memorySegments\(vramShare, vramBreakdown, measuredGb !== null\)/);
+  assert.match(readSrc("components/monitor-share.ts"), /memorySegments\(vramShare, vramBreakdown, measuredGb !== null, vramAppOnly\)/);
 });
 
 test("the VRAM split counts only models known to sit on the reported GPUs", () => {
@@ -319,6 +319,10 @@ test("training with no loaded model counts as Unsloth once VRAM is measured per 
   assert.deepEqual(
     poolSplit({ ...base, vramUnslothGb: 9 }).vram?.map((s) => [s.kind, s.gb]),
     [["unsloth", 9], ["other", 1], ["free", 14]],
+  );
+  assert.deepEqual(
+    poolSplit({ ...base, vramUnslothGb: 9, vramDetail: true }).vram?.map((s) => [s.kind, s.gb]),
+    [["app", 9], ["other", 1], ["free", 14]],
   );
 });
 
