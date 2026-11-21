@@ -47,3 +47,16 @@ def linux_descendant_pids(pid: int) -> Optional[list[int]]:
         return found
     except Exception:  # noqa: BLE001 -- psutil answers instead
         return None
+
+
+def own_process_tree_pids() -> frozenset[int]:
+    """This process and every descendant (llama-server, training, media and audio workers)."""
+    pid = os.getpid()
+    descendants = linux_descendant_pids(pid)
+    if descendants is None:
+        try:
+            import psutil
+            descendants = [child.pid for child in psutil.Process(pid).children(recursive = True)]
+        except Exception:  # noqa: BLE001 -- the backend alone is still a real answer
+            descendants = []
+    return frozenset((pid, *descendants))

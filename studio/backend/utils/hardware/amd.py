@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from pathlib import PurePath
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
 from loggers import get_logger
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -494,6 +494,52 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     return metrics
 
 
+def _process_entries(gpu_data: dict) -> Optional[list[dict]]:
+    """One GPU's ``amd-smi process`` rows, with or without the ``process_info`` wrapper older
+    releases use. None when the list has an unexpected shape."""
+    listed = gpu_data.get("process_list")
+    if listed is None:
+        return []
+    if not isinstance(listed, list):
+        return None
+    rows = []
+    for item in listed:
+        info = item.get("process_info", item) if isinstance(item, dict) else None
+        # "No running processes detected" is a string where a row would be.
+        if isinstance(info, dict):
+            rows.append(info)
+    return rows
+
+
+def get_process_vram_mib_by_gpu(pids: Collection[int]) -> Optional[dict[int, float]]:
+    """{amd-smi gpu id: VRAM MiB held by ``pids``} for every GPU amd-smi lists. None when none of
+    them is listed or one's VRAM is unreadable, so the caller keeps its model-sum fallback."""
+    data = _run_amd_smi("process", count_failures = False)
+    if data is None:
+        return None
+    totals: dict[int, float] = {}
+    matched = False
+    for idx, gpu_data in _gpu_entries(data):
+        rows = _process_entries(gpu_data) if isinstance(gpu_data, dict) else None
+        if rows is None:
+            return None
+        totals.setdefault(idx, 0.0)
+        for row in rows:
+            try:
+                pid = int(row.get("pid"))
+            except (TypeError, ValueError):
+                continue
+            if pid not in pids:
+                continue
+            usage = row.get("memory_usage")
+            vram = _parse_memory_mb(usage.get("vram_mem")) if isinstance(usage, dict) else None
+            if vram is None:
+                return None
+            totals[idx] += vram
+            matched = True
+    return totals if matched else None
+
+
 def get_visible_gpu_utilization(
     parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
 ) -> dict[str, Any]:
@@ -520,6 +566,14 @@ def get_visible_gpu_utilization(
     visible_set = set(parent_visible_ids)
     ordinal_map = {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
+    from utils.hardware import gpu_query
+    from utils.process_tree import own_process_tree_pids
+
+    unsloth_mib = (
+        get_process_vram_mib_by_gpu(own_process_tree_pids())
+        if gpu_query.process_vram_wanted()
+        else None
+    )
     devices = []
     for idx, gpu_data in _gpu_entries(data):
         if idx not in visible_set:
@@ -531,6 +585,8 @@ def get_visible_gpu_utilization(
         metrics["index"] = idx
         metrics["index_kind"] = "physical"
         metrics["visible_ordinal"] = ordinal_map.get(idx, len(devices))
+        if unsloth_mib is not None and idx in unsloth_mib:
+            metrics["unsloth_used_gb"] = round(unsloth_mib[idx] / 1024, 2)
         devices.append(metrics)
 
     return {

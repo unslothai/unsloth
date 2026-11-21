@@ -106,7 +106,8 @@ test("on VRAM the rest is unattributed: Unsloth's KV cache and training land the
     memorySegments(share, null, false).map((segment) => segment.kind),
     ["unsloth", "unattributed", "free"],
   );
-  assert.match(readSrc("components/monitor-share.ts"), /memorySegments\(vramShare, showBreakdown \? \{ models: vramModels, app: null \} : null, false\)/);
+  // Unless the backend measured Unsloth's own VRAM per process (covered by the poolSplit tests below).
+  assert.match(readSrc("components/monitor-share.ts"), /memorySegments\(vramShare, vramBreakdown, measuredGb !== null, vramAppOnly\)/);
 });
 
 test("the VRAM split counts only models known to sit on the reported GPUs", () => {
@@ -273,4 +274,71 @@ test("a resident NPU model is named on the RAM bar, where its weights live", () 
     );
     assert.equal(split.vram?.some((s) => s.kind === "model") ?? false, false);
   }
+});
+
+test("a measured per-process figure is the VRAM Unsloth slice, with the models broken out of it", () => {
+  // The 3x RTX 3060 report: ~21 GiB was Unsloth's, but only the 7.5 GiB GGUF row had a size.
+  const entries = [
+    { id: "g", name: "org/G-GGUF", source: "chat", residentMib: 7.5 * 1024, residentOnGpu: true },
+    { id: "hf", name: "unsloth/Qwen3-0.6B", source: "chat" },
+  ];
+  const base = {
+    entries, showShare: true, showBreakdown: true, modelsInVram: true, inferenceGpuElsewhere: false,
+    processGb: 3, ramUsedGb: 20, ramTotalGb: 32, vramUsedGb: 22, vramTotalGb: 36,
+  };
+  // Without it, the unsized row still hides the split (today's behaviour).
+  assert.equal(poolSplit(base).vram, null);
+  assert.equal(poolSplit({ ...base, vramUnslothGb: null }).vram, null);
+  const detailed = poolSplit({ ...base, vramUnslothGb: 21, vramDetail: true });
+  assert.deepEqual(detailed.vram?.map((s) => [s.kind, s.name ?? null, s.gb]), [
+    ["model", "G-GGUF", 7.5], ["app", null, 13.5], ["other", null, 1], ["free", null, 14],
+  ]);
+  // Simple (the default): one Unsloth slice, whatever the model breakdown toggle says.
+  for (const showBreakdown of [true, false]) {
+    assert.deepEqual(
+      poolSplit({ ...base, showBreakdown, vramUnslothGb: 21 }).vram?.map((s) => [s.kind, s.gb]),
+      [["unsloth", 21], ["other", 1], ["free", 14]],
+    );
+  }
+  // Detail alone still needs the share or breakdown toggle to draw anything.
+  assert.equal(
+    poolSplit({ ...base, showShare: false, showBreakdown: false, vramUnslothGb: 21, vramDetail: true }).vram,
+    null,
+  );
+});
+
+test("training with no loaded model counts as Unsloth once VRAM is measured per process", () => {
+  const base = {
+    entries: [], showShare: true, showBreakdown: true, modelsInVram: true, inferenceGpuElsewhere: false,
+    processGb: 3, ramUsedGb: 20, ramTotalGb: 32, vramUsedGb: 10, vramTotalGb: 24,
+  };
+  assert.deepEqual(
+    poolSplit(base).vram?.map((s) => [s.kind, s.gb]),
+    [["unsloth", 0], ["unattributed", 10], ["free", 14]],
+  );
+  assert.deepEqual(
+    poolSplit({ ...base, vramUnslothGb: 9 }).vram?.map((s) => [s.kind, s.gb]),
+    [["unsloth", 9], ["other", 1], ["free", 14]],
+  );
+  assert.deepEqual(
+    poolSplit({ ...base, vramUnslothGb: 9, vramDetail: true }).vram?.map((s) => [s.kind, s.gb]),
+    [["app", 9], ["other", 1], ["free", 14]],
+  );
+});
+
+test("sized models stay the floor when the per-process figure misses them (Vulkan llama-server)", () => {
+  const split = poolSplit({
+    entries: [{ id: "g", name: "org/G-GGUF", source: "chat", residentMib: 6 * 1024, residentOnGpu: true }],
+    showShare: true, showBreakdown: true, modelsInVram: true, inferenceGpuElsewhere: false,
+    processGb: 3, ramUsedGb: 20, ramTotalGb: 32, vramUsedGb: 10, vramTotalGb: 24, vramUnslothGb: 1,
+    vramDetail: true,
+  });
+  assert.deepEqual(split.vram?.map((s) => [s.kind, s.gb]), [["model", 6], ["other", 4], ["free", 14]]);
+});
+
+test("both monitors pass the per-process VRAM figure to poolSplit", () => {
+  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
+    assert.match(readSrc(file), /vramUnslothGb: vram\.unslothGb,\s*vramDetail: showVramDetail/, file);
+  }
+  assert.match(readSrc("features/settings/tabs/resources-tab.tsx"), /checked=\{showVramDetail\}/);
 });

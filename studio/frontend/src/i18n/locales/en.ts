@@ -2840,6 +2840,8 @@ export const en = {
         unslothShareDescription: "Split memory into what Unsloth uses, what other apps use, and what is free.",
         modelBreakdown: "Break down by model",
         modelBreakdownDescription: "Split Unsloth's part of the memory bar into each loaded model and the rest of the app.",
+        vramDetail: "Detailed VRAM breakdown",
+        vramDetailDescription: "Where the GPU driver reports memory per process, split Unsloth's VRAM into each loaded model and the rest: training, KV cache and the GPU runtime. Off shows it as one Unsloth slice.",
       },
       gpu: {
         title: "GPU devices",

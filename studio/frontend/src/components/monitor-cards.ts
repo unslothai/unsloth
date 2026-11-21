@@ -33,6 +33,8 @@ export interface VramCards {
   totalGb: number;
   /** null = unknown: one card without a reading must not read as 0. */
   usedGb: number | null;
+  /** VRAM Unsloth's processes hold across the cards; null unless every card reports it. */
+  unslothGb: number | null;
   rows: CardUsage[];
   showTotal: boolean;
 }
@@ -70,7 +72,10 @@ export function vramCards(
       : [];
   const showTotal =
     rows.length === 0 || (usedGb !== null && rows.some((row) => row.usedGb === null));
-  return { cards, totalGb: vramTotalGb(cards), usedGb, rows, showTotal };
+  const unslothGb = cards.every((card) => Number.isFinite(card.unsloth_used_gb))
+    ? cards.reduce((sum, card) => sum + (card.unsloth_used_gb as number), 0)
+    : null;
+  return { cards, totalGb: vramTotalGb(cards), usedGb, unslothGb, rows, showTotal };
 }
 
 export function holdsModelsInVram(cards: readonly GpuDevice[]): boolean {

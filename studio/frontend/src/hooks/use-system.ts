@@ -35,6 +35,8 @@ export interface GpuDevice {
   temperature_c?: number | null;
   power_draw_w?: number | null;
   power_limit_w?: number | null;
+  /** VRAM held by Unsloth's own processes; absent where the driver has no per-process sizes. */
+  unsloth_used_gb?: number | null;
 }
 
 export interface SystemGpuInfo {

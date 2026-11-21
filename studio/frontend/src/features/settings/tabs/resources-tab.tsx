@@ -327,6 +327,8 @@ export function ResourcesTab() {
     setShowUnslothShare,
     showModelBreakdown,
     setShowModelBreakdown,
+    showVramDetail,
+    setShowVramDetail,
   } = useMonitorOverlayStore();
   const wantsModels = showUnslothShare || showModelBreakdown;
   const [npuStatus] = useNpuStatus();
@@ -692,6 +694,8 @@ export function ResourcesTab() {
     ramTotalGb: metrics.ramTotal,
     vramUsedGb: vram.usedGb,
     vramTotalGb: vram.totalGb,
+    vramUnslothGb: vram.unslothGb,
+    vramDetail: showVramDetail,
   });
   const ramSegments = split.ram;
   const vramSegments = split.vram;
@@ -956,6 +960,16 @@ export function ResourcesTab() {
             aria-label={t("settings.resources.liveMonitor.modelBreakdown")}
             checked={showModelBreakdown}
             onCheckedChange={setShowModelBreakdown}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.vramDetail")}
+          description={t("settings.resources.liveMonitor.vramDetailDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.vramDetail")}
+            checked={showVramDetail}
+            onCheckedChange={setShowVramDetail}
           />
         </SettingsRow>
       </SettingsSection>
