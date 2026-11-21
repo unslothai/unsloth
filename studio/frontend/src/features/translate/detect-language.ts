@@ -15,6 +15,7 @@ const SINGLE_SCRIPT: readonly [RegExp, string][] = [
   [/\p{Script=Tamil}/gu, "ta"],
   [/\p{Script=Telugu}/gu, "te"],
   [/\p{Script=Gujarati}/gu, "gu"],
+  [/\p{Script=Ethiopic}/gu, "am"],
 ];
 
 const count = (text: string, pattern: RegExp) =>
@@ -173,12 +174,54 @@ const LATIN: Record<string, [ReadonlySet<string>, string]> = {
     ),
     "",
   ],
+  sw: [
+    words(
+      "kwa katika kuwa hii hiyo huyo kama lakini pia sana kutoka kwenye hata kila wake wao wetu yako yangu mimi wewe yeye sisi ninyi wapi lini nini habari asante karibu nataka kununua kituo treni tiketi",
+    ),
+    "",
+  ],
+  ha: [
+    words(
+      "domin kuma amma cikin daga tare wannan wancan yanzu sosai lokaci mutane gida wajen tashar jirgin kasa tikiti godiya sannu barka lafiya nawa yaya zuwa bayan kafin saboda",
+    ),
+    "ɓɗƙ",
+  ],
+  yo: [
+    words(
+      "ninu lati pẹlu ṣugbọn nitori gbogbo ọjọ ọkọ ibudo tikẹti fẹ nibo bawo daadaa ile awọn rẹ wọn yii naa dupẹ pupọ",
+    ),
+    "ẹọṣ",
+  ],
+  ig: [
+    words(
+      "nke maka site nwere chọrọ ịzụta tiketi ọdụ ụgbọ oloko ebee dị anyị unu nkeji daalụ kedu ọma ukwuu",
+    ),
+    "ịụṅ",
+  ],
+  zu: [
+    words(
+      "ukuthi lapho khona kodwa futhi ngoba phezu phansi phakathi kwaso lesi leyo mina wena yena thina nina bona ngifuna ukuthenga ithikithi isiteshi kuphi sawubona ngiyabonga kakhulu kuhle",
+    ),
+    "",
+  ],
+  af: [
+    words(
+      "ek jy ons hulle julle vir baie hierdie daardie stasie treinstasie kaartjie naaste dankie goeiedag asseblief hoekom watter graag koop",
+    ),
+    "",
+  ],
+  so: [
+    words(
+      "waxaan rabaa inaan iibsado tigidh saldhigga tareenka ugu dhow xaggee ayuu yaalaa mahadsanid aad iyo wanaagsan sidee tahay maanta halkan kaas",
+    ),
+    "",
+  ],
 };
 
 const MALAY = new Set(["id", "ms"]);
 
 function latin(text: string): string | null {
-  if (count(text, /[ơưđăạ-ỹ]/gu) >= 2) return "vi";
+  if (count(text, /(?![ẹịọụ])[ơưđăạ-ỹ]/gu) >= 2) return "vi";
   // Elisions split too: French "l'homme" counts "l".
   const tokens = tokensOf(text);
   return clearWinner(
