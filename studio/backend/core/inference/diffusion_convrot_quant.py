@@ -216,10 +216,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             cube = libdevice.mul_rn(libdevice.mul_rn(y, y), y)
             inner = libdevice.mul_rn(0.7978845608028654, libdevice.fma_rn(0.044715, cube, y))
             t = libdevice.add_rn(1.0, libdevice.tanh(inner))
-            out = libdevice.mul_rn(libdevice.mul_rn(0.5, y), t)
-            # the libdevice calls flush subnormals (FTZ builds). Below 2^-30, ATen's x^3 underflows, tanh(u) = u and
-            # 1 + u = 1, so its result is exactly 0.5 * y, subnormal or not (a plain multiply keeps those)
-            return tl.where(tl.abs(y) < 9.313225746154785e-10, y * 0.5, out).to(tl.bfloat16)
+            # plain multiplies (fusion is off at launch, and a mul * mul has no FMA to form): libdevice's mul_rn
+            # flushes subnormals, ATen keeps 0.5 * y there (the flushed fma above only makes t exactly 1, as ATen's)
+            return ((0.5 * y) * t).to(tl.bfloat16)
 
     @triton.jit
     def gelu_bf16(x_ptr, o_ptr, N, BLOCK: tl.constexpr):
