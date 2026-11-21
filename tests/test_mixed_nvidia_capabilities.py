@@ -153,7 +153,8 @@ def test_a_distributed_launch_keeps_the_weakest_card_for_bf16(monkeypatch, chain
 
 @pytest.mark.parametrize("current", [0, 1])
 def test_a_distributed_launch_keeps_the_public_bf16_probe_on_the_weakest_card(monkeypatch, current):
-    # save.py reads torch.cuda.is_bf16_supported() for merged 16-bit saves: every rank must agree.
+    # save.py picks the merged 16-bit dtype through is_bfloat16_supported(), which this same
+    # weakest-card answer drives: every rank must agree.
     monkeypatch.setenv("WORLD_SIZE", "2")
     fake = _fake_torch([SM90, SM75])
     fake.cuda.set_device(current)
