@@ -229,3 +229,29 @@ def test_bucket_lengths():
         512,
     ]
     assert trim.bucket_length(30, 40) == 40
+
+
+@pytest.mark.parametrize("cond_valid, neg_valid", [(30, 1), (1, 30)])
+def test_a_cfg_pair_of_two_buckets_keeps_one_length(dit, cond_valid, neg_valid):
+    # The pipeline passes one position_ids to both branches: they keep the longer branch's rows, so the CFG router
+    # can stack them (one doubled call), and each stays exact.
+    cond, neg = _inputs((cond_valid,)), _inputs((neg_valid,))
+    neg["position_ids"] = cond["position_ids"]
+    trim.install_for_pipe(_Pipe(dit))
+    got, handle = _seen(dit)
+    shapes = []
+    outs = []
+    try:
+        with torch.no_grad():
+            for _ in range(3):
+                for kw in (cond, neg):
+                    outs.append(dit(**kw)[0])
+                    shapes.append(tuple(got["encoder_hidden_states"].shape[:2]))
+    finally:
+        handle.remove()
+    assert shapes[-1] == shapes[-2]  # steady state: one length for the pair
+    trim.uninstall(dit)
+    with torch.no_grad():
+        ref = (dit(**cond)[0], dit(**neg)[0])
+    torch.testing.assert_close(outs[-2], ref[0], rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(outs[-1], ref[1], rtol = 1e-5, atol = 1e-5)

@@ -69,14 +69,19 @@ def _store(memo: list, srcs: tuple, value: Any) -> Any:
     return value
 
 
-def _columns(mask: Any, text_len: int) -> Optional[tuple]:
-    """(column index, every kept column valid for every row) or None when nothing would be dropped. One host read."""
+def _columns(
+    mask: Any,
+    text_len: int,
+    floor: int = 0,
+) -> Optional[tuple]:
+    """(column index, every kept column valid for every row) or None when nothing would be dropped. One host read.
+    ``floor``: keep at least this many rows (the longer branch of a CFG pair, so both stack)."""
     import torch
 
     mb = mask.bool()
     keep = mb.any(dim = 0)
     valid = int(keep.sum().item())
-    rows = bucket_length(valid, text_len)
+    rows = max(bucket_length(valid, text_len), int(floor))
     if valid == 0 or rows >= text_len:
         return None
     index = keep.nonzero().squeeze(1)
@@ -90,31 +95,38 @@ def _columns(mask: Any, text_len: int) -> Optional[tuple]:
 def _trim(
     module: Any, states: Any, mask: Any, position_ids: Any, image_len: int
 ) -> Optional[tuple]:
-    """(states, mask or None, position_ids) on the kept rows, or None to run the call as given."""
+    """(states, mask or None, position_ids) on the kept rows, or None to run the call as given.
+
+    Calls sharing one ``position_ids`` tensor (the CFG branches of a render) keep the same row count, the longest any of
+    them needs, so the CFG router can still stack them: a longer branch seen later re-trims the shorter one once."""
     memo = module.__dict__.setdefault(_MEMO_ATTR, [])
     srcs = (states, mask, position_ids)
-    hit = _lookup(memo, srcs)
-    if hit is not None:
-        return hit or None
-    text_len = int(states.shape[1])
-    plan = _columns(mask, text_len)
-    if plan is not None and not bool((position_ids[:text_len] == 0).all().item()):
-        plan = None  # text rows off the rotary origin: dropping one would move the others' phases
-    if plan is None:
-        _store(memo, srcs, ())
-        return None
-    index, all_valid = plan
-    rows = int(index.shape[0])
     pos_key = (position_ids,)
     pos_memo = module.__dict__.setdefault(_MEMO_ATTR + "_pos", [])
     held = _lookup(pos_memo, pos_key)
-    pos = held.get(rows) if isinstance(held, dict) else None
+    if not isinstance(held, dict):
+        held = _store(pos_memo, pos_key, {})
+    text_len = int(states.shape[1])
+    group = int(held.get("rows", 0))
+    hit = _lookup(memo, srcs)
+    if hit is not None and hit[0] >= group:
+        return hit[1] or None
+    plan = None
+    if group < text_len:
+        plan = _columns(mask, text_len, group)
+    if plan is not None and not bool((position_ids[:text_len] == 0).all().item()):
+        plan = None  # text rows off the rotary origin: dropping one would move the others' phases
+    if plan is None:
+        held["rows"] = text_len  # this branch runs padded: so do the others of its group
+        _store(memo, srcs, (text_len, ()))
+        return None
+    index, all_valid = plan
+    rows = int(index.shape[0])
+    held["rows"] = max(group, rows)
+    pos = held.get(rows)
     if pos is None:
         import torch
-
         pos = torch.cat((position_ids[:rows], position_ids[text_len:]))
-        if not isinstance(held, dict):
-            held = _store(pos_memo, pos_key, {})
         # one tensor per length: a CFG pair passes the same object, which the CFG router batches without a compare
         held[rows] = pos
     out = (
@@ -123,7 +135,8 @@ def _trim(
         pos,
         text_len - rows,
     )
-    return _store(memo, srcs, out)
+    _store(memo, srcs, (rows, out))
+    return out
 
 
 def _pre_hook(module: Any, args: tuple, kwargs: dict) -> tuple:
