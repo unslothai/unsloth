@@ -31,6 +31,18 @@ test("an NPU model with no repo keeps its Lemonade id", () => {
   }
 });
 
+test("a RyzenAI repo shows -NPU in place of its -onnx-ryzenai-npu suffix", () => {
+  const llama = {
+    id: "ryzenai-Llama-3.2-1B-Instruct-onnx-ryzenai-npu",
+    hf_repo: "amd/Llama-3.2-1B-Instruct-onnx-ryzenai-npu",
+  };
+  assert.equal(npuDisplayName(llama), "Llama-3.2-1B-Instruct-NPU");
+  assert.equal(
+    npuRepoLabel(llama),
+    "amd/Llama-3.2-1B-Instruct-onnx-ryzenai-npu",
+  );
+});
+
 test("a core build's repo drops only its owner", () => {
   const core = {
     id: "qwen3.5-9b-core",

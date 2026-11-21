@@ -23,6 +23,7 @@ import structlog
 
 from core.inference import npu_local_models as local_q4nx
 from core.inference import npu_memory
+from core.inference import ryzenai_runtime as ryzenai
 from core.inference.flm_files import (
     FlmDownloadCancelled,
     FlmDownloadError,
@@ -406,6 +407,20 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     return f"{explained} {advice}".rstrip()
 
 
+def _refusal_text(exc: BaseException) -> str:
+    reason = code_integrity_block_reason(exc) if isinstance(exc, OSError) else None
+    return code_integrity_user_message("the NPU runtime", reason) if reason else str(exc)
+
+
+def _code_integrity_refusal(exc: BaseException) -> bool:
+    text = str(exc)
+    return bool(
+        code_integrity_block_reason(exc)
+        or code_integrity_block_reason(text)
+        or "local model runtime" in text  # code_integrity_user_message wording
+    )
+
+
 def _blocked_message(binary: Path, error: object) -> Optional[str]:
     """The user message when Windows code integrity refused ``binary`` or its DLLs, else None."""
     blocked = code_integrity_block_reason(error)
@@ -455,10 +470,27 @@ class LemonadeNpuBackend:
         self._error: Optional[str] = None
         self._flm_version_cache: Optional[tuple[tuple[str, int, int], Optional[str]]] = None
         self._last_versions: dict[str, Optional[str]] = {"lemonade": None, "fastflowlm": None}
+        self._ryzen_server: Optional[ryzenai.RyzenAiServer] = None
 
     @property
     def root(self) -> Path:
         return self._root if self._root is not None else _npu_root()
+
+    @property
+    def _ryzen(self) -> ryzenai.RyzenAiRuntime:
+        return ryzenai.RyzenAiRuntime(self.root / "ryzenai")
+
+    def _ryzen_usable(self) -> bool:
+        """RyzenAI is the Windows fallback when Smart App Control refuses FastFlowLM."""
+        return ryzenai.supported_platform() and bool(self.hardware().get("supported"))
+
+    def _ryzen_version(self) -> dict[str, str]:
+        version = self._marker().get("ryzenai")
+        return {"ryzenai": version} if version else {}
+
+    def _ryzen_ready(self) -> bool:
+        version = self._marker().get("ryzenai")
+        return self._ryzen_usable() and bool(version) and self._ryzen.installed() is not None
 
     @property
     def _flm_model_dir(self) -> Path:
@@ -505,6 +537,8 @@ class LemonadeNpuBackend:
     def resident(self) -> Optional[NpuResident]:
         """The loaded model, or None: one snapshot, since unload clears it concurrently."""
         loaded, server = self._loaded, self._server
+        if loaded is not None and ryzenai.is_ryzenai_id(loaded.model.id):
+            server = self._ryzen_server
         if loaded is None or server is None:
             return None
         port, api_key = server.port, server.api_key
@@ -524,12 +558,22 @@ class LemonadeNpuBackend:
     def loading_model(self) -> Optional[str]:
         return self._loading
 
-    def _validated_install(self) -> Optional[str]:
+    def _marker(self) -> dict[str, Any]:
         try:
             marker = json.loads((self.root / _VALIDATED_MARKER).read_text(encoding = "utf-8"))
         except (OSError, ValueError):
-            return None
-        return marker.get("lemond") if isinstance(marker, dict) else None
+            return {}
+        return marker if isinstance(marker, dict) else {}
+
+    def _validated_install(self) -> Optional[str]:
+        return self._marker().get("lemond")
+
+    def _write_marker(self, **values: Any) -> None:
+        marker = self.root / _VALIDATED_MARKER
+        marker.parent.mkdir(parents = True, exist_ok = True)
+        tmp = marker.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({**self._marker(), **values}) + "\n", encoding = "utf-8")
+        tmp.replace(marker)
 
     def _upgrade_pending(self, binary: Optional[Path]) -> bool:
         """Whether the NPU was enabled, but a Studio update has since moved the runtime's pins."""
@@ -611,12 +655,15 @@ class LemonadeNpuBackend:
         # An enabled NPU stays enabled across a pin change: its first use upgrades the runtime.
         upgrade_pending = self._state == "idle" and self._upgrade_pending(binary)
         installed = binary is not None or upgrade_pending
+        ryzen_ready = self._ryzen_ready()
+        installed = installed or ryzen_ready
         ready = (
             self._state == "ready"
             or upgrade_pending
             or (self._state == "idle" and installed and validated == str(binary))
+            or (self._state == "idle" and ryzen_ready)
         )
-        running = self._server is not None and self._server.is_alive()
+        running = any(s is not None and s.is_alive() for s in (self._server, self._ryzen_server))
         resident = self.resident()
         platform_key = "linux" if sys.platform.startswith("linux") else sys.platform
         return {
@@ -632,7 +679,7 @@ class LemonadeNpuBackend:
             "loaded_model": resident.model.model_path if resident else None,
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
-            "versions": self._versions(binary, validated),
+            "versions": self._versions(binary, validated) | self._ryzen_version(),
             "memory_window_gb": npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb()),
         }
 
@@ -715,49 +762,22 @@ class LemonadeNpuBackend:
             return self._server
 
     def enable(self) -> dict[str, Any]:
-        """Install Lemonade and FastFlowLM, start them and validate the NPU. Idempotent."""
+        """Install Lemonade and FastFlowLM, start them and validate the NPU. On Windows, falls back
+        to AMD's RyzenAI runtime when FastFlowLM cannot run (Smart App Control). Idempotent."""
         self._require_supported()
         with self._lock:
             self._error = None
             (self.root / _VALIDATED_MARKER).unlink(missing_ok = True)
             try:
-                self._state = "installing"
-                if self._server is not None and self._installed_lemond() is None:
-                    # A running lemond or flm holds the files an upgrade replaces (Windows locks them).
-                    self._server.stop()
-                    self._loaded = None
-                binary = _installer_module().install(self.root, cancel = self._closing)
-                self._state = "starting"
-                server = self._ensure_running()
-                self._state = "installing_flm"
-                response = server.request(
-                    "POST",
-                    "/v1/install",
-                    json_body = {"recipe": "flm", "backend": "npu", "stream": False},
-                    timeout = 900.0,
-                )
-                if _failed(response):
-                    reason = _error_message(response)
-                    raise NpuError(
-                        self._flm_blocked(reason) or f"Installing FastFlowLM failed: {reason}"
-                    )
-                # lemond keeps the old FastFlowLM and answers success when an update download fails.
-                expected, actual = _pinned_flm_version(), self._flm_version()
-                if expected and actual and actual != expected:
-                    raise NpuError(
-                        f"Updating FastFlowLM to v{expected} failed; v{actual} is still installed. "
-                        "Check the internet connection, then try again."
-                    )
-                self._state = "validating"
-                self._validation = self._validate()
-                if not self._validation.get("ready"):
-                    raise NpuError(
-                        " ".join(self._validation.get("problems") or ["NPU validation failed."])
-                    )
-                marker = self.root / _VALIDATED_MARKER
-                tmp = marker.with_suffix(".json.tmp")
-                tmp.write_text(json.dumps({"lemond": str(binary)}) + "\n", encoding = "utf-8")
-                tmp.replace(marker)
+                try:
+                    binary = self._enable_flm()
+                    self._write_marker(lemond = str(binary))
+                except NpuError as exc:
+                    # Only a code integrity refusal: a network error or an old NPU driver
+                    # would otherwise switch the user to another runtime and catalog.
+                    if not (self._ryzen_usable() and _code_integrity_refusal(exc)):
+                        raise
+                    self._enable_ryzen(exc)
                 self._state = "ready"
             except NpuError as exc:
                 self._state = "failed"
@@ -768,6 +788,64 @@ class LemonadeNpuBackend:
                 self._error = f"Enabling the NPU runtime failed: {exc}"
                 raise NpuError(self._error) from exc
         return self.status()
+
+    def _enable_flm(self) -> Path:
+        self._state = "installing"
+        if self._server is not None and self._installed_lemond() is None:
+            # A running lemond or flm holds the files an upgrade replaces (Windows locks them).
+            self._server.stop()
+            self._loaded = None
+        try:
+            binary = _installer_module().install(self.root, cancel = self._closing)
+            self._state = "starting"
+            server = self._ensure_running()
+        except NpuError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the RyzenAI fallback may still work
+            raise NpuError(f"Enabling the NPU runtime failed: {exc}") from exc
+        self._state = "installing_flm"
+        response = server.request(
+            "POST",
+            "/v1/install",
+            json_body = {"recipe": "flm", "backend": "npu", "stream": False},
+            timeout = 900.0,
+        )
+        if _failed(response):
+            reason = _error_message(response)
+            raise NpuError(self._flm_blocked(reason) or f"Installing FastFlowLM failed: {reason}")
+        # lemond keeps the old FastFlowLM and answers success when an update download fails.
+        expected, actual = _pinned_flm_version(), self._flm_version()
+        if expected and actual and actual != expected:
+            raise NpuError(
+                f"Updating FastFlowLM to v{expected} failed; v{actual} is still installed. "
+                "Check the internet connection, then try again."
+            )
+        self._state = "validating"
+        self._validation = self._validate()
+        if not self._validation.get("ready"):
+            raise NpuError(" ".join(self._validation.get("problems") or ["NPU validation failed."]))
+        return binary
+
+    def _enable_ryzen(self, flm_failure: NpuError) -> None:
+        logger.warning("FastFlowLM unavailable, trying AMD RyzenAI: %s", flm_failure)
+        if self._server is not None:
+            self._server.stop()
+        self._state = "installing_ryzenai"
+        try:
+            self._ryzen.install(cancel = self._closing)
+        except Exception as exc:  # noqa: BLE001 -- reported with why FastFlowLM failed
+            raise NpuError(f"{flm_failure} Installing AMD RyzenAI also failed: {exc}") from exc
+        self._state = "validating"
+        problem = self._ryzen.validate()
+        if problem:
+            raise NpuError(f"{flm_failure} AMD RyzenAI also failed: {problem}")
+        self._write_marker(ryzenai = self._ryzen.pins["runtime"]["version"])
+        self._validation = {
+            "ready": True,
+            "problems": [],
+            "runtime": "ryzenai",
+            "fastflowlm": str(flm_failure),
+        }
 
     def _validate(self) -> dict[str, Any]:
         binary = self._flm_binary()
@@ -832,9 +910,9 @@ class LemonadeNpuBackend:
     def shutdown(self) -> None:
         self._closing.set()
         self.cancel_load()
-        server = self._server
-        if server is not None:
-            server.stop()
+        for server in (self._server, self._ryzen_server):
+            if server is not None:
+                server.stop()
         process = self._validate_process
         if process is not None:
             _kill_tree(process)
@@ -843,6 +921,7 @@ class LemonadeNpuBackend:
             if self._server is not None:
                 self._server.close()
                 self._server = None
+            self._ryzen_server = None
             if self._state not in ("failed",):
                 self._state = "idle"
             self._closing.clear()
@@ -863,7 +942,21 @@ class LemonadeNpuBackend:
         ]
 
     def catalog(self) -> list[NpuModel]:
-        rows = self._flm_rows()
+        ryzen_ready = self._ryzen_ready()
+        try:
+            rows = self._flm_rows() if self._validated_install() or not ryzen_ready else []
+        except (NpuError, LemonadeUnavailable, OSError) as exc:
+            if ryzen_ready:
+                rows = []  # Smart App Control refusing lemond leaves the RyzenAI models
+            elif self._ryzen_usable() and _code_integrity_refusal(exc):
+                # Allowed once, refused now (a new FastFlowLM build): Enable again falls back.
+                self._state = "failed"
+                self._error = (
+                    f"{_refusal_text(exc)} Enable the NPU again to use AMD RyzenAI models."
+                )
+                raise NpuError(self._error) from exc
+            else:
+                raise
         models: list[NpuModel] = []
         flm_binary = self._flm_binary()
         window_gb = npu_memory.npu_memory_window_gb(npu_memory.system_ram_gb())
@@ -899,8 +992,27 @@ class LemonadeNpuBackend:
                     fits_memory = npu_memory.fits_npu_memory(size_gb, window_gb),
                 )
             )
-        models.extend(self._local_rows(models, window_gb))
+        if rows:
+            models.extend(self._local_rows(models, window_gb))
+        if ryzen_ready:
+            models.extend(self._ryzen_rows(window_gb))
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
+
+    def _ryzen_rows(self, window_gb: Optional[float]) -> list[NpuModel]:
+        return [
+            NpuModel(
+                id = row.id,
+                checkpoint = row.repo,
+                size_gb = row.size_gb,
+                downloaded = row.downloaded,
+                labels = row.labels,
+                max_context_length = self._ryzen.context_length,
+                hf_repo = row.repo,
+                memory_needed_gb = npu_memory.npu_memory_needed_gb(row.size_gb),
+                fits_memory = npu_memory.fits_npu_memory(row.size_gb, window_gb),
+            )
+            for row in self._ryzen.catalog()
+        ]
 
     def _local_rows(self, catalog: list[NpuModel], window_gb: Optional[float]) -> list[NpuModel]:
         by_checkpoint = {model.checkpoint: model for model in catalog}
@@ -1078,7 +1190,9 @@ class LemonadeNpuBackend:
 
     def can_run(self) -> bool:
         """A supported NPU with the runtime installed: the catalog is readable once it starts."""
-        return bool(self.hardware().get("supported")) and self._installed_lemond() is not None
+        return bool(self.hardware().get("supported")) and (
+            self._installed_lemond() is not None or self._ryzen_ready()
+        )
 
     def model_path_for_name(self, name: str, *, start_runtime: bool) -> Optional[str]:
         """lemonade:<id> for the model whose HF repo or repo name is name, or None; the loaded model
@@ -1152,6 +1266,14 @@ class LemonadeNpuBackend:
         cancel = cancel or threading.Event()
         if local_q4nx.is_local_id(model_id):
             raise NpuError(f"{model_id} is a converted model already on this device.")
+        if ryzenai.is_ryzenai_id(model_id):
+            try:
+                yield from self._ryzen.download(model_id, cancel)
+            except ryzenai.RyzenAiDownloadCancelled as exc:
+                raise NpuDownloadCancelled(str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001 -- Hub and disk errors reach the user
+                raise NpuError(f"Downloading {model_id} failed: {exc}") from exc
+            return
         model = self._model(model_id)
         server = self._ensure_running()
         files = (
@@ -1221,6 +1343,12 @@ class LemonadeNpuBackend:
             resident = self.resident()
             if resident is not None and resident.model.id == model_id:
                 raise NpuError("Unload the model before deleting it.")
+            if ryzenai.is_ryzenai_id(model_id):
+                try:
+                    self._ryzen.delete(model_id)
+                except ryzenai.RyzenAiError as exc:
+                    raise NpuError(str(exc)) from exc
+                return
             if local_q4nx.is_local_id(model_id):
                 try:
                     self._unregister_local(self._local_model(model_id))
@@ -1290,6 +1418,23 @@ class LemonadeNpuBackend:
         return model_ids[0]
 
     def delete_downloaded(self) -> tuple[int, list[str]]:
+        """Delete every downloaded model: RyzenAI folders, then FastFlowLM's through lemond."""
+        deleted, errors = 0, []
+        if self._ryzen_usable():
+            for model_id in [
+                m.id for m in self._ryzen.catalog() if self._ryzen.model_dir(m.id).exists()
+            ]:
+                try:
+                    self.delete(model_id)
+                    deleted += 1
+                except NpuError as exc:
+                    errors.append(str(exc))
+        if self._validated_install() is None and self._ryzen_ready():
+            return deleted, errors  # lemond never ran here; starting it would only be refused
+        flm_deleted, flm_errors = self._delete_downloaded_flm()
+        return deleted + flm_deleted, errors + flm_errors
+
+    def _delete_downloaded_flm(self) -> tuple[int, list[str]]:
         """Delete every downloaded model through lemond, so its registry matches the disk."""
         # A failed pull keeps its files to resume, but lemond calls that model not downloaded.
         on_disk = {checkpoint for _, checkpoint in self.model_folders() if checkpoint is not None}
@@ -1346,6 +1491,10 @@ class LemonadeNpuBackend:
             replaced = False
             loaded = False
             try:
+                if ryzenai.is_ryzenai_id(model_id):
+                    model = self._load_ryzen(model_id, context_length)
+                    loaded = True
+                    return model
                 local = None
                 if local_q4nx.is_local_id(model_id):
                     local = self._local_model(model_id)
@@ -1419,9 +1568,49 @@ class LemonadeNpuBackend:
                 raise NpuError(f"Loading {model_id} failed: {reason}") from exc
             finally:
                 self._loading = None
-                if replaced and not loaded and self._server is not None:
+                if ryzenai.is_ryzenai_id(model_id):
+                    pass
+                elif replaced and not loaded and self._server is not None:
                     # lemond may have loaded the replacement before failing its health check.
                     self._server.stop()
+
+    def _load_ryzen(self, model_id: str, context_length: Optional[int]) -> NpuModel:
+        model = self._model(model_id)
+        if not model.downloaded:
+            raise NpuError(f"{model.id} is not downloaded yet.")
+        dll_dir = self._ryzen.installed()
+        if dll_dir is None:
+            raise NpuError("The AMD RyzenAI NPU runtime is not installed. Enable the NPU first.")
+        if self._loaded is not None:
+            self.unload()
+        self._raise_if_load_cancelled(model_id)
+        # The model is compiled for a fixed KV cache; a smaller ask is honoured, a larger one is not.
+        limit = self._ryzen.context_length
+        ctx = min(context_length, limit) if context_length and context_length > 0 else limit
+        server = ryzenai.RyzenAiServer(dll_dir, self._ryzen.model_dir(model_id), model_id, ctx)
+        self._ryzen_server = server
+        try:
+            server.start(cancel = self._load_cancelled)
+        except ryzenai.RyzenAiError as exc:
+            self._ryzen_server = None
+            self._raise_if_load_cancelled(model_id)
+            raise NpuError(str(exc)) from exc
+        with self._commit_lock:
+            if self._load_cancelled.is_set():
+                server.stop()
+                self._ryzen_server = None
+                self._raise_if_load_cancelled(model_id)
+            self._loaded = _Loaded(
+                model = model,
+                context_length = ctx,
+                requested_context_length = context_length
+                if context_length and context_length > 0
+                else None,
+            )
+            self._loading = None
+        self._state = "ready"
+        self._error = None
+        return model
 
     def _raise_if_load_cancelled(self, model_id: str) -> None:
         if self._load_cancelled.is_set():
@@ -1434,7 +1623,7 @@ class LemonadeNpuBackend:
             if loading is None or (model_id is not None and loading != model_id):
                 return False
             self._load_cancelled.set()
-        server = self._server
+        server = self._ryzen_server if ryzenai.is_ryzenai_id(loading) else self._server
         if server is not None:
             server.stop()
         return True
@@ -1477,6 +1666,11 @@ class LemonadeNpuBackend:
             self._loaded = None
             if loaded is None:
                 return None
+            if ryzenai.is_ryzenai_id(loaded.model.id):
+                server, self._ryzen_server = self._ryzen_server, None
+                if server is not None:
+                    server.stop()  # the child holds one model; stopping it frees the NPU
+                return loaded.model.model_path
             server = self._server
             if server is not None and server.is_alive():
                 try:
