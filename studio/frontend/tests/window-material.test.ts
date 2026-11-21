@@ -262,6 +262,31 @@ test("glass over an open conversation dims the image and thickens the composer a
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
 });
 
+test("glass drops the thread mask on the unscrolled welcome view, so the composer inside it blurs the image", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const ready = String.raw`:is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]`;
+	// The header fade masks the viewport, and a masked ancestor is the backdrop root.
+	assert.match(css, new RegExp(`${ready} \\.aui-thread-viewport:not\\(\\.chat-full-view-dock \\*\\),[^{]*\\{\\n  mask-image:`));
+	assert.match(css, new RegExp(`html\\[data-glass\\] ${ready} \\.aui-thread-viewport:has\\(> \\.aui-thread-welcome-root > \\.aui-thread-welcome-center\\) \\{\\n  mask-image: none;\\n  animation: thread-welcome-header-fade linear both;\\n  animation-timeline: scroll\\(self\\);\\n  animation-range: 0 1px;\\n\\}`));
+	// Scrolled, the header fade comes back.
+	assert.match(css, /@keyframes thread-welcome-header-fade \{\n  from \{ mask-image: none; \}\n  to \{ mask-image: linear-gradient\(to bottom, transparent var\(--thread-header-offset/);
+	// With view timelines the scrolled viewport stays unmasked; the welcome blocks and the composer's own surface fade instead.
+	const blocks = new RegExp(`@supports \\(animation-timeline: view\\(\\)\\) and \\(mask-clip: no-clip\\) \\{\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-viewport:has\\(> \\.aui-thread-welcome-root > \\.aui-thread-welcome-center\\) \\{\\n    animation: none;\\n  \\}\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-welcome-center > :is\\(\\.aui-thread-welcome-spacer, \\.aui-thread-welcome-message:only-child\\),\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-welcome-message :is\\(\\.unsloth-composer-surface, \\.glass-float-surface\\) \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+	assert.match(blocks, /mask-image: linear-gradient\(to bottom, transparent calc\(var\(--welcome-fade-cut\) - 1\.5rem\), #000 var\(--welcome-fade-cut\)\);/);
+	// The overhang keeps rings and the greeting halo; the range spans it so the cut matches the viewport fade.
+	assert.match(blocks, /mask-size: 100% calc\(100% \+ 8rem\);\n    mask-position: 0 -4rem;\n    mask-repeat: repeat-x;\n    mask-clip: no-clip;/);
+	assert.match(blocks, /animation-timeline: view\(block calc\(var\(--thread-header-offset, -1\.5rem\) \+ 5\.5rem\) auto\);\n    animation-range: exit-crossing 0% exit-crossing calc\(100% \+ 8rem\);/);
+	assert.match(css, /@property --welcome-fade-cut \{\n  syntax: "<percentage>";/);
+	assert.match(css, /@keyframes thread-welcome-block-fade \{\n  from \{ --welcome-fade-cut: 0%; \}\n  to \{ --welcome-fade-cut: 100%; \}\n\}/);
+	// The welcome composer is portaled into that viewport; an open chat's composer docks beside it.
+	const thread = readFileSync(new URL("../src/components/assistant-ui/thread.tsx", import.meta.url), "utf8");
+	assert.match(thread, /createPortal\(\n\s*<>\n\s*\{!hideWelcome && \([\s\S]*?<ThreadWelcome [\s\S]*?<\/>,\n\s*viewportEl,/);
+	assert.match(thread, /"aui-thread-composer-dock pointer-events-none absolute bottom-0/);
+	// The selectors above: the inline composer has its own message block, the bottom layout's greeting is the only one.
+	assert.match(thread, /<div className="aui-thread-welcome-message relative flex w-full flex-col">\n\s*\{!hideComposer && <ComposerAnimated [\s\S]*?<ModelPickerAnnouncement className="absolute/);
+	assert.match(thread, /\{composerAtBottom \? \(\n\s*<div className="aui-thread-welcome-message flex w-full flex-col justify-center">/);
+});
+
 test("glass frosts the chat model controls and gives the account row the row hover", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const model = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
