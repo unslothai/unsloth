@@ -48,7 +48,8 @@ def generate_smart_vlm_instruction(
 
     text_col_lower = text_column.lower()
 
-    text_sample = str(sample.get(text_column, ""))[:500]
+    # Hints read the rows the question scan reads, not row 0: a seeded row bound reorders train before formatting.
+    text_samples = [str(row.get(text_column, ""))[:500] for row in islice(dataset, 100)]
 
     # Task-specific keywords and their instructions
     task_patterns = {
@@ -114,6 +115,7 @@ def generate_smart_vlm_instruction(
     # Score each task by column/dataset name and content matches
     best_match = None
     best_score = 0.0
+    best_hits = 0
 
     for task_name, task_info in task_patterns.items():
         score = 0.0
@@ -126,13 +128,16 @@ def generate_smart_vlm_instruction(
         ):
             score += 0.3
 
-        for pattern in task_info["content_hints"]:
-            if re.search(pattern, text_sample, re.IGNORECASE):
-                score += 0.4
-                break
+        hits = sum(
+            any(re.search(pattern, text, re.IGNORECASE) for pattern in task_info["content_hints"])
+            for text in text_samples
+        )
+        if hits:
+            score += 0.4
 
-        if score > best_score:
-            best_score = score
+        # A tie goes to the task whose hints match more rows (LaTeX rows can also hold a long word).
+        if (score, hits) > (best_score, best_hits):
+            best_score, best_hits = score, hits
             best_match = task_info
 
     if best_match and best_score > 0.5:

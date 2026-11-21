@@ -3869,6 +3869,8 @@ class UnslothTrainer:
                     tokenizer = self.tokenizer,
                     is_vlm = self.is_vlm,
                     format_type = format_type,
+                    # Eval loss must score the prompt the model trains on, not one picked from the eval rows.
+                    vlm_instruction = dataset_info.get("vlm_instruction"),
                     dataset_name = dataset_source,
                     dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,
