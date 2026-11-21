@@ -190,6 +190,9 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
 export const CHAT_SHOW_MEMORY_BAR_KEY = "unsloth_chat_show_memory_bar";
+export const CHAT_PICKER_ORGS_KEY = "unsloth_chat_picker_orgs";
+export const CHAT_PICKER_ORGS_IN_TAB_BAR_KEY =
+  "unsloth_chat_picker_orgs_in_tab_bar";
 export const PICKER_EXPAND_LOADED_KEY = "unsloth_composer_picker_expand_loaded";
 export const PICKER_MONOCHROME_ICONS_KEY =
   "unsloth_composer_picker_monochrome_icons";
@@ -2206,6 +2209,19 @@ function chatFullAccessPermissionPatch(
 }
 
 
+function loadPickerOrgs(): string[] | null {
+  const raw = readStorageValue(CHAT_PICKER_ORGS_KEY);
+  if (raw === null) return null;
+  try {
+    const list: unknown = JSON.parse(raw);
+    return Array.isArray(list)
+      ? list.filter((id): id is string => typeof id === "string")
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function loadString(key: string, fallback: string): string {
   return readStorageValue(key) ?? fallback;
 }
@@ -2779,6 +2795,10 @@ type ChatRuntimeStore = {
   pickerExpandLoaded: boolean;
   pickerMonochromeIcons: boolean;
   fitOnDeviceOnly: boolean;
+  /** The composer picker's org filters, or null for its own suggestions. */
+  pickerOrgs: string[] | null;
+  /** Org filters sit in the source tab bar instead of their own row. */
+  pickerOrgsInTabBar: boolean;
   loadedIsMultimodal: boolean;
   loadedIsDiffusion: boolean;
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
@@ -2981,6 +3001,8 @@ type ChatRuntimeStore = {
   setPickerExpandLoaded: (value: boolean) => void;
   setPickerMonochromeIcons: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
+  setPickerOrgs: (value: string[] | null) => void;
+  setPickerOrgsInTabBar: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setPendingImageEditReference: (
@@ -4663,6 +4685,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   pickerExpandLoaded: loadBool(PICKER_EXPAND_LOADED_KEY, false),
   pickerMonochromeIcons: loadBool(PICKER_MONOCHROME_ICONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
+  pickerOrgs: loadPickerOrgs(),
+  pickerOrgsInTabBar: loadBool(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, true),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
@@ -6523,6 +6547,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
     set({ fitOnDeviceOnly });
+  },
+  setPickerOrgs: (pickerOrgs) => {
+    saveString(CHAT_PICKER_ORGS_KEY, JSON.stringify(pickerOrgs));
+    set({ pickerOrgs });
+  },
+  setPickerOrgsInTabBar: (pickerOrgsInTabBar) => {
+    saveBool(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, pickerOrgsInTabBar);
+    set({ pickerOrgsInTabBar });
   },
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),

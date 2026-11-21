@@ -13,6 +13,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { PROVIDER_LOGOS } from "@/features/hub";
 import {
   DEFAULT_THINKING_VISIBILITY,
   DEFAULT_TOOL_VISIBILITY,
@@ -386,6 +388,14 @@ export function ChatTab() {
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
+  );
+  const pickerOrgs = useChatRuntimeStore((state) => state.pickerOrgs);
+  const setPickerOrgs = useChatRuntimeStore((state) => state.setPickerOrgs);
+  const pickerOrgsInTabBar = useChatRuntimeStore(
+    (state) => state.pickerOrgsInTabBar,
+  );
+  const setPickerOrgsInTabBar = useChatRuntimeStore(
+    (state) => state.setPickerOrgsInTabBar,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
@@ -959,6 +969,54 @@ export function ChatTab() {
             aria-label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
             checked={fitOnDeviceOnly}
             onCheckedChange={setFitOnDeviceOnly}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerOrgs")}
+          description={t("settings.chat.modelSelection.pickerOrgsDescription")}
+          below={
+            pickerOrgs ? (
+              <ToggleGroup
+                type="multiple"
+                variant="outline"
+                size="sm"
+                spacing={1}
+                value={pickerOrgs}
+                onValueChange={setPickerOrgs}
+                aria-label={t("settings.chat.modelSelection.pickerOrgs")}
+                className="w-full flex-wrap justify-end"
+              >
+                {[...PROVIDER_LOGOS]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((org) => (
+                    <ToggleGroupItem
+                      key={org.id}
+                      value={org.id}
+                      className="rounded-full px-3"
+                    >
+                      {org.name}
+                    </ToggleGroupItem>
+                  ))}
+              </ToggleGroup>
+            ) : null
+          }
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerOrgs")}
+            checked={pickerOrgs !== null}
+            onCheckedChange={(on) => setPickerOrgs(on ? [] : null)}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerOrgsInTabBar")}
+          description={t(
+            "settings.chat.modelSelection.pickerOrgsInTabBarDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerOrgsInTabBar")}
+            checked={pickerOrgsInTabBar}
+            onCheckedChange={setPickerOrgsInTabBar}
           />
         </SettingsRow>
         <SettingsRow

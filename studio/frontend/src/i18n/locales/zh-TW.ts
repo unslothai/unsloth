@@ -3299,6 +3299,12 @@ export const zhTW = {
         showMemoryBar: "VRAM 用量列",
         showMemoryBarDescription:
           "顯示模型權重、上下文和推測解碼的估計 VRAM 用量。",
+        pickerOrgs: "選擇組織",
+        pickerOrgsDescription:
+          "選擇在模型選擇器中顯示篩選的組織，而非依你的模型建議的組織。",
+        pickerOrgsInTabBar: "在分頁列中顯示組織",
+        pickerOrgsInTabBarDescription:
+          "將組織篩選器顯示在收藏、探索和本機旁邊，而不是單獨一列。",
         fitOnDeviceOnly: "僅顯示放得下的模型",
         fitOnDeviceOnlyDescription:
           "在模型選擇器和模型中心中，隱藏超出此裝置 GPU 記憶體和 RAM 的模型。已下載的模型仍會顯示。",

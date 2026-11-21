@@ -3452,6 +3452,12 @@ export const id = {
         showMemoryBar: "Bilah penggunaan VRAM",
         showMemoryBarDescription:
           "Tampilkan perkiraan VRAM untuk bobot model, konteks, dan decoding spekulatif.",
+        pickerOrgs: "Pilih organisasi",
+        pickerOrgsDescription:
+          "Pilih organisasi mana yang mendapat filter di pemilih model, alih-alih yang disarankan dari model Anda.",
+        pickerOrgsInTabBar: "Organisasi di bilah tab",
+        pickerOrgsInTabBarDescription:
+          "Tampilkan filter organisasi di samping Favorit, Jelajahi, dan Di Perangkat, bukan di barisnya sendiri.",
         fitOnDeviceOnly: "Hanya tampilkan model yang muat",
         fitOnDeviceOnlyDescription:
           "Sembunyikan model yang terlalu besar untuk memori GPU dan RAM perangkat ini di pemilih model dan Hub. Model yang sudah diunduh tetap terlihat.",

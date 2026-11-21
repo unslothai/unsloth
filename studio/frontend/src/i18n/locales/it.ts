@@ -3123,6 +3123,12 @@ export const it = {
         showMemoryBar: "Mostra la barra di utilizzo della VRAM",
         showMemoryBarDescription:
           "Mostra sotto la riga di ogni modello scaricato il consumo stimato di VRAM: pesi, cache KV alla lunghezza di contesto con cui verrà caricato ed eventuale riserva per il draft speculativo.",
+        pickerOrgs: "Scegli le organizzazioni",
+        pickerOrgsDescription:
+          "Scegli quali organizzazioni hanno un filtro nel selettore dei modelli, invece di quelle che suggerisce in base ai tuoi modelli.",
+        pickerOrgsInTabBar: "Organizzazioni nella barra delle schede",
+        pickerOrgsInTabBarDescription:
+          "Mostra i filtri delle organizzazioni accanto a Preferiti, Scopri e Sul dispositivo invece che su una riga a parte.",
         fitOnDeviceOnly: "Mostra solo i modelli compatibili",
         fitOnDeviceOnlyDescription:
           "Nasconde nel selettore dei modelli e nell'Hub i modelli troppo grandi per la memoria GPU e la RAM di questo dispositivo. I modelli scaricati restano visibili.",

@@ -3162,6 +3162,12 @@ export const zhCN = {
         showMemoryBar: "显示显存占用条",
         showMemoryBarDescription:
           "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
+        pickerOrgs: "选择组织",
+        pickerOrgsDescription:
+          "选择在模型选择器中显示筛选的组织，而不是根据你的模型推荐的组织。",
+        pickerOrgsInTabBar: "在标签栏中显示组织",
+        pickerOrgsInTabBarDescription:
+          "将组织筛选器显示在收藏、发现和本机旁边，而不是单独一行。",
         fitOnDeviceOnly: "仅显示可运行的模型",
         fitOnDeviceOnlyDescription:
           "在模型选择器和 Hub 中隐藏超出本设备显存和内存容量的模型。已下载的模型仍会显示。",

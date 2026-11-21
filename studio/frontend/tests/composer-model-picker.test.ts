@@ -15,6 +15,7 @@ import {
   dedupeRows,
   downloadedQuants,
   effortLabel,
+  filterByOrg,
   filterRows,
   findChosenRow,
   isChatTask,
@@ -22,6 +23,8 @@ import {
   SECTION_LABEL,
   localSection,
   orderBySection,
+  orgFilterApplies,
+  ownerOrgId,
   pickerAlignOffset,
   pickerDropOffset,
   pickerMinHeight,
@@ -118,24 +121,77 @@ test("a tab lists its own rows; Favorites lists each favorite once; search narro
   );
 });
 
-test("an on-device model also lists under its maker's tab", () => {
+test("an org filter keeps only rows attributed to that org, on Discover and On Device", () => {
   const rows = [
+    row({ key: "g", id: "unsloth/gemma-4-E2B-it-GGUF", org: "google" }),
     row({
-      key: "g",
-      id: "unsloth/gemma-4-E2B-it-GGUF",
-      groups: ["maker:google"],
+      key: "gh",
+      id: "google/gemma-4-E2B-it",
+      tab: RECOMMENDED_TAB,
+      kind: "hub",
+      org: "google",
     }),
-    row({ key: "q", id: "unsloth/Qwen3.8-27B-GGUF", groups: ["maker:qwen"] }),
-    row({ key: "s", id: "hubertsiuzdak/snac_24khz" }),
+    row({ key: "q", id: "unsloth/Qwen3.8-27B-GGUF", org: "qwen" }),
+    // A third-party upload or an NPU offer carries no org, so no filter lists it.
+    row({ key: "b", id: "bartowski/gemma-4-E2B-it-GGUF" }),
+    row({ key: "n", id: "d3-edge-FLM", tab: RECOMMENDED_TAB, kind: "npu" }),
   ];
   assert.deepEqual(
-    filterRows(rows, "maker:google", "", none).map((r) => r.key),
-    ["g"],
+    filterByOrg(rows, "google").map((r) => r.key),
+    ["g", "gh"],
   );
-  assert.deepEqual(
-    filterRows(rows, DEVICE_TAB, "", none).map((r) => r.key),
-    ["g", "q", "s"],
+  assert.deepEqual(filterByOrg(rows, null), rows);
+  assert.equal(orgFilterApplies(DEVICE_TAB), true);
+  assert.equal(orgFilterApplies(RECOMMENDED_TAB), true);
+  assert.equal(orgFilterApplies(FAVORITES_TAB), false);
+  assert.equal(orgFilterApplies(CONNECTED_TAB), false);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
+  // Makers are toggles, in the source tab bar by default.
+  assert.match(picker, /\{sourceTabs\.map\(\(t\) => \(/);
+  assert.match(picker, /const orgButtons = orgTabs\.map\(/);
+  assert.match(picker, /aria-label="Filter by organization"[\s\S]{0,200}?\{orgButtons\}/);
+  assert.match(picker, /aria-pressed=\{toggle \? shown : undefined\}/);
+  // Settings can drop the org filters to their own row under the sources.
+  assert.match(picker, /\{showOrgs && orgsInTabBar \? \(\s+<div\s+role="group"\s+aria-label="Filter by organization"/);
+  assert.match(picker, /\{showOrgs && !orgsInTabBar \? \(\s+<div\s+ref=\{setOrgStrip\}/);
+  const runtime = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(runtime, /pickerOrgsInTabBar: loadBool\(CHAT_PICKER_ORGS_IN_TAB_BAR_KEY, true\),/);
+  assert.match(readSrc("features/settings/tabs/general-tab.tsx"), /"unsloth_chat_picker_orgs_in_tab_bar",/);
+  // An overflowing org row scrolls on a mouse wheel and fades its clipped ends, like the sources row.
+  assert.match(
+    picker,
+    /ref=\{setOrgStrip\}[\s\S]{0,200}?className="composer-tab-strip[^"]*"\s*onWheel=\{wheelSideways\}/,
+  );
+  assert.match(picker, /useStripFades\(tabStrip\);\s*useStripFades\(orgStrip\);/);
+  // An org click must cancel an unresolved Discover pick and restart the keyboard highlight, as a tab click does.
+  assert.match(picker, /offerAbort\.current = null;[\s\S]{0,120}?\}, \[open, viewed, orgFilter\]\);/);
+  assert.match(picker, /setHighlight\(false\);\s*\}, \[query, viewed, orgFilter, setHighlight\]\);/);
+  // Under an org filter, Discover pages count only the rows it shows, so hidden pages cannot reset the fetch cap.
+  assert.match(picker, /const hubShownCount = hubOrgFilter\s*\? foundRows\.filter\(\(row\) => row\.kind === "hub"\)\.length\s*: hubResults\.length;/);
+  assert.match(picker, /resultCount: hubShownCount,\s*resetKey: hubOrgFilter \?/);
+  // Chips that land after mount still refresh the fades.
+  assert.match(picker, /new MutationObserver\(update\);\s*chips\.observe\(strip, \{ childList: true \}\);/);
+  // The org comes from the repo itself, never a fine-tune's base model.
+  const rowOrgBody = picker.match(/function rowOrg\([\s\S]*?\n\}\n/)?.[0] ?? "";
+  assert.match(rowOrgBody, /hubParts\(row\.id\)/);
+  assert.doesNotMatch(rowOrgBody, /lora|baseModel/);
+  assert.match(picker, /org: rowOrg\(\{ kind: "hub", id: m\.id \}\)\?\.id,/);
+  // A provider's own repos (`google/gemma-*`) list under it even with no owner logo entry.
+  assert.equal(ownerOrgId("google"), "google");
+  assert.equal(ownerOrgId("Qwen"), "qwen");
+  assert.equal(ownerOrgId("ibm-granite"), "ibm");
+  assert.equal(ownerOrgId("CohereLabs"), "cohere");
+  assert.equal(ownerOrgId("bartowski"), "bartowski");
+  // NPU rows file under their repo's owner, FastFlowLM by default, which Settings can pick as an org.
+  assert.match(rowOrgBody, /const npuOwner = npuMarkOwner\(row\);/);
+  assert.match(picker, /npuPickerRows\(npuModels, false\)\.map\(\(row\) => \(\{\s+\.\.\.row,\s+org: rowOrg\(row\)\?\.id,/);
+  const logos = readSrc("features/hub/lib/provider-logos.ts");
+  assert.match(logos, /id: "fastflowlm",[\s\S]{0,240}?owners: \["FastFlowLM"\]/);
+  assert.equal(ownerOrgId("FastFlowLM"), "fastflowlm");
+  assert.match(logos, /id: "amd",[\s\S]{0,200}?owners: \["amd"\]/);
+  assert.match(rowOrgBody, /MAKER_BY_ID\.get\(ownerOrgId\(parts\.owner\)\)/);
 });
 
 test("favorites read the header picker's keys: a repo or any of its quants", () => {
@@ -1108,7 +1164,7 @@ test("the Connected tab lists every connection's models, favorites then newest f
   assert.match(picker, /const MAKER_TAB_MIN_MODELS = 3;/);
   assert.match(
     picker,
-    /entry\.ids\.add\(row\.id\.toLowerCase\(\)\)[\s\S]{0,200}?if \(ids\.size < MAKER_TAB_MIN_MODELS\)/,
+    /entry\.ids\.add\(row\.id\.toLowerCase\(\)\)[\s\S]{0,500}?\.filter\(\(\{ ids \}\) => ids\.size >= MAKER_TAB_MIN_MODELS\)/,
   );
 });
 
@@ -1427,12 +1483,12 @@ test("a new search or tab restarts the keyboard highlight before the active row 
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   const reset = picker.search(
-    /useEffect\(\(\) => \{\s*setHighlight\(false\);\s*\}, \[query, viewed, setHighlight\]\);/,
+    /useEffect\(\(\) => \{\s*setHighlight\(false\);\s*\}, \[query, viewed, orgFilter, setHighlight\]\);/,
   );
   const seat = picker.indexOf(
     "// Rows paging in under the pointer must not move the highlight.",
   );
-  assert.ok(reset >= 0, "no highlight reset on query / tab change");
+  assert.ok(reset >= 0, "no highlight reset on query / tab / org change");
   assert.ok(
     reset < seat,
     "the reset must run before the effect that seats `active`",
@@ -1744,6 +1800,29 @@ test("a cancelled or failed eject keeps the expand choice; only a real load star
     picker,
     /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
   );
+});
+
+test("Settings can name the picker's orgs; unset, it suggests them from the device", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const makers = pickerOrgs\s+\? PROVIDER_LOGOS\.filter\(\(maker\) => pickerOrgs\.includes\(maker\.id\)\)/,
+  );
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(store, /CHAT_PICKER_ORGS_KEY = "unsloth_chat_picker_orgs"/);
+  assert.match(store, /pickerOrgs: loadPickerOrgs\(\),/);
+  // Off by default: no saved list means the picker's own suggestions.
+  assert.match(store, /if \(raw === null\) return null;/);
+  const settings = readSrc("features/settings/tabs/chat-tab.tsx");
+  assert.match(
+    settings,
+    /checked=\{pickerOrgs !== null\}\s+onCheckedChange=\{\(on\) => setPickerOrgs\(on \? \[\] : null\)\}/,
+  );
+  // A settings reset clears it.
+  const general = readSrc("features/settings/tabs/general-tab.tsx");
+  assert.match(general, /"unsloth_chat_picker_orgs",/);
 });
 
 test("a connected model in use offers eject, which clears the pick", () => {

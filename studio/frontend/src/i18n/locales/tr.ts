@@ -3450,6 +3450,12 @@ export const tr = {
         showMemoryBar: "VRAM kullanım çubuğu",
         showMemoryBarDescription:
           "Model ağırlıkları, bağlam ve spekülatif kod çözme için tahmini VRAM'i gösterin.",
+        pickerOrgs: "Kuruluşları seç",
+        pickerOrgsDescription:
+          "Model seçicide hangi kuruluşların filtresi olacağını seçin; modellerinize göre önerilenlerin yerine kullanılır.",
+        pickerOrgsInTabBar: "Sekme çubuğunda kuruluşlar",
+        pickerOrgsInTabBarDescription:
+          "Kuruluş filtrelerini ayrı bir satır yerine Favoriler, Keşfet ve Cihazda'nın yanında göster.",
         fitOnDeviceOnly: "Yalnızca sığan modelleri göster",
         fitOnDeviceOnlyDescription:
           "Model seçicide ve Hub'da bu cihazın GPU belleği ve RAM'i için çok büyük modelleri gizleyin. İndirilen modeller görünür kalır.",

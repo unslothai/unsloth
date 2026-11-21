@@ -3318,6 +3318,12 @@ export const th = {
         showMemoryBar: "แถบการใช้ VRAM",
         showMemoryBarDescription:
           "แสดง VRAM โดยประมาณสำหรับน้ำหนักโมเดล บริบท และ speculative decoding",
+        pickerOrgs: "เลือกองค์กร",
+        pickerOrgsDescription:
+          "เลือกองค์กรที่จะมีตัวกรองในตัวเลือกโมเดล แทนองค์กรที่ระบบแนะนำจากโมเดลของคุณ",
+        pickerOrgsInTabBar: "องค์กรในแถบแท็บ",
+        pickerOrgsInTabBarDescription:
+          "แสดงตัวกรององค์กรข้างรายการโปรด สำรวจ และบนอุปกรณ์ แทนการแยกเป็นแถวของตัวเอง",
         fitOnDeviceOnly: "แสดงเฉพาะโมเดลที่ใช้ได้",
         fitOnDeviceOnlyDescription:
           "ซ่อนโมเดลที่ใหญ่เกินหน่วยความจำ GPU และ RAM ของอุปกรณ์นี้ในตัวเลือกโมเดลและ Hub โมเดลที่ดาวน์โหลดแล้วจะยังแสดงอยู่",
