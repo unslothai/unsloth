@@ -73,7 +73,10 @@ import {
   useHubModelSearch,
   useOnlineStatus,
 } from "@/features/hub";
-import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
+import {
+  useAvatarImageRetry,
+  useAvatarImageUrl,
+} from "@/features/hub/catalog/owner-avatar";
 import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
 import {
   hfCacheRepoId,
@@ -733,8 +736,8 @@ function OwnerImageMark({
   name?: string;
 }) {
   const src = useAvatarImageUrl(owner, repoName);
-  const [failed, setFailed] = useState<string | null>(null);
-  if (!src || failed === src) {
+  const image = useAvatarImageRetry(src);
+  if (!src || !image.show) {
     return (
       <ApiProviderLogo
         providerType={null}
@@ -749,7 +752,8 @@ function OwnerImageMark({
       alt=""
       aria-hidden={true}
       decoding="async"
-      onError={() => setFailed(src)}
+      onLoad={image.onLoad}
+      onError={image.onError}
       className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 rounded-[3px] object-cover"
     />
   );

@@ -49,6 +49,47 @@ function avatarImageRetryDelay(failures: number): number {
   );
 }
 
+/** Hides a URL whose <img> failed, then retries it with backoff instead of for the mount's life. */
+export function useAvatarImageRetry(url: string | null): {
+  show: boolean;
+  onLoad: () => void;
+  onError: () => void;
+} {
+  const [failedImage, setFailedImage] = useState<FailedAvatarImage | null>(
+    null,
+  );
+  const blocked =
+    Boolean(url) && failedImage?.url === url && !failedImage.retryReady;
+
+  useEffect(() => {
+    const activeFailure = url && failedImage?.url === url ? failedImage : null;
+    if (!activeFailure || activeFailure.retryReady) {
+      return;
+    }
+    const timer = globalThis.setTimeout(() => {
+      setFailedImage((current) =>
+        current?.url === url && !current.retryReady
+          ? { ...current, retryReady: true }
+          : current,
+      );
+    }, avatarImageRetryDelay(activeFailure.failures));
+    return () => globalThis.clearTimeout(timer);
+  }, [url, failedImage]);
+
+  return {
+    show: Boolean(url) && !blocked,
+    onLoad: () => setFailedImage(null),
+    onError: () => {
+      if (!url) return;
+      setFailedImage((current) => ({
+        url,
+        failures: current?.url === url ? current.failures + 1 : 1,
+        retryReady: false,
+      }));
+    },
+  };
+}
+
 export function OwnerAvatar({
   owner,
   repoName,
@@ -193,31 +234,8 @@ function DefaultAvatar({
   const initial = owned[0]?.toUpperCase() ?? "?";
   const color = ownerPaletteColor(owned);
   const remoteUrl = useHfOwnerAvatar(owned, remote);
-  const [failedImage, setFailedImage] = useState<FailedAvatarImage | null>(
-    null,
-  );
-  const imageBlocked =
-    Boolean(remoteUrl) &&
-    failedImage?.url === remoteUrl &&
-    !failedImage.retryReady;
-  const showImage = Boolean(remoteUrl) && !imageBlocked;
-
-  useEffect(() => {
-    const activeFailure =
-      remoteUrl && failedImage?.url === remoteUrl ? failedImage : null;
-    if (!activeFailure || activeFailure.retryReady) {
-      return;
-    }
-
-    const timer = globalThis.setTimeout(() => {
-      setFailedImage((current) =>
-        current?.url === remoteUrl && !current.retryReady
-          ? { ...current, retryReady: true }
-          : current,
-      );
-    }, avatarImageRetryDelay(activeFailure.failures));
-    return () => globalThis.clearTimeout(timer);
-  }, [remoteUrl, failedImage]);
+  const image = useAvatarImageRetry(remoteUrl);
+  const showImage = image.show;
 
   return (
     <span
@@ -236,17 +254,8 @@ function DefaultAvatar({
           alt=""
           decoding="async"
           className="size-full object-cover"
-          onLoad={() => setFailedImage(null)}
-          onError={() => {
-            if (!remoteUrl) {
-              return;
-            }
-            setFailedImage((current) => ({
-              url: remoteUrl,
-              failures: current?.url === remoteUrl ? current.failures + 1 : 1,
-              retryReady: false,
-            }));
-          }}
+          onLoad={image.onLoad}
+          onError={image.onError}
         />
       ) : (
         initial
