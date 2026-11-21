@@ -1082,7 +1082,9 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     let window = app.get_webview_window("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
-    window.with_webview(|webview| {
+    let handle = app.handle().clone();
+    // Runs synchronously here (setup is on the main thread), before any command is served.
+    window.with_webview(move |webview| {
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
@@ -1092,6 +1094,11 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
             );
             if !linux_webkit::smooth_scrolling_enabled(policy_never) {
                 settings.set_enable_smooth_scrolling(false);
+            }
+            // Not compositing paints on the CPU, also when WebKit turned it off itself (no variable).
+            let launch = handle.state::<gpu_rendering::LaunchState>();
+            if policy_never && launch.note_cpu_painting() {
+                info!("GPU rendering: WebKitGTK is not compositing; cpu_painting=true");
             }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
@@ -2693,13 +2700,6 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
-            #[cfg(target_os = "linux")]
-            if linux_webkit::webkit_compositing_off() {
-                let launch = app.state::<gpu_rendering::LaunchState>();
-                if launch.note_cpu_painting() {
-                    info!("GPU rendering: WebKitGTK turned compositing off; cpu_painting=true");
-                }
-            }
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
             #[cfg(target_os = "linux")]

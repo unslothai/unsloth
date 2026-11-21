@@ -29,6 +29,9 @@ const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 const SKIA_CPU_RENDERING: &str = "WEBKIT_SKIA_ENABLE_CPU_RENDERING";
 // 2.46 replaced cairo, which rasterized on the CPU, with Skia on the GPU whenever compositing is on.
 const SKIA_MIN_VERSION: (u32, u32) = (2, 46);
+// Below this the GPU look needs evidence of a hardware renderer (hardware_gl_available); from it the
+// environment alone decides, as it always has.
+const GPU_PAINTING_ASSUMED_FROM: (u32, u32) = (2, 54);
 const DRM_CLASS_DIR: &str = "/sys/class/drm";
 const DRI_DIR: &str = "/dev/dri";
 // Kernel drivers of real GPUs. Virtual ones (virtio_gpu, vmwgfx, vboxvideo) are left out: without
@@ -36,6 +39,15 @@ const DRI_DIR: &str = "/dev/dri";
 const HARDWARE_GPU_DRIVERS: &[&str] = &[
     "amdgpu", "asahi", "etnaviv", "i915", "lima", "msm", "nouveau", "nvidia", "panfrost",
     "panthor", "powervr", "radeon", "v3d", "xe",
+];
+// Operator choices of GL driver or EGL vendor. Any of them can put WebKit on llvmpipe over a real
+// GPU's render node (a Mesa-only vendor list on an NVIDIA host does), so they void the evidence.
+const GL_SELECTION_OVERRIDES: &[&str] = &[
+    "LIBGL_ALWAYS_SOFTWARE",
+    "GALLIUM_DRIVER",
+    "MESA_LOADER_DRIVER_OVERRIDE",
+    "__EGL_VENDOR_LIBRARY_FILENAMES",
+    "__EGL_VENDOR_LIBRARY_DIRS",
 ];
 // Composited video goes through GStreamer GL, which cannot create a context on NVIDIA with the
 // AppImage's bundled GStreamer: frames stay black. Without it WebKit uses the sink main already uses.
@@ -216,18 +228,18 @@ fn compositing_disabled_by(value: &OsStr) -> bool {
 /// Whether this launch's web process paints on the CPU, read from the environment it inherits.
 /// Skia's CPU path re-blurs every CSS shadow on each repaint, so the frontend flattens large
 /// blurred shadows to a 1px edge. True when unsure: a flat edge costs a GPU path only its softness.
-/// Compositing that WebKit turns off itself is caught after GTK starts (`webkit_compositing_off`).
+/// Compositing that WebKit turns off itself shows in the view's policy, read at setup.
 fn paints_on_cpu(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
     gpu: GpuInputs,
     hardware_gl: bool,
 ) -> bool {
-    let (major, minor, _) = webkit_version;
+    let version = (webkit_version.0, webkit_version.1);
     if gpu.unsafe_flag
         || gpu.setting == GpuRendering::Off
-        || (major, minor) < SKIA_MIN_VERSION
-        || !hardware_gl
+        || version < SKIA_MIN_VERSION
+        || (version < GPU_PAINTING_ASSUMED_FROM && !hardware_gl)
     {
         return true;
     }
@@ -243,11 +255,21 @@ fn paints_on_cpu(
             .is_some_and(compositing_disabled_by)
 }
 
-/// Whether WebKit can render on a GPU: a render node this user may open whose kernel driver is a
-/// GPU's (NVIDIA's comes from nvidia-drm). Without one WebKit composites on Mesa's llvmpipe, which
-/// paints slower than Skia's own CPU path. The NVIDIA module alone is no proof: a container sees the
-/// host's /proc/driver/nvidia, and even with its devices passed in, glvnd needs the vendor file.
-fn hardware_gl_available(drm_class_dir: &Path, dri_dir: &Path) -> bool {
+/// Evidence that WebKit renders on a GPU: a render node this user may open whose kernel driver is a
+/// GPU's (NVIDIA's comes from nvidia-drm), and no operator choice of GL driver or EGL vendor. Its
+/// absence proves nothing (NVIDIA's EGL renders with /dev/dri hidden), so it only lifts the CPU
+/// assumption below 2.54: without a GPU, WebKit there composites on llvmpipe, slower than Skia's CPU.
+fn hardware_gl_available(
+    env: impl Fn(&str) -> Option<OsString>,
+    drm_class_dir: &Path,
+    dri_dir: &Path,
+) -> bool {
+    if GL_SELECTION_OVERRIDES
+        .iter()
+        .any(|name| env(name).is_some())
+    {
+        return false;
+    }
     let Ok(entries) = std::fs::read_dir(drm_class_dir) else {
         return false;
     };
@@ -272,18 +294,6 @@ fn node_accessible(path: &Path) -> bool {
         return false;
     };
     unsafe { libc::access(path.as_ptr(), libc::R_OK | libc::W_OK) == 0 }
-}
-
-/// WebKit turns compositing off itself when its own checks fail (NVIDIA X11 without our variables,
-/// no usable EGL display), which no variable shows. Before 2.54 the policy also reads NEVER under
-/// DISABLE_COMPOSITING. A fresh WebKitSettings starts from the view's decision, since wry leaves the
-/// policy alone. Needs GTK initialized.
-pub fn webkit_compositing_off() -> bool {
-    use webkit2gtk::SettingsExt;
-    matches!(
-        webkit2gtk::Settings::new().hardware_acceleration_policy(),
-        webkit2gtk::HardwareAccelerationPolicy::Never
-    )
 }
 
 /// TextureMapper (before Skia in 2.54) blurs later layers into a backdrop-filter: index.css `webkit-legacy-compositor`.
@@ -658,7 +668,7 @@ pub struct RendererDecision {
     pub webkit_version: (u32, u32, u32),
     pub wayland_session: bool,
     pub nvidia_driver_branch: Option<u32>,
-    /// Whether WebKit can reach a GPU for GL (see `hardware_gl_available`).
+    /// Evidence of a hardware GL renderer (see `hardware_gl_available`).
     pub hardware_gl: bool,
     /// Whether the web process paints on the CPU, from the environment this launch hands it.
     pub cpu_painting: bool,
@@ -693,7 +703,7 @@ pub fn configure_renderer(
     let nvidia = nvidia_driver_branch();
     let wayland_socket = wayland_socket_present();
     let x11_open = x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR);
-    let hardware_gl = hardware_gl_available(Path::new(DRM_CLASS_DIR), Path::new(DRI_DIR));
+    let hardware_gl = hardware_gl_available(&env, Path::new(DRM_CLASS_DIR), Path::new(DRI_DIR));
     let mut decision = RendererDecision {
         applied: None,
         gpu_path: None,
@@ -2634,12 +2644,23 @@ mod tests {
     }
 
     #[test]
-    fn without_hardware_gl_the_gpu_path_paints_on_the_cpu() {
-        // No GPU WebKit can reach: it composites on llvmpipe, at every version.
+    fn below_2_54_the_gpu_look_needs_hardware_gl_evidence() {
+        // Without evidence 2.46 to 2.53 keep the CPU assumption; from 2.54 the environment decides,
+        // since a missing render node proves nothing (NVIDIA's EGL renders with /dev/dri hidden).
         let env = |_: &str| None;
-        for version in [WEBKIT_BUNDLED, WEBKIT_2_54] {
+        for (version, without_evidence) in [
+            (WEBKIT_BUNDLED, true),
+            ((2, 52, 6), true),
+            (WEBKIT_2_53, true),
+            ((2, 54, 0), false),
+            (WEBKIT_2_54, false),
+        ] {
             assert!(!paints_on_cpu(env, version, GpuInputs::default(), true));
-            assert!(paints_on_cpu(env, version, GpuInputs::default(), false));
+            assert_eq!(
+                paints_on_cpu(env, version, GpuInputs::default(), false),
+                without_evidence,
+                "{version:?}"
+            );
         }
     }
 
@@ -2654,7 +2675,7 @@ mod tests {
             let target = format!("../../../bus/pci/drivers/{driver}");
             std::os::unix::fs::symlink(target, device.join("driver")).unwrap();
         };
-        let available = || hardware_gl_available(&class, &dri);
+        let available = || hardware_gl_available(|_| None, &class, &dri);
         // No DRM device at all: a VM without a virtual GPU.
         assert!(!available());
         // A primary node is not a render node.
@@ -2666,10 +2687,16 @@ mod tests {
         std::fs::write(dri.join("renderD128"), "").unwrap();
         assert!(!available());
         // A real GPU's render node that /dev/dri lacks (a container without --device).
-        node("renderD129", "amdgpu");
+        node("renderD129", "nvidia");
         assert!(!available());
         std::fs::write(dri.join("renderD129"), "").unwrap();
         assert!(available());
+        // An operator's GL driver or EGL vendor choice voids it: a Mesa-only vendor list renders
+        // on llvmpipe over NVIDIA's render nodes.
+        for name in GL_SELECTION_OVERRIDES {
+            let env = |key: &str| (key == *name).then(|| OsString::from("1"));
+            assert!(!hardware_gl_available(env, &class, &dri), "{name}");
+        }
     }
 
     #[test]
