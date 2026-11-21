@@ -41,7 +41,7 @@ const EGL_VENDOR_DIRS: [&str; 2] = ["/etc/glvnd/egl_vendor.d", "/usr/share/glvnd
 // out: without host 3D their Mesa driver falls back to llvmpipe behind the same render node.
 const MESA_GPU_DRIVERS: &[&str] = &[
     "amdgpu", "asahi", "etnaviv", "i915", "lima", "msm", "nouveau", "panfrost", "panthor",
-    "powervr", "radeon", "v3d", "xe",
+    "radeon", "v3d", "xe",
 ];
 // Operator choices of GL driver or EGL vendor. Any of them can put WebKit on llvmpipe on a host
 // with a GPU (a Mesa-only vendor list on an NVIDIA host does), so they void the evidence.
