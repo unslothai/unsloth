@@ -16,6 +16,8 @@ if kernel is None:
     pytest.skip("Triton is not installed", allow_module_level = True)
 
 try:
+    import inspect
+
     from triton._C.libtriton import ir
     from triton.backends.compiler import GPUTarget
     from triton.compiler import ASTSource
@@ -23,7 +25,13 @@ try:
 
     _TARGET = GPUTarget("cuda", 80, 32)
     make_backend(_TARGET)
+    # Triton 3.2 takes ``constants=``, 3.3 a ``make_ir`` without the target: lower only through the API used below.
+    _api_ok = "constexprs" in inspect.signature(ASTSource.__init__).parameters and (
+        "target" in inspect.signature(ASTSource.make_ir).parameters
+    )
 except Exception:  # noqa: BLE001 -- a Triton without the NVIDIA backend or this API
+    _api_ok = False
+if not _api_ok:
     pytest.skip("this Triton cannot lower to TTIR offline", allow_module_level = True)
 
 _STRIDES = {"sqb", "sqs", "skb", "sks", "svb", "svs", "scs"}

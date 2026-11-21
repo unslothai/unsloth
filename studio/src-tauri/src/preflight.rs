@@ -9,7 +9,7 @@ use crate::desktop_backend_owner::{
 };
 use backend::probe_existing_backends;
 use log::{info, warn};
-pub use managed::managed_install_ready;
+pub use managed::managed_install_not_ready_reason;
 pub(crate) use managed::start_launch_cli_probe;
 use managed::probe_managed_install;
 use std::path::PathBuf;

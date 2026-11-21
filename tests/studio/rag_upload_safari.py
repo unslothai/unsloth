@@ -7,13 +7,16 @@ import time
 from pathlib import Path
 
 from selenium import webdriver
+from selenium.common.exceptions import SessionNotCreatedException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+
+from _playwright_robust import open_session_with_retry
 
 
 class SafariBrowser:
     def __init__(self, root):
-        self.driver = webdriver.Safari()
+        self.driver = open_session_with_retry(webdriver.Safari, retry_on = SessionNotCreatedException)
         self.driver.set_script_timeout(15)
         self.version = self.driver.capabilities.get("browserVersion", "unknown")
         self.root = Path(root)

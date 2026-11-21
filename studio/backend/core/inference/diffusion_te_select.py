@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Prompt encodes that read a few hidden states keep only those (UNSLOTH_DIFFUSION_TE_SELECT_HIDDEN=0 disables).
-
-The encoder runs with ``output_hidden_states=False`` and hooks record only the requested layers; reading any other
-index raises ``SelectionError`` so the caller re-runs stock."""
+"""Prompt encodes reading few hidden states keep only those: encoder runs with
+output_hidden_states=False and hooks record requested layers; other index raises SelectionError
+so caller re-runs stock; UNSLOTH_DIFFUSION_TE_SELECT_HIDDEN=0 disables"""
 
 from __future__ import annotations
 
@@ -84,10 +83,9 @@ def plan(
     *,
     last_pre_norm: bool = False,
 ) -> Optional[dict]:
-    """``{"length", "layers": {k: stack slot}, "norm"}`` for the requested indices, or None (run stock).
-
-    Entry ``k`` (1 <= k < n) is decoder layer ``k - 1``'s output; entry ``n`` (or -1) only with ``last_pre_norm``,
-    the caller's guarantee that its stock reading is the final norm's input. Entry 0 (embeddings) is not handled."""
+    """Returns {length, layers: {k: stack slot}, norm} or None (run stock); entry k is decoder layer
+    k-1 output (1 <= k < n); entry n or -1 only with last_pre_norm, caller guaranteeing
+    final-norm input; entry 0 unhandled"""
     import torch
 
     if not enabled() or not isinstance(encoder, torch.nn.Module):

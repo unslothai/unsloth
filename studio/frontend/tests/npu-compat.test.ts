@@ -86,13 +86,15 @@ test("an unread FastFlowLM or converter, or no architecture, gives no tag", () =
   assert.equal(npuFit(FLM_1_0_12, null, "x").tag, null);
 });
 
-test("the composer picker and the Hub tag each FastFlowLM catalog row with the same text", () => {
-  for (const path of [
-    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
-    "features/hub/catalog/npu-catalog-list.tsx",
-  ]) {
-    assert.match(readSrc(path), /NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/, path);
-  }
+test("the Hub tags each FastFlowLM catalog row; the composer picker tags only rows outside its NPU section", () => {
+  assert.match(
+    readSrc("features/hub/catalog/npu-catalog-list.tsx"),
+    /NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/,
+  );
+  assert.match(
+    readSrc("components/assistant-ui/composer-model-picker/composer-model-picker.tsx"),
+    /listSections\.includes\("npu"\)\) \? \([\s\S]{0,200}NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/,
+  );
 });
 
 test("a basename-routed model is judged by its file name too, not only its repo", () => {

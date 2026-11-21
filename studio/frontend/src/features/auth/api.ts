@@ -396,6 +396,13 @@ async function runRefresh(
         return "unavailable";
       }
       const stale = superseded();
+      // The server re-rotates a just-spent token, so a racing peer's pair may land first: use it.
+      if (
+        stale === "unavailable" &&
+        peerSessionMark !== undefined &&
+        (await peerRotated(refreshToken, startGeneration, peerSessionMark))
+      )
+        return "ok";
       if (stale) return stale;
       storeAuthTokens(payload.access_token, payload.refresh_token, preserveSessionMark);
       setMustChangePassword(payload.must_change_password ?? false);

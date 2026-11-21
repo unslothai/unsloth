@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The welcome greeting's halo darkens a background image behind the text. Glass with no image draws a
-// plain backdrop in the page colour, where the halo is the same colour as what it covers: it changed
-// nothing, and its blending rounded a step dark in places, drawing rings around the greeting.
+// The halo is applied only with an image: without one it matches the page and draws rings.
 
 import assert from "node:assert/strict";
 import test from "node:test";

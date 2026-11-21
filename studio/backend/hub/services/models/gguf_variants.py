@@ -1017,7 +1017,10 @@ async def _audio_cpp_variants_answer(
 
     text = (repo_id or "").strip()
     umbrella = audio_cpp_models.is_umbrella_id(text)
-    if not umbrella and not (_is_valid_repo_id(text) and text.lower().startswith("audio-cpp/")):
+    if not umbrella and not (
+        _is_valid_repo_id(text)
+        and (text.lower().startswith("audio-cpp/") or audio_cpp_models.spec_vouched_family(text))
+    ):
         return None
     real_repo = audio_cpp_models.repo_of(text) or text
     network = not (offline or audio_cpp_models.hub_offline())
@@ -1040,7 +1043,8 @@ async def _audio_cpp_variants_answer(
         if umbrella:
             raise HTTPException(status_code = 404, detail = f"No GGUF variants found in {text}.")
         return None
-    if not umbrella and not model.is_package:
+    packaged = model.is_package or model.spec_packaged
+    if not umbrella and not packaged:
         return None
     from core.inference import audio_cpp_files
 
@@ -1080,7 +1084,7 @@ async def _audio_cpp_variants_answer(
             downloaded = companions_cached and audio_cpp_files.cached_files(row_model) is not None
             partial = False
             remaining = None
-            key = variant.key if model.is_package else gguf_variant_key(variant.primary)
+            key = variant.key if packaged else gguf_variant_key(variant.primary)
             if not downloaded:
                 missing_files = audio_cpp_files.missing_files(row_model)
                 missing = {path for path, _size in missing_files}
@@ -1106,7 +1110,7 @@ async def _audio_cpp_variants_answer(
                 if partial:
                     remaining = (
                         None
-                        if model.is_package
+                        if packaged
                         else variant_remaining_bytes_from_state(model.repo_id, key, None)
                     )
                     if remaining is None:

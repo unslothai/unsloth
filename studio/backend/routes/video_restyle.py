@@ -184,8 +184,7 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
         raise HTTPException(status_code = 409, detail = f"{exc} Try again when it finishes.")
     finally:
         video_restyle.runner.release(kwargs.get("reservation"))
-    # Launched here, inside the shielded call: a request cancelled after start() must not leave
-    # an active runner with no worker.
+    # Start inside shielded call: a cancelled request must not leave a runner without a worker.
     account_thread(
         target = video_restyle.runner.run,
         args = (job, _save_to_gallery),
@@ -196,10 +195,9 @@ def _admit_and_start(**kwargs: Any) -> dict[str, Any]:
 
 
 def _take_the_gpu(mode: Optional[str] = None) -> None:
-    # The restyle sd-server (~30 GB) is a video workload: chat and image models go through the
-    # arbiter's eviction; the Create video model, which shares the VIDEO owner, is checked in ``admit``
-    # (under the arbiter lock, so a Create load cannot register in between) and unloaded in
-    # ``register``, which runs only once every other refusal has passed.
+    # The restyle sd-server (~30 GB) is video work: chat and image models evict; Create video is
+    # checked in admit under the arbiter lock, then unloaded in register once every other refusal
+    # passed.
     from core.inference import gpu_arbiter
     from core.inference.video import generation_account_in_flight, get_video_backend
     from utils.multi_model_settings import get_multi_model_mode

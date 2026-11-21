@@ -243,18 +243,20 @@ def test_companion_base_must_be_the_same_release(tmp_path, monkeypatch):
     backend.validate_load_request("vantagewithai/LTX-2.5-GGUF", base_repo = str(folder), **ltx25)
 
 
-def test_training_still_refuses_ltx25(tmp_path):
+def test_training_routes_ltx25_to_its_own_family(tmp_path):
     from core.training.diffusion_train_common import resolve_trainable_family
 
-    for family in (None, "ltx-2", "ltx-2.5"):
-        with pytest.raises(ValueError, match = r"ltx-2\.5|LTX-2\.5"):
-            resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", family)
+    for family in (None, "ltx-2.5"):
+        assert resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", family) == "ltx-2.5"
+    # The LTX-2 trainer never takes 2.5 weights, by name or by model_index.json.
+    with pytest.raises(ValueError, match = r"ltx-2\.5|LTX-2\.5"):
+        resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", "ltx-2")
     folder = tmp_path / "my-video-base"
     folder.mkdir()
     _write_index(folder, "Gemma4UnifiedForConditionalGeneration")
-    for family in (None, "ltx-2"):
-        with pytest.raises(ValueError, match = "model_index.json"):
-            resolve_trainable_family(str(folder), family)
+    assert resolve_trainable_family(str(folder)) == "ltx-2.5"
+    with pytest.raises(ValueError, match = "model_index.json"):
+        resolve_trainable_family(str(folder), "ltx-2")
     _write_index(folder, "Gemma3ForConditionalGeneration")
     assert resolve_trainable_family(str(folder), "ltx-2") == "ltx-2"
 

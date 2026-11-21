@@ -15,8 +15,7 @@ from mcp_server import create_studio_mcp, surface, withheld
 from studio_mcp import surface as text_surface
 from studio_mcp.profile import AGENT, CHAT, CallerProfile, OUTLIVES_CALL
 
-# What the chat model reads on every message, in characters. 52,513 before profiles, 47,499 with
-# them; lower it when the surface shrinks, never raise it to fit.
+# Chat model's per-message read budget; lower it as the surface shrinks, never raise it.
 CHAT_BUDGET_CHARS = 48_000
 
 

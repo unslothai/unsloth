@@ -88,9 +88,8 @@ def _placeholder_aware(name, original):
     def init(self, adapter_name, *args, **kwargs):
         if not base_is_placeholder(self):
             return original(self, adapter_name, *args, **kwargs)
-        # Another rank owns this layer: computing on the zero placeholder would densify it (fp32 copy plus a
-        # full residual) for an adapter the split drops. Keep the global RNG in step with a full load:
-        # PEFT's pissa_niter_N draws one sketch through torch.svd_lowrank (the other inits draw nothing).
+        # Another rank owns this layer: a zero placeholder would densify it; keep the global RNG in
+        # step with a full load (PEFT pissa_niter_N draws one sketch via torch.svd_lowrank).
         init_lora_weights = args[0] if args else kwargs.get("init_lora_weights")
         if (
             name == "pissa_init"
@@ -258,9 +257,8 @@ def check_preloaded_split(model, pp_mesh, schedule, stages_per_rank, bounds, loc
 
 
 def loaded_by(parts, spec, pp, stages_per_rank, bounds):
-    """{id(parameter): pp ranks that read it} for parameters under a layer, the embedding or the head (the rest
-    was read everywhere). Weight-derived trainable tensors are synced only among these ranks, never from a
-    placeholder copy."""
+    """{id(parameter): pp ranks that read it} for params under a layer, embedding or head;
+    weight-derived trainable tensors sync only among those ranks, never from a placeholder."""
     from .pp_schedules import stage_indices
 
     per_rank = [stage_indices(spec, r, pp, stages_per_rank) for r in range(pp)]

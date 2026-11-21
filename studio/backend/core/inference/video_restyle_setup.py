@@ -102,16 +102,57 @@ def installed_files(root: Optional[Path] = None) -> Optional[tuple[str, str]]:
 # ---- hardware -------------------------------------------------------------------------------------------------
 
 
-def hardware_plan(*, platform: Optional[str] = None, devices: Any = "probe") -> dict[str, Any]:
+def _metal_working_set() -> Optional[int]:
+    from utils.hardware import is_apple_silicon
+
+    if not is_apple_silicon():
+        return None
+    from core.inference.mlx_diffusion_backend import working_set_bytes
+
+    return working_set_bytes()
+
+
+def _sized_plan(vram: float, short: str) -> dict[str, Any]:
+    """``short``: the refusal's first sentence, with ``need`` and ``have`` (GB)."""
+    if vram >= BF16_MIN_VRAM_GIB:
+        return {"weights": "bf16", "vram_gib": round(vram, 1), "refusal": None}
+    if vram >= Q8_MIN_VRAM_GIB:
+        return {"weights": "q8_0", "vram_gib": round(vram, 1), "refusal": None}
+    return {
+        "weights": None,
+        "vram_gib": round(vram, 1),
+        "refusal": (
+            short.format(need = f"{Q8_MIN_VRAM_GIB:.0f}", have = f"{vram:.1f}")
+            + " The model uses about 29 GB with 8-bit weights and about 40 GB in bf16."
+        ),
+    }
+
+
+def hardware_plan(
+    *,
+    platform: Optional[str] = None,
+    devices: Any = "probe",
+    working_set: Any = "probe",
+) -> dict[str, Any]:
     """{weights: "bf16" | "q8_0" | None, refusal: str | None, vram_gib}. ``devices`` is
-    utils.hardware.nvidia.get_cuda_device_info()'s answer: [] no CUDA device, None unknown (not refused)."""
+    utils.hardware.nvidia.get_cuda_device_info()'s answer: [] no CUDA device, None unknown (not refused).
+    On a Mac, ``working_set`` is Metal's recommended working set in bytes, None without Apple Silicon."""
     platform = sys.platform if platform is None else platform
     if platform == "darwin":
-        return {
-            "weights": None,
-            "vram_gib": None,
-            "refusal": "Restyle needs an NVIDIA GPU with CUDA, so it cannot run on a Mac.",
-        }
+        if working_set == "probe":
+            working_set = _metal_working_set()
+        if not working_set:
+            return {
+                "weights": None,
+                "vram_gib": None,
+                "refusal": "Restyle on a Mac needs Apple Silicon and a native (arm64) Unsloth install.",
+            }
+        # The working set (2/3 to 3/4 of RAM) bounds the whole footprint, measured at 121 frames in bf16 on an M3 Max:
+        # 29.2 GiB on Metal + 11.1 GiB for a CPU-side VAE, or 41.4 GiB all on Metal with an IM2COL_3D build.
+        return _sized_plan(
+            int(working_set) / _GIB,
+            "Restyle needs at least {need} GB of GPU memory; this Mac's GPU can use {have} GB.",
+        )
     if devices == "probe":
         try:
             from utils.hardware.nvidia import get_cuda_device_info
@@ -131,19 +172,10 @@ def hardware_plan(*, platform: Optional[str] = None, devices: Any = "probe") -> 
     if first is None:
         return {"weights": "bf16", "vram_gib": None, "refusal": None}
     # sd-server renders on the first visible CUDA device.
-    vram = int(first[2]) / _GIB
-    if vram >= BF16_MIN_VRAM_GIB:
-        return {"weights": "bf16", "vram_gib": round(vram, 1), "refusal": None}
-    if vram >= Q8_MIN_VRAM_GIB:
-        return {"weights": "q8_0", "vram_gib": round(vram, 1), "refusal": None}
-    return {
-        "weights": None,
-        "vram_gib": round(vram, 1),
-        "refusal": (
-            f"Restyle needs a GPU with at least {Q8_MIN_VRAM_GIB:.0f} GB of memory; this one has "
-            f"{vram:.1f} GB. The model uses about 29 GB with 8-bit weights and about 40 GB in bf16."
-        ),
-    }
+    return _sized_plan(
+        int(first[2]) / _GIB,
+        "Restyle needs a GPU with at least {need} GB of memory; this one has {have} GB.",
+    )
 
 
 # ---- safetensors merge and rename ------------------------------------------------------------------------------
@@ -372,15 +404,16 @@ def _was_cached(repo_id: str, filename: str, revision: Optional[str]) -> bool:
 
 
 def _remove_cached(path: str, repo_dir: Optional[Path] = None) -> None:
-    """Drop a shard this setup downloaded from Studio's Hub cache: the snapshot entry, and its blob unless another
-    snapshot of the repo still links to it. A path outside Studio's cache for this repo is left alone."""
+    """Drop a shard this setup downloaded from Studio's Hub cache: the snapshot entry, and its blob unless any other
+    snapshot link of the repo still resolves to it (blobs are content-addressed, so another revision may hold the same
+    blob under a different file name). A path outside Studio's cache for this repo is left alone."""
     repo_dir = _hub_repo_dir() if repo_dir is None else repo_dir
     if repo_dir is None:
         return
     p = Path(path)
     snapshots = repo_dir / "snapshots"
     try:
-        rel = p.relative_to(snapshots)
+        p.relative_to(snapshots)
     except ValueError:
         logger.info("restyle setup: %s is outside Studio's cache for that repo; kept", path)
         return
@@ -389,9 +422,7 @@ def _remove_cached(path: str, repo_dir: Optional[Path] = None) -> None:
         p.unlink(missing_ok = True)
         if target is None or not target.is_relative_to(repo_dir / "blobs"):
             return
-        inner = Path(*rel.parts[1:])
-        for snap in snapshots.iterdir():
-            other = snap / inner
+        for other in snapshots.rglob("*"):
             if other.is_symlink() and other.resolve() == target:
                 return
         target.unlink(missing_ok = True)
@@ -539,10 +570,9 @@ class RestyleSetup:
             for (repo, _, f), size in zip(wanted, sizes)
             if size > 0 and _blob_bytes(_hub_blob_dir(repo), f.get("sha256"), final = True) >= size
         )
-        # Room for what is left to download, the merged transformer, the VAE and (8-bit) the GGUF. Each output is
-        # written to .partial and replaces its file only once verified, so an existing copy still holds its space
-        # while the new one is written: outputs a failed run left (no record) are removed first, and a recorded
-        # setup's outputs are kept and not counted as free.
+        # Outputs go to .partial and replace their file only once verified, so an existing copy
+        # keeps its space meanwhile; unrecorded leftovers are removed first; recorded outputs are
+        # kept, not counted free.
         if not (root / RECORD_NAME).exists():
             for leftover in _outputs(root):
                 leftover.unlink(missing_ok = True)

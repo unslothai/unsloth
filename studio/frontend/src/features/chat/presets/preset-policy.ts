@@ -383,48 +383,26 @@ export function resolveLoadMaxSeqLength({
   ggufVariant,
   isGguf,
   customContextLength,
-  loadedContextLength,
-  currentCheckpoint,
-  activeGgufVariant,
   isMlx,
   pinnedMaxSeqLength,
   defaultMaxSeqLength,
-  presetSource,
-  loadedContextPin = null,
 }: {
   modelId: string;
   ggufVariant?: string | null;
   isGguf?: boolean | null;
   customContextLength: number | null;
-  loadedContextLength: number | null;
-  currentCheckpoint: string;
-  activeGgufVariant?: string | null;
   isMlx?: boolean | null;
   pinnedMaxSeqLength: number | null;
   defaultMaxSeqLength: number;
-  presetSource: ChatPresetSource;
-  /** `loadedCustomContextLength`: the context the resident server was pinned to, or null when
-   *  it was loaded on Auto. */
-  loadedContextPin?: number | null;
 }): number {
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
   const isGgufLoad = isGguf === true || ggufVariant != null || isDirectGgufFile;
-  const isReloadingCurrentGguf =
-    isGgufLoad &&
-    currentCheckpoint === modelId &&
-    (ggufVariant ?? null) === (activeGgufVariant ?? null);
 
   if (customContextLength != null) {
     return customContextLength;
   }
-  if (isGgufLoad && presetSource === "builtin-default") {
-    return 0;
-  }
-  // Keeping the resident size only holds an Auto window steady. When that size was a pin, Auto is
-  // a request to drop it, and resending it made the reload a no-op that kept the old context.
-  if (isReloadingCurrentGguf) {
-    return loadedContextPin != null ? 0 : (loadedContextLength ?? 0);
-  }
+  // Auto fits every GGUF load again, a same-model reload included: the resident window was sized
+  // for the KV cache type, projector and GPUs it launched with, and the reload may change them.
   if (isGgufLoad) {
     return 0;
   }
@@ -530,14 +508,6 @@ export function resolveFitMaxSeqLength(
 ): number {
   if (!isGguf || gpuMemoryMode !== "manual" || gpuLayers >= 0) return fallback;
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
-}
-
-export function isReplayedLoadContext(
-  isGguf: boolean | null | undefined,
-  customContextLength: number | null,
-  maxSeqLength: number,
-): boolean {
-  return isGguf === true && customContextLength == null && maxSeqLength > 0;
 }
 
 /** The user's explicit Context Length or null; never derived from the wire n_ctx. */

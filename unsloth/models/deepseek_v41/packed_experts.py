@@ -37,8 +37,7 @@ def converted_experts_format(path):
 
 
 def zoo_saves_mxfp4_dense():
-    """True when unsloth_zoo's save patch (dequantize packed MXFP4 experts on a full save) is in the
-    PreTrainedModel.save_pretrained wrapper chain."""
+    """True if unsloth_zoo's MXFP4 dequantize-on-save patch wraps save_pretrained."""
     fn, seen = PreTrainedModel.save_pretrained, set()
     while fn is not None and id(fn) not in seen:
         seen.add(id(fn))

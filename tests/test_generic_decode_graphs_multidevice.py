@@ -147,8 +147,7 @@ def test_single_card_model_records_without_other_cards(two_cards, llama, monkeyp
     not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two CUDA GPUs"
 )
 def test_real_two_card_capture_matches_eager():
-    """A tiny Llama split over cuda:0 / cuda:1 with accelerate's dispatch: one multi-card graph,
-    tokens and logits equal to the eager step."""
+    """Tiny Llama split over two cards: one multi-card graph, tokens and logits match eager."""
     from accelerate import dispatch_model
 
     torch.manual_seed(0)
@@ -376,9 +375,8 @@ def _graph_block_mask(device = "cpu"):
 
 
 def test_graph_block_mask_moves_its_closure_tensors_to_the_layer_card(monkeypatch):
-    # Split model + flex decode: the static BlockMask is built on card 0 and accelerate moves it to card 1's
-    # layers. BlockMask.to leaves mask_mod's tensors on card 0 (the gpt-oss "Tensor device mismatch ...
-    # cuda:1 and cuda:0" at kv_idx + kv_o), so both the warm-up and the recording move them as well.
+    # Split model, flex decode: the static BlockMask is built on card 0 and BlockMask.to leaves
+    # mask_mod's tensors there (gpt-oss device mismatch), so warm-up and recording move them.
     pytest.importorskip("torch.nn.attention.flex_attention")
     cards = _HostCards()
     monkeypatch.setattr(GG, "_BACKEND", cards)

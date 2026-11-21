@@ -46,8 +46,7 @@ export function shouldShowCompactionNotice(
 }
 
 /**
- * What a compaction did, for the notice in the thread. Local models keep "compacted"; a cloud
- * connection says whether history was summarized (and by whom) or turns had to be dropped.
+ * Notice kind: local models say compacted; a cloud connection says summarized (by whom) or dropped.
  */
 export type CompactionNoticeKind =
   | "compacted"

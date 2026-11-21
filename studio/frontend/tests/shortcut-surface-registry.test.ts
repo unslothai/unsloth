@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Shortcut availability is asked on every press and every menu re-render. Each check used to be a
-// document query, a whole-tree walk that on a long chat cost tens of ms per press. The elements the
-// checks look for now register themselves, so a check reads those plus what sits outside the app
-// root, and never walks the root's subtree.
+// Checks read self-registered elements plus what sits outside the app root, never its subtree; a
+// whole-tree walk cost tens of ms per press on a long chat.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";

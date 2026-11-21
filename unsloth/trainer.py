@@ -80,7 +80,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check")
+    __slots__ = ("_checked_video_paths", "_padding_free", "_deferring_check", "_mm_rope_index")
 
     def __init__(
         self,
@@ -91,9 +91,12 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
         self._padding_free = bool(padding_free)
+        self._mm_rope_index = None
         if self._padding_free:
             from unsloth.utils.mm_packing import prepare_packed_multimodal_model
-            prepare_packed_multimodal_model(args[0] if args else kwargs.get("model"))
+            self._mm_rope_index = prepare_packed_multimodal_model(
+                args[0] if args else kwargs.get("model")
+            )
 
     @property
     def padding_free(self):
@@ -113,7 +116,11 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
                 _UnslothVisionDataCollatorBase, "_check_supervised"
             ):
                 self._check_supervised(*_stack_rows(docs))
-            return pack_multimodal_documents(docs, ignore_index = self.ignore_index)
+            return pack_multimodal_documents(
+                docs,
+                ignore_index = self.ignore_index,
+                rope_index = getattr(self, "_mm_rope_index", None),
+            )
         return self._collate_unpacked(examples)
 
     def _check_supervised(
@@ -2029,6 +2036,12 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 add_mfu_callback(self)
             except Exception as exc:
                 logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
+        if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+            try:
+                from .utils.run_report import install_memory_report
+                install_memory_report(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable the memory report ({exc}).")
 
     return new_init
 
@@ -2164,9 +2177,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
             is_ring_context_parallel = cp_backend == "ring"
-            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
-            # automatic padding-free choice would fail the first CP step.
-            # A deferred (string) model is classified by its resolved config's model types.
+            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses refuse packed batches (auto
+            # padding-free would fail); string models are classified by their config's model types.
             if cp_backend == "ulysses":
                 from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
                 ulysses_packing_blocker = _ulysses_packing_blocker(
@@ -2448,7 +2460,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if is_hybrid and hybrid_opt_in_device is not None:
                 print(
                     f"🦥 Unsloth: Packing enabled on {hybrid_opt_in_device} through "
-                    f"{_HYBRID_PACKING_ENV_VAR}=1 (on by default only on CUDA). The speedup "
+                    f"{_HYBRID_PACKING_ENV_VAR}=1 (not on by default on this device). The speedup "
                     "depends on this device's attention kernels, so compare seconds per step "
                     "against packing = False."
                 )
@@ -2466,6 +2478,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
             print(message)
 
         install_token_budget(self)
+        # Outermost wrapper, so it sees each micro-batch before UNSLOTH_TOKEN_BUDGET splits it.
+        if os.environ.get("UNSLOTH_BATCH_REPORT", "0") != "0":
+            try:
+                from .utils.run_report import install_batch_report
+                install_batch_report(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable the batch report ({exc}).")
 
         # get_peft_model installs a pre-train forward detector for plain LoRA/vision models, but only RL
         # trainers run the reset via prepare_for_training_mode, so wire it into the SFT train() path too,

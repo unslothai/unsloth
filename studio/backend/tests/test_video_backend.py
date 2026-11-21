@@ -1919,12 +1919,12 @@ def test_load_installs_the_vae_sync_on_mps(fake_runtime, monkeypatch, device, ho
         torch,
         device,
         types.SimpleNamespace(
-            synchronize = lambda: syncs.append(1),
             recommended_max_memory = lambda: 64 * 1024**3,
             driver_allocated_memory = lambda: 0,
         ),
         raising = False,
     )
+    monkeypatch.setattr("core.inference.diffusion_device.mps_synchronize", lambda: syncs.append(1))
     monkeypatch.setattr(
         "core.inference.video.resolve_diffusion_device_target",
         lambda: DiffusionDeviceTarget(
@@ -11586,9 +11586,7 @@ def _patch_events(
     done: bool = False,
     run_ahead: bool = True,
 ):
-    """Hand out fake CUDA events, optionally already complete. Returns the list they land in.
-
-    ``run_ahead`` lets the host outrun events that never finish, as it does when the hold is skipped."""
+    """Fake CUDA events, optionally done; run_ahead lets the host outrun events that never finish."""
     import core.inference.video as video_mod
 
     if run_ahead:

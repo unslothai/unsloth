@@ -266,12 +266,14 @@ if _IS_MLX:
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
             fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
+            fix_transformers_mistral_regex_hub_error as _fix_mistral_hub,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
         _fix_vocab_paths()
-        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
+        _fix_mistral_hub()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths, _fix_mistral_hub
     except Exception:
         pass
     try:
@@ -487,19 +489,31 @@ if _IS_MLX:
 
     is_bf16_supported = is_bfloat16_supported
 
+    def _mlx_memory_fn(name):
+        import mlx.core as mx
+
+        fn = getattr(mx, name, None)
+        if fn is None and hasattr(mx, "metal"):
+            fn = getattr(mx.metal, name, None)
+        return fn if callable(fn) else None
+
+    def _mlx_memory_bytes(name):
+        fn = _mlx_memory_fn(name)
+        return int(fn()) if fn is not None else 0
+
+    def _mlx_peak_memory_bytes():
+        # mx.reset_peak_memory zeroes the peak, where torch resets it to current usage.
+        return max(_mlx_memory_bytes("get_peak_memory"), _mlx_memory_bytes("get_active_memory"))
+
     def get_gpu_memory_stats():
         """Return MLX device stats, peak memory, and total memory in GiB."""
         import mlx.core as mx
 
         info = mx.device_info()
         total = info.get("memory_size") or info.get("max_recommended_working_set_size") or 0
-        get_peak_memory = getattr(mx, "get_peak_memory", None)
-        if get_peak_memory is None and hasattr(mx, "metal"):
-            get_peak_memory = getattr(mx.metal, "get_peak_memory", None)
-        peak = get_peak_memory() if callable(get_peak_memory) else 0
         stats = _UnslothDeviceStats(info.get("device_name", "Apple GPU"), total)
         max_memory = _bytes_to_gb(total) or 1.0
-        return stats, _bytes_to_gb(peak), max_memory
+        return stats, _bytes_to_gb(_mlx_peak_memory_bytes()), max_memory
 
     def clear_gpu_memory():
         """Clear MLX's cached GPU memory for compatibility cleanup helpers."""
@@ -556,43 +570,26 @@ if _IS_MLX:
                 return get_device_properties(device).name
 
             def max_memory_reserved(device = None):
-                """Return MLX peak memory in bytes for torch.cuda compatibility API."""
-                return int(get_gpu_memory_stats()[1] * 1024 * 1024 * 1024)
+                """MLX peak memory in exact bytes, never below memory_reserved."""
+                return _mlx_peak_memory_bytes()
 
             def empty_cache():
                 """Clear MLX cache through torch.cuda.empty_cache()."""
                 clear_gpu_memory()
 
-            def _mlx_active_memory_bytes():
-                """Current active MLX memory in bytes (not the peak high-water mark)."""
-                import mlx.core as mx
-
-                get_active = getattr(mx, "get_active_memory", None)
-                if get_active is None and hasattr(mx, "metal"):
-                    get_active = getattr(mx.metal, "get_active_memory", None)
-                return int(get_active()) if callable(get_active) else 0
-
             def memory_current(device = None):
-                """Return CURRENT MLX memory in bytes. torch.cuda.memory_reserved /
-                memory_allocated report live usage, not the peak (that is max_*)."""
-                return _mlx_active_memory_bytes()
+                """Live MLX memory in bytes; the peak is max_*."""
+                return _mlx_memory_bytes("get_active_memory")
 
             def mem_get_info(device = None):
-                """Return (free, total) bytes for torch.cuda compatibility API.
-                Free uses CURRENT active memory, not the peak high-water mark, so
-                a capacity check stays accurate after a transient spike."""
+                """(free, total) bytes; free uses live memory, not the peak, so it recovers after a spike."""
                 total = int(get_gpu_memory_stats()[2] * 1024 * 1024 * 1024)
-                return (max(total - _mlx_active_memory_bytes(), 0), total)
+                return (max(total - memory_current(), 0), total)
 
             def reset_peak_memory_stats(device = None):
-                """Reset MLX's peak-memory counter so a later max_memory_reserved /
-                max_memory_allocated scopes to the run, not earlier model-load peaks."""
-                import mlx.core as mx
-
-                reset = getattr(mx, "reset_peak_memory", None)
-                if reset is None and hasattr(mx, "metal"):
-                    reset = getattr(mx.metal, "reset_peak_memory", None)
-                if callable(reset):
+                """Scope later max_* calls to the run, not earlier model-load peaks."""
+                reset = _mlx_memory_fn("reset_peak_memory")
+                if reset is not None:
                     reset()
 
             def synchronize(device = None):
@@ -1492,6 +1489,70 @@ if _IS_MLX:
                 f"cannot be ignored safely: {', '.join(unsupported)}."
             )
 
+    def _mlx_is_text_list(value):
+        return (
+            isinstance(value, list) and bool(value) and all(isinstance(text, str) for text in value)
+        )
+
+    def _mlx_detached(value):
+        # Copies containers but shares other objects: copying a lazy image would load it.
+        shared = {}
+
+        def share(item):
+            if isinstance(item, (dict, list, tuple, set, frozenset)):
+                for child in item.values() if isinstance(item, dict) else item:
+                    share(child)
+            else:
+                shared[id(item)] = item
+
+        try:
+            share(value)
+            return _copy.deepcopy(value, shared)
+        except Exception:
+            return value
+
+    def _mlx_row_formatting_func(formatting_func):
+        # Unsloth's CUDA SFT path calls formatting_func on batches for a list of texts; TRL calls it
+        # per row for one text. MLX formats per row, so a function that returns a list of texts for
+        # a row is batched and gets each row as a one-row batch. Decided on the first row formatted.
+        batched = None
+
+        def one_row_batch(example):
+            return {key: [value] for key, value in example.items()}
+
+        def formatting_func_per_row(example):
+            nonlocal batched
+            if not isinstance(example, dict):
+                return formatting_func(example)
+            if batched is None:
+                # Built first, apart from the row: the row call may change the row in place.
+                batch = one_row_batch(_mlx_detached(example))
+                try:
+                    texts = formatting_func(example)
+                except (IndexError, TypeError):
+                    # A batched function can fail on a row, e.g. indexing past a short string.
+                    # Other errors are the function's own validation and must surface.
+                    try:
+                        texts = formatting_func(batch)
+                    except Exception:
+                        texts = None
+                    if not _mlx_is_text_list(texts):
+                        raise
+                    batched = True
+                    return texts
+                if not _mlx_is_text_list(texts):
+                    # An empty list fits both styles, so the next row decides.
+                    if not (isinstance(texts, list) and not texts):
+                        batched = False
+                    return texts
+                batched = True
+                return formatting_func(batch)
+            if batched:
+                return formatting_func(one_row_batch(example))
+            return formatting_func(example)
+
+        return formatting_func_per_row
+
     class UnslothTrainer(MLXTrainer):
         """Backend-aware public trainer that routes supported SFT notebooks to MLX."""
 
@@ -1601,6 +1662,8 @@ if _IS_MLX:
                         "trainer's native batching path."
                     )
 
+            if kwargs.get("formatting_func") is not None:
+                kwargs["formatting_func"] = _mlx_row_formatting_func(kwargs["formatting_func"])
             trainer_kwargs, config_kwargs, ignored_kwargs = _split_mlx_trainer_kwargs(
                 kwargs,
                 self._unsloth_mlx_extra_kwargs,
