@@ -1,0 +1,23 @@
+{
+  "version": "0.1.914-beta",
+  "title": "Glass themes and faster generation",
+  "date": "2026-11-03",
+  "features": [
+    {
+      "image": "https://github.com/user-attachments/assets/bc38677f-9e49-4b46-b0ac-f16522541a57",
+      "alt": "A translucent Studio chat over an illustrated landscape",
+      "title": "Glass themes",
+      "summary": "Five glass styles with adjustable transparency."
+    },
+    {
+      "image": "https://github.com/user-attachments/assets/a4c01069-da2f-4cf3-afee-d19499cfefc3",
+      "alt": "Custom artwork behind two Studio chats",
+      "title": "Background controls",
+      "summary": "Adjust the size, position, and placement of your chat background."
+    }
+  ],
+  "changes": [
+    ["Chat navigation", "Bookmark a turn and jump back to an earlier message."],
+    ["Training", "Fine-tune text models on CPU from the Train page."]
+  ]
+}

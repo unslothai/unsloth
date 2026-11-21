@@ -3,6 +3,11 @@
 
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import {
+  usePillHosted,
+  usePublishUpdateOffer,
+} from "@/components/update/update-offer-store";
+import { useT } from "@/i18n";
 import { type DeviceType, usePlatformStore } from "@/config/env";
 import { useNotificationGate } from "@/hooks/use-notification-frequency";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -43,6 +48,28 @@ export function WebUpdateBanner({
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
   const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const t = useT();
+  const pillHosted = usePillHosted();
+  const copied = status != null && copiedVersion === status.latestVersion;
+
+  // The same offer drives the top-right pill; this card is the fallback where none is mounted.
+  usePublishUpdateOffer(
+    status && open && !isTauri
+      ? {
+          source: "web",
+          currentVersion: status.currentVersion,
+          latestVersion: status.latestVersion,
+          notesUrl: RELEASE_NOTES_URL,
+          actionLabel: copied
+            ? t("updateNotes.copied")
+            : t("updateNotes.copyCommand"),
+          actionDisabled: false,
+          note: null,
+          runAction: () => void handleCopyCommand(),
+          later: snooze,
+        }
+      : null,
+  );
 
   useEffect(() => {
     return () => {
@@ -68,13 +95,12 @@ export function WebUpdateBanner({
     dismissTimerRef.current = setTimeout(() => snooze(), 1200);
   }
 
-  const copied = status != null && copiedVersion === status.latestVersion;
   // Keyed by version so a new offer collapses the panel.
   const notesOpen = status != null && notesVersion === status.latestVersion;
 
   return (
     <AnimatePresence>
-      {status && open ? (
+      {status && open && !pillHosted ? (
         <motion.div
           initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}

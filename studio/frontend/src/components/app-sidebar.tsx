@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  usePillHosted,
+  useUpdateOffer,
+} from "@/components/update/update-offer-store";
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
@@ -1366,7 +1370,10 @@ export function AppSidebar() {
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
   const { status: webUpdate } = useWebUpdateCheck();
-  const showUpdateCard = Boolean(webUpdate);
+  // The top-right pill already carries this offer wherever it is on screen.
+  const pillCarriesOffer = useUpdateOffer((s) => s.offer != null);
+  const pillHosted = usePillHosted();
+  const showUpdateCard = Boolean(webUpdate) && !(pillCarriesOffer && pillHosted);
   const updateVersion = webUpdate?.latestVersion ?? null;
 
   const closeMobileIfOpen = () => {
