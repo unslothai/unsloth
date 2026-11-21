@@ -2876,6 +2876,16 @@ export const it = {
         modelsFolderHint: "Dove vengono salvati i modelli scaricati. Cambialo per tenere i modelli fuori dall'unità di sistema. Vale solo per i nuovi download: i modelli che hai già restano dove sono.",
         modelsFolderKeywords:
           "cartella modelli directory percorso posizione download scaricati cache archiviazione disco unità spostare sposta hugging face models folder path storage",
+        projectsFolder: {
+          label: "Posizione predefinita per i nuovi progetti",
+          description: "Dove vengono creati gli spazi di lavoro dei nuovi progetti. I progetti esistenti rimangono nella loro posizione.",
+          chooseTitle: "Scegli la cartella dei progetti",
+          chooseAction: "Usa per i nuovi progetti",
+          saved: "Cartella dei progetti aggiornata",
+          loadError: "Impossibile caricare la cartella dei progetti",
+          saveError: "Impossibile aggiornare la cartella dei progetti",
+          keywords: "Cartella dei progetti projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Solo i nuovi download",
         environmentManaged: "Gestita dalla variabile d'ambiente {variable}.",
         locationFree: "Disponibili: {free}",

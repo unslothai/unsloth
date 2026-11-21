@@ -247,6 +247,7 @@ from utils.embedding_model_settings import (
 )
 from utils.stt_device_settings import set_stt_device
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.project_workspace_settings import get_projects_home_status, set_projects_home
 from utils.llama_cpp_path_settings import (
     MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
     custom_llama_cpp_path_status,
@@ -1038,6 +1039,18 @@ class HuggingFaceCachePayload(BaseModel):
     cache_home: Optional[str] = Field(default = None, max_length = 4096)
 
 
+class ProjectsHomePayload(BaseModel):
+    projects_home: Optional[str] = Field(max_length = 4096)
+
+
+class ProjectsHomeResponse(BaseModel):
+    projects_home: str
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    is_custom: bool
+    environment_variable: Optional[str] = None
+
+
 class HuggingFaceCacheResponse(BaseModel):
     cache_home: str
     hub_cache: str
@@ -1557,6 +1570,26 @@ def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
 ) -> HuggingFaceCacheResponse:
     return _hugging_face_cache_response()
+
+
+@_owner_settings_router.get("/projects-home", response_model = ProjectsHomeResponse)
+def get_projects_home(current_subject: str = Depends(get_current_subject)) -> ProjectsHomeResponse:
+    return ProjectsHomeResponse(**get_projects_home_status())
+
+
+@_owner_settings_router.put("/projects-home", response_model = ProjectsHomeResponse)
+def update_projects_home(
+    payload: ProjectsHomePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> ProjectsHomeResponse:
+    require_ui_session(via_api_key)
+    try:
+        return ProjectsHomeResponse(**set_projects_home(payload.projects_home))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
 @_owner_settings_router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)

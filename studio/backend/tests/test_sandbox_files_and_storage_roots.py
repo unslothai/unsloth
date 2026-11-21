@@ -3193,6 +3193,48 @@ def test_attachments_are_copied_only_for_the_python_tool(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+def test_offline_project_attachment_copy_reports_recovery_without_recreating_storage(
+    tmp_path, monkeypatch, missing
+):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from core import chat_originals
+    from routes import inference
+
+    studio_db, tools = _shared_setup_4(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    project = studio_db.upsert_chat_project(
+        {"id": "offline-attachment", "name": "Files", "createdAt": 1, "updatedAt": 1}
+    )
+    root = Path(project["rootPath"])
+    absent = root if missing == "workspace" else root / "sandbox"
+    offline = tmp_path / "disconnected"
+    absent.rename(offline)
+    sha, _ = chat_originals.save([b"a,b\n1,2\n"])
+    payload = SimpleNamespace(
+        enable_tools = True,
+        enabled_tools = ["python"],
+        sandbox_attachments = [SimpleNamespace(sha256 = sha, name = "data.csv")],
+        session_id = "project-offline-attachment",
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(inference._materialize_sandbox_attachments(payload))
+
+    assert caught.value.status_code == 503
+    assert str(absent) in caught.value.detail
+    assert "Reconnect" in caught.value.detail and "restore" in caught.value.detail
+    assert not absent.exists()
+    assert not (Path(tools.sandbox_root()) / payload.session_id).exists()
+    assert (chat_originals.originals_dir() / sha).read_bytes() == b"a,b\n1,2\n"
+
+    offline.rename(absent)
+    asyncio.run(inference._materialize_sandbox_attachments(payload))
+    copied = root / "sandbox" / tools.sandbox_attachment_path(sha, "data.csv")
+    assert copied.read_bytes() == b"a,b\n1,2\n"
+
+
 def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):
     """Other surfaces never offer the choice, so the route must report the folder it kept."""
     tools = _shared_setup_1(monkeypatch, tmp_path)
@@ -4566,6 +4608,9 @@ def test_only_a_pending_record_is_ever_collected(tmp_path, monkeypatch):
 
     assert keep.is_dir(), "deleted a workspace the user kept"
     assert not go.exists(), "left one the user asked to delete"
+    assert [record[0] for record in tools.list_orphaned_projects(include_missing = True)] == [
+        "projkeep1"
+    ], "successful deletion must remove the record, not merely hide it"
 
 
 def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypatch):
@@ -5375,6 +5420,54 @@ def test_a_listing_follows_a_tree_moved_out_from_under_it(tmp_path, monkeypatch)
         inference.list_sandbox_files("thread-1", request = None, token = None, session = None)
     )
     assert [f["name"] for f in result["files"]] == ["report.csv"], result
+
+
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+@pytest.mark.parametrize("operation", ["list", "file", "reveal"])
+def test_offline_project_file_routes_report_unavailability(
+    tmp_path, monkeypatch, missing, operation
+):
+    from fastapi import HTTPException
+    from core.inference import tools
+    from routes import inference
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(tools, "_workdirs", {})
+    project = studio_db.upsert_chat_project(
+        {"id": "offline-files", "name": "Files", "createdAt": 1, "updatedAt": 1}
+    )
+    root = Path(project["rootPath"])
+    (root / "sandbox" / "notes.txt").write_text("original content")
+    absent = root if missing == "workspace" else root / "sandbox"
+    offline = tmp_path / "disconnected"
+    absent.rename(offline)
+    authenticated = []
+
+    async def authenticate(request, token):
+        authenticated.append(True)
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", authenticate)
+    session_id = "project-offline-files"
+    if operation == "list":
+        call = inference.list_sandbox_files(session_id, request = None)
+    elif operation == "file":
+        call = inference.serve_sandbox_file(session_id, "notes.txt", request = None)
+    else:
+        call = inference.reveal_sandbox_dir(session_id, request = None)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(call)
+    assert authenticated == [True]
+    assert caught.value.status_code == 503
+    assert str(absent) in caught.value.detail
+    assert "Reconnect" in caught.value.detail and "restore" in caught.value.detail
+    assert not absent.exists()
+    assert not (Path(tools.sandbox_root()) / session_id).exists()
+
+    offline.rename(absent)
+    listed = asyncio.run(inference.list_sandbox_files(session_id, request = None))
+    assert [entry["name"] for entry in listed["files"]] == ["notes.txt"]
+    assert (root / "sandbox" / "notes.txt").read_text() == "original content"
 
 
 def test_a_record_never_deletes_what_the_helper_refused(tmp_path, monkeypatch):

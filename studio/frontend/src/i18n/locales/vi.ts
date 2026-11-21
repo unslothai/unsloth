@@ -3190,6 +3190,16 @@ export const vi = {
           "Nơi lưu các mô hình đã tải xuống. Hãy thay đổi để không lưu mô hình trên ổ đĩa hệ thống. Chỉ áp dụng cho các lượt tải xuống mới. Các mô hình bạn đã có vẫn ở nguyên vị trí.",
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face thư mục mô hình đường dẫn vị trí tải xuống bộ nhớ đệm lưu trữ ổ đĩa di chuyển",
+        projectsFolder: {
+          label: "Vị trí mặc định cho các dự án mới",
+          description: "Nơi tạo không gian làm việc cho các dự án mới. Các dự án hiện có vẫn giữ nguyên vị trí.",
+          chooseTitle: "Chọn thư mục dự án",
+          chooseAction: "Dùng cho các dự án mới",
+          saved: "Đã cập nhật thư mục dự án",
+          loadError: "Không thể tải thư mục dự án",
+          saveError: "Không thể cập nhật thư mục dự án",
+          keywords: "Thư mục dự án projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Chỉ lượt tải xuống mới",
         environmentManaged: "Được quản lý bởi biến môi trường {variable}.",
         locationFree: "Còn trống {free}",

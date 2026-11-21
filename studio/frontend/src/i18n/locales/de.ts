@@ -2994,6 +2994,16 @@ export const de = {
         modelsFolderHint: "Wo heruntergeladene Modelle gespeichert werden. Ändern Sie den Pfad, um Modelle von Ihrem Systemlaufwerk fernzuhalten. Gilt nur für neue Downloads. Bereits vorhandene Modelle bleiben, wo sie sind.",
         modelsFolderKeywords:
           "Modelle Ordner Verzeichnis Pfad Speicherort Download Downloads Cache Speicher Festplatte Laufwerk verschieben ändern hugging face",
+        projectsFolder: {
+          label: "Standardspeicherort für neue Projekte",
+          description: "Hier werden Arbeitsordner für neue Projekte erstellt. Bestehende Projekte bleiben an ihrem bisherigen Ort.",
+          chooseTitle: "Projektordner auswählen",
+          chooseAction: "Für neue Projekte verwenden",
+          saved: "Projektordner aktualisiert",
+          loadError: "Projektordner konnte nicht geladen werden",
+          saveError: "Projektordner konnte nicht aktualisiert werden",
+          keywords: "Projektordner projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Nur neue Downloads",
         environmentManaged:
           "Wird über die Umgebungsvariable {variable} verwaltet.",

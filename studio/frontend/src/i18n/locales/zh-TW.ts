@@ -3052,6 +3052,16 @@ export const zhTW = {
           "下載的模型存放的位置。變更此位置可避免將模型存放在系統磁碟上。僅適用於新的下載，已有的模型會保留在原位置。",
         modelsFolderKeywords:
           "模型 資料夾 目錄 路徑 位置 下載 快取 儲存空間 磁碟 移動 搬移 models folder directory path location download downloads cache storage disk drive move relocate hugging face",
+        projectsFolder: {
+          label: "新專案的預設位置",
+          description: "建立新專案工作區的位置。現有專案仍保留在原位置。",
+          chooseTitle: "選擇專案資料夾",
+          chooseAction: "用於新專案",
+          saved: "專案資料夾已更新",
+          loadError: "無法載入專案資料夾",
+          saveError: "無法更新專案資料夾",
+          keywords: "專案資料夾 projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "僅限新的下載",
         environmentManaged: "由環境變數 {variable} 管理。",
         locationFree: "可用 {free}",

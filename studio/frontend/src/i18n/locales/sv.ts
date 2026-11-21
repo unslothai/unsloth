@@ -3109,6 +3109,16 @@ export const sv = {
           "Där hämtade modeller lagras. Ändra detta för att hålla modeller borta från systemdisken. Gäller endast nya hämtningar. Modeller som redan finns ligger kvar där de är.",
         modelsFolderKeywords:
           "modellkatalog modellmapp katalog mapp sökväg plats hämtning hämtningar cache lagring disk enhet flytta hugging face models folder directory path location download downloads cache storage disk drive move relocate hugging face",
+        projectsFolder: {
+          label: "Standardplats för nya projekt",
+          description: "Här skapas arbetsytor för nya projekt. Befintliga projekt ligger kvar på sina nuvarande platser.",
+          chooseTitle: "Välj projektmapp",
+          chooseAction: "Använd för nya projekt",
+          saved: "Projektmappen har uppdaterats",
+          loadError: "Kunde inte läsa in projektmappen",
+          saveError: "Kunde inte uppdatera projektmappen",
+          keywords: "Projektmapp projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Endast nya hämtningar",
         environmentManaged: "Hanteras av miljövariabeln {variable}.",
         locationFree: "{free} ledigt",

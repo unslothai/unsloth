@@ -3068,6 +3068,16 @@ export const th = {
           "ตำแหน่งที่จัดเก็บโมเดลที่ดาวน์โหลด เปลี่ยนเพื่อเก็บโมเดลไว้นอกไดรฟ์ระบบ มีผลกับการดาวน์โหลดใหม่เท่านั้น โมเดลที่มีอยู่แล้วจะอยู่ที่เดิม",
         modelsFolderKeywords:
           "โฟลเดอร์โมเดล ไดเรกทอรี พาธ ตำแหน่ง ดาวน์โหลด แคช พื้นที่จัดเก็บ ดิสก์ ไดรฟ์ ย้าย models folder directory path location download downloads cache storage disk drive move relocate hugging face",
+        projectsFolder: {
+          label: "ตำแหน่งเริ่มต้นสำหรับโปรเจกต์ใหม่",
+          description: "ตำแหน่งที่สร้างพื้นที่ทำงานสำหรับโปรเจกต์ใหม่ โปรเจกต์ที่มีอยู่จะยังคงอยู่ที่เดิม",
+          chooseTitle: "เลือกโฟลเดอร์โปรเจกต์",
+          chooseAction: "ใช้สำหรับโปรเจกต์ใหม่",
+          saved: "อัปเดตโฟลเดอร์โปรเจกต์แล้ว",
+          loadError: "ไม่สามารถโหลดโฟลเดอร์โปรเจกต์ได้",
+          saveError: "ไม่สามารถอัปเดตโฟลเดอร์โปรเจกต์ได้",
+          keywords: "โฟลเดอร์โปรเจกต์ projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "การดาวน์โหลดใหม่เท่านั้น",
         environmentManaged: "จัดการโดยตัวแปรสภาพแวดล้อม {variable}",
         locationFree: "ว่าง {free}",

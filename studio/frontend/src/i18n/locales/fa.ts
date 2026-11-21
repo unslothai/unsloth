@@ -3177,6 +3177,16 @@ export const fa = {
           "جایی که مدل‌های دانلودشده ذخیره می‌شوند. برای نگه داشتن مدل‌ها بیرون از درایو سیستم آن را تغییر دهید. فقط بر دانلودهای جدید اعمال می‌شود. مدل‌هایی که از قبل دارید سر جای خود می‌مانند.",
         modelsFolderKeywords:
           "پوشه مدل‌ها مسیر مکان دانلود کش فضای ذخیره‌سازی دیسک درایو جابه‌جایی models folder directory path location download downloads cache storage disk drive move relocate hugging face",
+        projectsFolder: {
+          label: "محل پیش‌فرض برای پروژه‌های جدید",
+          description: "محل ایجاد فضای کاری پروژه‌های جدید. پروژه‌های موجود در محل فعلی خود باقی می‌مانند.",
+          chooseTitle: "انتخاب پوشهٔ پروژه‌ها",
+          chooseAction: "استفاده برای پروژه‌های جدید",
+          saved: "پوشهٔ پروژه‌ها به‌روزرسانی شد",
+          loadError: "بارگیری پوشهٔ پروژه‌ها ممکن نشد",
+          saveError: "به‌روزرسانی پوشهٔ پروژه‌ها ممکن نشد",
+          keywords: "پوشهٔ پروژه‌ها projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "فقط دانلودهای جدید",
         environmentManaged: "با متغیر محیطی {variable} مدیریت می‌شود.",
         locationFree: "{free} آزاد",

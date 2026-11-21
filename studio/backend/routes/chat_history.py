@@ -49,6 +49,7 @@ from storage.studio_db import (
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
     ProjectWorkspaceError,
+    ProjectWorkspaceUnavailableError,
     build_chat_history_export,
     clear_chat_history,
     clear_chat_history_with_replay_status,
@@ -1469,6 +1470,16 @@ def list_projects(
     )
 
 
+def _project_workspace_unavailable_error(exc: ProjectWorkspaceUnavailableError) -> HTTPException:
+    return log_and_http_error(
+        exc,
+        503,
+        str(exc),
+        event = "chat_history.project_workspace_unavailable",
+        log = logger,
+    )
+
+
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
     lease = getattr(payload, "nativePathLease", None)
@@ -1477,6 +1488,7 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
     try:
         project = payload.model_dump(exclude = {"nativePathLease", "reuseExisting"})
         if lease is None:
+            ensure_chat_project_workspace(project["id"])
             return _project_out(upsert_chat_project(project))
         working_folder = _resolve_project_working_folder(lease)
         if payload.reuseExisting:
@@ -1494,14 +1506,16 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
         raise
     except ProjectWorkingFolderConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
     except ProjectWorkspaceError as exc:
         # Only this project path error: the same upsert also opens the database elsewhere.
         raise log_and_http_error(
             exc,
             500,
             f"Could not create the project folder {exc.path}. Check that the "
-            "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
-            "location.",
+            "folder is available and writable. Change 'Default location for new projects' in "
+            "Settings > System > Storage, or set UNSLOTH_STUDIO_PROJECTS_HOME.",
             event = "chat_history.create_project_workspace_failed",
             log = logger,
         ) from exc
@@ -1519,8 +1533,19 @@ def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
-def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
-    project = ensure_chat_project_workspace(project_id)
+def get_project(
+    project_id: str,
+    current_subject: str = Depends(get_current_subject),
+    require_workspace: bool = True,
+):
+    try:
+        project = (
+            ensure_chat_project_workspace(project_id)
+            if require_workspace
+            else get_chat_project(project_id)
+        )
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
     if project is None:
         raise HTTPException(
             status_code = 404,
@@ -1548,9 +1573,12 @@ def patch_project(
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
-    project = update_chat_project(project_id, patch)
-    if project is not None:
+    try:
         project = ensure_chat_project_workspace(project_id)
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
+    if project is not None:
+        project = update_chat_project(project_id, patch)
     if project is None:
         raise HTTPException(
             status_code = 404,
@@ -1597,7 +1625,12 @@ def _resolve_server_working_folder(server_path: str) -> tuple[str, tuple[int, in
 
 
 def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
+    """Studio's own roots are reserved: they hold every account's data."""
     from core.inference.tools import shared_sandbox_root
+    from utils.project_workspace_settings import (
+        owner_project_workspaces_roots,
+        reserved_project_workspace_roots,
+    )
     from utils.paths.path_utils import is_path_within
     from utils.paths.storage_roots import (
         shared_project_workspaces_root,
@@ -1605,11 +1638,13 @@ def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
         studio_root,
     )
 
+    # A saved home may also hold unrelated repositories, so reserve actual workspaces only.
     for reserved in (
         studio_root(),
         shared_project_workspaces_root(),
         shared_sandbox_root(),
         shared_tmp_root(),
+        *reserved_project_workspace_roots(),
     ):
         reserved = os.path.realpath(str(reserved))
         if is_path_within(path, reserved, allow_root = True):
@@ -1624,6 +1659,13 @@ def _checked_project_folder(path: str) -> tuple[str, tuple[int, int]]:
                     "This folder contains Unsloth's own data, so it cannot be a project folder. "
                     "Choose a folder inside it instead."
                 ),
+            )
+    # Linking the home itself (or an ancestor) would expose future project workspaces.
+    for home in owner_project_workspaces_roots():
+        if is_path_within(os.path.realpath(str(home)), path, allow_root = True):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Unsloth's own folders cannot be used as a project folder.",
             )
     if not os.access(path, os.W_OK):
         raise HTTPException(status_code = 400, detail = "The folder is not writable.")
@@ -1688,7 +1730,10 @@ def _project_files_root(project_id: str) -> tuple[str, bool]:
     project = get_chat_project(project_id)
     if project is None:
         raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
-    root = os.path.realpath(resolve_sandbox_workdir(project_session_id(project_id)))
+    try:
+        root = os.path.realpath(resolve_sandbox_workdir(project_session_id(project_id)))
+    except ProjectWorkspaceUnavailableError as exc:
+        raise _project_workspace_unavailable_error(exc) from exc
     chosen = available_project_working_folder(project)
     return root, bool(chosen) and os.path.normcase(os.path.realpath(chosen)) == os.path.normcase(
         root

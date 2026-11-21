@@ -2985,6 +2985,16 @@ export const en = {
         // Not rendered: extra settings-search terms.
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
+        projectsFolder: {
+          label: "Default location for new projects",
+          description: "Where new project workspaces are created. Existing projects stay where they are.",
+          chooseTitle: "Choose projects folder",
+          chooseAction: "Use for new projects",
+          saved: "Projects folder updated",
+          loadError: "Couldn't load the projects folder",
+          saveError: "Couldn't update the projects folder",
+          keywords: "projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "New downloads only",
         environmentManaged: "Managed by the {variable} environment variable.",
         locationFree: "{free} free",

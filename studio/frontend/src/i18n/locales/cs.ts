@@ -3207,6 +3207,16 @@ export const cs = {
           "Kam se ukládají stažené modely. Změňte ji, chcete-li mít modely mimo systémovou jednotku. Platí jen pro nová stažení. Modely, které už máte, zůstanou tam, kde jsou.",
         modelsFolderKeywords:
           "složka modelů adresář cesta umístění stahování stažené mezipaměť úložiště disk jednotka přesunout models folder directory path location download downloads cache storage drive move relocate hugging face",
+        projectsFolder: {
+          label: "Výchozí umístění pro nové projekty",
+          description: "Místo pro vytváření pracovních složek nových projektů. Stávající projekty zůstanou na svém místě.",
+          chooseTitle: "Vybrat složku projektů",
+          chooseAction: "Použít pro nové projekty",
+          saved: "Složka projektů byla aktualizována",
+          loadError: "Složku projektů se nepodařilo načíst",
+          saveError: "Složku projektů se nepodařilo aktualizovat",
+          keywords: "Složka projektů projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Pouze nová stažení",
         environmentManaged: "Spravováno proměnnou prostředí {variable}.",
         locationFree: "Volno: {free}",

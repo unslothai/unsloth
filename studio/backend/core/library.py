@@ -782,6 +782,7 @@ class _SandboxSession(NamedTuple):
 
 def _sandbox_sessions() -> list[_SandboxSession]:
     from storage.studio_db import get_connection
+    from utils.paths.storage_roots import project_workspaces_roots
 
     conn = get_connection()
     try:
@@ -792,6 +793,8 @@ def _sandbox_sessions() -> list[_SandboxSession]:
     finally:
         conn.close()
     thread_ids = {row["id"] for row in threads}
+    # A saved owner location lives in the DB; read it once, not once per project.
+    project_roots = project_workspaces_roots() if projects else ()
     return [
         _SandboxSession(row["id"], row["id"], row["title"], pair_id = row["pair_id"])
         for row in threads
@@ -802,21 +805,23 @@ def _sandbox_sessions() -> list[_SandboxSession]:
         for row in projects
         # A chat with this id owns the directory (_get_project_workdir): listing both walks it twice.
         if f"{_PROJECT_SESSION_PREFIX}{row['id']}" not in thread_ids
-        and _studio_project_root(row["root_path"])
+        and _studio_project_root(row["root_path"], project_roots)
     ]
 
 
-def _studio_project_root(root_path: Optional[str]) -> bool:
+def _studio_project_root(
+    root_path: Optional[str], roots: Optional[tuple[Path, ...]] = None
+) -> bool:
     """Whether a project works in Studio's own workspace (every project is given a folder there),
     not a folder of the user's own, whose files are not Studio's."""
-    from utils.paths.storage_roots import project_workspaces_root
+    from utils.paths.storage_roots import project_workspaces_roots
 
     if not root_path:
         return True
-    return is_path_within(
-        os.path.realpath(os.path.expanduser(root_path)),
-        os.path.realpath(project_workspaces_root()),
-    )
+    if roots is None:
+        roots = project_workspaces_roots()
+    resolved = os.path.realpath(os.path.expanduser(root_path))
+    return any(is_path_within(resolved, os.path.realpath(root)) for root in roots)
 
 
 def _sandbox_session_eligible(session_id: str) -> bool:
@@ -856,6 +861,7 @@ def _sandbox_path(ref: str) -> str:
         _user_path_parts,
         resolve_sandbox_workdir,
     )
+    from storage.studio_db import ProjectWorkspaceUnavailableError
 
     session, _, relative = ref.partition(":")
     session_id = unquote(session)
@@ -864,7 +870,10 @@ def _sandbox_path(ref: str) -> str:
         raise LookupError(ref)
     if not _sandbox_session_eligible(session_id):
         raise LookupError(ref)
-    directory = os.path.realpath(resolve_sandbox_workdir(session_id))
+    try:
+        directory = os.path.realpath(resolve_sandbox_workdir(session_id))
+    except ProjectWorkspaceUnavailableError:
+        raise LookupError(ref) from None
     if len(_user_path_parts(parts, directory)) > _MAX_SANDBOX_PATH_SEGMENTS:
         raise LookupError(ref)
     path = os.path.join(directory, *parts)

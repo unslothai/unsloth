@@ -11225,8 +11225,14 @@ def forget_orphaned_project(project_id: str, is_chat: bool = False) -> None:
         pass
 
 
-def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
-    """Every recorded (id, folder, project root, pending, is a chat) still there."""
+def list_orphaned_projects(
+    *, include_missing: bool = False
+) -> "list[tuple[str, str, str | None, bool, bool]]":
+    """Recorded (id, folder, project root, pending, is a chat), hiding missing folders by default.
+
+    Missing folders stay recorded: their drive may be offline. Path reservations include them,
+    while explicit cleanup removes records after deleting the workspace.
+    """
     import json as _json
 
     records = []
@@ -11253,10 +11259,8 @@ def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
             record_id = record["id"]
         except (ValueError, TypeError, KeyError):
             continue
-        if _recorded_workspace_remains(path, root):
+        if include_missing or _recorded_workspace_remains(path, root):
             records.append((record_id, path, root, pending, is_chat))
-        else:
-            forget_orphaned_project(record_id, is_chat)
     return records
 
 
@@ -11484,15 +11488,24 @@ def _get_project_workdir(session_id: str) -> str | None:
     if _thread_exists(session_id):
         # A chat may use this id too; sharing the project's workspace would run its tools there.
         return None
+    from storage.studio_db import ProjectWorkspaceUnavailableError, ensure_chat_project_workspace
+
     try:
-        from storage.studio_db import ensure_chat_project_workspace
         project = ensure_chat_project_workspace(project_id)
+    except ProjectWorkspaceUnavailableError:
+        # A live project must not silently start using a fresh session sandbox.
+        raise
     except Exception:
         logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
         return None
     if not project:
         # The project is gone but a forked chat still shows cards for this sandbox.
         return _orphaned_project_workdir(project_id)
+    from storage.studio_db import available_project_working_folder, require_project_directory
+
+    working_folder = available_project_working_folder(project)
+    if working_folder:
+        return working_folder
     root_path = project.get("rootPath")
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
@@ -11506,9 +11519,11 @@ def _get_project_workdir(session_id: str) -> str | None:
         or not sandbox_real.startswith(root_real + os.sep)
     ):
         return None
-    from storage.studio_db import available_project_working_folder
-
-    return available_project_working_folder(project) or sandbox_real
+    if project.get("workingFolder"):
+        # The linked folder may have disappeared after ensure skipped the managed workspace.
+        require_project_directory(root_real)
+        require_project_directory(sandbox_real)
+    return sandbox_real
 
 
 def _is_windows_reparse_point(path: str) -> bool:
@@ -12216,7 +12231,14 @@ def _get_workdir(session_id: str | None = None) -> str:
         else:
             workdir = _sandbox_fallback(sandbox_root_path, "_default", create = True)
         created = not os.path.isdir(workdir)
-        os.makedirs(workdir, exist_ok = True)
+        if project_workdir:
+            from storage.studio_db import require_project_directory
+
+            # Project creation allocates its folders. A disconnect after resolution must not
+            # make an empty replacement here, including for linked and kept project folders.
+            require_project_directory(workdir)
+        else:
+            os.makedirs(workdir, exist_ok = True)
         if not project_workdir and not session_id:
             # Fallback dirs are claimed like any other, so the next run knows this one is the one we made.
             _claim_sandbox(workdir, "_default")
@@ -12433,8 +12455,15 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     """Drops a deleted chat's sandbox, its only handle: empty folders always go; files need delete_files as they are the user's. Project workspaces are excluded."""
     if not session_id:
         return False
-    # Only sessions that really resolve to a project workspace.
-    if session_id.startswith(_PROJECT_SESSION_PREFIX) and _get_project_workdir(session_id):
+    # An offline project still owns its workspace; only a separately claimed chat sandbox may go.
+    is_project = False
+    if session_id.startswith(_PROJECT_SESSION_PREFIX):
+        from storage.studio_db import ProjectWorkspaceUnavailableError
+        try:
+            is_project = bool(_get_project_workdir(session_id))
+        except ProjectWorkspaceUnavailableError:
+            is_project = True
+    if is_project:
         # Unless this id has its own sandbox: the row goes first and the files would stay behind.
         root_here = os.path.realpath(sandbox_root())
         if not _claimed_by_this_run(session_id, root_here) and not _marked_sandbox_in(
@@ -24107,6 +24136,8 @@ def _python_exec(
     host_access_approved: bool = False,
 ) -> str:
     """disable_sandbox skips safety analysis and rlimits, and uses the host env minus secrets."""
+    from storage.studio_db import ProjectWorkspaceUnavailableError
+
     if not code or not code.strip():
         return "No code provided."
 
@@ -24149,7 +24180,11 @@ def _python_exec(
     try:
         workdir = _get_workdir(session_id)
         confinement = _account_confinement()
-    except (ToolConfinementUnavailable, RetiredAccountError) as exc:
+    except (
+        ToolConfinementUnavailable,
+        RetiredAccountError,
+        ProjectWorkspaceUnavailableError,
+    ) as exc:
         return _truncate(f"Execution error: {exc}")
     # No spill in shared sandboxes (`_default` or a project): see `_spill_scope`.
     spill_scope = _spill_scope(session_id, thread_id)
@@ -24336,6 +24371,8 @@ def _bash_exec(
     host_access_approved: bool = False,
 ) -> str:
     """disable_sandbox skips the command blocklist and rlimits; the host env minus secrets is used."""
+    from storage.studio_db import ProjectWorkspaceUnavailableError
+
     if not command or not command.strip():
         return "No command provided."
 
@@ -24417,7 +24454,11 @@ def _bash_exec(
         try:
             workdir = _get_workdir(session_id)
             confinement = _account_confinement()
-        except (ToolConfinementUnavailable, RetiredAccountError) as exc:
+        except (
+            ToolConfinementUnavailable,
+            RetiredAccountError,
+            ProjectWorkspaceUnavailableError,
+        ) as exc:
             return _truncate(f"Execution error: {exc}")
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)

@@ -3231,6 +3231,16 @@ export const es419 = {
           "Dónde se guardan los modelos descargados. Cámbiala para mantener los modelos fuera de la unidad del sistema. Solo se aplica a las descargas nuevas. Los modelos que ya tienes se quedan donde están.",
         modelsFolderKeywords:
           "modelos models carpeta folder directorio directory ruta path ubicación location descarga descargas download downloads caché cache almacenamiento storage disco disk unidad drive mover move reubicar relocate hugging face",
+        projectsFolder: {
+          label: "Ubicación predeterminada para proyectos nuevos",
+          description: "Donde se crean los espacios de trabajo de los proyectos nuevos. Los proyectos existentes permanecen en su ubicación.",
+          chooseTitle: "Elegir carpeta de proyectos",
+          chooseAction: "Usar para proyectos nuevos",
+          saved: "Carpeta de proyectos actualizada",
+          loadError: "No se pudo cargar la carpeta de proyectos",
+          saveError: "No se pudo actualizar la carpeta de proyectos",
+          keywords: "Carpeta de proyectos projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Solo las descargas nuevas",
         environmentManaged:
           "Administrado por la variable de entorno {variable}.",

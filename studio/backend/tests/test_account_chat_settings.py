@@ -358,6 +358,7 @@ OWNER_PATHS = [
     (method, path)
     for path, methods in {
         "/hugging-face-cache": ("GET", "PUT"),
+        "/projects-home": ("GET", "PUT"),
         "/llama-cpp-path": ("GET", "PUT"),
         "/offline-docs": ("GET", "PUT"),
         "/offline-docs/refresh": ("POST",),

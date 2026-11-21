@@ -3,6 +3,7 @@
 
 
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -144,11 +145,12 @@ def test_a_relative_root_is_refused():
 
 
 def test_a_root_holding_studio_data_is_refused(tmp_path, monkeypatch):
+    from storage import studio_db
     from utils.paths.storage_roots import studio_root
 
     home = studio_root()
     home.mkdir(parents = True, exist_ok = True)
-    _write(home / "studio.db", "sqlite")
+    studio_db.get_connection().close()
     with pytest.raises(CachePurgeRefused) as excinfo:
         assert_purgeable_root(home)
     assert "protected" in str(excinfo.value)
@@ -161,6 +163,24 @@ def test_a_root_inside_the_projects_folder_is_refused(tmp_path, monkeypatch):
     with pytest.raises(CachePurgeRefused) as excinfo:
         assert_purgeable_root(projects / "my-run" / "cache")
     assert "protected folder" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("location", ["current", "previous"])
+def test_current_and_previous_project_homes_are_protected_from_cache_purge(
+    tmp_path, monkeypatch, location
+):
+    from utils.paths import storage_roots
+
+    homes = {name: tmp_path / name / "Projects" for name in ("current", "previous")}
+    root = homes[location]
+    project_file = _write(root / "example-1234" / "sandbox" / "notes.txt", "keep")
+    monkeypatch.setattr(storage_roots, "project_workspaces_roots", lambda: tuple(homes.values()))
+
+    # Neither a cache containing a project home nor one nested within it may be cleared.
+    for candidate in (root.parent, root / "example-1234" / "sandbox"):
+        with pytest.raises(CachePurgeRefused):
+            assert_purgeable_root(candidate)
+    assert project_file.read_text() == "keep"
 
 
 def test_a_symlinked_cache_root_is_refused(tmp_path):
@@ -222,11 +242,13 @@ def test_a_symlink_inside_the_cache_is_unlinked_and_never_followed(tmp_path, iso
 def test_a_purge_leaves_the_database_models_projects_and_token_alone(
     tmp_path, monkeypatch, isolated_caches
 ):
+    from storage import studio_db
     from utils.paths.storage_roots import studio_root
 
     home = studio_root()
     home.mkdir(parents = True, exist_ok = True)
-    database = _write(home / "studio.db", "sqlite")
+    studio_db.get_connection().close()
+    database = home / "studio.db"
     chat_history = _write(home / "chat" / "thread.json", "hello")
     token = _write(isolated_caches / "token", "hf_secret")
     model = _write(isolated_caches / "hub" / "models--unsloth--x" / "blobs" / "abc", "weights" * 10)
@@ -242,6 +264,17 @@ def test_a_purge_leaves_the_database_models_projects_and_token_alone(
     assert not cache_file.exists()
     for survivor in (database, chat_history, token, model, project_file, dataset):
         assert survivor.exists(), f"{survivor} was deleted by a cache purge"
+
+
+def test_a_purge_stops_when_retained_project_locations_cannot_be_read(tmp_path, isolated_caches):
+    from utils.paths.storage_roots import studio_root
+
+    database = _write(studio_root() / "studio.db", "not a database")
+    cache_file = _write(tmp_path / "uv" / "wheel.whl", "cached")
+    with pytest.raises(sqlite3.DatabaseError):
+        purge_caches(["uv"])
+    assert database.read_text() == "not a database"
+    assert cache_file.read_text() == "cached"
 
 
 def test_clearing_the_hub_cache_is_asked_for_by_itself(tmp_path, isolated_caches):

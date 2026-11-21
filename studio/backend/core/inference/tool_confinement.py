@@ -63,6 +63,17 @@ _SYSTEM_READ_ROOTS = (
     "/proc",
     "/sys",
 )
+_MACOS_READ_ROOTS = (
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/private/etc",
+    "/System",
+    "/Library",
+    "/opt",
+    "/Applications",
+)
 # Pseudo-devices plus accelerator nodes; the rest of /dev stays out: other session ptys, same-UID shm, and block devices.
 _DEVICE_NODES = ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty")
 _ACCELERATOR_NODES = (
@@ -175,6 +186,40 @@ def _interpreter_roots() -> list[str]:
     )
 
 
+def project_home_overlaps_tool_read_roots(path: Path) -> bool:
+    """A running child keeps its read grants after the owner changes project locations.
+    New private projects must stay outside those shared software directories."""
+    from core.inference.tools import _SANDBOX_SITE_DIR
+    from utils.paths.path_utils import macos_volume_ignores_case
+
+    candidate = os.path.realpath(path)
+    fold = sys.platform == "darwin" and macos_volume_ignores_case(candidate)
+
+    def normalized(raw):
+        resolved = os.path.realpath(raw)
+        return resolved.casefold() if fold else resolved
+
+    candidate = normalized(candidate)
+
+    def overlaps(raw):
+        root = normalized(raw)
+        return _contains(root, candidate) or _contains(candidate, root)
+
+    if any(overlaps(root) for root in (*_interpreter_roots(), _SANDBOX_SITE_DIR)):
+        return True
+    if sys.platform == "darwin":
+        return any(
+            overlaps(root)
+            for root in (*_MACOS_READ_ROOTS, "/private/var/db", *_darwin_user_cache_dirs())
+        )
+    if sys.platform == "linux":
+        # These subtrees are excluded from the /run grant, including removable media.
+        if any(_contains(normalized(root), candidate) for root in _PRIVATE_RUNTIME_ROOTS):
+            return False
+        return any(overlaps(root) for root in _SYSTEM_READ_ROOTS)
+    return False
+
+
 def _ensure_dirs(paths) -> list[str]:
     """Landlock rules need existing paths; ``ensure_dir`` refuses a launch racing account delete."""
     from utils.paths.storage_roots import ensure_dir
@@ -212,12 +257,14 @@ def _hf_cache_roots() -> tuple[str, ...]:
 
 def _protected_roots() -> list[str]:
     from core.inference.tools import shared_sandbox_root
+    from utils.project_workspace_settings import owner_project_workspaces_roots
     from utils.paths.storage_roots import (
         shared_project_workspaces_root,
         shared_tmp_root,
         studio_root,
     )
-    return _with_shared_bases(
+
+    roots = _with_shared_bases(
         _existing((studio_root(),)),
         (
             shared_sandbox_root(),
@@ -225,6 +272,13 @@ def _protected_roots() -> list[str]:
             shared_tmp_root(),
             *_hf_cache_roots(),
         ),
+    )
+    # Keep absent owner locations too: granting an ancestor would also expose a
+    # project directory recreated beneath it after the rules were installed.
+    return list(
+        dict.fromkeys(
+            (*roots, *(os.path.realpath(root) for root in owner_project_workspaces_roots()))
+        )
     )
 
 
@@ -622,6 +676,7 @@ def _macos_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     if not sandbox_exec:
         return None
     from core.inference.tools import shared_sandbox_root
+    from utils.project_workspace_settings import owner_project_workspaces_roots
     from utils.paths.storage_roots import (
         shared_project_workspaces_root,
         shared_tmp_root,
@@ -630,23 +685,36 @@ def _macos_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
 
     read_roots = _existing(
         (
-            "/usr",
-            "/bin",
-            "/sbin",
-            "/etc",
-            "/private/etc",
-            "/System",
-            "/Library",
-            "/opt",
-            "/Applications",
+            *_MACOS_READ_ROOTS,
             *_interpreter_roots(),
             sandbox_site_dir,
         )
     )
     writable_roots = _writable_roots()
+    # Seatbelt rules can name absent paths: a volume may return while the child lives.
+    owner_project_roots = [os.path.realpath(root) for root in owner_project_workspaces_roots()]
     hidden_roots = _with_shared_bases(
         _existing((str(studio_root()), str(shared_tmp_root()), os.path.expanduser("~"))),
-        (shared_sandbox_root(), str(shared_project_workspaces_root()), *_hf_cache_roots()),
+        (
+            shared_sandbox_root(),
+            shared_project_workspaces_root(),
+            *owner_project_roots,
+            *_hf_cache_roots(),
+        ),
+    )
+    # A home-directory deny is followed by narrower interpreter read grants. Keep
+    # owner project locations inside those grants so the profile can deny them again.
+    hidden_roots = list(
+        dict.fromkeys(
+            (
+                *hidden_roots,
+                *(
+                    root
+                    for root in owner_project_roots
+                    if any(_contains(read, root) for read in read_roots)
+                ),
+            )
+        )
     )
     profile = macos_profile(
         read_roots = read_roots,

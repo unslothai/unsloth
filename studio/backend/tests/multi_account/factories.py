@@ -56,11 +56,12 @@ def seed_chat(account) -> dict[str, str]:
 
 @seeder("project")
 def seed_project(account) -> dict[str, str]:
-    root = run_as(account, workspace_root)
+    root = run_as(account, workspace_root) / "projects" / PROJECT_ID
+    (root / "sandbox").mkdir(parents = True, exist_ok = True)
     with studio_connection(account) as conn:
         conn.execute(
             "INSERT INTO chat_projects (id,name,root_path,created_at,updated_at) VALUES (?,?,?,1000,1000)",
-            (PROJECT_ID, SENTINEL, str(root / "projects" / PROJECT_ID)),
+            (PROJECT_ID, SENTINEL, str(root)),
         )
         conn.commit()
     return {"project_id": PROJECT_ID}

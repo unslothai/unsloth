@@ -3214,6 +3214,16 @@ export const uk = {
           "Де зберігаються завантажені моделі. Змініть розташування, щоб не тримати моделі на системному диску. Застосовується лише до нових завантажень. Наявні моделі залишаються на місці.",
         modelsFolderKeywords:
           "папка моделей каталог шлях розташування завантаження кеш сховище диск перемістити models folder directory path location download downloads cache storage disk drive move relocate hugging face",
+        projectsFolder: {
+          label: "Типове розташування для нових проєктів",
+          description: "Місце створення робочих папок нових проєктів. Наявні проєкти залишаться на своїх місцях.",
+          chooseTitle: "Вибрати папку проєктів",
+          chooseAction: "Використовувати для нових проєктів",
+          saved: "Папку проєктів оновлено",
+          loadError: "Не вдалося завантажити папку проєктів",
+          saveError: "Не вдалося оновити папку проєктів",
+          keywords: "Папка проєктів projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Лише нові завантаження",
         environmentManaged: "Керується змінною середовища {variable}.",
         locationFree: "Вільно: {free}",

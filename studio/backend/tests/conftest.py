@@ -23,6 +23,7 @@ import itertools
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -1316,19 +1317,22 @@ def api_key(studio_server):
 
 
 @pytest.fixture(scope = "session")
-def linkable_temp_base(tmp_path_factory):
+def linkable_temp_base():
     """Scratch under the home dir: macOS temp paths under /private/var are denied as system dirs."""
-    basetemp = tmp_path_factory.getbasetemp()
     root = Path.home() / ".unsloth-test-tmp"
-    base = root / basetemp.name
-    base.mkdir(parents = True, exist_ok = True)
-    for stale in root.iterdir():
-        if stale.name != basetemp.name and not (basetemp.parent / stale.name).exists():
-            shutil.rmtree(stale, ignore_errors = True)
+    root.mkdir(parents = True, exist_ok = True)
+    # Concurrent pytest sessions (and interrupted runs) must never share cleanup ownership.
+    base = Path(tempfile.mkdtemp(prefix = "session-", dir = root))
     try:
         yield base
     finally:
         shutil.rmtree(base, ignore_errors = True)
+
+
+@pytest.fixture
+def linkable_tmp_path(linkable_temp_base):
+    """An isolated directory accepted by the real local-folder validators on every OS."""
+    return Path(tempfile.mkdtemp(prefix = "workspace-", dir = linkable_temp_base))
 
 
 @pytest.fixture

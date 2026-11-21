@@ -126,6 +126,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.modelAutoSwitch.mediaIdleUnload",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
+    "settings.resources.storage.projectsFolder.label",
     "settings.resources.storage.futureDownloads",
     "settings.resources.storage.systemDisk",
     "settings.resources.storage.caches.label",
@@ -469,6 +470,7 @@ const FULL_INSTALL_ENTRY: TranslationKey = "settings.general.fullInstall.label";
 
 // owner-only rows on tabs visible to every account.
 const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.resources.storage.projectsFolder.label",
   "settings.general.mlWarmup.sectionTitle",
   "settings.general.mlWarmup.hardwareLabel",
   "settings.general.mlWarmup.textLabel",
@@ -506,6 +508,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  "settings.resources.storage.projectsFolder.label":
+    "settings.resources.storage.projectsFolder.keywords",
   "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
   // A Chat only user searches for what is missing ("train", "pytorch", "video"), not "Install type".
   "settings.general.fullInstall.label": "settings.general.fullInstall.keywords",

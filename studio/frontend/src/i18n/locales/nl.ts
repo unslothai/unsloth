@@ -3230,6 +3230,16 @@ export const nl = {
           "Waar gedownloade modellen worden opgeslagen. Wijzig dit om modellen buiten je systeemschijf te houden. Geldt alleen voor nieuwe downloads. Modellen die je al hebt, blijven waar ze zijn.",
         modelsFolderKeywords:
           "modellenmap map directory pad locatie downloaden downloads cache opslag schijf station verplaatsen hugging face",
+        projectsFolder: {
+          label: "Standaardlocatie voor nieuwe projecten",
+          description: "Hier worden werkruimten voor nieuwe projecten aangemaakt. Bestaande projecten blijven op hun huidige locatie.",
+          chooseTitle: "Projectmap kiezen",
+          chooseAction: "Gebruiken voor nieuwe projecten",
+          saved: "Projectmap bijgewerkt",
+          loadError: "Kan de projectmap niet laden",
+          saveError: "Kan de projectmap niet bijwerken",
+          keywords: "Projectmap projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Alleen nieuwe downloads",
         environmentManaged: "Beheerd door de omgevingsvariabele {variable}.",
         locationFree: "{free} vrij",

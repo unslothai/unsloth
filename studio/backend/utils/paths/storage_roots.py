@@ -372,17 +372,24 @@ def documents_root() -> Path:
 
 
 def shared_project_workspaces_root() -> Path:
-    """Base every account's ``project_workspaces_root`` lives under; confinement hides it first."""
+    """Default/environment shared base; an owner's saved projects folder may live elsewhere."""
     override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
     return Path(override).expanduser() if override else documents_root() / "Unsloth Studio"
 
 
 def project_workspaces_root() -> Path:
-    override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
-    base = shared_project_workspaces_root()
     if is_owner_context():
-        return base if override else base / "Projects"
-    return base / "Accounts" / current_account().account_id / "Projects"
+        from utils.project_workspace_settings import get_projects_home_status
+        return Path(get_projects_home_status()["projects_home"])
+    return shared_project_workspaces_root() / "Accounts" / current_account().account_id / "Projects"
+
+
+def project_workspaces_roots() -> tuple[Path, ...]:
+    """Current and former managed locations belonging to the acting account."""
+    if is_owner_context():
+        from utils.project_workspace_settings import owner_project_workspaces_roots
+        return owner_project_workspaces_roots()
+    return (project_workspaces_root(),)
 
 
 def shared_tmp_root() -> Path:

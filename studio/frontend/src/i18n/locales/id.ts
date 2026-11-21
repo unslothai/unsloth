@@ -3192,6 +3192,16 @@ export const id = {
           "Tempat model yang diunduh disimpan. Ubah untuk menyimpan model di luar drive sistem Anda. Hanya berlaku untuk unduhan baru. Model yang sudah Anda miliki tetap berada di tempatnya.",
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face folder model direktori jalur lokasi unduh unduhan penyimpanan pindahkan",
+        projectsFolder: {
+          label: "Lokasi default untuk proyek baru",
+          description: "Tempat ruang kerja proyek baru dibuat. Proyek yang sudah ada tetap di lokasinya.",
+          chooseTitle: "Pilih folder proyek",
+          chooseAction: "Gunakan untuk proyek baru",
+          saved: "Folder proyek diperbarui",
+          loadError: "Tidak dapat memuat folder proyek",
+          saveError: "Tidak dapat memperbarui folder proyek",
+          keywords: "Folder proyek projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Hanya unduhan baru",
         environmentManaged: "Dikelola oleh variabel lingkungan {variable}.",
         locationFree: "{free} kosong",

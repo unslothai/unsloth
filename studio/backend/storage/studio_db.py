@@ -150,11 +150,19 @@ def _project_slug(name: str) -> str:
     return slug[:48] or "project"
 
 
-def _default_project_root(project: dict) -> str:
+def _create_default_project_workspace(project: dict) -> str:
+    from utils.project_workspace_settings import get_projects_home_status
+
     project_id = str(project["id"])
     suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
     folder_name = f"{_project_slug(str(project.get('name') or 'Project'))}-{suffix}"
-    return str(project_workspaces_root() / folder_name)
+    # Resolve the path and its source together. Re-reading settings to validate
+    # the path can miss an unavailable custom folder after a concurrent reset.
+    status = get_projects_home_status() if is_owner_context() else None
+    root = Path(status["projects_home"]) if status else project_workspaces_root()
+    return _ensure_project_workspace(
+        str(root / folder_name), create_parents = not (status and status["is_custom"])
+    )
 
 
 class ProjectWorkspaceError(OSError):
@@ -169,12 +177,49 @@ class ProjectWorkspaceError(OSError):
         self.path = path
 
 
-def _ensure_project_workspace(root_path: str) -> str:
+class ProjectWorkspaceUnavailableError(ProjectWorkspaceError):
+    """An existing workspace is unavailable; opening it must not recreate its files."""
+
+    def __str__(self) -> str:
+        return (
+            f"The project folder {self.path} is unavailable. Reconnect its drive if it is offline, "
+            "or restore this folder if it was moved or deleted, then try again."
+        )
+
+
+def require_project_directory(path: str | Path) -> None:
+    """Check an existing project directory without recreating missing/offline storage."""
+    try:
+        if not stat.S_ISDIR(os.stat(path).st_mode):
+            raise NotADirectoryError(str(path))
+    except OSError as exc:
+        raise ProjectWorkspaceUnavailableError(str(path), exc) from exc
+
+
+def _existing_project_workspace(root_path: str) -> str:
+    root = Path(root_path).expanduser()
+    # A disconnected drive can leave an empty mount point behind. Require the
+    # workspace and its sandbox without creating either directory.
+    for path in (root, *(root / name for name in _PROJECT_WORKSPACE_SUBDIRS)):
+        require_project_directory(path)
+    return root_path
+
+
+def _ensure_project_workspace(root_path: str, *, create_parents: bool = True) -> str:
     root = Path(root_path).expanduser()
     try:
-        root_resolved = ensure_dir(root).resolve()
+        if create_parents:
+            ensure_dir(root)
+        else:
+            # A saved custom parent may disappear after selection (e.g. a
+            # detached drive). Neither mkdir may recreate that parent.
+            root.mkdir(exist_ok = True)
+        root_resolved = root.resolve()
         for subdir in _PROJECT_WORKSPACE_SUBDIRS:
-            ensure_dir(root_resolved / subdir)
+            if create_parents:
+                ensure_dir(root_resolved / subdir)
+            else:
+                (root_resolved / subdir).mkdir(exist_ok = True)
     except OSError as exc:
         raise ProjectWorkspaceError(str(root), exc) from exc
     return str(root_resolved)
@@ -3380,9 +3425,9 @@ def upsert_chat_project(
 ) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
-    if not root_path:
-        root_path = _default_project_root(project)
-    root_path = _ensure_project_workspace(root_path)
+    # Reimports update database metadata even when the recorded workspace is offline.
+    # Callers that need its files validate availability with ensure_chat_project_workspace.
+    root_path = root_path or _create_default_project_workspace(project)
     conn = get_connection()
     try:
         if working_folder is not None:
@@ -3541,8 +3586,14 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
     project = get_chat_project(id)
     if project is None:
         return None
-    root_path = project.get("rootPath") or _default_project_root(project)
-    root_path = _ensure_project_workspace(root_path)
+    if available_project_working_folder(project):
+        return project
+    root_path = project.get("rootPath")
+    root_path = (
+        _existing_project_workspace(root_path)
+        if root_path
+        else _create_default_project_workspace(project)
+    )
     # A concurrent delete can drop the row before mkdir; recheck. Only delete decides file removal.
     project = get_chat_project(id)
     if project is None:
@@ -3566,6 +3617,18 @@ def get_chat_project(id: str) -> Optional[dict]:
     try:
         row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
         return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_chat_project_root_paths() -> list[str]:
+    """Nonempty workspace paths for the acting account, including archived projects."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT root_path FROM chat_projects WHERE root_path IS NOT NULL AND root_path != ''"
+        ).fetchall()
+        return [row["root_path"] for row in rows]
     finally:
         conn.close()
 

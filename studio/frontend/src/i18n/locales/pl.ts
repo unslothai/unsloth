@@ -3225,6 +3225,16 @@ export const pl = {
           "Gdzie przechowywane są pobrane modele. Zmień, aby trzymać modele poza dyskiem systemowym. Dotyczy tylko nowych pobrań. Już posiadane modele pozostają na miejscu.",
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face modele folder katalog ścieżka lokalizacja pobieranie pamięć podręczna dysk przenieś",
+        projectsFolder: {
+          label: "Domyślna lokalizacja nowych projektów",
+          description: "Miejsce tworzenia obszarów roboczych nowych projektów. Istniejące projekty pozostaną w swoich lokalizacjach.",
+          chooseTitle: "Wybierz folder projektów",
+          chooseAction: "Użyj dla nowych projektów",
+          saved: "Zaktualizowano folder projektów",
+          loadError: "Nie udało się wczytać folderu projektów",
+          saveError: "Nie udało się zaktualizować folderu projektów",
+          keywords: "Folder projektów projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Tylko nowe pobrania",
         environmentManaged: "Zarządzane przez zmienną środowiskową {variable}.",
         locationFree: "Wolne: {free}",

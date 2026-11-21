@@ -3034,6 +3034,16 @@ export const he = {
           "המיקום שבו מאוחסנים מודלים שהורדו. שנה אותו כדי לא לתפוס מקום בכונן המערכת. חל על הורדות חדשות בלבד. מודלים שכבר קיימים יישארו במיקומם הנוכחי.",
         modelsFolderKeywords:
           "models folder directory path location download downloads cache storage disk drive move relocate hugging face תיקייה מודלים הורדות אחסון דיסק",
+        projectsFolder: {
+          label: "מיקום ברירת המחדל לפרויקטים חדשים",
+          description: "המיקום שבו נוצרות סביבות העבודה של פרויקטים חדשים. פרויקטים קיימים נשארים במקומם.",
+          chooseTitle: "בחירת תיקיית פרויקטים",
+          chooseAction: "שימוש עבור פרויקטים חדשים",
+          saved: "תיקיית הפרויקטים עודכנה",
+          loadError: "לא ניתן לטעון את תיקיית הפרויקטים",
+          saveError: "לא ניתן לעדכן את תיקיית הפרויקטים",
+          keywords: "תיקיית פרויקטים projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "הורדות חדשות בלבד",
         environmentManaged: "מנוהל על ידי משתנה הסביבה {variable}.",
         locationFree: "{free} פנוי",

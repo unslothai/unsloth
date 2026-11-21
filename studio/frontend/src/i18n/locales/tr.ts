@@ -3186,6 +3186,16 @@ export const tr = {
           "İndirilen modellerin depolandığı yer. Modelleri sistem sürücünüzün dışında tutmak için değiştirin. Yalnızca yeni indirmeler için geçerlidir. Mevcut modelleriniz oldukları yerde kalır.",
         modelsFolderKeywords:
           "modeller klasör dizin yol konum indir indirmeler önbellek depolama disk sürücü taşı yer değiştir hugging face models folder",
+        projectsFolder: {
+          label: "Yeni projeler için varsayılan konum",
+          description: "Yeni proje çalışma alanlarının oluşturulduğu konum. Mevcut projeler bulundukları yerde kalır.",
+          chooseTitle: "Proje klasörünü seç",
+          chooseAction: "Yeni projeler için kullan",
+          saved: "Proje klasörü güncellendi",
+          loadError: "Proje klasörü yüklenemedi",
+          saveError: "Proje klasörü güncellenemedi",
+          keywords: "Proje klasörü projects folder directory workspace path location storage disk drive default new projects",
+        },
         futureDownloads: "Yalnızca yeni indirmeler",
         environmentManaged:
           "{variable} ortam değişkeni tarafından yönetiliyor.",

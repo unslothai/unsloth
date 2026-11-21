@@ -1572,6 +1572,107 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
 
 
+def test_a_project_in_a_previous_home_stays_listed_and_downloadable(
+    client, signed_in, monkeypatch, tmp_path
+):
+    from core.inference.tools import resolve_sandbox_workdir
+    from storage import studio_db
+    from utils.paths import storage_roots
+
+    previous = tmp_path / "Previous projects"
+    current = tmp_path / "Current projects"
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(previous))
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    project = studio_db.upsert_chat_project(
+        {"id": "p-retained", "name": "Earlier project", "createdAt": 1, "updatedAt": 1}
+    )
+    directory = Path(resolve_sandbox_workdir("project-p-retained"))
+    (directory / "notes.txt").write_text("kept in the original folder")
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(current))
+    monkeypatch.setattr(storage_roots, "project_workspaces_roots", lambda: (current, previous))
+    item_id = "sandbox:project-p-retained:notes.txt"
+    assert _items(client)[0][item_id]["threadTitle"] == "Earlier project"
+    assert _download(client, item_id).content == b"kept in the original folder"
+    assert studio_db.get_chat_project("p-retained")["rootPath"] == project["rootPath"]
+
+
+@pytest.mark.parametrize("missing", ["workspace", "sandbox"])
+def test_offline_project_items_are_unavailable_until_storage_returns(
+    client, signed_in, monkeypatch, tmp_path, missing
+):
+    from core.inference import tools
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(tools, "_workdirs", {})
+    project = studio_db.upsert_chat_project(
+        {"id": "offline-library", "name": "Files", "createdAt": 1, "updatedAt": 1}
+    )
+    root = Path(project["rootPath"])
+    (root / "sandbox" / "notes.txt").write_text("original content")
+    session_id = "project-offline-library"
+    item_id = f"sandbox:{session_id}:notes.txt"
+    assert _download(client, item_id).content == b"original content"
+
+    # An old fallback with this session id must never answer for the offline project.
+    fallback = Path(tools.sandbox_root()) / session_id
+    fallback.mkdir(parents = True)
+    (fallback / tools._SANDBOX_MARKER).write_text(session_id)
+    (fallback / "notes.txt").write_text("unrelated fallback content")
+    absent = root if missing == "workspace" else root / "sandbox"
+    offline = tmp_path / "disconnected"
+    absent.rename(offline)
+
+    assert _download(client, item_id).status_code == 404
+    assert _post(client, "items/reveal", id = item_id).status_code == 404
+    assert not absent.exists()
+    assert (fallback / "notes.txt").read_text() == "unrelated fallback content"
+
+    offline.rename(absent)
+    assert _download(client, item_id).content == b"original content"
+
+
+def test_listing_many_projects_reads_the_saved_locations_once(client, monkeypatch, tmp_path):
+    from storage import studio_db
+    from utils import project_workspace_settings as settings
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_PROJECTS_HOME", raising = False)
+    previous = tmp_path / "previous-projects"
+    current = tmp_path / "current-projects"
+    previous.mkdir()
+    current.mkdir()
+    studio_db.upsert_app_settings({settings.PROJECTS_HOME_SETTING_KEY: str(previous)})
+    for number in range(100):
+        project = studio_db.upsert_chat_project(
+            {"id": f"p-{number}", "name": f"Project {number}", "createdAt": 1, "updatedAt": 1}
+        )
+        (Path(project["rootPath"]) / "sandbox" / "output.txt").write_text(str(number))
+    studio_db.upsert_app_settings(
+        {
+            settings.PROJECTS_HOME_SETTING_KEY: str(current),
+            settings.PROJECTS_HOME_HISTORY_SETTING_KEY: [str(previous)],
+        }
+    )
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    get_settings = studio_db.get_app_settings
+    reads = []
+
+    def counted_settings(keys):
+        if settings.PROJECTS_HOME_SETTING_KEY in keys:
+            reads.append(tuple(keys))
+        return get_settings(keys)
+
+    monkeypatch.setattr(studio_db, "get_app_settings", counted_settings)
+    assert len(_items(client)[0]) == 100
+    assert len(reads) == 1
+    # A new listing must read a new snapshot, rather than keeping the previous roots forever.
+    studio_db.upsert_app_settings({settings.PROJECTS_HOME_HISTORY_SETTING_KEY: []})
+    library.invalidate_listing()
+    assert _items(client)[0] == {}
+    assert len(reads) == 2
+
+
 @pytest.fixture(autouse = True)
 def _temp_folders_are_ordinary(monkeypatch):
     # macOS tmp lives under /private/var, which the real path checks refuse

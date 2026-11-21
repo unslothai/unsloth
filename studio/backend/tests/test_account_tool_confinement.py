@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -574,6 +575,91 @@ def test_macos_profile_hides_shared_sandbox_and_project_bases(tmp_path, monkeypa
         < allow_own
     )
     assert f'(subpath "{alice_sandbox}")' not in profile
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_saved_owner_project_homes_are_excluded_from_landlock_read_grants(
+    tmp_path, monkeypatch, present
+):
+    from utils import project_workspace_settings
+
+    prefix = tmp_path / "readable-prefix"
+    prefix.mkdir()
+    homes = (prefix / "current-projects", prefix / "previous-projects")
+    if present:
+        for root in homes:
+            root.mkdir()
+            (root / "private.txt").write_text("OWNER_PRIVATE")
+    public = prefix / "public"
+    public.mkdir()
+    monkeypatch.setattr(project_workspace_settings, "owner_project_workspaces_roots", lambda: homes)
+    monkeypatch.setattr(tool_confinement, "_interpreter_roots", lambda: [str(prefix.resolve())])
+    monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", ())
+    monkeypatch.setattr(tool_confinement, "_device_nodes", lambda: [])
+
+    # The rule builder is testable without applying Landlock, including on macOS.
+    rules = run_as(BOB, tool_confinement._landlock_rules, 3, str(public))
+    for root in homes:
+        secret = str((root / "private.txt").resolve())
+        assert not any(tool_confinement._contains(path, secret) for path, _ in rules)
+    assert any(tool_confinement._contains(path, str(public.resolve())) for path, _ in rules)
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_macos_profile_hides_current_and_previous_owner_project_homes(
+    tmp_path, monkeypatch, present
+):
+    from utils import project_workspace_settings
+
+    prefix = tmp_path / "readable-prefix"
+    prefix.mkdir()
+    homes = (prefix / "current-projects", prefix / "previous-projects")
+    if present:
+        for root in homes:
+            root.mkdir()
+    monkeypatch.setattr(project_workspace_settings, "owner_project_workspaces_roots", lambda: homes)
+    monkeypatch.setattr(tool_confinement, "_interpreter_roots", lambda: [str(prefix.resolve())])
+    monkeypatch.setattr(tool_confinement.shutil, "which", lambda name: "/usr/bin/sandbox-exec")
+
+    profile = run_as(BOB, tool_confinement._macos_confinement, str(prefix)).wrap(["bash"])[2]
+    quoted_prefix = tool_confinement._sbpl(str(prefix.resolve()))
+    readable = profile.index(f"(allow file-read* (subpath {quoted_prefix}))")
+    for root in homes:
+        quoted_root = tool_confinement._sbpl(str(root.resolve()))
+        assert readable < profile.index(f"(deny file-read* file-write* (subpath {quoted_root}))")
+        assert f"(allow file-read* file-write* (subpath {quoted_root}))" not in profile
+    own = run_as(BOB, storage_roots.project_workspaces_root).resolve()
+    assert f"(allow file-read* file-write* (subpath {tool_confinement._sbpl(str(own))}))" in profile
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not tool_confinement.shutil.which("sandbox-exec"),
+    reason = "needs macOS sandbox-exec",
+)
+def test_macos_child_cannot_read_current_or_previous_owner_project_homes(tmp_path, monkeypatch):
+    from utils import project_workspace_settings
+
+    prefix = tmp_path / "readable-prefix"
+    homes = (prefix / "current-projects", prefix / "previous-projects")
+    secrets = []
+    for root in homes:
+        root.mkdir(parents = True)
+        secret = root / "private.txt"
+        secret.write_text("OWNER_PROJECT_SECRET")
+        secrets.append(secret)
+    public = prefix / "public.txt"
+    public.write_text("PUBLIC_VISIBLE")
+    interpreter_roots = tool_confinement._interpreter_roots()
+    monkeypatch.setattr(project_workspace_settings, "owner_project_workspaces_roots", lambda: homes)
+    monkeypatch.setattr(
+        tool_confinement, "_interpreter_roots", lambda: [*interpreter_roots, str(prefix.resolve())]
+    )
+
+    command = "cat " + " ".join(shlex.quote(str(path)) for path in secrets)
+    command += "; cat " + shlex.quote(str(public))
+    output = run_as(BOB, tools._bash_exec, command, session_id = "chat")
+    assert "OWNER_PROJECT_SECRET" not in output, output
+    assert "PUBLIC_VISIBLE" in output, output
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")

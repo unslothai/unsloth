@@ -450,6 +450,7 @@ import {
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
+  LoadModelError,
   loadModel,
   streamChatCompletions,
   StreamInterruptedError,
@@ -2502,12 +2503,21 @@ async function resolveUseAdapter(
   }
 }
 
-async function resolveProjectInstructions(projectId: string | null): Promise<string> {
+async function resolveProjectInstructions(
+  projectId: string | null,
+  requireWorkspace = true,
+): Promise<string> {
   if (!projectId) {
     return "";
   }
 
-  const project = await getStoredChatProject(projectId).catch(() => null);
+  const project = await getStoredChatProject(projectId, {
+    requireWorkspace,
+  }).catch((error) => {
+    // An unavailable project workspace must stop the send, not drop its instructions.
+    if (error instanceof LoadModelError && error.status === 503) throw error;
+    return null;
+  });
   if (!project || project.archived) {
     return "";
   }
@@ -2552,7 +2562,8 @@ export async function resolveChatInstructions(
       : "";
   const projectId = await resolveProjectId(threadId, readThreadRecord);
   const [projectInstructions, agentsMd] = await Promise.all([
-    resolveProjectInstructions(projectId),
+    // Copies and exports need the saved instructions even when the folder is offline.
+    resolveProjectInstructions(projectId, opts?.agentsMd === true),
     opts?.agentsMd ? resolveAgentsMd(projectId) : undefined,
   ]);
   return composeChatInstructions({
