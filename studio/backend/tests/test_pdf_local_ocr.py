@@ -160,7 +160,8 @@ def test_ocr_page_cap_does_not_silently_drop_pages(
         assert doc["status"] == "failed"
         error = doc["error"]
     assert "scanned PDF pages: 2" in error
-    assert local_ocr == [1]
+    # Ingestion fails a scan past the cap before OCR; the one-shot recipe upload still reads page 1.
+    assert local_ocr == ([1] if recipe else [])
 
 
 def test_blank_separator_needs_no_ocr(tmp_path):
