@@ -98,7 +98,8 @@ def _trim(
     """(states, mask or None, position_ids) on the kept rows, or None to run the call as given.
 
     Calls sharing one ``position_ids`` tensor (the CFG branches of a render) keep the same row count, the longest any of
-    them needs, so the CFG router can still stack them: a longer branch seen later re-trims the shorter one once."""
+    them needs, and all keep their mask once any of them needs one, so the CFG router can still stack them: a branch
+    seen later that widens either re-trims the others once."""
     memo = module.__dict__.setdefault(_MEMO_ATTR, [])
     srcs = (states, mask, position_ids)
     pos_key = (position_ids,)
@@ -108,9 +109,10 @@ def _trim(
         held = _store(pos_memo, pos_key, {})
     text_len = int(states.shape[1])
     group = int(held.get("rows", 0))
+    masked = bool(held.get("masked", False))
     hit = _lookup(memo, srcs)
-    if hit is not None and hit[0] >= group:
-        return hit[1] or None
+    if hit is not None and hit[0] >= group and (hit[1] or not masked):
+        return hit[2] or None
     plan = None
     if group < text_len:
         plan = _columns(mask, text_len, group)
@@ -118,11 +120,14 @@ def _trim(
         plan = None  # text rows off the rotary origin: dropping one would move the others' phases
     if plan is None:
         held["rows"] = text_len  # this branch runs padded: so do the others of its group
-        _store(memo, srcs, (text_len, ()))
+        _store(memo, srcs, (text_len, True, ()))
         return None
     index, all_valid = plan
     rows = int(index.shape[0])
     held["rows"] = max(group, rows)
+    if not all_valid:
+        held["masked"] = masked = True
+    keep_mask = masked or not all_valid
     pos = held.get(rows)
     if pos is None:
         import torch
@@ -131,11 +136,11 @@ def _trim(
         held[rows] = pos
     out = (
         states.index_select(1, index),
-        None if all_valid else mask.index_select(1, index),
+        mask.index_select(1, index) if keep_mask else None,
         pos,
         text_len - rows,
     )
-    _store(memo, srcs, (rows, out))
+    _store(memo, srcs, (rows, keep_mask, out))
     return out
 
 

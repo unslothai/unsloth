@@ -255,3 +255,29 @@ def test_a_cfg_pair_of_two_buckets_keeps_one_length(dit, cond_valid, neg_valid):
         ref = (dit(**cond)[0], dit(**neg)[0])
     torch.testing.assert_close(outs[-2], ref[0], rtol = 1e-5, atol = 1e-5)
     torch.testing.assert_close(outs[-1], ref[1], rtol = 1e-5, atol = 1e-5)
+
+
+@pytest.mark.parametrize("cond_valid, neg_valid", [(5, 1), (1, 5)])
+def test_a_cfg_pair_where_one_branch_fills_its_bucket_keeps_both_masks(dit, cond_valid, neg_valid):
+    # 5 prompt tokens + 3 suffix fill the 8-row bucket exactly (its mask could drop), the other branch needs its mask:
+    # both keep a mask so the CFG router sees the same keys in both branches.
+    cond, neg = _inputs((cond_valid,)), _inputs((neg_valid,))
+    neg["position_ids"] = cond["position_ids"]
+    trim.install_for_pipe(_Pipe(dit))
+    got, handle = _seen(dit)
+    masks, outs = [], []
+    try:
+        with torch.no_grad():
+            for _ in range(3):
+                for kw in (cond, neg):
+                    outs.append(dit(**kw)[0])
+                    masks.append(got.get("encoder_attention_mask"))
+    finally:
+        handle.remove()
+    assert masks[-1] is not None and masks[-2] is not None
+    assert masks[-1].shape == masks[-2].shape
+    trim.uninstall(dit)
+    with torch.no_grad():
+        ref = (dit(**cond)[0], dit(**neg)[0])
+    torch.testing.assert_close(outs[-2], ref[0], rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(outs[-1], ref[1], rtol = 1e-5, atol = 1e-5)
