@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import queue
+import re
 import shlex
 import subprocess
 import sys
@@ -68,6 +69,23 @@ def catalog_row(entry: dict[str, Any], models_dir: Optional[Path] = None) -> dic
         if installed and folder and models_dir
         else None,
     }
+
+
+def json_object(output: str, key: str) -> Optional[dict[str, Any]]:
+    """The JSON object holding ``key`` in flm's output. ``Flm.run`` joins stdout and stderr,
+    so a line flm prints before or after the object is skipped instead of failing the parse."""
+    decoder = json.JSONDecoder()
+    first = output.find("{")
+    # The object starts at the first brace or, after a status line, at the start of a line.
+    starts = sorted({first, *(m.start() for m in re.finditer(r"^\{", output, re.M))} - {-1})
+    for start in starts:
+        try:
+            value, _end = decoder.raw_decode(output, start)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and key in value:
+            return value
+    return None
 
 
 def log(message: str, tag: str = "FlmHost") -> None:
@@ -162,10 +180,10 @@ class Flm:
 
     def catalog(self) -> list[dict[str, Any]]:
         code, output = self.run("list", "--json", timeout = 120.0)
-        start = output.find("{")
-        if code or start < 0:
+        report = None if code else json_object(output, "models")
+        if report is None:
             raise RuntimeError(f"flm list failed: {output.strip()[-300:]}")
-        models = json.loads(output[start:]).get("models") or []
+        models = report.get("models") or []
         return [catalog_row(entry, self.models_dir) for entry in models if isinstance(entry, dict)]
 
 
