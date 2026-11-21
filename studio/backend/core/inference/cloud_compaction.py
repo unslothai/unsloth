@@ -30,13 +30,30 @@ SUMMARY_MIN_TOKENS = 1_024
 # A slow but streaming provider (a local server, a large backlog) is waited for; one that goes
 # silent is not. The total cap only bounds a stream that never ends.
 SUMMARY_IDLE_TIMEOUT_S = 120.0
+# Self-hosted servers are silent while reading the prompt; same as the chat stream's read timeout.
+SUMMARY_FIRST_LINE_TIMEOUT_S = 300.0
 SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8
 # One tool result or pasted file must not crowd the rest of the transcript out of the summary call.
 _TRANSCRIPT_MESSAGE_CHARS = 12_000
 _TRANSCRIPT_TOOL_CHARS = 3_000
+# Thinking can spend the whole summary cap; off is a no-op here without it, cloud may reject it.
+_THINKING_OFF_PROVIDERS = frozenset({"ollama", "llama_cpp", "vllm", "custom"})
 
 COMPACTING_SSE_LINE = 'data: {"type":"generation_progress","phase":"compacting"}'
+
+
+def summary_thinking(provider_type: Optional[str], api_type: Optional[str]) -> Optional[bool]:
+    if provider_type in _THINKING_OFF_PROVIDERS and api_type != "responses":
+        return False
+    return None
+
+
+def compaction_failed_sse_line(reason: str) -> str:
+    return "data: " + json.dumps(
+        {"type": "generation_progress", "phase": "compaction_failed", "reason": reason}
+    )
+
 
 SUMMARY_SYSTEM_PROMPT = (
     "You write the handover summary for a long conversation whose oldest part is about to be "
@@ -78,6 +95,20 @@ class SummaryCutOff(SummaryFailed):
 
 class SummaryTimedOut(SummaryFailed):
     pass
+
+
+class SummaryEmpty(SummaryFailed):
+    pass
+
+
+def failure_reason(exc: SummaryFailed) -> str:
+    if isinstance(exc, SummaryCutOff):
+        return "cut_off"
+    if isinstance(exc, SummaryTimedOut):
+        return "timed_out"
+    if isinstance(exc, SummaryEmpty):
+        return "empty"
+    return "error"
 
 
 _OVERFLOW_PATTERNS = tuple(
@@ -368,7 +399,8 @@ def summary_chunks(
 
 async def collect_summary(stream: AsyncIterator[str]) -> str:
     """The text of a streamed chat completion. Raises SummaryFailed on an error line, an empty
-    reply, SUMMARY_IDLE_TIMEOUT_S without a line, or SUMMARY_TIMEOUT_S in all."""
+    reply, SUMMARY_FIRST_LINE_TIMEOUT_S before the first line or SUMMARY_IDLE_TIMEOUT_S between
+    later ones, or SUMMARY_TIMEOUT_S in all."""
     parts: list[str] = []
     finish_reason = None
 
@@ -397,13 +429,15 @@ async def collect_summary(stream: AsyncIterator[str]) -> str:
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + SUMMARY_TIMEOUT_S
 
-                def _next_limit() -> float:
-                    return min(loop.time() + SUMMARY_IDLE_TIMEOUT_S, deadline)
+                def _next_limit(idle: float = SUMMARY_IDLE_TIMEOUT_S) -> float:
+                    return min(loop.time() + idle, deadline)
 
-                async with asyncio.timeout_at(_next_limit()) as scope:  # novermin
+                async with asyncio.timeout_at(  # novermin
+                    _next_limit(SUMMARY_FIRST_LINE_TIMEOUT_S)
+                ) as scope:
                     await _read(lambda: scope.reschedule(_next_limit()))
-            else:  # Python < 3.11: the whole call within the idle limit, as before.
-                await asyncio.wait_for(_read(), timeout = SUMMARY_IDLE_TIMEOUT_S)
+            else:  # Python < 3.11
+                await asyncio.wait_for(_read(), timeout = SUMMARY_FIRST_LINE_TIMEOUT_S)
         finally:
             aclose = getattr(stream, "aclose", None)
             if aclose is not None:
@@ -423,7 +457,7 @@ async def collect_summary(stream: AsyncIterator[str]) -> str:
     # A reasoning model may wrap its thinking in tags the chat would otherwise carry forever.
     text = re.sub(r"<think>.*?</think>", "", text, flags = re.DOTALL).strip()
     if not text:
-        raise SummaryFailed("the summary call returned no text")
+        raise SummaryEmpty("the summary call returned no text")
     return text
 
 
