@@ -28,6 +28,23 @@ type MessageRecord = import("../src/features/chat/types.ts").MessageRecord;
 
 const LOCAL = "unsloth/gemma-4-E2B-it-GGUF";
 
+test("custom instructions reach initial and regenerated title requests", async () => {
+  const prompt = "Use an emoji and eight German words.";
+  const initial = await buildTitleRequest(LOCAL, "User: hello", prompt);
+  const refreshed = await buildTitleRefreshRequest(LOCAL, "User: hello", prompt);
+  for (const request of [initial, refreshed]) {
+    assert.equal(request?.messages[0]?.content, prompt);
+    assert.equal(request?.messages[1]?.content, "User: hello");
+    assert.equal(request?.max_tokens, 96);
+  }
+  const defaultInitial = await buildTitleRequest(LOCAL, "User: hello");
+  const defaultRefresh = await buildTitleRefreshRequest(LOCAL, "User: hello");
+  assert.notEqual(defaultInitial?.messages[0]?.content, prompt);
+  assert.notEqual(defaultRefresh?.messages[0]?.content, prompt);
+  assert.equal(defaultInitial?.max_tokens, 24);
+  assert.equal(defaultRefresh?.max_tokens, 24);
+});
+
 function message(
   index: number,
   role: MessageRecord["role"],
@@ -138,8 +155,8 @@ test("a refresh follows the connection that answered, and asks a local model onl
     source.indexOf("async function titleFromModel"),
     source.indexOf("async function titleModelServing"),
   );
-  assert.match(fromModel, /await Promise\.race\(\[buildTitleRefreshRequest\(checkpoint, excerpt\), timedOut\]\)/);
-  assert.match(fromModel, /await Promise\.race\(\[titleFromStream\(streamChatCompletions\(request, controller\.signal\)\), timedOut\]\)/);
+  assert.match(fromModel, /await Promise\.race\(\[buildTitleRefreshRequest\(checkpoint, excerpt, customPrompt\), timedOut\]\)/);
+  assert.match(fromModel, /await Promise\.race\(\[titleFromStream\(streamChatCompletions\(request, controller\.signal\), Boolean\(customPrompt\)\), timedOut\]\)/);
   const body = source.slice(
     source.indexOf("export async function regenerateChatTitle"),
     source.indexOf("/** The sandbox"),
