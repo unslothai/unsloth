@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Who an MCP call answers to, and what follows from it: the tools it is offered, whether host
-files are reachable, and whether its key outlives the call. Tool modules only declare facts about
-their tools (``FACTS``); a profile withholds the tools whose facts it cannot allow."""
+"""Per-caller MCP profiles set tools offered, host-file reach and key lifetime; tools only declare
+FACTS, and a profile withholds the tools whose facts it cannot allow."""
 
 from __future__ import annotations
 

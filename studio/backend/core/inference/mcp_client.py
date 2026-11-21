@@ -11,6 +11,7 @@ import hashlib
 import importlib
 import ipaddress
 import json
+import ssl
 import mimetypes
 import os
 import re
@@ -2530,10 +2531,41 @@ def call_tool_sync(
         suffix = f" after {timeout:g}s" if timeout is not None else ""
         return f"Error: MCP tool '{name}' timed out{suffix}"
     except Exception as exc:
+        if server_unreachable(exc):
+            # The app behind the server is closed; say so, or models sleep and retry.
+            logger.warning("MCP server unreachable for %s: %s", name, exc)
+            return (
+                f"Error: MCP tool '{name}' did not run: {UNREACHABLE_SERVER}. {UNREACHABLE_ADVICE}"
+            )
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
     return _flatten_result(result, ui_resource_uri)
+
+
+UNREACHABLE_SERVER = "the MCP server is not reachable (nothing answered the connection)"
+UNREACHABLE_ADVICE = "It is probably not running. Tell the user to start it; waiting or calling it again will not help until it runs."
+
+
+def server_unreachable(exc: BaseException) -> bool:
+    """A refused or unanswered connection anywhere in the cause chain (httpx is vendored, so match by type name).
+    A TLS failure is not one: httpx raises ConnectError for an untrusted certificate too, but the server answered."""
+    chain, seen = [], 0
+    while exc is not None and seen < 10:
+        chain.append(exc)
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    if any(
+        isinstance(item, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(item) for item in chain
+    ):
+        return False
+    for exc in chain:
+        if type(exc).__name__ in (
+            "ConnectError",
+            "ConnectionRefusedError",
+        ) or "All connection attempts failed" in str(exc):
+            return True
+    return False
 
 
 MAX_UI_TOOL_RESULT_CHARS = 4_000_000

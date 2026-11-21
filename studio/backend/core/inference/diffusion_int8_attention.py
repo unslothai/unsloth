@@ -24,6 +24,8 @@ How the values are quantised (ideas from the cited papers, written from scratch 
   resolution (CUDA kernel; the Triton kernel keeps the range over every key). A launch plan none of whose first
   calls had a sink runs the kernels without that path from then on, so calls without sinks cost what they did; one
   with sinks keeps the path only where it still beats torch's attention on its own inputs (a race at that call).
+  A seed renders the same image on the first render of a load as on the next: a plan whose sink-path calls were used
+  in a render where V clipped keeps that path for the load.
 
 The kernel never replaces attention on its own: a strided processor runs it only after ``install_int8_attention``
 found the kernel accurate on this card and, unless it was asked for by name, more than 2% faster than what the
@@ -578,8 +580,11 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# A plan's first SINK_LEARN_CALLS calls learn whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT.
-# Both must precede CUDA graph capture (3 eager warm-ups): an undecided plan keeps the sink path in the graph.
+# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT
+# (the bucket's verdict of this load, else a race). Undecided, a plan runs the sink path, which a graph records. A
+# verdict other than the sink path is taken only where no call whose output was used (not a thrown-away graph
+# warm-up) clipped on the sink path: else the plan keeps it for the load, so the first render repeats. The verdict
+# stays the bucket's for the load; the next load races again.
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
 # A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).
@@ -621,6 +626,14 @@ def _decisions() -> dict:
     return found
 
 
+def _sink_unsafe() -> set:
+    """``plan["decision"]`` keys whose race rejected the sink path on accuracy (a non-finite error): never pinned."""
+    found = _LOADED.get("sink_unsafe")
+    if found is None:
+        found = _LOADED["sink_unsafe"] = set()
+    return found
+
+
 # Set once a CUDA graph records a sink-route call: no later race or route change, the graph replays what it recorded.
 _GRAPHED = [False]
 # (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
@@ -634,23 +647,39 @@ def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
 def _drop_routes(plan: dict) -> None:
     _, Sq, Sk, _, D = plan["shape"]
     floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
+    restored = raised = 0
     for index, head_dim, raise_floor in list(_ROUTES):
         if index == plan["index"] and head_dim == D:
-            raise_floor(floor)
+            if raise_floor(floor):
+                restored += 1
+            else:
+                raised += 1
+    if restored or raised:
+        _log().info(
+            "diffusion.int8_attention: torch attention beat the sink path on cuda:%d at %d tokens: %d attention "
+            "modules back on their stock processor, %d below %d tokens stay on %s",
+            plan["index"],
+            min(Sq, Sk),
+            restored,
+            raised,
+            floor,
+            BACKEND,
+        )
 
 
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
     its calls compile as they did before the install; any other raises its token floor."""
 
-    def raise_floor(tokens: int) -> None:
+    def raise_floor(tokens: int) -> bool:
         stock = getattr(proc, "_unsloth_stock", None)
         if stock is not None and module is not None and getattr(module, "processor", None) is proc:
             module.processor = stock
-            return
+            return True
         proc._unsloth_int8_min_tokens = max(
             int(getattr(proc, "_unsloth_int8_min_tokens", 0)), tokens
         )
+        return False
 
     return raise_floor
 
@@ -857,6 +886,7 @@ def forget_plans() -> None:
     """Drop launch plans, sink decisions and routes: a new pipeline decides again."""
     _plans().clear()
     _decisions().clear()
+    _sink_unsafe().clear()
     _ROUTES.clear()
     _GRAPHED[0] = False
 
@@ -945,15 +975,9 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: b
 
 
 def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
-    """(path, call index) for this call of ``plan``: True the attention-sink path, False the kernels without it, or
-    "native" torch's attention. Every call takes the sink path until the plan's SINK_DECIDE_AT-th; from then on a
-    plan none of whose first SINK_LEARN_CALLS calls had a head that clipped V (an attention sink) runs the kernels
-    without the path, instruction for instruction the ones from before it, with no residual launch (a head without
-    sinks gets the same bits either way; one that would still clip takes the full range, as before). A plan with
-    sinks keeps the path where ``race`` (timed on the deciding call's own inputs) finds it still faster than torch's
-    attention by RACE_MARGIN, and runs torch's attention otherwise (no race: it keeps the path). The races and the
-    early calls aside, the same calls in the same order take the same paths. Called on the device of the plan; a CUDA
-    graph capture keeps what the plan has decided."""
+    """Returns (path, call index): sink path until SINK_DECIDE_AT, then dropped if the first
+    SINK_LEARN_CALLS calls never clipped V; race keeps it or falls to torch; native is torch;
+    CUDA graph capture keeps the decision"""
     import torch
 
     forced = getattr(_RACE, "path", None)
@@ -966,14 +990,21 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
         return (True if plan["sinks"] is None else plan["sinks"]), None
     n = plan["calls"]
     plan["calls"] = n + 1
+    # a CUDA graph's side-stream warm-ups throw their outputs away: those calls pin no route
+    if _discarded_call():
+        plan["discarded"] = plan.get("discarded", 0) + 1
     if plan["sinks"] is None and n >= SINK_DECIDE_AT:
         # its event waits and the race's are prohibited while another thread records a graph: decide on a later call
         with _outside_capture() as safe:
             if safe:
                 seen = False
-                for event, host in plan["checks"]:
-                    event.synchronize()  # done: recorded SINK_DECIDE_AT - SINK_LEARN_CALLS calls ago or more
-                    seen = seen or bool(host.any())
+                for check in plan["checks"]:
+                    # one wait per plan and load: the last undecided calls' copies may still be in flight
+                    check[0].synchronize()
+                    if bool(check[1].any()):
+                        seen = True
+                        if len(check) > 2 and check[2]:
+                            plan["live_seen"] = True
                 plan["checks"] = []
                 # the bucket's verdict for plans that, like this one, had sinks (or none: no race either way)
                 key = plan["decision"] + (seen,) if "decision" in plan else None
@@ -985,15 +1016,26 @@ def _choose_path(plan: dict, race: Optional[Callable] = None) -> tuple:
                 elif _GRAPHED[0]:
                     # after a capture: the path the graph recorded for an undecided plan, no race, no route change
                     plan["sinks"] = True
-                elif known is not None:
-                    plan["sinks"] = known
                 else:
+                    # raced by this plan: it moves routes; the bucket keeps it for the load
+                    fresh = key is not None and known is None
                     # never persisted: the race checks accuracy on this model's own inputs (_pick_path)
-                    plan["sinks"] = True if race is None else race()
-                    if key is not None:
-                        _decisions()[key] = plan["sinks"]
-                        if plan["sinks"] == "native":
-                            _drop_routes(plan)
+                    verdict = known if known is not None else (True if race is None else race())
+                    if fresh:
+                        _decisions()[key] = verdict
+                        if not math.isfinite((plan.get("sink_error") or {}).get("sinks", 0.0)):
+                            _sink_unsafe().add(key)
+                    if verdict == "native" and fresh and _routes_used(plan):
+                        # moving the routes would put another plan's used INT8 calls on torch's attention next render
+                        verdict = True
+                    if verdict is not True and plan.get("live_seen") and key not in _sink_unsafe():
+                        # a render already used this plan's sink-path outputs where V clipped: keep the path for the
+                        # load (the next render repeats the seed); the bucket keeps the verdict for later plans. Not
+                        # where the race rejected the sink path on accuracy: numerical safety wins over repeating
+                        verdict = True
+                    plan["sinks"] = verdict
+                    if verdict == "native" and fresh:
+                        _drop_routes(plan)
     return (True if plan["sinks"] is None else plan["sinks"]), n
 
 
@@ -1012,11 +1054,8 @@ def _sink_race(
     index: int,
     forced: bool = False,
 ) -> Any:
-    """The path a plan whose first calls clipped takes, timed on this call like the card race (interleaved, median):
-    the faster of the sink path and the kernels without it (only where their error against torch's attention here is
-    within PLAIN_ERROR_SLACK of the sink path's) where it beats torch's attention by RACE_MARGIN, else "native".
-    ``forced`` (a forced request): the INT8 paths only, torch's attention neither timed nor taken. The verdict is
-    logged."""
+    """Timed on this call: faster of sink or plain INT8 if it beats torch by RACE_MARGIN, else
+    native; forced: INT8 paths only, torch's attention neither timed nor taken."""
     import torch
 
     stream = _raw_stream(index)
@@ -1073,13 +1112,8 @@ def _pick_path(
     err: dict,
     forced: bool = False,
 ) -> Any:
-    """_sink_race's verdict from its median milliseconds (incumbent, sinks, plain) and errors (sinks, plain). The
-    kernels without the sink path (the ones from before it) stay where their error is within PLAIN_ERROR_SLACK of the
-    sink path's and the sink path is not faster by RACE_MARGIN: a near tie keeps the old path's output. The path
-    taken must beat torch's attention by RACE_MARGIN, else torch's attention. A path whose error is not finite (a NaN
-    or inf output) is never taken; the kernels without the sink path then stand alone where theirs is finite.
-    ``forced``: the first of those INT8 paths, never torch's attention (the kernels without the sink path where
-    neither error is finite: the ones a forced request ran before the path)."""
+    """Verdict from median ms and errors: a path must beat torch attention by RACE_MARGIN else
+    torch; a near tie keeps the old path; non-finite errors never win; forced never uses torch"""
     finite = {name: math.isfinite(err[name]) for name in ("sinks", "plain")}
     if not finite["sinks"]:
         order = ["plain"] if finite["plain"] else []
@@ -1099,11 +1133,12 @@ def _pick_path(
 
 
 def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
-    """For one of the plan's first SINK_LEARN_CALLS calls: its clipped-key counts (rcnt) copied to pinned host memory
-    behind the quantisers, read when the plan decides (_choose_path); no wait here."""
+    """For each undecided call before SINK_DECIDE_AT (every one runs the sink path, and a render may use it): its
+    clipped-key counts (rcnt) copied to pinned host memory behind the quantisers, read when the plan decides
+    (_choose_path); no wait here."""
     import torch
 
-    if n is None or n >= SINK_LEARN_CALLS or plan["sinks"] is not None:
+    if n is None or n >= SINK_DECIDE_AT or plan["sinks"] is not None:
         return
     # an event record is prohibited while another thread records a graph: that call goes unread
     with _outside_capture() as safe:
@@ -1114,7 +1149,39 @@ def _check_sinks(plan: dict, i8: Any, n: Optional[int]) -> None:
         host.copy_(i8[at : at + 4 * BH].view(torch.int32), non_blocking = True)
         event = torch.cuda.Event()
         event.record()
-        plan["checks"].append((event, host))
+        # live: the call's output is used (not a thrown-away side-stream warm-up of a CUDA graph capture)
+        plan["checks"].append((event, host, not _discarded_call()))
+
+
+def _discarded_call() -> bool:
+    """Whether this call runs in the side-stream warm-ups of a CUDA graph capture, whose outputs are thrown away."""
+    try:
+        from .diffusion_cuda_graph import step_recording
+        return bool(step_recording())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _used_calls(plan: dict) -> int:
+    """Calls whose outputs a render used (not a CUDA graph's thrown-away side-stream warm-ups)."""
+    return plan.get("calls", 0) - plan.get("discarded", 0)
+
+
+def _routes_used(plan: dict) -> bool:
+    """Whether another plan on the routes ``_drop_routes(plan)`` would move (same card, same head dim) already ran a
+    used call this load: raising their floor or restoring the stock processor would change those outputs."""
+    try:
+        dim = plan["shape"][4]
+    except Exception:  # noqa: BLE001 - a plan without its shape moves no route
+        return False
+    return any(
+        other is not plan
+        and other.get("index") == plan.get("index")
+        and (other.get("shape") or (None,) * 5)[4] == dim
+        and _used_calls(other)
+        for other in _plans().values()
+        if isinstance(other, dict)
+    )
 
 
 def _quantise_on_device(plan: dict, q: Any, k: Any, v: Any, i8: Any) -> bool:
@@ -2367,6 +2434,26 @@ def int8_attention_count(transformer: Any) -> int:
     return sum(
         1 for m in int8_processors(transformer) if getattr(m.processor, "_unsloth_int8", False)
     )
+
+
+# The backend a strided install raced (None: native), kept on the pipeline: the status names it once no module routes.
+INCUMBENT_ATTR = "_unsloth_int8_incumbent"
+
+
+def live_backend(pipe: Any, engaged: Any) -> Any:
+    """``engaged`` while any module still routes to the kernel, else the incumbent after a sink race dropped them."""
+    if engaged != BACKEND or pipe is None or not hasattr(pipe, INCUMBENT_ATTR):
+        return engaged
+    dits = [getattr(pipe, name, None) for name in ("transformer", "transformer_2")]
+    if any(int8_attention_count(t) for t in dits if t is not None):
+        return engaged
+    try:
+        from .diffusion_int8_attention_dispatch import routed_count
+        if routed_count(pipe):
+            return engaged
+    except Exception:  # noqa: BLE001 - no dispatch route: the strided census decides
+        pass
+    return getattr(pipe, INCUMBENT_ATTR)
 
 
 def engaged_implementations(transformer: Any) -> set:

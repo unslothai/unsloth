@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pillow's exact PNG bytes, with ZipEncode.c's per-row filter choice done in numpy beside deflate.
-
-Used per (mode, level) only after a probe matched Pillow byte for byte in this process; UNSLOTH_IMAGE_PNG_FAST=0 off."""
+"""Pillow-exact PNG via numpy row filters; off with UNSLOTH_IMAGE_PNG_FAST=0; probe-gated per mode."""
 
 from __future__ import annotations
 

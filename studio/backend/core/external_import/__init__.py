@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -246,9 +247,9 @@ def _reread_messages(
 
 
 def _reader(revision: str) -> str:
-    # ":images" only says the file has image-only turns; it reads completed items like ":items".
+    # ":images" and ":generated" only mark image turns; both read completed items like ":items".
     tag = revision.partition(":")[2]
-    return "items" if tag == "images" else tag
+    return "items" if tag in ("images", "generated") else tag
 
 
 def _pending_messages(
@@ -281,15 +282,26 @@ def _pending_messages(
     reseated = []
     for message in pending:
         parent = message.get("parentId")
-        while parent and parent not in present:
+        seen = set()
+        while parent and parent not in present and parent not in seen:
+            seen.add(parent)
             parent = by_id.get(parent, {}).get("parentId")
+        if parent in seen:
+            parent = None  # cycle: no surviving ancestor
         reseated.append({**message, "parentId": parent})
         present.add(message["id"])
     return reseated
 
 
+def _stale_result(part: dict, result: object) -> bool:
+    # A stored string equal to the new text was imported before tool images were kept.
+    return "result" not in part or (
+        isinstance(result, dict) and part["result"] == result.get("text")
+    )
+
+
 def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[dict]:
-    """Stored messages whose tool calls were imported while open and have a result now."""
+    """Stored messages whose tool calls were imported open or without images and have a result now."""
     stored = {m["id"]: m for m in stored_rows}
     patched = []
     for message in transcript.messages:
@@ -304,8 +316,8 @@ def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[
         content = [
             {**part, "result": results[part["toolCallId"]]}
             if part.get("type") == "tool-call"
-            and "result" not in part
             and part.get("toolCallId") in results
+            and _stale_result(part, results[part["toolCallId"]])
             else part
             for part in current["content"]
         ]
@@ -376,7 +388,14 @@ def _import_project(
         }
     )
     before = (summary.new_chats, summary.messages)
-    imported = sum(_import_session(source, path, project_id, summary) for path in project.sessions)
+    imported = 0
+    for path in project.sessions:
+        try:
+            imported += _import_session(source, path, project_id, summary)
+        except sqlite3.Error:
+            raise  # storage failure, not a corrupt file
+        except Exception as exc:
+            summary.warnings.append(f"{path.name}: could not be imported ({exc}).")
     if studio_db.list_chat_threads(project_id = project_id):
         # updatedAt only moves when something landed, so a no-op click does not re-sort the sidebar.
         if (summary.new_chats, summary.messages) != before:

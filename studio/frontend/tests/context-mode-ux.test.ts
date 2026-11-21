@@ -85,8 +85,14 @@ test("once a number is set, the far right is the real maximum and only reset ret
   );
   assert.match(
     panelCode,
-    /<\/InfoHint> \{isAuto \? null : \( <button type="button" onClick=\{\(\) => onChange\(0\)\}[^>]*aria-label="Reset context to Auto"[\s\S]*?<\/button> \)\} <\/span>/,
+    /const reset = isAuto \? null : \( <button type="button" onClick=\{\(\) => onChange\(0\)\}[^>]*aria-label="Reset context to Auto"/,
   );
+});
+
+test("the sidebar puts the context reset beside the number; the picker keeps it by the label", () => {
+  assert.match(panelCode, /<\/InfoHint> \{stacked \? null : reset\} <\/span>/);
+  assert.match(panelCode, /\{stacked \? reset : null\} <NumericValueInput/);
+  assert.match(panelCode, /stacked=\{variant === "sidebar"\}/);
 });
 
 test("the context slider's left gap counts from the label text, with a tighter right gap", () => {

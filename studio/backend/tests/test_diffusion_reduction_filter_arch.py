@@ -206,3 +206,24 @@ def test_qwen_image_21_filter_kill_switch(monkeypatch):
     kwargs = {"options": {}}
     assert ds.pin_reduction_configs(kwargs) is False
     assert ds.REDUCTION_FILTER_OPTION not in kwargs["options"]
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+@pytest.mark.parametrize(
+    "repo, name",
+    [
+        ("black-forest-labs/flux-3-image-klein-base", "flux.3-klein-base"),
+        ("black-forest-labs/flux-3-image-klein", "flux.3-klein"),
+    ],
+)
+def test_flux3_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch, repo, name, cap):
+    """Fresh L4 processes rendered one Klein base seed 0.003-0.007 LPIPS apart (per-process reduction-config and
+    cuDNN conv picks); FLUX.3 shares FLUX.2 Klein's q/k RMSNorm and VAE, so it pins both the same way."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family(repo)
+    assert fam is not None and fam.name == name
+    _on(monkeypatch, cap)
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+    assert fam.cudnn_benchmark is False

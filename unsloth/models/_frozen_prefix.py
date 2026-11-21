@@ -1,0 +1,256 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
+"""Skip the frozen bottom layers under gradient checkpointing.
+
+With adapters only on the upper layers (finetune_last_n_layers, layers_to_transform), the embedding output
+is made to require grad so reentrant checkpointing gives the adapters a gradient. That also pulls every
+frozen layer below into the graph: each one is checkpointed, replayed and backpropagated for a gradient
+nothing reads. When every trainable parameter sits at or above layer k of one decoder stack (plus the
+output head), layers 0..k-1 run once without a graph and layer k's input becomes the leaf that requires
+grad instead. Loss and gradients are unchanged. UNSLOTH_FROZEN_PREFIX_SKIP=0 turns it off."""
+
+import os
+import weakref
+
+import torch
+import torch.nn as nn
+
+__all__ = ["install_frozen_prefix_skip", "FROZEN_PREFIX_STATS"]
+
+# Engagement counters (tests read them): forwards that skipped a prefix, and prefix layers run without a graph.
+FROZEN_PREFIX_STATS = {"forwards": 0, "layers": 0}
+
+# Modules after the decoder stack whose trainable parameters keep the cut valid.
+_HEAD_NAMES = ("lm_head", "score", "classifier")
+
+
+def _enabled():
+    return os.environ.get("UNSLOTH_FROZEN_PREFIX_SKIP", "1") != "0"
+
+
+def _layer_class():
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        return None
+    return GradientCheckpointingLayer
+
+
+def _decoder_stacks(model):
+    """Every ModuleList made only of transformers checkpointing layers (the text stack, vision towers)."""
+    layer_class = _layer_class()
+    if layer_class is None:
+        return []
+    stacks = []
+    for module in model.modules():
+        if isinstance(module, nn.ModuleList) and len(module) > 1:
+            if all(isinstance(layer, layer_class) for layer in module):
+                stacks.append(module)
+    return stacks
+
+
+def _head_parameters(model):
+    ids = set()
+    for name, module in model.named_modules():
+        if name.rsplit(".", 1)[-1] in _HEAD_NAMES:
+            ids.update(id(p) for p in module.parameters())
+    try:
+        output = model.get_output_embeddings()
+    except Exception:
+        output = None
+    if output is not None:
+        ids.update(id(p) for p in output.parameters())
+    # A tied head is the input embedding: training it needs the gradient below the cut.
+    try:
+        embedding = model.get_input_embeddings()
+    except Exception:
+        embedding = None
+    if embedding is not None:
+        ids.difference_update(id(p) for p in embedding.parameters())
+    return ids
+
+
+def _first_trainable(stack):
+    for index, layer in enumerate(stack):
+        if any(p.requires_grad for p in layer.parameters()):
+            return index
+    return None
+
+
+def _plan(model, stacks, heads):
+    """(stack, k) when the first k layers of one stack, and everything feeding them, hold nothing trainable."""
+    if any(
+        getattr(layer, "_unsloth_pipeline_stand_in", False) for stack in stacks for layer in stack
+    ):
+        # Pipeline parallel: a later stage's first layers are pass-throughs returning the previous stage's
+        # activations (cutting there trains no earlier stage), and a non-last stage exits its forward by raising,
+        # past the hooks' cleanup. Off on every stage and every stack.
+        return None
+    for stack in stacks:
+        # Runs on every training forward: a stack that trains its first layer (adapters everywhere) or
+        # nothing (a frozen vision tower) is settled here, without walking the whole model's parameters.
+        k = _first_trainable(stack)
+        if not k:
+            continue
+        trainable = {id(p) for p in model.parameters() if p.requires_grad}
+        upper = {id(p) for layer in stack[k:] for p in layer.parameters() if p.requires_grad}
+        if not trainable.issubset(upper | heads):
+            return None
+        # Only checkpointing makes the frozen layers replay; a layer kept out of it (checkpoint_skip_layers) is fine.
+        if not stack[k].training or not any(
+            getattr(layer, "gradient_checkpointing", False) for layer in stack
+        ):
+            return None
+        if any(getattr(layer, "_compiled_call_impl", None) is not None for layer in stack[:k]):
+            return None  # hooks would sit inside a compiled call
+        return stack, k
+    return None
+
+
+def _detach(value):
+    if isinstance(value, torch.Tensor) and value.requires_grad:
+        return value.detach()
+    if isinstance(value, tuple) and any(
+        isinstance(item, torch.Tensor) and item.requires_grad for item in value
+    ):
+        return tuple(_detach(item) for item in value)
+    return value
+
+
+def _detach_inputs(module, args, kwargs):
+    # Nothing below the cut is trainable, so no input of a frozen prefix layer needs a graph.
+    return tuple(_detach(arg) for arg in args), {
+        key: _detach(value) for key, value in kwargs.items()
+    }
+
+
+def _input_leaves(args, kwargs):
+    # Nested too: transformers takes attention_mask as a {layer type: mask} mapping.
+    try:
+        from torch.utils._pytree import tree_leaves
+    except Exception:
+        return (*args, *kwargs.values())
+    return tree_leaves((args, kwargs))
+
+
+def _leaf(hidden):
+    """Layer k's input: requires grad (reentrant checkpointing needs one), but is not a leaf, so code
+    between layers may still write into it in place (Qwen3-VL DeepStack on transformers 4.57). Subtracting
+    a zero that requires grad is exact for every value (-0.0 and NaN included) and allocates nothing."""
+    hidden = hidden.detach()
+    zero = torch.zeros((), device = hidden.device, dtype = hidden.dtype, requires_grad = True)
+    try:
+        return hidden.sub_(zero)
+    except RuntimeError:  # overlapping or otherwise unwritable memory
+        return hidden.clone().sub_(zero)
+
+
+def install_frozen_prefix_skip(model):
+    """Idempotent. Hooks the outer model; per training forward it decides again from requires_grad."""
+    if model is None or not hasattr(model, "register_forward_pre_hook"):
+        return model
+    if getattr(model, "_unsloth_frozen_prefix", None) is not None:
+        return model
+    state = {"stacks": None, "active": None, "disabled": False}
+    model_ref = weakref.ref(model)
+
+    def _cut_output(module, args, output):
+        state["ran"] = True
+        if isinstance(output, torch.Tensor):
+            output = _leaf(output)
+        elif isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
+            output = type(output)((_leaf(output[0]), *output[1:]))
+        else:
+            return None
+        state["cut"] = True
+        # One cut per forward: a stack run again (looped / recurrent-depth models such as Ouro) feeds
+        # the prefix from trainable layers, so later passes keep their graph and checkpointing.
+        _release(state["active"])
+        return output
+
+    def _release(active):
+        if active is None:
+            return
+        for handle in active["handles"]:
+            handle.remove()
+        for layer, flag in active["flags"]:
+            layer.gradient_checkpointing = flag
+
+    def _restore():
+        active = state["active"]
+        state["active"] = None
+        _release(active)
+
+    def _pre(module, args, kwargs):
+        if torch.compiler.is_compiling():
+            return None  # inside the caller's torch.compile: hook registration cannot be traced
+        _restore()
+        if (
+            state["disabled"]
+            or not _enabled()
+            or not module.training
+            or not torch.is_grad_enabled()
+        ):
+            return None
+        if any(
+            isinstance(x, torch.Tensor) and x.requires_grad for x in _input_leaves(args, kwargs)
+        ):
+            return None  # the caller wants a gradient at an input (inputs_embeds, a mask in a mapping, ...)
+        outer = model_ref()
+        if outer is None:
+            return None
+        if getattr(outer, "_unsloth_block_swap", None) is not None:
+            return None  # block swap streams the frozen blocks around their checkpoint replay
+        if state["stacks"] is None:
+            state["stacks"] = _decoder_stacks(outer)
+            state["heads"] = _head_parameters(outer)
+        plan = _plan(outer, state["stacks"], state["heads"])
+        if plan is None:
+            return None
+        stack, k = plan
+        flags, handles = [], []
+        for layer in stack[:k]:
+            flags.append((layer, layer.gradient_checkpointing))
+            # Off: the hooks then run outside the checkpoint, and the layer runs once.
+            layer.gradient_checkpointing = False
+            handles.append(layer.register_forward_pre_hook(_detach_inputs, with_kwargs = True))
+        handles.append(stack[k - 1].register_forward_hook(_cut_output))
+        state["cut"] = state["ran"] = False
+        state["active"] = {"flags": flags, "handles": handles, "k": k}
+        return None
+
+    def _post(module, args, output):
+        if torch.compiler.is_compiling():
+            return None
+        active = state["active"]
+        _restore()
+        if active is None or output is None:
+            return None  # also the always_call run after a forward that raised
+        if not state["ran"]:
+            # The stack never ran (a vision tower on a text-only batch): nothing was skipped.
+            return None
+        if not state["cut"]:
+            # Layer k would have had an input without grad: its adapters got no gradient this step.
+            state["disabled"] = True
+            raise RuntimeError(
+                "Unsloth: the frozen-prefix skip could not mark the first trainable layer's input "
+                "(unexpected layer output). Set UNSLOTH_FROZEN_PREFIX_SKIP=0 and rerun."
+            )
+        FROZEN_PREFIX_STATS["forwards"] += 1
+        FROZEN_PREFIX_STATS["layers"] += active["k"]
+        return None
+
+    try:
+        handles = (
+            model.register_forward_pre_hook(_pre, with_kwargs = True, prepend = True),
+            model.register_forward_hook(_post, always_call = True),
+        )
+    except Exception:
+        return model
+    try:
+        model._unsloth_frozen_prefix = handles
+    except Exception:
+        for handle in handles:
+            handle.remove()
+    return model

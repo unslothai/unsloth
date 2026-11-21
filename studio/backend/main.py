@@ -2199,6 +2199,7 @@ app.add_middleware(
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
+        "X-Unsloth-Chat-Revision",
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
@@ -2813,6 +2814,7 @@ def _get_cached_system_gpu_info(
     from utils.hardware import (
         LIVE_GPU_TELEMETRY_KEYS,
         amd_driver_warning_report,
+        get_apple_metal_inference_gpu_info,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_mixed_vulkan_inference_gpu_info,
@@ -2938,7 +2940,7 @@ def _get_cached_system_gpu_info(
                 # SMI row numbers, not the ordinals a pin is applied in.
                 inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
             else:
-                inference_gpu_info = gpu_info
+                inference_gpu_info = get_apple_metal_inference_gpu_info() or gpu_info
             if vulkan_info is None:
                 # A CUDA + Vulkan llama.cpp also runs on the cards only Vulkan reaches (#15444).
                 with (
@@ -3157,8 +3159,7 @@ def get_system_info(
 
     logger = logging.getLogger(__name__)
 
-    # The image/video picker explicitly asks on first use; ordinary system polls
-    # must not import torchao or diffusers just to populate optional picker tiers.
+    # Media probes run only when the picker asks; polls must not import torchao or diffusers.
     if probe_media:
         # Like an image or video load: the probes import torchao and diffusers, which must not race Dynamo.
         gate_torch_stack_import("media capability probe", logger)

@@ -599,8 +599,7 @@ def half_storage_disabled() -> bool:
 
 
 def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
-    """bf16 for a CUDA float32/float16 load: keep stored bf16 mmapped and cast per op (exact); a host conversion
-    costs ~20-40 GB for klein. None otherwise."""
+    """bf16 for a CUDA fp32/fp16 load: mmap stored bf16 and cast per op (exact); else None."""
     from .diffusion_manual_cast import manual_cast_disabled
 
     if manual_cast_disabled() or getattr(target, "device", None) != "cuda":

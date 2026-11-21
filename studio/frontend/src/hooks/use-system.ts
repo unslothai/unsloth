@@ -32,7 +32,7 @@ export interface GpuDevice {
   no_torch_kernels?: boolean;
   /** ROCm: the installed llama.cpp prebuilt has no kernels for this GPU, so GGUF loads skip it. */
   no_llama_kernels?: boolean;
-  /** Apple MLX only: Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
+  /** Apple only (MLX, or the "metal" GGUF inventory): Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
   metal_working_set_gb?: number | null;
   /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
   gpu_utilization_pct?: number | null;

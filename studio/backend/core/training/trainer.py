@@ -4921,6 +4921,17 @@ class UnslothTrainer:
                     vocab_size = vocab_size,
                     completion_only_loss = completion_only,
                 )
+            elif (
+                raw_text_mode
+                and config_args.get("packing")
+                and eval_dataset is not None
+                and eval_final_format != "raw_text"
+            ):
+                # Raw text packs wrapped, which would join a formatted eval split's examples across rows.
+                logger.info(
+                    "Formatted eval dataset beside raw text: eval sequence packing turned off\n"
+                )
+                config_args["eval_packing"] = False
 
             # Plain-text single-pass runs tokenize in DataLoader workers; other runs keep eager .map().
             self._online_prewarm_batches = 0
@@ -5056,12 +5067,16 @@ class UnslothTrainer:
                         trainer_kwargs["eval_dataset"] = eval_dataset
                     self.trainer = _UnslothCPTTrainer(**trainer_kwargs)
                 else:
+                    sft_args = SFTConfig(**config_args)
+                    if raw_text_mode and config_args.get("packing", False):
+                        sft_args.packing_strategy = "wrapped"
+                        logger.info("Raw-text packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": SFTConfig(**config_args),
+                        "args": sft_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset

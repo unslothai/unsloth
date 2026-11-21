@@ -115,6 +115,9 @@ def _run_cli(monkeypatch, **overrides):
         per_device_eval_batch_size = 4,
         context_parallel_size = 1,
         save_model = False,
+        save_gguf = False,
+        push_model = False,
+        push_gguf = False,
     )
     args.update(overrides)
     cli.run(argparse.Namespace(**args))

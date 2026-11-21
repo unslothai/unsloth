@@ -194,19 +194,6 @@ def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> 
         )
 
 
-def ltx25_training_message(subject: str) -> str:
-    return (
-        f"{subject} is LTX-2.5, which Unsloth can run on the Video page but cannot train yet. "
-        "Train on LTX-2 (Lightricks/LTX-2) instead."
-    )
-
-
-def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
-    """Training guard: refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
-    if local_ltx_pipeline_family(path) == LTX25_FAMILY:
-        raise ValueError(ltx25_training_message(f"'{path}' (by its model_index.json)"))
-
-
 @dataclass(frozen = True)
 class VideoFamily:
     name: str
@@ -420,21 +407,32 @@ _COSMOS3_REASONER_REFUSAL = (
     "This is a Cosmos3 Reasoner checkpoint, a vision-language model that answers in text rather than generating "
     "video. Load it from Chat, or load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge here."
 )
+# ModelOpt FP8 builds: transformer via diffusion_modelopt_fp8, the rest is the bf16 sibling's pipeline.
 _COSMOS3_CONDITIONED_RE = (
-    _COSMOS3_VARIANT + r"(?:policy|sim|transfer|fp8)(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
+    _COSMOS3_VARIANT + r"(?:policy|sim|transfer)(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 )
 _COSMOS3_CONDITIONED_REFUSAL = (
-    "This Cosmos3 checkpoint is a Policy, Sim, Transfer or FP8 build. The first three need action or control "
-    "inputs (and their own Diffusers pipelines) that Studio's Video page does not provide, and the FP8 builds are "
-    "untested here. Load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge instead."
+    "This Cosmos3 checkpoint is a Policy, Sim or Transfer build. Those need action or control inputs (and their own "
+    "Diffusers pipelines) that Studio's Video page does not provide. Load nvidia/Cosmos3-Nano or nvidia/Cosmos3-Edge "
+    "(or their -FP8 builds) instead."
 )
 _COSMOS3_UNSUPPORTED = (
     (_COSMOS3_REASONER_RE, _COSMOS3_REASONER_REFUSAL),
     (_COSMOS3_CONDITIONED_RE, _COSMOS3_CONDITIONED_REFUSAL),
 )
 # Wan2.2-TI2V-5B VAE: stock tiles leave a 4-latent edge tile at 480 / 832 px; priced at its measured 2.5 MiB/latent px.
-_COSMOS3_PROFILE = FamilyProfile(
-    untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
+_COSMOS3_UNTILED_VAE = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4))
+COSMOS3_FP8_REPOS = {
+    COSMOS3_NANO_FAMILY: "nvidia/Cosmos3-Nano-FP8",
+    COSMOS3_EDGE_FAMILY: "nvidia/Cosmos3-Edge-FP8",
+}
+_COSMOS3_NANO_PROFILE = FamilyProfile(
+    untiled_vae = _COSMOS3_UNTILED_VAE,
+    trusted_repos = (COSMOS3_FP8_REPOS[COSMOS3_NANO_FAMILY].lower(),),
+)
+_COSMOS3_EDGE_PROFILE = FamilyProfile(
+    untiled_vae = _COSMOS3_UNTILED_VAE,
+    trusted_repos = (COSMOS3_FP8_REPOS[COSMOS3_EDGE_FAMILY].lower(),),
 )
 # Model-card sampling; the shipped scheduler_config.json's flow_shift 1.0 is used by neither card.
 _COSMOS3_NANO_SCHEDULER = (("flow_shift", 10.0),)
@@ -644,6 +642,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
     VideoFamily(
         name = "ltx-2.5",
+        trainable = True,
+        label = "LTX-2.5",
         profile = FamilyProfile(
             # the 2.3 DiT less the video FFN bias
             int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
@@ -1049,7 +1049,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "Cosmos3OmniPipeline",
         transformer_class = "Cosmos3OmniTransformer",
         base_repo = "nvidia/Cosmos3-Nano",
-        profile = _COSMOS3_PROFILE,
+        profile = _COSMOS3_NANO_PROFILE,
         has_audio = False,
         default_steps = 35,
         default_guidance = 6.0,
@@ -1093,7 +1093,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "Cosmos3OmniPipeline",
         transformer_class = "Cosmos3OmniTransformer",
         base_repo = "nvidia/Cosmos3-Edge",
-        profile = _COSMOS3_PROFILE,
+        profile = _COSMOS3_EDGE_PROFILE,
         has_audio = False,
         default_steps = 20,
         default_guidance = 6.0,

@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-// tap schedules flushes on a MessageChannel created at import, which keeps Node's event loop alive after
-// the tests; without one it falls back to setTimeout.
+// Deleting MessageChannel makes tap use setTimeout; a MessageChannel would keep Node's loop alive.
 delete (globalThis as { MessageChannel?: unknown }).MessageChannel;
 const {
   createResourceRoot,

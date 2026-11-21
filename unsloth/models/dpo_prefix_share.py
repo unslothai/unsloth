@@ -117,9 +117,8 @@ def build_pair_layout(
     min_saved = None,
     max_segment_cap = None,
 ):
-    """PairLayout for ``input_ids`` ``[2B, L]`` (right padded, row ``i`` paired with ``i + B``), or
-    None. Each row keeps at least one own token; positions stay the column index.
-    """
+    """PairLayout for input_ids [2B, L] (right padded, row i paired with row i + B), or None. Each
+    row keeps at least one own token; positions stay the column index."""
     from ..utils.prefix_grouper_kernel import build_seg_info_multigroup
 
     if not (isinstance(input_ids, torch.Tensor) and isinstance(attention_mask, torch.Tensor)):
@@ -399,11 +398,17 @@ def _neftune_active(causal_lm):
 
 def _dropout_active(causal_lm):
     """Shared prompt dropout masks would correlate chosen / rejected and change the DPO objective."""
+    dropout_type = torch.nn.modules.dropout._DropoutNd
+    peft_config = getattr(causal_lm, "peft_config", None)
+    if peft_config and any(
+        getattr(config, "lora_dropout", 0) > 0 for config in peft_config.values()
+    ):
+        return any(
+            isinstance(m, dropout_type) and m.training and m.p > 0 for m in causal_lm.modules()
+        )
     modules = getattr(causal_lm, "_unsloth_dps_dropouts", None)
     if modules is None:
-        modules = [
-            m for m in causal_lm.modules() if isinstance(m, torch.nn.modules.dropout._DropoutNd)
-        ]
+        modules = [m for m in causal_lm.modules() if isinstance(m, dropout_type)]
         try:
             causal_lm._unsloth_dps_dropouts = modules
         except Exception:

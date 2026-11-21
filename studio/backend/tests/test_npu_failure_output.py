@@ -168,7 +168,7 @@ def test_a_failure_with_nothing_printed_still_points_at_the_log(tmp_path, monkey
     with pytest.raises(nb.NpuError) as raised:
         backend.load(_MODEL, 32768)
 
-    assert "boom (Lemonade's output is on the Logs page.)" in str(raised.value)
+    assert "boom (The NPU runtime's output is on the Logs page.)" in str(raised.value)
     assert log.warnings == []
 
 

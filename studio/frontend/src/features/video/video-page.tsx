@@ -64,6 +64,8 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildVideoTourSteps } from "./tour";
 import { VideoRestylePanel } from "./restyle-panel";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { FullInstallDialog } from "@/features/settings/components/full-install-dialog";
+import { useFullInstallBringsVideo } from "@/hooks/use-full-install-upgrade";
 import {
   applyPin,
   fetchNextPage,
@@ -220,9 +222,11 @@ import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
+  engagedAttentionBackend,
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedRequestSelectValue,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
@@ -772,8 +776,8 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
       <BuildRow
         label="Attention"
         value={
-          status.attention_backend
-            ? formatResolvedValue("attention_backend", status.attention_backend)
+          engagedAttentionBackend(status)
+            ? formatResolvedValue("attention_backend", engagedAttentionBackend(status))
             : "Native SDPA"
         }
       />
@@ -1236,6 +1240,12 @@ export function VideoPage({
   onInitialReady?: () => void;
 }) {
   const hardware = useHardwareInfo();
+  // Only offered: the generator still gates on the backend's own verdict alone.
+  const fullInstall = useFullInstallBringsVideo();
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
+  const offerFullInstall =
+    fullInstall !== null &&
+    hardware.videoUnsupportedReason === "pytorch_not_installed";
 
   useEffect(() => {
     if (active && hardware.loaded && hardware.videoSupported === false) {
@@ -1261,9 +1271,23 @@ export function VideoPage({
           className="size-7 shrink-0 text-muted-foreground/70"
         />
         <p className="max-w-sm text-balance">
-          {hardware.videoUnsupportedMessage ??
-            "Video generation is not supported on this machine."}
+          {offerFullInstall
+            ? "Video generation was left out of this install (Chat only). Upgrade to the full install to add it."
+            : (hardware.videoUnsupportedMessage ??
+              "Video generation is not supported on this machine.")}
         </p>
+        {offerFullInstall && fullInstall && (
+          <>
+            <Button size="sm" onClick={() => setFullInstallOpen(true)}>
+              Upgrade to full install
+            </Button>
+            <FullInstallDialog
+              open={fullInstallOpen}
+              onOpenChange={setFullInstallOpen}
+              onConfirm={() => void fullInstall.repairInstall()}
+            />
+          </>
+        )}
       </VideoGate>
     );
   }
@@ -2014,7 +2038,7 @@ function VideoGenerator({
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
     if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+    const attention = resolvedRequestSelectValue(record.attention_backend, (v) =>
       // Map the dispatcher's name back to the option.
       (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
         (o) => o === v || `_native_${o}` === v,

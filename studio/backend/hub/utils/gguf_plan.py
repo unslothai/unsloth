@@ -49,9 +49,8 @@ class GgufVariantPlan:
         return next((t for t in self.engram_tables if found and t.path == found.filename), None)
 
     def with_engram(self, precision: Optional[str]) -> "GgufVariantPlan":
-        """The files a load with the ``precision`` table fetches: the quant's own table shard
-        swapped for the standalone file. Unchanged when the table is the quant's own (same size),
-        the repo has no such table, or the quant's shard is unknown."""
+        """Swap the quant's table shard for the standalone file; unchanged if same size, absent or
+        unknown."""
         table = self.engram_table(precision)
         shard = self.engram_shard
         if table is None or shard is None or table.size == shard.size:
@@ -343,30 +342,54 @@ def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVaria
     if not packages:
         return None
     shared = set.intersection(*(set(files) for files in packages.values()))
-    plans: dict[str, GgufVariantPlan] = {}
-    for key, files in packages.items():
-        expected = tuple(
-            file
-            for name in files
-            if (file := expected_file_from_sibling(by_name[name])) is not None
+    return {
+        key.lower(): _audio_cpp_package_plan(
+            tuple(
+                file
+                for name in files
+                if (file := expected_file_from_sibling(by_name[name])) is not None
+            ),
+            shared,
         )
-        main_files = tuple(
-            file for file in expected if is_gguf_filename(file.path) and file.path not in shared
-        )
-        companions = tuple(file for file in expected if file.path in shared)
-        plans[key.lower()] = GgufVariantPlan(
-            main_filenames = frozenset(file.path for file in main_files),
-            target_filenames = tuple(file.path for file in expected),
-            main_hashes = frozenset(file.sha256 for file in main_files if file.sha256),
-            required_hashes = frozenset(file.sha256 for file in expected if file.sha256),
-            companion_hashes = frozenset(file.sha256 for file in companions if file.sha256),
-            mmproj_filenames = frozenset(),
-            mmproj_hashes = frozenset(),
-            expected_files = expected,
-            main_size_bytes = sum(max(0, int(file.size or 0)) for file in main_files),
-            download_size_bytes = sum(max(0, int(file.size or 0)) for file in expected),
-        )
-    return plans
+        for key, files in packages.items()
+    }
+
+
+def _audio_cpp_package_plan(expected: tuple[ExpectedFile, ...], shared: set) -> GgufVariantPlan:
+    ggufs = tuple(file for file in expected if is_gguf_filename(file.path))
+    # A package inside another (Zonos3's base) keeps its GGUFs as weights, or resumes are refused.
+    main_files = tuple(file for file in ggufs if file.path not in shared) or ggufs
+    companions = tuple(file for file in expected if file.path in shared and file not in main_files)
+    return GgufVariantPlan(
+        main_filenames = frozenset(file.path for file in main_files),
+        target_filenames = tuple(file.path for file in expected),
+        main_hashes = frozenset(file.sha256 for file in main_files if file.sha256),
+        required_hashes = frozenset(file.sha256 for file in expected if file.sha256),
+        companion_hashes = frozenset(file.sha256 for file in companions if file.sha256),
+        mmproj_filenames = frozenset(),
+        mmproj_hashes = frozenset(),
+        expected_files = expected,
+        main_size_bytes = sum(max(0, int(file.size or 0)) for file in main_files),
+        download_size_bytes = sum(max(0, int(file.size or 0)) for file in expected),
+    )
+
+
+def _spec_package_plan(
+    variant: str, expected: tuple[ExpectedFile, ...]
+) -> Optional[GgufVariantPlan]:
+    """A recorded manifest holding one whole runtime-spec package, planned as that package: its
+    same-quant GGUFs (LFM2.5's vocoder, tokenizer) are members, not competing shard families."""
+    try:
+        from core.inference.audio_cpp_models import spec_package_files
+    except Exception:
+        return None
+    names = {file.path for file in expected}
+    packages = spec_package_files(names) or {}
+    wanted = (variant or "").strip().lower()
+    files = next((f for key, f in packages.items() if key.lower() == wanted), None)
+    if files is None or set(files) != names:
+        return None
+    return _audio_cpp_package_plan(expected, set())
 
 
 def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVariantPlan:
@@ -565,6 +588,9 @@ def plan_from_expected_files(
     all_mmproj_hashes: frozenset[str] | None = None,
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
+    package = _spec_package_plan(variant, expected)
+    if package is not None:
+        return package
     all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
     from hub.utils.snapshot_filters import PRECISION_FOLDER_RE
 

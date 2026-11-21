@@ -173,8 +173,7 @@ test("the panels are prefetched: the opening tab after startup, the rest after a
 });
 
 test("an open renders the requested panel, never the one shown last", async () => {
-  // The deferred tab lives in the pane, which mounts with the dialog's content, so only tab
-  // switches made while open lag. A tab's first view in the page paints the dialog first (null,
+  // Only tab switches made while open lag; the first view of a tab paints the dialog first (null,
   // no panel) and renders the panel right after; once shown, an open renders it in the same pass.
   const source = await readFile(DIALOG, "utf8");
   const pane = source.slice(

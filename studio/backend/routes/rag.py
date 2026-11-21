@@ -985,20 +985,19 @@ _IMAGE_MAX_PIXELS = int(8.5 * 11 * config.OCR_DPI**2)
 _IMAGE_DECODE_MAX_PIXELS = 50_000_000
 
 
-def _image_png(path: str) -> bytes:
+def _image_png(opened) -> bytes:
     """Native pixels, never rescaled by the file's DPI tag (PyMuPDF does, and cannot open WebP)."""
     import io
 
     from PIL import Image, ImageOps
 
-    with Image.open(path) as opened:
-        width, height = opened.size
-        if width * height > _IMAGE_DECODE_MAX_PIXELS:
-            raise ValueError(f"the image is too large ({width} x {height} pixels)")
-        scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
-        size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        opened.thumbnail(size, Image.Resampling.LANCZOS)
-        rgba = ImageOps.exif_transpose(opened).convert("RGBA")
+    width, height = opened.size
+    if width * height > _IMAGE_DECODE_MAX_PIXELS:
+        raise ValueError(f"the image is too large ({width} x {height} pixels)")
+    scale = min(1.0, (_IMAGE_MAX_PIXELS / (width * height)) ** 0.5)
+    size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    opened.thumbnail(size, Image.Resampling.LANCZOS)
+    rgba = ImageOps.exif_transpose(opened).convert("RGBA")
     # On white like PyMuPDF, or dark text on a transparent PNG turns black on black.
     image = Image.new("RGB", rgba.size, "white")
     image.paste(rgba, mask = rgba.getchannel("A"))
@@ -1008,32 +1007,169 @@ def _image_png(path: str) -> bytes:
     return out.getvalue()
 
 
-def _image_text(path: str) -> str:
-    """The loaded vision model reads the image, else local Tesseract; "" when neither can."""
+def _image_text(path: str, filename: str) -> tuple[str, str | None]:
+    """The loaded vision model reads each page, else local Tesseract; returns the text and any warning."""
     import tempfile
+
+    from PIL import Image
 
     from core.rag import captioner, pdf_ocr
 
-    png = _image_png(path)
-    text = captioner.ocr_pages({1: png}).get(1, "")
-    if text:
-        return text
-    with tempfile.TemporaryDirectory() as tmp:
-        normalized = os.path.join(tmp, "image.png")
-        with open(normalized, "wb") as handle:
-            handle.write(png)
-        return pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+    pngs: dict[int, bytes] = {}
+    failed: dict[int, Exception] = {}
+    more = False
+    # A handle, not the path: Pillow memory-maps a path's raw strips and scrambles a rotated uncompressed TIFF.
+    with open(path, "rb") as upload, Image.open(upload) as opened:
+        # TIFF frames are pages; GIF and WebP frames are animation.
+        multipage = opened.format == "TIFF" and opened.is_animated
+        if not multipage:
+            pngs[1] = _image_png(opened)
+        else:
+            # Not n_frames: Pillow's walk over every page is quadratic, and a small TIFF can hold millions.
+            for number in range(1, config.OCR_MAX_PAGES + 1):
+                try:
+                    opened.seek(number - 1)
+                    pngs[number] = _image_png(opened)
+                except EOFError:
+                    break
+                except Exception as exc:
+                    # Pillow can still reach the pages after one it fails to set up.
+                    failed[number] = exc
+            else:
+                more = True
+                try:
+                    opened.seek(config.OCR_MAX_PAGES)
+                except EOFError:
+                    more = False
+                except Exception:
+                    pass  # a page Pillow cannot set up is still a page
+    if not pngs and failed:
+        raise next(iter(failed.values()))
+    texts = captioner.ocr_pages(pngs)
+    if rest := sorted(pngs.keys() - texts.keys()):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                normalized = os.path.join(tmp, "image.png")
+                for number in rest:
+                    with open(normalized, "wb") as handle:
+                        handle.write(pngs[number])
+                    text = pdf_ocr.ocr_pages(normalized, [1]).get(1, "")
+                    if text:
+                        texts[number] = text
+        except OSError:
+            # A full disk costs only the pages left for Tesseract.
+            if not texts:
+                raise
+    text = "\n\n".join(texts[number] for number in sorted(texts))
+    if not multipage:
+        return text, None
+    notes = []
+    if failed:
+        first, error = next(iter(failed.items()))
+        cause = f"; page {first}: {error}" if len(failed) > 1 else f": {error}"
+        notes.append(
+            f"Could not read page{'s' if len(failed) > 1 else ''} {', '.join(map(str, failed))} "
+            f"of {filename}{cause}."
+        )
+    unread = sorted(pngs.keys() - texts.keys())
+    if unread:
+        notes.append(_unread_pages_warning(filename, unread))
+    if more:
+        notes.append(f"Only the first {config.OCR_MAX_PAGES} pages of {filename} were read.")
+    return text, " ".join(notes) or None
+
+
+def _page_text(page, scanned_text: dict[int, str]) -> str:
+    original = page.text.strip()
+    scanned = scanned_text.get(page.page_number, "")
+    return scanned if original in scanned else "\n\n".join(filter(None, [original, scanned]))
+
+
+def _length_before(pages: list, texts: dict[int, str], page_number: int) -> int:
+    """Characters of the joined text ahead of *page_number*; OCR only ever adds to it."""
+    length = 0
+    for page in pages:
+        if page.page_number == page_number:
+            break
+        text = _page_text(page, texts)
+        if text:
+            length += len(text) + (2 if length else 0)
+    return length
+
+
+def _scanned_page_text(
+    path: str,
+    pages: list,
+    max_chars: int | None = None,
+) -> tuple[dict[int, str], list[int], int]:
+    """OCR text by page, unread scanned pages, and pages kept; pages past *max_chars* are never OCR'd."""
+    from core.rag import captioner, parsers, pdf_ocr
+
+    scanned = [page.page_number for page in pages if page.needs_ocr]
+    # pdf_ocr.ocr_pages takes MUPDF_LOCK even for no pages, stalling text-only reads behind ingestion OCR.
+    if not scanned:
+        return {}, [], len(pages)
+    wanted = scanned[: config.OCR_MAX_PAGES]
+    texts: dict[int, str] = {}
+    if max_chars is None:
+        if captioner.vision_endpoint() is not None:
+            texts = captioner.ocr_pages(parsers.render_pdf_pages(path, wanted, dpi = config.OCR_DPI))
+        rest = [number for number in wanted if number not in texts]
+        if rest:
+            texts.update(pdf_ocr.ocr_pages(path, rest))
+        return texts, [number for number in scanned if number not in texts], len(pages)
+
+    # Counted in code points, never more than the UTF-16 units the page measures, so its cut still lands.
+    def past_cap(number: int, extra: dict[int, str] | None = None) -> bool:
+        return _length_before(pages, {**texts, **extra} if extra else texts, number) > max_chars
+
+    if captioner.vision_endpoint() is not None:
+        for number in wanted:
+            if past_cap(number):
+                break
+            texts.update(
+                captioner.ocr_pages(parsers.render_pdf_pages(path, [number], dpi = config.OCR_DPI))
+            )
+    rest = [number for number in wanted if number not in texts and not past_cap(number)]
+    if rest:
+        texts.update(pdf_ocr.ocr_pages(path, rest, until = past_cap))
+    kept, length = len(pages), 0
+    for index, page in enumerate(pages):
+        if length > max_chars:
+            kept = index
+            break
+        text = _page_text(page, texts)
+        if text:
+            length += len(text) + (2 if length else 0)
+    kept_numbers = {page.page_number for page in pages[:kept]}
+    return texts, [n for n in scanned if n in kept_numbers and n not in texts], kept
+
+
+def _unread_pages_warning(filename: str, unread: list[int]) -> str:
+    pages_label = ", ".join(map(str, unread[:20]))
+    if len(unread) > 20:
+        pages_label += f" and {len(unread) - 20} more"
+    return (
+        f"Could not read scanned page{'s' if len(unread) > 1 else ''} {pages_label} of "
+        f"{filename}. Reading scanned pages needs a vision model loaded in Chat, or Tesseract OCR "
+        f"installed, and covers at most {config.OCR_MAX_PAGES} pages."
+    )
 
 
 # Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
 @router.post("/extract-text")
-def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
+def extract_text(
+    file: UploadFile = File(...),
+    # Translate keeps only its first max_chars characters; scanned pages past them are not OCR'd.
+    max_chars: Annotated[int | None, Form(ge = 1)] = None,
+    subject: str = Depends(get_current_subject),
+) -> dict:
     from core.rag import parsers
 
     stored_path, filename, _digest = _save_upload(file, _IMAGE_TEXT_EXTS)
     if os.path.splitext(filename)[1].lower() in _IMAGE_TEXT_EXTS:
         try:
-            text = _image_text(stored_path)
+            text, warning = _image_text(stored_path, filename)
         except Exception as exc:
             raise HTTPException(
                 status_code = 422, detail = f"{filename} could not be read: {exc}"
@@ -1043,12 +1179,17 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         if not text.strip():
             raise HTTPException(
                 status_code = 422,
-                detail = f"No text could be read from {filename}. Reading images needs a vision "
+                detail = warning
+                or f"No text could be read from {filename}. Reading images needs a vision "
                 "model loaded in Chat, or Tesseract OCR installed.",
             )
-        return {"filename": filename, "text": text, "truncated": False}
+        result = {"filename": filename, "text": text, "truncated": False}
+        if warning:
+            result["warning"] = warning
+        return result
     try:
         pages = parsers.parse(stored_path)
+        scanned_text, unread, kept = _scanned_page_text(stored_path, pages, max_chars)
     except ImportError as exc:
         raise HTTPException(status_code = 503, detail = f"{filename} could not be read: {exc}") from exc
     # Not only ValueError: python-docx raises its own errors for a damaged .docm/.dotx.
@@ -1056,12 +1197,13 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
     finally:
         _remove_stored_upload(stored_path)
+    warning = _unread_pages_warning(filename, unread) if unread else None
     # Capped page by page: joining everything first would hold a huge extraction several times over.
     parts: list[bytes] = []
     room = _EXTRACT_TEXT_MAX_BYTES
-    truncated = False
-    for page in pages:
-        chunk = page.text.strip().encode("utf-8")
+    truncated = kept < len(pages)
+    for page in pages[:kept]:
+        chunk = _page_text(page, scanned_text).encode("utf-8")
         if not chunk:
             continue
         if parts:
@@ -1073,7 +1215,13 @@ def extract_text(file: UploadFile = File(...), subject: str = Depends(get_curren
         parts.append(chunk)
         room -= len(chunk)
     text = b"".join(parts).decode("utf-8", errors = "ignore")
-    return {"filename": filename, "text": text, "truncated": truncated}
+    # Refused only when the unread scans were all there was; otherwise the text loads with the warning.
+    if warning and not text.strip():
+        raise HTTPException(status_code = 422, detail = warning)
+    result = {"filename": filename, "text": text, "truncated": truncated}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 @router.post("/search")
