@@ -173,6 +173,33 @@ test("the pinned Windows glass frame rounds the corner with either an image or a
 	assert.ok(css.includes(glassFrame + ' [data-windows-glass-frame] > [data-slot="sidebar-inner"] {\n  position: relative;\n  z-index: 1;\n  background: transparent;'));
 });
 
+test("the pinned caption strip stops at docked Run settings, whose glass runs to the window top", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const frame = /\[data-slot="sidebar-container"\]\[data-windows-glass-frame\]::before \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	assert.ok(frame.includes("left top / calc(100% - var(--studio-chat-settings-docked-width, 0px)) var(--studio-custom-titlebar-height)"));
+	// Only while the pinned strip is there; unpinned, the panel starts below the caption with its rounded corner.
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready]';
+	const panel = new RegExp(glassFrame.replace(/[[\]()|]/g, "\\$&") + ' aside\\[data-slot="chat-settings-panel"\\] \\{([^}]*)\\}').exec(css)?.[1] ?? "";
+	assert.ok(panel.includes("--chat-settings-top: 0px;"), panel);
+	assert.ok(panel.includes("padding-top: var(--studio-custom-titlebar-height, 0px);"), panel);
+	assert.ok(css.includes(glassFrame + ' [data-slot="chat-settings-resize-handle"] {\n  top: var(--studio-custom-titlebar-height, 0px);'));
+	// Beside the strip the strip's own glass runs down the panel column, and the panel draws none, so nothing meets in a seam.
+	assert.ok(frame.includes("linear-gradient(black 0 0) right top / var(--studio-chat-settings-docked-width, 0px) 100% no-repeat"), frame);
+	assert.ok(frame.includes("background-attachment: fixed;"), frame);
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] {\n  background: transparent;\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;\n  box-shadow: none;'));
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"]::before {\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;'));
+	assert.ok(frame.includes("radial-gradient(circle at left bottom, transparent calc(var(--studio-run-settings-fillet) - 1px), black var(--studio-run-settings-fillet))"), frame);
+	assert.ok(frame.includes("calc(100vw - var(--studio-chat-settings-docked-width, 0px) - var(--studio-run-settings-fillet)) var(--studio-custom-titlebar-height)"), frame);
+	assert.ok(frame.includes("--studio-run-settings-fillet: min(var(--radius-md), var(--studio-chat-settings-docked-width, 0px));"), frame);
+	assert.ok(css.includes('html:is([data-glass], [data-glass-clear])[data-sidebar-glass-frame][data-chat-wallpaper-workspace-ready] aside[data-slot="chat-settings-panel"] > div:last-child {\n  border-left-color: transparent;'));
+	// Off glass the panel still starts below the caption.
+	assert.ok(sheet.includes('"var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))"'));
+	assert.match(sheet, /marginTop: CHAT_SETTINGS_TOP,/);
+	assert.match(sheet, /root\.setProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR, `\$\{panel\.offsetWidth\}px`\)/);
+	assert.match(sheet, /root\.removeProperty\(CHAT_SETTINGS_DOCKED_WIDTH_VAR\)/);
+});
+
 test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  --glass-page-wash: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \+ 6%\)/);
@@ -274,6 +301,74 @@ test("glass frosts the chat model controls and gives the account row the row hov
 	assert.match(css, /\[data-slot="sidebar-inner"\] \.app-user-trigger:is\(:hover, \[data-state="open"\]\)[^{]*\{\n  background-color: var\(--glass-hover\);\n  box-shadow: var\(--glass-hover-rim\);/);
 	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
 	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-model-controls=""/);
+});
+
+test("glass gives the chat header's icon buttons the model picker's glass, not a new style", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const model = String.raw`\[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
+	const actions = String.raw`:is\(\[data-chat-header-actions\] > button, \[data-chat-new-chat\], html:not\(\[data-sidebar-glass-frame\]\) \[data-titlebar-nav\]:not\(\[data-slot="sidebar"\] \*\) > button\)`;
+	// Listed beside the picker in each of its rules, so the buttons share its fill, rim, edge and hover.
+	for (const glass of [String.raw`\[data-glass\]`, String.raw`\[data-glass\^="liquid"\]`, String.raw`\[data-glass="liquid-3d"\]`]) {
+		const after = glass.includes("3d") ? "::before" : "";
+		assert.match(css, new RegExp(String.raw`html${glass}\[data-chat-wallpaper-ready\] ${actions}${after},\nhtml${glass}\[data-chat-wallpaper-ready\] ${model}${after},\n`));
+	}
+	assert.match(css, new RegExp(String.raw`${actions}:is\(:hover, \[aria-expanded="true"\], \[aria-pressed="true"\]\),\nhtml\[data-glass\]\[data-chat-wallpaper-ready\] ${model}:is\(:hover`));
+	assert.match(css, new RegExp(String.raw`html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] ${actions},\nhtml:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] ${model} \{\n  box-shadow: var\(--glass-light-edge\)`));
+	// The glass edge is a box-shadow, so the focus ring has to win over it.
+	assert.match(css, new RegExp(String.raw`${actions}:focus-visible,\n[^{]*:focus-visible:is\(\[class\*="focus-visible:ring"\]\) \{\n  box-shadow: var\(--tw-inset-shadow[^;]*!important;`));
+	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
+	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-header-actions="" className="pointer-events-auto ml-auto/);
+	// Back, forward and the sidebar toggle frost too, except over a pinned sidebar's strip or inside the sidebar.
+	const titlebar = readFileSync(new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url), "utf8");
+	assert.match(titlebar, /role="toolbar"\n\s*aria-label=\{t\("desktopShell\.navigation"\)\}\n\s*data-titlebar-nav=""/);
+	// The collapsed sidebar's New chat button sits beside the picker and takes the same glass.
+	assert.match(page, /aria-label="New chat"\n\s*data-chat-new-chat=""\n\s*onClick=\{handleDesktopNewChat\}/);
+});
+
+test("the window buttons get an inset glass pill off the pinned strip, keeping the full caption hit area", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const win = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\]:not\(\[data-sidebar-glass-frame\]\) \[data-window-controls\] > button`;
+	// The pill shares the header buttons' fill, rim and hover.
+	assert.match(css, new RegExp(String.raw`${win}::before,\nhtml\[data-glass\]\[data-chat-wallpaper-ready\] :is\(\[data-chat-header-actions\] > button`));
+	assert.match(css, new RegExp(String.raw`html\[data-glass\^="liquid"\]\[data-chat-wallpaper-ready\]:not\(\[data-sidebar-glass-frame\]\) \[data-window-controls\] > button::before,\n`));
+	assert.match(css, new RegExp(String.raw`${win}:hover::before,\n`));
+	assert.match(css, new RegExp(String.raw`${win} \{\n  background-color: transparent !important;\n\}`));
+	assert.match(css, new RegExp(String.raw`${win}::before \{\n  content: "";\n  position: absolute;\n  inset: 2px 4px;\n  z-index: -1;`));
+	// Close keeps its red, on the pill.
+	assert.match(css, new RegExp(String.raw`${win}:last-child:hover::before \{\n  background-color: #c42b1c !important;`));
+	const titlebar = readFileSync(new URL("../src/components/tauri/window-titlebar.tsx", import.meta.url), "utf8");
+	assert.match(titlebar, /data-wallpaper-chrome-controls=""\n\s*data-window-controls=""\n\s*role="toolbar"\n\s*aria-label=\{t\("desktopShell\.windowControls"\)\}/);
+	assert.match(titlebar, /label=\{t\("desktopShell\.close"\)\}[\s\S]*?<CaptionGlyph kind="close" \/>\n\s*<\/WindowControlButton>\n\s*<\/div>/);
+});
+
+test("docked Run settings rounds its top corner only while no pinned sidebar strip meets it", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const panel = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\]`;
+	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] \{\n  transition: border-top-left-radius \.2s ease;`));
+	// No custom titlebar (macOS, browser, fullscreen) leaves the corner square.
+	assert.match(css, new RegExp(String.raw`${panel}:not\(\[data-sidebar-glass-frame\]\) aside\[data-slot="chat-settings-panel"\] \{\n  border-top-left-radius: min\(14px, var\(--studio-custom-titlebar-height, 0px\)\);`));
+	assert.match(css, new RegExp(String.raw`${panel} aside\[data-slot="chat-settings-panel"\] > div:last-child \{\n  border-top-left-radius: inherit;`));
+	// The strip is only drawn for a pinned sidebar under the custom titlebar.
+	const sidebar = readFileSync(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8");
+	assert.match(sidebar, /data-windows-glass-frame=\{\(pinned && usesCustomTitlebar\) \|\| undefined\}/);
+	// Mirrored on <html> by the sidebar, not read through a :has() that would restyle the thread.
+	assert.match(sidebar, /const glassFrame = pinned && usesCustomTitlebar;\n\s*useEffect\(\(\) => \{\n\s*const el = document\.documentElement;\n\s*el\.toggleAttribute\("data-sidebar-glass-frame", glassFrame\);\n\s*return \(\) => el\.removeAttribute\("data-sidebar-glass-frame"\);/);
+	const sheet = readFileSync(new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url), "utf8");
+	const docked = sheet.slice(sheet.indexOf("<aside"), sheet.indexOf("</aside>"));
+	assert.match(docked, /\{settingsContent\}\n\s*<\/div>\n\s*$/);
+});
+
+test("glass tints the user's bubble and thread code blocks like the composer, with no blur", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const host = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\)\[data-wallpaper-ready\]\[data-wallpaper-ready\]`;
+	const rule = (target: string) => new RegExp(`${host} ${target} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+	const bubble = rule(String.raw`\.aui-user-message-content`);
+	const code = rule(String.raw`\.aui-thread-root \[data-streamdown="code-block"\]`);
+	assert.match(bubble, /var\(--glass-composer-fill\)[^;]*var\(--glass-composer-floor\)\) \+ 9%\)/);
+	// Code reads at the panes' floor, a step darker than the bubble.
+	assert.match(code, /var\(--glass-composer-fill\)[^;]*var\(--glass-pane-floor\)\) \+ 9%\)/);
+	// The thread viewport's mask is a backdrop root, so a blur here would frost only the wash.
+	for (const block of [bubble, code]) assert.doesNotMatch(block, /backdrop-filter/);
 });
 
 test("glass frosts sticky bars in panels and popups, floating buttons, and softens shared shadows", () => {
