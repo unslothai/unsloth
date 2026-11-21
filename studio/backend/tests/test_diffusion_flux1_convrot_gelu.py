@@ -291,3 +291,70 @@ def test_gelu_entry_keeps_the_stock_path_below_the_card_min_rows(monkeypatch):
     assert cq.convrot_gelu_act_quant(None, small, 256, True) is None and not calls
     assert cq.convrot_gelu_act_quant(None, big, 256, True) == ("q", "s") and len(calls) == 1
     assert cq._GELU_MIN_ROWS[(12, 0)] == 2048 and cq._GELU_MIN_ROWS[(8, 9)] == 1024  # noqa: SLF001
+
+
+def test_gelu_verdict_is_persisted_and_a_later_load_skips_the_probe(monkeypatch):
+    """The probe's cold compile (4.8 s RTX PRO 6000, 16 s L4) is paid once per card and source: the verdict joins the
+    ConvRot verdict file and a later process adopts it without probing."""
+    pytest.importorskip("torch")
+    from core.inference import diffusion_convrot_quant as cq
+
+    store = {}
+    probes = []
+    monkeypatch.setattr(cq, "_verdict_load", lambda index: dict(store) if store else None)
+    monkeypatch.setattr(cq, "_verdict_store", lambda index, upd: store.update(upd))
+    monkeypatch.setattr(cq, "_gelu_probe", lambda index: probes.append(index) or True)
+    monkeypatch.setattr(cq, "_device_cap", lambda index: (12, 0))
+    monkeypatch.setattr(cq, "_GELU_DEVICE", {})
+    monkeypatch.setattr(cq, "_GELU_OFF", set())
+    monkeypatch.setitem(cq._H16_DEVICE, 5, "ieee")  # noqa: SLF001
+    monkeypatch.setitem(cq._ROTQ_DEVICE, 5, (128, 32, 8, 4))  # noqa: SLF001
+    monkeypatch.delenv(cq.GELU_FUSED_ENV, raising = False)
+    assert cq.gelu_probe_pending(5)
+    assert cq._arm_gelu(5) and probes == [5] and store == {"gelu": True}  # noqa: SLF001
+    cq._GELU_DEVICE.clear()  # noqa: SLF001 - a new process
+    assert not cq.gelu_probe_pending(5)
+    assert cq._arm_gelu(5) and probes == [5]  # noqa: SLF001 - adopted, not probed again
+    # a persisted verdict also reaches the device table through the shared adoption path
+    cq._GELU_DEVICE.clear()  # noqa: SLF001
+    cq._adopt_verdict(5, {"cfg": [128, 32, 8, 4], "h16": "ieee", "gelu": False})  # noqa: SLF001
+    assert cq._GELU_DEVICE[5] is False  # noqa: SLF001
+
+
+def test_flux1_loads_put_the_gelu_probe_in_the_prewarm_pool(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import types
+
+    import core.inference.diffusion as D
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_flux_convrot_fused as fused
+    from core.inference import diffusion_int8_gemm as gemm
+
+    seen = []
+    monkeypatch.setattr(
+        gemm,
+        "start_early_probe_prewarm",
+        lambda index, rotated, producer, logger = None, gelu = False: seen.append(
+            (rotated, producer, gelu)
+        )
+        or True,
+    )
+    from core.inference.diffusion_families import detect_family
+
+    cuda = types.SimpleNamespace(device = "cuda", ordinal = 0)
+    assert D._kick_early_probe_prewarm(detect_family("black-forest-labs/FLUX.1-schnell"), cuda)
+    assert D._kick_early_probe_prewarm(detect_family("black-forest-labs/flux-3-image-klein"), cuda)
+    assert seen == [(True, False, True), (True, True, False)]
+    # the swap-time warm-up asks for the GELU jobs on a FLUX.1 denoiser whose verdict is pending
+    calls = []
+    monkeypatch.setattr(gemm, "join_early_probe_prewarm", lambda index = None: None)
+    monkeypatch.setattr(gemm, "_EARLY_DONE", {})
+    monkeypatch.setattr(gemm, "_gemm_probe_jobs", lambda index: [])
+    monkeypatch.setattr(cq, "rotq_probes_pending", lambda index: False)
+    monkeypatch.setattr(cq, "producer_probe_pending", lambda index: True)
+    monkeypatch.setattr(cq, "gelu_probe_pending", lambda index: True)
+    monkeypatch.setattr(cq, "prewarm_probe_kernels", lambda index, **kw: calls.append(kw) or 3)
+    flux1 = type("FluxTransformer2DModel", (), {})()
+    assert gemm._prewarm_probes(0, flux1, True, None) == 3  # noqa: SLF001
+    assert calls[-1]["gelu"] is True and calls[-1]["producer"] is False
+    assert fused.gelu_probe_expected(flux1) and not fused.producer_probe_expected(flux1)

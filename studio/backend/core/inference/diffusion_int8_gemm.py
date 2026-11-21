@@ -2439,15 +2439,22 @@ def _gemm_probe_jobs(index: int) -> list:
     return [partial(_probe, index, cfg) for cfg in cfgs]
 
 
-# card index -> the early warm-up thread, and once it ran: (rotq, producer, gemm jobs, launches)
+# card index -> the early warm-up thread, and once it ran: (rotq, producer, gemm jobs, launches, gelu)
 _EARLY_PREWARM: dict = {}
 _EARLY_DONE: dict = {}
 _EARLY_LOCK = threading.Lock()
 
 
-def _early_prewarm_run(index: int, rotated: bool, producer: bool, logger: Any) -> None:
+def _early_prewarm_run(
+    index: int,
+    rotated: bool,
+    producer: bool,
+    logger: Any,
+    gelu: bool = False,
+) -> None:
     try:
         from .diffusion_convrot_quant import (
+            gelu_probe_pending,
             prewarm_probe_kernels,
             producer_probe_pending,
             rotq_probes_pending,
@@ -2455,13 +2462,21 @@ def _early_prewarm_run(index: int, rotated: bool, producer: bool, logger: Any) -
 
         rotq = bool(rotated) and rotq_probes_pending(index)
         prod = bool(rotated and producer) and producer_probe_pending(index)
+        gel = bool(rotated and gelu) and gelu_probe_pending(index)
         extra = tuple(_gemm_probe_jobs(index))
         ran = (
-            prewarm_probe_kernels(index, rotq = rotq, producer = prod, extra = extra, logger = logger)
-            if (extra or rotq or prod)
+            prewarm_probe_kernels(
+                index,
+                rotq = rotq,
+                producer = prod,
+                extra = extra,
+                logger = logger,
+                **({"gelu": True} if gel else {}),
+            )
+            if (extra or rotq or prod or gel)
             else 0
         )
-        _EARLY_DONE[index] = (rotq, prod, len(extra), ran)
+        _EARLY_DONE[index] = (rotq, prod, len(extra), ran, gel)
     except Exception:  # noqa: BLE001
         pass
 
@@ -2472,6 +2487,7 @@ def start_early_probe_prewarm(
     rotated: bool,
     producer: bool,
     logger: Any = None,
+    gelu: bool = False,
 ) -> bool:
     """Run ``_prewarm_probes``' compiles in a thread during the disk-bound load (saved 10-14 s on a new L4).
 
@@ -2495,7 +2511,7 @@ def start_early_probe_prewarm(
                 return False
             thread = threading.Thread(
                 target = _early_prewarm_run,
-                args = (index, rotated, producer, logger),
+                args = (index, rotated, producer, logger) + ((True,) if gelu else ()),
                 name = "unsloth-probe-prewarm-early",
                 daemon = True,
             )
@@ -2538,6 +2554,7 @@ def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) ->
     join_early_probe_prewarm(index)
     try:
         from .diffusion_convrot_quant import (
+            gelu_probe_pending,
             prewarm_probe_kernels,
             probe_prewarm_enabled,
             producer_probe_pending,
@@ -2546,14 +2563,15 @@ def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) ->
 
         if not probe_prewarm_enabled():
             return 0
-        from .diffusion_flux_convrot_fused import producer_probe_expected
+        from .diffusion_flux_convrot_fused import gelu_probe_expected, producer_probe_expected
 
         rotq = bool(rotated) and rotq_probes_pending(index)
         producer = (
             bool(rotated) and producer_probe_expected(transformer) and producer_probe_pending(index)
         )
+        gelu = bool(rotated) and gelu_probe_expected(transformer) and gelu_probe_pending(index)
         extra = tuple(_gemm_probe_jobs(index))
-        if not (extra or rotq or producer):
+        if not (extra or rotq or producer or gelu):
             return 0
         early = _EARLY_DONE.get(index)
         if (
@@ -2561,10 +2579,16 @@ def _prewarm_probes(index: int, transformer: Any, rotated: bool, logger: Any) ->
             and early[0] >= rotq
             and early[1] >= producer
             and early[2] >= len(extra)
+            and (early[4] if len(early) > 4 else False) >= gelu
         ):
             return early[3]
         return prewarm_probe_kernels(
-            index, rotq = rotq, producer = producer, extra = extra, logger = logger
+            index,
+            rotq = rotq,
+            producer = producer,
+            extra = extra,
+            logger = logger,
+            **({"gelu": True} if gelu else {}),
         )
     except Exception as exc:  # noqa: BLE001 - a warm-up only
         if logger is not None:

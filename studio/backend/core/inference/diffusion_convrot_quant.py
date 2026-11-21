@@ -1867,6 +1867,8 @@ def _adopt_verdict(index: int, v: dict) -> Optional[tuple]:
     _SWIGLU_DEVICE[index] = sw
     if isinstance(v.get("producer"), bool) and h16:
         _PRODUCER_DEVICE[index] = v["producer"]
+    if isinstance(v.get("gelu"), bool) and h16:
+        _GELU_DEVICE[index] = v["gelu"]
     _ROTQ_HANDLE = _rotq_op()
     if sw:
         _SWIGLU_HANDLE = _swiglu_op()
@@ -2138,11 +2140,26 @@ def _warm_producer(dev: Any, m: int, pre: Optional[tuple], f: int, kind: str, tf
     _h16x_launch(prefix, gate, value, kind, tf32x3 = tf32x3)
 
 
+def _warm_gelu(dev: Any, m: int, pre: Optional[tuple], f: int, kind: str, tf32x3: bool) -> None:
+    import torch
+    prefix, gate, _value = _producer_probe_inputs(
+        m, pre, f, torch.Generator(device = "cpu").manual_seed(8), dev
+    )
+    _h16x_launch(prefix, gate, gate, kind, tf32x3 = tf32x3, act = 2)
+
+
+def _warm_gelu_exhaustive(dev: Any) -> None:
+    k = _kernels()
+    x = _warm_input(1, 1024, dev).reshape(-1)
+    k.gelu_bf16[(1,)](x, x.clone(), x.numel(), BLOCK = 1024, num_warps = 4, enable_fp_fusion = False)
+
+
 def probe_warm_jobs(
     index: int,
     *,
     rotq: bool = True,
     producer: bool = False,
+    gelu: bool = False,
 ) -> list:
     """Zero-argument launches matching the cold probes' shapes, kinds and layouts (every candidate tile)."""
     from functools import partial
@@ -2186,6 +2203,17 @@ def probe_warm_jobs(
     ):
         for m, pre, f in _PRODUCER_PROBE_SHAPES:
             jobs += [partial(_warm_producer, dev, m, pre, f, kind, tf32x3) for kind in kinds]
+    if (
+        gelu
+        and want is not None
+        and rotquant_h16_enabled()
+        and rotquant_producer_enabled()
+        and gelu_arch_ok(cap)
+        and _gelu_op() is not None
+    ):
+        jobs.append(partial(_warm_gelu_exhaustive, dev))
+        for m, pre, f in _GELU_PROBE_SHAPES:
+            jobs += [partial(_warm_gelu, dev, m, pre, f, kind, tf32x3) for kind in kinds]
     return jobs
 
 
@@ -2196,6 +2224,7 @@ def prewarm_probe_kernels(
     producer: bool = False,
     extra: tuple = (),
     logger: Any = None,
+    gelu: bool = False,
 ) -> int:
     """Run ``extra`` + ``probe_warm_jobs`` on a thread pool; returns launches run. Never raises; skipped in capture/trace."""
     if not probe_prewarm_enabled():
@@ -2208,7 +2237,8 @@ def prewarm_probe_kernels(
 
         if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
             return 0
-        jobs = list(extra) + probe_warm_jobs(index, rotq = rotq, producer = producer)
+        more = {"gelu": True} if gelu else {}
+        jobs = list(extra) + probe_warm_jobs(index, rotq = rotq, producer = producer, **more)
         workers = min(_PREWARM_MAX_WORKERS, os.cpu_count() or 1, len(jobs))
         if workers < 2:
             return 0
@@ -2370,6 +2400,14 @@ def gelu_arch_ok(cap: Optional[tuple]) -> bool:
     return cap is not None and tuple(cap) in _GELU_ARCHS
 
 
+def gelu_probe_pending(index: int) -> bool:
+    """``_arm_gelu`` would probe card ``index`` (no in-process verdict and none persisted)."""
+    if index in _GELU_DEVICE:
+        return False
+    stored = _verdict_load(index)
+    return not (isinstance(stored, dict) and isinstance(stored.get("gelu"), bool))
+
+
 def gelu_matches_reference(dev: Any) -> bool:
     """``_gelu_bf16`` equals ``gelu_reference`` on every finite bf16 input, bit for bit (signed zeros included)."""
     import torch
@@ -2428,12 +2466,23 @@ def _arm_gelu(index: int) -> bool:
         return False
     _GELU_OFF.discard(index)
     if index not in _GELU_DEVICE:
-        ok = False
-        try:
-            ok = _gelu_op() is not None and _gelu_probe(index)
-        except Exception:  # noqa: BLE001 - the stock GELU, concat and act quant stay
+        stored = _verdict_load(index)
+        if (
+            isinstance(stored, dict)
+            and isinstance(stored.get("gelu"), bool)
+            and _gelu_op() is not None
+        ):
+            # a verdict this card, this source and these switches already reached (no probe compile on later loads)
+            _GELU_DEVICE[index] = stored["gelu"]
+        else:
             ok = False
-        _GELU_DEVICE[index] = ok
+            try:
+                ok = _gelu_op() is not None and _gelu_probe(index)
+            except Exception:  # noqa: BLE001 - the stock GELU, concat and act quant stay
+                ok = False
+            _GELU_DEVICE[index] = ok
+            if _ROTQ_DEVICE.get(index) is not None:
+                _verdict_store(index, {"gelu": ok})
     if _GELU_DEVICE[index]:
         _GELU_DEVICE_MIN_ROWS[index] = _GELU_MIN_ROWS.get(
             _device_cap(index), _GELU_MIN_ROWS_DEFAULT

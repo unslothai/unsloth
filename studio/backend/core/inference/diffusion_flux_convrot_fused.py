@@ -914,6 +914,13 @@ def producer_probe_expected(transformer: Any) -> bool:
     )
 
 
+def gelu_probe_expected(transformer: Any) -> bool:
+    """``install`` will arm (and probe) the GELU ``rotq_h16x`` for this denoiser (FLUX.1)."""
+    return (
+        not flux_convrot_fused_disabled() and type(transformer).__name__ == "FluxTransformer2DModel"
+    )
+
+
 def install(transformer: Any, logger: Any = None) -> dict:
     """After the int8 GEMM swap, before the regional compile: patch the FLUX.1 / FLUX.2 / FLUX.3 helpers (each checks its
     Linears per call) and arm ``rotq_h16x`` on the denoiser's cards, at the first forward when the weights (and so
