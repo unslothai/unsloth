@@ -223,7 +223,7 @@ function WallpaperTile({
       aria-label={label}
       title={label}
       onClick={onPick}
-      className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {children}
       {busy ? (
@@ -242,7 +242,7 @@ function Swatches() {
   const { palette, setPalette } = usePalette();
   const standard = t("settings.appearance.palette.standard");
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1.5">
       {SWATCHES.map((id) => {
         const colors = COLOR_THEMES[id][resolved];
         return (
@@ -253,20 +253,15 @@ function Swatches() {
             aria-label={paletteName(id, standard)}
             title={paletteName(id, standard)}
             onClick={() => setPalette(id)}
-            className="relative flex size-7 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="relative flex size-8 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <span
-              className="flex size-5 items-center justify-center rounded-full"
-              style={{ backgroundColor: colors.background }}
-            >
-              <span
-                className="size-2.5 rounded-full"
-                style={{ backgroundColor: colors.accent }}
-              />
-            </span>
+              className="size-6 rounded-full"
+              style={{ backgroundColor: colors.accent }}
+            />
             <ChosenRing
               on={palette === id}
-              className="ring-foreground ring-[1.5px]"
+              className="ring-foreground ring-2"
             />
           </button>
         );
