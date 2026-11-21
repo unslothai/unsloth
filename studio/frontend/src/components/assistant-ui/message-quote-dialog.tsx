@@ -35,9 +35,11 @@ type MessageQuoteDialogProps = {
   readonly anchorRect: SelectionRect | null;
   readonly viewportEl: HTMLElement | null;
   readonly open: boolean;
-  readonly onCancel: () => void;
+  readonly onCancel: (reason: QuoteDialogCancelReason) => void;
   readonly onSave: (comment: string) => void;
 };
+
+export type QuoteDialogCancelReason = "escape" | "outside";
 
 const PANEL_MARGIN = 8;
 const PANEL_MAX_WIDTH = 420;
@@ -125,7 +127,7 @@ const QuoteCommentPanel: FC<{
   readonly anchor: QuoteAnchor;
   readonly anchorRect: SelectionRect;
   readonly viewportEl: HTMLElement;
-  readonly onCancel: () => void;
+  readonly onCancel: (reason: QuoteDialogCancelReason) => void;
   readonly onSave: (comment: string) => void;
 }> = ({ anchor, anchorRect, viewportEl, onCancel, onSave }) => {
   const t = useT();
@@ -190,14 +192,14 @@ const QuoteCommentPanel: FC<{
       ) {
         return;
       }
-      onCancel();
+      onCancel("outside");
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
         return;
       }
       event.preventDefault();
-      onCancel();
+      onCancel("escape");
     };
     // Defer listener attachment so the click that opened the panel cannot
     // immediately dismiss it.

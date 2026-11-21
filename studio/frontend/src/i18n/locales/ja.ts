@@ -27,6 +27,7 @@ export const ja = {
     quoteSourceMissing: "The quoted message is no longer in this chat.",
     quotePassageMissing: "That passage is no longer in the source message.",
     quoteNavigationAnnounce: "Highlighted the quoted passage.",
+    quoteOpenSource: "Go to quoted passage",
     releaseQuotes: "Release quotes",
     releaseQuotesAnyway: "Release anyway",
     keepWaitingQuotes: "Keep waiting",

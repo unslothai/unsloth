@@ -54,6 +54,15 @@ export function clampQuotePillPosition(
   };
 }
 
+/** One shared outer width for the quote pill and its dropdown, capped by the chat viewport. */
+export function clampQuoteCollectionWidth(
+  width: number,
+  viewportWidth: number,
+  margin = 8,
+): number {
+  return Math.max(0, Math.min(width, viewportWidth - margin * 2));
+}
+
 export function quotePillDragExceeded(
   startX: number,
   startY: number,

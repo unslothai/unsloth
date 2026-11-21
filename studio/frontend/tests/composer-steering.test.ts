@@ -56,6 +56,7 @@ const names = [
   "advancePromptQueue",
   "handlePromptQueueRunFailed",
   "retainPendingPromptQueueItemsAfterFailure",
+  "consumePromptQueueDeepResearch",
 ];
 const declarations = names
   .map((name) => {
@@ -89,6 +90,7 @@ function makeTarget(id: string, running = true) {
     getDocumentThreadId: () => id || null,
     running,
     usesLocalModel: true,
+    usesDeepResearch: false,
     researchStarted: () => false,
     complete: () => undefined,
     cancels: 0,
@@ -161,11 +163,10 @@ function world() {
     canReleaseQueuedQuoteDispatch: () => true,
     releaseQuoteDispatch: () => true,
     subscribeQuoteDispatchOutcome: () => () => undefined,
-    consumePromptQueueDeepResearch: noop,
   };
   const engine = new Function(
     ...Object.keys(deps),
-    `${js}\nreturn {startPromptQueue, steerPromptQueueItem, dispatchQueuedPrompt, isPromptQueueRunReadyToDispatch, handlePromptQueueRunState, handlePromptQueueRunFailed, resumePromptQueueRun};`,
+    `${js}\nreturn {startPromptQueue, steerPromptQueueItem, dispatchQueuedPrompt, isPromptQueueRunReadyToDispatch, handlePromptQueueRunState, handlePromptQueueRunFailed, resumePromptQueueRun, consumePromptQueueDeepResearch};`,
   )(...Object.values(deps)) as {
     handlePromptQueueRunFailed: (
       threadId?: string,
@@ -189,6 +190,7 @@ function world() {
       run: Run,
       runningByThreadId: Record<string, boolean>,
     ) => void;
+    consumePromptQueueDeepResearch: (run: Run, item: Item) => void;
   };
   return {
     ...engine,
@@ -294,6 +296,48 @@ test("normal queue follow-ups append without interrupting", () => {
   );
   assert.equal(target.cancels, 0);
   assert.deepEqual(w.scopedCancels, []);
+});
+
+test("deep research is spent at the run-start edge, not when a prompt is appended", async () => {
+  const w = world();
+  const target = makeTarget("chat", false);
+  target.usesDeepResearch = true;
+  w.startPromptQueue(["research prompt"], target);
+  const run = w.run();
+  const item = run.items[0];
+
+  await w.dispatchQueuedPrompt(run, item);
+  assert.deepEqual(w.appended, ["research prompt"]);
+  assert.equal(
+    target.deepResearch,
+    0,
+    "appending a prompt must not spend the queue's research",
+  );
+
+  // The dispatcher marks the item dispatched; the model only starts later.
+  target.running = true;
+  target.researchStarted = () => true;
+  w.handlePromptQueueRunState(run, {});
+  assert.equal(target.deepResearch, 1);
+
+  w.handlePromptQueueRunState(run, {});
+  assert.equal(target.deepResearch, 1, "one research per queue");
+});
+
+test("an ordinary queued prompt keeps dispatching without quote metadata", async () => {
+  const w = world();
+  const target = makeTarget("chat", false);
+  w.startPromptQueue(["no quotes"], target);
+  const run = w.run();
+  const item = run.items[0] as Item & { quoteDispatch?: unknown };
+  assert.equal(item.quoteDispatch, undefined);
+
+  await w.dispatchQueuedPrompt(run, item);
+  assert.deepEqual(w.appended, ["no quotes"]);
+
+  target.running = true;
+  w.handlePromptQueueRunState(run, {});
+  assert.equal(w.run(), run, "the queue stays alive while the response runs");
 });
 
 test("row steer retains the selected item and history, cancelling its shared target once", async () => {

@@ -11,6 +11,9 @@ const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
 const TAG_NAME = /^<([A-Za-z0-9_.]+)/;
 const GUARD = /<MenuDismissGuard\b(?=[^>]*\btriggerRef=\{)[^>]*\/>/;
+// Boundary-aware so `aria-modal={false}` and `data-modal={false}` do not count.
+// Indentation-independent so a tab or a reflowed line is still scanned.
+const MODAL_FALSE = /(?<![\w-])modal=\{false\}/g;
 
 const UNGUARDED = new Map<string, string>([
   [
@@ -84,19 +87,28 @@ function element(source: string, at: number): { tag: string; body: string } {
 const relativeId = (file: string): string =>
   path.relative(SRC, file).split(path.sep).join("/");
 
+function elementsIn(
+  source: string,
+  idFor: (tag: string) => string = (tag) => `<fixture> <${tag}>`,
+): { id: string; body: string }[] {
+  const menus: { id: string; body: string }[] = [];
+  const modalFalse = new RegExp(MODAL_FALSE.source, "g");
+  while (true) {
+    const match = modalFalse.exec(source);
+    if (match === null) {
+      break;
+    }
+    const { tag, body } = element(source, match.index);
+    menus.push({ id: idFor(tag), body });
+  }
+  return menus;
+}
+
 function nonModalMenus(): { id: string; body: string }[] {
   const menus: { id: string; body: string }[] = [];
   for (const file of sources(SRC)) {
     const source = readFileSync(file, "utf8");
-    // The leading space keeps `aria-modal={false}` from being mistaken for the
-    // Radix modal prop on a role="dialog" element.
-    let at = source.indexOf(" modal={false}");
-    while (at !== -1) {
-      at += 1;
-      const { tag, body } = element(source, at);
-      menus.push({ id: `${relativeId(file)} <${tag}>`, body });
-      at = source.indexOf(" modal={false}", at + 1);
-    }
+    menus.push(...elementsIn(source, (tag) => `${relativeId(file)} <${tag}>`));
   }
   return menus;
 }
@@ -141,6 +153,25 @@ test("the element scan does not confuse a tag with one that merely starts the sa
     !GUARD.test(body),
     "the scan ran past the menu's own closing tag and swallowed the next element",
   );
+});
+
+test("the non-modal scan ignores indentation and aria-modal", () => {
+  const source = [
+    "<DropdownMenu",
+    "\tmodal={false}",
+    ">",
+    "  <MenuDismissGuard triggerRef={triggerRef} />",
+    "</DropdownMenu>",
+    '<div role="dialog" aria-modal={false} />',
+    "<div data-modal={false} />",
+  ].join("\n");
+  const menus = elementsIn(source);
+  assert.deepEqual(
+    menus.map(({ id }) => id),
+    ["<fixture> <DropdownMenu>"],
+    "a tab-indented prop must be found; aria-modal and data-modal must not",
+  );
+  assert.match(menus[0].body, GUARD);
 });
 
 test("menu ids are separator-independent", () => {

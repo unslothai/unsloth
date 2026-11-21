@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clampQuoteCollectionWidth,
   clampQuotePillPosition,
   placeQuoteDropdown,
   quotePillDragExceeded,
@@ -108,4 +109,57 @@ test("the dropdown clamps horizontally and caps its height", () => {
       side: "below",
     },
   );
+});
+
+test("the measured quote width is shared and viewport-clamped", () => {
+  assert.equal(clampQuoteCollectionWidth(236, 800, 12), 236);
+  assert.equal(clampQuoteCollectionWidth(236, 390, 12), 236);
+  assert.equal(clampQuoteCollectionWidth(236, 320, 12), 236);
+  assert.equal(clampQuoteCollectionWidth(236, 260, 12), 236);
+  assert.equal(clampQuoteCollectionWidth(236, 240, 12), 216);
+  assert.equal(clampQuoteCollectionWidth(236, 236, 12), 212);
+  assert.equal(clampQuoteCollectionWidth(236, 20, 12), 0);
+  assert.equal(clampQuoteCollectionWidth(236, 236), 220);
+});
+
+test("equal-width pill and dropdown keep exact edges", () => {
+  const width = 236;
+  const pill = { width, height: 40 };
+  const dropdown = { width, height: 200 };
+
+  for (const left of [100, 12, 552]) {
+    const placement = placeQuoteDropdown(
+      { left, top: 100 },
+      pill,
+      dropdown,
+      viewport,
+      12,
+      6,
+    );
+    assert.equal(placement.left, left);
+  }
+});
+
+test("a narrow viewport keeps pill and dropdown in lockstep", () => {
+  const narrow = { left: 0, top: 0, width: 260, height: 600 };
+  const width = clampQuoteCollectionWidth(260, narrow.width, 12);
+  const pill = clampQuotePillPosition(
+    { left: 100, top: 100 },
+    { width, height: 40 },
+    narrow,
+    12,
+  );
+
+  const placement = placeQuoteDropdown(
+    pill,
+    { width, height: 40 },
+    { width, height: 200 },
+    narrow,
+    12,
+    6,
+  );
+
+  assert.equal(width, 236);
+  assert.equal(pill.left, 12);
+  assert.equal(placement.left, 12);
 });

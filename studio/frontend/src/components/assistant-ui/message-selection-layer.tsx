@@ -27,7 +27,10 @@ import {
   assistantContentForMessage,
   captureQuoteAnchor,
 } from "./message-quote-capture";
-import { MessageQuoteDialog } from "./message-quote-dialog";
+import {
+  MessageQuoteDialog,
+  type QuoteDialogCancelReason,
+} from "./message-quote-dialog";
 import type { QuoteAnchor } from "./message-quote-model";
 import { addQuote } from "./message-quote-store";
 import {
@@ -509,18 +512,29 @@ export function MessageSelectionLayer({
     clearSnapshot();
   }, [clearSnapshot, snapshot, t, viewportEl]);
 
-  const closeQuoteDialog = useCallback(() => {
-    setQuoteDialogOpen(false);
-    setDraftAnchor(null);
-    setDraftAnchorRect(null);
-  }, []);
+  const closeQuoteDialog = useCallback(
+    (reason?: "save" | QuoteDialogCancelReason) => {
+      setQuoteDialogOpen(false);
+      setDraftAnchor(null);
+      setDraftAnchorRect(null);
+      if (reason === "save" || reason === "escape") {
+        // The panel owns focus while open. Return it to this thread's dock
+        // composer after unmount, but never steal the click target on an
+        // outside press. composerInputFor() skips row-owned edit composers.
+        window.requestAnimationFrame(() => {
+          composerInputFor(viewportEl)?.focus({ preventScroll: true });
+        });
+      }
+    },
+    [viewportEl],
+  );
 
   const saveQuoteDraft = useCallback(
     (comment: string) => {
       if (draftAnchor !== null) {
         addQuote(threadId, draftAnchor, { comment });
       }
-      closeQuoteDialog();
+      closeQuoteDialog("save");
     },
     [closeQuoteDialog, draftAnchor, threadId],
   );

@@ -8,8 +8,14 @@
 // thread's scroll geometry.
 
 import { useAui } from "@assistant-ui/react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { isTouchClick } from "@/components/ui/touch-click";
 import { useT } from "@/i18n";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -48,6 +54,7 @@ import {
   type QuotePillPosition,
   type QuotePillSize,
   type QuotePillViewport,
+  clampQuoteCollectionWidth,
   clampQuotePillPosition,
   placeQuoteDropdown,
   quotePillDragExceeded,
@@ -59,6 +66,9 @@ import {
 import {
   quotePillExpandedAfterCountChange,
   quotePillMode,
+  quoteSourceLabel,
+  shouldApplyQuotePreviewOpen,
+  toggledPinnedQuoteId,
 } from "./message-quote-presentation";
 import {
   getQuotes,
@@ -66,13 +76,11 @@ import {
   removeQuote,
   subscribeQuotes,
 } from "./message-quote-store";
-import { shortMessageId } from "./message-selection-model";
 import { useDetachThreadFromBottom } from "./use-intent-aware-autoscroll";
 
 const EDGE_INSET = 12;
 const TOP_INSET = 8;
 const COMPOSER_GAP = 8;
-const DROPDOWN_WIDTH = 340;
 const DROPDOWN_GAP = 6;
 const DRAG_THRESHOLD = 4;
 
@@ -152,33 +160,60 @@ function useCollectionGeometry(
     if (!enabled || viewportEl === null) {
       return;
     }
+
+    let observedDock: HTMLElement | null = null;
+    let observedSurface: HTMLElement | null = null;
+    let dockObserver: ResizeObserver | null = null;
+    let surfaceObserver: ResizeObserver | null = null;
+    let dockTreeObserver: MutationObserver | null = null;
+
+    // The composer dock can mount after this effect (welcome screen, compare
+    // mode) and can be replaced. Re-sync the observers whenever the tree says
+    // the dock or its surface changed instead of observing only once.
+    const syncObservers = () => {
+      const dock =
+        viewportEl.parentElement?.querySelector<HTMLElement>(
+          ".aui-thread-composer-dock",
+        ) ?? null;
+      const composerSurface =
+        dock?.querySelector<HTMLElement>(".unsloth-composer-surface") ?? null;
+
+      if (dock !== observedDock) {
+        dockObserver?.disconnect();
+        dockObserver = null;
+        dockTreeObserver?.disconnect();
+        dockTreeObserver = null;
+        observedDock = dock;
+        if (dock !== null) {
+          dockObserver = new ResizeObserver(measure);
+          dockObserver.observe(dock);
+          dockTreeObserver = new MutationObserver(syncObservers);
+          dockTreeObserver.observe(dock, { childList: true });
+        }
+      }
+
+      if (composerSurface !== observedSurface) {
+        surfaceObserver?.disconnect();
+        surfaceObserver = null;
+        observedSurface = composerSurface;
+        if (composerSurface !== null) {
+          surfaceObserver = new ResizeObserver(measure);
+          surfaceObserver.observe(composerSurface);
+        }
+      }
+    };
+
+    const sync = () => {
+      measure();
+      syncObservers();
+    };
+
+    sync();
     const viewportObserver = new ResizeObserver(measure);
     viewportObserver.observe(viewportEl);
-    const dock =
-      viewportEl.parentElement?.querySelector<HTMLElement>(
-        ".aui-thread-composer-dock",
-      ) ?? null;
-    const composerSurface =
-      dock?.querySelector<HTMLElement>(".unsloth-composer-surface") ?? null;
-    const dockObserver = dock ? new ResizeObserver(measure) : null;
-    if (dockObserver !== null && dock !== null) {
-      dockObserver.observe(dock);
-    }
-    const surfaceObserver = composerSurface
-      ? new ResizeObserver(measure)
-      : null;
-    if (surfaceObserver !== null && composerSurface !== null) {
-      surfaceObserver.observe(composerSurface);
-    }
-    const dockTreeObserver =
-      dock === null && viewportEl.parentElement !== null
-        ? new MutationObserver(measure)
-        : null;
-    if (dockTreeObserver !== null) {
-      dockTreeObserver.observe(viewportEl.parentElement as Node, {
-        childList: true,
-      });
-    }
+    const parent = viewportEl.parentElement;
+    const parentObserver = parent !== null ? new MutationObserver(sync) : null;
+    parentObserver?.observe(parent as Node, { childList: true });
     window.addEventListener("resize", measure);
 
     return () => {
@@ -186,6 +221,7 @@ function useCollectionGeometry(
       dockObserver?.disconnect();
       surfaceObserver?.disconnect();
       dockTreeObserver?.disconnect();
+      parentObserver?.disconnect();
       window.removeEventListener("resize", measure);
     };
   }, [enabled, measure, viewportEl]);
@@ -259,21 +295,45 @@ function usePendingQuoteDispatches(threadId: string) {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-function quoteSource(
-  quote: CollectedQuote,
-  turnLabel: (turn: number) => string,
-): string {
-  const shortId = shortMessageId(quote.anchor.messageId);
-  return quote.anchor.turn > 0
-    ? `${turnLabel(quote.anchor.turn)} · ${shortId}`
-    : shortId;
-}
+const QuoteCount: FC<{ readonly count: number }> = ({ count }) => (
+  <span
+    data-quote-count=""
+    className="inline-grid shrink-0 whitespace-nowrap text-ui-12 tabular-nums leading-snug text-muted-foreground"
+  >
+    <span aria-hidden={true} className="invisible col-start-1 row-start-1">
+      (00)
+    </span>
+    <span className="col-start-1 row-start-1">({count})</span>
+  </span>
+);
+
+const QUOTE_PREVIEW_CLASS =
+  "pointer-events-auto overflow-y-auto overscroll-contain whitespace-pre-line break-words text-left";
+const QUOTE_PREVIEW_STYLE = {
+  maxWidth: "min(20rem, calc(100vw - 1.5rem))",
+  maxHeight: "min(24rem, calc(100vh - 1.5rem))",
+} as const;
+
+const QuotePreviewContent: FC<{
+  readonly text: string;
+  readonly source: string;
+}> = ({ text, source }) => (
+  <>
+    <span className="block">{text}</span>
+    {source.length > 0 && (
+      <span className="mt-1 block text-ui-10 text-muted-foreground">
+        {source}
+      </span>
+    )}
+  </>
+);
 
 const QuotePillRow: FC<{
   readonly quote: CollectedQuote;
   readonly index: number;
   readonly reserved: boolean;
   readonly reservedByQueuedPrompt: boolean;
+  readonly rowHeight: number;
   readonly onNavigate: (quote: CollectedQuote) => void;
   readonly onRemove: (quoteId: string) => void;
 }> = ({
@@ -281,11 +341,12 @@ const QuotePillRow: FC<{
   index,
   reserved,
   reservedByQueuedPrompt,
+  rowHeight,
   onNavigate,
   onRemove,
 }) => {
   const t = useT();
-  const source = quoteSource(quote, (turn) =>
+  const source = quoteSourceLabel(quote.anchor.turn, (turn) =>
     t("turns.label", { number: turn }),
   );
   const removeLabel = `${t("messageSelection.removeQuote")} ${index + 1}`;
@@ -293,26 +354,36 @@ const QuotePillRow: FC<{
   return (
     <li
       data-quote-id={quote.id}
-      className="group flex min-w-0 list-none items-start gap-2 rounded-lg px-1 py-1 transition-colors"
+      className="flex w-full min-w-0 shrink-0 list-none items-center gap-1.5 rounded-full bg-popover px-1.5 text-popover-foreground transition-colors hover:bg-muted/50 focus-within:bg-muted/50"
+      style={{ height: rowHeight }}
     >
-      <button
-        type="button"
-        data-quote-navigate=""
-        onClick={() => onNavigate(quote)}
-        className="flex min-w-0 flex-1 items-start gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <span className="mt-0.5 w-5 shrink-0 text-ui-10 tabular-nums text-muted-foreground">
-          {index + 1}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="line-clamp-2 break-words text-ui-12 leading-snug text-foreground/85">
-            {quote.anchor.text}
-          </span>
-          <span className="mt-1 block truncate text-ui-10 text-muted-foreground">
-            {source}
-          </span>
-        </span>
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild={true} disableClickToggle={true}>
+          <button
+            type="button"
+            data-quote-navigate=""
+            onClick={() => onNavigate(quote)}
+            className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-full px-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <span className="w-5 shrink-0 text-ui-10 tabular-nums text-muted-foreground">
+              {index + 1}
+            </span>
+            <span className="min-w-0 flex-1 truncate whitespace-nowrap text-ui-12 leading-snug text-foreground/85">
+              {quote.anchor.text}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="bottom"
+          align="start"
+          sideOffset={6}
+          collisionPadding={12}
+          className={QUOTE_PREVIEW_CLASS}
+          style={QUOTE_PREVIEW_STYLE}
+        >
+          <QuotePreviewContent text={quote.anchor.text} source={source} />
+        </TooltipContent>
+      </Tooltip>
       <button
         type="button"
         data-quote-remove=""
@@ -328,12 +399,17 @@ const QuotePillRow: FC<{
             : undefined
         }
         aria-disabled={reserved}
-        disabled={reserved}
         onClick={(event) => {
           event.stopPropagation();
+          if (reserved) {
+            return;
+          }
           onRemove(quote.id);
         }}
-        className="mt-1 flex size-5 shrink-0 items-center justify-center rounded-[4px] text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 pointer-coarse:opacity-100"
+        className={cn(
+          "flex size-5 shrink-0 items-center justify-center rounded-[4px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          reserved && "cursor-not-allowed opacity-30",
+        )}
       >
         <HugeiconsIcon
           icon={Cancel01Icon}
@@ -372,7 +448,12 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
   );
   const reservedQuoteIds = getReservedQuoteIds(threadId);
   const mode = quotePillMode(quotes.length);
+  const singleQuote = mode === "single" ? quotes[0] : null;
   const [expanded, setExpanded] = useState(false);
+  const [singlePreview, setSinglePreview] = useState<{
+    readonly quoteId: string;
+    readonly open: boolean;
+  } | null>(null);
   const [releaseConfirmId, setReleaseConfirmId] = useState<string | null>(null);
   const [positionState, setPositionState] = useState<PositionState>(() => ({
     threadId,
@@ -380,7 +461,10 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
   }));
   const [dragging, setDragging] = useState(false);
   const pillRef = useRef<HTMLButtonElement>(null);
+  const sizerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLUListElement>(null);
+  const singlePreviewRef = useRef<HTMLDivElement>(null);
+  const singlePinnedRef = useRef<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const previousThreadRef = useRef(threadId);
   const previousCountRef = useRef(quotes.length);
@@ -390,11 +474,60 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
     threadRef.current = threadId;
   }, [threadId]);
 
+  const singleQuoteId = singleQuote?.id ?? null;
+  // A preview opened for an older quote or thread is stale by identity, not by
+  // an effect, so returning to a thread can never resurrect it.
+  const singlePreviewOpen =
+    singleQuoteId !== null &&
+    singlePreview !== null &&
+    singlePreview.quoteId === singleQuoteId &&
+    singlePreview.open;
+  const setSinglePreviewOpen = useCallback(
+    (open: boolean) => {
+      // Radix closes on pointerdown/click. While a touch pin owns the preview,
+      // those temporary closes must not clear the pinned identity.
+      if (
+        !shouldApplyQuotePreviewOpen(
+          singlePinnedRef.current,
+          singleQuoteId,
+          open,
+        )
+      ) {
+        return;
+      }
+      if (singleQuoteId === null) {
+        setSinglePreview(null);
+        return;
+      }
+      setSinglePreview({ quoteId: singleQuoteId, open });
+    },
+    [singleQuoteId],
+  );
+  const closeSinglePreview = useCallback(() => {
+    singlePinnedRef.current = null;
+    setSinglePreview(null);
+  }, []);
+
   const geometry = useCollectionGeometry(
     viewportEl,
     enabled && quotes.length > 0,
   );
-  const pillSize = useMeasuredSize(pillRef, enabled && quotes.length > 0);
+  const sizerSize = useMeasuredSize(sizerRef, enabled && quotes.length > 0);
+  const collectionWidth =
+    sizerSize === null || geometry === null
+      ? null
+      : clampQuoteCollectionWidth(
+          sizerSize.width,
+          geometry.viewport.width,
+          EDGE_INSET,
+        );
+  const pillSize = useMeasuredSize(
+    pillRef,
+    enabled &&
+      quotes.length > 0 &&
+      collectionWidth !== null &&
+      collectionWidth > 0,
+  );
 
   const storedPosition =
     positionState.threadId === threadId
@@ -412,32 +545,23 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
           EDGE_INSET,
         )
       : null;
-  const pillMaxWidth =
-    geometry === null
-      ? 320
-      : Math.max(0, Math.min(320, geometry.viewport.width - EDGE_INSET * 2));
-  const dropdownWidth =
-    geometry === null
-      ? 0
-      : Math.max(
-          0,
-          Math.min(DROPDOWN_WIDTH, geometry.viewport.width - EDGE_INSET * 2),
-        );
+  const dropdownOpen = mode === "multiple" && expanded;
   const dropdownSize = useMeasuredSize(
     dropdownRef,
-    enabled && expanded && quotes.length > 0 && pillPosition !== null,
+    enabled && dropdownOpen && quotes.length > 0 && pillPosition !== null,
   );
   const dropdownPlacement =
-    expanded &&
+    dropdownOpen &&
     geometry !== null &&
     pillPosition !== null &&
     pillSize !== null &&
     dropdownSize !== null &&
-    dropdownWidth > 0
+    collectionWidth !== null &&
+    collectionWidth > 0
       ? placeQuoteDropdown(
           pillPosition,
           pillSize,
-          { width: dropdownWidth, height: dropdownSize.height },
+          { width: collectionWidth, height: dropdownSize.height },
           geometry.viewport,
           EDGE_INSET,
           DROPDOWN_GAP,
@@ -452,7 +576,7 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
     previousThreadRef.current = threadId;
     previousCountRef.current = quotes.length;
     setExpanded((current) =>
-      threadChanged
+      threadChanged || quotePillMode(quotes.length) !== "multiple"
         ? false
         : quotePillExpandedAfterCountChange(
             previousCount,
@@ -460,7 +584,9 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
             current,
           ),
     );
-  }, [threadId, quotes.length]);
+    // A preview belonging to a different collection size cannot be reused.
+    closeSinglePreview();
+  }, [closeSinglePreview, threadId, quotes.length]);
 
   useEffect(() => {
     setPositionState({
@@ -470,7 +596,43 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
     setReleaseConfirmId(null);
     setDragging(false);
     dragRef.current = null;
-  }, [threadId]);
+    closeSinglePreview();
+  }, [closeSinglePreview, threadId]);
+
+  useEffect(() => {
+    if (!singlePreviewOpen) {
+      return;
+    }
+    // Hover/focus opens the preview through Radix; a controlled preview also
+    // needs the dismissal paths Radix would otherwise own.
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (pillRef.current?.contains(target)) {
+        return;
+      }
+      if (singlePreviewRef.current?.contains(target)) {
+        return;
+      }
+      closeSinglePreview();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeSinglePreview();
+      }
+    };
+    const closeOnBlur = () => closeSinglePreview();
+    document.addEventListener("pointerdown", closeOnOutside, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    window.addEventListener("blur", closeOnBlur);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+      window.removeEventListener("blur", closeOnBlur);
+    };
+  }, [closeSinglePreview, singlePreviewOpen]);
 
   useEffect(() => {
     if (
@@ -514,6 +676,7 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
   const navigate = useCallback(
     async (quote: CollectedQuote) => {
       setExpanded(false);
+      closeSinglePreview();
       detachFromBottom();
       highlightedQuoteRef.current = quote.id;
       const result = await navigateToQuote({
@@ -545,7 +708,7 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
         pillRef.current?.focus();
       }
     },
-    [aui, detachFromBottom, t, threadId, viewportEl],
+    [aui, closeSinglePreview, detachFromBottom, t, threadId, viewportEl],
   );
 
   if (!enabled || mode === "hidden" || typeof document === "undefined") {
@@ -556,17 +719,34 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
     mode === "single"
       ? quotes[0].anchor.text
       : t("messageSelection.multipleQuotes");
+  const singleReserved =
+    singleQuote !== null && reservedQuoteIds.has(singleQuote.id);
+  const singleReservedByQueuedPrompt =
+    singleQuote !== null && queuedReservedQuoteIds.has(singleQuote.id);
+  const singleSource =
+    singleQuote === null
+      ? ""
+      : quoteSourceLabel(singleQuote.anchor.turn, (turn) =>
+          t("turns.label", { number: turn }),
+        );
   const expandLabel = expanded
     ? t("messageSelection.collapseQuotes")
     : t("messageSelection.expandQuotes");
   const pillStyle =
-    pillPosition !== null
-      ? { left: pillPosition.left, top: pillPosition.top }
-      : {
-          left: geometry?.viewport.left ?? 0,
-          top: geometry?.viewport.top ?? 0,
-          visibility: "hidden" as const,
-        };
+    collectionWidth === null || collectionWidth <= 0
+      ? null
+      : pillPosition !== null
+        ? {
+            left: pillPosition.left,
+            top: pillPosition.top,
+            width: collectionWidth,
+          }
+        : {
+            left: geometry?.viewport.left ?? 0,
+            top: geometry?.viewport.top ?? 0,
+            width: collectionWidth,
+            visibility: "hidden" as const,
+          };
 
   const beginDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (
@@ -614,6 +794,7 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
     if (!drag.moved) {
       drag.moved = true;
       setDragging(true);
+      closeSinglePreview();
     }
     event.preventDefault();
     const next = clampQuotePillPosition(
@@ -635,6 +816,11 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
   ) => {
     const drag = dragRef.current;
     if (drag === null || drag.pointerId !== event.pointerId) {
+      // A cancelled pointer must not leave a tapped preview pinned even when
+      // the gesture never began a drag.
+      if (!allowToggle) {
+        closeSinglePreview();
+      }
       return;
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -644,112 +830,258 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
     dragRef.current = null;
     setDragging(false);
     if (moved) {
+      closeSinglePreview();
       setQuotePillPosition(threadId, drag.last);
       return;
     }
-    if (allowToggle) {
-      setExpanded((current) => !current);
+    if (!allowToggle) {
+      closeSinglePreview();
+      return;
     }
+    if (mode === "single") {
+      // Touch has no hover, so a non-dragged tap pins the same preview the
+      // mouse and keyboard get. A second tap unpins it.
+      if (isTouchClick(event)) {
+        const pinned = singlePinnedRef.current === singleQuoteId;
+        singlePinnedRef.current = toggledPinnedQuoteId(
+          singlePinnedRef.current,
+          singleQuoteId ?? "",
+        );
+        setSinglePreview({
+          quoteId: singleQuoteId ?? "",
+          open: !pinned,
+        });
+      }
+      return;
+    }
+    setExpanded((current) => !current);
   };
 
-  return createPortal(
-    <>
-      <section
-        data-quote-collection=""
-        aria-label={t("messageSelection.quoteCollection")}
-        style={pillStyle}
-        className="fixed z-30"
+  const pillButton = (
+    <button
+      ref={pillRef}
+      type="button"
+      data-quote-pill=""
+      data-dragging={dragging ? "true" : undefined}
+      aria-expanded={mode === "multiple" ? expanded : undefined}
+      aria-controls={mode === "multiple" && expanded ? dropdownId : undefined}
+      title={mode === "multiple" ? expandLabel : undefined}
+      onClick={(event) => {
+        // Mouse and touch activation is handled on pointerup, where the drag
+        // threshold is known. Keyboard activation has no pointerup.
+        if (event.detail === 0 && mode === "multiple") {
+          setExpanded((current) => !current);
+        }
+      }}
+      onPointerDown={beginDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={(event) => endDrag(event, true)}
+      onPointerCancel={(event) => endDrag(event, false)}
+      className={cn(
+        "menu-soft-surface menu-soft-edgeless flex w-full touch-none select-none items-center gap-1.5 rounded-full py-2 pl-3 pr-3 text-left",
+        mode === "single" && "pr-14",
+        dragging ? "cursor-grabbing" : "cursor-grab",
+      )}
+    >
+      <span
+        aria-hidden={true}
+        title={t("messageSelection.moveQuoteCollection")}
+        className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/60"
       >
-        <button
-          ref={pillRef}
-          type="button"
-          data-quote-pill=""
-          data-dragging={dragging ? "true" : undefined}
-          aria-expanded={expanded}
-          aria-controls={expanded ? dropdownId : undefined}
-          title={expandLabel}
-          style={{ maxWidth: pillMaxWidth }}
-          onClick={(event) => {
-            // Mouse and touch activation is handled on pointerup, where the
-            // drag threshold is known. Keyboard activation has no pointerup.
-            if (event.detail === 0) {
-              setExpanded((current) => !current);
-            }
-          }}
-          onPointerDown={beginDrag}
-          onPointerMove={moveDrag}
-          onPointerUp={(event) => endDrag(event, true)}
-          onPointerCancel={(event) => endDrag(event, false)}
+        <HugeiconsIcon
+          icon={DragDropVerticalIcon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+      </span>
+      <span className="flex min-w-0 flex-1 items-center gap-1">
+        <span
           className={cn(
-            "menu-soft-surface menu-soft-edgeless flex touch-none select-none items-center gap-2 rounded-full px-3 py-2 text-left",
-            dragging ? "cursor-grabbing" : "cursor-grab",
+            "min-w-0 flex-1 truncate whitespace-nowrap text-ui-12 leading-snug text-foreground",
+            mode === "multiple" && "font-medium",
           )}
         >
+          {label}
+        </span>
+        {mode === "multiple" && <QuoteCount count={quotes.length} />}
+      </span>
+      {mode === "multiple" && (
+        <HugeiconsIcon
+          icon={QuoteIcon}
+          strokeWidth={1.75}
+          aria-hidden={true}
+          className="size-3.5 shrink-0 text-muted-foreground"
+        />
+      )}
+      {pendingDispatches.length > 0 && (
+        <>
+          <span className="sr-only">
+            {t("messageSelection.quoteSendPending")}
+          </span>
           <span
+            data-quote-pending=""
+            title={t("messageSelection.quoteSendPending")}
             aria-hidden={true}
-            title={t("messageSelection.moveQuoteCollection")}
-            className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/60"
+            className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground"
           >
             <HugeiconsIcon
-              icon={DragDropVerticalIcon}
+              icon={Clock01Icon}
               strokeWidth={1.75}
               className="size-3.5"
             />
           </span>
-          <HugeiconsIcon
-            icon={QuoteIcon}
-            strokeWidth={1.75}
-            aria-hidden={true}
-            className="size-3.5 shrink-0 text-muted-foreground"
-          />
-          <span
-            className={cn(
-              "min-w-0 truncate text-ui-12 text-foreground",
-              mode === "multiple"
-                ? "font-medium"
-                : "max-w-[calc(190px*var(--ui-space-scale,1))]",
-            )}
-            title={mode === "single" ? label : undefined}
-          >
-            {label}
-          </span>
-          {mode === "multiple" && (
-            <span className="shrink-0 text-ui-11 tabular-nums text-muted-foreground">
-              {quotes.length}
-            </span>
-          )}
-          {pendingDispatches.length > 0 && (
-            <>
-              <span className="sr-only">
-                {t("messageSelection.quoteSendPending")}
-              </span>
-              <span
-                data-quote-pending=""
-                title={t("messageSelection.quoteSendPending")}
-                aria-hidden={true}
-                className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground"
-              >
-                <HugeiconsIcon
-                  icon={Clock01Icon}
-                  strokeWidth={1.75}
-                  className="size-3.5"
-                />
-              </span>
-            </>
-          )}
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={1.75}
-            aria-hidden={true}
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              expanded && "rotate-180",
-            )}
-          />
-        </button>
-      </section>
+        </>
+      )}
+    </button>
+  );
 
-      {expanded && pillPosition !== null && dropdownWidth > 0 && (
+  return createPortal(
+    <>
+      <div
+        ref={sizerRef}
+        aria-hidden={true}
+        data-quote-pill-sizer=""
+        className="pointer-events-none invisible fixed left-0 top-0 flex w-max items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-2 text-left text-ui-12 leading-snug"
+      >
+        <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/60">
+          <HugeiconsIcon
+            icon={DragDropVerticalIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="font-medium text-ui-12 leading-snug text-foreground">
+            {t("messageSelection.multipleQuotes")}
+          </span>
+          <QuoteCount count={2} />
+        </span>
+        <HugeiconsIcon
+          icon={QuoteIcon}
+          strokeWidth={1.75}
+          aria-hidden={true}
+          className="size-3.5 shrink-0 text-muted-foreground"
+        />
+        {pendingDispatches.length > 0 && (
+          <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
+            <HugeiconsIcon
+              icon={Clock01Icon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+          </span>
+        )}
+      </div>
+
+      {pillStyle !== null && (
+        <section
+          data-quote-collection=""
+          aria-label={t("messageSelection.quoteCollection")}
+          style={pillStyle}
+          className="fixed z-30"
+        >
+          {mode === "single" && singleQuote !== null ? (
+            <TooltipProvider
+              delayDuration={120}
+              skipDelayDuration={300}
+              disableHoverableContent={false}
+            >
+              <Tooltip
+                open={singlePreviewOpen}
+                onOpenChange={setSinglePreviewOpen}
+              >
+                <TooltipTrigger asChild={true} disableClickToggle={true}>
+                  {pillButton}
+                </TooltipTrigger>
+                <TooltipContent
+                  ref={singlePreviewRef}
+                  data-quote-single-preview=""
+                  side="top"
+                  align="start"
+                  sideOffset={6}
+                  collisionPadding={12}
+                  className={QUOTE_PREVIEW_CLASS}
+                  style={QUOTE_PREVIEW_STYLE}
+                >
+                  <QuotePreviewContent
+                    text={singleQuote.anchor.text}
+                    source={singleSource}
+                  />
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            pillButton
+          )}
+          {singleQuote !== null && (
+            <button
+              type="button"
+              data-quote-single-navigate=""
+              aria-label={t("messageSelection.quoteOpenSource")}
+              title={t("messageSelection.quoteOpenSource")}
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                void navigate(singleQuote);
+              }}
+              className="absolute right-7 top-1/2 z-10 flex size-6 -translate-y-1/2 items-center justify-center rounded-[4px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <HugeiconsIcon
+                icon={QuoteIcon}
+                strokeWidth={1.75}
+                aria-hidden={true}
+                className="size-3.5"
+              />
+            </button>
+          )}
+          {singleQuote !== null && (
+            <button
+              type="button"
+              data-quote-single-remove=""
+              aria-label={t("messageSelection.removeQuote")}
+              aria-description={
+                singleReservedByQueuedPrompt
+                  ? t("messageSelection.quoteReservedByQueuedPrompt")
+                  : undefined
+              }
+              title={
+                singleReservedByQueuedPrompt
+                  ? t("messageSelection.quoteReservedByQueuedPrompt")
+                  : undefined
+              }
+              aria-disabled={singleReserved}
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (singleReserved) {
+                  return;
+                }
+                remove(singleQuote.id);
+              }}
+              className={cn(
+                "absolute right-1.5 top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded-[4px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                singleReserved && "cursor-not-allowed opacity-30",
+              )}
+            >
+              <HugeiconsIcon
+                icon={Cancel01Icon}
+                strokeWidth={2}
+                aria-hidden={true}
+                className="size-3"
+              />
+            </button>
+          )}
+        </section>
+      )}
+
+      {dropdownOpen &&
+        geometry !== null &&
+        pillPosition !== null &&
+        pillSize !== null &&
+        collectionWidth !== null &&
+        collectionWidth > 0 && (
         <ul
           ref={dropdownRef}
           id={dropdownId}
@@ -760,29 +1092,32 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
               ? {
                   left: dropdownPlacement.left,
                   top: dropdownPlacement.top,
-                  width: dropdownWidth,
+                  width: collectionWidth,
                   maxHeight: dropdownPlacement.maxHeight,
                 }
               : {
                   left: pillPosition.left,
                   top: pillPosition.top,
-                  width: dropdownWidth,
+                  width: collectionWidth,
                   visibility: "hidden" as const,
                 }
           }
-          className="menu-soft-surface menu-soft-edgeless fixed z-30 m-0 list-none overflow-y-auto overscroll-contain scroll-rounded rounded-xl p-1.5"
+          className="fixed z-30 m-0 flex list-none flex-col gap-1 overflow-y-auto overscroll-contain bg-transparent p-0 shadow-none"
         >
           {pendingDispatches.map((dispatch) => {
             const confirming = releaseConfirmId === dispatch.contextId;
             return (
-              <li key={`pending-${dispatch.contextId}`} className="list-none">
+              <li
+                key={`pending-${dispatch.contextId}`}
+                className="list-none shrink-0"
+              >
                 {/* A single generic warning deliberately covers every visible
                     pending state. The only safe-to-release state, reserved,
                     never paints before send() starts; every visible state can
                     still finish and duplicate if the user releases and resends. */}
                 <div
                   data-quote-pending-banner=""
-                  className="mb-1 rounded-lg border border-border/60 bg-muted/30 p-2 text-ui-11p5 leading-snug"
+                  className="rounded-lg border border-border/60 bg-muted/30 p-2 text-ui-11p5 leading-snug"
                 >
                   <div className="flex items-start gap-2">
                     <HugeiconsIcon
@@ -841,17 +1176,24 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
               </li>
             );
           })}
-          {quotes.map((quote, index) => (
-            <QuotePillRow
-              key={quote.id}
-              quote={quote}
-              index={index}
-              reserved={reservedQuoteIds.has(quote.id)}
-              reservedByQueuedPrompt={queuedReservedQuoteIds.has(quote.id)}
-              onNavigate={navigate}
-              onRemove={remove}
-            />
-          ))}
+          <TooltipProvider
+            delayDuration={120}
+            skipDelayDuration={300}
+            disableHoverableContent={false}
+          >
+            {quotes.map((quote, index) => (
+              <QuotePillRow
+                key={quote.id}
+                quote={quote}
+                index={index}
+                reserved={reservedQuoteIds.has(quote.id)}
+                reservedByQueuedPrompt={queuedReservedQuoteIds.has(quote.id)}
+                rowHeight={pillSize.height}
+                onNavigate={navigate}
+                onRemove={remove}
+              />
+            ))}
+          </TooltipProvider>
         </ul>
       )}
     </>,
