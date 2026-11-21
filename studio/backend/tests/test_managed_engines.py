@@ -1522,8 +1522,9 @@ def test_engine_start_reserves_a_share_of_the_card():
 
 
 @_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize("nvcc", [False, True])
 @pytest.mark.parametrize("gpu_ids", [[1], [1, 0]])
-def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids, tmp_path):
+def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids, nvcc, tmp_path):
     import os
     import sys
     import time
@@ -1531,6 +1532,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
     from core.inference import managed_engine
 
     active(isolated)
+    if nvcc:
+        # The pip nvcc as link_cuda_home links it, so cuda/ becomes CUDA_HOME.
+        (isolated / "vllm" / "env-prior" / "cuda" / "bin").mkdir(parents = True)
+        (isolated / "vllm" / "env-prior" / "cuda" / "bin" / "nvcc").touch()
     monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
     engine = ManagedEngine("vllm")
 
@@ -1542,7 +1547,7 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
             "class Handler(BaseHTTPRequestHandler):\n"
             " def do_GET(self):\n"
             "  self.send_response(200); self.end_headers()\n"
-            "  self.wfile.write('|'.join(os.environ.get(k, '') for k in ('CUDA_VISIBLE_DEVICES', 'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_BASE', 'LD_LIBRARY_PATH')).encode())\n"
+            "  self.wfile.write('|'.join(os.environ.get(k, '') for k in ('CUDA_VISIBLE_DEVICES', 'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_BASE', 'LD_LIBRARY_PATH', 'PATH')).encode())\n"
             " def log_message(self, *args): pass\n"
             f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
         )
@@ -1586,11 +1591,15 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         assert engine.alive()
         import httpx
 
-        visible, cache_path, flashinfer_base, library_path = httpx.get(
+        visible, cache_path, flashinfer_base, library_path, path = httpx.get(
             engine.base_url, trust_env = False
         ).text.split("|")
         assert library_path == str(driver)
-        assert flashinfer_base == install.installed("vllm")["path"]
+        env_dir = install.installed("vllm")["path"]
+        assert flashinfer_base == env_dir
+        # vLLM counts FlashInfer as missing unless nvcc is on PATH.
+        first = [env_dir + "/cuda/bin", env_dir + "/bin"] if nvcc else [env_dir + "/bin"]
+        assert path.split(os.pathsep)[: len(first)] == first
         assert visible == ",".join(map(str, gpu_ids))
         assert Path(cache_path).parent.parent == isolated / "vllm" / "cache"
         assert Path(cache_path).name == "triton"
