@@ -75,7 +75,7 @@ export function OwnerAvatar({
     );
   }
 
-  if (isUnslothOwner(owner) && !remote) {
+  if (isUnslothOwner(owner)) {
     return (
       <ProviderLogoTile
         provider={UNSLOTH_OWNER_LOGO}
@@ -97,13 +97,12 @@ export function OwnerAvatar({
 export function useAvatarImageUrl(
   owner: string,
   repoName?: string,
-  remote = true,
 ): string | null {
   const provider = resolveOwnerProviderLogo(owner, repoName);
   const isUnsloth = isUnslothOwner(owner);
   const remoteUrl = useHfOwnerAvatar(
     owner.trim() || "?",
-    remote && provider == null && !isUnsloth,
+    provider == null && !isUnsloth,
   );
   if (provider) {
     return provider.treatment === "original" ? provider.logoPath : null;

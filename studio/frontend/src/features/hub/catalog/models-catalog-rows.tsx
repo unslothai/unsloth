@@ -529,6 +529,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           owner={row.owner}
           repoName={row.repo}
           className="size-8 rounded-sm"
+          remote={false}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
           <div className="flex h-[calc(18px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2">

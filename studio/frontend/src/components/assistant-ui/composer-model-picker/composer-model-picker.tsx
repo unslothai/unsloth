@@ -727,14 +727,12 @@ function OwnerImageMark({
   owner,
   repoName,
   name,
-  remote = true,
 }: {
   owner: string;
   repoName?: string;
   name?: string;
-  remote?: boolean;
 }) {
-  const src = useAvatarImageUrl(owner, repoName, remote);
+  const src = useAvatarImageUrl(owner, repoName);
   const [failed, setFailed] = useState<string | null>(null);
   if (!src || failed === src) {
     return (
