@@ -1055,6 +1055,10 @@ _FIT_DEVICE_RE = re.compile(
     r"common_params_fit_impl:\s+-\s+(?P<device>[A-Za-z]+\d+)\s+\(.*?\):\s+(?P<layers>\d+)\s+layers?"
     r"\s*(?:\(\s*(?P<overflow>\d+)\s+overflowing\s*\))?\s*,\s*\d+\s+MiB used"
 )
+# llama-server reads no weight bytes before this line, only GGUF headers and shared libraries.
+_LOAD_TENSORS_MARK = "load_tensors: loading model tensors"
+# --fit on prints these before its placement probes. Each probe parses the GGUF header again and reads no weights.
+_FIT_START_MARKS = ("fitting params to device memory", "common_params_fit_impl:")
 # The MoE-only fill: printed for a model with experts, whose GPU layers then hold only their dense weights.
 _FIT_DENSE_ONLY_MARK = "filling dense-only layers back-to-front"
 # From here the per-device lines carry an explicit "(N overflowing)" count.
@@ -8728,7 +8732,9 @@ class LlamaCppBackend:
         self._gguf_split_index: Optional[int] = None
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
-        self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
+        self._load_rss_hwm = (None, 0)  # ((pid, stage), peak bytes) for load_progress
+        # (pid, "fit" | "weights", bytes read, RSS) for load_progress, set by _drain_stdout.
+        self._load_stage = None
         self._stats_logger = None  # vLLM-style engine-stats poller, set on load
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
@@ -9492,11 +9498,14 @@ class LlamaCppBackend:
 
         ``bytes_loaded`` is the larger of the bytes read and Linux file-backed RSS; never a working set,
         which counts buffers allocated before any read. The total includes projector, drafter and adapters.
+        Both counters start from their values at llama-server's first weight read, when its log shows it:
+        what came before is GGUF headers and shared libraries. Until then a --fit placement search
+        reports phase "fit" with no bytes, since its probes re-read the header and load no weights.
 
         Shape::
 
             {
-                "phase": "mmap" | "ready",
+                "phase": "fit" | "mmap" | "ready",
                 "bytes_loaded": int,   # as above, never decreasing
                 "bytes_total":  int,   # weight files the server loads
                 "fraction": float,     # bytes_loaded / bytes_total, 0..1
@@ -9517,16 +9526,23 @@ class LlamaCppBackend:
             launched[1] if launched is not None and launched[0] is proc else None,
         )
 
+        stage = getattr(self, "_load_stage", None)
+        if stage is None or stage[0] != pid:
+            stage = (pid, None, 0, 0)
+        if stage[1] == "fit" and not self._healthy:
+            return {"phase": "fit", "bytes_loaded": 0, "bytes_total": bytes_total, "fraction": 0.0}
+
         rss = LlamaCppBackend._read_rss_bytes(pid)
         read = LlamaCppBackend._read_load_bytes(pid)
         if rss is None and read is None:
             return None
-        bytes_loaded = max(rss or 0, read or 0)
+        bytes_loaded = max((rss or 0) - stage[3], (read or 0) - stage[2], 0)
 
         # RSS drops once -ngl offloads to VRAM; keep a high-water mark so progress never regresses.
-        hwm_pid, hwm = getattr(self, "_load_rss_hwm", (None, 0))
-        hwm = bytes_loaded if hwm_pid != pid else max(hwm, bytes_loaded)
-        self._load_rss_hwm = (pid, hwm)
+        # Per stage too: a raw figure from before the baseline must not hold the bar up after it.
+        hwm_key, hwm = getattr(self, "_load_rss_hwm", (None, 0))
+        hwm = bytes_loaded if hwm_key != stage[:2] else max(hwm, bytes_loaded)
+        self._load_rss_hwm = (stage[:2], hwm)
         bytes_loaded = hwm
 
         phase = "ready" if self._healthy else "mmap"
@@ -19310,6 +19326,23 @@ class LlamaCppBackend:
 
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
+    def _note_load_stage(self, pid: int, line: str) -> bool:
+        """Tracks the startup stage for load_progress: the --fit search, then the first weight read,
+        where it records both byte counters as the baseline. True once weights are being read."""
+        if _LOAD_TENSORS_MARK in line:
+            self._load_stage = (
+                pid,
+                "weights",
+                LlamaCppBackend._read_load_bytes(pid) or 0,
+                LlamaCppBackend._read_rss_bytes(pid) or 0,
+            )
+            return True
+        if any(mark in line for mark in _FIT_START_MARKS):
+            stage = getattr(self, "_load_stage", None)
+            if stage is None or stage[0] != pid:
+                self._load_stage = (pid, "fit", 0, 0)
+        return False
+
     def _drain_stdout(self):
         """Drains llama-server stdout in a background thread so a full ~4 KB Windows pipe cannot block it; tees each line to _llama_log_fh when set."""
         startup_len: Optional[int] = None
@@ -19318,6 +19351,9 @@ class LlamaCppBackend:
         proc = self._process
         device_lost_seen = False
         metal_poison = {"draft": False}
+        # Read once: a stage note must never be what stops the drain.
+        stage_pid = getattr(proc, "pid", None)
+        weights_seen = stage_pid is None
         try:
             for line in proc.stdout:
                 line = line.rstrip()
@@ -19329,6 +19365,8 @@ class LlamaCppBackend:
                         head = _STDOUT_HEAD_MAX if startup_len is None else startup_len
                         head = min(head, _STDOUT_HEAD_MAX, len(lines))
                         del lines[head : len(lines) - _STDOUT_TAIL_KEEP]
+                    if not weights_seen and startup_len is None:
+                        weights_seen = self._note_load_stage(stage_pid, line)
                     # Only readiness lines wake the probe; waking per tensor-load line spins startup.
                     line_lower = line.lower()
                     ready = "server is listening" in line_lower or "model loaded" in line_lower

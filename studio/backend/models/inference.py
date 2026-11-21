@@ -2386,9 +2386,10 @@ class LoadProgressResponse(BaseModel):
     phase: Optional[str] = Field(
         None,
         description = (
-            "Load phase: 'mmap' (weights paging into RAM via mmap), "
-            "'ready' (llama-server reported healthy), or null when no "
-            "load is in flight."
+            "Load phase: 'fit' (llama-server's --fit is searching for a layer "
+            "placement and reads no weights yet), 'mmap' (weights paging into "
+            "RAM via mmap), 'ready' (llama-server reported healthy), or null "
+            "when no load is in flight."
         ),
     )
     bytes_loaded: int = Field(

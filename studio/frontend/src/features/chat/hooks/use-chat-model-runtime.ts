@@ -3359,6 +3359,17 @@ export function useChatModelRuntime() {
               }
               return;
             }
+            if (prog.phase === "fit") {
+              // The placement search reads no weights, so there is no byte count or rate to show.
+              mmapSamples.length = 0;
+              const label = "Finding a GPU layer split that fits in memory.";
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({ percent: 0, label, phase: "starting" });
+              } else {
+                toast(null, { id: toastId, ...modelLoadToastOptions(renderLoadDescription("Starting model…", label)) });
+              }
+              return;
+            }
             if (prog.bytes_total <= 0) return;
             // Decimal GB to match the file size Hugging Face reports.
             const loadedGb = prog.bytes_loaded / 1e9;

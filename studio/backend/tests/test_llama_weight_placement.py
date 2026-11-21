@@ -320,6 +320,74 @@ def test_no_load_signal_reports_no_figure(tmp_path, monkeypatch):
     assert inst.load_progress() is None
 
 
+def test_fit_probe_reads_are_not_weight_progress(tmp_path, monkeypatch):
+    """--fit parses the GGUF header once per placement probe. Those reads, and the shared
+    libraries already in RssFile, must not show as weights loaded."""
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 30, "rss": 200}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: counters["rss"])
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: counters["read"])
+    )
+    pid = inst._process.pid
+    log = [
+        "0.00.244.400 I cmn  common_fit_a: fitting params to device memory ...",
+        "0.00.244.417 I common_params_fit_impl: getting device memory data for initial parameters:",
+        "0.12.606.382 I common_fit_params: successfully fit params to free device memory",
+    ]
+    for line in log:
+        assert inst._note_load_stage(pid, line) is False
+    counters["read"] = 450  # every probe re-read the header
+    assert inst.load_progress() == {
+        "phase": "fit",
+        "bytes_loaded": 0,
+        "bytes_total": 1000,
+        "fraction": 0.0,
+    }
+
+    line = "0.12.758.987 I load_tensors: loading model tensors, this can take a while... (load_mode = mmap)"
+    assert inst._note_load_stage(pid, line) is True
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 0)
+    counters["rss"] = 200 + 600  # weights paging in through mmap
+    assert inst.load_progress()["bytes_loaded"] == 600
+
+
+def test_load_without_fit_counts_from_the_first_weight_read(tmp_path, monkeypatch):
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 20, "rss": 200}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: counters["rss"])
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: counters["read"])
+    )
+    # Before the marker nothing is subtracted, as before.
+    assert inst.load_progress()["bytes_loaded"] == 200
+    inst._note_load_stage(
+        inst._process.pid,
+        "I load_tensors: loading model tensors, this can take a while... (load_mode = none)",
+    )
+    # The raw 200 seen before the marker is libraries, not weights: it must not hold the bar up.
+    assert inst.load_progress()["bytes_loaded"] == 0
+    counters["read"] = 20 + 700  # --load-mode none reads the weights with read()
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 700)
+
+
+def test_a_stage_from_an_earlier_process_is_ignored(tmp_path, monkeypatch):
+    """Each retry is a new llama-server: a finished one's fit stage or baseline must not apply."""
+    inst = _fake_load(tmp_path, 1000)
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 300))
+    monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: 0))
+    inst._load_stage = (inst._process.pid + 1, "fit", 0, 0)
+    assert inst.load_progress()["phase"] == "mmap"
+    inst._load_stage = (inst._process.pid + 1, "weights", 0, 250)
+    assert inst.load_progress()["bytes_loaded"] == 300
+
+
 def test_each_os_reads_its_own_load_counter(monkeypatch):
     """Windows: psutil read bytes. macOS: the larger of disk bytes read (a cold memory-mapped Metal
     load) and physical footprint (a copy into Metal or CPU buffers); RSS stays at ~20% of a Metal load."""
