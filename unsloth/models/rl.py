@@ -5406,6 +5406,138 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
     return outputs
 
 
+# Gated DeltaNet calls TRL >= 1.17 routes along each sample's path in a prefix-trie row (see _patch_tree_gdn).
+_ASYNC_GRPO_TREE_GDN_COUNTS = {"conv": 0, "chunk": 0}
+_TREE_GDN_NAMES = ("causal_conv1d_fn", "torch_chunk_gated_delta_rule")
+
+
+def _tree_gdn_callers(model):
+    # The functions that look up causal_conv1d_fn / torch_chunk_gated_delta_rule as globals, reached from each module
+    # class's forward through its wrappers. Unsloth's compiled modeling files define their own copies of these
+    # forwards, and import transformers' __name__, so `type(model).forward.__module__` names the stock module while
+    # the layers read the compiled one.
+    callers, seen_types, seen = [], set(), set()
+    for module in model.modules():
+        if type(module) in seen_types:
+            continue
+        seen_types.add(type(module))
+        todo = [(getattr(type(module), "forward", None), 0)]
+        while todo:
+            fn, depth = todo.pop()
+            fn = getattr(fn, "__func__", fn)
+            if not isinstance(fn, types.FunctionType) or id(fn) in seen:
+                continue
+            seen.add(id(fn))
+            if any(name in fn.__code__.co_names for name in _TREE_GDN_NAMES):
+                callers.append(fn)
+            if depth >= 4:
+                continue
+            for attr in ("__wrapped__", "_unsloth_undisabled", "_torchdynamo_orig_callable"):
+                todo.append((getattr(fn, attr, None), depth + 1))
+            for cell in fn.__closure__ or ():
+                try:
+                    todo.append((cell.cell_contents, depth + 1))
+                except ValueError:
+                    pass
+    return callers
+
+
+def _patch_tree_gdn_namespace(space, tree_conv, tree_chunk):
+    # TRL's patch_tree_gdn wrappers, on a given global namespace. No functools.wraps: Unsloth's block-compile
+    # adapters read the hub kernel's forwarded keywords through __wrapped__, and those drop the tree.
+    conv, chunk = (space.get(name) for name in _TREE_GDN_NAMES)
+    if not callable(conv) or not callable(chunk):
+        return False
+    if getattr(conv, "_unsloth_tree_gdn", False) and getattr(chunk, "_unsloth_tree_gdn", False):
+        return True
+
+    @torch.compiler.disable
+    def causal_conv1d_fn(
+        hidden_states,
+        weight,
+        bias = None,
+        activation = None,
+        **kwargs,
+    ):
+        if "tree_segment_parents" not in kwargs:
+            return conv(hidden_states, weight, bias, activation = activation, **kwargs)
+        _ASYNC_GRPO_TREE_GDN_COUNTS["conv"] += 1
+        return tree_conv(hidden_states, weight, bias, activation, kwargs, conv)
+
+    @torch.compiler.disable
+    def torch_chunk_gated_delta_rule(
+        query,
+        key,
+        value,
+        g,
+        beta,
+        use_qk_l2norm_in_kernel = False,
+        **kwargs,
+    ):
+        if "tree_segment_parents" not in kwargs:
+            return chunk(
+                query,
+                key,
+                value,
+                g = g,
+                beta = beta,
+                use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel,
+                **kwargs,
+            )
+        _ASYNC_GRPO_TREE_GDN_COUNTS["chunk"] += 1
+        out = tree_chunk(query, key, value, g, beta, kwargs, use_qk_l2norm_in_kernel)
+        return out, None
+
+    for fn in (causal_conv1d_fn, torch_chunk_gated_delta_rule):
+        fn._unsloth_tree_gdn = True
+    space["causal_conv1d_fn"] = causal_conv1d_fn
+    space["torch_chunk_gated_delta_rule"] = torch_chunk_gated_delta_rule
+    return True
+
+
+def _unsloth_patch_tree_gdn(original):
+    # TRL >= 1.17 patch_tree_gdn(model) patches sys.modules[type(model).forward.__module__]. A PEFT model names
+    # peft.peft_model (so TRL refuses every LoRA hybrid), and an Unsloth-compiled model names transformers' module
+    # while its gated DeltaNet layers read the compiled one (so the scan would silently run across samples).
+    # Patch the namespace each layer actually reads instead.
+    def patch_tree_gdn(model):
+        target = model.get_base_model() if hasattr(model, "get_base_model") else model
+        try:
+            stock = bool(original(target))
+        except Exception:
+            stock = False
+        callers = _tree_gdn_callers(target)
+        if not callers:
+            return stock
+        # TRL >= 1.18 trl.kernels; TRL 1.17 next to its packing module.
+        errors = []
+        for name in (
+            "trl.kernels.tree_gated_delta_rule",
+            original.__module__.rsplit(".", 1)[0] + ".tree_gated_delta_rule",
+        ):
+            try:
+                kernels = importlib.import_module(name)
+                tree_conv = kernels.tree_causal_conv1d
+                tree_chunk = kernels.tree_chunk_gated_delta_rule
+                break
+            except Exception as error:
+                errors.append(f"{name}: {error}")
+        else:
+            logger.info(
+                f"Unsloth: TRL's tree gated DeltaNet kernels are unavailable: {'; '.join(errors)}"
+            )
+            return False
+        spaces = []
+        for fn in callers:
+            if all(fn.__globals__ is not space for space in spaces):
+                spaces.append(fn.__globals__)
+        return all(_patch_tree_gdn_namespace(space, tree_conv, tree_chunk) for space in spaces)
+
+    patch_tree_gdn._unsloth_async_grpo_patched = True
+    patch_tree_gdn._unsloth_original = original
+    return patch_tree_gdn
+
+
 def _unsloth_async_grpo_lm_head(
     original,
     flag,
@@ -5800,6 +5932,8 @@ def patch_trl_async_grpo():
         return original_create(model_id, *args, **kwargs)
 
     async_module.create_model_from_path = create_model_from_path
+    if callable(getattr(async_module, "patch_tree_gdn", None)):
+        async_module.patch_tree_gdn = _unsloth_patch_tree_gdn(async_module.patch_tree_gdn)
     tree_attention = getattr(async_module, "TREE_ATTENTION", None)
     for name, flag in heads:
         setattr(
