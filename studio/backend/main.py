@@ -2610,6 +2610,9 @@ async def health_check(request: Request, detect_hardware: bool = False):
                 pass
         # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
         authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
+        # The detected backend, not a reason: a Chat only Mac serves MLX models when its MLX stack
+        # works, and the same no_torch reason covers one without (macOS 13, Python 3.9, broken).
+        authed["mlx_inference"] = _hw_module.DEVICE == _hw_module.DeviceType.MLX
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.

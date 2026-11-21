@@ -46,6 +46,9 @@ interface PlatformState {
   videoCpuOptIn: boolean;
   // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
   cpuTraining: boolean;
+  // authed /api/health mlx_inference: the detected backend is MLX, so MLX models load. Null on an
+  // older backend that does not send it; MLX checks then fall back to chatOnlyReason.
+  mlxInference: boolean | null;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
@@ -85,6 +88,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnlyHint: null,
   videoCpuOptIn: false,
   cpuTraining: false,
+  mlxInference: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -273,6 +277,7 @@ async function readHealth(
         chat_only_reason?: string | null;
         video_cpu_opt_in?: boolean;
         cpu_training?: boolean;
+        mlx_inference?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -354,6 +359,8 @@ async function readHealth(
             : data.video_cpu_opt_in === true,
         cpuTraining:
           data.cpu_training === undefined ? previous.cpuTraining : data.cpu_training === true,
+        mlxInference:
+          data.mlx_inference === undefined ? previous.mlxInference : data.mlx_inference === true,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

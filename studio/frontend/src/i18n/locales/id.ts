@@ -6235,7 +6235,7 @@ export const id = {
     checking: "Memeriksa...",
     installPrompt: "Untuk menginstal Unsloth, klik Mulai.",
     getStarted: "Mulai",
-    chatOnly: "Hanya chat (GGUF): instalasi lebih kecil, tanpa pelatihan",
+    chatOnly: "Hanya chat: instalasi lebih kecil, tanpa pelatihan",
     installLocation: "Lokasi instalasi:",
     changeLocation: "Ubah",
     useDefaultLocation: "Gunakan default",

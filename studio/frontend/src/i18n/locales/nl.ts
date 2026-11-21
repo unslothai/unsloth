@@ -6291,7 +6291,7 @@ export const nl = {
     checking: "Controleren...",
     installPrompt: "Klik op Aan de slag om Unsloth te installeren.",
     getStarted: "Aan de slag",
-    chatOnly: "Alleen chat (GGUF): kleinere installatie, geen training",
+    chatOnly: "Alleen chat: kleinere installatie, geen training",
     installLocation: "Installatielocatie:",
     changeLocation: "Wijzigen",
     useDefaultLocation: "Standaard gebruiken",

@@ -5960,7 +5960,7 @@ export const th = {
     checking: "กำลังตรวจสอบ...",
     installPrompt: "หากต้องการติดตั้ง Unsloth ให้คลิก “เริ่มต้นใช้งาน”",
     getStarted: "เริ่มต้นใช้งาน",
-    chatOnly: "แชทเท่านั้น (GGUF): ติดตั้งขนาดเล็กกว่า ไม่มีการเทรน",
+    chatOnly: "แชทเท่านั้น: ติดตั้งขนาดเล็กกว่า ไม่มีการเทรน",
     installLocation: "ตำแหน่งที่ติดตั้ง:",
     changeLocation: "เปลี่ยน",
     useDefaultLocation: "ใช้ค่าเริ่มต้น",

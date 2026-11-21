@@ -481,6 +481,8 @@ export const ModelInspector = memo(function ModelInspector({
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  // A Chat only Mac still runs MLX models when its MLX stack works.
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -593,28 +595,30 @@ export const ModelInspector = memo(function ModelInspector({
   const audioPage =
     mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
   const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
+  // A precision folder downloads as it loads, so it need not be on device.
+  const isMlx =
+    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
+  const mlxRunsHere = isMlx && deviceType === "mac" && mlxInference === true;
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
     mediaRuntime: runsOnMediaRuntime,
     nonGgufRuntimeAvailable:
-      !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+      (!chatOnlyMeasured || mlxRunsHere) &&
+      unslothSupport.status !== "unsupported",
   });
   const runAction =
     runEligible && onRun
       ? (selection: HubModelRunSelection) =>
           onRun(selection, audioPage ? "audio" : mediaPage)
       : undefined;
-  // A precision folder downloads as it loads, so it need not be on device.
-  const isMlx =
-    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
   const precisionRunAction =
     isMlx &&
     onRun &&
     !isDataset &&
     !isEmbeddingOnly(model) &&
     !runsOnMediaRuntime &&
-    !chatOnlyMeasured &&
+    (!chatOnlyMeasured || mlxRunsHere) &&
     unslothSupport.status !== "unsupported"
       ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
@@ -880,7 +884,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
-          chatOnly={chatOnly}
+          chatOnly={chatOnly && !mlxRunsHere}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />

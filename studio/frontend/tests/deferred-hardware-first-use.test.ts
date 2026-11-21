@@ -158,24 +158,44 @@ test("the real route guard keeps hover preloads cold and starts detection on nav
 test("auto-load keeps cached non-GGUF models while detection is deferred", () => {
   reset();
   const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
-  const lift = (name: string) => {
-    const match = new RegExp(`function ${name}\\([^)]*\\): boolean \\{([\\s\\S]*?)\\n\\}`).exec(adapterSource);
+  const lift = (name: string, param: string) => {
+    const match = new RegExp(`function ${name}\\(${param}[^)]*\\): boolean \\{([\\s\\S]*?)\\n\\}`).exec(adapterSource);
     assert.ok(match, `${name} moved`);
-    return new Function("usePlatformStore", "isGgufLocalRow", "isMlxId", "row", match[1])
-      .bind(null, usePlatformStore, (row: { path: string }) => row.path.endsWith(".gguf"), () => false);
+    return new Function("usePlatformStore", "isGgufLocalRow", "isMlxId", param, match[1])
+      .bind(
+        null,
+        usePlatformStore,
+        (row: { path: string }) => row.path.endsWith(".gguf"),
+        (id: string) => id.toLowerCase().includes("mlx"),
+      );
   };
-  const cachedModelsRun = lift("cachedModelsRunOnThisPlatform");
-  const runsHere = lift("runsOnThisPlatform");
+  const cachedModelRuns = lift("cachedModelRunsOnThisPlatform", "repo");
+  const runsHere = lift("runsOnThisPlatform", "row");
   const safetensors = { id: "org/model", path: "/models/org/model" };
+  const mlxRepo = { repo_id: "mlx-community/Qwen2.5-0.5B-Instruct-4bit" };
+  const mlxRow = { id: mlxRepo.repo_id, path: "/models/qwen-mlx" };
 
   usePlatformStore.setState({ fetched: true, detectionDeferred: true, chatOnly: true, deviceType: "linux" });
-  assert.equal(cachedModelsRun(), true);
+  assert.equal(cachedModelRuns({ repo_id: "org/model" }), true);
   assert.equal(runsHere(safetensors), true);
 
   usePlatformStore.setState({ detectionDeferred: false });
-  assert.equal(cachedModelsRun(), false);
+  assert.equal(cachedModelRuns({ repo_id: "org/model" }), false);
   assert.equal(runsHere(safetensors), false);
   assert.equal(runsHere({ id: "org/model-GGUF", path: "/models/m.gguf" }), true);
+
+  // A Chat only Mac keeps its MLX models only when the backend reports MLX inference.
+  usePlatformStore.setState({ deviceType: "mac", mlxInference: true });
+  assert.equal(cachedModelRuns(mlxRepo), true);
+  assert.equal(cachedModelRuns({ repo_id: "org/model" }), false);
+  assert.equal(runsHere(mlxRow), true);
+  usePlatformStore.setState({ mlxInference: false });
+  assert.equal(cachedModelRuns(mlxRepo), false);
+  assert.equal(runsHere(mlxRow), false);
+  // An older backend sends no mlx_inference: local MLX rows stay, cached ones stay hidden.
+  usePlatformStore.setState({ mlxInference: null });
+  assert.equal(cachedModelRuns(mlxRepo), false);
+  assert.equal(runsHere(mlxRow), true);
 });
 
 test("a deferred reply names the server platform and is re-read until measured", async () => {

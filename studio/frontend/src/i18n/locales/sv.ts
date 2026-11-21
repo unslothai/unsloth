@@ -6073,7 +6073,7 @@ export const sv = {
     checking: "Kontrollerar...",
     installPrompt: "Klicka på Kom igång för att installera Unsloth.",
     getStarted: "Kom igång",
-    chatOnly: "Endast chatt (GGUF): mindre installation, ingen träning",
+    chatOnly: "Endast chatt: mindre installation, ingen träning",
     installLocation: "Installationsplats:",
     changeLocation: "Ändra",
     useDefaultLocation: "Använd standard",

@@ -147,10 +147,16 @@ test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
   assert.equal(isServedByMlx(false, "mac", null), true);
   assert.equal(isServedByMlx(true, "mac", null), false);
   assert.equal(isServedByMlx(false, "cuda", null), false);
-  // A Chat only Mac installs MLX and serves chat on it.
-  assert.equal(isServedByMlx(false, "mac", "no_torch"), true);
+  // A Chat only Mac reports no_torch with and without a working MLX stack; mlx_inference decides.
+  assert.equal(isServedByMlx(false, "mac", "no_torch", true), true);
+  assert.equal(isServedByMlx(false, "mac", "no_torch", false), false);
+  assert.equal(isServedByMlx(false, "mac", null, false), false);
+  assert.equal(isServedByMlx(true, "mac", "no_torch", true), false);
+  assert.equal(isServedByMlx(false, "cuda", null, true), false);
+  // An older backend sends no mlx_inference, so the reason answers.
   for (const reason of [
     "mlx_unavailable",
+    "no_torch",
     "intel_mac",
     "rosetta",
     "detection_failed",

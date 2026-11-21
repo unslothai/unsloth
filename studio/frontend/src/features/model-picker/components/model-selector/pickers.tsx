@@ -4467,6 +4467,8 @@ export function HubModelPicker({
   );
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  // A Chat only Mac loads MLX only when its MLX stack works; null is an older backend.
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
   const hostClass = useHostClass();
@@ -5389,7 +5391,7 @@ export function HubModelPicker({
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
-              (isMac && localModelIsMlx(m))) &&
+              (isMac && mlxInference !== false && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m) &&
             (!rowFilter ||
@@ -5412,6 +5414,7 @@ export function HubModelPicker({
       loadTimes,
       localQuery,
       chatOnly,
+      mlxInference,
       task,
       catalog,
       activeCatalogArtifactIds,
@@ -5619,8 +5622,14 @@ export function HubModelPicker({
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
-  // Empty-state logic must use this or the picker can go blank.
-  const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
+  // Empty-state logic must use this or the picker can go blank. A Chat only Mac whose MLX stack
+  // works still lists its cached MLX repos.
+  const visibleCachedModelRows =
+    chatOnly && !task
+      ? isMac && mlxInference === true
+        ? visibleCachedModels.filter((c) => isMlxId(c.repo_id, cachedRepoHasMlxTag(c)))
+        : []
+      : visibleCachedModels;
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
     const alreadyListed = new Set(

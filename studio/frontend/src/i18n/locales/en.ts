@@ -5884,7 +5884,7 @@ export const en = {
     checking: "Checking...",
     installPrompt: "To install Unsloth, click Get Started.",
     getStarted: "Get Started",
-    chatOnly: "Chat only (GGUF): smaller install, no training",
+    chatOnly: "Chat only: smaller install, no training",
     installLocation: "Install location:",
     changeLocation: "Change",
     useDefaultLocation: "Use default",

@@ -5841,7 +5841,7 @@ export const hi = {
     checking: "जाँच हो रही है...",
     installPrompt: "Unsloth इंस्टॉल करने के लिए, शुरू करें पर क्लिक करें।",
     getStarted: "शुरू करें",
-    chatOnly: "सिर्फ़ चैट (GGUF): छोटा इंस्टॉल, ट्रेनिंग नहीं",
+    chatOnly: "सिर्फ़ चैट: छोटा इंस्टॉल, ट्रेनिंग नहीं",
     installLocation: "इंस्टॉल स्थान:",
     changeLocation: "बदलें",
     useDefaultLocation: "डिफ़ॉल्ट उपयोग करें",

@@ -5911,7 +5911,7 @@ export const zhTW = {
     checking: "正在檢查…",
     installPrompt: "若要安裝 Unsloth，請按一下「開始使用」。",
     getStarted: "開始使用",
-    chatOnly: "僅聊天（GGUF）：安裝較小，不含訓練功能",
+    chatOnly: "僅聊天：安裝較小，不含訓練功能",
     installLocation: "安裝位置：",
     changeLocation: "變更",
     useDefaultLocation: "使用預設值",
