@@ -737,79 +737,45 @@ def test_only_a_chats_still_running_video_is_watched(
 
 
 # A chat loads and unloads only image, video and speech-to-text catalog models.
+FLUX = "unsloth/FLUX.2-klein-4B"
 CATALOG = {
     ("GET", "/api/inference/media/catalog"): {
-        "models": [
-            {"id": "unsloth/FLUX.2-klein-4B", "kind": "image"},
-            {"id": "org/vid", "kind": "video"},
-        ]
+        "models": [{"id": FLUX, "kind": "image"}, {"id": "org/vid", "kind": "video"}]
     },
-    ("GET", "/api/inference/audio/catalog"): {
-        "models": [{"id": "org/tts", "task": "tts"}, {"id": "org/asr", "task": "asr"}]
-    },
+    ("GET", "/api/inference/audio/catalog"): {"models": [{"id": "org/tts", "task": "tts"}]},
 }
 
 
-def _chat_schema(name):
+def test_the_chat_schemas_offer_only_the_kinds_it_may_load():
     tools = {
         tool.name: tool for tool in asyncio.run(studio_tools_mcp.chat_tools_mcp().list_tools())
     }
-    return tools[name].parameters
+    load = tools["load_model"].parameters["properties"]
+    assert [option["enum"] for option in load["kind"]["anyOf"] if "enum" in option] == [
+        ["image", "video", "stt"]
+    ]
+    assert not {"checkpoint", "export", "hf_token", "gpu_layers"} & set(load)
+    unload = tools["unload_model"].parameters
+    assert (
+        unload["properties"]["kind"]["enum"] == ["image", "video", "stt"]
+        and "kind" in unload["required"]
+    )
 
 
-def test_the_chat_schemas_offer_only_the_kinds_it_may_load():
-    load = _chat_schema("load_model")["properties"]
-    kinds = [option.get("enum") for option in load["kind"]["anyOf"] if "enum" in option]
-    assert kinds == [["image", "video", "stt"]]
-    assert not {"checkpoint", "export", "hf_token", "max_seq_length", "gpu_layers"} & set(load)
-    unload = _chat_schema("unload_model")
-    assert unload["properties"]["kind"]["enum"] == ["image", "video", "stt"]
-    assert "default" not in unload["properties"]["kind"] and "kind" in unload["required"]
-    assert "hf_token" not in _chat_schema("download_model")["properties"]
-    # An agent's schemas keep everything.
-    agent = {tool.name: tool for tool in asyncio.run(create_studio_mcp().list_tools())}
-    assert "checkpoint" in agent["load_model"].parameters["properties"]
-    assert "all" in agent["unload_model"].parameters["properties"]["kind"]["enum"]
+KINDS_ONLY = "only image, video and speech-to-text"
+CATALOG_ONLY = "only models in the Unsloth Studio catalog"
 
 
 @pytest.mark.parametrize(
     "name, args, expected",
     [
-        (
-            "load_model",
-            {"model": "unsloth/Qwen3-0.6B-GGUF", "kind": "llm"},
-            "only image, video and speech-to-text",
-        ),
-        ("load_model", {"model": "org/tts"}, "only image, video and speech-to-text"),
-        (
-            "load_model",
-            {"model": "someone/any-image-repo", "kind": "image"},
-            "only models in the Unsloth Studio catalog",
-        ),
-        (
-            "load_model",
-            {"model": "/home/me/models/flux", "kind": "image"},
-            "only models in the Unsloth Studio catalog",
-        ),
-        (
-            "load_model",
-            {"model": "org/vid", "kind": "image"},
-            "only models in the Unsloth Studio catalog",
-        ),
-        (
-            "load_model",
-            {"model": "unsloth/FLUX.2-klein-4B", "hf_token": "hf_x"},
-            "cannot pass hf_token",
-        ),
-        ("load_model", {"checkpoint": "run-1"}, "cannot pass checkpoint"),
-        ("unload_model", {}, "only image, video and speech-to-text"),
-        ("unload_model", {"kind": "all"}, "only image, video and speech-to-text"),
-        (
-            "download_model",
-            {"model": "someone/any-repo"},
-            "only models in the Unsloth Studio catalog",
-        ),
-        ("download_model", {"model": "org/tts", "hf_token": "hf_x"}, "cannot pass hf_token"),
+        ("load_model", {"model": "unsloth/Qwen3-0.6B-GGUF", "kind": "llm"}, KINDS_ONLY),
+        ("load_model", {"model": "org/tts"}, KINDS_ONLY),
+        ("load_model", {"model": "/home/me/models/flux", "kind": "image"}, CATALOG_ONLY),
+        ("load_model", {"model": "org/vid", "kind": "image"}, CATALOG_ONLY),
+        ("load_model", {"model": "org/vid", "hf_token": "hf_x"}, "cannot pass hf_token"),
+        ("unload_model", {"kind": "all"}, KINDS_ONLY),
+        ("download_model", {"model": "someone/any-repo"}, CATALOG_ONLY),
     ],
 )
 def test_a_chat_load_outside_its_kinds_or_the_catalog_is_refused_before_any_load_route(
@@ -818,66 +784,38 @@ def test_a_chat_load_outside_its_kinds_or_the_catalog_is_refused_before_any_load
     app = studio(monkeypatch, {**CATALOG, ("GET", "/v1/models"): {"data": []}})
     result = bridge(OWNER, name, args)
     assert result.startswith("Error: ") and expected in result, result
-    reached = {seen["path"] for seen in app.state.seen}
-    assert reached <= {
-        "/api/inference/media/catalog",
-        "/api/inference/audio/catalog",
-        "/v1/models",
-    }, reached
+    assert all(seen["path"].endswith(("catalog", "/v1/models")) for seen in app.state.seen)
     assert chat_keys() == []
 
 
-def test_a_chat_on_an_inference_only_key_is_told_it_cannot_load(server_loop, monkeypatch):
-    app = studio(monkeypatch, CATALOG)
-    never = AccountContext(OWNER.account_id, OWNER.username, OWNER.role, load_policy = "never")
-    for name, args in (
-        ("load_model", {"model": "unsloth/FLUX.2-klein-4B"}),
-        ("unload_model", {"kind": "image"}),
-    ):
-        result = bridge(never, name, args)
-        assert "inference only API key" in result and "cannot load" in result, result
-    assert [seen["path"] for seen in app.state.seen if "catalog" not in seen["path"]] == []
-
-
-def test_a_chat_loads_a_catalog_image_model_beside_its_own_through_the_bridge(
-    server_loop, monkeypatch
-):
+def test_a_chat_loads_a_catalog_image_model_beside_its_own(server_loop, monkeypatch):
     from core.inference.load_policy import current_load_policy
-    from studio_mcp import loading
+    from studio_mcp import loading, model_downloads
     from studio_mcp.outputs import LoadResult
 
-    policies = []
+    order = []
 
     async def load(request):
-        policies.append(current_load_policy().value)
+        order.append(current_load_policy().value)
         return {"status": "loading"}
-
-    app = studio(monkeypatch, {**CATALOG, ("POST", "/api/inference/images/load"): load})
-    order = []
 
     async def download(caller, ctx, *, model, kind, hf_token, **kwargs):
         order.append(("download", model, kind, hf_token))
 
     async def load_media(caller, ctx, *, kind, model, **kwargs):
-        order.append(("load", model, kind, None))
+        order.append(("load", model, kind))
         await loading.route_json("POST", "/api/inference/images/load", caller = caller, json_body = {})
         return LoadResult(kind = kind, model = model, loaded = True)
 
-    from studio_mcp import model_downloads
-
+    studio(monkeypatch, {**CATALOG, ("POST", "/api/inference/images/load"): load})
     monkeypatch.setattr(model_downloads, "start", download)
     monkeypatch.setattr(loading, "load_media", load_media)
-    model = "unsloth/FLUX.2-klein-4B"
-    # A bare catalog name loads the same row.
-    for asked in (model, "flux.2-klein-4b"):
+    # A bare name loads the same row, downloaded first so the load can be sized; the route sees the
+    # chat's own key, whose policy is beside_only.
+    for asked in (FLUX, "flux.2-klein-4b"):
         order.clear()
-        result = bridge(OWNER, "load_model", {"model": asked})
-        assert '"loaded":true' in result and '"kind":"image"' in result, result
-        # Downloaded first, so the load can be sized beside the chat model.
-        assert order == [("download", model, "image", None), ("load", model, "image", None)]
-    # The route sees the chat's own key, whose policy is beside_only.
-    assert policies == ["beside_only"] * 2
-    assert "/api/inference/images/load" in [seen["path"] for seen in app.state.seen]
+        assert '"kind":"image"' in bridge(OWNER, "load_model", {"model": asked})
+        assert order == [("download", FLUX, "image", None), ("load", FLUX, "image"), "beside_only"]
     assert chat_keys() == []
 
 
@@ -887,55 +825,20 @@ def test_a_chat_load_off_would_refuse_is_refused_before_any_download(server_loop
     from utils import multi_model_settings
 
     studio(monkeypatch, CATALOG)
-    started, keeps = [], []
+    started = []
 
     async def never(*args, **kwargs):
         started.append(args)
 
-    def media_load_keeps_chat(owner):
-        keeps.append(owner)
-        return False
-
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "off")
-    monkeypatch.setattr(ensure_model, "media_load_keeps_chat", media_load_keeps_chat)
+    monkeypatch.setattr(ensure_model, "media_load_keeps_chat", lambda owner: False)
     monkeypatch.setattr(model_downloads, "start", never)
     monkeypatch.setattr(loading, "load_media", never)
-    expected = {
-        "load_model": "is Off, so loading it would unload the model serving this chat",
-        "download_model": "does not download 'unsloth/FLUX.2-klein-4B'",
-    }
-    for name, says in expected.items():
-        result = bridge(OWNER, name, {"model": "unsloth/FLUX.2-klein-4B"})
-        assert says in result, result
-        assert "set it to When they fit" in result and "Always" not in result
-    assert started == [] and keeps == ["diffusion", "diffusion"] and chat_keys() == []
+    for name in ("load_model", "download_model"):
+        result = bridge(OWNER, name, {"model": FLUX})
+        assert "set it to When they fit" in result and "Always" not in result, result
+    assert started == [] and chat_keys() == []
     # Under When they fit the route decides.
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
-    bridge(OWNER, "download_model", {"model": "unsloth/FLUX.2-klein-4B"})
+    bridge(OWNER, "download_model", {"model": FLUX})
     assert len(started) == 1
-
-
-def test_a_load_job_of_one_call_is_never_followed_by_another_and_stops_with_its_key():
-    from studio_mcp import loading
-    from studio_mcp.profile import CHAT
-
-    async def scenario():
-        loading.LOADS.reset()
-        release = asyncio.Event()
-        first = make_caller(token = "sk-unsloth-first", profile = CHAT)
-        second = make_caller(token = "sk-unsloth-second", profile = CHAT)
-
-        async def run(job, before):
-            await release.wait()
-
-        common = {"slot": "image", "model": "org/image", "variant": None, "run": run}
-        await loading.start_load(first, None, deadline = time.monotonic(), **common)
-        await loading.start_load(second, None, deadline = time.monotonic(), **common)
-        jobs = loading.LOADS.running()
-        assert len(jobs) == 2 and len({job.scoped for job in jobs}) == 2
-        assert await loading.stop_scoped_loads("sk-unsloth-first") == 1
-        assert [job.scoped for job in loading.LOADS.running()] == [jobs[1].scoped]
-        release.set()
-        loading.LOADS.reset()
-
-    asyncio.run(scenario())

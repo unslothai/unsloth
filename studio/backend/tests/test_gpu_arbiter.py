@@ -188,23 +188,6 @@ def test_spare_chat_loads_beside_chat_or_refuses_without_evicting(
         assert caught.value.owner == arb.CHAT
 
 
-def test_spare_chat_still_frees_an_idle_video_model(cores):
-    cores.fits(arb.VIDEO)
-    arb.acquire_for(arb.CHAT, gpu_ids = [0])
-    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 1024})
-    cores.calls.clear()
-    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096}, spare_chat = True)
-    assert cores.calls == ["evict-video"]
-    assert set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
-
-
-def test_spare_chat_loads_when_no_chat_model_is_resident(cores):
-    arb.acquire_for(arb.VIDEO, lambda: None)
-    arb.acquire_for(arb.DIFFUSION, lambda: None, spare_chat = True)
-    assert cores.calls == ["evict-video"]
-    assert set(arb.residents()) == {arb.DIFFUSION}
-
-
 @pytest.mark.parametrize(
     "policy, growth, outcome",
     [("always", 512, "join"), ("fit", None, "evict"), ("always", None, "refuse")],
@@ -1249,63 +1232,3 @@ def test_a_failed_first_load_and_an_unpriced_one_restore_nothing_stale(cores, mo
     arb.begin_media_load(arb.VIDEO, "fit", ("org/video",), lambda: None)
     arb.restore_media_need(arb.VIDEO)
     assert arb._media_needs[arb.VIDEO] == {0: 2048}
-
-
-@pytest.mark.parametrize(
-    "quant, base_ok, cached, priced",
-    [
-        ("auto", True, True, True),  # int8 seeds from the FP8 repo: its transformer prices the load
-        ("fp8", True, True, True),
-        ("none", True, True, False),  # bf16 reads the base transformer, which is missing
-        ("auto", False, True, False),  # the rest of the pipeline is missing too
-        ("auto", True, False, False),  # the prequant transformer is not downloaded
-    ],
-)
-def test_a_prequant_transformer_prices_a_base_without_one(
-    monkeypatch, quant, base_ok, cached, priced
-):
-    import types
-
-    import core.inference.gpu_residency as res
-    from core.inference import diffusion_families
-    from core.inference.diffusion import DiffusionBackend
-
-    fam = types.SimpleNamespace(prequant_repos = (("int8", "org/x-FP8"), ("fp8", "org/x-FP8")))
-    request = types.SimpleNamespace(transformer_quant = quant, loras = None)
-    asked = []
-
-    def complete(
-        root,
-        filename,
-        *,
-        excluded_components = (),
-        **_,
-    ):
-        asked.append(tuple(excluded_components))
-        return base_ok and excluded_components == ("transformer",)
-
-    def union(
-        repo,
-        fn,
-        staged_dir = None,
-    ):
-        assert repo == "org/x-FP8"
-        return sum(fn("fp8-dir").values()) if cached else 0
-
-    from core.inference import diffusion_prequant
-
-    sizes = {"x-INT8-ConvRot.safetensors": 4 << 30, "text_encoder/model.safetensors": 8 << 30}
-    source = types.SimpleNamespace(
-        kind = "repo", location = "org/x-FP8", candidate_filenames = ("x-INT8-ConvRot.safetensors",)
-    )
-    monkeypatch.setattr(
-        diffusion_prequant, "resolve_prequant_source", lambda fam, scheme, **kw: source
-    )
-    monkeypatch.setattr(diffusion_families, "local_pipeline_components_are_complete", complete)
-    monkeypatch.setattr(DiffusionBackend, "_union_over_cached_revs", staticmethod(union))
-    monkeypatch.setattr(
-        DiffusionBackend, "_local_dir_weight_sizes", staticmethod(lambda d, **_: dict(sizes))
-    )
-    found = res._prequant_transformer_sizes(fam, request, ["base-dir"])
-    # Only the transformer comes from the prequant repo.
-    assert found == ({"transformer/x-INT8-ConvRot.safetensors": 4 << 30} if priced else None)

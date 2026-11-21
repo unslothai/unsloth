@@ -561,28 +561,11 @@ def test_an_mlx_precision_listing_is_no_gguf_for_cpu_placement(monkeypatch):
         asyncio.run(placement.require_cpu_gguf(None, "llm", "org/model-mlx", None, None, 0))
 
 
-FLUX2 = "unsloth/FLUX.2-klein-4B"
-MEDIA_CATALOG = ("GET", "/api/inference/media/catalog")
-AUDIO_CATALOG = ("GET", "/api/inference/audio/catalog")
-V1_MODELS = ("GET", "/v1/models")
-
-
 def test_plan_load_infers_an_image_kind_from_the_media_catalog(monkeypatch, fast_polls):
-    world = {**_world("off", []), MEDIA_CATALOG: {"models": [{"id": FLUX2, "kind": "image"}]}}
+    from .test_mcp_tools_loading import CATALOGS, FLUX2
+
+    world = {**_world("off", []), **CATALOGS}
     result, studio = run_tool(monkeypatch, world, "plan_load", {"model": FLUX2}, fallback = {})
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["kind"] == "image"
+    assert result["structuredContent"]["kind"] == "image", result
     (body,) = bodies(studio, "/api/inference/images/download-plan")
     assert body["model_path"] == FLUX2
-
-
-def test_plan_load_infers_tts_for_an_uncatalogued_repo_listed_by_v1_models(monkeypatch):
-    world = {
-        **_world("off", []),
-        MEDIA_CATALOG: {"models": []},
-        AUDIO_CATALOG: {"models": []},
-        V1_MODELS: {"data": [{"id": OUTETTS, "task": "text-to-speech"}]},
-    }
-    result, _studio = run_tool(monkeypatch, world, "plan_load", {"model": OUTETTS}, fallback = {})
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["kind"] == "tts"

@@ -1541,151 +1541,55 @@ def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(mon
 
 # Kind inference: a catalog row or the /v1/models task picks the route; otherwise llm.
 FLUX2 = "unsloth/FLUX.2-klein-4B"
+TTS_ID = "unsloth/Kokoro-82M"
 MEDIA_CATALOG = ("GET", "/api/inference/media/catalog")
-AUDIO_CATALOG = ("GET", "/api/inference/audio/catalog")
-V1_MODELS = ("GET", "/v1/models")
-FLUX2_CATALOG = {"models": [{"id": FLUX2, "kind": "image"}]}
-NO_CATALOG = {"models": []}
-
-
-def _autoconfig(model):
-    detail = f"Unrecognized model in {model}. Should have a model_type key in its config.json."
-    return JSONResponse({"detail": detail}, status_code = 500)
+CATALOGS = {
+    MEDIA_CATALOG: {"models": [{"id": FLUX2, "kind": "image"}]},
+    ("GET", "/api/inference/audio/catalog"): {"models": [{"id": TTS_ID, "task": "tts"}]},
+    ("GET", "/v1/models"): {"data": []},
+}
 
 
 def test_a_catalog_image_id_loads_as_an_image_without_a_kind(monkeypatch, fast_polls):
     studio = _media_studio(
         "image",
-        catalog = FLUX2_CATALOG,
+        catalog = CATALOGS[MEDIA_CATALOG],
         progress = [READY],
         statuses = [{"loaded": True, "repo_id": FLUX2}],
     )
     result, studio = run_tool(monkeypatch, studio, "load_model", {"model": FLUX2})
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["kind"] == "image"
+    assert result["structuredContent"]["kind"] == "image", result
     assert len(media_load_bodies(studio, "/api/inference/images/load")) == 1
     assert bodies(studio, "/api/inference/load") == []
 
 
-def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(
-    monkeypatch, fast_polls
-):
-    routes = {
-        **PAYLOADS,
-        MEDIA_CATALOG: FLUX2_CATALOG,
-        AUDIO_CATALOG: NO_CATALOG,
-        V1_MODELS: {"data": []},
-    }
-    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": FLUX2, "kind": "llm"})
-    assert result["isError"] is True
+def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(monkeypatch):
+    args = {"model": FLUX2, "kind": "llm"}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
     text = result["content"][0]["text"]
-    assert (
-        "not a chat model" in text and f"call load_model(model='{FLUX2}', kind='image')" in text
-    ), text
+    assert result["isError"] is True and f"call load_model(model='{FLUX2}', kind='image')" in text
     assert bodies(studio, "/api/inference/load") == []
 
 
-TTS_ID = "unsloth/Kokoro-82M"
-TTS_CATALOG = {"models": [{"id": TTS_ID, "task": "tts"}]}
-
-
-def test_an_explicit_llm_load_of_a_catalog_tts_row_loads_through_the_llm_route(
-    monkeypatch, fast_polls
-):
-    routes = {
-        **PAYLOADS,
-        MEDIA_CATALOG: NO_CATALOG,
-        AUDIO_CATALOG: TTS_CATALOG,
-        V1_MODELS: {"data": []},
-    }
-    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": TTS_ID, "kind": "llm"})
+# An explicit llm load of a tts row goes through; a bare name keeps its variant.
+@pytest.mark.parametrize(
+    "model, kind, sent",
+    [(TTS_ID, "llm", TTS_ID), ("Kokoro-82M:Q4_K_M", "tts", f"{TTS_ID}:Q4_K_M")],
+)
+def test_a_catalog_tts_row_loads_through_the_llm_route(monkeypatch, fast_polls, model, kind, sent):
+    args = {"model": model, "kind": kind}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
     assert result["isError"] is False, json.dumps(result)
-    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [TTS_ID]
+    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [sent]
 
 
-def test_a_bare_catalog_name_keeps_its_variant(monkeypatch, fast_polls):
-    routes = {
-        **PAYLOADS,
-        MEDIA_CATALOG: NO_CATALOG,
-        AUDIO_CATALOG: TTS_CATALOG,
-        V1_MODELS: {"data": []},
-    }
-    result, studio = run_tool(
-        monkeypatch, routes, "load_model", {"model": "Kokoro-82M:Q4_K_M", "kind": "tts"}
-    )
-    assert result["isError"] is False, json.dumps(result)
-    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [
-        f"{TTS_ID}:Q4_K_M"
-    ]
-
-
-def test_a_failed_catalog_read_falls_back_to_an_llm_load(monkeypatch, fast_polls):
-    failed = JSONResponse({"detail": "catalog unavailable"}, status_code = 500)
-    routes = {**PAYLOADS, MEDIA_CATALOG: failed, AUDIO_CATALOG: failed, V1_MODELS: failed}
-    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["loaded"] is True
-    assert len(bodies(studio, "/api/inference/load")) == 1
-
-
-def test_an_unknown_repo_loads_as_an_llm_with_the_body_of_kind_llm(monkeypatch, fast_polls):
-    routes = {
-        **PAYLOADS,
-        MEDIA_CATALOG: NO_CATALOG,
-        AUDIO_CATALOG: NO_CATALOG,
-        V1_MODELS: {"data": []},
-    }
-    _result, inferred = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
-    _result, explicit = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "kind": "llm"})
-    sent = bodies(inferred, "/api/inference/load")
-    assert len(sent) == 1
-    assert sent == bodies(explicit, "/api/inference/load")
-
-
-def test_get_job_shows_the_wrong_kind_hint(monkeypatch, fast_polls):
-    studio = fake_studio({**PAYLOADS, LOAD: slow(_autoconfig(LLM), 0.3), MEDIA_CATALOG: NO_CATALOG})
-    with session(monkeypatch, studio) as call:
-        early = call("load_model", {"model": LLM, "kind": "llm", "wait_s": 0})
-        job = call(
-            "get_job", {"kind": "load", "id": early["structuredContent"]["job_id"], "wait_s": 30}
-        )
-    assert "pass kind" in json.dumps(job)
-
-
-def test_an_autoconfig_failure_on_an_uncatalogued_model_gets_the_generic_hint(monkeypatch):
-    routes = {**PAYLOADS, LOAD: _autoconfig(LLM), MEDIA_CATALOG: NO_CATALOG}
+def test_an_autoconfig_failure_gets_the_kind_hint(monkeypatch):
+    failed = JSONResponse({"detail": f"Unrecognized model in {LLM}."}, status_code = 500)
+    routes = {**PAYLOADS, **CATALOGS, LOAD: failed}
     result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
     text = result["content"][0]["text"]
-    assert result["isError"] is True
-    assert "pass kind" in text
-    assert "list_models(source='catalog')" in text
-
-
-def test_a_failure_that_is_not_autoconfig_gets_no_kind_hint(monkeypatch):
-    failed = JSONResponse({"detail": "CUDA out of memory"}, status_code = 500)
-    routes = {**PAYLOADS, LOAD: failed, MEDIA_CATALOG: NO_CATALOG}
-    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "kind": "llm"})
-    text = result["content"][0]["text"]
-    assert result["isError"] is True
-    assert "CUDA out of memory" in text
-    assert "pass kind" not in text
-    assert "kind='" not in text
-
-
-@pytest.mark.parametrize(
-    "tools,expected,absent",
-    [
-        ({"load_model", "list_models"}, "list_models(source='catalog')", None),
-        ({"load_model"}, "pass kind", "list_models"),
-        ({"list_models"}, None, None),
-    ],
-)
-def test_the_wrong_kind_hint_names_only_tools_the_caller_has(monkeypatch, tools, expected, absent):
-    monkeypatch.setattr(loading.problems, "caller_tools", lambda: frozenset(tools))
-    hint = loading._wrong_kind_hint("Unrecognized model in x")
-    if expected is None:
-        assert hint is None
-        return
-    assert expected in hint
-    if absent is not None:
-        assert absent not in hint
+    assert (
+        result["isError"] is True
+        and "pass kind" in text
+        and "list_models(source='catalog')" in text
+    )

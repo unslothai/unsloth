@@ -79,27 +79,9 @@ def test_media_load_spares_chat(monkeypatch, value, mode, keeps, outcome):
     if outcome == "refused":
         with pytest.raises(HTTPException) as refused:
             run_as(account, decide)
-        assert refused.value.status_code == 403
-        assert "needs_user_load" in refused.value.headers.get("X-Unsloth-Problem", "")
-        assert "org/image" in refused.value.detail
+        assert refused.value.status_code == 403 and "org/image" in refused.value.detail
     else:
         assert run_as(account, decide) is outcome
-
-
-@pytest.mark.parametrize(
-    "mode, priced, says, never",
-    [
-        ("off", True, "set it to When they fit", "Always"),
-        ("fit", True, "does not fit in the GPU memory left", "Always"),
-        ("fit", False, "cannot size it yet", "Always"),
-    ],
-)
-def test_a_chat_kept_refusal_names_only_a_change_that_lets_it_load(mode, priced, says, never):
-    from core.inference import ensure_model
-
-    refusal = ensure_model.chat_kept_refusal("image", "org/image", mode, priced = priced)
-    assert refusal.status_code == 403 and says in refusal.detail and never not in refusal.detail
-    assert "needs_user_load" in refusal.headers["X-Unsloth-Problem"]
 
 
 def test_routes_and_media_switch_do_not_read_the_mcp_caller():

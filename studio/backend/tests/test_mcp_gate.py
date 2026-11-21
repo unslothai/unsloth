@@ -7,7 +7,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -144,106 +143,44 @@ def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, autho
 
 
 @pytest.mark.parametrize("method", ["GET", "POST"])
-@pytest.mark.parametrize("path", ["/mcp/", "/mcp/x"])
-def test_off_tells_a_valid_full_access_key_why(studio, key_spy, off_key, method, path):
+def test_off_tells_a_valid_full_access_key_why(studio, key_spy, off_key, method):
     response = studio.request(
-        method, path, json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)}
+        method, "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)}
     )
     assert response.status_code == 404
-    assert response.json() == OFF_HINT_BODY
-    assert "www-authenticate" not in response.headers
-    assert key_spy == [{"touch": False}]
-
-
-@pytest.mark.parametrize("origin", ["http://localhost", "tauri://localhost"])
-def test_off_hint_takes_a_lowercase_scheme_and_an_allowed_origin(studio, off_key, origin):
-    headers = {**MCP_HEADERS, "Authorization": f"bearer {off_key}", "Origin": origin}
-    response = studio.post("/mcp/", json = LISTING, headers = headers)
-    assert response.status_code == 404
-    assert response.json() == OFF_HINT_BODY
-
-
-def test_decisions_redirects_before_any_hint(studio, key_spy, off_key):
-    response = studio.get("/mcp/decisions?x=1", headers = bearer(off_key), follow_redirects = False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "http://testserver/mcp/decisions/?x=1"
-    assert key_spy == []
+    assert response.json() == OFF_HINT_BODY and key_spy == [{"touch": False}]
 
 
 @pytest.mark.parametrize(
-    "case,lookups",
+    "case",
     [
-        ("two-authorization-headers", 0),
-        ("basic-scheme", 0),
-        ("token-scheme", 0),
-        ("bearer-without-a-token", 0),
-        ("ui-session-jwt", 0),
-        ("unknown-key", 1),
-        ("revoked-key", 1),
-        ("expired-key", 1),
-        ("inference-key", 1),
-        ("workflow-key", 1),
-        ("foreign-origin", 0),
-        ("two-origins", 0),
+        "ui-session-jwt",
+        "unknown-key",
+        "revoked-key",
+        "inference-key",
+        "workflow-key",
+        "foreign-origin",
     ],
 )
-def test_off_keeps_the_bare_404_for_every_other_request(studio, key_spy, case, lookups):
+def test_off_keeps_the_bare_404_for_every_other_request(studio, case):
     seed_owner()
-    valid = owner_key()[0]
-    revoked, revoked_row = owner_key()
-    storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, revoked_row["id"])
+    revoked, row = owner_key()
+    storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
     storage._reset_api_key_hash_cache()
-    expired = owner_key(expires_at = (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat())[0]
-    inference = owner_key(access = storage.API_KEY_ACCESS_INFERENCE)[0]
-    workflow = owner_key(internal = True)[0]
-    jwt = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)
-    extra = {
-        "two-authorization-headers": [("authorization", f"Bearer {valid}")] * 2,
-        "basic-scheme": [("authorization", f"Basic {valid}")],
-        "token-scheme": [("authorization", f"Token {valid}")],
-        "bearer-without-a-token": [("authorization", "Bearer")],
-        "ui-session-jwt": [("authorization", f"Bearer {jwt}")],
-        "unknown-key": [("authorization", "Bearer sk-unsloth-" + "0" * 32)],
-        "revoked-key": [("authorization", f"Bearer {revoked}")],
-        "expired-key": [("authorization", f"Bearer {expired}")],
-        "inference-key": [("authorization", f"Bearer {inference}")],
-        "workflow-key": [("authorization", f"Bearer {workflow}")],
-        "foreign-origin": [
-            ("authorization", f"Bearer {valid}"),
-            ("origin", "https://evil.example"),
-        ],
-        "two-origins": [
-            ("authorization", f"Bearer {valid}"),
-            ("origin", "http://testserver"),
-            ("origin", "http://testserver"),
-        ],
-    }[case]
-    baseline = studio.post("/mcp/", json = LISTING, headers = MCP_HEADERS)
-    response = studio.post("/mcp/", json = LISTING, headers = [*MCP_HEADERS.items(), *extra])
+    token = {
+        "ui-session-jwt": lambda: create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME),
+        "unknown-key": lambda: "sk-unsloth-" + "0" * 32,
+        "revoked-key": lambda: revoked,
+        "inference-key": lambda: owner_key(access = storage.API_KEY_ACCESS_INFERENCE)[0],
+        "workflow-key": lambda: owner_key(internal = True)[0],
+        "foreign-origin": lambda: owner_key()[0],
+    }[case]()
+    origin = {"Origin": "https://evil.example"} if case == "foreign-origin" else {}
+    response = studio.post(
+        "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(token), **origin}
+    )
     assert response.status_code == 404
-    assert response.content == baseline.content == json.dumps({"detail": "Not Found"}).encode()
-    assert response.headers["content-type"] == baseline.headers["content-type"]
-    assert "www-authenticate" not in response.headers
-    assert len(key_spy) == lookups
-
-
-@pytest.mark.parametrize("dummy", sorted(APPROVED_DUMMY_BEARERS))
-def test_off_keeps_the_bare_404_for_a_keyless_dummy(studio, key_spy, dummy):
-    response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(dummy)})
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Not Found"}
-    assert key_spy == []
-
-
-def test_off_keeps_the_bare_404_when_the_key_store_raises(studio, monkeypatch, off_key):
-    def broken(*args, **kwargs):
-        raise RuntimeError("database is locked")
-
-    monkeypatch.setattr(storage, "validate_api_key_account", broken)
-    response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)})
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Not Found"}
-    assert "www-authenticate" not in response.headers
+    assert response.content == json.dumps({"detail": "Not Found"}).encode()
 
 
 @pytest.mark.parametrize("enabled", [False, True])

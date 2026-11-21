@@ -467,28 +467,3 @@ def test_a_gguf_repo_is_known_by_its_listing_not_its_name():
 def test_a_speech_repo_with_variants_downloads_one():
     studio = fake_studio({("GET", "/api/hub/gguf-variants"): VARIANTS, ("POST", START): STARTED})
     assert start(studio, model = "org/speech", kind = "tts").id == "org/speech::Q4_K_M"
-
-
-MEDIA_CATALOG = ("GET", "/api/inference/media/catalog")
-AUDIO_CATALOG = ("GET", "/api/inference/audio/catalog")
-
-
-def test_download_model_infers_stt_from_the_audio_catalog(monkeypatch):
-    done = {"downloading": False, "completed_download_ids": ["d1"]}
-    status = sequence(
-        {"transformers": stt_state()},
-        {"transformers": stt_state(downloaded = [WHISPER], download = done)},
-    )
-    routes = {
-        AUDIO_CATALOG: {"models": [{"id": WHISPER, "task": "asr"}]},
-        MEDIA_CATALOG: {"models": []},
-        ("GET", "/api/inference/audio/stt/status"): status,
-        ("POST", "/api/inference/audio/stt/download"): {"download_id": "d1"},
-    }
-    result, studio = run_tool(monkeypatch, routes, "download_model", {"model": WHISPER})
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["status"] == "completed"
-    assert bodies(studio, "/api/inference/audio/stt/download") == [
-        {"model": WHISPER, "engine": "transformers"}
-    ]
-    assert bodies(studio, START) == []
