@@ -48,6 +48,7 @@ export const TRANSLATE_LANGUAGES: readonly TranslateLanguage[] = [
   { code: "kk", name: "Kazakh" },
   { code: "mn", name: "Mongolian" },
   { code: "ug", name: "Uyghur" },
+  { code: "hmn", name: "Hmong" },
 ];
 
 export const DEFAULT_TARGET_LANGUAGE = "en";

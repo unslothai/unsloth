@@ -116,6 +116,10 @@ const SENTENCES: Record<string, string[]> = {
     "ئەڭ يېقىن پويىز ئىستانسىسى قەيەردە؟ مەن بىلەت سېتىۋالماقچىمەن.",
     "كۆپ رەھمەت سىزگە",
   ],
+  hmn: [
+    "Lub chaw nres tsheb ciav hlau nyob qhov twg? Kuv xav yuav ib daim pib.",
+    "Nyob zoo, ua tsaug ntau.",
+  ],
 };
 
 test("every Translate language is recognised from a sentence and a short phrase", () => {
