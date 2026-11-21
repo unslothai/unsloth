@@ -321,6 +321,9 @@ def _worker(rank, world, port, case, tmp, kwargs):
     try:
         res = CASES[case](rank, world, tmp, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
+        # Rank 0 hosts the TCP store; leaving before a peer's last store call (a size-1
+        # subgroup needs no rendezvous with rank 0) breaks that peer's pipe.
+        dist.barrier()
     finally:
         dist.destroy_process_group()
 
