@@ -771,6 +771,15 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             auto_static_skip = (
                 ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
             ),
+            # 27 computed steps like every-3, placed by a propagation-weighted guided-error rule (RA-CFGCache,
+            # calibrated offline on one held-out prompt): denser early, wider gaps late. 832x480x49, CFG 5, shift 8,
+            # 4 held-out prompts: mean LPIPS 0.050 vs 0.104 for every-3 at the same 54 calls (lower on all 4).
+            auto_static_skip_masks = (
+                (
+                    "wan-ai/wan2.2-ti2v-5b-diffusers",
+                    (("max", "11111111111101010100100100010001001001000100011111"),),
+                ),
+            ),
         ),
         comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",

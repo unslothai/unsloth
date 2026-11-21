@@ -161,3 +161,21 @@ def test_shipped_masks_are_well_formed_and_match_their_interval_rows():
                 interval = ss.static_schedule(steps, every = entry.get(tier) or entry["max"])
                 # A shipped mask never computes more steps than the interval it replaces.
                 assert mask.count("1") <= sum(interval), (repo, tier)
+
+
+def test_wan22_5b_max_tier_runs_the_measured_mask_at_50_steps():
+    repo = "wan-ai/wan2.2-ti2v-5b-diffusers"
+    masks = dcache.AUTO_STATIC_SKIP_MASKS[repo]["max"]
+    mask = masks[50]
+    # Same compute budget as the every-3 interval it replaces, so the speedup is unchanged.
+    assert mask.count("1") == sum(ss.static_schedule(50, every = 3)) == 27
+    plan = dcache.auto_static_skip_plan((repo,), "max", 50, env = {})
+    assert plan["masks"] == {50: mask}
+    settings = ss.auto_static_settings(plan, env = {})
+    assert ss.static_schedule(
+        50, every = settings["every"], masks = settings.get("masks")
+    ) == ss.parse_mask(mask)
+    # Other step counts keep the interval.
+    assert ss.static_schedule(40, every = 3, masks = settings.get("masks")) == ss.static_schedule(
+        40, every = 3
+    )
