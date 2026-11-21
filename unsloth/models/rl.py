@@ -2974,7 +2974,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "            args.max_length = 1024\n"
             )
             # TRL >= 1.0.0 refuses padding-free without packing while max_length is set, and Unsloth auto-enables padding-free, so move the resolved length to where it is enforced: max_seq_length when prep tokenizes, else padding-free off. Unconditional copy, since no TRL from 0.22.2 to 1.9.2 declares max_seq_length on SFTConfig and a hasattr() gate would skip every pristine config. Must be None, not 0: TRL's guard reads `args.max_length is not None`.
-            if "`max_length` is not enforced" in old_RLTrainer_source:
+            # TRL >= 1.18 dropped that refusal: its own _prepare_dataset truncates, but Zoo's prep replaces it and leaves
+            # pre-tokenized rows alone, so the cap is still applied here.
+            if "`max_length` is not enforced" in old_RLTrainer_source or trl_version >= Version(
+                "1.18.0"
+            ):
                 max_length_check += (
                     "if getattr(args, 'padding_free', False) is True and not getattr(args, 'packing', False) "
                     "and getattr(args, 'max_length', None) is not None:\n"
