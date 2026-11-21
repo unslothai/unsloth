@@ -36,9 +36,23 @@ function directRank(quant: string): number {
 /** "by-architecture": Q4_K_M of a file whose architecture is not known yet. "mismatch": blocks the model reads in another layout. */
 export type Q4nxPacking = "direct" | "by-architecture" | "requantized" | "mismatch";
 
+// Only names whose layout differs from the Q4_1 default; a Qwen2.5-VL is qwen2vl, which reads Q4_1.
+const NAME_ARCHITECTURES: [RegExp, string][] = [
+  [/qwen3\.[56](?![0-9])/i, "qwen35"],
+  [/qwen2\.5(?![-_.]?vl)(?![0-9])/i, "qwen2"],
+  [/(^|[^a-z0-9])lfm2/i, "lfm2"],
+];
+
+/** The architecture, else the one a model's name gives: a local GGUF is not read before converting. */
+export function q4nxArchitecture(architecture?: string | null, name?: string | null): string | null {
+  const arch = architecture?.trim().toLowerCase();
+  if (arch) return arch;
+  return NAME_ARCHITECTURES.find(([re]) => re.test(name ?? ""))?.[1] ?? null;
+}
+
 /** The quant that packs directly for an architecture, or null when it is not known. */
 export function q4nxFitQuant(architecture?: string | null, name?: string | null): string | null {
-  const arch = architecture?.trim().toLowerCase();
+  const arch = q4nxArchitecture(architecture, name);
   if (!arch) return null;
   // The q4k converter resolves a Qwen3.5 named Omni to qwen3.5_omni.json, which reads Q4_1.
   if (arch === "qwen35" && /omni/i.test(name ?? "")) return "q4_1";
@@ -62,9 +76,14 @@ export function q4nxPacking(
   if (!fit) return "by-architecture";
   if (fit === "q4_k_m") return "direct";
   // The q4k converter packs Q4_K as is too, so only the q4nx one re-quantizes it.
-  return Q4K_ARCHITECTURES.includes(architecture?.trim().toLowerCase() ?? "")
+  return Q4K_ARCHITECTURES.includes(q4nxArchitecture(architecture, name) ?? "")
     ? "mismatch"
     : "requantized";
+}
+
+/** Whether a file belongs in the short list: one that packs as is, or might for this model. */
+export function q4nxIsFirstChoice(packing: Q4nxPacking): boolean {
+  return packing === "direct" || packing === "by-architecture";
 }
 
 export function packsDirectly(quant: string, architecture?: string | null): boolean {
