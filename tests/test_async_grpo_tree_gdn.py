@@ -173,8 +173,9 @@ def _reference_tree_chunk(chunk):
 
 
 def _compiled_copy(modeling):
-    # An Unsloth compiled modeling file: its own GatedDeltaNet forward whose globals are a separate namespace that
-    # imported transformers' functions and __name__, wrapped by a decorator (torch_compiler_disable_unless_decode).
+    # An Unsloth compiled modeling file: its own module-level `Qwen3_5GatedDeltaNet_forward`, wrapped by a decorator
+    # (torch_compiler_disable_unless_decode), in a separate namespace that imported transformers' functions and
+    # __name__; the class forward only calls it by name.
     stock = modeling.Qwen3_5GatedDeltaNet.forward
     inner = stock
     while not any(
@@ -194,7 +195,14 @@ def _compiled_copy(modeling):
 
         return forward
 
-    return decorator(copy), space
+    space["Qwen3_5GatedDeltaNet_forward"] = decorator(copy)
+    exec(
+        "def forward(self, hidden_states, cache_params = None, attention_mask = None, **kwargs):\n"
+        "    return Qwen3_5GatedDeltaNet_forward(self, hidden_states = hidden_states, cache_params = cache_params, "
+        "attention_mask = attention_mask, **kwargs)\n",
+        space,
+    )
+    return space.pop("forward"), space
 
 
 @pytest.fixture

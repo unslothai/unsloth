@@ -5406,16 +5406,17 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
     return outputs
 
 
-# Gated DeltaNet calls TRL >= 1.17 routes along each sample's path in a prefix-trie row (see _patch_tree_gdn).
+# Gated DeltaNet calls TRL >= 1.17 routes along each sample's path in a prefix-trie row (see _unsloth_patch_tree_gdn).
 _ASYNC_GRPO_TREE_GDN_COUNTS = {"conv": 0, "chunk": 0}
 _TREE_GDN_NAMES = ("causal_conv1d_fn", "torch_chunk_gated_delta_rule")
 
 
 def _tree_gdn_callers(model):
     # The functions that look up causal_conv1d_fn / torch_chunk_gated_delta_rule as globals, reached from each module
-    # class's forward through its wrappers. Unsloth's compiled modeling files define their own copies of these
-    # forwards, and import transformers' __name__, so `type(model).forward.__module__` names the stock module while
-    # the layers read the compiled one.
+    # class's forward through its wrappers and the module-level functions it calls. Unsloth's compiled modeling files
+    # define their own copies of these forwards (the class forward calls `Qwen3_5GatedDeltaNet_forward`) and import
+    # transformers' __name__, so `type(model).forward.__module__` names the stock module while the layers read the
+    # compiled one.
     callers, seen_types, seen = [], set(), set()
     for module in model.modules():
         if type(module) in seen_types:
@@ -5439,6 +5440,10 @@ def _tree_gdn_callers(model):
                     todo.append((cell.cell_contents, depth + 1))
                 except ValueError:
                     pass
+            for name in fn.__code__.co_names:
+                value = fn.__globals__.get(name)
+                if isinstance(value, types.FunctionType):
+                    todo.append((value, depth + 1))
     return callers
 
 
