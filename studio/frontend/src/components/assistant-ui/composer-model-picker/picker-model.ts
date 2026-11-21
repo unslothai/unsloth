@@ -138,6 +138,19 @@ export const DEVICE_SORT_DESC: Record<DeviceSort, boolean> = {
   size: true,
   name: false,
 };
+/** Connected has no size or load history: it sorts by connection or by name. */
+export type ConnectedSort = "provider" | "name";
+export const CONNECTED_SORT_LABEL: Record<ConnectedSort, string> = {
+  provider: "Connection",
+  name: "Name",
+};
+// No Audio: connected models never take audio attachments.
+export type ConnectedModality = "all" | "vision" | "imageGen";
+export const CONNECTED_MODALITY_LABEL: Record<ConnectedModality, string> = {
+  all: "All",
+  vision: "Vision",
+  imageGen: "Image gen",
+};
 export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
 export const FORMAT_FILTER_LABEL: Record<FormatFilter, string> = {
   all: "All",
@@ -198,10 +211,11 @@ export function modelVersion(id: string): number[] {
   return run ? run[0].split(/[.-]/).map(Number) : [];
 }
 
-/** Each connection's favorites first, then newest version first; ties keep the provider's order. */
+/** Each connection's favorites first, then newest version first; ties keep the provider's order. By name, one list A to Z with favorites first. */
 export function sortConnectedRows<T extends PickerRow>(
   rows: readonly T[],
   isFavorite: (row: T) => boolean = () => false,
+  by: ConnectedSort = "provider",
 ): T[] {
   const at = new Map(rows.map((row, index) => [row, index]));
   const newer = (a: T, b: T) => {
@@ -215,6 +229,14 @@ export function sortConnectedRows<T extends PickerRow>(
     }
     return 0;
   };
+  if (by === "name") {
+    return [...rows].sort(
+      (a, b) =>
+        Number(isFavorite(b)) - Number(isFavorite(a)) ||
+        a.label.localeCompare(b.label) ||
+        (a.providerName ?? "").localeCompare(b.providerName ?? ""),
+    );
+  }
   return [...rows].sort(
     (a, b) =>
       (a.providerName ?? "").localeCompare(b.providerName ?? "") ||

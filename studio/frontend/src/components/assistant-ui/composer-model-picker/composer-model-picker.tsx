@@ -42,7 +42,10 @@ import {
   parseExternalModelId,
 } from "@/features/chat/external-providers";
 import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
-import {} from "@/features/chat/model-catalog";
+import {
+  modelCatalogVersion,
+  subscribeModelCatalog,
+} from "@/features/chat/model-catalog";
 import { providerLogoPath } from "@/features/chat/provider-logo-path";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
@@ -129,6 +132,7 @@ import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
 } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+import { connectedModelMarks } from "@/features/model-picker/components/model-selector/connected-model-meta";
 import { repinExportedGgufAfterDelete } from "@/features/model-picker/components/model-selector/repin-exported-gguf";
 import { isCapableCheckpointQuant } from "@/features/model-picker/components/model-selector/recommended-fit";
 import {
@@ -200,6 +204,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { useAnimatedListHeight } from "./animated-height";
 import { useComposerModelPickerSource } from "./context";
@@ -208,7 +213,11 @@ import { useHubRepoSizes } from "./hub-repo-size";
 import { EffortSlider } from "./effort-slider";
 import { ListScrollbar } from "./list-scrollbar";
 import {
+  CONNECTED_MODALITY_LABEL,
+  CONNECTED_SORT_LABEL,
   CONNECTED_TAB,
+  type ConnectedModality,
+  type ConnectedSort,
   DEFAULT_PROVIDERS,
   DEVICE_SORT_DESC,
   DEVICE_SORT_LABEL,
@@ -1255,6 +1264,75 @@ function glyphScale(key: Capability["key"], label: string): string | undefined {
     : GLYPH_SCALE[key];
 }
 
+/** What a row's model does, by the backend's flags first and the repo's tags and name after. */
+function rowCapabilities(
+  row: Row,
+  known: ChatModelSummary | undefined,
+  hit?: { tags?: string[]; pipelineTag?: string | null },
+): Capability[] {
+  const task =
+    row.gguf?.task ?? row.cached?.task ?? hit?.pipelineTag ?? undefined;
+  const id = row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id;
+  // The backend's own flags (projector, audio and video towers) beat the name, which only guesses.
+  const vision =
+    row.npu?.supports_vision ??
+    row.gguf?.has_vision ??
+    (known?.isVision ? true : undefined);
+  const found = detectHubCapabilities(hit?.tags, task, id).filter(
+    (c) =>
+      SHOWN_CAPABILITIES.has(c.key) &&
+      !(c.key === "vision" && vision === false),
+  );
+  const has = (key: Capability["key"]) => found.some((c) => c.key === key);
+  if (vision === true && !has("vision")) {
+    found.push({ key: "vision", label: "Vision" });
+  }
+  if ((known?.hasAudioInput || known?.isAudio) && !has("audio")) {
+    found.push({ key: "audio", label: "Audio" });
+  }
+  if (row.npu?.supports_reasoning && !has("reasoning")) {
+    found.push({ key: "reasoning", label: "Reasoning" });
+  }
+  return found.sort(
+    (a, b) => CAPABILITY_ORDER.indexOf(a.key) - CAPABILITY_ORDER.indexOf(b.key),
+  );
+}
+
+function RowCapabilities({
+  capabilities,
+  dimmed,
+}: {
+  capabilities: readonly Capability[];
+  dimmed: boolean;
+}) {
+  if (capabilities.length === 0) {
+    return null;
+  }
+  return (
+    <span
+      className={cn(
+        "flex shrink-0 items-center gap-[calc(5px*var(--ui-space-scale,1))]",
+        dimmed && DIM_CLASS,
+      )}
+    >
+      {capabilities.map((c) => (
+        <Hint key={c.key} label={c.label}>
+          <span
+            role="img"
+            aria-label={c.label}
+            className="grid size-[calc(14px*var(--ui-space-scale,1))] place-items-center"
+          >
+            <CapabilityGlyph
+              capability={c}
+              className={glyphScale(c.key, c.label)}
+            />
+          </span>
+        </Hint>
+      ))}
+    </span>
+  );
+}
+
 function modelFacts(
   row: Row,
   onDisk: readonly GgufVariantDetail[],
@@ -1279,31 +1357,7 @@ function modelFacts(
   if (params) {
     facts.push(["Parameters", params]);
   }
-  const task = row.gguf?.task ?? row.cached?.task ?? undefined;
-  const id = row.lora?.baseModel ? `${row.lora.baseModel} ${row.id}` : row.id;
-  // The backend's own flags (projector, audio and video towers) beat the name, which only guesses.
-  const vision =
-    row.npu?.supports_vision ??
-    row.gguf?.has_vision ??
-    (known?.isVision ? true : undefined);
-  const found = detectHubCapabilities(undefined, task, id).filter(
-    (c) =>
-      SHOWN_CAPABILITIES.has(c.key) &&
-      !(c.key === "vision" && vision === false),
-  );
-  const has = (key: Capability["key"]) => found.some((c) => c.key === key);
-  if (vision === true && !has("vision")) {
-    found.push({ key: "vision", label: "Vision" });
-  }
-  if ((known?.hasAudioInput || known?.isAudio) && !has("audio")) {
-    found.push({ key: "audio", label: "Audio" });
-  }
-  if (row.npu?.supports_reasoning && !has("reasoning")) {
-    found.push({ key: "reasoning", label: "Reasoning" });
-  }
-  found.sort(
-    (a, b) => CAPABILITY_ORDER.indexOf(a.key) - CAPABILITY_ORDER.indexOf(b.key),
-  );
+  const found = rowCapabilities(row, known);
   const mark = (key: string, glyph: ReactNode, label: string) => (
     <span key={key} className="inline-flex items-center gap-1">
       {glyph}
@@ -2643,6 +2697,35 @@ export function ComposerModelPicker({
   );
   const [deviceSort, setDeviceSort] = useState<DeviceSort>("recent");
   const [deviceSortDesc, setDeviceSortDesc] = useState(DEVICE_SORT_DESC.recent);
+  const [connectedSort, setConnectedSort] = useState<ConnectedSort>("provider");
+  const [connectedModality, setConnectedModality] =
+    useState<ConnectedModality>("all");
+  // The marks read catalog state a provider sync writes later.
+  const catalogVersion = useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+  );
+  const connectedMatches = useCallback(
+    (row: Row) => {
+      if (connectedModality === "all") {
+        return true;
+      }
+      const provider = providers.find(
+        (p) => `${EXT_PREFIX}${p.id}` === row.tab,
+      );
+      const marks = connectedModelMarks({
+        providerType: row.providerType,
+        modelId: parseExternalModelId(row.id)?.modelId ?? row.label,
+        baseUrl: provider?.baseUrl ?? null,
+        apiType: provider?.apiType,
+      });
+      return connectedModality === "vision"
+        ? marks.vision
+        : marks.capabilities.imageGen;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- catalogVersion is the marks' staleness key.
+    [connectedModality, providers, catalogVersion],
+  );
   // Stamped here too: the header picker that used to record chat loads is gone from Chat.
   const loadTimes = useModelLoadTimes(loadStampId(checkpoint, source?.loaded));
   const sizeFilter = formatFilter === "mlx" || formatFilter === "safetensors";
@@ -2671,6 +2754,16 @@ export function ComposerModelPicker({
     }
     return map;
   }, [hubResults]);
+  const hubHits = useMemo(
+    () =>
+      new Map(
+        hubResults.map((r) => [
+          r.id.toLowerCase(),
+          { tags: r.tags, pipelineTag: r.pipelineTag },
+        ]),
+      ),
+    [hubResults],
+  );
   const hubSizeOf = useCallback(
     (id: string): number | undefined => {
       const key = id.toLowerCase();
@@ -2754,7 +2847,14 @@ export function ComposerModelPicker({
         return !isOverBudget(fit) || (fit === "ram" && noGpu);
       });
     }
-    if (viewed === CONNECTED_TAB || viewed.startsWith(EXT_PREFIX)) {
+    if (viewed === CONNECTED_TAB) {
+      return sortConnectedRows(
+        found.filter(connectedMatches),
+        isFavorite,
+        connectedSort,
+      );
+    }
+    if (viewed.startsWith(EXT_PREFIX)) {
       return sortConnectedRows(found, isFavorite);
     }
     const lastLoaded = (row: Row) => loadedAt(loadTimes, row.id);
@@ -2786,6 +2886,8 @@ export function ComposerModelPicker({
     formatFilter,
     deviceSort,
     deviceSortDesc,
+    connectedSort,
+    connectedMatches,
     loadTimes,
     fitOnDeviceOnly,
     hubFit,
@@ -2851,9 +2953,9 @@ export function ComposerModelPicker({
       );
     }
     if (viewed === CONNECTED_TAB) {
-      return found.filter(
-        (row) => !collapsedSections.has(`${viewed}:${row.tab}`),
-      );
+      return connectedSort === "name"
+        ? found
+        : found.filter((row) => !collapsedSections.has(`${viewed}:${row.tab}`));
     }
     if (viewed !== FAVORITES_TAB) {
       return found;
@@ -2875,6 +2977,7 @@ export function ComposerModelPicker({
     listSections,
     collapsedSections,
     foundRows,
+    connectedSort,
   ]);
   const customFolders = useCustomFolders({
     enabled: open && viewed === DEVICE_TAB,
@@ -4234,6 +4337,13 @@ export function ComposerModelPicker({
     const sizeBytes =
       row.kind === "hub" && sizeFilter ? hubSizeOf(row.id) : undefined;
     const sizeLabel = sizeBytes ? formatBytes(sizeBytes) : null;
+    const known = chatModels.find(
+      (m) => m.id.toLowerCase() === (row.loadedId ?? row.id).toLowerCase(),
+    );
+    const hubHit =
+      row.kind === "hub" ? hubHits.get(row.id.toLowerCase()) : undefined;
+    const capabilities =
+      row.kind === "external" ? [] : rowCapabilities(row, known, hubHit);
     const onDisk = deviceQuants.get(row.inventoryKey ?? row.key) ?? NO_QUANTS;
     const partials = partialsOf(row);
     const manyQuants = onDisk.length + partials.length > 1;
@@ -4296,6 +4406,7 @@ export function ComposerModelPicker({
           row.npu ? npuCatalog : null,
           paramLabel,
           sizeLabel,
+          hubHit,
         ]}
         render={() => (
           <div
@@ -4384,6 +4495,7 @@ export function ComposerModelPicker({
                 </Hint>
               ) : null}
             </span>
+            <RowCapabilities capabilities={capabilities} dimmed={dimmed} />
             {row.media ? (
               <StatusTag
                 tone="accent"
@@ -4469,15 +4581,7 @@ export function ComposerModelPicker({
                     details={
                       row.tab === DEVICE_TAB ? (
                         <ModelFacts
-                          facts={modelFacts(
-                            row,
-                            onDisk,
-                            chatModels.find(
-                              (m) =>
-                                m.id.toLowerCase() ===
-                                (row.loadedId ?? row.id).toLowerCase(),
-                            ),
-                          )}
+                          facts={modelFacts(row, onDisk, known)}
                         />
                       ) : undefined
                     }
@@ -5185,7 +5289,11 @@ export function ComposerModelPicker({
   };
 
   const renderSections = () => {
-    if (viewed === CONNECTED_TAB && foundRows.length > 0) {
+    if (
+      viewed === CONNECTED_TAB &&
+      connectedSort === "provider" &&
+      foundRows.length > 0
+    ) {
       return renderConnectedGroups();
     }
     if (listSections.length === 0) {
@@ -5267,6 +5375,7 @@ export function ComposerModelPicker({
     </>
   );
   const viewedTab = tabs.find((t) => t.value === viewed);
+  const connectedRowCount = externalModels?.length ?? 0;
   // Only when the tab changes, so a sideways scroll of the user's own is left alone.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `viewed` is the trigger; the DOM holds the selection.
   useEffect(() => {
@@ -5734,6 +5843,75 @@ export function ComposerModelPicker({
                   </DropdownMenuRadioGroup>
                   <DropdownMenuSeparator />
                   {formatGroup}
+                </NonModalDropdownMenu>
+              ) : null}
+              {viewed === CONNECTED_TAB && connectedRowCount > 0 ? (
+                <NonModalDropdownMenu
+                  align="end"
+                  className="composer-filter-menu w-auto min-w-[calc(140px*var(--ui-space-scale,1))]"
+                  trigger={(ref) => (
+                    <button
+                      ref={ref}
+                      type="button"
+                      aria-label={`Sort and filter: ${CONNECTED_SORT_LABEL[connectedSort]}, ${CONNECTED_MODALITY_LABEL[connectedModality]}`}
+                      className="relative grid size-[calc(24px*var(--ui-space-scale,1))] shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent max-md:size-8"
+                    >
+                      <HugeiconsIcon
+                        icon={FilterMailIcon}
+                        strokeWidth={1.75}
+                        className="size-4 -translate-y-[0.5px]"
+                      />
+                      {connectedModality !== "all" ? (
+                        <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
+                      ) : null}
+                    </button>
+                  )}
+                >
+                  <DropdownMenuLabel className={MENU_LABEL}>
+                    Sort
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={connectedSort}
+                    onValueChange={(next) =>
+                      setConnectedSort(next as ConnectedSort)
+                    }
+                  >
+                    {(Object.keys(CONNECTED_SORT_LABEL) as ConnectedSort[]).map(
+                      (key) => (
+                        <DropdownMenuRadioItem
+                          key={key}
+                          value={key}
+                          className={MENU_ITEM}
+                        >
+                          {CONNECTED_SORT_LABEL[key]}
+                        </DropdownMenuRadioItem>
+                      ),
+                    )}
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className={MENU_LABEL}>
+                    Modality
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={connectedModality}
+                    onValueChange={(next) =>
+                      setConnectedModality(next as ConnectedModality)
+                    }
+                  >
+                    {(
+                      Object.keys(
+                        CONNECTED_MODALITY_LABEL,
+                      ) as ConnectedModality[]
+                    ).map((key) => (
+                      <DropdownMenuRadioItem
+                        key={key}
+                        value={key}
+                        className={MENU_ITEM}
+                      >
+                        {CONNECTED_MODALITY_LABEL[key]}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
                 </NonModalDropdownMenu>
               ) : null}
               {source && viewed === CONNECTED_TAB ? (
