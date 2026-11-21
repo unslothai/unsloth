@@ -409,15 +409,42 @@ def test_sync_report_window_starts_at_the_resumed_step(monkeypatch, tmp_path, ca
         0
     ]
     state = type("S", (), {"global_step": 100})()
-    callback.on_train_begin(None, state, None)
-    state.global_step = 101
-    callback.on_step_end(None, state, None)
-    # Resumed at 100: one new step done, the window of 2 is still open.
-    assert trainer._unsloth_sync_report.active
-    state.global_step = 102
-    callback.on_step_end(None, state, None)
-    assert not trainer._unsloth_sync_report.active
-    assert sorted(trainer._unsloth_sync_report.steps) == [101, 102]
+    for _ in range(2):  # a second train() on the same trainer measures its own window
+        state.global_step = 100
+        callback.on_train_begin(None, state, None)
+        callback.on_step_begin(None, state, None)
+        _site_a()
+        state.global_step = 101
+        callback.on_step_end(None, state, None)
+        # Resumed at 100: one new step done, the window of 2 is still open.
+        assert trainer._unsloth_sync_report.active
+        callback.on_step_begin(None, state, None)
+        _site_a()
+        state.global_step = 102
+        callback.on_step_end(None, state, None)
+        assert not trainer._unsloth_sync_report.active
+        assert trainer._unsloth_sync_report.summary()[0] == {101: 1, 102: 1}
+
+
+def test_sync_report_ignores_a_step_that_never_ran(monkeypatch, tmp_path, capsys):
+    # Training ends inside the window: no bucket for a step that did not begin.
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "16")
+    original_start = rr.SyncCounter.start
+    monkeypatch.setattr(
+        rr.SyncCounter, "start", lambda self, use_cuda = True: original_start(self, False)
+    )
+    trainer = _tiny_trainer(tmp_path)
+    assert rr.install_sync_report(trainer)
+    original_step = trainer.training_step
+
+    def training_step(*args, **kwargs):
+        _site_a()
+        return original_step(*args, **kwargs)
+
+    trainer.training_step = training_step
+    trainer.train()
+    totals = trainer._unsloth_sync_report.summary()[0]
+    assert len(totals) == trainer.state.global_step and all(v == 1 for v in totals.values()), totals
 
 
 def test_sync_report_wiring():

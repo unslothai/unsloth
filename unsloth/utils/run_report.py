@@ -422,21 +422,25 @@ def install_sync_report(trainer):
 
     class _UnslothSyncReportCallback(TrainerCallback):
         def on_train_begin(self, args, state, control, **kwargs):
-            # Resumed runs start past step 0: the window counts steps from here.
+            # A new train() call measures its own window; resumed runs start past step 0.
+            counter.steps, counter.lines = {}, None
             counter.start_step = int(state.global_step)
-            counter.enter(counter.start_step + 1)
+            counter.step = counter.start_step + 1
             if not counter.start():
                 print("Unsloth: UNSLOTH_SYNC_REPORT needs a CUDA device; skipped.")
 
+        def on_step_begin(self, args, state, control, **kwargs):
+            # The bucket is registered when the step runs, so a step with no syncs still counts and a step that never
+            # runs (training ending inside the window) does not.
+            if counter.active:
+                counter.enter(int(state.global_step) + 1)
+
         def on_step_end(self, args, state, control, **kwargs):
-            # Bucket k: data fetch, every micro-batch and the optimizer step of step k, plus the
-            # logging of step k - 1 (the Trainer logs after on_step_end).
             if not counter.active:
                 return
+            # The Trainer's logging after this step stays in this step's bucket.
             if int(state.global_step) - counter.start_step >= steps:
                 finish()
-            else:
-                counter.enter(int(state.global_step) + 1)
 
         def on_train_end(self, args, state, control, **kwargs):
             finish()
