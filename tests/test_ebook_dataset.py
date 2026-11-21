@@ -162,6 +162,31 @@ def test_ruby_readings_are_not_inlined_into_the_text(ebooks, ruby):
     assert ebooks._html_text(data) == "東京に行く。"
 
 
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<template><p>Card title placeholder</p></template>",
+        '<audio src="a.mp3" controls="controls">Your reader does not support audio.</audio>',
+        '<video src="a.mp4"><p>Your reader does not support video.</p><track kind="captions"/></video>',
+        '<canvas id="chart">Chart fallback</canvas>',
+    ],
+)
+def test_content_a_reader_does_not_display_is_not_training_text(ebooks, markup):
+    html = f"<html><body><p>Before.</p>{markup}<p>After.</p></body></html>"
+    assert ebooks._html_text(html.encode()) == "Before.\n\nAfter."
+
+
+def test_mathml_annotation_is_not_appended_to_the_formula(ebooks):
+    html = (
+        '<html><body><p>Area <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics>'
+        "<mrow><mi>x</mi><mo>+</mo><mn>2</mn></mrow>"
+        '<annotation encoding="application/x-tex">x + 2</annotation>'
+        '<annotation-xml encoding="MathML-Content"><apply><plus/><ci>x</ci><cn>2</cn></apply>'
+        "</annotation-xml></semantics></math> units.</p></body></html>"
+    )
+    assert ebooks._html_text(html.encode()) == "Area x+2 units."
+
+
 def test_bom_is_dropped_when_xml_declares_utf8(ebooks):
     data = b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?><html><body><p>Chapter</p></body></html>'
     assert ebooks._html_text(data) == "Chapter"

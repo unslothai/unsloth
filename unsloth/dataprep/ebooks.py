@@ -56,6 +56,9 @@ _BLOCKS = {
     "details",
     "summary",
 }
+# Never displayed by a reading system that supports the element: inert templates, the TeX / content copy
+# beside rendered MathML, and "your reader does not support audio" fallbacks.
+_UNRENDERED = {"template", "annotation", "annotation-xml", "audio", "video", "canvas"}
 _VOID = {
     "area",
     "base",
@@ -103,6 +106,7 @@ class _BookTextParser(HTMLParser):
         hidden = (
             bool(self.stack and self.stack[-1][1])
             or tag in _IGNORE
+            or tag in _UNRENDERED
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
         )
