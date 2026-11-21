@@ -241,6 +241,9 @@ def _reference(model, samples, token_order):
 
 def _head(model, module):
     # The Unsloth stand-in backbone under TRL's fused head, as AsyncGRPOTrainer installs it.
+    # TRL <= 1.15 runs that head only through its Triton kernel, left None where Triton is absent (Windows, macOS).
+    if getattr(sys.modules.get("trl.trainer.utils"), "_ChunkedLogProbFunction", True) is None:
+        pytest.skip("this TRL's fused LM head needs Triton, which this platform lacks")
     fake = FakeUnslothBackbone(model.model)
     lm_head = model.lm_head
     model.model = fake
