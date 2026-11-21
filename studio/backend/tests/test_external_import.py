@@ -810,9 +810,7 @@ def _ends_badly(head: bytes, error: Exception):
     return EndsBadly(head)
 
 
-def test_codex_a_corrupt_zst_rollout_is_skipped_without_crashing(
-    client, codex_home, monkeypatch
-):
+def test_codex_a_corrupt_zst_rollout_is_skipped_without_crashing(client, codex_home, monkeypatch):
     fake = _fake_zstandard(
         monkeypatch, lambda _raw: _ends_badly(b"", fake.ZstdError("corrupt archive"))
     )

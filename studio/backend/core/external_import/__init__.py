@@ -183,9 +183,7 @@ def read_jsonl(path: Path) -> Iterator[dict]:
                     yield record
         except _zstd_errors() as exc:
             # Corrupt or truncated archive: the decoded prefix is all there is.
-            logger.warning(
-                "external_import_corrupt_archive", path = str(path), error = str(exc)
-            )
+            logger.warning("external_import_corrupt_archive", path = str(path), error = str(exc))
 
 
 def iso_ms(value) -> Optional[int]:
