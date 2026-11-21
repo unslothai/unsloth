@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import builtins
 import os
+import sys
 
 import pytest
 
@@ -84,10 +85,15 @@ def test_no_library_still_keys_on_the_sources(monkeypatch):
     assert g8._cut_cache_key(0)
 
 
-def test_the_key_hashes_the_same_bytes_as_before(lib):
+def test_the_key_hashes_the_library_bytes(lib):
+    """Same race code, another build of the library: another key (the tile set and kernels live in the build)."""
     import hashlib
 
-    h = hashlib.sha256(open(g8.__file__, "rb").read())
-    h.update(open(cut.__file__, "rb").read())
+    before = g8._cut_cache_key(0).rsplit("|", 1)[-1]
+    h = hashlib.sha256(f"race-format={g8._RACE_FORMAT}\n".encode())
+    for module in (g8, cut, sys.modules["core.inference.diffusion_triton_prefetch"]):
+        h.update(
+            g8._code(module.__file__, g8._RACE_SOURCES[module.__name__.rsplit(".", 1)[-1]]).encode()
+        )
     h.update(lib.read_bytes())
-    assert g8._cut_cache_key(0).endswith("|" + h.hexdigest()[:20])
+    assert before == h.hexdigest()[:20]

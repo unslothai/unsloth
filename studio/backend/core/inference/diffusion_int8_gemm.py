@@ -747,22 +747,127 @@ def cutlass_wanted(capability: Optional[tuple]) -> bool:
         return False
 
 
+# What decides a CUTLASS race verdict, by module: today's path it races (Triton kernel, launch, tile pick, eager
+# epilogue), the race itself (points, timing, margin, candidates, how a cached entry is read back) and the prebuilt
+# kernels' launch. Hashed as parsed code: a comment, a docstring or an edit anywhere else keeps the cached verdicts.
+_RACE_SOURCES = {
+    "diffusion_int8_gemm": (
+        "_kernels",
+        "_launch",
+        "_prefetch_fix_key",
+        "reference",
+        "_launch_or_ref",
+        "tile_for",
+        "_aligned",
+        "_cutlass_tile",
+        "_cutlass_plan",
+        "_huge_race_fits",
+        "_HUGE_RACE_HEADROOM",
+        "_CUT_LARGE_M",
+        "_CUT_SKIPPED",
+        "_SHAPE_MIN_M",
+        "_MIN_ROWS",
+    ),
+    "diffusion_int8_cutlass": (
+        "ABI_VERSION",
+        "_bind",
+        "_MARGIN",
+        "_RACE_M",
+        "_RACE_M_HUGE",
+        "_HUGE_M",
+        "_LARGE_M",
+        "ROW_BUCKET",
+        "_MAX_ROW_RACES",
+        "row_bucket",
+        "large_points",
+        "race_points",
+        "slot",
+        "large_slots",
+        "family",
+        "out_dtype_for",
+        "_kind",
+        "EPI_TORCHAO",
+        "EPI_NATIVE",
+        "has_kernel",
+        "eligible",
+        "launch",
+        "reference",
+        "reference_native",
+        "_SUSTAIN_S",
+        "sustained_for",
+        "_CLOCK_DRIFT",
+        "sustained_decides",
+        "time_sustained_us",
+        "time_us",
+        "race",
+        "_NATIVE_LARGE_M",
+        "native_prepare",
+    ),
+    # the sm_8x prefetch fix's version: bumped with any change to what it does to the Triton kernel's codegen
+    "diffusion_triton_prefetch": ("_TRITON_PREFETCH_SALT",),
+}
+# Bump to re-race every card on purpose: a change outside the code above that moves race results.
+_RACE_FORMAT = 1
+
+
+def _code(path: str, names: tuple) -> str:
+    """``names``' top-level definitions in ``path``, docstrings dropped, as ``ast.unparse`` prints them: formatting and
+    comments do not reach the key, and a name no longer defined there reads ``<missing>``."""
+    import ast
+
+    tree = ast.parse(open(path, "rb").read())
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (
+            isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    found: dict = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found[node.name] = node
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for target in node.targets if isinstance(node, ast.Assign) else (node.target,):
+                if isinstance(target, ast.Name):
+                    found[target.id] = node
+    return "\n".join(
+        f"{name}: " + (ast.unparse(found[name]) if name in found else "<missing>") for name in names
+    )
+
+
 @lru_cache(maxsize = 4)
 def _sources_digest(lib: Optional[str]) -> str:
-    """Both sources and the loaded library, hashed once per process: the plan asks once per weight shape."""
+    """The race code (``_RACE_SOURCES``) and the loaded library, hashed once per process: the plan asks once per weight
+    shape."""
     import hashlib
+    import sys
 
     from . import diffusion_int8_cutlass as cut
+    from . import diffusion_triton_prefetch as prefetch
 
-    h = hashlib.sha256(open(__file__, "rb").read())
-    h.update(open(cut.__file__, "rb").read())
+    h = hashlib.sha256(f"race-format={_RACE_FORMAT}\n".encode())
+    for module in (sys.modules[__name__], cut, prefetch):
+        h.update(_code(module.__file__, _RACE_SOURCES[module.__name__.rsplit(".", 1)[-1]]).encode())
     if lib:
         h.update(open(lib, "rb").read())
     return h.hexdigest()[:20]
 
 
+def _today_tiles(index: int) -> str:
+    """The Triton tiles today's path runs on this card (settled by ``device_config`` before any plan): an arch table,
+    shape rule or unlisted-card race edit re-races only the cards whose tile it moves."""
+    cfg = _DEVICE_CFG.get(index)
+    if cfg is None:
+        return "today=stock"
+    return f"today={cfg}+{_DEVICE_TILES.get(index, ())}+fix={_prefetch_fix_key()}"
+
+
 def _cut_cache_key(index: int) -> Optional[str]:
-    """Card, toolchain, library build and both sources: any change re-races."""
+    """Card, toolchain, library build, today's tiles and the race code: an unrelated Studio edit keeps the verdicts."""
     try:
         import torch
 
@@ -786,6 +891,9 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
                 # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
                 f"sustained={cut.sustained_mode()}",
+                # force keeps the fastest tile even when it loses to today's path
+                f"cutlass={cut.mode()}",
+                _today_tiles(index),
                 digest,
             )
         )
