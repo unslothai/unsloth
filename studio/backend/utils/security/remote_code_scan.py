@@ -71,9 +71,7 @@ _CONFIG_READS: contextvars.ContextVar = contextvars.ContextVar(
 
 @contextlib.contextmanager
 def shared_config_reads():
-    """Within this scope each Hub config is probed and downloaded once per (endpoint, source,
-    cache, repo, file, token); only a downloaded path or a confirmed 404 is kept, never a
-    failure. Per context, so concurrent requests and threads never see each other's reads."""
+    """Per context: each Hub config is read once per scope; failures are never kept, only paths or 404s."""
     if _CONFIG_READS.get() is not None:
         yield
         return
@@ -110,8 +108,7 @@ def _config_read_key(model_name: str, cfg_name: str, hf_token) -> Optional[tuple
 
 
 def hub_config_path(model_name: str, cfg_name: str, hf_token) -> Optional[str]:
-    """Cached path of an optional Hub config, None when absent; any other failure raises.
-    Probes first so a 404 is not cached (utils/hf_probe.py)."""
+    """Hub config path, None when absent, raises on other failures; probes first so 404s aren't cached."""
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import LocalEntryNotFoundError
     from huggingface_hub.utils import EntryNotFoundError

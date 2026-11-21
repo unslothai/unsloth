@@ -179,6 +179,7 @@ export const nl = {
       add: "Toevoegen",
       cancel: "Annuleren",
       removeSite: "{site} verwijderen",
+      hostOnly: "Alleen deze host, niet de subdomeinen",
       permissionsNote:
         "Alleen sites met eigen toestemmingen worden hier weergegeven. Acties zijn inloggen, formulierverzendingen en knoppen waarmee iets wordt gekocht, verzonden of verwijderd.",
       siteInvalid: "Voer een site in zoals example.com of *.example.com.",
@@ -812,6 +813,7 @@ export const nl = {
     failed:
       "Installatie van engine mislukt. Probeer het opnieuw of gebruik de standaardengine.",
     details: "Technische details",
+    lastAttempt: "Laatste poging: {time}",
     cancelled: "Installatie geannuleerd. Je kunt het opnieuw proberen.",
     scope:
       "Tekst- en afbeeldingschat op NVIDIA-GPU's. Het eerste laden kan langer duren.",
@@ -988,7 +990,6 @@ export const nl = {
     copy: "Kopiëren",
     addScheduledTask: "Geplande taak toevoegen…",
     compact: "Gesprek comprimeren",
-    compactQueued: "Comprimeren aangevraagd voor het volgende bericht",
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
@@ -1886,6 +1887,12 @@ export const nl = {
       learnMore: "Meer informatie",
       managedNote:
         "De eigenaar van deze Unsloth-server stelt de OS-sandbox in.",
+      trustedFoldersTitle: "Vertrouwde mappen",
+      trustedFoldersLabel: "Uitvoeren zonder te vragen",
+      trustedFoldersDescription: "Python en Terminal mogen bestanden in deze mappen lezen en uitvoeren zonder om goedkeuring te vragen, alleen in je eigen chats. Schrijven naar deze mappen vraagt nog steeds om goedkeuring. Eén map per regel.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "De vertrouwde mappen konden niet worden geladen.",
+      trustedFoldersSaveError: "De vertrouwde mappen konden niet worden opgeslagen.",
     },
     debugging: {
       description: "Lees de Unsloth-logboeken zonder de app te verlaten.",
@@ -2759,6 +2766,54 @@ export const nl = {
     appearance: {
       title: "Weergave",
       description: "Hoe Unsloth eruitziet op dit apparaat.",
+      themeFile: {
+        title: "Themabestand",
+        importLabel: "Een thema importeren",
+        import: "Importeren",
+        exportLabel: "Je thema exporteren",
+        export: "Exporteren",
+        exportTitle: "Thema exporteren",
+        exportName: "Themanaam",
+        exportNamePlaceholder: "Mijn thema",
+        exportIncludeLayout: "Indeling van de zijbalk opnemen",
+        exportIncludeAssets: "Geïmporteerde lettertypen en achtergrondafbeelding opnemen",
+        exportAction: "Downloaden",
+        exported: "Thema opgeslagen als {name}",
+        exportFailed: "Het thema kon niet worden geëxporteerd.",
+        exportBackgroundOmitted: "De achtergrondafbeelding was te groot om mee te nemen, dus het bestand is zonder opgeslagen.",
+        importTitle: "Thema importeren",
+        importApplyLayout: "Ook de indeling van de zijbalk toepassen",
+        importApplyAssets: "Ook lettertypen en achtergrondafbeelding toepassen",
+        importApply: "Thema toepassen",
+        changesTitle: "Wat er verandert",
+        noChanges: "Dit thema komt overeen met je huidige uiterlijk.",
+        warningsTitle: "Waarschuwingen",
+        applied: "Thema “{name}” toegepast",
+        undo: "Ongedaan maken",
+        undone: "Vorig uiterlijk hersteld",
+        undoneWithoutBackground: "Vorige weergave hersteld, maar de achtergrondafbeelding kon niet worden teruggezet.",
+        fileTooLarge: "Dit bestand is te groot om een thema te zijn.",
+        fileInvalid: "Dit bestand is geen geldig Unsloth-thema.",
+        change: {
+          palette: "Kleurthema",
+          colors: "Kleuren en contrast",
+          typography: "Lettertypen en tekstgrootte",
+          code: "Weergave van code",
+          chat: "Chatbreedte en invoerveld",
+          glass: "Glas",
+          layout: "Indeling van de zijbalk",
+          fonts: "Geïmporteerde lettertypen",
+          background: "Achtergrondafbeelding",
+        },
+        warning: {
+          newerVersion: "Gemaakt met een nieuwere versie van Unsloth. Instellingen die deze versie niet kent, zijn overgeslagen.",
+          unknownPalette: "Onbekend kleurthema “{palette}”, in plaats daarvan wordt Standaard gebruikt.",
+          unknown: "Onbekende instelling overgeslagen: {path}",
+          invalid: "Ongeldige waarde vervangen: {path}",
+          backgroundSkipped: "De achtergrondafbeelding in dit bestand kon niet worden gebruikt.",
+          more: "En nog {count}",
+        },
+      },
       gpuRendering: {
         sectionTitle: "Rendering",
         label: "GPU-rendering",
@@ -3389,6 +3444,7 @@ export const nl = {
       groups: {
         replies: { title: "Antwoorden" },
         thinkingTools: { title: "Denken en tools" },
+        customization: { title: "Aanpassing" },
         conversations: {
           title: "Gesprekken",
         },
@@ -3446,6 +3502,10 @@ export const nl = {
         fitOnDeviceOnly: "Alleen modellen tonen die passen",
         fitOnDeviceOnlyDescription:
           "Modellen die te groot zijn voor het GPU-geheugen en RAM van dit apparaat verbergen in de modelkiezer en de Hub. Gedownloade modellen blijven zichtbaar.",
+        pickerExpandLoaded: "Volledige modellijst tonen",
+        pickerExpandLoadedDescription: "Open de modelkiezer op de volledige lijst terwijl een model is geladen, in plaats van alleen het geladen model. Het uit- of samenvouwen van de kiezer wijzigt deze instelling ook.",
+        pickerMonochromeIcons: "Monochrome modelpictogrammen",
+        pickerMonochromeIconsDescription: "Toon logo's van modellen en providers in zwart, wit en grijs in de modelkiezer.",
       },
       menu: {
         title: "Chatmenu",

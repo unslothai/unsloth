@@ -571,8 +571,7 @@ def test_long_verdict_thresholds(monkeypatch):
 
 
 def test_extra_races_time_on_the_probed_card(monkeypatch):
-    """A secondary card's mid / long race must run with that card current: the timing events record on the current
-    device's stream."""
+    """Extra races must run with the probed card current; timing events record on its stream."""
     current = [None]
     seen = []
 
@@ -800,9 +799,7 @@ def test_rocm_auto_stays_off_elsewhere(monkeypatch):
 
 
 def test_rocm_auto_table_is_the_measured_one():
-    """gfx1151 Linux (against flash attention): Qwen-Image-2.1 and Wan won end to end; FLUX.3 Klein lost and Z-Image
-    gained under 2%. gfx1151 Windows (against torch SDPA): Qwen-Image-2.1 won; FLUX.3 Klein, Z-Image and Wan gained
-    under 2%. The unset switch leaves the rest native."""
+    """ROCM_AUTO_DITS as measured on gfx1151: Qwen-Image-2.1 and Wan on Linux, Qwen-Image-2.1 on Windows."""
     assert D.ROCM_AUTO_DITS == {
         ("gfx1151", "linux"): {"QwenImage21Transformer2DModel", "WanTransformer3DModel"},
         ("gfx1151", "win32"): {"QwenImage21Transformer2DModel"},

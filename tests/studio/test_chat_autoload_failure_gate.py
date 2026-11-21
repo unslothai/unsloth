@@ -239,6 +239,10 @@ export function clearedServerTuningState(): any {
     loadedCacheRam: null,
   };
 }
+export function committedMlxServerTuningState(values: any): any {
+  const cacheRam = values?.cacheRam ?? null;
+  return { ...clearedServerTuningState(), cacheRam, loadedCacheRam: cacheRam };
+}
 export function committedServerTuningState(values: any, isDiffusion = false): any {
   if (isDiffusion) {
     return clearedServerTuningState();

@@ -338,8 +338,7 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
-      # Model-free suites on their own ports and home (the scripts wipe auth/ per boot). Started
-      # after the chat UI, which ran ~2x slower when sharing the runner.
+      # Own ports and home, since the scripts wipe auth/ per boot; starts after the chat UI.
       - name: Cross-browser permission controls + loaded-models indicator (WebKit)
         id: webkit_lane
         background: true

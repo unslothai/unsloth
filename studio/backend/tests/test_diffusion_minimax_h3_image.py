@@ -40,6 +40,31 @@ def _stack():
     return torch
 
 
+# Hang guard: the file runs in ~100 s on CPU.
+_TEST_TIMEOUT_S = 300
+pytestmark = pytest.mark.timeout(_TEST_TIMEOUT_S)
+
+
+@pytest.fixture(autouse = True)
+def _fail_fast_on_a_hang(request):
+    """Without pytest-timeout, faulthandler dumps stacks and exits on a hang."""
+    if request.config.pluginmanager.hasplugin("timeout"):
+        yield
+        return
+    import faulthandler
+
+    try:  # pytest's real stderr dup; fd 2 is the capture file
+        from _pytest.faulthandler import fault_handler_stderr_fd_key
+        fd = request.config.stash[fault_handler_stderr_fd_key]
+    except (ImportError, KeyError):
+        fd = sys.__stderr__.fileno()
+    faulthandler.dump_traceback_later(_TEST_TIMEOUT_S, exit = True, file = fd)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.fixture(autouse = True)
 def _picture_one_at_its_own_size(monkeypatch):
     """Picture 1 keeps its own size here (the reference edit workflow's 4 MP rescale would make every CPU edit render
@@ -1351,9 +1376,8 @@ def test_the_fp16_int8_blocks_rescale_in_float32(h3i):
 
 
 def test_the_fp16_block_stream_runs_rescaled_past_the_fp16_range(h3i):
-    """The H3 residual stream outgrows float16 (the first block alone writes ~1e5 on a real render): with the rows
-    entering at 1/4096, the blocks writing at 1/4096 and the stream norms' eps at 1/4096^2, the velocity matches the
-    float32 forward where plain float16 reads inf / NaN."""
+    """H3 stream outgrows fp16; scaling rows and block writes by 1/4096 and norm eps by 1/4096^2
+    avoids inf/NaN."""
     import torch
 
     pytest.importorskip("torchao")
@@ -1681,7 +1705,7 @@ def test_the_plan_is_redone_for_a_local_text_encoder_folder(h3i, release, tmp_pa
     pipe.release()
 
 
-def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
+def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i, monkeypatch):
     args = {
         "vram_gb": 95.0,
         "host_gb": 177.0,
@@ -1702,6 +1726,10 @@ def test_replanning_moves_to_a_tier_that_fits_and_refuses_when_none_does(h3i):
         h3i.replan_for_encoder(
             h3i.plan_placement(te_gb = 27.2, **small), h3i.H3_IMAGE_TE_BF16_GB, small
         )
+    # the measured working set floors the stream tier at about 4.5 GB, the old pricing at 7.2 GB
+    with pytest.raises(RuntimeError, match = "free GPU memory"):
+        h3i.plan_placement(te_gb = 27.2, **dict(args, vram_gb = 4.0))
+    monkeypatch.setenv(h3i.MEASURED_WORKING_SET_ENV, "0")
     with pytest.raises(RuntimeError, match = "free GPU memory"):
         h3i.plan_placement(te_gb = 27.2, **dict(args, vram_gb = 6.0))
 
@@ -1909,9 +1937,82 @@ def test_int8_attention_engages_on_the_blocks_only_and_comes_off(h3i, release, m
     assert h3i.install_checkpoint_attention(p, "cpu", scheme = "int8") is None
 
 
+def test_an_explicit_attention_pick_beats_the_checkpoint_and_its_races(h3i, release, monkeypatch):
+    """The user's "sage" pins SageAttention on the DiT blocks whatever the checkpoint declares, with no race against
+    native and no INT8 race (INT8 only when its control is On); any other explicit pick keeps the checkpoint's
+    SageAttention off. The status reads the blocks' routes off the modules."""
+    from core.inference import diffusion_attention as da
+
+    root, _ref, te = release
+    p = h3i.load_minimax_h3_image_pipeline(str(root), device = "cpu", text_encoder = te)
+    mods = h3i._attention_processors(p.transformer)
+    blocks = {id(m) for b in p.transformer.transformer_blocks for m in b.modules()}
+    before = {id(m): m.processor._attention_backend for m in mods}
+    applied: list = []
+
+    def fake_apply(
+        pipe,
+        backend,
+        logger = None,
+        target = None,
+        requested = None,
+    ):
+        applied.append(requested)
+        for m in h3i._attention_processors(pipe.transformer):
+            m.processor._attention_backend = backend
+        return backend
+
+    raced: list = []
+
+    def no_race(*a, **k):
+        raise AssertionError("an explicit sage pick was raced against native")
+
+    def kernel_race(transformer, block_modules, saved, dev, dtype, sage, forced, log, **k):
+        raced.append((sage, forced))
+        return 0, None
+
+    monkeypatch.setattr(da, "apply_attention_backend", fake_apply)
+    monkeypatch.setattr(h3i, "race_checkpoint_attention", no_race)
+    monkeypatch.setattr(h3i, "_race_int8_kernel", kernel_race)
+    # fp8 declares no attention: the pick alone engages it
+    assert (
+        h3i.install_checkpoint_attention(p, "cuda", scheme = "fp8", attention_backend = "sage")
+        == "sage"
+    )
+    assert applied == ["sage"] and raced == [(True, True)]
+    routed = da.attention_census(p)
+    assert routed.get("sage") == sum(1 for m in mods if id(m) in blocks) > 0
+    entry = da.attention_resolved_entry("sage", "sage", p)
+    assert entry[1] == "sage" and len(entry) == 3
+    assert h3i.remove_checkpoint_attention(p) == len(mods)
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    # an explicit native pick: the checkpoint's SageAttention stays off
+    assert (
+        h3i.install_checkpoint_attention(p, "cuda", scheme = "int8", attention_backend = "native")
+        is None
+    )
+    assert {id(m): m.processor._attention_backend for m in mods} == before
+    assert (
+        h3i.explicit_attention_pick("auto") is None
+        and h3i.explicit_attention_pick("unsloth_int8") is None
+    )
+
+
+def test_h3_image_load_passes_the_pick_and_reports_it():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    body = src[src.index("    def _load_h3_image_locked(") :]
+    body = body[: body.index("\n    def ", 10)]
+    assert "attention_backend = attention_backend," in body
+    assert '"attention_backend": attention_resolved_entry(' in body
+    assert "annotate_attention_resolved(resolved, pipe)" in body
+
+
 def test_int8_attention_stays_off_where_it_loses_the_race(h3i, release, monkeypatch):
-    """A card where the INT8 route times slower than the native one keeps native; UNSLOTH_H3_IMAGE_INT8_ATTENTION=1
-    skips the race and forces it."""
+    """Losing race stays native; UNSLOTH_H3_IMAGE_INT8_ATTENTION=1 forces INT8 with no race."""
     from core.inference import diffusion_attention as da
 
     root, _ref, te = release

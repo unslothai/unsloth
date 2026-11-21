@@ -309,8 +309,7 @@ export function generationRawContent(content: unknown): {
   for (const [index, part] of content.entries()) {
     if (!part || typeof part !== "object") continue;
     const record = part as { type?: string; text?: unknown };
-    // Saved parts are already parsed, so their tags are literal; only the reply's very end may
-    // hold a fragment inline parsing has yet to complete.
+    // Saved parts are parsed, so their tags are literal; only the reply's end may be open.
     const text =
       typeof record.text === "string"
         ? markLiteralThinkTags(record.text, {

@@ -224,6 +224,29 @@ test("new settings are named after the model and numbered past taken names", () 
   );
 });
 
+test("an NPU model's settings are named after its picker name, not the lemonade id", () => {
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    page,
+    /const npuName = useNpuDisplayName\(targetIsNpu \? target\.id : null\);[\s\S]*?const modelName =\s+npuName \?\? \(targetIsNpu \? configId\.replace\(\/\^lemonade:\/, ""\) : modelDisplayName\(configId\)\);/,
+  );
+  // Remembered settings wait for the NPU list, so the adopted set is not named after the id.
+  assert.match(
+    page,
+    /const npuNamePending = targetIsNpu && !npuCatalogListed;\s+useEffect\(\(\) => \{\s+if \(storedRecord\.remembered && persistedSet === undefined && !npuNamePending\) \{\s+adoptRememberedRunSettings\(/,
+  );
+  assert.equal(
+    saved.newRunSettingsName([], "Qwen3-VL-4B-Instruct-NPU2"),
+    "Qwen3-VL-4B-Instruct-NPU2 custom settings",
+  );
+});
+
 test("a model name at the length limit still gets a unique numbered name", () => {
   const longName = "x".repeat(90);
   const first = saved.newRunSettingsName([], longName);

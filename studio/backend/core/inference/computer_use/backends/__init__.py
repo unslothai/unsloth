@@ -42,7 +42,10 @@ def _create() -> Backend:
             from .windows import WindowsBackend
             return WindowsBackend()
         if sys.platform.startswith("linux"):
-            from .linux import LinuxBackend
+            from .linux import LinuxBackend, wayland_session
+            if wayland_session():
+                from .wayland import WaylandBackend
+                return WaylandBackend()
             return LinuxBackend()
     except Exception:  # noqa: BLE001 - a missing system library must not take the server down
         logger.warning("computer use backend failed to load", exc_info = True)

@@ -1086,6 +1086,13 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
+            let policy_never = matches!(
+                settings.hardware_acceleration_policy(),
+                webkit2gtk::HardwareAccelerationPolicy::Never
+            );
+            if !linux_webkit::smooth_scrolling_enabled(policy_never) {
+                settings.set_enable_smooth_scrolling(false);
+            }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
         // installed; deferred because loading it blocks ~40 ms. Not on a bundled AppImage: its
@@ -2385,9 +2392,11 @@ fn main() {
             webkit_rendering.wayland_session,
         ),
         webkit_rendering.cpu_painting,
+        linux_webkit::legacy_compositor(webkit_rendering.webkit_version),
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
+    let gpu_launch =
+        gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.

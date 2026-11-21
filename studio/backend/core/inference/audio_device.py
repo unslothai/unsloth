@@ -84,9 +84,7 @@ def audio_load_runs_on_cpu(
     value: Optional[str],
     model: Any = None,
 ) -> bool:
-    """True when a native audio load of this type ends up in CPU RAM: asked for, or a GGUF
-    audio model on an audio.cpp runtime that only runs on the CPU (Auto cannot place it on a GPU).
-    A CPU-only audio.cpp package (``model``, TQ2_1) runs on the CPU too."""
+    """True when an audio load lands in CPU RAM: CPU requested, or a CPU-only audio.cpp runtime/package."""
     if audio_device_forces_cpu(value) or getattr(model, "cpu_only", False):
         return True
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES

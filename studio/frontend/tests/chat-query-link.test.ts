@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `/chat?q=%s` is what a browser custom search engine opens: a new chat with the text typed in,
-// never sent, in its own draft slot.
+// `/chat?q=%s` opens a new chat with the text in its own draft slot, typed in but never sent.
 
 import assert from "node:assert/strict";
 import test from "node:test";

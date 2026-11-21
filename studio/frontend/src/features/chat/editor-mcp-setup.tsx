@@ -16,18 +16,53 @@ import {
   type EditorMcpId,
   type McpBuiltinConfig,
   type McpServerConfig,
+  installUnrealTools,
   listMcpBuiltins,
   testEditorMcp,
   updateEditorMcp,
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { EDITOR_MCP } from "./editor-mcp-catalog";
+import { openInstallGuide } from "./mcp-install-guide";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
-export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
+/** Epic's Unreal MCP can build a level but not save it; this installs Unsloth's save tools into the project. */
+function UnrealToolsInstaller() {
+  const [projectPath, setProjectPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function install() {
+    setBusy(true);
+    setResult(null);
+    try {
+      await installUnrealTools(projectPath.trim());
+      setResult({ ok: true, text: "Installed. Restart Unreal Editor to load the level save tools." });
+    } catch (err) {
+      setResult({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 border-t pt-3">
+      <p>Unreal MCP cannot save levels. Install Unsloth&apos;s level save tools into your project so the model can save what it builds.</p>
+      <Label htmlFor="unreal-tools-project">Unreal project folder</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input id="unreal-tools-project" className="min-w-0 flex-1" value={projectPath} disabled={busy} placeholder="Folder that holds your .uproject file" onChange={(event) => { setProjectPath(event.target.value); setResult(null); }} />
+        <Button size="sm" variant="outline" disabled={busy || !projectPath.trim()} onClick={() => void install()}>Install level save tools</Button>
+      </div>
+      {result && <p role={result.ok ? "status" : "alert"} className={`text-xs ${result.ok ? "" : "text-destructive"}`}>{result.text}</p>}
+    </div>
+  );
+}
+
+export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
   editorId: EditorMcpId;
   servers: McpServerConfig[];
   onBusyChange: (busy: boolean) => void;
+  onClose?: () => void;
 }) {
   const copy = EDITOR_MCP[editorId];
   const [config, setConfig] = useState<McpBuiltinConfig | null>(null);
@@ -47,7 +82,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
   const refresh = useCallback(async (wait = true) => {
     const current = ++generation.current;
     try {
-      const rows = await listMcpBuiltins(wait);
+      const rows = await listMcpBuiltins(wait, editorId);
       if (generation.current !== current) return;
       const row = rows.find((item) => item.builtin_id === editorId);
       if (!row) throw new Error(`${copy.name} MCP is not available from this Unsloth backend.`);
@@ -157,7 +192,12 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
       {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
         Unsloth connects to the MCP server that the {copy.name} add-on runs on this computer. Nothing is downloaded.
       </p>}
-      {config?.installed === false && !config.is_enabled && <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer. Open Setup help below to install it.</p>}
+      {config?.installed === false && !config.is_enabled && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer.</p>
+          <Button size="sm" variant="outline" disabled={locked} onClick={() => openInstallGuide(copy.guide, onClose)}>Guide to Install</Button>
+        </div>
+      )}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">
@@ -186,6 +226,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange }: {
             {copy.steps.map((step, index) => <li key={index}>{step}</li>)}
           </ol>
           <p>Keep {copy.name} open, then test the connection above.</p>
+          {copy.installTools && <UnrealToolsInstaller />}
         </div>
         </CollapsibleContent>
       </Collapsible>

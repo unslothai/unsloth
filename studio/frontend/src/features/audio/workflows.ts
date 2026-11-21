@@ -38,7 +38,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
   {
     id: "speak",
     label: "Text to Speech",
-    heading: "Text to speech",
+    heading: "Text to Speech",
     icon: TextToSpeechIcon,
     hint: "Turn text into speech with a built-in or designed voice",
     slot: "speak",
