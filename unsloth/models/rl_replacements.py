@@ -7149,6 +7149,116 @@ def _unsloth_gkd_dense_head(model):
     return head
 
 
+_UNSLOTH_GKD_TOKENIZER_PROBES = (
+    "Unsloth GKD tokenizer compatibility probe 7F4A.",
+    "The quick brown fox jumps over the lazy dog.",
+    "think reasoning 12345 !@#$%^&*()",
+    "こんにちは世界 Привет мир مرحبا بالعالم",
+)
+
+
+def _unsloth_gkd_tokenizer(processing_class):
+    """Return the text tokenizer from a tokenizer/processor/model reference, if one is available."""
+    if processing_class is None:
+        return None
+    tokenizer = getattr(processing_class, "tokenizer", None)
+    if tokenizer is not None:
+        return tokenizer
+    if callable(processing_class) and (
+        hasattr(processing_class, "get_vocab") or hasattr(processing_class, "encode")
+    ):
+        return processing_class
+    tokenizer = getattr(processing_class, "_saved_temp_tokenizer", None)
+    if tokenizer is not None:
+        return getattr(tokenizer, "tokenizer", tokenizer)
+    tokenizer = getattr(processing_class, "_tokenizer", None)
+    return getattr(tokenizer, "tokenizer", tokenizer) if tokenizer is not None else processing_class
+
+
+def _unsloth_gkd_probe_ids(tokenizer, text):
+    try:
+        encoded = tokenizer(text, add_special_tokens = False)
+        ids = (
+            encoded["input_ids"]
+            if isinstance(encoded, dict)
+            else getattr(encoded, "input_ids", encoded)
+        )
+        if hasattr(ids, "tolist"):
+            ids = ids.tolist()
+        while ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+        return tuple(int(token_id) for token_id in ids)
+    except Exception:
+        return None
+
+
+def _unsloth_gkd_tokenizers_compatible(trainer, student, teacher):
+    """Return False for a known mismatch, True for matching probes, or None when unknown."""
+    cache_name = "_unsloth_gkd_tokenizer_compatibility"
+    if hasattr(trainer, cache_name):
+        return getattr(trainer, cache_name)
+
+    def finish(result):
+        try:
+            setattr(trainer, cache_name, result)
+        except Exception:
+            pass
+        return result
+
+    def exposed_mapping(tokenizer):
+        """Return the public vocabulary and added-token mappings, when available."""
+        try:
+            get_vocab = getattr(tokenizer, "get_vocab", None)
+            if not callable(get_vocab):
+                return None
+            vocab = get_vocab()
+            if not isinstance(vocab, dict):
+                return None
+            vocab_items = tuple(
+                sorted((str(token), int(token_id)) for token, token_id in vocab.items())
+            )
+            added = getattr(tokenizer, "added_tokens_encoder", None)
+            if isinstance(added, dict):
+                added_items = tuple(
+                    sorted((str(token), int(token_id)) for token, token_id in added.items())
+                )
+            else:
+                added_items = None
+            return vocab_items, added_items
+        except Exception:
+            return None
+
+    student_tokenizer = _unsloth_gkd_tokenizer(
+        getattr(trainer, "processing_class", None)
+        or getattr(student, "_saved_temp_tokenizer", None)
+        or getattr(student, "_tokenizer", None)
+    )
+    teacher_tokenizer = _unsloth_gkd_tokenizer(
+        getattr(teacher, "_saved_temp_tokenizer", None) or getattr(teacher, "_tokenizer", None)
+    )
+    if student_tokenizer is None or teacher_tokenizer is None:
+        return finish(None)
+    student_mapping = exposed_mapping(student_tokenizer)
+    teacher_mapping = exposed_mapping(teacher_tokenizer)
+    if student_mapping is not None and teacher_mapping is not None:
+        if student_mapping[0] != teacher_mapping[0]:
+            return finish(False)
+        if (
+            student_mapping[1] is not None
+            and teacher_mapping[1] is not None
+            and student_mapping[1] != teacher_mapping[1]
+        ):
+            return finish(False)
+    for text in _UNSLOTH_GKD_TOKENIZER_PROBES:
+        student_ids = _unsloth_gkd_probe_ids(student_tokenizer, text)
+        teacher_ids = _unsloth_gkd_probe_ids(teacher_tokenizer, text)
+        if student_ids is None or teacher_ids is None:
+            return finish(None)
+        if student_ids != teacher_ids:
+            return finish(False)
+    return finish(True)
+
+
 def _unsloth_gkd_logit_transforms(model):
     """``(scale, softcap)`` exactly as the model's own forward applies them to its logits."""
     model_config = _unsloth_get_model_config(model)
@@ -7311,6 +7421,19 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     """TRL's GKD loss without either full logits tensor, or ``None`` to run TRL's own ``compute_loss``."""
     if layout is None:
         return None
+    teacher_model = getattr(self, "teacher_model", None)
+    if teacher_model is None:
+        return _unsloth_gkd_note_fallback(self, "no teacher_model")
+    try:
+        unwrapped_student = self.accelerator.unwrap_model(model)
+        unwrapped_teacher = self.accelerator.unwrap_model(teacher_model)
+    except Exception:
+        return _unsloth_gkd_note_fallback(self, "unwrap_model")
+    if _unsloth_gkd_tokenizers_compatible(self, unwrapped_student, unwrapped_teacher) is False:
+        raise ValueError(
+            "GKD requires the student and teacher tokenizers to map every token to the same ID; "
+            "use matching tokenizers or a cross-tokenizer distillation method."
+        )
     if distillation_chunked_jsd is None and _unsloth_fused_linear_jsd is None:
         return _unsloth_gkd_note_fallback(self, "unsloth_zoo has no distillation_chunked_jsd")
     if os.environ.get("UNSLOTH_GKD_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
@@ -7337,16 +7460,8 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "inputs")
     if layout["shift"] == "prompt" and "prompts" not in inputs:
         return _unsloth_gkd_note_fallback(self, "inputs")
-    teacher_model = getattr(self, "teacher_model", None)
-    if teacher_model is None:
-        return _unsloth_gkd_note_fallback(self, "no teacher_model")
     if not _unsloth_gkd_jsd_supported(type(self)):
         return _unsloth_gkd_note_fallback(self, "generalized_jsd_loss is not TRL's")
-    try:
-        unwrapped_student = self.accelerator.unwrap_model(model)
-        unwrapped_teacher = self.accelerator.unwrap_model(teacher_model)
-    except Exception:
-        return _unsloth_gkd_note_fallback(self, "unwrap_model")
     student_head = _unsloth_gkd_dense_head(unwrapped_student)
     teacher_head = _unsloth_gkd_dense_head(unwrapped_teacher)
     if student_head is None or teacher_head is None:
@@ -7661,6 +7776,9 @@ for _gkd_item in (
     _unsloth_gkd_jsd_supported,
     _unsloth_gkd_note_fallback,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_tokenizer,
+    _unsloth_gkd_probe_ids,
+    _unsloth_gkd_tokenizers_compatible,
     _unsloth_gkd_head_hooks,
     _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
@@ -7672,6 +7790,12 @@ for _gkd_item in (
 ):
     RL_PRE_ITEMS["gkd_trainer"].append(inspect.getsource(_gkd_item))
 RL_PRE_ITEMS["gkd_trainer"].append(
+    "_UNSLOTH_GKD_TOKENIZER_PROBES = (\n"
+    "    'Unsloth GKD tokenizer compatibility probe 7F4A.',\n"
+    "    'The quick brown fox jumps over the lazy dog.',\n"
+    "    'think reasoning 12345 !@#$%^&*()',\n"
+    "    'こんにちは世界 Привет мир مرحبا بالعالم',\n"
+    ")\n"
     "import re\n"
     "import inspect\n"
     "try:\n"

@@ -154,6 +154,83 @@ class _Head(torch.nn.Module):
         return self.head
 
 
+class _ProbeTokenizer:
+    def __init__(self, offset = 0):
+        self.offset = offset
+
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+    ):
+        del add_special_tokens
+        return {"input_ids": [ord(char) + self.offset for char in text]}
+
+
+class _MappedProbeTokenizer(_ProbeTokenizer):
+    def __init__(self, vocab, added_tokens):
+        super().__init__()
+        self._vocab = dict(vocab)
+        self.added_tokens_encoder = dict(added_tokens)
+
+    def get_vocab(self):
+        return dict(self._vocab)
+
+
+def test_gkd_tokenizer_probe_detects_same_width_different_token_ids():
+    student = _TinyLM(128, 8, 0.0, 1)
+    teacher = _TinyLM(128, 8, 0.0, 2)
+    trainer = types.SimpleNamespace(processing_class = _ProbeTokenizer())
+    teacher._saved_temp_tokenizer = _ProbeTokenizer(offset = 1)
+    assert rl._unsloth_gkd_tokenizers_compatible(trainer, student, teacher) is False
+    teacher._saved_temp_tokenizer = _ProbeTokenizer()
+    matching_trainer = types.SimpleNamespace(processing_class = _ProbeTokenizer())
+    assert rl._unsloth_gkd_tokenizers_compatible(matching_trainer, student, teacher) is True
+
+
+def test_gkd_tokenizer_mapping_detects_added_token_id_mismatch():
+    student = _TinyLM(128, 8, 0.0, 1)
+    teacher = _TinyLM(128, 8, 0.0, 2)
+    student_tokenizer = _MappedProbeTokenizer({"a": 0, "b": 1}, {"<extra>": 2})
+    teacher_tokenizer = _MappedProbeTokenizer({"a": 0, "b": 1}, {"<extra>": 3})
+    trainer = types.SimpleNamespace(processing_class = student_tokenizer)
+    teacher._saved_temp_tokenizer = teacher_tokenizer
+    assert rl._unsloth_gkd_tokenizers_compatible(trainer, student, teacher) is False
+
+
+def test_gkd_tokenizer_probe_is_unknown_when_teacher_has_no_tokenizer():
+    student = _TinyLM(128, 8, 0.0, 1)
+    teacher = _TinyLM(128, 8, 0.0, 2)
+    trainer = types.SimpleNamespace(processing_class = _ProbeTokenizer())
+    assert rl._unsloth_gkd_tokenizers_compatible(trainer, student, teacher) is None
+
+
+def test_same_width_tokenizer_mismatch_stops_trainer_before_optimizer_step(monkeypatch):
+    student = _TinyLM(128, 8, 0.0, 1)
+    teacher = _TinyLM(128, 8, 0.0, 2)
+    teacher._saved_temp_tokenizer = _ProbeTokenizer(offset = 1)
+    namespace = dict(vars(rl), GKDTrainer = GKDTrainer, empty_cache = lambda: None)
+    exec(
+        "class _Generated(GKDTrainer):\n"
+        + rl.gkd_trainer_compute_loss("compute_loss", SHIFT_LAYOUT),
+        namespace,
+    )
+    trainer = namespace["_Generated"].__new__(namespace["_Generated"])
+    trainer.__dict__.update(_trainer(0.5, student, teacher).__dict__)
+    trainer.processing_class = _ProbeTokenizer()
+    monkeypatch.setenv("UNSLOTH_GKD_CHUNKED", "0")
+    optimizer = torch.optim.SGD(student.parameters(), lr = 0.1)
+    before = [parameter.detach().clone() for parameter in student.parameters()]
+    with pytest.raises(ValueError, match = "cross-tokenizer"):
+        loss = trainer.compute_loss(student, _inputs(128))
+        loss.backward()
+        optimizer.step()
+    assert all(
+        torch.equal(parameter, previous)
+        for parameter, previous in zip(student.parameters(), before)
+    )
+
+
 def test_dense_head_guard():
     assert rl._unsloth_gkd_dense_head(_Head(torch.nn.Linear(8, 32, bias = False))) is not None
     assert rl._unsloth_gkd_dense_head(_Head(torch.nn.Embedding(32, 8))) is None
@@ -373,11 +450,15 @@ def test_generated_items_are_self_contained():
         "_unsloth_gkd_jsd_supported",
         "_unsloth_gkd_note_fallback",
         "_unsloth_gkd_chunk_size",
+        "_unsloth_gkd_tokenizer",
+        "_unsloth_gkd_probe_ids",
+        "_unsloth_gkd_tokenizers_compatible",
         "_unsloth_grpo_returns_hidden_states",
         "_unsloth_grpo_hidden_states_signal",
         "_unsloth_get_model_config",
     ):
         assert f"def {name}(" in pre, name
+    assert "_UNSLOTH_GKD_TOKENIZER_PROBES = (" in pre
     assert "from unsloth_zoo.rl_replacements import distillation_chunked_jsd" in pre
     assert rl.gkd_trainer_compute_loss in rl.RL_FUNCTIONS["gkd_trainer"]
 
