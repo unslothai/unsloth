@@ -359,11 +359,12 @@ class TextPreprocessor:
     # Language = info string's first word (c++); the lookbehind keeps a failed fence line linear.
     # Fences fill their own line, so an inline ```span``` is none. The lookahead finds the closer
     # or, first, the next opener with an info string; then only the opener line matches (no
-    # closer group), which keeps the scan linear and its memory constant.
+    # closer group), which keeps the scan linear and its memory constant. A fence line shorter
+    # than the opener is code (CommonMark), so a four-backtick block can show a three-backtick one.
     _STRUCTURE_PATTERN = re.compile(
-        r"^([^\S\n]*)```+[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n"
-        r"(?=(?s:.*?)^(?:([^\S\n]*```+[^\S\n]*$)|[^\S\n]*```+[^\S\n]*[^\s`][^\n`]*$))"
-        r"(?(3)(?:\3$|((?s:.*?))\n\3$))"
+        r"^([^\S\n]*)(```+)[^\S\n]*([^\s`]*)(?:(?<=[^\s`])[^\S\n][^\n`]*)?\n"
+        r"(?=(?s:.*?)^(?:([^\S\n]*\2`*[^\S\n]*$)|[^\S\n]*\2`*[^\S\n]*[^\s`][^\n`]*$))"
+        r"(?(4)(?:\4$|((?s:.*?))\n\4$))"
         r"|^(#{1,3}) (.+)$",
         re.MULTILINE,
     )
@@ -392,12 +393,12 @@ class TextPreprocessor:
         """Add special tokens for structure (chapters, sections)"""
 
         def tag(match):
-            if match[5] is not None:
-                name = self._HEADING_TAGS[len(match[5])]
-                return f"<|{name}|>{match[6]}<|/{name}|>"
-            if match[3] is None:
+            if match[6] is not None:
+                name = self._HEADING_TAGS[len(match[6])]
+                return f"<|{name}|>{match[7]}<|/{name}|>"
+            if match[4] is None:
                 return match[0]
-            return f"{match[1]}<|code|{match[2]}|>{match[4] or ''}<|/code|>"
+            return f"{match[1]}<|code|{match[3]}|>{match[5] or ''}<|/code|>"
 
         return self._STRUCTURE_PATTERN.sub(tag, text)
 
