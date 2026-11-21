@@ -43100,13 +43100,14 @@ class LlamaCppBackend:
                     # The sanitizer hides those calls; don't report an empty success.
                     # Streaming snapshots may contain an unfinished marker that the
                     # route holds back. Judge the completed, sanitized answer instead.
+                    # answer_text holds content only, including any literal think tags.
                     _completed_answer = _strip_tool_markup(answer_text, final = True)
                     _final_visible_answer = _final_answer_visible(
                         _completed_answer, _completed_answer, at_end = True
                     )
                     _hidden_final_call = (
                         auto_heal_tool_calls
-                        and not _text_outside_think(_final_visible_answer).strip()
+                        and not _final_visible_answer.strip()
                         and (
                             answer_text.strip()
                             or _final_structured_call

@@ -329,3 +329,38 @@ def test_final_retry_after_user_nudge_uses_servable_prompt(monkeypatch, charge_s
     assert retry_counts == [(None, False)]
     assert "tools" not in retry
     assert retry["add_generation_prompt"] is True
+
+
+@pytest.mark.parametrize("reasoning", ["", "I should return the requested XML."])
+def test_final_literal_think_tags_do_not_trigger_tool_recovery(monkeypatch, reasoning):
+    literal = "<think>like this</think>"
+    final = _answer(literal)
+    if reasoning:
+        final.insert(0, _sse({"reasoning_content": reasoning}))
+    backend, payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            [
+                _tool_call_sse("web_search", {"query": "first"}, "first"),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            final,
+            _answer("Unnecessary retry."),
+        ],
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *a, **kw: 300)
+    calls = _record_tool_calls(monkeypatch, "safe")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Search, then return the literal XML I requested."}],
+        [_web_search_tool()],
+        reasoning_provenance = {},
+    )
+
+    assert len(payloads) == 2
+    assert calls == [("web_search", {"query": "first"})]
+    shown = [event["text"] for event in events if event["type"] == "content"][-1]
+    expected = f"<think>{reasoning}</think>{literal}" if reasoning else literal
+    assert shown == expected
