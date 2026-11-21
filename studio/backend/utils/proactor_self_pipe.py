@@ -104,6 +104,7 @@ def install_proactor_self_pipe_guard() -> bool:
         return False
     try:
         from asyncio import proactor_events
+
         base = proactor_events.BaseProactorEventLoop
         original = base._loop_self_reading
         original_make = base._make_self_pipe

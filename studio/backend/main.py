@@ -58,8 +58,9 @@ if sys.platform == "win32":
                 pass
     del _win_stream
     try:
-        from utils.proactor_self_pipe import install_proactor_self_pipe_guard as _install_self_pipe_guard
-
+        from utils.proactor_self_pipe import (
+            install_proactor_self_pipe_guard as _install_self_pipe_guard,
+        )
         _install_self_pipe_guard()
     except Exception:
         pass
