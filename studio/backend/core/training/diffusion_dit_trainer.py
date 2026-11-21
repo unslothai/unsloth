@@ -3991,18 +3991,23 @@ def _train_dit(
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "fp8":
+        reload_nf4 = None
         try:
             if not _apply_fp8_training(transformer, on_event, cfg.resolved_family, device = device):
                 base_precision = "bf16"
         except Fp8FallbackDoesNotFit as exc:
+            reload_nf4 = str(exc)
+        if reload_nf4 is not None:
             # Below the bf16 fit the base only trains quantized: reload it as nf4 (no fp8 here, and no block swap
-            # either: Auto never picks fp8 with one), with the same adapter and checkpointing.
+            # either: Auto never picks fp8 with one), with the same adapter and checkpointing. Outside the handler,
+            # so the exception's traceback no longer holds the conversion frame's reference to the old base.
             _emit(
                 on_event,
                 "warning",
-                message = f"fp8 training unavailable ({exc}); the bf16 base does not fit, training nf4 instead.",
+                message = f"fp8 training unavailable ({reload_nf4}); the bf16 base does not fit, training nf4 instead.",
             )
             transformer = None
+            lora_params = None
             gc.collect()
             _empty_device_cache(device)
             with report_model_load_progress(on_event):
