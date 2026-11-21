@@ -712,9 +712,7 @@ def evaluate(
                         "Use --backend unsloth or --backend hf to evaluate it."
                     )
                 if rank > 16:
-                    model_args["max_lora_rank"] = next(
-                        r for r in _VLLM_LORA_RANKS if r >= rank
-                    )
+                    model_args["max_lora_rank"] = next(r for r in _VLLM_LORA_RANKS if r >= rank)
                 if _has_tokenizer_files(model):
                     model_args["tokenizer"] = model_args["lora_local_path"]
                 typer.echo(
