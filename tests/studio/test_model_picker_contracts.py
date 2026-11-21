@@ -2515,7 +2515,7 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     assert "diffusionPinnable: false," in src
     # The XPU ban applies to torch ordinals only, not Vulkan ones.
     assert (
-        "pinnable: pinnableBackend && "
+        "pinnable: pinnableBackend && d.no_llama_kernels !== true && "
         '(d.index_kind === "vulkan" || '
         '(data?.device_backend !== "xpu" && '
         '(d.index_kind === "physical" || d.index_kind === "cuda_device"))),' in src
@@ -2526,7 +2526,7 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
     )
     assert (
-        "diffusionPinnable: diffusionBackend && "
+        "diffusionPinnable: diffusionBackend && d.no_torch_kernels !== true && "
         '(d.index_kind === "physical" || d.index_kind === "cuda_device"),' in src
     )
 
