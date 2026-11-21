@@ -116,6 +116,38 @@ const SENTENCES: Record<string, string[]> = {
     "ئەڭ يېقىن پويىز ئىستانسىسى قەيەردە؟ مەن بىلەت سېتىۋالماقچىمەن.",
     "كۆپ رەھمەت سىزگە",
   ],
+  am: [
+    "በጣም የቅርቡ የባቡር ጣቢያ የት ነው? ትኬት መግዛት እፈልጋለሁ።",
+    "አመሰግናለሁ",
+  ],
+  sw: [
+    "Kituo cha treni cha karibu kiko wapi? Mimi nataka kununua tiketi kwa safari yangu.",
+    "Habari yako, asante sana.",
+  ],
+  ha: [
+    "Ina tashar jirgin ƙasa mafi kusa? Ina so in sayi tikiti domin tafiya zuwa gida.",
+    "Sannu, barka da zuwa, mun gode sosai.",
+  ],
+  yo: [
+    "Nibo ni ibudo ọkọ oju-irin ti o sunmọ julọ wa? Mo fẹ ra tikẹti kan lati lọ si ile.",
+    "Ẹ ku ọjọ meta, a dupẹ pupọ.",
+  ],
+  ig: [
+    "Ebee ka ọdụ ụgbọ oloko kacha nso dị? Achọrọ m ịzụta tiketi maka njem anyị.",
+    "Kedu ka ị mere? Daalụ nke ukwuu.",
+  ],
+  zu: [
+    "Kuphi isiteshi sesitimela esiseduze? Mina ngifuna ukuthenga ithikithi futhi ngihambe.",
+    "Sawubona, ngiyabonga kakhulu.",
+  ],
+  af: [
+    "Waar is die naaste treinstasie? Ek wil graag hierdie kaartjie vir ons koop.",
+    "Goeiedag, baie dankie vir julle hulp.",
+  ],
+  so: [
+    "Xaggee ayuu ku yaalaa saldhigga tareenka ugu dhow? Waxaan rabaa inaan iibsado tigidh.",
+    "Aad iyo aad ayaad u mahadsanid, sidee tahay maanta?",
+  ],
 };
 
 test("every Translate language is recognised from a sentence and a short phrase", () => {

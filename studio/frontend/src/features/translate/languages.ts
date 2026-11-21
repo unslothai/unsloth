@@ -48,6 +48,14 @@ export const TRANSLATE_LANGUAGES: readonly TranslateLanguage[] = [
   { code: "kk", name: "Kazakh" },
   { code: "mn", name: "Mongolian" },
   { code: "ug", name: "Uyghur" },
+  { code: "am", name: "Amharic" },
+  { code: "sw", name: "Swahili" },
+  { code: "ha", name: "Hausa" },
+  { code: "yo", name: "Yoruba" },
+  { code: "ig", name: "Igbo" },
+  { code: "zu", name: "Zulu" },
+  { code: "af", name: "Afrikaans" },
+  { code: "so", name: "Somali" },
 ];
 
 export const DEFAULT_TARGET_LANGUAGE = "en";
