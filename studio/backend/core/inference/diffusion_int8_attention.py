@@ -2235,6 +2235,10 @@ def install_auto(
     )
     if type(transformer).__name__ not in listed:
         return 0
+    if type(
+        transformer
+    ).__name__ in dispatch.AUTO_SINGLE_EXPERT_ONLY and dispatch.two_expert_pipeline(pipe):
+        return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):
         index = _device_index(torch.device(device))
