@@ -176,6 +176,19 @@ def test_declared_html_charset_is_honored(ebooks):
     assert ebooks._html_text(data) == "café"
 
 
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<p aria-hidden>Shown.</p>",
+        "<head><meta http-equiv content></head><body><p>Shown.</p></body>",
+        '<head><meta http-equiv="Content-Type" content></head><body><p>Shown.</p></body>',
+    ],
+)
+def test_valueless_attributes_do_not_abort_the_book(ebooks, markup):
+    assert ebooks._html_text(f"<html>{markup}</html>".encode()) == "Shown."
+    assert ebooks._html_text(b"<html><p hidden>Gone.</p><p>Shown.</p></html>") == "Shown."
+
+
 def test_html_body_closes_implicit_head(ebooks):
     assert ebooks._html_text(b"<head><title>Book</title><body><p>hello</p>") == "hello"
 
