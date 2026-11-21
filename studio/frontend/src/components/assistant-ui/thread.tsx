@@ -1887,7 +1887,6 @@ const PromptQueueContext = createContext<PromptQueueCallbacks>({
 // Gap between last message and floating composer, added to the bottom spacer height.
 const COMPOSER_SCROLL_GAP_PX = 24;
 const FOOTER_GAP_BELOW_SPACER_PX = 10;
-// The composer's box inside the thread viewport, for the wallpaper mask.
 const THREAD_COMPOSER_VARS = [
   "--thread-composer-clip",
   "--thread-composer-bottom",

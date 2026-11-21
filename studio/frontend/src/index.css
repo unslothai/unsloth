@@ -6954,8 +6954,7 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* Masks the thread only inside the composer's rounded box, fading in across its top edge: the side
-   strips and top-corner layers keep text beside it visible (vars from ThreadComposerDock). */
+/* Masks the thread only inside the composer's rounded box; side strips and top-corner layers keep text beside it. */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
   --clip: var(--thread-composer-clip, 0px);
   --fade: var(--thread-composer-fade, 0px);
