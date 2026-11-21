@@ -45,6 +45,7 @@ except Exception:
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
+import threading
 import math
 import requests
 import torch
@@ -6966,7 +6967,7 @@ class _CastShardsOnWrite:
             if len(names) > 1 and any(planned[k] != state_dict[k].dtype for k in names):
                 for k in names[1:]:
                     self.state_dict[k] = state_dict[k].to(device = "cpu", dtype = planned[k])
-        seen, before, after = set(), 0, 0
+        seen, ratio = set(), None
         for k, dtype in planned.items():
             v = self.state_dict[k]
             if v.device.type != "meta":
@@ -6974,10 +6975,14 @@ class _CastShardsOnWrite:
                 if key in seen:
                     continue
                 seen.add(key)
-            before += v.numel() * v.element_size()
-            after += v.numel() * torch.empty((), dtype = dtype).element_size()
-        # Plan shards on the written sizes, so the layout matches an eager cast.
-        if before and after and before != after:
+            if v.numel() == 0:
+                continue
+            r = torch.empty((), dtype = dtype).element_size() / v.element_size()
+            ratio = r if ratio is None else max(ratio, r)
+        # transformers plans shards on the original sizes. Scale the limit by the largest per-tensor export / original
+        # ratio, so no written shard passes max_shard_size even when some tensors keep their dtype (one uniform cast
+        # gives the eager layout; a mix plans a little smaller).
+        if ratio is not None and ratio != 1.0:
             try:
                 from huggingface_hub.serialization._base import parse_size_to_int
                 limit = (
@@ -6985,37 +6990,73 @@ class _CastShardsOnWrite:
                     if isinstance(max_shard_size, str)
                     else int(max_shard_size)
                 )
-                self.max_shard_size = max(1, int(limit * before / after))
+                self.max_shard_size = max(1, int(limit / ratio))
             except Exception:
                 pass
 
-    def _write(self, original):
-        def write(tensors, filename, *args, **kwargs):
-            planned = _planned_save_dtypes(self.model, tensors, self.target_dtype)
-            cast = {
-                k: v.to(device = "cpu", dtype = planned[k])
-                if k in planned and planned[k] != v.dtype
-                else v
-                for k, v in tensors.items()
-            }
-            self.engaged += 1
-            return original(cast, filename, *args, **kwargs)
-
-        return write
+    def _write_one(self, original, tensors, filename, *args, **kwargs):
+        planned = _planned_save_dtypes(self.model, tensors, self.target_dtype)
+        cast = {
+            k: v.to(device = "cpu", dtype = planned[k]) if k in planned and planned[k] != v.dtype else v
+            for k, v in tensors.items()
+        }
+        self.engaged += 1
+        return original(cast, filename, *args, **kwargs)
 
     def __enter__(self):
         import transformers.modeling_utils as modeling_utils
 
-        self._module = modeling_utils
-        self._original = getattr(modeling_utils, "safe_save_file", None)
-        if self._original is not None:
-            modeling_utils.safe_save_file = self._write(self._original)
+        with _CAST_HOOK_LOCK:
+            if _CAST_HOOK_STATE["users"] == 0:
+                original = getattr(modeling_utils, "safe_save_file", None)
+                if original is None:
+                    self._installed = False
+                    return self
+                _CAST_HOOK_STATE["original"] = original
+                modeling_utils.safe_save_file = _dispatch_cast_save
+            _CAST_HOOK_STATE["users"] += 1
+        self._installed = True
+        _cast_hook_stack().append(self)
         return self
 
     def __exit__(self, *exc):
-        if self._original is not None:
-            self._module.safe_save_file = self._original
+        if not getattr(self, "_installed", False):
+            return False
+        stack = _cast_hook_stack()
+        if self in stack:
+            stack.remove(self)
+        import transformers.modeling_utils as modeling_utils
+
+        with _CAST_HOOK_LOCK:
+            _CAST_HOOK_STATE["users"] -= 1
+            if _CAST_HOOK_STATE["users"] == 0:
+                if getattr(modeling_utils, "safe_save_file", None) is _dispatch_cast_save:
+                    modeling_utils.safe_save_file = _CAST_HOOK_STATE["original"]
+                _CAST_HOOK_STATE["original"] = None
         return False
+
+
+# One dispatcher stands in for transformers' safe_save_file while any _CastShardsOnWrite is open. Each thread
+# writes through its own innermost caster (a thread-local stack), so overlapping saves never cast each other's
+# shards, and the original is put back only when the last one closes.
+_CAST_HOOK_LOCK = threading.Lock()
+_CAST_HOOK_STATE = {"users": 0, "original": None}
+_CAST_HOOK_LOCAL = threading.local()
+
+
+def _cast_hook_stack():
+    stack = getattr(_CAST_HOOK_LOCAL, "stack", None)
+    if stack is None:
+        stack = _CAST_HOOK_LOCAL.stack = []
+    return stack
+
+
+def _dispatch_cast_save(tensors, filename, *args, **kwargs):
+    original = _CAST_HOOK_STATE["original"]
+    stack = getattr(_CAST_HOOK_LOCAL, "stack", None)
+    if stack:
+        return stack[-1]._write_one(original, tensors, filename, *args, **kwargs)
+    return original(tensors, filename, *args, **kwargs)
 
 
 def _restamp_index_total_size(save_directory, variant = None):
