@@ -147,7 +147,7 @@ export function missingRewardColumns(
 }
 
 export function isRlRole(name: string): name is RlRole {
-  return name in RL_ROLE_ALIASES;
+  return Object.hasOwn(RL_ROLE_ALIASES, name);
 }
 
 /** Roles, then GRPO reward compare_to columns, the dataset can't supply; Start stays off for any. */

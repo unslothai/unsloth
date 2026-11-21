@@ -18,7 +18,7 @@ const { parseRewardWeight } = await import(
 const { parseYamlRlSettings } = await import(
   "../src/features/training/lib/yaml-config.ts"
 );
-const { resolveRlMapping, streamingBlockersClearChoice } = await import(
+const { isRlRole, resolveRlMapping, streamingBlockersClearChoice } = await import(
   "../src/features/training/lib/rl-roles.ts"
 );
 
@@ -92,4 +92,11 @@ test("YAML beta 0 is dropped for DPO and ORPO, kept for GRPO", () => {
 test("Alpaca's output column is GRPO's answer, as in the backend", () => {
   const mapping = resolveRlMapping("grpo", ["instruction", "input", "output"], {});
   assert.deepEqual(mapping, { instruction: "prompt", output: "answer" });
+});
+
+test("a reward column named like an Object property is a column, not a role", () => {
+  for (const name of ["constructor", "toString", "__proto__"]) {
+    assert.equal(isRlRole(name), false, name);
+  }
+  assert.equal(isRlRole("answer"), true);
 });
