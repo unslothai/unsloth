@@ -6008,6 +6008,38 @@ def _spec_start_failure(output: str) -> tuple[str, str]:
     )
 
 
+def _target_failed_before_drafter(output: str, drafter_path: Optional[str]) -> bool:
+    """llama-server creates the target context before it loads a drafter file, so a target
+    context that failed there (compute buffer OOM at a long context) is not the drafter's fault."""
+    if not drafter_path or "loading draft model" in output:
+        return False
+    name = Path(drafter_path).name
+    return any(
+        "failed to create context with model" in line and name not in line
+        for line in output.splitlines()
+    )
+
+
+# A context Studio picked that still runs out of memory is halved, down to this floor.
+_CTX_HALVE_FLOOR = _FIT_MIN_CTX
+_CTX_HALVE_MAX = 8
+
+
+def _halved_ctx_after_oom(cmd: Sequence[str], output: str, is_memory_failure) -> Optional[int]:
+    """Half of the launched -c when the context could not be created for lack of GPU memory;
+    None when there is no -c, the failure is something else, or half drops below the floor."""
+    if "-c" not in cmd or "failed to create context with model" not in output:
+        return None
+    if not is_memory_failure(output):
+        return None
+    try:
+        ctx = int(cmd[list(cmd).index("-c") + 1])
+    except (IndexError, ValueError):
+        return None
+    half = (ctx // 2) // 256 * 256
+    return half if half >= _CTX_HALVE_FLOOR else None
+
+
 def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
     """Last occurrence wins across both spellings; --no-mmproj-offload keeps the projector in host RAM."""
     if not extra_args:
@@ -8832,6 +8864,9 @@ class LlamaCppBackend:
         self._n_kv_heads: Optional[int] = None
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
+        # head_count array; _n_heads stays unset so other estimates keep their fallbacks.
+        self._n_heads_by_layer: Optional[list[int]] = None
+        self._attn_res_block_size: Optional[int] = None
         self._embedding_length: Optional[int] = None
         # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
         self._pooling_type: Optional[int] = None
@@ -18703,6 +18738,15 @@ class LlamaCppBackend:
     _INKLING_CTX_COMPUTE_BYTES_PER_TOK = 8192  # per token at ub=512
     # Dense relative-bias fallback (quantized KV disables the banded path): ~402 KiB/tok measured.
     _INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK = 402470  # per token at ub=512
+    # Inkling 2 relative bias (llama.cpp with unslothai/llama.cpp#385 and #386). Bytes per cell per ub token.
+    # Banded flash path (flash attention, f16/bf16/f32 cache, head dim 64/128, ub > 32): 18 * ub per cell
+    # plus a flat f32 [ub, ub, n_head] block.
+    _INKLING2_BANDED_BYTES = 18
+    # Dense fallback: f32 [n_kv, ub, n_head] bias, its permuted copy and an i32 [n_kv, ub] index. #385
+    # chunks the rows past 2^29 elements, so this is an upper bound (exact to 32k at ub=512).
+    _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
+    _INKLING2_REL_INDEX_BYTES = 4
+    _INKLING2_BANDED_MIN_UBATCH = 33
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -18734,7 +18778,13 @@ class LlamaCppBackend:
             conv_in = inner + 2 * (dim("_ssm_group_count") or 1) * dim("_ssm_state_size")
             widths.append(4 * conv_in)
         per_layer_input = dim("_embedding_length_per_layer_input") * dim("_n_layers")
-        return max(widths) + per_layer_input
+        # Attention residuals keep every block output live; a depth mix holds 3 (blocks + 1) copies.
+        res_blocks = 0
+        block_size = dim("_attn_res_block_size")
+        if block_size > 0 and dim("_n_layers") > 0:
+            res_blocks = -(-dim("_n_layers") // block_size)
+            widths.append(3 * (res_blocks + 1) * n_embd)
+        return max(widths) + per_layer_input + res_blocks * n_embd
 
     def _estimate_compute_buffer_bytes(
         self,
@@ -18787,6 +18837,14 @@ class LlamaCppBackend:
             return window if any(pattern) else 0
         context = getattr(self, "_context_length", None) or 0
         return window if not context or window < context else 0
+
+    def _inkling2_bias_heads(self) -> int:
+        """Query heads of the widest full-attention layer, the layers whose bias spans the context."""
+        by_layer = getattr(self, "_n_heads_by_layer", None) or []
+        pattern = getattr(self, "_sliding_window_pattern", None) or []
+        full = [h for i, h in enumerate(by_layer) if not (i < len(pattern) and pattern[i])]
+        heads = max(full or by_layer or [0]) or getattr(self, "_n_heads", None)
+        return heads or max(1, (self._embedding_length or 0) // 64)
 
     def _attention_dequant_width(self) -> int:
         """K+V elements per cell copied to f16 from a quantized cache, from the widest global layer (SWA does not scale with context); MLA has K only."""
@@ -18872,6 +18930,28 @@ class LlamaCppBackend:
                 rate = self._INKLING_CTX_COMPUTE_BYTES_PER_TOK
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
+        if getattr(self, "_architecture", None) == "inkling2":
+            # Sliding layers' smaller bias reuses this allocation; no dequant copy on either path.
+            n_head = self._inkling2_bias_heads()
+            head_dim = getattr(self, "_kv_key_length", None) or 128
+            banded = (
+                flash_attn
+                and (cache_type_kv or "f16").strip().lower() in ("f16", "bf16", "f32")
+                and head_dim in (64, 128)
+                and ub >= self._INKLING2_BANDED_MIN_UBATCH
+            )
+            if banded:
+                per_tok = self._INKLING2_BANDED_BYTES * ub + split_extra
+                return int(per_tok * n_ctx + 4 * n_head * ub * ub)
+            per_tok = (
+                mask_rate
+                + split_extra
+                + ub
+                * (self._INKLING2_REL_BIAS_BYTES_PER_HEAD * n_head + self._INKLING2_REL_INDEX_BYTES)
+            )
+            if not flash_attn:
+                per_tok += ub * n_head * 4
+            return int(per_tok * n_ctx)
         per_tok = mask_rate
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
             # Quantized cache: the f16 K/V copy, independent of the micro-batch.
@@ -19767,6 +19847,8 @@ class LlamaCppBackend:
         self._n_kv_heads = None
         self._n_kv_heads_by_layer = None
         self._n_heads = None
+        self._n_heads_by_layer = None
+        self._attn_res_block_size = None
         self._embedding_length = None
         self._pooling_type = None
         self._gguf_path = gguf_path
@@ -19924,6 +20006,7 @@ class LlamaCppBackend:
                                         f"{arch}.ssm.conv_kernel": "ssm_conv_kernel",
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
+                                        f"{arch}.attn_res.block_size": "attn_res_block_size",
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -19964,6 +20047,8 @@ class LlamaCppBackend:
                                     self._n_kv_heads_by_layer = [int(x) for x in val_a]
                                     if self._n_kv_heads is None and self._n_kv_heads_by_layer:
                                         self._n_kv_heads = max(self._n_kv_heads_by_layer)
+                                elif attr == "n_heads" and val_a:
+                                    self._n_heads_by_layer = [int(x) for x in val_a]
                                 elif attr == "sliding_window_pattern" and val_a is not None:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
@@ -31938,6 +32023,12 @@ class LlamaCppBackend:
                         "max_total_s": max(floor, ceiling),
                     }
 
+                # Studio's own context (Auto, or filled in by the UI from the model), never a typed one.
+                _studio_chose_ctx = ctx_override is None and (
+                    requested_ctx <= 0
+                    or bool(getattr(intent, "max_seq_length_auto_derived", False))
+                )
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -31950,7 +32041,7 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
-                    nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib
+                    nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib, effective_ctx
                     # Single revocation point for the tensor-spill plan; label is empty only on the first spawn.
                     if label:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
@@ -31965,7 +32056,8 @@ class LlamaCppBackend:
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
-                    for _spawn_attempt in (0, 1, 2, 3):
+                    _ctx_halvings = 0
+                    for _spawn_attempt in range(4 + _CTX_HALVE_MAX):
                         if _spawn_attempt:
                             run_cmd = self._drop_managed_lazy_mode(run_cmd, "startup")
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -32340,6 +32432,11 @@ class LlamaCppBackend:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
                                 self._remember_bundle_only_rocm(binary)
+                            if _ctx_halvings:
+                                # A halved context came up: the limits are what it allocated.
+                                effective_ctx = int(run_cmd[run_cmd.index("-c") + 1])
+                                self._effective_context_length = effective_ctx
+                                self._max_context_length = effective_ctx
                             return True
                         if getattr(self, "_health_wait_cancelled", False):
                             return False
@@ -32597,6 +32694,40 @@ class LlamaCppBackend:
                                     )
                                 self._record_memory_state(run_cmd, env)
                             _did_fit_retry = True
+                            continue
+                        # Studio picked this context and it still does not fit (an estimate
+                        # that ran low): halve it rather than fail the load or drop the drafter.
+                        _half_ctx = (
+                            _halved_ctx_after_oom(
+                                run_cmd,
+                                "\n".join(self._stdout_lines[-200:]),
+                                self._is_gpu_memory_start_failure,
+                            )
+                            if (
+                                _studio_chose_ctx
+                                and _startup_crashed
+                                and not _capability_crash
+                                and _ctx_halvings < _CTX_HALVE_MAX
+                                and not _load_cancelled()
+                            )
+                            else None
+                        )
+                        if _half_ctx is not None:
+                            _ctx_was = run_cmd[run_cmd.index("-c") + 1]
+                            logger.warning(
+                                "llama-server could not allocate its context at %s tokens; "
+                                "Studio chose that length, retrying at %d. Crash log: %s",
+                                _ctx_was,
+                                _half_ctx,
+                                self._llama_log_path,
+                            )
+                            run_cmd = list(run_cmd)
+                            run_cmd[run_cmd.index("-c") + 1] = str(_half_ctx)
+                            # The context limits follow only a launch that comes up (see the
+                            # health check above); a later fallback respawns from its own argv.
+                            self._vram_fit_context_length = None
+                            self._record_memory_state(run_cmd, env)
+                            _ctx_halvings += 1
                             continue
                         return False
 
@@ -33730,6 +33861,9 @@ class LlamaCppBackend:
                         or _spec_requested_eagle3
                     )
                     and not _load_cancelled()
+                    and not _target_failed_before_drafter(
+                        "\n".join(self._stdout_lines), launch_mtp_draft_path
+                    )
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Launched without spec group; keep MTP only in requested state or the next Apply repeats the crash.
@@ -35351,6 +35485,8 @@ class LlamaCppBackend:
             self._n_kv_heads = None
             self._n_kv_heads_by_layer = None
             self._n_heads = None
+            self._n_heads_by_layer = None
+            self._attn_res_block_size = None
             self._embedding_length = None
             self._pooling_type = None
             self._kv_key_length = None
