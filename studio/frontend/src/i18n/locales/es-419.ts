@@ -3040,6 +3040,11 @@ export const es419 = {
         unslothShareDescription: "Divide la memoria en lo que usa Unsloth, lo que usan otras apps y lo que está libre.",
         modelBreakdown: "Desglosar por modelo",
         modelBreakdownDescription: "Divide la parte de Unsloth en la barra de memoria entre cada modelo cargado y el resto de la app.",
+        recording: "Registrar actividad de API",
+        recordingDescription: "Se aplica a todas las cuentas. Cuando está desactivado, no se registran las nuevas solicitudes ni el uso de API. Las entradas existentes y en curso permanecen.",
+        recordingDisabledByEnv: "El registro de API está deshabilitado por el entorno del servidor.",
+        recordingLoadError: "No se pudo cargar la configuración del registro de API.",
+        recordingSaveError: "No se pudo guardar la configuración del registro de API.",
         autoOpen: "El monitor flotante se abre automáticamente",
         autoOpenDescription:
           "Abre un panel pequeño cuando llega tráfico de la API.",

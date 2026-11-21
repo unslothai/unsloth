@@ -2813,6 +2813,11 @@ export const de = {
         summary: "Aktive Anfragen, Fehler und Token-Nutzung",
         status: "Aktiv: {active} · kürzlich: {recent} · {model}",
         noModelLoaded: "Kein Modell geladen",
+        recording: "Zeichnen Sie die API-Aktivität auf",
+        recordingDescription: "Gilt für alle Konten. Wenn diese Option deaktiviert ist, werden neue API-Anfragen und -Nutzung nicht aufgezeichnet. Bestehende und in Bearbeitung befindliche Einträge bleiben bestehen.",
+        recordingDisabledByEnv: "Die API-Aufzeichnung ist durch die Serverumgebung deaktiviert.",
+        recordingLoadError: "Die API-Aufzeichnungseinstellungen konnten nicht geladen werden.",
+        recordingSaveError: "Die API-Aufzeichnungseinstellungen konnten nicht gespeichert werden.",
         autoOpen: "Schwebenden Monitor automatisch anzeigen",
         autoOpenDescription:
           "Öffnet ein kleines Fenster, wenn API-Aktivität eingeht.",

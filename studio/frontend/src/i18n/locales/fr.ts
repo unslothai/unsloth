@@ -2811,6 +2811,11 @@ export const fr = {
         summary: "Requêtes en cours, erreurs et utilisation des jetons",
         status: "{active} actives · {recent} récentes · {model}",
         noModelLoaded: "Aucun modèle chargé",
+        recording: "Enregistrer l'activité de l'API",
+        recordingDescription: "S'applique à tous les comptes. Lorsqu'elle est désactivée, les nouvelles demandes et utilisations d'API ne sont pas enregistrées. Les entrées existantes et en cours restent.",
+        recordingDisabledByEnv: "L'enregistrement API est désactivé par l'environnement du serveur.",
+        recordingLoadError: "Impossible de charger les paramètres d'enregistrement de l'API.",
+        recordingSaveError: "Impossible d'enregistrer les paramètres d'enregistrement de l'API.",
         autoOpen: "Afficher automatiquement le moniteur flottant",
         autoOpenDescription:
           "Ouvre un petit panneau lorsque l’API reçoit du trafic.",

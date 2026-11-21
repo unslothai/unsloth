@@ -2808,6 +2808,11 @@ export const es = {
         summary: "Solicitudes en curso, errores y uso de tokens",
         status: "{active} activas · {recent} recientes · {model}",
         noModelLoaded: "Ningún modelo cargado",
+        recording: "Registrar actividad de API",
+        recordingDescription: "Se aplica a todas las cuentas. Cuando está desactivado, no se registran las nuevas solicitudes ni el uso de API. Las entradas existentes y en curso permanecen.",
+        recordingDisabledByEnv: "El registro de API está deshabilitado por el entorno del servidor.",
+        recordingLoadError: "No se pudo cargar la configuración del registro de API.",
+        recordingSaveError: "No se pudo guardar la configuración del registro de API.",
         autoOpen: "Mostrar automáticamente el monitor flotante",
         autoOpenDescription:
           "Abre un panel pequeño cuando llega tráfico de la API.",

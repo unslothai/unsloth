@@ -2695,6 +2695,11 @@ export const it = {
         summary: "Richieste attive, errori e utilizzo dei token",
         status: "{active} attive · {recent} recenti · {model}",
         noModelLoaded: "Nessun modello caricato",
+        recording: "Registra l'attività dell'API",
+        recordingDescription: "Si applica a tutti gli account. Quando questa opzione è disattivata, le nuove richieste e l'utilizzo dell'API non vengono registrati. Le voci esistenti e in corso rimangono.",
+        recordingDisabledByEnv: "La registrazione API è disabilitata dall'ambiente del server.",
+        recordingLoadError: "Impossibile caricare le impostazioni di registrazione API.",
+        recordingSaveError: "Impossibile salvare le impostazioni di registrazione API.",
         autoOpen: "Mostra automaticamente il monitor fluttuante",
         autoOpenDescription:
           "Apre un piccolo pannello quando arriva traffico API.",

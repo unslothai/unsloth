@@ -3036,6 +3036,11 @@ export const nl = {
         unslothShareDescription: "Verdeel het geheugen in wat Unsloth gebruikt, wat andere apps gebruiken en wat vrij is.",
         modelBreakdown: "Uitsplitsen per model",
         modelBreakdownDescription: "Verdeel het deel van Unsloth in de geheugenbalk over elk geladen model en de rest van de app.",
+        recording: "API-activiteit registreren",
+        recordingDescription: "Geldt voor alle accounts. Als dit is uitgeschakeld, worden nieuwe API-verzoeken en gebruik niet geregistreerd. Bestaande en lopende vermeldingen blijven behouden.",
+        recordingDisabledByEnv: "API-registratie is uitgeschakeld door de serveromgeving.",
+        recordingLoadError: "De instellingen voor API-registratie konden niet worden geladen.",
+        recordingSaveError: "De instellingen voor API-registratie konden niet worden opgeslagen.",
         autoOpen: "Zwevende monitor opent automatisch",
         autoOpenDescription:
           "Opent een klein paneel wanneer er API-verkeer binnenkomt.",

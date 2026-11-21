@@ -2796,6 +2796,11 @@ export const ptBR = {
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
         noModelLoaded: "Nenhum modelo carregado",
+        recording: "Registrar atividade da API",
+        recordingDescription: "Aplica-se a todas as contas. Quando desativado, novas solicitações e usos de API não são registrados. As entradas existentes e em andamento permanecem.",
+        recordingDisabledByEnv: "A gravação da API está desabilitada pelo ambiente do servidor.",
+        recordingLoadError: "Não foi possível carregar as configurações de gravação da API.",
+        recordingSaveError: "Não foi possível salvar as configurações de gravação da API.",
         autoOpen: "Mostrar o monitor flutuante automaticamente",
         autoOpenDescription:
           "Abre um pequeno painel quando chega tráfego da API.",

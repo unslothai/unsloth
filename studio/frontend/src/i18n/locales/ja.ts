@@ -2761,6 +2761,11 @@ export const ja = {
         summary: "処理中のリクエスト、エラー、トークン使用量",
         status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
         noModelLoaded: "モデル未読み込み",
+        recording: "APIアクティビティを記録する",
+        recordingDescription: "すべてのアカウントに適用されます。オフの場合、新しい API リクエストと使用状況は記録されません。既存のエントリと進行中のエントリは残ります。",
+        recordingDisabledByEnv: "API記録はサーバー環境により無効になっています。",
+        recordingLoadError: "API 記録設定をロードできませんでした。",
+        recordingSaveError: "API 記録設定を保存できませんでした。",
         autoOpen: "フローティングモニターを自動表示",
         autoOpenDescription:
           "API トラフィックを受信すると小さなパネルを開きます。",
