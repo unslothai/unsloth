@@ -81,6 +81,12 @@ def _child_grads(rank: int, world: int, port: int, out: str) -> None:
     flag = ctx.any_flag(rank == 1)
     quiet = ctx.any_flag(False)
     pick = ctx.agree_precision("bf16" if rank == 0 else "nf4")
+    # Diverged generators (a resume restores each card's from rank 0's save): sync_rng continues rank 0's stream.
+    torch.manual_seed(100)
+    ref_draw = torch.rand(6)
+    torch.manual_seed(100 if rank == 0 else 7)
+    ctx.sync_rng()
+    draw = torch.rand(6)
     torch.save(
         {
             "local": local,
@@ -89,6 +95,8 @@ def _child_grads(rank: int, world: int, port: int, out: str) -> None:
             "flag": flag,
             "quiet": quiet,
             "pick": pick,
+            "ref_draw": ref_draw,
+            "draw": draw,
             "stats": ctx.stats(),
         },
         f"{out}/grads_{rank}.pt",
@@ -185,6 +193,7 @@ def test_all_reduce_averages_grads_and_loss_and_flags(tmp_path):
     # Ranks that resolve different bases train the most frugal one.
     assert r0["pick"] == r1["pick"] == "nf4"
     assert r0["stats"]["allreduce_calls"] == 1 and r0["stats"]["world_size"] == 2
+    assert torch.equal(r0["draw"], r0["ref_draw"]) and torch.equal(r1["draw"], r0["ref_draw"])
 
 
 def _cfg(**kw):

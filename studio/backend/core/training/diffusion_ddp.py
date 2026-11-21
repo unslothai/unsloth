@@ -156,6 +156,26 @@ class DistContext:
         dist.all_reduce(t, op = dist.ReduceOp.SUM)
         return bool(t.item() > 0)
 
+    def sync_rng(self) -> None:
+        """Every rank continues from rank 0's torch CPU and device generator states. A resume restores each rank's
+        device generator from the per-device states rank 0 saved, and rank 0 only ever advanced its own card's, so
+        without this the other ranks would draw their noise from a restarted stream."""
+        import torch
+        import torch.distributed as dist
+
+        dev = self._device()
+        states = [torch.get_rng_state()]
+        if dev.type == "cuda":
+            states.append(torch.cuda.get_rng_state())
+        synced = []
+        for state in states:
+            t = state.to(dev)
+            dist.broadcast(t, src = 0)
+            synced.append(t.cpu())
+        torch.set_rng_state(synced[0])
+        if dev.type == "cuda":
+            torch.cuda.set_rng_state(synced[1])
+
     def gather(self, obj) -> list:
         import torch.distributed as dist
 
@@ -267,6 +287,42 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _loopback_store(world: int):
+    """Rank 0's store, listening on 127.0.0.1 only. A TCPStore server given just a port listens on every interface,
+    so it hands the store a socket already bound to loopback (also no free-port race); the legacy backend is the one
+    that accepts a listening fd on every supported torch. Returns (store, port)."""
+    import torch.distributed as dist
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((_HOST, 0))
+        sock.listen(max(16, 2 * world))
+        port = sock.getsockname()[1]
+        store = dist.TCPStore(
+            _HOST,
+            port,
+            world,
+            is_master = True,
+            timeout = _timeout(),
+            wait_for_workers = False,
+            master_listen_fd = sock.fileno(),
+            use_libuv = False,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a torch without listen-fd support keeps the old store
+        sock.close()
+        log.warning(
+            "multi-GPU training: loopback-only store unavailable (%s); using the default bind.", exc
+        )
+        port = _free_port()
+        store = dist.TCPStore(
+            _HOST, port, world, is_master = True, timeout = _timeout(), wait_for_workers = False
+        )
+        return store, port
+    # The store's server owns the descriptor now.
+    sock.detach()
+    return store, port
+
+
 def _config_payload(cfg) -> str:
     import dataclasses
 
@@ -291,11 +347,8 @@ def launch(
     import torch
     import torch.distributed as dist
 
-    port = _free_port()
     torch.cuda.set_device(0)
-    store = dist.TCPStore(
-        _HOST, port, world, is_master = True, timeout = _timeout(), wait_for_workers = False
-    )
+    store, port = _loopback_store(world)
     ctx = DistContext(0, world, store)
     payload = _config_payload(cfg)
     env = dict(os.environ)
@@ -340,7 +393,13 @@ def launch(
 
     ctx._monitor = threading.Thread(target = _watch, name = "diffusion-ddp-watch", daemon = True)
     ctx._monitor.start()
-    dist.init_process_group("nccl", store = store, rank = 0, world_size = world, timeout = _timeout())
+    try:
+        dist.init_process_group("nccl", store = store, rank = 0, world_size = world, timeout = _timeout())
+    except BaseException:
+        # The caller never gets ctx, so stop the started ranks and the watcher (which would os._exit this process
+        # once they die) here.
+        ctx.close(failed = True)
+        raise
     _CURRENT = ctx
     return ctx
 

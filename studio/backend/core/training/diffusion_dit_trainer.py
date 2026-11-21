@@ -4265,6 +4265,8 @@ def _train_dit(
     if ddp is not None:
         # A stop seen during the opening preview (rank 0 only) must end every rank together.
         stop_latched = ddp.any_flag(stop_latched)
+        # A resume restored each card's generator from rank 0's save; the noise stream must continue from rank 0's.
+        ddp.sync_rng()
     # while, not range: an fp16 overflow step applies no update and is not counted.
     opt_step = resumed
     while opt_step < cfg.train_steps:
