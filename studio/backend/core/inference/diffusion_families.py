@@ -2079,7 +2079,7 @@ def retired_copy_loads_from_disk(source: Optional[str], *, companion: bool = Fal
             excluded_components = ("transformer",) if companion else (),
             fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
         )
-    except (OSError, StopIteration):
+    except (OSError, UnicodeDecodeError, StopIteration):
         return False
 
 

@@ -9688,7 +9688,7 @@ class VideoBackend:
                                 best,
                                 blob_bytes_present(path) - (baseline or {}).get(str(path), 0),
                             )
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
                         continue
                 total += min(best, size) if size else best
         return int(total)

@@ -1503,7 +1503,7 @@ def snapshot_dirs(repo_id: str, hub_cache: Optional[Path] = None) -> list[Path]:
         return snapshot_dirs(match.name[len("models--") :].replace("--", "/"), root)
     try:
         main_sha = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         main_sha = ""
 
     def order(p: Path) -> tuple[int, float]:
