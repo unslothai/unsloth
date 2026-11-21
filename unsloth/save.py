@@ -1060,6 +1060,20 @@ def _without_runtime_truncation(
             )
 
 
+@contextmanager
+def _left_padding_side(tokenizer):
+    """Force the source tokenizer's padding side to "left" for one save or push, restoring the
+    original afterwards even when the write raises. `tokenizer` may be a processor whose
+    `.tokenizer` holds the real tokenizer."""
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    old_padding_side = source_tokenizer.padding_side
+    source_tokenizer.padding_side = "left"
+    try:
+        yield
+    finally:
+        source_tokenizer.padding_side = old_padding_side
+
+
 def _capture_source_tokenizer_class(
     tokenizer,
     *,
@@ -1777,14 +1791,9 @@ def unsloth_save_model(
         _model_push = getattr(model, "original_push_to_hub", model.push_to_hub)
         _model_push(**_filter_push_to_hub_kwargs(_model_push, _push_kwargs))
         if tokenizer is not None:
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-
-            _tokenizer_push = getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)
-            _tokenizer_push(**_filter_push_to_hub_kwargs(_tokenizer_push, _push_kwargs))
-
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                _tokenizer_push = getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)
+                _tokenizer_push(**_filter_push_to_hub_kwargs(_tokenizer_push, _push_kwargs))
 
         if hasattr(model, "config"):
             print(f"Saved {save_method} model to https://huggingface.co/" + save_directory)
@@ -1855,18 +1864,13 @@ def unsloth_save_model(
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
 
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-
-            with _without_runtime_truncation(
-                tokenizer,
-                tokenizer_save_settings["save_directory"],
-                tokenizer_save_settings.get("filename_prefix"),
-            ):
-                tokenizer.save_pretrained(**tokenizer_save_settings)
-
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                with _without_runtime_truncation(
+                    tokenizer,
+                    tokenizer_save_settings["save_directory"],
+                    tokenizer_save_settings.get("filename_prefix"),
+                ):
+                    tokenizer.save_pretrained(**tokenizer_save_settings)
 
             print(" Done.")
         else:
@@ -2130,35 +2134,30 @@ def unsloth_save_model(
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
 
-        _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-        old_padding_side = _tokenizer.padding_side
-        _tokenizer.padding_side = "left"
-
-        with _without_runtime_truncation(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            tokenizer_save_settings.get("filename_prefix"),
-        ):
-            tokenizer.save_pretrained(**tokenizer_save_settings)
-        _preserve_tokenizer_eos_token(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-        )
-        _restore_source_tokenizer_class(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-            token = tokenizer_save_settings.get("token"),
-            source_class = source_tokenizer_class,
-        )
-        _preserve_repaired_tokenizer_class(
-            tokenizer,
-            tokenizer_save_settings["save_directory"],
-            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
-        )
-
-        _tokenizer.padding_side = old_padding_side
+        with _left_padding_side(tokenizer):
+            with _without_runtime_truncation(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                tokenizer_save_settings.get("filename_prefix"),
+            ):
+                tokenizer.save_pretrained(**tokenizer_save_settings)
+            _preserve_tokenizer_eos_token(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            )
+            _restore_source_tokenizer_class(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+                token = tokenizer_save_settings.get("token"),
+                source_class = source_tokenizer_class,
+            )
+            _preserve_repaired_tokenizer_class(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            )
 
         print(" Done.")
     else:
@@ -7110,11 +7109,8 @@ def unsloth_generic_save(
         except ImportError:
             pass
         if tokenizer is not None:
-            _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
-            old_padding_side = _tokenizer.padding_side
-            _tokenizer.padding_side = "left"
-            tokenizer.save_pretrained(save_directory)
-            _tokenizer.padding_side = old_padding_side
+            with _left_padding_side(tokenizer):
+                tokenizer.save_pretrained(save_directory)
 
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     elif _is_adapter_save_method(save_method):
