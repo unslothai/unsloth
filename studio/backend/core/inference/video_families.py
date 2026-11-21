@@ -903,7 +903,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b"),
+        # "fastwan2.1-t2v-1.3b": FastVideo's DMD student of this model, sampled dense (video_dmd).
+        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b", "fastwan2.1-t2v-1.3b"),
         has_audio = False,
         default_steps = 30,
         default_guidance = 6.0,
@@ -1157,13 +1158,15 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         _H3_IMAGE_NOT_VIDEO,
     ),
     (
-        # The dense-attention FastWan2.2-TI2V-5B-FullAttn student runs (video_dmd samples it); the rest were
-        # distilled with sparse attention.
+        # The dense-attention DMD students (FastWan2.2-TI2V-5B-FullAttn, FastWan2.1-T2V-1.3B) run as Diffusers repos
+        # through video_dmd; the sparse-attention releases and any GGUF / single-file copy stay refused.
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))"
-        r"(?![^/\\]*(?<![a-z0-9])fastwan-?2-2-ti2v-5b-fullattn(?![a-z0-9]))[^/\\]*[/\\]*$",
-        "This is a FastVideo FastWan checkpoint distilled with FastVideo's sparse attention, so Unsloth "
-        "cannot run it faithfully with dense attention. Load FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers "
-        "(the dense-attention 3-step student) or Wan-AI/Wan2.1-T2V-1.3B-Diffusers instead.",
+        r"(?!(?![^/\\]*(?:gguf|safetensors))[^/\\]*(?<![a-z0-9])"
+        r"fastwan-?2-(?:2-ti2v-5b-fullattn|1-t2v-1-3b)(?![a-z0-9]))[^/\\]*[/\\]*$",
+        "This is a FastVideo FastWan checkpoint Unsloth cannot run faithfully: the sparse-attention releases need "
+        "FastVideo's own attention kernels, and the dense-attention DMD students load only as their Diffusers "
+        "repos. Load FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers or FastVideo/FastWan2.1-T2V-1.3B-Diffusers "
+        "(3-step students) or Wan-AI/Wan2.1-T2V-1.3B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",

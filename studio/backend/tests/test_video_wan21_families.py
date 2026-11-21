@@ -90,7 +90,7 @@ _TABLE = [
     ("QuantStack/Wan2.1_T2V_14B_FusionX_VACE-GGUF", None),
     ("lym00/Wan2.1_T2V_1.3B_SelfForcing_VACE-GGUF", None),
     ("TheDenk/wan2.1-t2v-1.3b-controlnet-canny-v1", None),
-    ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", None),
+    ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
     ("FastVideo/FastWan2.1-T2V-14B-Diffusers", None),
 ]
 
@@ -115,7 +115,7 @@ def test_detection_table(identifier, expected):
         ("alibaba-pai/Wan2.1-Fun-1.3B-InP", _VARIANT),
         ("alibaba-pai/Wan2.1-Fun-V1.1-14B-Control", _VARIANT),
         ("/models/Wan2.1-VACE-14B-diffusers/", _VARIANT),
-        ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", _FASTWAN),
+        ("FastVideo/FastWan2.1-T2V-14B-Diffusers", _FASTWAN),
         ("FastVideo/FastWan-QAD-1.3B", _FASTWAN),
     ],
 )
@@ -422,7 +422,7 @@ def test_load_validation_refuses_with_the_named_reason():
             model_kind = "gguf",
         )
     with pytest.raises(ValueError, match = _FASTWAN):
-        backend.validate_load_request("FastVideo/FastWan2.1-T2V-1.3B-Diffusers")
+        backend.validate_load_request("FastVideo/FastWan2.1-T2V-14B-Diffusers")
     with pytest.raises(ValueError, match = "not a supported text-to-video model"):
         backend.validate_load_request("someorg/some-image-model")
 
@@ -570,7 +570,7 @@ def test_anyflow_owner_or_folder_does_not_refuse():
             {"gguf_filename": "i2v-14b-480p-Q4_K_M.gguf", "model_kind": "gguf"},
             _I2V,
         ),
-        ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", {}, "FastVideo FastWan checkpoint"),
+        ("FastVideo/FastWan2.1-T2V-14B-Diffusers", {}, "FastVideo FastWan checkpoint"),
         ("nvidia/AnyFlow-Wan2.1-T2V-14B-Diffusers", {}, _ANYFLOW),
     ],
 )

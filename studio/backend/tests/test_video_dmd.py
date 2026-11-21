@@ -32,10 +32,32 @@ def test_fullattn_student_loads_as_wan22_5b(identifier):
 
 
 @pytest.mark.parametrize(
+    "identifier, family",
+    [
+        ("FastVideo/FastWan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
+        ("/models/FastWan2.1-T2V-1.3B-Diffusers/", "wan2.1-t2v-1.3b"),
+    ],
+)
+def test_dense_13b_student_loads_as_wan21_13b(identifier, family):
+    from core.inference import video_dmd
+
+    assert vf.unsupported_video_checkpoint_reason(identifier) is None
+    fam = vf.detect_video_family(identifier)
+    assert fam is not None and fam.name == family
+    assert video_dmd.dmd_timesteps(identifier) == (1000, 757, 522)
+    assert vf.default_video_generation_params(
+        identifier, fallback = (fam.default_steps, fam.default_guidance), family = fam.name
+    ) == (3, 1.0)
+
+
+@pytest.mark.parametrize(
     "identifier",
     [
-        "FastVideo/FastWan2.1-T2V-1.3B-Diffusers",
         "FastVideo/FastWan2.1-T2V-14B-Diffusers",
+        "FastWan2.1-T2V-1.3B-Q8_0.gguf",
+        "FastWan2.1-T2V-1.3B_bf16.safetensors",
+        "FastWan2.2-TI2V-5B-FullAttn-Q4_K_M.gguf",
+        "someone/FastWan2.2-TI2V-5B-FullAttn-GGUF",
         "FastVideo/FastWan2.2-TI2V-5B-Diffusers",
         "FastVideo/FastWan-QAD-1.3B",
         "FastVideo/FastWan2.2-TI2V-5B-FullAttention-VSA",
@@ -43,7 +65,7 @@ def test_fullattn_student_loads_as_wan22_5b(identifier):
 )
 def test_sparse_attention_fastwan_stays_refused(identifier):
     message = vf.unsupported_video_checkpoint_reason(identifier)
-    assert message is not None and "sparse attention" in message
+    assert message is not None and "FastVideo FastWan checkpoint" in message
     assert vf.detect_video_family(identifier) is None
 
 

@@ -22,10 +22,12 @@ from typing import Any, Iterator, Optional
 DMD_TRAINING_SHIFT = 8.0
 DMD_TRAIN_TIMESTEPS = 1000
 
-# (last-path-segment regex on the normalised name, trained timesteps). Only dense-attention students: the
-# sparse-attention (VSA) FastWan releases stay refused by video_families.
+# (last-path-segment regex on the normalised name, trained timesteps); every other FastWan release stays refused
+# by video_families.
 _DMD_RECIPES: tuple[tuple[str, tuple[int, ...]], ...] = (
     (r"(?<![a-z0-9])fastwan-?2-2-ti2v-5b-fullattn(?![a-z0-9])", (1000, 757, 522)),
+    # Distilled with sparse attention; sampled dense it matches the 30-step base on CLIP-T / PickScore (L4, 8 prompts).
+    (r"(?<![a-z0-9])fastwan-?2-1-t2v-1-3b(?![a-z0-9])", (1000, 757, 522)),
 )
 DMD_STEPS_DEFAULT = 3
 
