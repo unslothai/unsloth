@@ -5192,6 +5192,12 @@ def unsloth_save_pretrained_gguf(
 
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+    # A non-main process leaves the merge and the conversion to the main one. An FSDP2 writer
+    # reaches this inside the gather, which already chose it: the flag must not veto it there.
+    if not is_main_process:
+        from .models.fsdp2_save import fsdp2_gather_active
+        if not fsdp2_gather_active():
+            return None
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
     # Read before the processor is unwrapped to its tokenizer below.
@@ -5200,8 +5206,6 @@ def unsloth_save_pretrained_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
-        if not is_main_process:
-            return None
         if push_to_hub:
             raise ValueError(
                 "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
@@ -5809,7 +5813,28 @@ def _free_merge_if_disk_is_tight(
     return freed
 
 
+def _ddp_push_on_rank0(method):
+    """Plain DDP Hub upload for the merged / GGUF exports: identical weights on every rank, so
+    rank 0 alone merges, converts and uploads; the other ranks return None without waiting (the
+    `_tp_collective_save` routing `push_to_hub` already had). `_plain_data_parallel_push` leaves
+    FSDP2 to its gathered writer and FSDP1 to its state dict hooks, so this only fires where every
+    rank genuinely holds the whole model."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            if _plain_data_parallel_push(self, method, fn, args, kwargs):
+                from .models.tp_replica import tp_world_push
+                return tp_world_push(method, lambda: fn(self, *args, **kwargs))
+            return fn(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 @_model_parallel_refuses_save("push_to_hub_gguf")
+@_ddp_push_on_rank0("push_to_hub")
 @_fsdp2_export_on_rank0("push_to_hub_gguf", adapter_only = _gguf_lora_only)
 def unsloth_push_to_hub_gguf(
     self,
@@ -5845,7 +5870,9 @@ def unsloth_push_to_hub_gguf(
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if not is_main_process:
-        return None
+        from .models.fsdp2_save import fsdp2_gather_active
+        if not fsdp2_gather_active():
+            return None
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
@@ -6773,7 +6800,9 @@ def _push_merged_to_hub_revision(save_kwargs):
     from unsloth_zoo.saving_utils import get_original_model_id
 
     if not save_kwargs["is_main_process"]:
-        return
+        from unsloth.models.fsdp2_save import fsdp2_gather_active
+        if not fsdp2_gather_active():
+            return
     token = save_kwargs["token"]
     if token is None:
         token = get_token()
@@ -7147,6 +7176,12 @@ def unsloth_generic_save(
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
+        # Mirroring the non-PEFT branch: every DDP rank holds the same weights, so only the main
+        # process merges and writes; the FSDP2 writer is already inside the gather.
+        if not is_main_process:
+            from unsloth.models.fsdp2_save import fsdp2_gather_active
+            if not fsdp2_gather_active():
+                return
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
         # An older unsloth_zoo accepts `output_dtype` but still writes the base dtype.
@@ -7411,6 +7446,7 @@ def _fsdp2_merged_gather_options(model, args, kwargs):
 
 
 @_model_parallel_refuses_save("save_pretrained_merged")
+@_ddp_push_on_rank0("save_pretrained")
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
@@ -7576,6 +7612,7 @@ def unsloth_generic_save_pretrained_merged(
 
 # Like save_pretrained_merged: every rank calls it, rank 0 gathers, merges and uploads.
 @_model_parallel_refuses_save("push_to_hub_merged")
+@_ddp_push_on_rank0("push_to_hub")
 @_fsdp2_collective_save(
     lambda self, args, kwargs: isinstance(self, PeftModel)
     and _is_adapter_save_method(_merged_save_method(args, kwargs)),
