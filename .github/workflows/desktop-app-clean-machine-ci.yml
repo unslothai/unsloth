@@ -610,9 +610,7 @@ jobs:
           if-no-files-found: error
 
 
-  # The plain images deliberately omit host GTK, WebKitGTK, and AppIndicator. host_webkit lanes
-  # install a host WebKitGTK and check which runtime AppRun picks; second_* relaunches the
-  # same AppImage with an override or a removed package to cover the other runtime.
+  # Plain images omit host GTK, WebKitGTK and AppIndicator; host_webkit lanes install WebKitGTK.
   appimage-portability:
     needs: appimage-pr-build
     if: >-

@@ -60,10 +60,13 @@ export interface BlenderMcpSettings {
   blender_path: string;
 }
 
+// detect: the one app to look up (a disk read); the rest report installed: null.
 export function listMcpBuiltins(
   waitForPendingMutations = true,
+  detect?: string,
 ): Promise<McpBuiltinConfig[]> {
-  const read = () => mcpRequest<McpBuiltinConfig[]>("/builtins");
+  const path = detect === undefined ? "/builtins" : `/builtins?detect=${encodeURIComponent(detect)}`;
+  const read = () => mcpRequest<McpBuiltinConfig[]>(path);
   return waitForPendingMutations
     ? readAfterPendingMcpServerMutations(read)
     : readMcpServerMutationSnapshot(read);
@@ -82,6 +85,7 @@ export function testBlenderMcp(
 ): Promise<
   McpServerProbeResult & {
     blender_ready?: boolean;
+    blender_path?: string | null;
     blender_error?: string | null;
   }
 > {
@@ -115,6 +119,16 @@ export function testEditorMcp(
   }
 > {
   return mcpRequest(`/builtins/${id}/test`, { method: "POST", body: payload });
+}
+
+/** Copies Unsloth's level-save toolset into an Unreal project; loads on the next editor start. */
+export function installUnrealTools(
+  projectPath: string,
+): Promise<{ files: string[]; restart_required: boolean }> {
+  return mcpRequest("/builtins/unreal/install-tools", {
+    method: "POST",
+    body: { project_path: projectPath },
+  });
 }
 
 export interface McpServerImportResult {

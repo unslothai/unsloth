@@ -1142,13 +1142,8 @@ def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     return _read_gguf_bool(path, "clip.has_audio_encoder")
 
 
-def read_mmproj_projector_type(path: str) -> Optional[str]:
-    """``clip.projector_type`` from an mmproj GGUF, or None if absent or unreadable. The family name llama.cpp keys its per-projector image-token limits on (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an image will occupy can look the ceiling up instead of assuming one."""
-    return _read_gguf_string(path, "clip.projector_type")
-
-
 def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
-    """Return the image tower family, falling back to the single-tower key."""
+    """The image tower's family (``qwen3vl_merger``, ``gemma4v``, ``pixtral``, ...), which llama.cpp keys its image-token limits on. Mixed-modality projectors (Gemma 4, LFM3) carry it only under ``clip.vision.projector_type``; single-tower ones under ``clip.projector_type``. None if absent or unreadable."""
     return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
         path, "clip.projector_type"
     )

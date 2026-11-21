@@ -50,8 +50,7 @@ function declaration(name: string): string {
   return `const ${findNode((node) => ts.isVariableDeclaration(node) && node.name.getText(source) === name).getText(source)};`;
 }
 
-// Execute the shipped callbacks/options and JSX, rather than repeating their
-// predicates in the test. ChatPage's unrelated services need no DOM or mocks.
+// Runs the shipped callbacks and JSX rather than copying their predicates into the test.
 function evaluate<T>(body: string, bindings: Record<string, unknown>): T {
   const { outputText } = ts.transpileModule(body, {
     fileName: "chat-drop-fragment.tsx",
@@ -437,8 +436,7 @@ for (const [label, nextView, nextNonce] of [
 }
 
 
-// Re-evaluate the shipped render fragment with one persistent ref, as ChatPage
-// does while the same mounted runtime changes routes.
+// Evaluates the fragment with one persistent ref, as ChatPage does across route changes.
 function ownerScopeRenders() {
   const start = findNode(
     (node) =>

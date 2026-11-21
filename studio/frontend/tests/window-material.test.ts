@@ -271,7 +271,7 @@ test("glass drops the thread mask on the unscrolled welcome view, so the compose
 	// Scrolled, the header fade comes back.
 	assert.match(css, /@keyframes thread-welcome-header-fade \{\n  from \{ mask-image: none; \}\n  to \{ mask-image: linear-gradient\(to bottom, transparent var\(--thread-header-offset/);
 	// With view timelines the scrolled viewport stays unmasked; the welcome blocks and the composer's own surface fade instead.
-	const blocks = new RegExp(`@supports \\(animation-timeline: view\\(\\)\\) and \\(mask-clip: no-clip\\) \\{\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-viewport:has\\(> \\.aui-thread-welcome-root > \\.aui-thread-welcome-center\\) \\{\\n    animation: none;\\n  \\}\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-welcome-center > :is\\(\\.aui-thread-welcome-spacer, \\.aui-thread-welcome-message:only-child\\),\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-welcome-message \\.unsloth-composer-surface \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+	const blocks = new RegExp(`@supports \\(animation-timeline: view\\(\\)\\) and \\(mask-clip: no-clip\\) \\{\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-viewport:has\\(> \\.aui-thread-welcome-root > \\.aui-thread-welcome-center\\) \\{\\n    animation: none;\\n  \\}\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-welcome-center > :is\\(\\.aui-thread-welcome-spacer, \\.aui-thread-welcome-message:only-child\\),\\n  html\\[data-glass\\]:not\\(\\[data-glass-layers\\]\\) ${ready} \\.aui-thread-welcome-message :is\\(\\.unsloth-composer-surface, \\.glass-float-surface\\) \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
 	assert.match(blocks, /mask-image: linear-gradient\(to bottom, transparent calc\(var\(--welcome-fade-cut\) - 1\.5rem\), #000 var\(--welcome-fade-cut\)\);/);
 	// The overhang keeps rings and the greeting halo; the range spans it so the cut matches the viewport fade.
 	assert.match(blocks, /mask-size: 100% calc\(100% \+ 8rem\);\n    mask-position: 0 -4rem;\n    mask-repeat: repeat-x;\n    mask-clip: no-clip;/);
@@ -283,7 +283,7 @@ test("glass drops the thread mask on the unscrolled welcome view, so the compose
 	assert.match(thread, /createPortal\(\n\s*<>\n\s*\{!hideWelcome && \([\s\S]*?<ThreadWelcome [\s\S]*?<\/>,\n\s*viewportEl,/);
 	assert.match(thread, /"aui-thread-composer-dock pointer-events-none absolute bottom-0/);
 	// The selectors above: the inline composer has its own message block, the bottom layout's greeting is the only one.
-	assert.match(thread, /<div className="aui-thread-welcome-message flex w-full flex-col">\n\s*\{!hideComposer && <ComposerAnimated /);
+	assert.match(thread, /<div className="aui-thread-welcome-message relative flex w-full flex-col">\n\s*\{!hideComposer && <ComposerAnimated [\s\S]*?<ModelPickerAnnouncement className="absolute/);
 	assert.match(thread, /\{composerAtBottom \? \(\n\s*<div className="aui-thread-welcome-message flex w-full flex-col justify-center">/);
 });
 

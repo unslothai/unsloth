@@ -9,8 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 import os
 import sys
+import threading
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
@@ -29,6 +31,7 @@ from .utils import (
     torch_amp_custom_bwd,
 )
 from . import rms_layernorm as _rms_layernorm
+from . import dequant_cache as _dq
 from .fp8_lora import has_fp8_dgrad
 
 _is_compiling = torch.compiler.is_compiling
@@ -328,6 +331,27 @@ def _add_lora_dX(dX, y_dB, A, S, mask, p):
         dX.add_(_dropout_replay(y_dB @ A.t(), mask, p, S))
 
 
+def _base_dgrad_accum(dX, dY, W, W_quant):
+    # dX += dY @ base weight: fast_dequantize(W.t()).t() is the weight, read from the dequant cache when it holds it.
+    if _dq.traced_route(W, W_quant):
+        return _dq.nf4_addmm_(dX, dY, W.t(), W_quant)
+    W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
+    return addmm_(dX, dY, W.t())
+
+
+def _base_dgrad(
+    dY,
+    W,
+    W_quant,
+    out = None,
+):
+    # dY @ base weight into a new tensor (or out, eager only).
+    if out is None and _dq.traced_route(W, W_quant):
+        return _dq.nf4_matmul(dY, W.t(), W_quant)
+    W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
+    return torch.matmul(dY, W.t(), out = out)
+
+
 def _grad_needed(ctx, index):
     # A ctx without the flags (handcrafted) computes every gradient.
     needs = getattr(ctx, "needs_input_grad", None)
@@ -354,9 +378,7 @@ def _lora_AB_grads(X, mask, p, y_dB, A, B, dY, S, need_A, need_B):
 
 
 def _shared_XA(X, As, dtype):
-    # One X @ [A_1; A_2; ...].t() instead of one pass over X per projection; per-projection column views.
-    # Compressed sparse adapters cannot be concatenated: one product each, as before.
-    # Eager only: a strided layout is neither sparse nor compressed sparse.
+    # Eager only: one X @ concatenated A's for strided layouts; sparse adapters stay separate.
     if not all(A.layout == torch.strided for A in As):
         return [torch.matmul(X, A.to(dtype).t()) for A in As]
     XA = torch.matmul(X, torch.cat([A if A.dtype is dtype else A.to(dtype) for A in As], 0).t())
@@ -471,6 +493,91 @@ def _may_overwrite_input(X):
     )
 
 
+# Skipping the down projection while a gradient checkpoint replays a decoder layer. The replay only rebuilds the
+# tensors LoRA_MLP saves (X, e, g); backward never reads h or the down output i, and the layer output they feed
+# (residual + i) is the checkpoint's output, whose value its nested backward never reads. A decoder layer arms this
+# (arm_mlp_output_unread) only when it is the whole checkpointed function; UNSLOTH_GC_SKIP_MLP_DOWN=0 disables.
+_SKIP_DOWN_TLS = threading.local()
+MLP_DOWN_SKIP_STATS = collections.Counter()  # skipped: replays that did not run the down projection
+_SKIP_DOWN_ENABLED = os.environ.get("UNSLOTH_GC_SKIP_MLP_DOWN", "1") != "0"
+_SKIPPED_FILL = None  # tests fill the unused output (NaN) to prove nothing reads it
+
+
+def _replay_module():
+    try:
+        from unsloth_zoo.gradient_checkpointing import gradient_checkpoint_replay_module
+    except ImportError:  # unsloth_zoo without the replay root: never skip
+        return None
+    return gradient_checkpoint_replay_module()
+
+
+def _no_forward_hooks(*modules):
+    if torch.nn.modules.module._global_forward_hooks:
+        return False
+    return not any(getattr(m, "_forward_hooks", None) for m in modules)
+
+
+def arm_mlp_output_unread(layer, mlp):
+    """Call before `mlp(x)` in a decoder layer whose output is `residual + mlp(x)` and nothing else reads mlp(x);
+    call disarm_mlp_output_unread() after it when this returned True. While a checkpoint replays exactly this
+    layer, the fused LoRA MLP then skips its down projection. Plain code, no context manager: traced blocks
+    fold _is_compiling() to True and keep no trace of it."""
+    if _is_compiling() or not _SKIP_DOWN_ENABLED:
+        return False
+    if _replay_module() is not layer or not _no_forward_hooks(layer, mlp):
+        return False
+    _SKIP_DOWN_TLS.armed = (layer, mlp)
+    return True
+
+
+def disarm_mlp_output_unread():
+    _SKIP_DOWN_TLS.armed = None
+
+
+# Block compile (torch >= 2.11) traces the decoder layer, where the thread-local token above cannot be read.
+# The block's eager wrapper instead sets this plain global around a replay of a layer that qualifies
+# (block_skip_down_eligible); the traced LoRA_MLP reads it, so dynamo guards on it: the replay (grad mode)
+# graph is compiled with the skip and the forward (no grad) graph without, the same two graphs as before.
+_BLOCK_SKIP_DOWN = False
+
+
+def set_block_skip_down(value):
+    global _BLOCK_SKIP_DOWN
+    previous = _BLOCK_SKIP_DOWN
+    _BLOCK_SKIP_DOWN = bool(value)
+    return previous
+
+
+def block_skip_down_eligible(layer, layer_forward):
+    """True when a compiled replay of `layer` may skip its down projection: the layer runs a forward whose
+    MLP output only feeds `residual + mlp(x)`, its MLP's own `forward` is the fused SwiGLU LoRA (no
+    accelerate hook or tiled MLP around it), and no forward hook could read an output. The caller still
+    checks that the checkpoint replays exactly this layer (_replay_module)."""
+    if not (_SKIP_DOWN_ENABLED and TRACE_LORA_FUNCTIONS):
+        return False
+    if not getattr(layer_forward, "_unsloth_mlp_output_unread", False):
+        return False
+    mlp = getattr(layer, "mlp", None)
+    slots = getattr(mlp, "__dict__", {})
+    if "_hf_hook" in slots or "_unsloth_forward" in slots:
+        return False
+    if getattr(slots.get("forward"), "__func__", None) is not apply_lora_mlp_swiglu:
+        return False
+    # LoRA dropout / bias take LoRA_MLP's other branch, which always runs the down projection.
+    return _no_forward_hooks(layer, mlp)
+
+
+def _take_skip_down(mlp):
+    # One shot, and re-checked against the live replay so a token left by an exception never fires elsewhere.
+    if _is_compiling():
+        return False
+    armed = getattr(_SKIP_DOWN_TLS, "armed", None)
+    if armed is None or armed[1] is not mlp:
+        return False
+    _SKIP_DOWN_TLS.armed = None
+    return _replay_module() is armed[0]
+
+
 class LoRA_MLP(torch.autograd.Function):
     """
     ### LoRA weights
@@ -565,10 +672,26 @@ class LoRA_MLP(torch.autograd.Function):
                 X, upW, upW_quant, upA, upB, upS, XA = upXA, fused = fused, fused_checked = checked
             )
             del gateXA, upXA
-            h = _forward_function(e, g)
-            i = matmul_lora(
-                h, downW, downW_quant, downA, downB, downS, fused = fused, fused_checked = checked
-            )
+            if _is_compiling():
+                skip_down = _BLOCK_SKIP_DOWN  # guarded: set around a compiled block replay
+            else:
+                skip_down = getattr(_SKIP_DOWN_TLS, "active", False)
+                if skip_down:
+                    _SKIP_DOWN_TLS.active = False
+                    MLP_DOWN_SKIP_STATS["skipped"] += 1
+            if skip_down:
+                # Checkpoint replay of a layer whose output nothing reads: backward needs only X, e, g.
+                # Out of place: an ATen fill_ on a returned fresh tensor compiles a wrong gradient (#14712).
+                i = (
+                    X.new_empty(X.shape)
+                    if _SKIPPED_FILL is None
+                    else X.new_full(X.shape, _SKIPPED_FILL)
+                )
+            else:
+                h = _forward_function(e, g)
+                i = matmul_lora(
+                    h, downW, downW_quant, downA, downB, downS, fused = fused, fused_checked = checked
+                )
             masks = (None, None, None)
         else:
             fused = False
@@ -714,14 +837,12 @@ class LoRA_MLP(torch.autograd.Function):
             if has_fp8_dgrad(upW_quant):
                 dX = upW_quant.dgrad_accum(df, upW, dX)
             else:
-                upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
-                addmm_(dX, df, upW.t())
+                _base_dgrad_accum(dX, df, upW, upW_quant)
             del upW
             if has_fp8_dgrad(gateW_quant):
                 dX = gateW_quant.dgrad_accum(de, gateW, dX)
             else:
-                gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
-                addmm_(dX, de, gateW.t())
+                _base_dgrad_accum(dX, de, gateW, gateW_quant)
             del gateW
             d_gateBias = d_upBias = None
             d_downBias = _lora_bias_grad(dY, downS) if ctx.biases[2] else None
@@ -777,17 +898,17 @@ class LoRA_MLP(torch.autograd.Function):
         if has_fp8_dgrad(upW_quant):
             dX = upW_quant.dgrad(df, upW)
         else:
-            upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
             # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
-            dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
+            dX = _base_dgrad(
+                df, upW, upW_quant, out = X if ctx.inplace and not _is_compiling() else None
+            )
             del upW
         _add_lora_dX(dX, up_dB, upA, upS, up_mask, up_p)
 
         if has_fp8_dgrad(gateW_quant):
             dX.add_(gateW_quant.dgrad(de, gateW))
         else:
-            gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
-            addmm_(dX, de, gateW.t())
+            _base_dgrad_accum(dX, de, gateW, gateW_quant)
             del gateW
         _add_lora_dX(dX, gate_dB, gateA, gateS, gate_mask, gate_p)
 
@@ -841,30 +962,37 @@ def apply_lora_mlp_swiglu(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        swiglu_fg_kernel,
-        swiglu_DWf_DW_dfg_kernel,
-        inplace,
-        dropout_p,
-        *biases,
-    )
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            swiglu_fg_kernel,
+            swiglu_DWf_DW_dfg_kernel,
+            inplace,
+            dropout_p,
+            *biases,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
 
 
@@ -1166,13 +1294,10 @@ class LoRA_QKV(torch.autograd.Function):
             for W_, W_quant_, dY_ in ((QW, QW_quant, dQ), (KW, KW_quant, dK), (VW, VW_quant, dV)):
                 if has_fp8_dgrad(W_quant_):
                     dX = W_quant_.dgrad_accum(dY_, W_, dX)
+                elif W_quant_ is None:
+                    addmm_(dX, dY_, W_)
                 else:
-                    W_ = (
-                        W_.t()
-                        if W_quant_ is None
-                        else fast_dequantize(W_.t(), W_quant_, dtype = dY_.dtype)
-                    )
-                    addmm_(dX, dY_, W_.t())
+                    _base_dgrad_accum(dX, dY_, W_, W_quant_)
                 del W_
             return (
                 dX.view(batch, seq_len, hd),
@@ -1221,24 +1346,23 @@ class LoRA_QKV(torch.autograd.Function):
         if has_fp8_dgrad(QW_quant):
             dX = QW_quant.dgrad(dQ, QW)
         else:
-            QW = fast_dequantize(QW.t(), QW_quant, dtype = dQ.dtype)
-            dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
+            dX = _base_dgrad(
+                dQ, QW, QW_quant, out = X if ctx.inplace and not _is_compiling() else None
+            )
             del QW
         _add_lora_dX(dX, q_dB, QA, QS, Q_mask, Q_p)
 
         if has_fp8_dgrad(KW_quant):
             dX.add_(KW_quant.dgrad(dK, KW))
         else:
-            KW = fast_dequantize(KW.t(), KW_quant, dtype = dK.dtype)
-            addmm_(dX, dK, KW.t())
+            _base_dgrad_accum(dX, dK, KW, KW_quant)
             del KW
         _add_lora_dX(dX, k_dB, KA, KS, K_mask, K_p)
 
         if has_fp8_dgrad(VW_quant):
             dX.add_(VW_quant.dgrad(dV, VW))
         else:
-            VW = fast_dequantize(VW.t(), VW_quant, dtype = dV.dtype)
-            addmm_(dX, dV, VW.t())
+            _base_dgrad_accum(dX, dV, VW, VW_quant)
             del VW
         _add_lora_dX(dX, v_dB, VA, VS, V_mask, V_p)
 
@@ -1415,15 +1539,13 @@ class LoRA_W(torch.autograd.Function):
             if has_fp8_dgrad(W_quant):
                 dX = W_quant.dgrad_accum(dY, W, dX)
             else:
-                W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
-                addmm_(dX, dY, W.t())
+                _base_dgrad_accum(dX, dY, W, W_quant)
             del W
         else:
             if has_fp8_dgrad(W_quant):
                 dX = W_quant.dgrad(dY, W)
             else:
-                W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
-                dX = dY @ W.t()
+                dX = _base_dgrad(dY, W, W_quant)
             del W
             _add_lora_dX(dX, y_dB, A, S, mask, ctx.dropout_p)
 

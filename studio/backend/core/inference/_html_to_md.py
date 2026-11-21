@@ -466,6 +466,7 @@ _SITE_LINK_MARKER_TAIL = re.compile(r"\x00[0-9a-f]+:\d+:[se]\x00$")
 # parts a base lookup reads back: enough for delimiters and link markers, bounded on hostile pages
 _SUP_BASE_SCAN_PARTS = 8
 _SUP_BASE_SCAN_CHARS = 128
+_SUP_BASE_ENDS = ")]}|）］｝"
 # a caret binds one token: a signed number or one letter goes bare, anything longer in parentheses
 _BARE_EXPONENT = re.compile(r"[-+−]?(?:\d+(?:[.,]\d+)?|[^\W\d_])")
 # split cents: $19<sup>99</sup> is a price, not an exponent
@@ -513,6 +514,66 @@ def _visible_tail(text: str) -> str:
         if trimmed == text:
             return text
         text = trimmed
+
+
+def _note_reference(attr_dict: dict) -> bool:
+    return (
+        any(
+            token in _FOOTNOTE_CLASSES
+            or any(
+                part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
+                for part in _CLASS_PART_SPLIT.split(token)
+            )
+            for token in (attr_dict.get("class") or "").lower().split()
+        )
+        or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
+    )
+
+
+def _sup_exponent(base: str, raw: str, shown: str, after_price: int) -> str | None:
+    visible = shown.strip(_MD_DELIMITERS)
+    if (
+        not visible
+        or "\n" in visible
+        or visible[0] == "["
+        # $19<sup>.99</sup> / €19<sup>,99</sup> are split cents; 10<sup>.5</sup> with no currency is a power
+        or (visible[0] in ".," and after_price)
+        or not any(c.isalnum() for c in visible)
+        or visible.lower() in _PLAIN_SUFFIXES
+        or (
+            len(_last_word(base)) > 1
+            and _CITATION_LIST.fullmatch(visible)
+            and ("–" in visible or not _THOUSANDS.fullmatch(visible))
+        )
+        or (base[-1] == "2" and visible.lower() in _SECOND_SUFFIXES)
+        or (
+            (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
+            and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
+        )
+        or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
+        # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
+        or (len(visible) == after_price and visible.isdigit())
+    ):
+        return None
+    # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
+    bare = _BARE_EXPONENT.fullmatch(visible) or (
+        visible.startswith("(") and visible.endswith(")") and visible.count("(") == 1
+    )
+    return f"^{raw}" if bare else f"^({raw})"
+
+
+def _raise_superscript(parts: list[str], start: int) -> None:
+    before = parts[max(start - _SUP_BASE_SCAN_PARTS, 0) : start]
+    # the joined tail: Word splits runs mid-word, and the citation rule reads the whole last word
+    base = "".join(part[-_SUP_BASE_SCAN_CHARS:] for part in before)[-_SUP_BASE_SCAN_CHARS:]
+    if not base or not (base[-1].isalnum() or base[-1] in _SUP_BASE_ENDS):
+        return
+    after_price = _MarkdownRenderer._after_price(before) if base[-1].isdigit() else 0
+    joined = "".join(parts[start:])
+    raw = joined.strip()
+    exponent = _sup_exponent(base, raw, raw, after_price)
+    if exponent is not None:
+        parts[start:] = [exponent + joined[len(joined.rstrip()) :]]
 
 
 # measured density: 0.94-1.00 for link lists, 0.13-0.90 for content headers
@@ -854,39 +915,74 @@ class _TitleButtonScan:
 # (len, hash) of recent pages -> their title buttons, so main-content passes over one page scan it once
 _TITLE_BUTTON_CACHE: dict[tuple[int, int], frozenset[tuple[int, int]]] = {}
 _TITLE_BUTTON_CACHE_SIZE = 4
-_TAB_LABEL_CACHE: dict[tuple[int, int], dict[str, str]] = {}
+_TabLabels = tuple[dict[str, str], dict[str, str], dict[tuple[int, int], str]]
+_TAB_LABEL_CACHE: dict[tuple[int, int], _TabLabels] = {}
 _MAX_TAB_LABEL_CHARS = 80
 # what the renderer skips, except buttons, which sphinx-tabs uses as tabs
 _TAB_LABEL_SKIP = _SKIP_TAGS - {"button"}
 _TAB_PANEL = re.compile(r"tabpanel", re.IGNORECASE)
-_TAB_PANEL_LABELLED = re.compile(r"aria-labelledby", re.IGNORECASE)
+_TAB_PANEL_PAIRING = re.compile(r"aria-labelledby|aria-controls|tablist", re.IGNORECASE)
 
 
 class _TabLabelScan(HTMLParser):
-    """Text of each shown role=tab element with an id, so a panel's aria-labelledby can name its tab."""
+    """Tab text by id for aria-labelledby; panel_labels by panel id for a tab's aria-controls; order_labels by panel
+    start-tag position for Headless UI and Docusaurus, which pair panels with tabs only by order and may have no ids."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs = True)
         self.labels: dict[str, str] = {}
+        self.panel_labels: dict[str, str] = {}
+        self.order_labels: dict[tuple[int, int], str] = {}
+        self._slot_labels: list[str] = []
+        self._tab_slot = -1
         self._open: list[str] = []
         # per-tag _open indices, so an end tag that matches nothing costs O(1) rather than a stack walk
         self._open_at: dict[str, list[int]] = {}
         self._muted_at = -1  # _open index of the outermost skipped or hidden element
         self._tab_at = -1  # _open index of the tab being read
         self._tab_id = ""
+        self._tab_controls = ""
+        self._tab_selected = False
+        self._selected_panels: set[str] = set()
         self._parts: list[str] = []
+        self._list_at = -1  # _open index of the tablist being read
+        self._list_tabs: list[int] = []
+        self._list_explicit = False
+        self._closed_list: tuple[int, list[int]] | None = None
+        # (wrapper _open index, tab slots, (panel position, has aria-labelledby)), innermost last
+        self._groups: list[tuple[int, list[int], list[tuple[tuple[int, int], bool]]]] = []
 
     def _finish_tab(self) -> None:
         # capped here too, so joining many long labels per panel stays linear
         label = " ".join("".join(self._parts).split())[:_MAX_TAB_LABEL_CHARS]
-        if label:
+        if label and self._tab_id:
             self.labels.setdefault(self._tab_id, label)
+        if self._tab_slot >= 0:
+            self._slot_labels[self._tab_slot] = label
+        # a panel several tabs control shows the selected one's content; with none selected it is ambiguous
+        for panel_id in self._tab_controls.split():
+            if panel_id in self._selected_panels:
+                continue
+            if self._tab_selected:
+                self._selected_panels.add(panel_id)
+                self.panel_labels[panel_id] = label
+            else:
+                self.panel_labels[panel_id] = "" if panel_id in self.panel_labels else label
         self._tab_at = -1
+        self._tab_slot = -1
         self._parts = []
 
     def _pop_to(self, i: int) -> None:
         if 0 <= self._tab_at and i <= self._tab_at:
             self._finish_tab()
+        if 0 <= self._list_at and i <= self._list_at:
+            if not self._list_explicit:
+                self._closed_list = (self._list_at, self._list_tabs)
+            self._list_at = -1
+        if self._closed_list and i < self._closed_list[0]:
+            self._closed_list = None
+        while self._groups and self._groups[-1][0] >= i:
+            self._finish_group()
         for tag in self._open[i:]:
             self._open_at[tag].pop()
         del self._open[i:]
@@ -897,16 +993,58 @@ class _TabLabelScan(HTMLParser):
         # an omitted </li> or </p> ends the element at a sibling that closes it, a tab included
         while self._open and tag in _IMPLICIT_CLOSERS.get(self._open[-1], ()):
             self._pop_to(len(self._open) - 1)
-        if tag in _VOID_TAGS:
-            return
+        # order-paired panels live in the element right after the tablist
+        if self._closed_list:
+            if tag not in _VOID_TAGS:
+                self._groups.append((len(self._open), self._closed_list[1], []))
+            self._closed_list = None
         attr_dict = dict(attrs)
+        if tag in _VOID_TAGS:
+            # a void tab still takes its slot
+            if self._take_slot(attr_dict, len(self._open) - 1):
+                self._start_tab(attr_dict, len(self._open))
+                self._finish_tab()
+            return
         self._open_at.setdefault(tag, []).append(len(self._open))
         self._open.append(tag)
         if self._muted_at < 0 and (tag in _TAB_LABEL_SKIP or _is_hidden_element(attr_dict)):
             self._muted_at = len(self._open) - 1
-        if self._tab_at < 0 and attr_dict.get("id") and _has_role(attr_dict, "tab"):
-            self._tab_at = len(self._open) - 1
-            self._tab_id = attr_dict["id"]
+        if self._list_at < 0 and _has_role(attr_dict, "tablist"):
+            self._list_at = len(self._open) - 1
+            self._list_tabs = []
+            self._list_explicit = False
+        if self._take_slot(attr_dict, len(self._open) - 2):
+            self._start_tab(attr_dict, len(self._open) - 1)
+
+    def _start_tab(self, attr_dict: dict, at: int) -> None:
+        self._tab_at = at
+        self._tab_slot = self._list_tabs[-1] if self._list_at >= 0 and self._list_tabs else -1
+        self._tab_id = attr_dict.get("id") or ""
+        self._tab_controls = attr_dict.get("aria-controls") or ""
+        self._tab_selected = (attr_dict.get("aria-selected") or "").strip().lower() == "true"
+
+    def _take_slot(self, attr_dict: dict, parent: int) -> bool:
+        """Count a tab in the open tablist, or a panel in the innermost group's wrapper; True for a tab to read."""
+        if self._tab_at >= 0:
+            return False
+        if _has_role(attr_dict, "tab"):
+            if self._list_at >= 0:
+                self._list_tabs.append(len(self._slot_labels))
+                self._slot_labels.append("")
+                self._list_explicit |= bool((attr_dict.get("aria-controls") or "").strip())
+            return True
+        if self._groups and self._groups[-1][0] == parent and _has_role(attr_dict, "tabpanel"):
+            linked = bool((attr_dict.get("aria-labelledby") or "").strip())
+            self._groups[-1][2].append((self.getpos(), linked))
+        return False
+
+    def _finish_group(self) -> None:
+        _, slots, panels = self._groups.pop()
+        # order pairs only when every tab has its panel (else labels after a gap shift) and no panel names its tab
+        if len(panels) == len(slots) and not any(linked for _, linked in panels):
+            for slot, (pos, _) in zip(slots, panels):
+                if self._slot_labels[slot]:
+                    self.order_labels[pos] = self._slot_labels[slot]
 
     def handle_endtag(self, tag: str) -> None:
         # stray end tags, and the </img> HTMLParser sends after <img/>, match nothing and are ignored
@@ -918,16 +1056,21 @@ class _TabLabelScan(HTMLParser):
         if self._tab_at >= 0 and self._muted_at < 0 and len(self._parts) < 64:
             self._parts.append(data)
 
+    def close(self) -> None:
+        super().close()
+        while self._groups:
+            self._finish_group()
 
-def _tab_labels(source_html: str, key: tuple[int, int]) -> dict[str, str]:
+
+def _tab_labels(source_html: str, key: tuple[int, int]) -> _TabLabels:
     labels = _TAB_LABEL_CACHE.get(key)
     if labels is None:
-        labels = {}
-        if _TAB_PANEL.search(source_html) and _TAB_PANEL_LABELLED.search(source_html):
+        labels = ({}, {}, {})
+        if _TAB_PANEL.search(source_html) and _TAB_PANEL_PAIRING.search(source_html):
             scan = _TabLabelScan()
             scan.feed(source_html)
             scan.close()
-            labels = scan.labels
+            labels = (scan.labels, scan.panel_labels, scan.order_labels)
         if len(_TAB_LABEL_CACHE) >= _TITLE_BUTTON_CACHE_SIZE:
             _TAB_LABEL_CACHE.clear()
         _TAB_LABEL_CACHE[key] = labels
@@ -957,6 +1100,8 @@ class _MarkdownRenderer(HTMLParser):
         # parser positions of buttons that carry their heading title, found by _TitleButtonScan
         self.title_buttons: frozenset[tuple[int, int]] = frozenset()
         self.tab_labels: dict[str, str] = {}  # tab id -> its text, from _TabLabelScan
+        self.panel_labels: dict[str, str] = {}
+        self.order_labels: dict[tuple[int, int], str] = {}
         self._title_scan: _TitleButtonScan | None = None
         self._site_links = site_links
         self._out: list[str] = []
@@ -1135,7 +1280,7 @@ class _MarkdownRenderer(HTMLParser):
             part = _visible_tail(part)
             if part:
                 base = part[-1]
-                return part if base.isalnum() or base in ")]}|）］｝" else ""
+                return part if base.isalnum() or base in _SUP_BASE_ENDS else ""
         return ""
 
     @staticmethod
@@ -1170,36 +1315,9 @@ class _MarkdownRenderer(HTMLParser):
         joined = "".join(target[start:])
         raw = joined.strip()
         shown = self._site_links.clean(raw) if self._site_links is not None else raw
-        visible = shown.strip(_MD_DELIMITERS)
-        if (
-            not visible
-            or "\n" in visible
-            or visible[0] == "["
-            # $19<sup>.99</sup> / €19<sup>,99</sup> are split cents; 10<sup>.5</sup> with no currency is a power
-            or (visible[0] in ".," and after_price)
-            or not any(c.isalnum() for c in visible)
-            or visible.lower() in _PLAIN_SUFFIXES
-            or (
-                len(_last_word(base)) > 1
-                and _CITATION_LIST.fullmatch(visible)
-                and ("–" in visible or not _THOUSANDS.fullmatch(visible))
-            )
-            or (base[-1] == "2" and visible.lower() in _SECOND_SUFFIXES)
-            or (
-                (base[-1].isdigit() or _ROMAN_NUMERAL_TAIL.search(base))
-                and visible.lower() in _DIGIT_ORDINAL_SUFFIXES
-            )
-            or visible in _SUPERIOR_ABBREVIATIONS.get(_last_word(base), ())
-            # split cents are two digits; $2<sup>n</sup> or USD 10<sup>6</sup> stays an exponent
-            or (len(visible) == after_price and visible.isdigit())
-        ):
+        exponent = _sup_exponent(base, raw, shown, after_price)
+        if exponent is None:
             return
-        # only the emphasis wrapping a whole exponent is renderer syntax; an inner * is an operator
-        token = shown.strip(_MD_DELIMITERS)
-        bare = _BARE_EXPONENT.fullmatch(token) or (
-            token.startswith("(") and token.endswith(")") and token.count("(") == 1
-        )
-        exponent = f"^{raw}" if bare else f"^({raw})"
         exponent += joined[len(joined.rstrip()) :]
         target[start:] = [exponent]
         # headings are teed into these copies; a stale one renders "E=mc2" or skews the prose gate
@@ -1930,15 +2048,22 @@ class _MarkdownRenderer(HTMLParser):
 
         # every panel is read, so name each by its tab rather than leave the model to count tabs
         if (
-            self.tab_labels
+            (self.tab_labels or self.panel_labels or self.order_labels)
             and not (self._in_pre or self._in_table)
             and _has_role(attr_dict, "tabpanel")
         ):
             ids = dict.fromkeys((attr_dict.get("aria-labelledby") or "").split())
-            # capped, so repeating an id cannot multiply the page
-            label = " ".join(self.tab_labels[i] for i in ids if i in self.tab_labels)[
-                :_MAX_TAB_LABEL_CHARS
-            ]
+            panel_id = attr_dict.get("id") or ""
+            # capped, so a repeated id cannot multiply the page; aria-labelledby, then aria-controls (even an
+            # ambiguous one), outrank order
+            if ids:
+                label = " ".join(self.tab_labels[i] for i in ids if i in self.tab_labels)[
+                    :_MAX_TAB_LABEL_CHARS
+                ]
+            elif panel_id in self.panel_labels:
+                label = self.panel_labels[panel_id]
+            else:
+                label = self.order_labels.get(self.getpos(), "")
             if label:
                 self._emit(f"\n\n**{label}**\n\n")
 
@@ -1964,17 +2089,7 @@ class _MarkdownRenderer(HTMLParser):
 
         elif tag == "sup":
             target = self._emit_target()
-            reference = (
-                any(
-                    token in _FOOTNOTE_CLASSES
-                    or any(
-                        part == "fn" or part.startswith(_FOOTNOTE_CLASS_PREFIXES)
-                        for part in _CLASS_PART_SPLIT.split(token)
-                    )
-                    for token in (attr_dict.get("class") or "").lower().split()
-                )
-                or "doc-noteref" in (attr_dict.get("role") or "").lower().split()
-            )
+            reference = _note_reference(attr_dict)
             # past the cap nothing is tracked, so the stack stays bounded on hostile pages
             if len(self._sup_starts) < _MAX_SUP_DEPTH:
                 self._sup_starts.append(
@@ -2492,7 +2607,7 @@ def _new_renderer(
             page_span_limit = 2 * len(source_html),
         )
         renderer.title_buttons = title_buttons
-        renderer.tab_labels = tab_labels
+        renderer.tab_labels, renderer.panel_labels, renderer.order_labels = tab_labels
         renderer._title_scan = scan
         if tokens is None:
             renderer.feed(source_html)
@@ -2725,14 +2840,12 @@ _MAIN_START = re.compile(r"<main", re.IGNORECASE)
 # absent text = no generated span cells, so a pass needs no span-free scoring re-render
 _SPAN_ATTR = re.compile(r"(?:col|row)span", re.IGNORECASE)
 _NOSCRIPT_TAG = re.compile(r"<(/?)noscript\b", re.IGNORECASE)
-# html.unescape raises once a decimal reference has more digits, leading zeros included, than
-# int()'s limit, which Python never sets below 640
+# html.unescape raises past int()'s digit limit (never below 640), leading zeros included.
 _LONG_DECIMAL_REF = re.compile(r"&#([0-9]{641,})")
 
 
 def _short_decimal_ref(match: re.Match[str]) -> str:
-    """The reference without its leading zeros, or &#65533 (U+FFFD, what html.unescape gives past
-    U+10FFFF) when 8 or more digits remain."""
+    """Leading zeros dropped; 8+ digits give U+FFFD, as html.unescape does past U+10FFFF."""
     digits = match.group(1).lstrip("0") or "0"
     return "&#" + (digits if len(digits) < 8 else "65533")
 

@@ -470,10 +470,8 @@ def _image_payload(part) -> Optional[str]:
 
 
 def _local_image_request(messages: list, several: bool):
-    """Studio's local route shape: an image marker where each image stood, plus the payloads in order.
-
-    A model that reads one image per conversation gets only the newest turn's, like the app.
-    """
+    """Studio's local route shape: an image marker where each image stood plus payloads in order; a
+    model that reads one image per conversation gets only the newest turn's image, like the app."""
     owners = []  # (message index, user ordinal, payloads)
     ordinal = 0
     for index, message in enumerate(messages):
@@ -1350,14 +1348,12 @@ def connect_studio_server(
 
     npu_path = npu_model_path(model)
     if npu_path:
-        # `unsloth inference` passes the bare id the picker shows; load it by its model path.
-        model = npu_path
         try:
-            prepare_npu_model(
+            model = prepare_npu_model(
                 lambda method, path, payload, timeout: backend._request(
                     method, path, payload, timeout = timeout
                 ),
-                model,
+                npu_path,
                 lambda line: typer.echo(line, err = True),
             )
         except RuntimeError as exc:

@@ -27,10 +27,9 @@ function pointIn(el: Element, x: number, y: number): boolean {
 
 const DISABLED_TITLED = `${TITLED}:disabled, ${TITLED}[aria-disabled='true']`;
 
-/** Runs on every pointermove. With the pointer over the chat column's margins the hit is the thread
- *  viewport, so a subtree query would walk every message (~2.5 ms per move at 200 turns). A hit above
- *  the message rows means the point is in none of them (a row under it would have been the hit), so
- *  their subtrees are skipped. */
+/**
+ * Runs on every pointermove: over margins the hit is the viewport, so message subtrees are skipped.
+ */
 function disabledUnder(hit: Element | null, x: number, y: number): HTMLElement | null {
   if (!hit) return null;
   if (!hit.querySelector("[data-role]")) {

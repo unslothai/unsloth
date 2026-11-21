@@ -637,9 +637,8 @@ def test_rl_evaluate_and_predict_refuse_iterable_datasets(monkeypatch, kind):
 
 
 def test_trainers_built_before_cp_keep_the_plain_methods(monkeypatch):
-    # The generated RL trainers bind self.train on the instance in __init__ (rl.py: MethodType(...)), from
-    # the instance's CP train when one is bound, else from the class. A trainer built before CP keeps the
-    # class's own train (no CP wrapper runs for it); the CP trainer installs its state only inside train.
+    # RL trainers bind self.train in __init__ from the CP train if bound, else the class; a trainer
+    # built before CP keeps the class train; CP installs its state only inside train.
     installs = []
     Trainer = _cp_fake_trainer(monkeypatch, "dpo_trainer", [], installs)
     plain_train = Trainer.__dict__.get("train")

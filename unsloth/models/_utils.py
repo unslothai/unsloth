@@ -1842,11 +1842,25 @@ def _flex_preferred_fits(config, dtype = None):
         return True
 
 
+def _flex_float32_compile_too_slow(config, dtype = None):
+    """True when attention runs in float32 above head_dim 128: Inductor then takes minutes per flex
+    kernel (B200, torch 2.15, head_dim 256: 174 s forward, 211 s with backward, against 7 s / 16 s
+    in bf16), and a model compiles several, so the load looks hung. SDPA / eager are used instead;
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM=1 or an explicit flex_attention request keeps flex."""
+    if not _flex_attention_runs_float32(dtype):
+        return False
+    if _flex_large_head_dim_override() is True:
+        return False
+    head_dim = _text_attention_head_dim(config)
+    return head_dim is not None and head_dim > _SDPA_FLASH_MAX_HEAD_DIM
+
+
 def _supports_flex_attention(
     model_class,
     config,
     model_type,
     dtype = None,
+    automatic = True,
 ):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -1857,6 +1871,9 @@ def _supports_flex_attention(
     if not _flex_attention_gpu_is_supported():
         return False
     if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config, dtype):
+        return False
+    # A compile-time preference for automatic selection only: an explicit flex request keeps flex.
+    if automatic and _flex_float32_compile_too_slow(config, dtype):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -3336,13 +3353,16 @@ def resolve_attention_implementation(
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
-    supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
+    automatic_flex = not requests_flex_attention(requested_attn_implementation)
+    supports_flex_attention = _supports_flex_attention(
+        model_class, config, model_type, dtype, automatic = automatic_flex
+    )
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
             supports_flex_attention = _supports_flex_attention(
-                model_class, config, model_type, dtype
+                model_class, config, model_type, dtype, automatic = automatic_flex
             )
     # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
@@ -5730,6 +5750,13 @@ def _mark_requested_float32(model, requested):
         model._unsloth_user_float32 = bool(requested)
     except Exception:
         pass
+    # Every from_pretrained return passes here, so this is the opt-in UNSLOTH_MEMORY_REPORT "load" point.
+    if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+        try:
+            from unsloth.utils.run_report import report_memory
+            report_memory("load", model)
+        except Exception:
+            pass
     return model
 
 
@@ -8984,7 +9011,9 @@ def _native_from_converted(model, adapter_name, folder):
             delta = scaling0 * (B0_live.float() @ A0_live.float() - B0.float() @ A0.float())
             if getattr(module, "fan_in_fan_out", False):
                 delta = delta.T
-            base.data.add_(delta.to(base))
+            # In place on the parameter (no_grad), not through .data: the version bump invalidates
+            # anything keyed on it, such as the QAT fake quantized weight cache.
+            base.add_(delta.to(base))
             module._unsloth_initial_lora[k] = (A0.clone(), B0.clone(), scaling0)
     return weights
 
@@ -10694,7 +10723,13 @@ def _prepare_model_for_qat(
     _reinstall_input_require_grads(require_grads_owners)
     _reregister_unowned_require_grads_hooks(model, all_embeddings, unowned_require_grads)
     _patch_microscaling_qat_forwards(model)
+    from ._qat_weight_memo import install_qat_weight_memo
+
+    install_qat_weight_memo(model)
     _record_qat_engagement(model, torchao_config)
+    from ._qat_round import round_frozen_qat_weights
+
+    round_frozen_qat_weights(model)
 
     return model
 
@@ -10777,6 +10812,11 @@ def patch_hf_quantizer():
 
 
 patch_hf_quantizer()
+
+# DoRA: PEFT rebuilds the dense B @ A update per forward for the row norm; use the rank-r factored identity instead.
+from ..kernels.dora import patch_peft_dora_factored_norm
+
+patch_peft_dora_factored_norm()
 
 
 def _fp8_checkpoint_dequantizes_below_sm89():

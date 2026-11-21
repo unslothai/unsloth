@@ -11,9 +11,12 @@ import math
 import os
 import random as _random
 import resource
+import socket
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +38,10 @@ def _seed_everything() -> None:
 
 
 def _peak_gpu_gb() -> float:
-    import mlx.core as mx
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return 0.0
 
     if not mx.metal.is_available():
         return 0.0
@@ -473,7 +479,7 @@ def cmd_reload(args) -> int:
     return 0
 
 
-def _find_llama_cli() -> Path | None:
+def _find_llama_binary(name: str) -> Path | None:
     """llama.cpp is installed under UNSLOTH_LLAMA_CPP_PATH or ~/.unsloth/llama.cpp, not the CWD."""
     bases: list[Path] = []
     env_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
@@ -491,23 +497,79 @@ def _find_llama_cli() -> Path | None:
         if base in seen:
             continue
         seen.add(base)
-        for rel in ("llama-cli", "build/bin/llama-cli"):
+        for rel in (name, f"build/bin/{name}"):
             cand = base / rel
             if cand.is_file() and os.access(cand, os.X_OK):
                 # Absolute: a separator-less relative path would trigger a PATH lookup.
                 return cand.resolve()
         if base.is_dir():
-            for cand in sorted(base.glob("**/llama-cli")):
+            for cand in sorted(base.glob(f"**/{name}")):
                 if cand.is_file() and os.access(cand, os.X_OK):
                     return cand.resolve()
     return None
 
 
+def _llama_server_completion(
+    llama_server: Path, flags: list[str], n_predict: str, timeout: int
+) -> str:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    url = f"http://127.0.0.1:{port}"
+    # Loopback must never go through an HTTP(S)_PROXY from the environment.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    argv = [str(llama_server), *flags, "--host", "127.0.0.1", "--port", str(port)]
+    with tempfile.TemporaryFile() as log:
+        server = subprocess.Popen(argv, stdout = log, stderr = subprocess.STDOUT)
+
+        def _log_tail() -> str:
+            log.seek(0)
+            return log.read().decode("utf-8", errors = "replace")[-1000:]
+
+        try:
+            deadline = time.monotonic() + timeout
+            while True:
+                if server.poll() is not None:
+                    raise SystemExit(
+                        f"llama-server exit {server.returncode}; log tail: {_log_tail()}"
+                    )
+                try:
+                    with opener.open(f"{url}/health", timeout = 5):
+                        break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise SystemExit(
+                            f"llama-server not healthy after {timeout}s; log tail: {_log_tail()}"
+                        )
+                    time.sleep(0.5)
+            payload = {
+                "prompt": PROMPT,
+                "n_predict": int(n_predict),
+                "temperature": 0,
+                "seed": SEED,
+            }
+            request = urllib.request.Request(
+                f"{url}/completion",
+                data = json.dumps(payload).encode(),
+                headers = {"Content-Type": "application/json"},
+            )
+            with opener.open(request, timeout = timeout) as response:
+                return json.loads(response.read()).get("content") or ""
+        finally:
+            server.terminate()
+            try:
+                server.wait(timeout = 10)
+            except subprocess.TimeoutExpired:
+                server.kill()
+
+
 def _reload_gguf(save_dir: Path, metrics: dict) -> int:
-    llama_cli = _find_llama_cli()
-    if llama_cli is None:
+    llama_cli = _find_llama_binary("llama-cli")
+    # Studio's prebuilt llama.cpp bundle ships llama-server but no llama-cli.
+    llama_server = None if llama_cli else _find_llama_binary("llama-server")
+    if llama_cli is None and llama_server is None:
         raise SystemExit(
-            "llama-cli not found under $UNSLOTH_LLAMA_CPP_PATH, "
+            "llama-cli or llama-server not found under $UNSLOTH_LLAMA_CPP_PATH, "
             "~/.unsloth/llama.cpp, or ./llama.cpp"
         )
 
@@ -522,61 +584,71 @@ def _reload_gguf(save_dir: Path, metrics: dict) -> int:
     n_ctx = os.environ.get("UNSLOTH_GGUF_RELOAD_CTX", "256")
     n_gpu_layers = os.environ.get("UNSLOTH_GGUF_RELOAD_NGL", "0")
     reload_timeout = int(os.environ.get("UNSLOTH_GGUF_RELOAD_TIMEOUT", "420"))
-    argv = [
-        str(llama_cli),
+    flags = [
         "-m",
         str(gguf_path),
-        "-p",
-        PROMPT,
-        "-n",
-        n_predict,
         "-t",
         n_threads,
         "-c",
         n_ctx,
         "-ngl",
         n_gpu_layers,
-        "--temp",
-        "0",
-        "--seed",
-        str(SEED),
         "--no-warmup",
     ]
-    with Phase("reload_gguf", metrics):
-        try:
-            proc = subprocess.run(
-                argv,
-                capture_output = True,
-                text = True,
-                timeout = reload_timeout,
-                # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
-                input = "/exit\n",
-            )
-        except subprocess.TimeoutExpired as exc:
 
-            def _decode(stream) -> str:
-                if isinstance(stream, bytes):
-                    return stream.decode("utf-8", errors = "replace")
-                return stream or ""
+    if llama_cli is None:
+        with Phase("reload_gguf", metrics):
+            output = _llama_server_completion(llama_server, flags, n_predict, reload_timeout)
+        metrics["generation"] = output[:1500]
+        print(f"  [reload:gguf] llama-server completion: {output!r}", flush = True)
+        body = output.strip()
+    else:
+        argv = [
+            str(llama_cli),
+            *flags,
+            "-p",
+            PROMPT,
+            "-n",
+            n_predict,
+            "--temp",
+            "0",
+            "--seed",
+            str(SEED),
+        ]
+        with Phase("reload_gguf", metrics):
+            try:
+                proc = subprocess.run(
+                    argv,
+                    capture_output = True,
+                    text = True,
+                    timeout = reload_timeout,
+                    # Newer llama.cpp keeps llama-cli in chat mode; exit after one reply.
+                    input = "/exit\n",
+                )
+            except subprocess.TimeoutExpired as exc:
 
-            print(f"  [reload:gguf] TIMEOUT running: {' '.join(argv)}", flush = True)
-            print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
-            print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
-            raise
+                def _decode(stream) -> str:
+                    if isinstance(stream, bytes):
+                        return stream.decode("utf-8", errors = "replace")
+                    return stream or ""
 
-    metrics["llama_cli_returncode"] = proc.returncode
-    metrics["generation"] = (proc.stdout or "")[:1500]
-    metrics["stderr_head"] = (proc.stderr or "")[:600]
+                print(f"  [reload:gguf] TIMEOUT running: {' '.join(argv)}", flush = True)
+                print(f"  [reload:gguf] TIMEOUT stdout:\n{_decode(exc.stdout)[:1000]}", flush = True)
+                print(f"  [reload:gguf] TIMEOUT stderr:\n{_decode(exc.stderr)[:1000]}", flush = True)
+                raise
 
-    print(f"  [reload:gguf] stdout (head):\n{proc.stdout[:800]}", flush = True)
-    if proc.returncode != 0:
-        raise SystemExit(f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}")
+        output = proc.stdout or ""
+        metrics["llama_cli_returncode"] = proc.returncode
+        metrics["generation"] = output[:1500]
+        metrics["stderr_head"] = (proc.stderr or "")[:600]
+        print(f"  [reload:gguf] stdout (head):\n{output[:800]}", flush = True)
+        if proc.returncode != 0:
+            raise SystemExit(f"llama-cli exit {proc.returncode}; stderr head: {proc.stderr[:400]}")
+        body = output.replace(PROMPT, "", 1).strip()
+
     # llama.cpp samples differently than mlx_lm, so record EXPECT_IN_OUTPUT without gating.
-    body = (proc.stdout or "").replace(PROMPT, "", 1).strip()
-    metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in (proc.stdout or "")
-    assert len(body) >= 4, (
-        f"GGUF reload produced no usable output for {PROMPT!r}: " f"{proc.stdout[:400]!r}"
-    )
+    metrics["gguf_has_expected"] = EXPECT_IN_OUTPUT in output
+    assert len(body) >= 4, f"GGUF reload produced no usable output for {PROMPT!r}: {output[:400]!r}"
 
     metrics["final_peak_rss_gb"] = round(_peak_rss_gb(), 3)
     _write_metrics(save_dir.parent / "gguf_reload_metrics.json", metrics)

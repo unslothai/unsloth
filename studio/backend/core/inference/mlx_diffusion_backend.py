@@ -524,7 +524,7 @@ class MfluxRuntime:
         import mlx.core as mx
 
         try:
-            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            info = mx.device_info()
             budget = int(info.get("max_recommended_working_set_size") or 0)
         except Exception:  # noqa: BLE001 -- no Metal reading: leave the decode untiled
             return None
@@ -965,6 +965,8 @@ class MlxDiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         gpu_ordinal: Optional[int] = None,
         allow_oversized_load: bool = False,
+        # Accepted and ignored: MLX has no Studio INT8 attention kernel.
+        int8_attention: Optional[str] = None,
         **_ignored: Any,
     ) -> dict[str, Any]:
         if isinstance(hf_token, str):

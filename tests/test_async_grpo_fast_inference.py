@@ -254,8 +254,18 @@ def test_concurrent_requests_all_complete(served):
     assert results == [[i + 1, i + 2] for i in range(count)]
 
 
-def test_pause_holds_new_requests_until_resume(served):
-    server, _ = served
+@pytest.fixture
+def served_pausing(monkeypatch):
+    # Kill switch: /pause stops the engine until /resume, as before.
+    monkeypatch.setenv("UNSLOTH_ASYNC_GRPO_PAUSE_ON_SYNC", "1")
+    llm = _FakeLLM()
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    yield server, llm
+    server.stop()
+
+
+def test_pause_holds_new_requests_until_resume(served_pausing):
+    server, _ = served_pausing
     _post(server, "/pause")
     box = {}
     thread = threading.Thread(target = lambda: box.update(out = _complete(server, [3])))
@@ -425,8 +435,8 @@ def test_abort_all_fails_in_flight_requests_and_the_server_keeps_serving(served)
     assert _complete(server, [4])["choices"][0]["token_ids"] == [5, 6]
 
 
-def test_abort_all_also_fails_requests_still_queued(served):
-    server, llm = served
+def test_abort_all_also_fails_requests_still_queued(served_pausing):
+    server, llm = served_pausing
     _post(server, "/pause")
     box = {}
 
@@ -544,6 +554,21 @@ def test_top_logprobs_are_keyed_by_token_id_as_trl_reads_them(served):
     assert [list(_by_token_id([t])[0]) for t in zero] == [[6], [7]]
 
 
+def test_a_sampled_token_missing_from_the_logprobs_is_refused_not_substituted():
+    # The first entry is another token's logprob: returning it would feed TRL a wrong behaviour logprob.
+    entry = {
+        900: types.SimpleNamespace(logprob = -0.25),
+        8: types.SimpleNamespace(logprob = -3.0),
+    }
+    assert server_module._sampled_logprob([entry], 0, 8) == -3.0
+    with pytest.raises(ValueError, match = "no logprob for sampled token 7 at position 0"):
+        server_module._sampled_logprob([entry], 0, 7)
+    completion = types.SimpleNamespace(token_ids = [7], logprobs = [entry], finish_reason = "length")
+    output = types.SimpleNamespace(request_id = "r", outputs = [completion])
+    with pytest.raises(ValueError, match = "sampled token 7"):
+        server_module.UnslothAsyncVLLMServer.finish(output)
+
+
 def test_metrics_report_kv_capacity_and_load_in_vllm_format(served):
     import re
 
@@ -565,6 +590,147 @@ def test_metrics_report_kv_capacity_and_load_in_vllm_format(served):
     with pytest.raises(urllib.error.HTTPError) as error:
         urllib.request.urlopen(server.url.rsplit("/", 1)[0] + "/wrong/metrics", timeout = 10)
     assert error.value.code == 404
+
+
+class _Request:
+    def __init__(self, num_preemptions = 0):
+        self.num_preemptions = num_preemptions
+
+
+class _PreemptingScheduler:
+    """vLLM V1 Scheduler subset: `requests`, `Request.num_preemptions`, `_free_blocks`."""
+
+    def __init__(self):
+        self.kv_cache_manager = types.SimpleNamespace(usage = 0.5)
+        self.running = []
+        self.waiting = []
+        self.requests = {}
+        self.freed = 0
+
+    def _free_blocks(self, request):
+        self.freed += 1
+        del self.requests[request.request_id]
+
+
+def _metric(text, name):
+    import re
+    return [float(x) for x in re.findall(rf"^{name}\{{.*\}} (\S+)", text, re.M)]
+
+
+def _scrape(server):
+    with urllib.request.urlopen(server.url + "/metrics", timeout = 10) as response:
+        assert response.status == 200
+        return response.read().decode()
+
+
+def test_metrics_export_a_monotonic_preemption_total_across_finished_requests():
+    llm = _FakeLLM()
+    scheduler = _PreemptingScheduler()
+    llm.llm_engine.engine_core.engine_core.scheduler = scheduler
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    try:
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [0.0]
+        a, b = _Request(2), _Request(1)
+        a.request_id, b.request_id = "a", "b"
+        scheduler.requests.update(a = a, b = b)
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [3.0]
+        scheduler._free_blocks(a)
+        assert scheduler.freed == 1 and "a" not in scheduler.requests
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [3.0]
+        b.num_preemptions += 1
+        scheduler._free_blocks(b)
+        assert _metric(_scrape(server), "vllm:num_preemptions_total") == [4.0]
+        second = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+        try:
+            c = _Request(5)
+            c.request_id = "c"
+            scheduler.requests["c"] = c
+            scheduler._free_blocks(c)
+            assert _metric(_scrape(second), "vllm:num_preemptions_total") == [9.0]
+        finally:
+            second.stop()
+    finally:
+        server.stop()
+
+
+def test_metrics_omit_preemptions_without_a_countable_scheduler(served):
+    # No `_free_blocks`: omit rather than emit a non-monotonic total.
+    server, _ = served
+    text = _scrape(server)
+    assert "num_preemptions_total" not in text
+    assert _metric(text, "vllm:num_requests_running") == [2.0]
+
+
+def test_metrics_export_the_engine_thread_counters(served):
+    server, _ = served
+    for prompt in ([5], [9, 10]):
+        _complete(server, prompt)
+    _post(server, "/pause")
+    _post(server, "/resume")
+    text = _scrape(server)
+    assert _metric(text, "unsloth:async_grpo_requests_finished_total") == [2.0]
+    assert _metric(text, "unsloth:async_grpo_generation_tokens_total") == [4.0]
+    assert _metric(text, "unsloth:async_grpo_syncs_total") == [1.0]
+    assert _metric(text, "unsloth:async_grpo_engine_steps_total")[0] >= 1.0
+    assert _metric(text, "unsloth:async_grpo_engine_step_seconds_total")[0] > 0.0
+    assert _metric(text, "unsloth:async_grpo_engine_max_batch")[0] >= 1.0
+
+
+def test_installed_vllm_scheduler_has_what_the_preemption_count_wraps():
+    pytest.importorskip("vllm")
+    import inspect
+
+    try:
+        from vllm.v1.core.sched.scheduler import Scheduler
+        from vllm.v1.request import Request
+    except Exception:
+        pytest.skip("vLLM without the V1 scheduler")
+    assert "del self.requests[" in inspect.getsource(Scheduler._free_blocks)
+    assert "num_preemptions += 1" in inspect.getsource(Scheduler)
+    assert "self.num_preemptions = 0" in inspect.getsource(Request.__init__)
+
+
+def test_trl_control_loop_reports_preemptions_from_this_server():
+    import asyncio
+
+    loop_class = _trl_rollout_loop()
+    if not hasattr(loop_class, "_control_loop"):
+        pytest.skip("TRL AsyncGRPO without the KV-cap control loop")
+    import aiohttp
+
+    llm = _FakeLLM()
+    scheduler = _PreemptingScheduler()
+    llm.llm_engine.engine_core.engine_core.scheduler = scheduler
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    loop = _rollout_loop(loop_class, server)
+    loop._metrics_poll_s = 0.05
+    loop._concurrency = 0
+    loop._total_rollouts = 0
+    pushed = []
+    stop = []
+
+    def push(values):
+        pushed.append(values)
+        request = _Request(len(pushed))
+        request.request_id = str(len(pushed))
+        scheduler.requests[request.request_id] = request
+        scheduler._free_blocks(request)
+        if len(pushed) >= 3:
+            stop[0].set()
+
+    loop._push_metrics = push
+
+    async def run():
+        stop.append(asyncio.Event())
+        async with aiohttp.ClientSession() as session:
+            loop.session = session
+            await asyncio.wait_for(loop._control_loop(stop[0]), timeout = 30)
+
+    try:
+        asyncio.run(run())
+    finally:
+        server.stop()
+    assert [p["rollout/vllm_preemption_count"] for p in pushed] == [0.0, 1.0, 2.0]
 
 
 def _trl_rollout_loop():
@@ -806,3 +972,176 @@ def test_unloading_the_newest_version_puts_the_previous_one_back_in_the_slot(ser
     assert engine.added_loras == [slot] * 3 and engine.removed_loras == [slot] * 2
     _complete(server, [1], model = "trl-policy-v1")
     assert seen[-1][1].lora_path == "/tmp/v1" and seen[-1][0]["cache_salt"] != v2_salt
+
+
+def test_decoding_goes_on_between_pause_and_resume(served):
+    # TRL brackets the adapter save with /pause and /resume; the reload is an engine-thread command, so the engine
+    # keeps decoding through the save on the adapter it already serves.
+    server, llm = served
+    engine = llm.llm_engine
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
+    seen = _recording(engine)
+    _post(server, "/pause")
+    assert server.engine.paused is False and server.engine.syncing is True
+    choice = _post(
+        server, "/v1/completions", {"prompt": [3], "max_tokens": 4, "logprobs": 0}, timeout = 5
+    )
+    assert choice[1]["choices"][0]["token_ids"] == [4, 5]
+    assert seen[-1][1].lora_path == "/tmp/v1"
+    v1_salt = seen[-1][0]["cache_salt"]
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/tmp/v2"})
+    _post(server, "/resume")
+    _complete(server, [3])
+    assert seen[-1][1].lora_path == "/tmp/v2" and seen[-1][0]["cache_salt"] != v1_salt
+    stats = server.engine.stats
+    assert stats["syncs"] == 1 and stats["sync_steps"] >= 1 and server.engine.syncing is False
+
+
+def test_kill_switch_stops_decoding_between_pause_and_resume(served_pausing):
+    server, llm = served_pausing
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"})
+    _post(server, "/pause")
+    box = {}
+    thread = threading.Thread(target = lambda: box.update(out = _complete(server, [3])))
+    thread.start()
+    thread.join(0.3)
+    assert thread.is_alive() and server.engine.paused is True
+    _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/tmp/v2"})
+    _post(server, "/resume")
+    thread.join(10)
+    assert box["out"]["choices"][0]["token_ids"] == [4, 5]
+    assert server.engine.stats["syncs"] == 1 and server.engine.stats["sync_steps"] == 0
+
+
+@pytest.mark.parametrize("pause_on_sync", ["0", "1"])
+def test_a_failed_load_during_a_sync_keeps_serving_the_previous_version(monkeypatch, pause_on_sync):
+    monkeypatch.setenv("UNSLOTH_ASYNC_GRPO_PAUSE_ON_SYNC", pause_on_sync)
+    llm = _FakeLLM()
+    engine = llm.llm_engine
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    try:
+        _post(
+            server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"}
+        )
+        version = server.engine.slot_version
+        original = engine.add_lora
+
+        def add_lora(lora):
+            if lora.lora_path == "/tmp/bad":
+                raise RuntimeError("bad adapter")
+            return original(lora)
+
+        engine.add_lora = add_lora
+        seen = _recording(engine)
+        _post(server, "/pause")
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _post(
+                server,
+                "/v1/load_lora_adapter",
+                {"lora_name": "trl-policy-v2", "lora_path": "/tmp/bad"},
+            )
+        assert error.value.code == 400
+        # Rolled back: same slot version (same prefix-cache salt), the previous adapter back in the slot.
+        assert server.engine.slot_version == version and server.engine.newest == "trl-policy-v1"
+        if pause_on_sync == "1":
+            _post(server, "/resume")
+        # TRL raises before /resume; without the kill switch the engine still serves v1 meanwhile.
+        _complete(server, [1])
+        assert seen[-1][1].lora_path == "/tmp/v1"
+    finally:
+        server.stop()
+
+
+def _trl_sync_weight_lora():
+    import importlib
+    for name in (
+        "trl.trainer.async_grpo_trainer",
+        "trl.experimental.async_grpo.async_grpo_trainer",
+    ):
+        try:
+            module = importlib.import_module(name)
+        except Exception:
+            continue
+        trainer = getattr(module, "AsyncGRPOTrainer", None)
+        if trainer is not None and hasattr(trainer, "_sync_weight_lora"):
+            return module, trainer._sync_weight_lora
+    pytest.skip("TRL AsyncGRPOTrainer with LoRA sync (>= 1.14) not installed")
+
+
+@pytest.mark.parametrize("pause_on_sync", ["0", "1"])
+def test_trl_lora_sync_decodes_through_the_save_on_the_previous_version(
+    monkeypatch, tmp_path, pause_on_sync
+):
+    # TRL's own `_sync_weight_lora` against this server: a rollout dispatched while the adapter is being saved is
+    # decoded during the save on the previous adapter and stamped with the previous version, because TRL bumps
+    # `model_version` only after the load. The kill switch restores the stall.
+    pytest.importorskip("requests")
+    module, sync_weight_lora = _trl_sync_weight_lora()
+    try:
+        from accelerate.state import PartialState
+        try:
+            from trl.generation.async_vllm_client import AsyncVLLMClient as VLLMClient
+            timeout = {"timeout": 10}
+        except ImportError:
+            from trl.experimental.async_grpo.vllm_client import VLLMClient
+            timeout = {"server_timeout": 10}
+    except Exception:
+        pytest.skip("TRL AsyncGRPO client not installed")
+    PartialState()
+    monkeypatch.setenv("UNSLOTH_ASYNC_GRPO_PAUSE_ON_SYNC", pause_on_sync)
+    llm = _FakeLLM()
+    engine = llm.llm_engine
+    server = server_module.UnslothAsyncVLLMServer(_model(llm), sampling_params = _Sampling)
+    seen = _recording(engine)
+    stamps = []
+
+    class _Worker:
+        def update_model_version(self, version):
+            stamps.append(("bump", version))
+
+    trainer = types.SimpleNamespace(
+        model_version = 1,
+        _lora_dir = str(tmp_path),
+        _lora_name = "trl-policy",
+        _adapter_name = "default",
+        model = object(),
+        accelerator = types.SimpleNamespace(
+            is_main_process = True, wait_for_everyone = lambda: None, unwrap_model = lambda m: m
+        ),
+        args = types.SimpleNamespace(max_staleness = 4),
+        vllm_client = VLLMClient(server.url, **timeout),
+        rollout_worker = _Worker(),
+    )
+    rollout = {}
+
+    def save_lora_adapter(model, accelerator, adapter_name, dest_dir):
+        # A rollout dispatched mid-save: TRL stamps its group with the version current at dispatch.
+        stamps.append(("dispatch", trainer.model_version))
+        thread = threading.Thread(target = lambda: rollout.update(out = _complete(server, [3])))
+        thread.start()
+        thread.join(1.0)
+        rollout["done_during_save"] = not thread.is_alive()
+        rollout["thread"] = thread
+
+    try:
+        _post(
+            server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/tmp/v1"}
+        )
+        monkeypatch.setattr(module, "save_lora_adapter", save_lora_adapter)
+        sync_weight_lora(trainer, time.time())
+        rollout["thread"].join(10)
+        assert rollout["out"]["choices"][0]["token_ids"] == [4, 5]
+        assert stamps == [("dispatch", 1), ("bump", 2)] and trainer.model_version == 2
+        if pause_on_sync == "0":
+            assert rollout["done_during_save"] is True
+            # Decoded on v1 and stamped v1: the staleness TRL computes is the true one.
+            assert [s[1].lora_path for s in seen] == ["/tmp/v1"]
+            assert server.engine.stats["sync_steps"] >= 1
+        else:
+            assert rollout["done_during_save"] is False
+            # Held until after the load: served by v2 under a v1 stamp.
+            assert [s[1].lora_path for s in seen] == [str(tmp_path / "trl-policy-v2")]
+            assert server.engine.stats["sync_steps"] == 0
+        assert server.engine.stats["syncs"] == 1 and server.engine.syncing is False
+    finally:
+        server.stop()

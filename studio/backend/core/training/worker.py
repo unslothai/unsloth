@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from utils.account_context import account_thread
 from loggers import get_logger
+import contextlib
 import importlib
 import importlib.metadata
 import importlib.util
@@ -55,6 +56,7 @@ from utils.hf_dataset_options import hf_dataset_split_instruction_names
 
 # Light module: the MLX branch runs on torch-less hosts.
 from core.training.dataset_bounds import (
+    ROW_BOUND_MARKER_FILE,
     bound_dataset_rows,
     max_train_rows_for_config,
     record_row_bound,
@@ -2568,12 +2570,6 @@ def _resize_mlx_vlm_images(
     return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
-_MLX_VIDEO_UNSUPPORTED = (
-    "Training on video is not supported on Apple Silicon (MLX) yet. "
-    "Train this dataset on an NVIDIA or AMD GPU, or drop the video column."
-)
-
-
 _RESOLVE_IMAGE_COLUMN = object()
 
 
@@ -2584,9 +2580,8 @@ def _mlx_audio_rows(
     image_col = _RESOLVE_IMAGE_COLUMN,
     warn = None,
 ) -> tuple:
-    """The CUDA transcription rows, with each clip left decoded so zoo can check its rate, and
-    the row's images (a mixed audio + image dataset) beside them. Returns (rows, image column);
-    an eval split takes the train split's image column, None for none."""
+    """CUDA transcription rows with clips left decoded for the zoo rate check, plus row images
+    beside them; returns (rows, image column); eval takes the train image column, None for none."""
     from datasets import Audio
     from unsloth_zoo.mlx.utils import audio_extractor_sampling_rate
 
@@ -2648,19 +2643,19 @@ def _adapt_for_mlx_vlm(
     items,
     resize = None,
     image_layout = None,
+    hub = None,
 ):
     """mlx-vlm needs images at top level to build pixel_values, not inside message content."""
     adapted = []
     for item in items:
         images = []
+        videos = []
         messages = []
         for msg in item.get("messages", []):
             content = msg.get("content", "")
             if isinstance(content, list):
                 new_content = []
                 for part in content:
-                    if isinstance(part, dict) and part.get("type") == "video":
-                        raise ValueError(_MLX_VIDEO_UNSUPPORTED)
                     if isinstance(part, dict) and part.get("type") == "image":
                         img = part.get("image")
                         if img is not None:
@@ -2672,16 +2667,33 @@ def _adapt_for_mlx_vlm(
                                 )
                             )
                         new_content.append({"type": "image"})
+                    elif isinstance(part, dict) and part.get("type") == "video":
+                        video = part.get("video")
+                        if video is not None:
+                            # Parts beyond the formatter's detection sample were never checked there.
+                            videos.append(_own_mlx_video_values(video, hub))
+                        # Decode hints (fps, nframes, ...) stay: the collator pairs them with the hoisted clip.
+                        new_content.append(
+                            {k: v for k, v in part.items() if k != "video" and v is not None}
+                        )
                     else:
                         new_content.append(part)
                 messages.append({"role": msg["role"], "content": new_content})
             else:
                 messages.append(msg)
         out = {"messages": messages}
+        placeholders = sum(
+            1
+            for msg in messages
+            if isinstance(msg.get("content"), list)
+            for part in msg["content"]
+            if isinstance(part, dict) and part.get("type") == "video"
+        )
+        # The collator reads `image` only when every placeholder is an image, so mixed rows need `images`.
         if images:
-            out["image"] = images[0] if len(images) == 1 else images
+            out["images"] = images[0] if len(images) == 1 else images
         elif "image" in item:
-            out["image"] = _resize_mlx_vlm_images(
+            out["images" if placeholders else "image"] = _resize_mlx_vlm_images(
                 item["image"],
                 resize,
                 image_layout = image_layout,
@@ -2692,8 +2704,68 @@ def _adapt_for_mlx_vlm(
                 resize,
                 image_layout = image_layout,
             )
+        if videos:
+            out["videos"] = videos[0] if len(videos) == 1 else videos
+        elif item.get("videos") is not None:
+            out["videos"] = _own_mlx_video_values(item["videos"], hub)
+        elif item.get("video") is not None:
+            out["videos"] = _own_mlx_video_values(item["video"], hub)
+        hoisted = out.get("videos")
+        hoisted_count = (
+            len(hoisted) if isinstance(hoisted, list) else (1 if hoisted is not None else 0)
+        )
+        if placeholders > hoisted_count:
+            raise ValueError(
+                "A message references a video but no clip was provided for it; "
+                'every {"type": "video"} part needs a clip in the same message '
+                "or a video in the row's video column."
+            )
         adapted.append(out)
     return adapted
+
+
+def _own_mlx_video_values(value, hub = None):
+    """Top-level video columns bypass the message-part ownership checks, so apply them here."""
+    from utils.account_context import current_account
+    from utils.datasets.format_conversion import _own_video_part
+
+    account = current_account()
+    values = value if isinstance(value, list) else [value]
+    owned = [_own_video_part(video, account, hub) for video in values]
+    return owned if isinstance(value, list) else owned[0]
+
+
+_MLX_ZOO_VIDEO_TOO_OLD = "Training on video needs a newer unsloth-zoo; update it and retry."
+
+
+def _mlx_zoo_collates_video():
+    import inspect
+
+    from unsloth_zoo.mlx import utils as mlx_utils
+    return "all_videos" in inspect.signature(mlx_utils._processor_vlm_inputs).parameters
+
+
+def _mlx_video_preflight(dataset):
+    if _mlx_zoo_collates_video():
+        return
+    from utils.datasets.format_detection import detect_video_columns, video_sample
+
+    first_row = next(iter(dataset), None)
+    if isinstance(first_row, dict) and detect_video_columns(video_sample(dataset, first_row)):
+        raise ValueError(_MLX_ZOO_VIDEO_TOO_OLD)
+
+
+def _require_mlx_video_collation(*splits):
+    """The preflight sees one train row; this covers eval splits and list-valued video columns."""
+    if _mlx_zoo_collates_video():
+        return
+    if any(
+        isinstance(row, dict) and row.get("videos") not in (None, [], ())
+        for split in splits
+        if split is not None
+        for row in split
+    ):
+        raise ValueError(_MLX_ZOO_VIDEO_TOO_OLD)
 
 
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
@@ -3084,12 +3156,32 @@ def _synchronize_mlx_before_final_save(trainer, synchronize):
     raise_distributed_failure(error is not None, "final synchronization", error)
 
 
+def _remove_untrained_mlx_output_dir(output_dir):
+    try:
+        if os.listdir(output_dir) == [ROW_BOUND_MARKER_FILE]:
+            os.remove(os.path.join(output_dir, ROW_BOUND_MARKER_FILE))
+            os.rmdir(output_dir)
+    except OSError:
+        pass
+
+
 def _finalize_mlx_training(
-    trainer, snapshot_stop, output_dir, synchronize, send, write_stop_checkpoint
+    trainer,
+    snapshot_stop,
+    output_dir,
+    synchronize,
+    send,
+    write_stop_checkpoint,
+    owns_output_dir = False,
 ):
     stopped, cancelled = _mlx_worker_finalization_state(trainer, snapshot_stop)
     if cancelled:
         send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+    if stopped and getattr(trainer, "_global_step", None) == 0:
+        if owns_output_dir and bool(trainer.is_main_process):
+            _remove_untrained_mlx_output_dir(output_dir)
+        send("complete", output_dir = None, saved = False, status_message = "Training stopped")
         return
 
     if stopped:
@@ -3160,7 +3252,19 @@ def _resolve_mlx_max_grad_norm(value):
     return value
 
 
-def _run_mlx_training(event_queue, stop_queue, config):
+_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL = (
+    "Audio dataset training on Apple Silicon needs an audio-input model such as "
+    "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
+    "supported on MLX yet."
+)
+
+
+def _run_mlx_training(
+    event_queue,
+    stop_queue,
+    config,
+    exit_stack = None,
+):
     """Apple Silicon MLX path via unsloth_zoo's MLXTrainer, no torch; same event_queue protocol."""
     import time
     import math
@@ -3247,6 +3351,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_audio = bool(config.get("is_dataset_audio", False)) and not (
         is_cpt or config.get("format_type") == "raw"
     )
+    from utils.models import detect_audio_type
+
+    audio_type = (
+        detect_audio_type(
+            model_load_name,
+            hf_token,
+            local_files_only = model_local_only,
+            revision = model_revision,
+        )
+        if is_dataset_audio
+        else None
+    )
+    if audio_type not in (None, "audio_vlm"):
+        raise ValueError(_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL)
     use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
     # Before the download/load below: unlike the CUDA path, this needs none of the model.
     # A continued adapter keeps its own targets, and CPT builds its adapter from target_modules alone.
@@ -3321,9 +3439,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
             try:
                 dataset = _load_local(s3_download.files)
             finally:
-                s3_download.cleanup()
+                # Rows decode audio from the download in _mlx_audio_rows, after model load.
+                if exit_stack is not None and config.get("is_dataset_audio"):
+                    exit_stack.callback(s3_download.cleanup)
+                else:
+                    s3_download.cleanup()
         except S3DownloadCancelled:
-            _send("complete", output_dir = None, status_message = "Training cancelled")
+            _send(
+                "complete",
+                output_dir = None,
+                status_message = "Training stopped" if _stop_save[0] else "Training cancelled",
+            )
             return
     else:
         raise ValueError("No dataset specified")
@@ -3336,7 +3462,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_dataset = _load_local(config["local_eval_datasets"], EVAL_SPLITS)
 
     if _is_stop_requested():
-        _send("complete", output_dir = None, status_message = "Training cancelled")
+        _send(
+            "complete",
+            output_dir = None,
+            status_message = "Training stopped" if _stop_save[0] else "Training cancelled",
+        )
         return
 
     _send("status", status_message = f"Loading {model_name}...")
@@ -3405,11 +3535,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     model._is_vlm_model = is_vlm
     if is_dataset_audio and not is_vlm:
         # zoo trains audio only as input to an audio-capable vision-language model.
-        raise ValueError(
-            "Audio dataset training on Apple Silicon needs an audio-input model such as "
-            "Gemma 3n or Gemma 4; text-to-speech and speech-recognition checkpoints are not "
-            "supported on MLX yet."
-        )
+        raise ValueError(_MLX_AUDIO_NEEDS_AUDIO_INPUT_MODEL)
     vision_image_size = config.get("vision_image_size")
     # DeepSeek OCR uses a coupled preset tuple; skip resize like the Torch path.
     _model_name_lower = str(config.get("model_name", "")).lower()
@@ -3572,8 +3698,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
     eval_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
+
         def _fmt_progress(status_message = "", **_kw):
             _send("status", status_message = status_message)
+
+        # Before formatting: it would fetch every Hub clip only to be refused.
+        if is_vlm and not is_dataset_audio:
+            _mlx_video_preflight(dataset)
 
         if is_dataset_audio:
             _send("status", status_message = "Formatting audio dataset...")
@@ -3606,14 +3737,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         eval_dataset, resize = vision_image_size, image_layout = image_layout
                     )
         elif is_vlm:
-            from utils.datasets.format_detection import detect_video_columns, video_sample
+            from utils.datasets.format_conversion import _HubClips
 
-            # Before formatting: conversion would fetch every Hub clip only to be refused.
-            first_row = next(iter(dataset), None)
-            if isinstance(first_row, dict) and detect_video_columns(
-                video_sample(dataset, first_row)
-            ):
-                raise ValueError(_MLX_VIDEO_UNSUPPORTED)
+            clip_hub = _HubClips(hf_dataset, config.get("dataset_revision"))
             _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,
@@ -3635,6 +3761,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     vlm_info["dataset"],
                     resize = vision_image_size,
                     image_layout = vision_image_layout,
+                    hub = clip_hub,
                 )
             else:
                 errors = vlm_info.get("errors", [])
@@ -3659,6 +3786,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                         ev_info["dataset"],
                         resize = vision_image_size,
                         image_layout = vision_image_layout,
+                        hub = clip_hub,
                     )
 
         elif format_type:
@@ -3719,6 +3847,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     _send("warning", message = message)
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
+
+    if is_vlm:
+        _require_mlx_video_collation(dataset, eval_dataset)
 
     if not is_vlm and dataset_final_format:
         # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in
@@ -3905,6 +4036,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         warmup_ratio = warmup_ratio if warmup_uses_ratio else None,
         eval_steps_ratio = eval_steps_ratio,
     )
+    # A step-0 stop may remove only a folder this run created, never one that already existed.
+    owns_output_dir = not os.path.exists(output_dir)
     _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)
 
     def _record_mlx_row_bound():
@@ -4102,6 +4235,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             mx.synchronize,
             _send,
             lambda: _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir),
+            owns_output_dir = owns_output_dir,
         )
     finally:
         _finish_tracking()
@@ -4169,7 +4303,8 @@ def run_mlx_training_process(
                     from core.training.decision_trainer import run_decision_training
                     run_decision_training(event_queue, stop_queue, config)
             else:
-                _run_mlx_training(event_queue, stop_queue, config)
+                with contextlib.ExitStack() as exit_stack:
+                    _run_mlx_training(event_queue, stop_queue, config, exit_stack)
         finally:
             try:
                 stop_queue.put({"type": _MLX_WORKER_COMPLETE})
@@ -4271,6 +4406,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    # The NF4 dequant cache (unsloth/kernels/dequant_cache.py) fills the GPU's free memory, which Studio reads
+    # to keep or load a chat model during training: off in the worker unless the user's environment sets it.
+    os.environ.setdefault("UNSLOTH_NF4_DEQUANT_CACHE", "0")
     # Until unsloth is imported below; transformers is first imported well before that.
     metadata_scan_cache = _install_metadata_scan_cache()
 
@@ -4616,12 +4754,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 os.environ["TORCHDYNAMO_DISABLE"] = "1"
                 logger.info("Windows ROCm: torch.compile (dynamo) disabled")
 
-            # bitsandbytes probes hipinfo.exe from PATH; the venv Scripts dir is only on PATH when activated.
-            _scripts_dir = os.path.dirname(sys.executable)
-            if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
-                import shutil as _shutil
-                if not _shutil.which("hipinfo.exe"):
-                    os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
+            # bnb never reads its hipinfo.exe arch; the venv copy is unsigned (Smart App Control blocks it).
+            import logging as _logging
+
+            _logging.getLogger("bitsandbytes.cuda_specs").addFilter(
+                lambda _r: _r.funcName != "get_rocm_gpu_arch"
+            )
 
             # AMD's Windows BNB DLL suffix may not match torch.version.hip; detect the real one. Caller-set BNB_ROCM_VERSION stays authoritative.
             if (

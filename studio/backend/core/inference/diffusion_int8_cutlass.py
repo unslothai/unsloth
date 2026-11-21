@@ -7,7 +7,10 @@ Any load failure or tile failing the bit-exact probe keeps today's path; a tile 
 the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` skips the race.
 ``UNSLOTH_DIFFUSION_INT8_CUTLASS_HUGE_RACE=0`` lets the 4096-row winner serve every large M (no ``_RACE_M_HUGE``);
 ``UNSLOTH_DIFFUSION_INT8_CUTLASS_SUSTAINED=0`` decides every race on interleaved short timings, ``=huge`` only the
-16384-row race on sustained timings (the 4096-row race on short ones, as before)."""
+16384-row race on sustained timings (the 4096-row race on short ones, as before).
+Large calls (1024 to 8191 rows) take the winner of a race at their own row bucket once an earlier load recorded it
+(``row_bucket``: a 1024^2 FLUX.3 joint call has 4176 rows, where the 4096-row winner's 256-row tile leaves a 17th row
+tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call."""
 
 from __future__ import annotations
 
@@ -59,24 +62,55 @@ def huge_race_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
-def race_points() -> tuple:
-    """Race M values for a weight shape's plan entry: ``_RACE_M`` plus ``_RACE_M_HUGE`` unless switched off."""
-    return _RACE_M + ((_RACE_M_HUGE,) if huge_race_enabled() else ())
+ROW_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE"
+# A large call's row bucket: rounding up to 64 rows keeps the row tile count of every M tile (64, 128, 256 rows).
+ROW_BUCKET = 64
+# Recorded buckets raced per weight shape (the most recently seen); more keeps the 4096-row race.
+_MAX_ROW_RACES = 2
+
+
+def row_race_enabled() -> bool:
+    raw = (os.environ.get(ROW_RACE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def row_bucket(m: int) -> int:
+    return -(-int(m) // ROW_BUCKET) * ROW_BUCKET
+
+
+def large_points(rows: Any = None) -> tuple:
+    """Recorded row buckets (``rows``, oldest first) in place of the 4096-row race when any exist."""
+    if row_race_enabled() and rows:
+        picks = [int(b) for b in rows if _LARGE_M <= int(b) < _HUGE_M][-_MAX_ROW_RACES:]
+        if picks:
+            return tuple(sorted(set(picks)))
+    return (max(_RACE_M),)
+
+
+def race_points(rows: Any = None) -> tuple:
+    return (min(_RACE_M),) + large_points(rows) + ((_RACE_M_HUGE,) if huge_race_enabled() else ())
 
 
 def slot(m: int, entry: dict) -> Optional[int]:
     """The plan entry's tile for an ``m``-row call: below ``_LARGE_M`` the small race, from ``_HUGE_M`` the huge race
-    when the entry has one (None there keeps today's path), else the 4096-row race."""
+    when the entry has one (None there keeps today's path), else the race at the call's row bucket, else the nearest
+    large race (the 4096-row one when nothing was recorded)."""
     if m < _LARGE_M:
         return entry.get(min(_RACE_M))
     if m >= _HUGE_M and _RACE_M_HUGE in entry:
         return entry.get(_RACE_M_HUGE)
-    return entry.get(max(_RACE_M))
+    b = row_bucket(m)
+    if b in entry:
+        return entry[b]
+    if max(_RACE_M) in entry:
+        return entry[max(_RACE_M)]
+    large = [r for r in entry if _LARGE_M <= r < _HUGE_M]
+    return entry[min(large, key = lambda r: abs(r - m))] if large else None
 
 
 def large_slots(entry: dict) -> tuple:
     """Tiles of the entry's slots that serve M >= ``_LARGE_M``."""
-    return tuple(entry.get(m) for m in (max(_RACE_M), _RACE_M_HUGE) if m in entry)
+    return tuple(v for r, v in entry.items() if r >= _LARGE_M)
 
 
 def family(capability: Optional[tuple]) -> Optional[int]:
@@ -611,6 +645,10 @@ def native_prepare(weight_q: Any, x_dtype: Any, has_bias: bool) -> None:
         _NATIVE_PLAN[key] = {}
         if family(torch.cuda.get_device_capability(index)) != 75 or not probed_tiles(index):
             return
+        cached = _native_cache_get(index, key)
+        if cached is not None:
+            _NATIVE_PLAN[key] = cached
+            return
         g = torch.Generator(device = "cpu").manual_seed(13)
         ws = (torch.rand(weight_q.shape[0], generator = g) * 1e-3 + 1e-5).to(weight_q.device)
         today = lambda a, w_, x_, s_, b_: reference_native(a, w_, x_, s_, torch.float16)  # noqa: E731
@@ -623,8 +661,58 @@ def native_prepare(weight_q: Any, x_dtype: Any, has_bias: bool) -> None:
             entry[m] = r["tile"]
             _NATIVE_RACES.setdefault(key, {})[m] = r
         _NATIVE_PLAN[key] = entry
+        _native_cache_put(index, key, entry)
     except Exception:  # noqa: BLE001
         return
+
+
+def _native_cache_key(index: int) -> Optional[str]:
+    """The torchao plan's disk-cache key (card, toolchain, library, sources, timing mode) plus the native kind."""
+    from . import diffusion_int8_gemm as g8
+
+    ckey = g8._cut_cache_key(index)
+    return f"{ckey}|native|{mode()}" if ckey else None
+
+
+def _native_cache_get(index: int, key: tuple) -> Optional[dict]:
+    """A complete earlier race for this card and shape, else None (race it). The race costs seconds per shape on a
+    T4 (sustained timings at 4096 rows) and runs on the first forward: a fresh process reads it back."""
+    try:
+        from . import diffusion_int8_gemm as g8
+
+        nkey = _native_cache_key(index)
+        if not nkey:
+            return None
+        slot = g8._cut_cache_read().get(nkey)
+        hit = slot.get(f"{key[1]}x{key[2]}") if isinstance(slot, dict) else None
+        if not isinstance(hit, dict):
+            return None
+        ok = probed_tiles(index)
+        entry = {m: hit.get(str(m)) for m in _RACE_M}
+        if any(str(m) not in hit for m in _RACE_M) or any(
+            v is not None and v not in ok for v in entry.values()
+        ):
+            return None
+        return entry
+    except Exception:  # noqa: BLE001 - no cache: race as before
+        return None
+
+
+def _native_cache_put(index: int, key: tuple, entry: dict) -> None:
+    try:
+        from . import diffusion_int8_gemm as g8
+
+        nkey = _native_cache_key(index)
+        if not nkey:
+            return
+        table = g8._cut_cache_read()
+        slot = table.pop(nkey, None)
+        slot = dict(slot) if isinstance(slot, dict) else {}
+        slot[f"{key[1]}x{key[2]}"] = {str(m): v for m, v in entry.items()}
+        table[nkey] = slot
+        g8._cut_cache_write(table)
+    except Exception:  # noqa: BLE001 - the plan still holds for this process
+        pass
 
 
 def native_tile(xq: Any, weight_q: Any, x_scale: Any, w_scale: Any) -> Optional[int]:

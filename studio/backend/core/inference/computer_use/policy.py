@@ -21,12 +21,15 @@ COORDINATE_SETTINGS = ("auto", "pixels", "grid")
 MAX_ALLOWED_APPS = 100
 _MAX_APP_NAME_CHARS = 80
 
-# Families that answer on a 0-1000 grid whatever the picture's size; the others answer in pixels.
+# Families named here answer on a 0-1000 grid whatever the picture's size.
 _GRID_MODEL_RE = re.compile(
     r"qwen[-_ ]?3(?:\.\d+)?[-_ ]?vl|qwen3vl|qwen[-_ ]?3\.[5-9](?!\d)|gemma[-_ ]?4(?!\d)"
     r"|ui[-_ ]?tars(?![-_ ]?1\.5)|gemini",
     re.IGNORECASE,
 )
+
+# Image towers measured answering in picture pixels; every newer local family measured uses the grid.
+_PIXEL_ENCODERS = frozenset({"qwen2vl_merger", "qwen2.5vl_merger", "qwen2_vl", "qwen2_5_vl"})
 
 _TERMINALS = (
     "terminal", "iterm", "warp", "kitty", "alacritty", "wezterm", "ghostty", "konsole", "xterm",
@@ -215,11 +218,16 @@ def update_settings(*, enabled: Optional[bool] = None, coordinates: Optional[str
     return settings()
 
 
-def coordinate_mode(model: Any) -> str:
+def coordinate_mode(model: Any, encoder: Optional[str] = None) -> str:
+    """`encoder`: the local model's image tower ("" if unknown); None for a cloud model."""
     chosen = settings()["coordinates"]
     if chosen in ("pixels", "grid"):
         return chosen
-    return "grid" if isinstance(model, str) and _GRID_MODEL_RE.search(model) else "pixels"
+    if isinstance(model, str) and _GRID_MODEL_RE.search(model):
+        return "grid"
+    if encoder is None or encoder.strip().lower() in _PIXEL_ENCODERS:
+        return "pixels"
+    return "grid"
 
 
 def host_problem() -> Optional[str]:

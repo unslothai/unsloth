@@ -173,8 +173,7 @@ REST = """async (frames) => {
   return offsets;
 }"""
 
-# Focus a control in the first row the reader can see, and mark its node: a row that was unmounted
-# and mounted again has a new node, which the mark is not on.
+# Focus and mark a control in the first visible row; a remounted row is a new node, not marked.
 PIN = """() => {
   const viewport = window.__threadWeight.viewport();
   const fold = viewport.getBoundingClientRect().top;

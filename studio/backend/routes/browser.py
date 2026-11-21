@@ -35,6 +35,7 @@ from core.inference.tools import (
 )
 from core.inference.web_access_policy import normalize_domain
 from loggers import get_logger
+from utils.account_context import current_account
 from routes.browser_cookies import (
     clear_cookies,
     cookie_header,
@@ -2093,13 +2094,23 @@ def _fetch(
         on_redirect = on_redirect,
         proxy_hostname = True,
     )
+    body = body if isinstance(body, bytes) else b""
     if jar is not None:
         final_url = meta.get("url") or at["url"]
         store_cookies(jar, final_url, meta.get("headers"))
-        meta["cookies_version"], meta["cookies"], meta["site_cookies"] = site_cookie_state(
-            jar, final_url
-        )
-    return error, body if isinstance(body, bytes) else b"", content_type, meta
+        # Only _build_response's HTML branch reads the cookie state.
+        if _is_html(body, content_type):
+            meta["cookies_version"], meta["cookies"], meta["site_cookies"] = site_cookie_state(
+                jar, final_url
+            )
+    return error, body, content_type, meta
+
+
+def _is_html(body: bytes, content_type: str) -> bool:
+    looks_html = not content_type and body[:512].removeprefix(
+        codecs.BOM_UTF8
+    ).lstrip().lower().startswith((b"<!doctype html", b"<html"))
+    return content_type in _HTML_TYPES or looks_html
 
 
 def _attachment_name(meta: dict) -> Optional[str]:
@@ -2128,10 +2139,7 @@ def _build_response(
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
     """build the panel response in the fetch pool to keep large pages off the event loop."""
-    looks_html = not content_type and body[:512].removeprefix(
-        codecs.BOM_UTF8
-    ).lstrip().lower().startswith((b"<!doctype html", b"<html"))
-    is_html = content_type in _HTML_TYPES or looks_html
+    is_html = _is_html(body, content_type)
     if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
         # log the host only because page URLs can carry sign-in tokens.
         try:
@@ -2523,6 +2531,14 @@ async def _run_in_pool(
         task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
+def _cookie_jar_key(current_subject: str) -> str:
+    """Cookie jars key on the immutable account_id: a deleted or renamed account's username can be reused."""
+    account = current_account()
+    return (
+        f"account:{account.account_id}" if account.username == current_subject else current_subject
+    )
+
+
 @router.post("/fetch")
 async def browser_fetch(
     request: BrowserFetchRequest,
@@ -2531,9 +2547,10 @@ async def browser_fetch(
 ):
     """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
     request.url = _normalize_url_scheme(request.url.strip())
+    jar_key = _cookie_jar_key(current_subject)
     return await _run_in_pool(
         _FETCH_POOL,
-        lambda request, cancel: _fetch_and_build(request, cancel, current_subject),
+        lambda request, cancel: _fetch_and_build(request, cancel, jar_key),
         request,
         http_request,
     )
@@ -2546,9 +2563,10 @@ async def browser_page_request(
     current_subject: str = Depends(get_current_subject),
 ):
     """A page's fetch or XHR to its own site, which its opaque-origin sandbox can't make (browser_network.py)."""
+    jar_key = _cookie_jar_key(current_subject)
     return await _run_in_pool(
         _REQUEST_POOL,
-        lambda request, cancel: _page_request(request, cancel, current_subject),
+        lambda request, cancel: _page_request(request, cancel, jar_key),
         request,
         http_request,
         slots = _PAGE_REQUEST_SLOTS,
@@ -2567,14 +2585,15 @@ async def browser_page_cookie(
     request: BrowserPageCookie, current_subject: str = Depends(get_current_subject)
 ):
     """A page's ``document.cookie`` write, so the site sees it on the page's next request."""
-    set_page_cookie(current_subject, request.page, request.key, request.value, request.same_site)
+    jar_key = _cookie_jar_key(current_subject)
+    set_page_cookie(jar_key, request.page, request.key, request.value, request.same_site)
     return Response(status_code = 204)
 
 
 @router.post("/clear-cookies", status_code = 204)
 async def browser_clear_cookies(current_subject: str = Depends(get_current_subject)):
     """Forget the cookies sites set on this account's pages (Clear browsing data)."""
-    clear_cookies(current_subject)
+    clear_cookies(_cookie_jar_key(current_subject))
     return Response(status_code = 204)
 
 

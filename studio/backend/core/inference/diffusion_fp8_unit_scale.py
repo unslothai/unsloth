@@ -122,8 +122,7 @@ def _device_caps() -> dict:
 
 
 def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
-    """Patch torchao's fp8 addmm with the dispatcher; idempotent, False when off / no qualifying GPU / layout moved /
-    it cannot engage."""
+    """Patch torchao addmm; idempotent, False when off, no qualifying GPU, or layout moved."""
     if _STATE["installed"]:
         from .diffusion_compile_config import apply
         apply()

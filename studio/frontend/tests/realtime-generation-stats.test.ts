@@ -272,22 +272,16 @@ test("settled mode keeps today's paths: no live subscription in the meter, the l
   assert.match(hook, /throttle\.cancel\(\)/);
 });
 
-test("the toggle row sits in Chat defaults only, is searchable, and is translated in every locale", async () => {
+test("the toggle row sits in Composer only, is searchable, and is translated in every locale", async () => {
   const row = readSrc(
     "features/settings/components/generation-stats-updates-row.tsx",
   );
   assert.match(row, /GENERATION_STATS_UPDATES\.map\(\(mode\) =>/);
   assert.match(row, /onClick=\{\(\) => setGenerationStatsUpdates\(mode\)\}/);
   const chat = readSrc("features/settings/tabs/chat-tab.tsx");
-  const defaults = chat.slice(
-    chat.indexOf(
-      '<SettingsSection title={t("settings.general.chatDefaults")}>',
-    ),
-    chat.indexOf(
-      '<SettingsSection title={t("settings.chat.groups.conversations.title")}>',
-    ),
-  );
-  assert.match(defaults, /<GenerationStatsUpdatesRow \/>/);
+  const start = chat.indexOf('<SettingsSection title={t("composerSettings.title")}>');
+  const composer = chat.slice(start, chat.indexOf("</SettingsSection>", start));
+  assert.match(composer, /<GenerationStatsUpdatesRow \/>/);
   assert.equal(
     chat.match(/<GenerationStatsUpdatesRow \/>/g)?.length,
     1,

@@ -149,6 +149,8 @@ export interface FolderSyncJob {
   removedFiles?: number;
   renamedFiles?: number;
   failedFiles?: number;
+  /** Already indexed plus this pass's checked files. */
+  syncedFiles?: number;
   error?: string | null;
 }
 

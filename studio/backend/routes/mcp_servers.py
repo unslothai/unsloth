@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from integrations import editors
+from integrations import unreal as unreal_tools
 from integrations.blender import service as blender
 from models.mcp_servers import (
     BlenderSettings,
@@ -18,6 +19,8 @@ from models.mcp_servers import (
     EditorSetup,
     EditorTest,
     McpBuiltinResponse,
+    UnrealToolsInstall,
+    UnrealToolsInstallResult,
 )
 
 from auth.authentication import (
@@ -143,6 +146,19 @@ def _validate_url(url: str) -> str:
     return trimmed
 
 
+def _http_origin(url: str) -> tuple:
+    try:
+        parsed = urlparse((url or "").strip())
+        scheme = parsed.scheme.lower()
+        return (
+            scheme,
+            (parsed.hostname or "").lower(),
+            parsed.port or {"http": 80, "https": 443}.get(scheme),
+        )
+    except ValueError:
+        return (url,)
+
+
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     """Trim header names, drop empties, coerce values to str; None if empty."""
     if not headers:
@@ -244,16 +260,27 @@ def list_builtins(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
     no_credential: WithoutCredential = False,
+    detect: Optional[str] = None,
 ):
+    # Install detection reads the disk (and the registry on Windows): only for the app being set up when asked.
+    def wanted(builtin_id: str) -> bool:
+        return detect is None or detect == builtin_id
+
     if via_api_key or no_credential:
-        items = [blender.catalog_item(), *(editors.catalog_item(key) for key in editors.EDITORS)]
+        items = [
+            blender.catalog_item(detect = wanted("blender")),
+            *(editors.catalog_item(key, detect = wanted(key)) for key in editors.EDITORS),
+        ]
         for item in items:
             item.available = False
             item.unavailable_reason = f"An authenticated Unsloth Studio UI session is required for {item.display_name} MCP."
         return items
     return [
-        blender.catalog_item(_builtin_row()),
-        *(editors.catalog_item(key, _builtin_row(key)) for key in editors.EDITORS),
+        blender.catalog_item(_builtin_row(), detect = wanted("blender")),
+        *(
+            editors.catalog_item(key, _builtin_row(key), detect = wanted(key))
+            for key in editors.EDITORS
+        ),
     ]
 
 
@@ -274,9 +301,17 @@ async def test_blender(
         )
     settings = BlenderSettings(port = payload.port, blender_path = payload.blender_path)
     on_tools = None
-    if row and blender.settings_for(row) == settings:
+    saved = bool(row) and blender.settings_for(row) == settings
+    if saved:
         on_tools = lambda tools: cache_tools(row["id"], tools)
-    return await blender.probe(settings, on_tools = on_tools)
+    result = await blender.probe(settings, on_tools = on_tools)
+    if saved and result.blender_path:
+        mcp_servers_db.update_server(
+            row["id"],
+            {"builtin_config_json": json.dumps({**config, "blender_path": result.blender_path})},
+        )
+        await asyncio.to_thread(close_mcp_sessions, row["url"], parse_server_headers(row))
+    return result
 
 
 @router.put("/builtins/blender", response_model = McpBuiltinResponse)
@@ -356,6 +391,26 @@ async def test_editor(
     if row and editors.settings_for(builtin_id, row) == settings:
         on_tools = lambda tools: cache_tools(row["id"], tools)
     return await editors.probe(builtin_id, settings, on_tools = on_tools)
+
+
+@router.post("/builtins/unreal/install-tools", response_model = UnrealToolsInstallResult)
+def install_unreal_tools(
+    payload: UnrealToolsInstall,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    # The editor runs what lands in Content/Python, so this follows the editor-tools gate.
+    _require_managed_access(via_api_key, no_credential, executes = True)
+    try:
+        files = unreal_tools.install(payload.project_path)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400, detail = f"Could not write to the project: {exc}"
+        ) from exc
+    return UnrealToolsInstallResult(files = files)
 
 
 @router.put("/builtins/{editor}", response_model = McpBuiltinResponse)
@@ -585,6 +640,15 @@ async def update_mcp_server(
         "url" in changes
         and is_stdio(changes["url"]) != is_stdio(old["url"])
         and "headers_json" not in changes
+    ):
+        changes["headers_json"] = None
+    # Saved headers belong to one origin: repointing an http row elsewhere drops them unless resent.
+    if (
+        "url" in changes
+        and "headers_json" not in changes
+        and not is_stdio(old["url"])
+        and not is_stdio(changes["url"])
+        and _http_origin(changes["url"]) != _http_origin(old["url"])
     ):
         changes["headers_json"] = None
     # Clear persisted OAuth tokens when the URL, the OAuth flag or the client changes

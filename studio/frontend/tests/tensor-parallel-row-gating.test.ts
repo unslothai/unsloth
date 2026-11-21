@@ -36,5 +36,5 @@ test("the Tensor Parallelism row is gated out for diffusion models", () => {
 });
 
 test("the Vision row it sits beside stays gated too", () => {
-  assert.equal(gateAbove("checked={!config.disableVision}"), "!isDiffusion");
+  assert.equal(gateAbove("hint={GGUF_VISION_HINT}"), "!isDiffusion");
 });

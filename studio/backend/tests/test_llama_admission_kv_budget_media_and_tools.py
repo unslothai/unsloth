@@ -236,6 +236,7 @@ class TestMediaIsCharged:
             assert _openai_llama_admission_image_tokens(_Backend(projector = projector)) >= ceiling
         assert _openai_llama_admission_image_tokens(_Backend(projector = "youtuvl")) >= 62500
         assert _openai_llama_admission_image_tokens(_Backend(projector = "lfm2")) < 1024
+        assert 1102 <= _openai_llama_admission_image_tokens(_Backend(projector = "gemma4uv")) < 4096
         assert _openai_llama_admission_image_tokens(_Backend(projector = "nope")) == (
             _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )

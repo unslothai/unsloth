@@ -283,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._frozen_prefix import install_frozen_prefix_skip
 from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -2527,6 +2528,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
+    # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
+    if kwargs.get("past_key_values") is not None or any(
+        (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
+        for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
+    ):
+        cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); None would be refilled from default.
     force_dynamic_cache = kwargs.get(
         "past_key_values"
@@ -2542,7 +2550,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         force_dynamic_cache = False
 
-    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
         cache_implementation == "static"
         and not force_dynamic_cache
@@ -5154,6 +5161,9 @@ class FastBaseModel:
                     )
 
                 llm = load_vllm(**load_vllm_kwargs)
+                if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+                    from unsloth.utils.run_report import report_memory
+                    report_memory("vLLM init", llm)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,
@@ -5677,6 +5687,7 @@ class FastBaseModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            install_frozen_prefix_skip(model)
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
@@ -6171,6 +6182,7 @@ class FastBaseModel:
         enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        install_frozen_prefix_skip(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)
@@ -6365,6 +6377,10 @@ class FastBaseModel:
             )
         _tensor_parallel_for_inference(model)
         restore_fp8_lora_for_inference(model)
+        # Training's NF4 dequant cache (kernels/dequant_cache.py) would hold memory generation may need.
+        from ..kernels.dequant_cache import clear_dequant_cache
+
+        clear_dequant_cache()
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):

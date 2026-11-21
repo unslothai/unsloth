@@ -1102,7 +1102,8 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
         target = None,
         requested = None,
         speed_active = True,
-        speed_unset_only = False: backend,
+        speed_unset_only = False,
+        int8_policy = None: backend,
     )
     monkeypatch.setattr(
         dmod,
@@ -1403,7 +1404,8 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         target = None,
         requested = None,
         speed_active = True,
-        speed_unset_only = False: backend,
+        speed_unset_only = False,
+        int8_policy = None: backend,
     )
 
     def fake_select(
@@ -5865,7 +5867,10 @@ def test_apply_loras_quant_unbaked_requires_reload(monkeypatch):
     # Topology is frozen after quantize_ + compile, so a new adapter needs a reload (clean 400).
     backend = DiffusionBackend()
     pipe = _BakePipe()
-    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
+    # The typed refusal the routes key on (X-Unsloth-Refusal: lora-reload), and its remedy.
+    from core.inference.diffusion_lora import LoraReloadRequiredError
+
+    with pytest.raises(LoraReloadRequiredError, match = "Reload the model with the LoRA selection"):
         backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.0)], threading.Event())
     backend._apply_loras(_quant_lora_state(pipe), [], threading.Event())
     assert pipe.calls == []
@@ -5902,7 +5907,10 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
     backend._apply_loras(_quant_lora_state(pipe), [], ev)
     assert len(pipe.calls) == 1
     pipe = baked_pipe()
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+    # The typed refusal the routes key on (X-Unsloth-Refusal: lora-reload), and its remedy.
+    from core.inference.diffusion_lora import LoraReloadRequiredError
+
+    with pytest.raises(LoraReloadRequiredError, match = "Reload the model with the LoRA selection"):
         backend._apply_loras(_quant_lora_state(pipe), [("other", 1.0)], ev)
 
 
@@ -6904,6 +6912,9 @@ def test_diffusion_status_response_carries_resolved():
             "artifact": None,
             "replaced": None,
             "steps": None,
+            "engaged": None,
+            "modules": None,
+            "routed": None,
         }
     }
     assert DiffusionStatusResponse(loaded = False).resolved is None
@@ -6928,6 +6939,9 @@ def test_diffusion_status_response_carries_requested_precision():
             "artifact": None,
             "replaced": None,
             "steps": None,
+            "engaged": None,
+            "modules": None,
+            "routed": None,
         }
     }
 
