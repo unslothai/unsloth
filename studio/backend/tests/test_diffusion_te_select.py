@@ -267,3 +267,30 @@ def test_flux3_prompt_helper_matches_bitwise():
         got = sel.run_selected(encoder, FLUX3_LAYERS, lambda: helper(**kwargs))
     assert sel.call_count() == before + 1
     assert torch.equal(got.view(torch.int32), stock.view(torch.int32))
+
+
+@pytest.mark.parametrize("indices, last_pre_norm", [((-1,), True), (FLUX3_LAYERS, False)])
+def test_recorded_states_follow_a_boundary_that_moved_the_output(indices, last_pre_norm):
+    """A text encoder on a second card sits behind a multi-GPU boundary that wraps forward() and moves the output
+    home before the module's forward hooks run. The recorded states must land where the output is (2x T4: the
+    Qwen-Image-2.1 / FLUX.3 layer split indexed a cuda:1 state with a cuda:0 mask). ``meta`` stands in for home."""
+    encoder = _encoder()
+    orig = encoder.forward
+
+    def boundary(*args, **kwargs):
+        out = orig(*args, **kwargs)
+        for key, value in list(out.items()):
+            if isinstance(value, torch.Tensor):
+                out[key] = value.to("meta")
+        return out
+
+    encoder.forward = boundary
+    with (
+        torch.no_grad(),
+        sel.selected_hidden_states(encoder, indices, last_pre_norm = last_pre_norm) as armed,
+    ):
+        assert armed
+        output = encoder(**_inputs(), output_hidden_states = True, use_cache = False)
+    assert output.logits.device.type == "meta"
+    for k in indices:
+        assert output.hidden_states[k].device.type == "meta", k
