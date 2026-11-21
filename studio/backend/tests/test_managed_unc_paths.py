@@ -163,3 +163,34 @@ def test_a_diffusion_data_dir_refuses_a_unc_path_before_resolving_it(studio_home
     finally:
         reset_account(token)
     assert unc_calls == []
+
+
+@pytest.mark.parametrize("lease", [None, "not-a-lease"], ids = ["path", "native-label"])
+@pytest.mark.parametrize("unc", [UNC, NT_UNC])
+def test_a_chat_load_refuses_a_unc_path_before_resolving_it(
+    studio_home, unc_calls, unc, lease, monkeypatch
+):
+    # The Decision API layout check reads the model's files, so it runs after the access check. A native
+    # selection's model_path is only a label: its file is checked once the lease names it.
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from core.inference import llama_keepwarm
+    from routes import inference
+
+    @asynccontextmanager
+    async def _gate():
+        yield
+
+    monkeypatch.setattr(inference, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    monkeypatch.setattr(inference, "_pending_load_attempts", {})
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", _gate)
+    token = bind_account(ALICE)
+    try:
+        request = inference.LoadRequest(model_path = unc, native_path_lease = lease)
+        with pytest.raises(HTTPException) as info:
+            asyncio.run(inference.load_model_gated(request, object(), "alice"))
+        assert info.value.status_code == (404 if lease is None else 400)
+    finally:
+        reset_account(token)
+    assert unc_calls == []

@@ -616,6 +616,11 @@ def _weights_are_servable(load_dir) -> bool:
         return False
     if any((load_dir / name).is_file() for name in _ADAPTER_MARKERS):
         return False
+    # A Clef decision model is a causal LM plus a decision head; it is served from the Decision API, not as chat.
+    from hub.services.models.common import _is_decision_folder
+
+    if _is_decision_folder(load_dir):
+        return False
     # Same marker as is_embedding_model, minus its memo, which would pin one scan's verdict.
     return not (load_dir / "modules.json").is_file()
 

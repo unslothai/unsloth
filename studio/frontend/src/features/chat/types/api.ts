@@ -53,6 +53,7 @@ export interface BackendLoraInfo {
   export_type?: "lora" | "merged" | "gguf" | null;
   size_bytes?: number | null;
   audio_type?: string | null;
+  is_decision?: boolean;
 }
 
 export interface ListLorasResponse {

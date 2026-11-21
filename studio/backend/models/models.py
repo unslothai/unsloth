@@ -155,6 +155,10 @@ class LoRAInfo(BaseModel):
         "None when no adapter config was found. A None VALUE means "
         "unverified.",
     )
+    is_decision: bool = Field(
+        False,
+        description = "A Decision API model (Clef or Laya), served from Settings > API, not a chat model",
+    )
 
 
 class LoRAScanResponse(BaseModel):
