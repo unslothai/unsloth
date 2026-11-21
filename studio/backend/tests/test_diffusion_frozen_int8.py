@@ -123,3 +123,50 @@ def test_fp16_preflight_allows_int8_only_with_the_w8a8_gate(monkeypatch):
     reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
     assert reason is None or "fp16" not in reason
     assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "bf16") or "")
+
+
+def test_conversion_keeps_the_fp32_island_on_an_untargeted_layer():
+    """fp16 path: islands are installed before the W8A8 conversion and live on the module's forward. A converted
+    Z-Image feed_forward.w2 (not a LoRA target) must still run fp32 with autocast off, not fp16 / bf16."""
+    from core.training.diffusion_dit_fp16 import install_fp32_islands
+
+    class _FF(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w2 = nn.Linear(64, 32)
+
+    class _Attn(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.to_q = nn.Linear(32, 32)
+
+    class _Layer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.feed_forward = _FF()
+            self.attention = _Attn()
+
+    class _M(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = nn.ModuleList([_Layer()])
+
+    torch.manual_seed(0)
+    model = _M().to(torch.bfloat16).requires_grad_(False)
+    islands = install_fp32_islands(model, "z-image", "cpu")
+    assert islands == ["layers.0.feed_forward.w2"]
+    done, failed = fi8.convert_frozen_int8(
+        model, {"layers.0.feed_forward.w2", "layers.0.attention.to_q"}
+    )
+    assert (done, failed) == (2, 0)
+    w2, q = model.layers[0].feed_forward.w2, model.layers[0].attention.to_q
+    assert isinstance(w2, fi8.FrozenInt8Linear) and isinstance(q, fi8.FrozenInt8Linear)
+    assert getattr(w2, "_unsloth_fp32_island", False)
+    assert not getattr(q, "_unsloth_fp32_island", False)
+    x64 = torch.randn(24, 64, dtype = torch.bfloat16, requires_grad = True)
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        y = w2(x64)
+        yq = q(torch.randn(24, 32, dtype = torch.bfloat16))
+    assert y.dtype == torch.float32 and yq.dtype == torch.bfloat16
+    y.sum().backward()
+    assert x64.grad is not None and torch.isfinite(x64.grad).all()

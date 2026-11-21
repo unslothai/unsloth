@@ -120,6 +120,11 @@ def convert_frozen_int8(
             failed += 1
             continue
         new._studio_lowp = "int8_w8a8"
+        if getattr(old, "_unsloth_fp32_island", False):
+            # The fp16 path's fp32 island lives on the replaced module's forward: re-install it on the new one, or
+            # an untargeted overflow-prone layer (Z-Image feed_forward.w2) would run under fp16 autocast again.
+            from core.training.diffusion_dit_fp16 import make_fp32_island
+            make_fp32_island(new, new.weight.device.type)
         setattr(parent, child, new)
         done += 1
     return done, failed
