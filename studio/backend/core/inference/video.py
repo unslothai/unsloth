@@ -15244,7 +15244,9 @@ class VideoBackend:
                     return render_call()
 
                 try:
-                    with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx, draft_ctx:
+                    # The draft decoder first: the decode-phase / finite / uint8 wrappers progress_ctx installs then
+                    # wrap whichever decoder runs, so the decode phase (and its residency release) still fires.
+                    with grad_ctx, protect_ctx, draft_ctx, progress_ctx(), sigma_ctx:
                         output = render_thread.run("video", _render_streamed_after_oom)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); offloaded modules would stay on GPU.

@@ -248,3 +248,36 @@ def test_chunked_decode_matches_one_pass(tmp_path, chunk):
     got = model.decode(lat, chunk_frames = chunk)
     assert got.shape == one.shape == (1, 3, 17, 48, 64)
     torch.testing.assert_close(got, one, atol = 1e-2, rtol = 1e-2)
+
+
+def test_draft_decode_runs_inside_the_decode_phase_wrappers(tmp_path):
+    """video.py enters the draft decoder before progress_ctx(): the decode-phase wrapper (which reports the decode and
+    lets video_stream_residency return lent denoiser groups) wraps the tiny decoder instead of being replaced by it."""
+    import ast
+    from pathlib import Path
+
+    from core.inference.media_decode_phase import decode_phase
+
+    path = _random_checkpoint(tmp_path, 16, 1, "d.safetensors")
+    model = TV.load_from_file(path, 16, 1, device = "cpu", dtype = torch.float32)
+    vae = _fake_vae(16)
+    pipe = types.SimpleNamespace(vae = vae)
+    fired = []
+    with TV.TinyVaeDraftDecode(vae, model) as ctx, decode_phase(pipe, lambda: fired.append(1)):
+        vae.decode(torch.randn(1, 16, 2, 3, 3), return_dict = False)
+    assert ctx.calls == 1 and fired == [1]
+    assert "decode" not in vae.__dict__
+
+    # The render's ``with`` statement keeps that order.
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
+    orders = [
+        [ast.unparse(item.context_expr) for item in node.items]
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.With)
+        and any(ast.unparse(i.context_expr) == "draft_ctx" for i in node.items)
+    ]
+    assert orders, "the render no longer enters draft_ctx"
+    for names in orders:
+        assert names.index("draft_ctx") < names.index("progress_ctx()"), names
