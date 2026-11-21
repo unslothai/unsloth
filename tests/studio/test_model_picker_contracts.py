@@ -551,7 +551,7 @@ def test_compare_load_uses_each_models_gpu_config():
     # An unclassified GGUF is pinned: /load may still find a diffusion header after download.
     assert "return isDiffusion === true || diffusionUnknown" in placement
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
-    assert "if (ownConfig.selectedGpuIds != null)" in src
+    assert "ownConfig.selectedGpuIds !== undefined" in src
     assert "ownConfig.selectedGpuIndexKind," in src
     assert "compareLoadKnobs.selectedGpuIndexKind," in src
     assert src.count("resolvedIsDiffusion === true") >= 2
@@ -2525,7 +2525,7 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     assert "diffusionPinnable: false," in src
     # The XPU ban applies to torch ordinals only, not Vulkan ones.
     assert (
-        "pinnable: pinnableBackend && "
+        "pinnable: pinnableBackend && d.no_llama_kernels !== true && "
         '(d.index_kind === "vulkan" || '
         '(data?.device_backend !== "xpu" && '
         '(d.index_kind === "physical" || d.index_kind === "cuda_device"))),' in src
@@ -2536,7 +2536,7 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
     )
     assert (
-        "diffusionPinnable: diffusionBackend && "
+        "diffusionPinnable: diffusionBackend && d.no_torch_kernels !== true && "
         '(d.index_kind === "physical" || d.index_kind === "cuda_device"),' in src
     )
 

@@ -3345,6 +3345,23 @@ def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeyp
     assert backend.host_offload_warning_for_intent(_load_intent(gguf)) is None
 
 
+def test_the_route_precheck_ignores_a_gpu_llama_server_cannot_run(tmp_path, monkeypatch):
+    """2x R9700 plus a 9950X iGPU (gfx1036) the prebuilt has no kernels for: the iGPU's total-0
+    row silenced the warning for the whole host, though llama-server never uses it."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 100, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    _host_totals(monkeypatch, backend, vram_total_mib = 24_000, ram_total_mib = 32_000)
+    rows = {
+        False: [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 35_926, 0)],
+        True: [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    }
+    backend._get_gpu_memory = lambda _binary = None, *, for_llama_server = False: rows[for_llama_server]
+
+    verdict = backend.host_offload_warning_for_intent(_load_intent(gguf))
+    assert verdict is not None and "does not fit in GPU memory" in verdict
+
+
 def test_the_route_precheck_skips_the_gpu_probe_when_the_file_fits_in_ram(tmp_path, monkeypatch):
     """A GGUF within RAM less headroom cannot warn, so the route skips the GPU probe."""
     backend, gguf = _offload_backend(

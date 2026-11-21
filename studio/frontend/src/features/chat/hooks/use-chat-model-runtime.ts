@@ -1528,8 +1528,18 @@ export function useChatModelRuntime() {
         const readPickStatus = () =>
           getInferenceStatus(undefined, modelId).catch(() => null);
         const residentStatus = await readPickStatus();
-        // Warm the GPU cache first: a cold cache passes the pick through unvalidated.
-        if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {
+        // Warm first: a cold cache passes the pick through unvalidated, or drops a GGUF's Automatic default.
+        // The status falls back to the resident slot, so its is_gguf only speaks for the pick when it is the pick.
+        if (
+          residentStatus &&
+          ((residentStatus.is_gguf === true &&
+            residentModelMatchesPick(residentStatus, {
+              id: modelId,
+              loadPath,
+              ggufVariant,
+            })) ||
+            pendingConfig?.selectedGpuIds !== undefined)
+        ) {
           await ensureGpuDeviceCache().catch(() => {});
         }
         // Mirror what /load would send for an unconfigured pick; performLoad clears per-model fields.
@@ -1612,6 +1622,7 @@ export function useChatModelRuntime() {
                 ids,
                 savedIndexKind,
                 status.is_diffusion ?? false,
+                status.is_gguf === true,
               ),
             defaultEngineGpuIds: defaultEngineGpuIds(),
             normalizeSpeculative: normalizeSpeculativeType,
@@ -1665,6 +1676,7 @@ export function useChatModelRuntime() {
                 pendingConfig.selectedGpuIds,
                 pendingConfig.selectedGpuIndexKind,
                 confirmedStatus.is_diffusion ?? false,
+                confirmedStatus.is_gguf === true,
               );
               const hydrated = useChatRuntimeStore.getState();
               if (!sameGpuSelection(hydrated.selectedGpuIds, picked)) {
@@ -2004,16 +2016,18 @@ export function useChatModelRuntime() {
           const previousMlxExpertOffload = rollbackConfig
             ? (rollbackConfig.mlxExpertOffload ?? null)
             : useChatRuntimeStore.getState().mlxExpertOffload;
+          // An unclassifiable GGUF may still be DiffusionGemma, which /load rejects gpu_ids for: no default pick.
+          let ggufDiffusionUnknown = false;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token like validateModel: the Hub 401s an invalid header even for public repos.
-            isDiffusion = (
-              await fetchGgufStagedMetadata({
-                model_path: loadPath,
-                gguf_variant: ggufVariant ?? null,
-                hf_token: hfToken,
-                nativePathToken: nativePathToken ?? null,
-              })
-            ).isDiffusion;
+            const staged = await fetchGgufStagedMetadata({
+              model_path: loadPath,
+              gguf_variant: ggufVariant ?? null,
+              hf_token: hfToken,
+              nativePathToken: nativePathToken ?? null,
+            });
+            isDiffusion = staged.isDiffusion;
+            ggufDiffusionUnknown = staged.diffusionUnknown;
           }
           // The staged-metadata read cannot be aborted, so check after it.
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -2138,8 +2152,9 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.tensorSplit !== undefined
               ? pendingLoadConfig.tensorSplit
               : stateBeforeUnload.splitRatio;
-          // Drop stale cross-host GPU picks before /load; warm the device cache first.
+          // Drop stale cross-host GPU picks before /load; a GGUF's Automatic default needs the warm cache too.
           if (
+            isGguf ||
             pendingLoadConfig?.selectedGpuIds !== undefined ||
             stateBeforeUnload.selectedGpuIds != null
           ) {
@@ -2151,6 +2166,7 @@ export function useChatModelRuntime() {
                   pendingLoadConfig.selectedGpuIds,
                   pendingLoadConfig.selectedGpuIndexKind,
                   targetIsDiffusion,
+                  isGguf && !ggufDiffusionUnknown,
                 )
               : null;
           let loadSelectedGpuIds =
@@ -2160,6 +2176,7 @@ export function useChatModelRuntime() {
                   stateBeforeUnload.selectedGpuIds,
                   stateBeforeUnload.selectedGpuIndexKind,
                   targetIsDiffusion,
+                  isGguf && !ggufDiffusionUnknown,
                 );
           loadSplitRatio = reconcileTensorSplit(
             loadSplitRatio,

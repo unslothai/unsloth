@@ -90,14 +90,36 @@ export function resolveGpuSelectionContext(
   return pinnableGpuContext(devices, forDiffusion);
 }
 
+/** An iGPU: its "VRAM" is system RAM. Cards nothing can run never reach the picker. */
+export function isFallbackGpu(device: {
+  sharedMemory?: boolean;
+  unifiedMemory?: boolean;
+}): boolean {
+  return device.sharedMemory === true || device.unifiedMemory === true;
+}
+
+/** What an untouched picker selects: every GPU except fallback ones sitting beside a
+ *  discrete card. null when that is all of them, so Automatic stays Automatic. */
+export function defaultGpuIds(
+  devices: readonly SystemGpuDevice[] | null,
+): number[] | null {
+  if (!devices?.length) return null;
+  const primary = devices.filter((device) => !isFallbackGpu(device));
+  if (primary.length === 0 || primary.length === devices.length) return null;
+  return primary.map((device) => device.index);
+}
+
 export function reconcileGpuSelection(
   ids: number[] | null,
   savedIndexKind: GpuIndexKind | null | undefined,
   currentIndexKind: GpuIndexKind | null | undefined,
   pinnableIds: number[] | null,
+  defaultIds: number[] | null = null,
 ): ReconciledGpuSelection {
   if (ids == null) {
-    return { ids: null, indexKind: null };
+    return defaultIds?.length && currentIndexKind
+      ? { ids: defaultIds, indexKind: currentIndexKind }
+      : { ids: null, indexKind: null };
   }
   const expectedIndexKind =
     savedIndexKind === undefined ? "physical" : savedIndexKind;

@@ -1,0 +1,366 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+/**
+ * 2x R9700 (32 GiB) plus a Ryzen 9950X iGPU whose 36 GiB is shared system RAM: the Train page read
+ * "VRAM 100 GiB" and the chat GPU picker offered and ticked the iGPU, which neither the installed
+ * llama.cpp nor torch has kernels for. Device rows are pinned here, never read from the host.
+ */
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import {
+  type SystemGpuDevice,
+  defaultGpuIds,
+  reconcileGpuSelection,
+} from "../src/hooks/gpu-selection.ts";
+import { type MemoryTotalDevice } from "../src/hooks/gpu-vram.ts";
+import type * as GpuHooks from "../src/hooks/use-gpu-info.ts";
+import { normalizeDenseQuantSchemes } from "../src/lib/dense-quant-schemes.ts";
+import { normalizeReportedOffloadFitTiers } from "../src/lib/offload-fit-tiers.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+const R9700: MemoryTotalDevice = { memory_total_gb: 31.86 };
+const IGPU_SHARED: MemoryTotalDevice = {
+  memory_total_gb: 36.23,
+  shared_memory: true,
+  shared_memory_host_backed_gb: 34.26,
+  unified_memory: true,
+};
+
+function device(
+  index: number,
+  overrides: Partial<SystemGpuDevice> = {},
+): SystemGpuDevice {
+  return {
+    index,
+    indexKind: "physical",
+    name: `GPU ${index}`,
+    memoryTotalGb: 31.86,
+    memoryFreeGb: 31.86,
+    sharedMemory: false,
+    pinnable: true,
+    diffusionPinnable: true,
+    ...overrides,
+  };
+}
+
+test("an untouched picker ticks only the discrete cards", () => {
+  assert.deepEqual(
+    defaultGpuIds([
+      device(0),
+      device(1),
+      device(2, { sharedMemory: true, unifiedMemory: true }),
+    ]),
+    [0, 1],
+  );
+});
+
+test("no default narrowing when there is nothing to narrow", () => {
+  assert.equal(defaultGpuIds([device(0), device(1)]), null);
+  assert.equal(
+    defaultGpuIds([
+      device(0, { sharedMemory: true }),
+      device(1, { unifiedMemory: true }),
+    ]),
+    null,
+  );
+  assert.equal(defaultGpuIds([]), null);
+  assert.equal(defaultGpuIds(null), null);
+});
+
+test("an Automatic selection sends the default ids, a manual pick is kept", () => {
+  assert.deepEqual(
+    reconcileGpuSelection(null, undefined, "physical", [0, 1, 2], [0, 1]),
+    { ids: [0, 1], indexKind: "physical" },
+  );
+  // Ticking the iGPU by hand still reaches /load.
+  assert.deepEqual(
+    reconcileGpuSelection([0, 2], "physical", "physical", [0, 1, 2], [0, 1]),
+    { ids: [0, 2], indexKind: "physical" },
+  );
+  // Without a default, or before discovery settles, Automatic stays null.
+  assert.deepEqual(
+    reconcileGpuSelection(null, undefined, "physical", [0, 1], null),
+    { ids: null, indexKind: null },
+  );
+  assert.deepEqual(
+    reconcileGpuSelection(null, undefined, undefined, null, [0, 1]),
+    { ids: null, indexKind: null },
+  );
+});
+
+let snapshot: unknown = null;
+let fetchResults: unknown[] = [];
+const hooks = loadWithStubs<typeof GpuHooks>(
+  new URL("../src/hooks/use-gpu-info.ts", import.meta.url),
+  {
+    react: {
+      useState: (initial: unknown) => [initial, () => {}],
+      useEffect: () => {},
+      useMemo: (read: () => unknown) => read(),
+    },
+    "./use-system": {
+      getCachedSystemInfo: () => snapshot,
+      fetchSystemInfo: async () => fetchResults.shift() ?? null,
+    },
+    "@/lib/dense-quant-schemes": { normalizeDenseQuantSchemes },
+    "@/lib/offload-fit-tiers": { normalizeReportedOffloadFitTiers },
+  },
+  { relativePassthrough: true },
+);
+
+test("Automatic gets its default pick only once devices are cached", () => {
+  snapshot = null;
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true), {
+    ids: null,
+    indexKind: null,
+  });
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", ...R9700 },
+      { index: 1, index_kind: "physical", ...R9700 },
+      { index: 2, index_kind: "physical", ...IGPU_SHARED },
+    ],
+  };
+  snapshot = {
+    status: "ready",
+    device_backend: "rocm",
+    gpu,
+    inference_gpu: gpu,
+  };
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true), {
+    ids: [0, 1],
+    indexKind: "physical",
+  });
+});
+
+test("a device cache warm that left no devices is retried once", async () => {
+  const ready = {
+    status: "ready",
+    inference_gpu: { backend: "rocm", available: true },
+  };
+  const vulkanPending = {
+    status: "ready",
+    inference_gpu: { backend: "vulkan", available: false },
+  };
+  snapshot = ready;
+  fetchResults = [null, ready, ready];
+  await hooks.ensureGpuDeviceCache();
+  assert.equal(fetchResults.length, 1);
+  snapshot = vulkanPending;
+  fetchResults = [vulkanPending, vulkanPending, ready];
+  await hooks.ensureGpuDeviceCache();
+  assert.equal(fetchResults.length, 1);
+  snapshot = ready;
+  fetchResults = [ready, ready];
+  await hooks.ensureGpuDeviceCache();
+  assert.equal(fetchResults.length, 1);
+});
+
+test("GGUF load paths warm the device cache even for an Automatic pick", () => {
+  // A warm gated only on an explicit pick leaves a GGUF's Automatic on a cold cache, so /load omits gpu_ids.
+  // Other engines get no default, so an unpinned non-GGUF load skips the wait.
+  const gates: [string, RegExp][] = [
+    [
+      "../src/features/chat/api/chat-adapter.ts",
+      /if \(candidate\.kind === "gguf" \|\| config\.selectedGpuIds != null\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+    [
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      /isGguf \|\|\s*pendingLoadConfig\?\.selectedGpuIds !== undefined \|\|\s*stateBeforeUnload\.selectedGpuIds != null\s*\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+    [
+      "../src/features/chat/hooks/use-chat-model-runtime.ts",
+      /residentStatus\.is_gguf === true &&\s*residentModelMatchesPick\(residentStatus, \{\s*id: modelId,\s*loadPath,\s*ggufVariant,\s*\}\)\) \|\|\s*pendingConfig\?\.selectedGpuIds !== undefined\)\s*\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+    [
+      "../src/features/chat/shared-composer.tsx",
+      /targetIsGguf \|\|\s*ownConfig\.selectedGpuIds != null \|\|\s*compareLoadKnobs\.selectedGpuIds != null\s*\) \{\s*await ensureGpuDeviceCache\(/,
+    ],
+  ];
+  for (const [file, gate] of gates) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.match(source, gate, file);
+  }
+});
+
+test("a background load with no saved pick still reconciles as Automatic", () => {
+  // An unconfigured model's config has no selectedGpuIds; skipping the reconcile sent no gpu_ids.
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const effectiveGpuIds = reconcilePersistedGpuIds\(\s*config\.selectedGpuIds \?\? null,\s*config\.selectedGpuIndexKind,\s*isDiffusion,\s*candidate\.kind === "gguf" && !diffusionUnknown,/,
+  );
+});
+test("only a GGUF load gets the default pick; other engines keep their own device", () => {
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", ...R9700 },
+      { index: 1, index_kind: "physical", ...R9700 },
+      { index: 2, index_kind: "physical", ...IGPU_SHARED },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true), {
+    ids: [0, 1],
+    indexKind: "physical",
+  });
+  // A vLLM/SGLang or transformers load on Automatic would otherwise go tensor-parallel over both cards.
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null), { ids: null, indexKind: null });
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, true, true), {
+    ids: null,
+    indexKind: null,
+  });
+  // A manual pick is kept whatever the model kind.
+  assert.deepEqual(hooks.reconcileCachedGpuSelection([1], "physical"), {
+    ids: [1],
+    indexKind: "physical",
+  });
+});
+
+test("Automatic classifies a GGUF before pinning its default pick", () => {
+  // /load rejects gpu_ids for DiffusionGemma on Vulkan, and the probe used to skip Automatic.
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /config\.tensorParallel === true \|\|\s*automaticPinsDefault\)/,
+  );
+  assert.match(
+    source,
+    /automaticPinsDefault =\s*config\.selectedGpuIds == null &&\s*reconcilePersistedGpuIds\(null, undefined, false, true\) != null;/,
+  );
+});
+test("an unclassifiable GGUF keeps Automatic unpinned", () => {
+  // It may be DiffusionGemma, whose /load rejects gpu_ids; only a confirmed non-diffusion GGUF gets the default.
+  const sources: [string, RegExp, number][] = [
+    ["../src/features/chat/api/chat-adapter.ts", /diffusionUnknown = staged\.diffusionUnknown;/, 1],
+    ["../src/features/chat/api/chat-adapter.ts", /candidate\.kind === "gguf" && !diffusionUnknown,/, 1],
+    ["../src/features/chat/hooks/use-chat-model-runtime.ts", /ggufDiffusionUnknown = staged\.diffusionUnknown;/, 1],
+    ["../src/features/chat/hooks/use-chat-model-runtime.ts", /isGguf && !ggufDiffusionUnknown,/g, 2],
+    ["../src/features/chat/shared-composer.tsx", /targetIsGguf && !diffusionUnknown,/g, 2],
+  ];
+  for (const [file, pattern, count] of sources) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.equal(source.match(new RegExp(pattern.source, "g"))?.length ?? 0, count, `${file} ${pattern}`);
+  }
+});
+
+test("a GPU the engine has no kernels for is never offered", () => {
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", ...R9700 },
+      { index: 1, index_kind: "physical", ...R9700 },
+      {
+        index: 2,
+        index_kind: "physical",
+        ...IGPU_SHARED,
+        no_llama_kernels: true,
+        no_torch_kernels: true,
+      },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  assert.deepEqual(hooks.cachedPinnableGpuIndices(), [0, 1]);
+  assert.deepEqual(hooks.cachedPinnableGpuIndices(true), [0, 1]);
+  // A pick saved before the card was flagged loses it instead of failing the load.
+  assert.deepEqual(hooks.reconcileCachedGpuSelection([0, 2], "physical", false, true), {
+    ids: [0],
+    indexKind: "physical",
+  });
+});
+
+test("each picker drops only the cards its own engine cannot run", () => {
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", ...R9700 },
+      { index: 1, index_kind: "physical", ...R9700, no_llama_kernels: true },
+      { index: 2, index_kind: "physical", ...R9700, no_torch_kernels: true },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  // GGUF runs on llama.cpp; diffusion and the optional engines run on torch.
+  assert.deepEqual(hooks.cachedPinnableGpuIndices(), [0, 2]);
+  assert.deepEqual(hooks.cachedPinnableGpuIndices(true), [0, 1]);
+});
+
+test("a shared-memory GPU llama.cpp can run stays offered, unticked", () => {
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", ...R9700 },
+      { index: 1, index_kind: "physical", ...R9700 },
+      { index: 2, index_kind: "physical", ...IGPU_SHARED },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  assert.deepEqual(hooks.cachedPinnableGpuIndices(), [0, 1, 2]);
+  assert.deepEqual(hooks.reconcileCachedGpuSelection(null, null, false, true).ids, [0, 1]);
+});
+
+test("fit capacity counts only the cards each engine can run", () => {
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", visible_ordinal: 0, ...R9700 },
+      { index: 1, index_kind: "physical", visible_ordinal: 1, ...R9700 },
+      {
+        index: 2,
+        index_kind: "physical",
+        visible_ordinal: 2,
+        ...IGPU_SHARED,
+        no_llama_kernels: true,
+        no_torch_kernels: true,
+      },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  // Hub and recommended-model badges read these; the iGPU's 36 GiB once made it 100.
+  for (const info of [hooks.useGpuInfo(), hooks.useInferenceGpuInfo()]) {
+    assert.equal(info.memoryTotalGb, 63.72);
+    assert.equal(info.deviceCount, 2);
+    assert.equal(info.maxDeviceMemoryGb, 31.86);
+    assert.equal(info.unifiedMemory, false);
+  }
+  // Each view drops only what its own engine cannot run.
+  gpu.devices[1] = { ...gpu.devices[1], no_llama_kernels: true } as (typeof gpu.devices)[number];
+  assert.equal(hooks.useInferenceGpuInfo().memoryTotalGb, 31.86);
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 63.72);
+});
+
+test("training capacity keeps a shared-memory GPU torch can run", () => {
+  // Training's auto-select adds it once the discrete card alone is too small, so its fit must count it.
+  const gpu = {
+    available: true,
+    backend: "rocm",
+    devices: [
+      { index: 0, index_kind: "physical", visible_ordinal: 0, ...R9700 },
+      { index: 1, index_kind: "physical", visible_ordinal: 1, ...IGPU_SHARED },
+    ],
+  };
+  snapshot = { status: "ready", device_backend: "rocm", gpu, inference_gpu: gpu };
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 68.09);
+  gpu.devices[1] = { ...gpu.devices[1], no_torch_kernels: true } as (typeof gpu.devices)[number];
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 31.86);
+  // A host with only cards torch cannot run has no GPU capacity to fit against.
+  gpu.devices[0] = { ...gpu.devices[0], no_torch_kernels: true } as (typeof gpu.devices)[number];
+  assert.equal(hooks.useGpuInfo().memoryTotalGb, 0);
+});
