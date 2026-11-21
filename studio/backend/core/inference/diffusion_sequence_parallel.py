@@ -11,13 +11,15 @@ heads (Ulysses, arXiv 2309.14509), so each card attends over all tokens for half
 outputs back. The swaps are plain device-to-device copies ordered by CUDA events between the router's two host
 threads (its worker thread drives the replica): no torch.distributed, NCCL or second process.
 
-Where the tokens are cut and joined comes from the denoiser class's own ``_cp_plan`` in diffusers (the context
-parallel plan its maintainers keep per model), checked against the plan this module was written for
-(``SP_PLANS``): a class or a diffusers version whose plan differs keeps the whole call on one card.
+Where the tokens are cut and joined follows the denoiser class's own ``_cp_plan`` in diffusers (the context parallel
+plan its maintainers keep per model), checked against the plan this module was written for (``SP_PLANS``): a class or
+a diffusers version whose plan differs keeps the whole call on one card. The cut itself (``SP_EXEC_PLANS``) moves two
+small per-token pieces to the full sequence on both cards: Wan 2.2 TI2V's per-token timestep embedding and the
+output projection, whose GEMMs would otherwise run on half the rows.
 
 Attention per head is the same computation on any number of heads, and every other layer sees each token alone, so
-the result is the one-card result as long as the card's kernels give a row the same bits whatever the row count
-(measured, not assumed: the A/B harness compares against one card bit for bit).
+the result is the one-card result as long as the card's GEMMs give a row the same bits whatever the row count. That
+holds on some cards and not on others (the A/B harness compares against one card bit for bit).
 
 The swaps are matched by attention module and call kind, not by call order: a card that runs one attention twice
 on the same inputs (a fused block checking itself against the stock block on its first call, or a fallback that
@@ -52,6 +54,21 @@ SP_PLANS: dict[str, tuple] = {
         ("rope", "output", 1, 1, 4),
         ("blocks.0", "input", "hidden_states", 1, 3),
         ("proj_out", "gather", None, 1, 3),
+    ),
+}
+# Where this module cuts and joins once the class's plan checked out: diffusers' plan, except that the work every
+# token does alone in a GEMM whose row count would change (the per-token timestep embedding of Wan 2.2 TI2V, the
+# output projection) runs on all tokens on both cards, so its rows keep their one-card bits on cards whose GEMM picks
+# its kernel by row count. Kinds: input / output (cut a forward argument / output), gather (join an output),
+# gather_input (join an argument before the module runs).
+SP_EXEC_PLANS: dict[str, tuple] = {
+    "WanTransformer3DModel": (
+        ("condition_embedder", "output", 0, 1, 3),
+        ("condition_embedder", "output", 1, 1, 3),
+        ("rope", "output", 0, 1, 4),
+        ("rope", "output", 1, 1, 4),
+        ("blocks.0", "input", "hidden_states", 1, 3),
+        ("proj_out", "gather_input", 0, 1, 3),
     ),
 }
 # Attention processor classes whose self-attention call passes ``parallel_config`` (diffusers' context parallel
@@ -141,7 +158,7 @@ def read_plan(cls: Any) -> Optional[tuple]:
         return None
     if sorted(found, key = repr) != sorted(expected, key = repr):
         return None
-    return tuple(found)
+    return SP_EXEC_PLANS.get(cls.__name__, tuple(found))
 
 
 def refusal(module: Any, tokens: Optional[int] = None) -> Optional[str]:
@@ -466,6 +483,36 @@ def _install_hooks(module: Any, plan: tuple, rank: int, store: _Store, engaged: 
                 return type(output)(seq)
 
             handles.append(sub.register_forward_hook(post))
+        elif kind == "gather_input":
+
+            def gather_in(
+                mod,
+                args,
+                kwargs,
+                _n = name,
+                _d = dim,
+                _x = dims,
+                _k = key,
+            ):
+                torch = _torch()
+                engaged[_k] = engaged.get(_k, 0) + 1
+                index = _param_index(type(mod).forward, _n)
+                if _n in kwargs:
+                    value = kwargs[_n]
+                elif index is not None and index < len(args):
+                    value = args[index]
+                else:
+                    raise SequenceParallelError(f"{_k} has no input {_n}")
+                if not torch.is_tensor(value) or (_x is not None and value.dim() != _x):
+                    raise SequenceParallelError(f"{_k} input {_n} is not a {_x}-dim tensor")
+                store.publish(rank, f"gather:{_k}", "in", (value.contiguous(),))
+                (theirs,) = store.fetch(rank, f"gather:{_k}", "in")
+                full = torch.cat((value, theirs) if rank == 0 else (theirs, value), dim = _d)
+                if _n in kwargs:
+                    return args, {**kwargs, _n: full}
+                return (*args[:index], full, *args[index + 1 :]), kwargs
+
+            handles.append(sub.register_forward_pre_hook(gather_in, with_kwargs = True))
         else:
 
             def gather(

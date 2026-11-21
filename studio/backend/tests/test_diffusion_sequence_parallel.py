@@ -108,9 +108,8 @@ def test_per_token_timesteps_are_cut_with_the_tokens():
     model = _model()
     router, _ = _router(model)
     out = _loop(model, per_token = True)
-    # CPU GEMMs on half the rows of the timestep embedding round differently in the last bit; a misaligned cut would
-    # be off by the timestep gap (0.02 per token) instead
-    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-6)
+    # the per-token timestep embedding runs on every token on both cards and is cut after it: the same bits
+    assert torch.equal(out, ref)
     assert router.stats["sequence_splits"] == STEPS - 1
 
 
