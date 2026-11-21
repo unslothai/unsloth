@@ -7532,6 +7532,38 @@ def _moe_spill_batch_ubatch(
     return n_batch, _MOE_SPILL_N_UBATCH
 
 
+# Inkling 2 with every expert on the GPU: prompt processing is bound by the MoE GEMM tile,
+# so a larger micro-batch gives each expert more rows. B200 llama-bench, ub 512 -> 1024:
+# +21% at 4K, +14% at 32K (2048 loses ground at 32K, 4096 loses outright). KLD vs ub 512 is
+# 0.002, rounding-order noise. Costs ~225 MiB + 1.2 MiB per 1K context of compute buffer.
+_INKLING_RESIDENT_N_UBATCH = 1024
+# Free VRAM the raised launch must still leave, on top of the occupancy cap.
+_INKLING_UBATCH_MIN_FREE_MIB = 256
+# "on" = raise without the headroom gate, "off" = never raise, else auto.
+_INKLING_UBATCH_ENV = "UNSLOTH_INKLING_UBATCH"
+
+
+def _inkling_resident_batch_ubatch(
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    *,
+    architecture: Optional[str],
+    experts_resident: bool,
+    user_named_batch: bool,
+) -> tuple[Optional[int], Optional[int]]:
+    """The raised pair for an all-GPU Inkling 2 load; a user-set batch always wins."""
+    if user_named_batch or not experts_resident or architecture not in _INKLING2_ARCHS:
+        return n_batch, n_ubatch
+    current = _DEFAULT_LLAMA_N_UBATCH if n_ubatch is None else int(n_ubatch)
+    if current >= _INKLING_RESIDENT_N_UBATCH:
+        return n_batch, n_ubatch
+    # llama.cpp caps the micro-batch at the batch, so keep batch >= micro-batch.
+    batch = _DEFAULT_LLAMA_N_BATCH if n_batch is None else int(n_batch)
+    if batch < _INKLING_RESIDENT_N_UBATCH:
+        n_batch = _INKLING_RESIDENT_N_UBATCH
+    return n_batch, _INKLING_RESIDENT_N_UBATCH
+
+
 def _override_targets_host(value: str) -> bool:
     """Whether an ``--override-tensor`` value sends any tensor to host memory
     (``CPU``, ``CPU_REPACK``, ``CUDA_Host``, ...), not only to GPUs."""
@@ -28956,6 +28988,129 @@ class LlamaCppBackend:
                                 100 * (_share_before or 0.0),
                                 100 * (_share_after or 0.0),
                             )
+
+                    # Inkling 2 with every expert on the GPU: raise the micro-batch to 1024 for
+                    # prompt processing (see _INKLING_RESIDENT_N_UBATCH). After the spill raise,
+                    # which wins when experts sit in host RAM. Only a pinned all-GPU placement
+                    # (--fit off) counts as resident; the raise is repriced on the chosen cards
+                    # as the placement priced the default micro-batch, and kept only when the
+                    # launch stays under the occupancy cap with 256 MiB still free.
+                    _inkling_ub_switch = _moe_switch(_INKLING_UBATCH_ENV)
+                    _inkling_resident = bool(
+                        gpus
+                        and not use_fit
+                        and not tensor_parallel
+                        and self._moe_spill_batch_restore is None
+                        and not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                        and not intent.cpu_fallback
+                        and not _device_selection_is_cpu(extra_args, os.environ)
+                        and not _expert_spill_places_tensors_on_cpu(extra_args, os.environ)
+                        and (not is_vulkan_backend or _inkling_ub_switch == "on")
+                        and self._discrete_gpu_for_expert_spill(
+                            gpu_indices, _detected_gpus, _shared_gpu_ids
+                        )
+                    )
+                    _ink_n_batch, _ink_n_ubatch = _inkling_resident_batch_ubatch(
+                        n_batch,
+                        n_ubatch,
+                        architecture = getattr(self, "_architecture", None),
+                        experts_resident = _inkling_resident,
+                        user_named_batch = _user_named_batch,
+                    )
+                    if _ink_n_ubatch != n_ubatch and _inkling_ub_switch != "off":
+                        _ink_on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
+                        _ink_n = max(1, len(_ink_on))
+
+                        def _ink_footprint_mib(cb_delta: int) -> float:
+                            # The placement's footprint (_auto_fit) on the chosen cards; the KV
+                            # and context-linear compute terms read _effective_ubatch.
+                            return (
+                                model_size_fit
+                                + cb_delta
+                                + (_ink_n - 1) * _pipeline_overhead_bytes
+                                - _discrete_host_only(_ink_on)
+                                + _kv_bytes(effective_ctx)
+                                + _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                                + _cc_bytes(effective_ctx, _ink_n)
+                            ) / (1024 * 1024)
+
+                        _ink_before_mib = _ink_footprint_mib(0)
+                        _pre_raise = (
+                            n_batch,
+                            n_ubatch,
+                            _effective_ubatch,
+                            _compute_buffer_pipeline,
+                            _compute_buffer_tensor,
+                        )
+                        n_batch, n_ubatch = _ink_n_batch, _ink_n_ubatch
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = False,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = True,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _ink_need_mib = _ink_footprint_mib(_compute_buffer_pipeline - _pre_raise[3])
+                        # Compute buffer, its context-linear term and the SWA window.
+                        _ink_cost_mib = _ink_need_mib - _ink_before_mib
+                        _ink_budget_mib = _pool_budget_mib(_ink_on, _pin_fraction)
+                        _ink_free_mib = sum(max(0.0, float(f)) for _i, f in _ink_on)
+                        _ink_fits = bool(
+                            _ink_on
+                            and effective_ctx > 0
+                            and self._can_estimate_kv()
+                            and _ink_need_mib <= _ink_budget_mib
+                            and _ink_free_mib - _ink_need_mib >= _INKLING_UBATCH_MIN_FREE_MIB
+                            and (
+                                _ink_n == 1
+                                or self._every_gpu_holds_reserve(
+                                    [_gpu_usable(g, _pin_fraction) for g in _ink_on],
+                                    _pipeline_overhead_bytes
+                                    + _cc_bytes(effective_ctx, _ink_n) // _ink_n,
+                                )
+                            )
+                        )
+                        _ink_from = (
+                            _pre_raise[1] if _pre_raise[1] is not None else _DEFAULT_LLAMA_N_UBATCH
+                        )
+                        # A context below the target caps the micro-batch: nothing to gain.
+                        _ink_grows = int(_effective_ubatch or 0) > int(
+                            _pre_raise[2] or _DEFAULT_LLAMA_N_UBATCH
+                        )
+                        if _ink_grows and (_ink_fits or _inkling_ub_switch == "on"):
+                            logger.info(
+                                "Inkling 2 on GPU: raising --ubatch-size %s -> %s for faster "
+                                "prompt processing (+%.0f MiB compute buffer).",
+                                _ink_from,
+                                _effective_ubatch,
+                                _ink_cost_mib,
+                            )
+                            # A CPU replay hands back the pair as it was (see the spill raise).
+                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
+                        else:
+                            (
+                                n_batch,
+                                n_ubatch,
+                                _effective_ubatch,
+                                _compute_buffer_pipeline,
+                                _compute_buffer_tensor,
+                            ) = _pre_raise
+                            if _ink_grows:
+                                logger.info(
+                                    "Inkling 2 on GPU: keeping --ubatch-size %s; %s (+%.0f MiB "
+                                    "compute buffer) would need %.0f MiB of a %.0f MiB GPU budget "
+                                    "and %d MiB must stay free.",
+                                    _ink_from,
+                                    _ink_n_ubatch,
+                                    _ink_cost_mib,
+                                    _ink_need_mib,
+                                    _ink_budget_mib,
+                                    _INKLING_UBATCH_MIN_FREE_MIB,
+                                )
 
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,
