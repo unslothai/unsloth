@@ -2319,10 +2319,14 @@ export async function completeChat(
 export async function generateAudio(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  options: { requireText?: boolean } = {},
 ): Promise<AudioGenerationResponse> {
   const response = await authFetch("/api/inference/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.requireText ? { "X-Unsloth-Require-Text": "1" } : {}),
+    },
     body: JSON.stringify({ ...payload, stream: false }),
     signal,
   });

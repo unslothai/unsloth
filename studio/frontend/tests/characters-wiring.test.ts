@@ -47,6 +47,14 @@ test("a reply draft refuses a speech model's echoed prompt", () => {
   assert.match(complete, /"X-Unsloth-Require-Text": "1"/);
 });
 
+test("a character turn refuses a speech-only model instead of reading the prompt aloud", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /runSignal,\s*(\/\/[^\n]*\n\s*)*\{ requireText: Boolean\(characterRun\) \},\s*\);/);
+  const api = read("features/chat/api/chat-api.ts");
+  const audio = api.slice(api.indexOf("export async function generateAudio"));
+  assert.match(audio, /options\.requireText \? \{ "X-Unsloth-Require-Text": "1" \}/);
+});
+
 test("a send re-reads the cast and personas, not only the scene", () => {
   const runtime = read("features/characters/chat-runtime.ts");
   assert.match(runtime, /if \(args\.revalidate\) await revalidateParticipants\(scene\);/);
