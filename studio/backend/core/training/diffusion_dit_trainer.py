@@ -764,6 +764,13 @@ def _apply_mxfp8_training(
 AUTO_FP8_ENV = "UNSLOTH_DIT_AUTO_FP8"
 # Free VRAM (x the dense bf16 size) above which Auto trains a streamed frozen fp8 base instead of nf4.
 AUTO_FP8_MIN_FREE_RATIO = 0.9
+# Where Auto's fp8 pick departs from the plain bands, from L4 runs at 512 px (150 steps, 3 seeds, held-out denoising
+# MSE on a bf16 base inside the bf16 seed spread for all three). Above 1.5x, fp8 replaces compiled bf16 only where it
+# measured faster: z-image 1.45x on L4 and 1.32x on RTX PRO 6000, flux.2-klein 1.32x. wan2.2-ti2v-5b packs a 512 px
+# frame into 256 tokens, where fp8's activation quantisation costs more than it saves (0.78x of bf16), so its
+# 1.15x-1.5x band keeps the bf16 block swap / int8 pick.
+_AUTO_FP8_OVER_BF16 = frozenset({"z-image", "flux.2-klein"})
+_AUTO_FP8_NOT_OVER_SWAP = frozenset({"wan2.2-ti2v-5b"})
 
 
 def _auto_fp8_enabled() -> bool:
@@ -790,26 +797,27 @@ def _pick_auto_precision(
     capability,
     has_fp8,
     has_torchao = True,
+    family: Optional[str] = None,
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
-    decision time. bf16 + regional compile where the dense base fits with room (free > 1.5x dense).
-    Between 1.15x and 1.5x: the frozen fp8 base on sm89+ (``has_fp8``: the caller's NVIDIA frozen-fp8 check), which
-    is about 2x the speed of eager int8 at less peak memory and trains to the same held-out loss. The fp8 base streams
-    onto the card, so it also takes the top of the nf4 range (free > AUTO_FP8_MIN_FREE_RATIO x dense). Else int8, which
-    must still materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so its band
-    requires the dense-load transient (1.15x dense) to fit. int8 also needs torchao at runtime
-    (``_int8_quantize_base`` has no fallback, unlike fp8), so auto only picks it when torchao is importable and drops
-    to nf4 otherwise. UNSLOTH_DIT_AUTO_FP8=0 keeps int8 in that band."""
+    decision time. ``has_fp8`` is the caller's NVIDIA frozen-fp8 check; fp8 is only picked on sm89+.
+    - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16.
+    - 1.15x-1.5x: the frozen fp8 base (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
+      the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
+    - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
+      fits where only nf4 did; nf4 trained a worse adapter (held-out MSE above the bare base on Z-Image) 1.75x slower.
+    UNSLOTH_DIT_AUTO_FP8=0 restores the int8 / nf4 picks."""
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
-    if free_gb > dense_gb * 1.5:
-        return "bf16"
     fp8 = has_fp8 and capability is not None and tuple(capability) >= (8, 9)
+    fam = str(family or "").strip().lower()
+    if free_gb > dense_gb * 1.5:
+        return "fp8" if fp8 and fam in _AUTO_FP8_OVER_BF16 else "bf16"
     if free_gb > dense_gb * 1.15:
-        return "fp8" if fp8 else ("int8" if has_torchao else "nf4")
-    # The fp8 base streams onto the card Linear by Linear (never whole in bf16), so it holds about half the dense
-    # weights plus checkpointed activations: nf4 only below that.
+        if fp8 and fam not in _AUTO_FP8_NOT_OVER_SWAP:
+            return "fp8"
+        return "int8" if has_torchao else "nf4"
     if fp8 and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
         return "fp8"
     return "nf4"
@@ -992,6 +1000,7 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         capability,
         has_fp8,
         has_torchao,
+        getattr(spec, "family", None),
     )
 
 

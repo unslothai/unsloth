@@ -140,3 +140,28 @@ def test_auto_fp8_respects_the_family_train_deny(monkeypatch, family, expected):
         base_precision = "auto", base_model = "some/dense-base", mixed_precision = "bf16"
     )
     assert dit._resolve_base_precision(cfg, spec, "cuda") == expected
+
+
+@pytest.mark.parametrize(
+    "family, ratio, expected",
+    [
+        ("z-image", 1.6, "fp8"),
+        ("flux.2-klein", 1.6, "fp8"),
+        ("flux.1", 1.6, "bf16"),
+        ("qwen-image-2.1", 1.6, "bf16"),
+        ("wan2.2-ti2v-5b", 1.6, "bf16"),
+        ("wan2.2-ti2v-5b", 1.3, "int8"),
+        ("wan2.2-ti2v-5b", 1.0, "fp8"),
+        ("flux.1", 1.3, "fp8"),
+        (None, 1.3, "fp8"),
+        (None, 1.6, "bf16"),
+    ],
+)
+def test_pick_auto_precision_per_family(family, ratio, expected):
+    assert (
+        dit._pick_auto_precision(False, "cuda", 10.0 * ratio, 10.0, (8, 9), True, True, family)
+        == expected
+    )
+    # Below sm89 nothing changes.
+    old = dit._pick_auto_precision(False, "cuda", 10.0 * ratio, 10.0, (8, 6), True, True, family)
+    assert old == ("bf16" if ratio > 1.5 else "int8" if ratio > 1.15 else "nf4")

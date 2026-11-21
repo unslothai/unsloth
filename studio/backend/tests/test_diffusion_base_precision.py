@@ -393,10 +393,12 @@ def test_resolve_auto_uses_klein_variant_size(monkeypatch):
         mixed_precision = "bf16",
     )
 
-    assert dit._resolve_base_precision(four_b, spec, "cuda") == "bf16"
+    # 20 GB free is 2.5x the 4B's 8.1 GB: fp8 is measured faster than compiled bf16 for flux.2-klein on sm89+.
+    assert dit._resolve_base_precision(four_b, spec, "cuda") == "fp8"
     # 20 GB free is 1.10x the 9B's 18.2 GB: the streamed fp8 base on sm89+.
     assert dit._resolve_base_precision(nine_b, spec, "cuda") == "fp8"
     monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "0")
+    assert dit._resolve_base_precision(four_b, spec, "cuda") == "bf16"
     assert dit._resolve_base_precision(nine_b, spec, "cuda") == "nf4"
 
 
@@ -469,6 +471,9 @@ def test_auto_still_picks_bf16_for_the_klein_4b_default(monkeypatch):
         base_precision = "auto",
         mixed_precision = "bf16",
     )
+    # The bf16 band on sm89+ trains klein on the frozen fp8 base (1.32x at the same held-out loss).
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "fp8"
+    monkeypatch.setenv("UNSLOTH_DIT_AUTO_FP8", "0")
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "bf16"
 
 
@@ -1204,7 +1209,15 @@ def test_auto_fp8_skips_rocm_and_keeps_the_bf16_band(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIT_AUTO_FP8", raising = False)
     cfg = _cfg(base_model = "Tongyi-MAI/Z-Image", base_precision = "auto", mixed_precision = "bf16")
     _fake_cuda(monkeypatch, 21.9, (8, 9))
-    assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") == "bf16"
+    # z-image is one of the families fp8 measured faster for above 1.5x; flux.1 keeps compiled bf16 there.
+    assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") == "fp8"
+    _fake_cuda(monkeypatch, 40.0, (8, 9))
+    assert (
+        dit._resolve_base_precision(
+            _cfg(base_precision = "auto", mixed_precision = "bf16"), dit._SPECS["flux.1"], "cuda"
+        )
+        == "bf16"
+    )
     _fake_cuda(monkeypatch, 16.4, (9, 4))
     monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
     assert dit._resolve_base_precision(cfg, dit._SPECS["z-image"], "cuda") not in ("fp8", "int8")
