@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -613,7 +614,9 @@ _FOLD_CAPS = frozenset({(7, 5), (8, 0), (8, 9), (12, 0)})
 # upsample is 2^28); larger maps fold strip by strip (bounded workspace, one copy into the output).
 FOLD_FULL_MAX_ELEMS = 1 << 28
 _FOLD_TAPS = {0: (2,), 1: (1, 2), 2: (0, 1), 3: (0,)}
-_FOLD_CACHE: dict = {}  # id(conv) -> (weight, version, folded)
+# conv -> ((data_ptr, dtype, device, shape, version), folded): dies with the conv, and a ``.data`` swap (Studio's fp32
+# retry, module.to) changes the key, which weight identity + version alone miss.
+_FOLD_CACHE: Any = weakref.WeakKeyDictionary()
 _FOLD_CALLS = [0]
 
 
@@ -644,9 +647,10 @@ def folded_upsample_weight(conv: Any) -> Any:
     rounding to the conv dtype, channels-last like the conv. Cached per conv while its weight tensor and version hold."""
     torch = fused._torch()
     w = conv.weight
-    hit = _FOLD_CACHE.get(id(conv))
-    if hit is not None and hit[0] is w and hit[1] == w._version:
-        return hit[2]
+    key = (w.data_ptr(), w.dtype, w.device, tuple(w.shape), w._version)
+    hit = _FOLD_CACHE.get(conv)
+    if hit is not None and hit[0] == key:
+        return hit[1]
     wf = w.detach().float()
     cout, cin = wf.shape[:2]
     wt = wf.new_zeros(cin, cout, 4, 4)
@@ -658,7 +662,7 @@ def folded_upsample_weight(conv: Any) -> Any:
                     acc += wf[:, :, i, j]
             wt[:, :, a, b] = acc.t()
     wt = wt.to(w.dtype).contiguous(memory_format = torch.channels_last)
-    _FOLD_CACHE[id(conv)] = (w, w._version, wt)
+    _FOLD_CACHE[conv] = (key, wt)
     return wt
 
 

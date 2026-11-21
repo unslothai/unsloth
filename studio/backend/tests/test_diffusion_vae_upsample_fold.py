@@ -130,3 +130,21 @@ def test_non_3x3_or_dtype_mismatch_keeps_the_2x_path(monkeypatch):
     assert not st._fold_ok(conv, x.double())  # noqa: SLF001
     c5 = torch.nn.Conv2d(6, 5, 5, padding = 2)
     assert not st._fold_ok(c5, x)  # noqa: SLF001
+
+
+def test_fold_follows_a_data_swap_like_the_fp32_retry(monkeypatch):
+    """Studio's fp32 decode retry (diffusion_vae_upcast) swaps ``.data`` under the same Parameter: version unchanged."""
+    from core.inference import diffusion_vae_upcast as upcast
+
+    monkeypatch.setenv(st.UPSAMPLE_FOLD_ENV, "1")
+    conv, x = _case(dtype = torch.bfloat16)
+    up = type("Upsample2D", (), {"conv": conv})()
+    st._upsample(up, x, False)  # noqa: SLF001 - folds and caches the bf16 taps
+    token = upcast.upcast_keeping_storage(conv)
+    try:
+        y, _ = st._upsample(up, x.float(), False)  # noqa: SLF001
+        assert y.dtype == torch.float32
+        assert (y - _chain(conv, x.float())).abs().max().item() < 1e-5
+    finally:
+        upcast.restore_storage(token)
+    assert st._upsample(up, x, False)[0].dtype == torch.bfloat16  # noqa: SLF001
