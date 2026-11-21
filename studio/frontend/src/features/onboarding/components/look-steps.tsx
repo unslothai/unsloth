@@ -24,10 +24,8 @@ import {
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  BlendIcon,
   LaptopIcon,
   Moon02Icon,
-  SquareIcon,
   Sun03Icon,
   UnavailableIcon,
   Upload01Icon,
@@ -371,9 +369,8 @@ function GlassSegmented({
     {
       value: false,
       label: t("onboarding.scene.solid"),
-      icon: SquareIcon,
     },
-    { value: true, label: t("onboarding.scene.glassOn"), icon: BlendIcon },
+    { value: true, label: t("onboarding.scene.glassOn") },
   ];
   return (
     // The dialog is page-coloured, so hub.css's sunk dialog track would vanish into it: use the page's track.
@@ -387,7 +384,7 @@ function GlassSegmented({
             onClick={() => onChange(opt.value)}
             aria-pressed={active}
             className={cn(
-              "relative flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors",
+              "relative flex h-8 items-center rounded-full px-3.5 text-xs font-medium transition-colors",
               active
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -404,7 +401,6 @@ function GlassSegmented({
                 }
               />
             ) : null}
-            <HugeiconsIcon icon={opt.icon} className="relative z-10 size-3.5" />
             <span className="relative z-10">{opt.label}</span>
           </button>
         );
