@@ -110,9 +110,11 @@ def test_auto_arms_only_the_measured_cuda_cards(monkeypatch):
     for cap, want in (
         ((8, 0), True),
         ((12, 0), True),
-        ((8, 9), False),
-        ((7, 5), False),
+        ((8, 9), True),
+        ((7, 5), True),
         ((10, 0), False),
+        ((9, 0), False),
+        ((8, 6), False),
     ):
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda d, c = cap: c)
         assert st._fold_on(fake) is want, cap  # noqa: SLF001
