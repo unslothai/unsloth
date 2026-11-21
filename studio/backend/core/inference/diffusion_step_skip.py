@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import os
+import sys
 from functools import update_wrapper
 from typing import Any, Optional
 
@@ -427,6 +428,9 @@ class StaticStepSkip:
         return inner(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
+        return self._dispatch(args, kwargs)
+
+    def _dispatch(self, args: tuple, kwargs: dict) -> Any:
         if not self.plan:
             if self.counting:
                 self.stats["calls"] += 1
@@ -537,6 +541,35 @@ def _denoiser(pipe: Any) -> Any:
     return transformer if transformer is not None else getattr(pipe, "unet", None)
 
 
+_OPAQUE = False
+
+
+def _opaque_to_dynamo() -> None:
+    """A whole-module compile (``nn.Module.compile``: the SDXL U-Net) traces ``_call_impl`` into the forward slot,
+    i.e. into this layer: dynamo then guards on its step counters and recompiles every step until the recompile
+    limit drops the compile. The schedule's frames run outside dynamo; only ``_forward`` (the wrapped forward) is
+    traced, as its own frame, so the denoiser is compiled exactly as without the layer."""
+    global _OPAQUE
+    if _OPAQUE:
+        return
+    _OPAQUE = True
+    try:
+        disable = getattr(getattr(_torch(), "compiler", None), "disable", None)
+        if not callable(disable):
+            return
+        # Frames that reach the forward: skipped themselves, their callees still traced (recursive=False).
+        for name in ("__call__", "_dispatch"):
+            setattr(StaticStepSkip, name, disable(getattr(StaticStepSkip, name), recursive = False))
+        # Pure bookkeeping: never traced at all.
+        for name in ("_remember", "_skipped"):
+            setattr(StaticStepSkip, name, disable(getattr(StaticStepSkip, name)))
+        module = sys.modules[__name__]
+        for name in ("_call_signature", "_split_output", "_timestep_of", "_stream_timesteps"):
+            setattr(module, name, disable(getattr(module, name)))
+    except Exception:  # noqa: BLE001 - an old torch keeps the plain call
+        pass
+
+
 def _find(pipe: Any) -> Optional[StaticStepSkip]:
     transformer = _denoiser(pipe)
     try:
@@ -567,6 +600,7 @@ def install_static_step_skip(
         _warn(logger, "transformer has no forward")
         return None
     knobs = settings if settings is not None else static_skip_settings(logger = logger)
+    _opaque_to_dynamo()
     existing = _find(pipe)
     if existing is not None:
         existing.armed = True

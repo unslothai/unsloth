@@ -113,3 +113,57 @@ def test_skip_survives_diffusers_model_offload_reattach():
         assert pipe.unet.calls == 16, "the skip layer fell out of the hooked call path"
         hooks.remove_hook_from_module(pipe.unet)
         assert pipe.unet.__dict__.get("forward") is ss._find(pipe)
+
+
+class _LinearUNet(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.proj = torch.nn.Linear(8, 8)
+
+    def forward(
+        self,
+        sample,
+        timestep,
+        encoder_hidden_states = None,
+        return_dict = True,
+    ):
+        return (self.proj(sample) * timestep.reshape(-1)[0],)
+
+
+def _linear_render(pipe, steps):
+    ss.reset_static_step_skip(pipe, steps, step_signal = True)
+    outs = []
+    for i in range(steps):
+        outs.append(
+            pipe.unet(
+                torch.ones(2, 8), torch.tensor([1000.0 * (1 - i / steps)]), return_dict = False
+            )[0]
+        )
+        ss.mark_step_end(pipe)
+    return outs
+
+
+def test_whole_module_compile_keeps_one_graph():
+    # Studio compiles the SDXL U-Net whole (``unet.compile()``), which traces the forward slot, i.e. this layer.
+    # Its step counters must stay out of dynamo: one graph for the forward, no per-step recompiles.
+    dynamo = pytest.importorskip("torch._dynamo")
+    from torch._dynamo.utils import counters
+
+    eager_pipe = _sdxl_pipe(_LinearUNet())
+    ss.install_static_step_skip(eager_pipe, settings = {"mode": "taylor1", "every": 2})
+    expected = _linear_render(eager_pipe, 25)
+
+    dynamo.reset()
+    counters.clear()
+    pipe = _sdxl_pipe(_LinearUNet())
+    ss.install_static_step_skip(pipe, settings = {"mode": "taylor1", "every": 2})
+    pipe.unet.compile(backend = "eager")
+    for _ in range(2):
+        got = _linear_render(pipe, 25)
+    stats = ss.static_skip_stats(pipe)["stats"]
+    assert stats["skipped"] > 0
+    assert counters["stats"]["unique_graphs"] == 1
+    assert not counters["recompiles"]
+    for a, b in zip(expected, got):
+        torch.testing.assert_close(a, b)
