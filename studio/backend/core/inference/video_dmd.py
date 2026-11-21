@@ -72,6 +72,16 @@ def dmd_sigmas(timesteps: tuple[int, ...]) -> list[float]:
     return [float(v) for v in sigmas[idx]]
 
 
+def renoise_seed(seed: int) -> int:
+    """The re-noise stream's seed: derived from the request seed (deterministic per request) but never equal to it.
+    The pipeline draws the initial latent from a generator seeded with the request seed (a CPU one on CPU / MPS), so
+    seeding the re-noise stream with it too would make the first re-noise draw repeat the initial noise exactly."""
+    import hashlib
+
+    digest = hashlib.sha256(f"unsloth-dmd-renoise:{int(seed)}".encode()).digest()
+    return int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
+
+
 def _scheduler_base():
     from diffusers import FlowMatchEulerDiscreteScheduler
     return FlowMatchEulerDiscreteScheduler
@@ -84,7 +94,8 @@ def make_dmd_scheduler(
     device: Any = None,
 ) -> Any:
     """A diffusers-compatible scheduler running the DMD update over ``timesteps``, noise from a CPU generator
-    seeded with ``seed`` (identical across CUDA, ROCm, MPS and CPU)."""
+    seeded with :func:`renoise_seed` of ``seed`` (identical across CUDA, ROCm, MPS and CPU, independent of the
+    initial latent noise)."""
     import torch
 
     base = _scheduler_base()
@@ -96,7 +107,7 @@ def make_dmd_scheduler(
             super().__init__(num_train_timesteps = DMD_TRAIN_TIMESTEPS, shift = 1.0)
             self._dmd_timesteps = tuple(int(x) for x in timesteps)
             self._dmd_sigmas = dmd_sigmas(self._dmd_timesteps)
-            self._dmd_seed = int(seed)
+            self._dmd_seed = renoise_seed(seed)
             self._dmd_generator = torch.Generator(device = "cpu")
             self.set_timesteps(len(self._dmd_timesteps), device = device)
 

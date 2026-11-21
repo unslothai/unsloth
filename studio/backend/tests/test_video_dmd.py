@@ -190,7 +190,7 @@ def test_dmd_sampling_through_the_stock_wan_loop_matches_fp64_oracle(expand_time
 
     # Oracle: fp64 DMD update with hand-derived sigmas and the same CPU noise stream.
     sigmas = [1.0, 28 / 37, 12 / 23]
-    gen = torch.Generator().manual_seed(seed)
+    gen = torch.Generator().manual_seed(video_dmd.renoise_seed(seed))
     x = latents.clone()
     with torch.no_grad():
         for i, t in enumerate(timesteps):
@@ -231,3 +231,22 @@ def test_dmd_scheduler_reseeds_per_render():
     assert sched.sigmas.shape[0] == 4 and float(sched.sigmas[-1]) == 0.0
     sched.set_shift(12.0)  # a request flow shift must not move the trained levels
     assert video_dmd.dmd_sigmas((1000, 757, 522))[1] == pytest.approx(28 / 37)
+
+
+@pytest.mark.parametrize("seed", [0, 7, 42, 2**31 - 1])
+def test_renoise_stream_is_independent_of_the_initial_latent_noise(seed):
+    """On CPU / MPS the pipeline draws its initial latent from a CPU generator seeded with the request seed; the
+    first re-noise draw must not repeat it (same shape, same dtype)."""
+    torch = pytest.importorskip("torch")
+    from core.inference import video_dmd
+
+    shape = (1, 16, 2, 8, 8)
+    initial = torch.randn(shape, generator = torch.Generator().manual_seed(seed), dtype = torch.float32)
+    sched = video_dmd.make_dmd_scheduler((1000, 757, 522), seed)
+    zeros = torch.zeros(shape)
+    out = sched.step(zeros, sched.timesteps[0], zeros, return_dict = False)[0]
+    noise = out / sched._dmd_sigmas[1]
+    assert not torch.allclose(noise, initial)
+    assert abs(float(torch.corrcoef(torch.stack([noise.flatten(), initial.flatten()]))[0, 1])) < 0.2
+    # Still deterministic per request seed (an OOM retry redraws the same noise).
+    assert video_dmd.renoise_seed(seed) == video_dmd.renoise_seed(seed) != seed
