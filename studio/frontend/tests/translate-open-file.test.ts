@@ -76,7 +76,25 @@ test("only a bounded prefix of a large text file is uploaded", () => {
   const big = new File([new Uint8Array(READ_BYTES * 3).fill(0xe9)], "big.log");
   const upload = serverUpload(big);
   assert.equal(upload.size, READ_BYTES);
-  assert.equal(upload.name, "big.log");
+  assert.equal(upload.name, "big.log.txt");
   const pdf = new File([new Uint8Array(READ_BYTES * 3)], "scan.pdf");
   assert.equal(serverUpload(pdf), pdf);
+});
+
+test("the server decodes text files as plain text, so HTML keeps its markup", () => {
+  const html = new File(
+    [Buffer.from("<p>Réunion</p>", "latin1")],
+    "page.html",
+    {
+      type: "text/html",
+    },
+  );
+  assert.equal(serverUpload(html).name, "page.html.txt");
+});
+
+test("a text file named without a known extension is still accepted by the server", () => {
+  const readme = new File([Buffer.from("Grüße", "latin1")], "README", {
+    type: "text/plain",
+  });
+  assert.equal(serverUpload(readme).name, "README.txt");
 });

@@ -210,8 +210,9 @@ async function readUtf8Prefix(file: File): Promise<string | null> {
 
 function serverUpload(file: File): File {
   return isTextFile(file)
-    ? new File([file.slice(0, TEXT_READ_BYTES)], file.name, {
-        type: file.type,
+    ? // .txt: decoded as is (HTML keeps its markup), and any text name is accepted.
+      new File([file.slice(0, TEXT_READ_BYTES)], `${file.name}.txt`, {
+        type: "text/plain",
       })
     : file;
 }
