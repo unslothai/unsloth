@@ -4815,6 +4815,8 @@ export const tr = {
       lrSchedulerOptions: {
         linear: "Doğrusal",
         cosine: "Kosinüs",
+        constantWithWarmup: "Sabit + ısınma",
+        constant: "Sabit",
       },
       batchSize: "Toplu İş Boyutu",
       batchSizeTooltip:

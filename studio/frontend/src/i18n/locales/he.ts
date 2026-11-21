@@ -4576,6 +4576,8 @@ export const he = {
       lrSchedulerOptions: {
         linear: "לינארי (Linear)",
         cosine: "קוסינוס (Cosine)",
+        constantWithWarmup: "קבוע + חימום (Constant + warmup)",
+        constant: "קבוע (Constant)",
       },
       batchSize: "גודל Batch",
       batchSizeTooltip:

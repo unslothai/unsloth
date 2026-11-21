@@ -4833,6 +4833,8 @@ export const cs = {
       lrSchedulerOptions: {
         linear: "Lineární",
         cosine: "Kosinový",
+        constantWithWarmup: "Konstantní + zahřívání",
+        constant: "Konstantní",
       },
       batchSize: "Velikost dávky",
       batchSizeTooltip:

@@ -4525,6 +4525,8 @@ export const ptBR = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Constante + aquecimento (warmup)",
+        constant: "Constante",
       },
       batchSize: "Tamanho do Lote (Batch Size)",
       batchSizeTooltip: "Amostras processadas por passo. Maior consome mais VRAM.",
