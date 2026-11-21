@@ -12,7 +12,6 @@ import pytest
 def utils(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
     import unsloth.models._utils as U
-
     return U
 
 
