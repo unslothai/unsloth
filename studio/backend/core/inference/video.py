@@ -883,6 +883,24 @@ def _ltx23_prequant_pick(
     return ltx23_prequant_eligible(checkpoint_filename, checkpoint_repo)
 
 
+def _draft_decode_ctx(pipe: Any, fam: Any, device: Any, requested: Optional[bool]) -> Any:
+    """The tiny-VAE draft decode for this render when asked for on a Wan family whose decoder is cached, else a
+    no-op context; the full VAE decodes otherwise, so a draft request never fails a render."""
+    from . import video_tiny_vae
+
+    if not video_tiny_vae.draft_decode_wanted(requested):
+        return contextlib.nullcontext()
+    vae = getattr(pipe, "vae", None)
+    channels = getattr(getattr(vae, "config", None), "z_dim", None)
+    decoder = video_tiny_vae.get_decoder(getattr(fam, "name", None), channels, device)
+    if decoder is None:
+        logger.info(
+            "video.draft_decode: tiny decoder not available for this family yet; full VAE decode"
+        )
+        return contextlib.nullcontext()
+    return video_tiny_vae.TinyVaeDraftDecode(vae, decoder)
+
+
 def _decodes_untiled_when_fits(family: str, offload_policy: str, device: str, speed: str) -> bool:
     """Untiled when it fits (free memory read at decode time); not under sequential offload, nor on SPEED_OFF
     (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px).
@@ -13961,6 +13979,7 @@ class VideoBackend:
         decoded_reference_images: Optional[Any] = None,
         expected_state: Optional[object] = None,
         live_preview: Optional[bool] = None,
+        draft_decode: Optional[bool] = None,
         before_commit: Optional[Callable[[], None]] = None,
     ) -> dict[str, int]:
         """Returns at once (proxy caps ~100 s). VIDEO_NOT_LOADED_MSG and VIDEO_GENERATION_BUSY_MSG map to 409.
@@ -14101,6 +14120,7 @@ class VideoBackend:
                 _resolved_inputs = resolved_inputs,
                 cancel_event = cancel,
                 live_preview = live_preview,
+                draft_decode = draft_decode,
             ),
             daemon = True,
         )
@@ -14239,6 +14259,7 @@ class VideoBackend:
                     "text_encoder_quant": result.get("text_encoder_quant"),
                     "memory_mode": result.get("memory_mode"),
                     "offload_policy": result.get("offload_policy"),
+                    **({"draft_decode": True} if result.get("draft_decode") else {}),
                     # Adapters baked into the denoiser at load: part of the build, so part of the recipe.
                     **(
                         {"baked_loras": list(result["baked_loras"])}
@@ -14349,6 +14370,8 @@ class VideoBackend:
         _resolved_inputs: Optional[_VideoResolvedInputs] = None,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
+        # Wan only: decode the final latent with the tiny VAE (fast, lower fidelity). None = UNSLOTH_VIDEO_DRAFT_DECODE.
+        draft_decode: Optional[bool] = None,
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
@@ -15206,6 +15229,7 @@ class VideoBackend:
                     engage = fam.modular_workflow and ltx25_render_call is None,
                     logger = logger,
                 )
+                draft_ctx = _draft_decode_ctx(pipe, fam, state.device, draft_decode)
                 previewer = LatentPreviewer.create(
                     family = fam.name,
                     requested = live_preview,
@@ -15250,7 +15274,9 @@ class VideoBackend:
                     return render_call()
 
                 try:
-                    with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
+                    # The draft decoder first: the decode-phase / finite / uint8 wrappers progress_ctx installs then
+                    # wrap whichever decoder runs, so the decode phase (and its residency release) still fires.
+                    with grad_ctx, protect_ctx, draft_ctx, progress_ctx(), sigma_ctx:
                         output = render_thread.run("video", _render_streamed_after_oom)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); offloaded modules would stay on GPU.
@@ -15371,6 +15397,7 @@ class VideoBackend:
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
                     "baked_loras": video_lora.baked_lora_names(state.pipe),
+                    "draft_decode": bool(getattr(draft_ctx, "calls", 0)),
                 }
             except Exception as exc:
                 self._gen = {"active": False}

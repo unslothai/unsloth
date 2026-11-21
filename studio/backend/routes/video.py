@@ -854,6 +854,7 @@ async def generate_video(
         continuation_video = request.continuation_video,
         continuation_keep = request.continuation_keep,
         live_preview = request.live_preview,
+        draft_decode = request.draft_decode,
     )
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.
     for attempt in range(2):
