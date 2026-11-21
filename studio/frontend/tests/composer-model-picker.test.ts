@@ -598,7 +598,7 @@ test("the details menu shows modalities with the Model Hub's coloured icons", ()
     picker,
     /<CapabilityGlyph\s+capability=\{c\}\s+className=\{glyphScale\(c\.key, c\.label\)\}/,
   );
-  assert.match(picker, /detectHubCapabilities\(hit\?\.tags, task, id\)/);
+  assert.match(picker, /detectHubCapabilities\(\s+hit\?\.tags \?\? row\.cached\?\.tags,\s+task,\s+id,\s+\)/);
 });
 
 test("an MLX variant's gear keeps its format, and exported GGUFs delete per quant", () => {

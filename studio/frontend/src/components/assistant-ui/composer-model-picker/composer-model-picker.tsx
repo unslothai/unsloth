@@ -1278,7 +1278,11 @@ function rowCapabilities(
     row.npu?.supports_vision ??
     row.gguf?.has_vision ??
     (known?.isVision ? true : undefined);
-  const found = detectHubCapabilities(hit?.tags, task, id).filter(
+  const found = detectHubCapabilities(
+    hit?.tags ?? row.cached?.tags,
+    task,
+    id,
+  ).filter(
     (c) =>
       SHOWN_CAPABILITIES.has(c.key) &&
       !(c.key === "vision" && vision === false),
