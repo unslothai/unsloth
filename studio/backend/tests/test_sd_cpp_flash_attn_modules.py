@@ -8,7 +8,6 @@ import pytest
 
 import core.inference.sd_cpp_args as sd_cpp_args
 from core.inference.sd_cpp_args import (
-    FLASH_ATTN_MODULES,
     OFFLOAD_GROUP,
     SdCppGenParams,
     SdCppModelFiles,
@@ -17,8 +16,16 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_server_command,
     build_sd_cpp_video_command,
     offload_flags,
-    with_module_flash_attn,
 )
+
+FLASH_ATTN_MODULES = "off,diffusion=on,te=on"
+
+
+def _clear_help_cache():
+    cache = getattr(sd_cpp_args, "_flash_attn_modules_in_help", None)
+    if cache is not None:
+        cache.cache_clear()
+
 
 # The pinned fork's sd-cli / sd-server --help line (examples/common/common.cpp) and the deprecated alias.
 MODULE_HELP = (
@@ -34,7 +41,7 @@ LEGACY_HELP = (
 @pytest.fixture
 def binary(tmp_path, monkeypatch):
     def make(help_text):
-        sd_cpp_args._flash_attn_modules_in_help.cache_clear()
+        _clear_help_cache()
         path = tmp_path / f"sd-{abs(hash(help_text))}"
         path.write_text("#!/bin/sh\n")
         monkeypatch.setattr(
@@ -44,7 +51,7 @@ def binary(tmp_path, monkeypatch):
         return str(path)
 
     yield make
-    sd_cpp_args._flash_attn_modules_in_help.cache_clear()
+    _clear_help_cache()
 
 
 FILES = SdCppModelFiles(diffusion_model = "/m/x.gguf", llm = "/m/te.gguf", vae = "/m/ae.safetensors")
@@ -58,7 +65,7 @@ def test_server_speed_flag_keeps_text_encoder_flash_attention(binary):
     b = binary(MODULE_HELP)
     cmd = build_sd_cpp_server_command(b, FILES, host = "127.0.0.1", port = 1, native_speed = "default")
     assert "--diffusion-fa" not in cmd
-    assert _flash_attn_values(cmd) == [FLASH_ATTN_MODULES] == ["off,diffusion=on,te=on"]
+    assert _flash_attn_values(cmd) == [FLASH_ATTN_MODULES]
 
 
 def test_offload_and_speed_give_one_flash_attn(binary):
@@ -121,6 +128,8 @@ def test_builds_without_module_syntax_keep_diffusion_fa(binary):
 
 
 def test_unknown_binary_keeps_diffusion_fa():
+    from core.inference.sd_cpp_args import with_module_flash_attn
+
     assert with_module_flash_attn(["--diffusion-fa"], None) == ["--diffusion-fa"]
     assert with_module_flash_attn(["--diffusion-fa"], "/does/not/exist") == ["--diffusion-fa"]
     assert with_module_flash_attn(["--offload-to-cpu"], "/does/not/exist") == ["--offload-to-cpu"]
