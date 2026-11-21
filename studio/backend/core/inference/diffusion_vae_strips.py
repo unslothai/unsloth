@@ -602,12 +602,13 @@ def _up_rows(
 
 
 # Nearest 2x + conv3x3(p1) as one ConvTranspose2d(k4, s2, p1) whose taps are the 3x3 taps summed in fp32 (rounded once
-# to the conv dtype): 2.25x fewer MACs and the 2x map is never written. Rounding-level only (FLUX.1 1024 px decode:
-# LPIPS 7e-5 vs the 2x path, PSNR vs fp32 54.11 vs 54.22 dB), 11-12% faster decodes on the measured cards (RTX PRO 6000
-# 41.0 -> 36.2 ms, A100 62.0 -> 55.0 ms). ``UNSLOTH_VAE_UPSAMPLE_FOLD``: ``0`` off, ``1`` on any device (CUDA, ROCm,
-# MPS, CPU); unset: the measured CUDA cards only.
+# to the conv dtype): 2.25x fewer MACs and the 2x map is never written. Rounding-level only (1024 px decode vs the 2x
+# path: LPIPS 7e-5 bf16, 1e-6 fp16 T4; PSNR vs fp32 -0.04 to -0.28 dB). Measured on the FLUX.1 / Z-Image / FLUX.2 VAEs
+# (strip decode, cuDNN 9.24), 1024 / 2048 px: T4 fp16 1.11-1.14x, A100 1.06-1.12x, L4 1.05-1.11x, RTX PRO 6000
+# 1.07-1.13x per decode. ``UNSLOTH_VAE_UPSAMPLE_FOLD``: ``0`` off, ``1`` on any device (CUDA, ROCm, MPS, CPU); unset:
+# the measured CUDA cards only (MIOpen / MPS transposed convs unmeasured).
 UPSAMPLE_FOLD_ENV = "UNSLOTH_VAE_UPSAMPLE_FOLD"
-_FOLD_CAPS = frozenset({(8, 0), (12, 0)})
+_FOLD_CAPS = frozenset({(7, 5), (8, 0), (8, 9), (12, 0)})
 # Output elements up to which one transposed conv covers the whole map (the measured shape: FLUX.1 1024 px's last
 # upsample is 2^28); larger maps fold strip by strip (bounded workspace, one copy into the output).
 FOLD_FULL_MAX_ELEMS = 1 << 28
