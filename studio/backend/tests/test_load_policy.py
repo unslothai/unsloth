@@ -54,6 +54,64 @@ def test_owner_chat_loads_beside(role, value, ui_chat, beside, read):
     assert run_as(account, lp.current_load_policy).value == read
 
 
+# A direct image or video load from a chat's tools key must leave the chat model loaded.
+@pytest.mark.parametrize(
+    "value, mode, keeps, outcome",
+    [
+        ("any", "off", False, False),
+        ("beside_only", "fit", False, True),
+        ("beside_only", "off", True, True),
+        ("beside_only", "off", False, "refused"),
+        ("never", "fit", True, "refused"),
+    ],
+)
+def test_media_load_spares_chat(monkeypatch, value, mode, keeps, outcome):
+    from fastapi import HTTPException
+
+    from core.inference import ensure_model
+
+    monkeypatch.setattr(ensure_model, "media_load_keeps_chat", lambda owner: keeps)
+    account = AccountContext("a", "a", "owner", load_policy = value)
+
+    def decide():
+        return ensure_model.media_load_spares_chat("diffusion", "image", "org/image", mode)
+
+    if outcome == "refused":
+        with pytest.raises(HTTPException) as refused:
+            run_as(account, decide)
+        assert refused.value.status_code == 403
+        assert "needs_user_load" in refused.value.headers.get("X-Unsloth-Problem", "")
+        assert "org/image" in refused.value.detail
+    else:
+        assert run_as(account, decide) is outcome
+
+
+@pytest.mark.parametrize(
+    "mode, priced, says, never",
+    [
+        ("off", True, "set it to When they fit", "Always"),
+        ("fit", True, "does not fit in the GPU memory left", "Always"),
+        ("fit", False, "cannot size it yet", "Always"),
+    ],
+)
+def test_a_chat_kept_refusal_names_only_a_change_that_lets_it_load(mode, priced, says, never):
+    from core.inference import ensure_model
+
+    refusal = ensure_model.chat_kept_refusal("image", "org/image", mode, priced = priced)
+    assert refusal.status_code == 403 and says in refusal.detail and never not in refusal.detail
+    assert "needs_user_load" in refusal.headers["X-Unsloth-Problem"]
+
+
+def test_direct_media_load_routes_spare_the_chat_model():
+    # Both gated loads read the policy and hand spare_chat to the arbiter, mapping its refusal.
+    backend = Path(__file__).parents[1]
+    for name in ("routes/inference.py", "routes/video.py"):
+        text = (backend / name).read_text(encoding = "utf-8")
+        assert text.count("media_load_spares_chat,") == 1, name
+        assert text.count('**({"spare_chat": True} if spare_chat else {})') == 1, name
+        assert text.count("raise chat_kept_refusal(") == 1, name
+
+
 def test_routes_and_media_switch_do_not_read_the_mcp_caller():
     for name in ("routes/inference.py", "routes/video.py", "core/inference/media_auto_switch.py"):
         assert "studio_mcp" not in (Path(__file__).parents[1] / name).read_text(

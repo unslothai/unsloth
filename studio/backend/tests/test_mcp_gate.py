@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from fastmcp import FastMCP
 from auth import storage
 from auth.authentication import create_access_token
 from mcp_server import create_studio_mcp
+from studio_mcp import gate as gate_module
 from studio_mcp.caller import current_caller
 from studio_mcp.gate import MAX_REQUEST_BYTES, NEED_KEY, TOO_LARGE, StudioMcpGate
 from utils.account_context import AccountContext, bind_account, current_account, reset_account
@@ -45,6 +47,20 @@ def live_key():
     raw_key, _row = owner_key()
     set_mcp_enabled(True)
     return raw_key
+
+
+@pytest.fixture
+def off_key():
+    """The owner's API key, with the switch off."""
+    seed_owner()
+    raw_key, _row = owner_key()
+    return raw_key
+
+
+OFF_HINT_TEXT = (
+    "Unsloth Studio MCP is off. The owner turns it on in Settings > Agents > Allow agent connections, "
+    "or starts Unsloth Studio with UNSLOTH_STUDIO_ENABLE_MCP=1."
+)
 
 
 def probe_mcp():
@@ -117,7 +133,138 @@ def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, autho
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}
     assert "www-authenticate" not in response.headers
+    # Only an sk-unsloth- bearer from no foreign Origin reaches the key store while off.
+    sk_bearer = bool(authorization) and authorization.startswith("Bearer sk-unsloth-")
+    assert key_spy == ([{"touch": False}] if sk_bearer and origin is None else [])
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("path", ["/mcp/", "/mcp/x"])
+def test_off_tells_a_valid_full_access_key_why(studio, key_spy, off_key, method, path):
+    response = studio.request(method, path, json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)})
+    assert response.status_code == 404
+    assert response.json() == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": OFF_HINT_TEXT},
+        "detail": OFF_HINT_TEXT,
+    }
+    assert "www-authenticate" not in response.headers
+    assert key_spy == [{"touch": False}]
+
+
+@pytest.mark.parametrize("origin", ["http://localhost", "tauri://localhost"])
+def test_off_hint_takes_a_lowercase_scheme_and_an_allowed_origin(studio, off_key, origin):
+    headers = {**MCP_HEADERS, "Authorization": f"bearer {off_key}", "Origin": origin}
+    response = studio.post("/mcp/", json = LISTING, headers = headers)
+    assert response.status_code == 404
+    assert response.json() == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": OFF_HINT_TEXT},
+        "detail": OFF_HINT_TEXT,
+    }
+
+
+def test_decisions_redirects_before_any_hint(studio, key_spy, off_key):
+    response = studio.get("/mcp/decisions?x=1", headers = bearer(off_key), follow_redirects = False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "http://testserver/mcp/decisions/?x=1"
     assert key_spy == []
+
+
+@pytest.mark.parametrize(
+    "case,lookups",
+    [
+        ("two-authorization-headers", 0),
+        ("basic-scheme", 0),
+        ("token-scheme", 0),
+        ("bearer-without-a-token", 0),
+        ("ui-session-jwt", 0),
+        ("unknown-key", 1),
+        ("revoked-key", 1),
+        ("expired-key", 1),
+        ("inference-key", 1),
+        ("workflow-key", 1),
+        ("foreign-origin", 0),
+        ("two-origins", 0),
+    ],
+)
+def test_off_keeps_the_bare_404_for_every_other_request(studio, key_spy, case, lookups):
+    seed_owner()
+    valid = owner_key()[0]
+    revoked, revoked_row = owner_key()
+    storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, revoked_row["id"])
+    storage._reset_api_key_hash_cache()
+    expired = owner_key(expires_at = (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat())[0]
+    inference = owner_key(access = storage.API_KEY_ACCESS_INFERENCE)[0]
+    workflow = owner_key(internal = True)[0]
+    jwt = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)
+    extra = {
+        "two-authorization-headers": [("authorization", f"Bearer {valid}")] * 2,
+        "basic-scheme": [("authorization", f"Basic {valid}")],
+        "token-scheme": [("authorization", f"Token {valid}")],
+        "bearer-without-a-token": [("authorization", "Bearer")],
+        "ui-session-jwt": [("authorization", f"Bearer {jwt}")],
+        "unknown-key": [("authorization", "Bearer sk-unsloth-" + "0" * 32)],
+        "revoked-key": [("authorization", f"Bearer {revoked}")],
+        "expired-key": [("authorization", f"Bearer {expired}")],
+        "inference-key": [("authorization", f"Bearer {inference}")],
+        "workflow-key": [("authorization", f"Bearer {workflow}")],
+        "foreign-origin": [("authorization", f"Bearer {valid}"), ("origin", "https://evil.example")],
+        "two-origins": [
+            ("authorization", f"Bearer {valid}"),
+            ("origin", "http://testserver"),
+            ("origin", "http://testserver"),
+        ],
+    }[case]
+    baseline = studio.post("/mcp/", json = LISTING, headers = MCP_HEADERS)
+    response = studio.post("/mcp/", json = LISTING, headers = [*MCP_HEADERS.items(), *extra])
+    assert response.status_code == 404
+    assert response.content == baseline.content == json.dumps({"detail": "Not Found"}).encode()
+    assert response.headers["content-type"] == baseline.headers["content-type"]
+    assert "www-authenticate" not in response.headers
+    assert len(key_spy) == lookups
+
+
+@pytest.mark.parametrize("dummy", sorted(APPROVED_DUMMY_BEARERS))
+def test_off_keeps_the_bare_404_for_a_keyless_dummy(studio, key_spy, dummy):
+    response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(dummy)})
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert key_spy == []
+
+
+def test_off_keeps_the_bare_404_for_the_retired_static_token(studio, key_spy, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_TOKEN", "sk-unsloth-retired-static")
+    response = studio.post(
+        "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer("sk-unsloth-retired-static")}
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert key_spy == []
+
+
+def test_off_keeps_the_bare_404_when_the_key_store_raises(studio, monkeypatch, off_key):
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(storage, "validate_api_key_account", broken)
+    response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)})
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert "www-authenticate" not in response.headers
+
+
+def test_off_keeps_the_bare_404_when_the_key_check_raises(studio, monkeypatch, off_key):
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(gate_module, "_validate_key", broken)
+    response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)})
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert "www-authenticate" not in response.headers
 
 
 @pytest.mark.parametrize("enabled", [False, True])
