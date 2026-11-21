@@ -163,7 +163,11 @@ import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
-import { classifyVariantFitOnCard, requiredGgufMemoryGb } from "@/lib/gguf-fit";
+import {
+  classifyVariantFitOnCard,
+  ggufVariantFitSizeBytes,
+  requiredGgufMemoryGb,
+} from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
@@ -4294,12 +4298,8 @@ export function ComposerModelPicker({
       : quiet && row.kind === "hub"
         ? (hubCheckpointFit.get(row.id.toLowerCase()) ?? null)
         : null;
-    // A checkpoint cannot offload, so its file size is what it needs.
-    const needGb = offering
-      ? hubNeedGb.get(row.id.toLowerCase())
-      : fit
-        ? (hubSizeOf(row.id) ?? 0) / 1024 ** 3
-        : undefined;
+    // A checkpoint's verdict comes from a load estimate this row does not have: no number.
+    const needGb = offering ? hubNeedGb.get(row.id.toLowerCase()) : undefined;
     // No GPU: every load runs from RAM, so `ram` is no overage.
     const dimmed = isOverBudget(fit) && !(fit === "ram" && noGpu) && !isChosen;
     const offerOpen = offer?.key === row.key;
@@ -4978,7 +4978,7 @@ export function ComposerModelPicker({
           <span className="flex shrink-0 items-center gap-1.5">
             <FitBadge
               status={fit}
-              needGb={requiredGgufMemoryGb(quantBytes(variant))}
+              needGb={requiredGgufMemoryGb(ggufVariantFitSizeBytes(variant))}
               gpuGb={inferenceGpu.memoryTotalGb}
             />
             <span className="font-mono text-ui-10 tabular-nums text-muted-foreground">

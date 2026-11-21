@@ -87,8 +87,15 @@ export function fitMemoryText(
   if (status === "offload") {
     return `~${formatGiB(estGb)} memory. Might be slower with RAM offloading.`;
   }
-  if (status === "tight" || status === "marginal") {
+  if (status === "marginal") {
+    return `~${formatGiB(estGb)} memory, over your VRAM Budget (GPU: ${formatGiB(gpuGb)}). Raising the budget can keep it resident.`;
+  }
+  if (status === "tight") {
     return `~${formatGiB(estGb)} VRAM (tight fit on ${formatGiB(gpuGb)})`;
+  }
+  // The estimate counts the lookup tables that stay on disk.
+  if (status === "streamed") {
+    return VRAM_VERDICT.streamed?.hint ?? null;
   }
   return `~${formatGiB(estGb)} VRAM`;
 }

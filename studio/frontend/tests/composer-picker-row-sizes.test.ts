@@ -253,7 +253,11 @@ test("a fit mark's tooltip gives the memory it was judged with", () => {
     fitMemoryText("offload", 9.2, 8),
     "~9.2 GiB memory. Might be slower with RAM offloading.",
   );
-  assert.equal(fitMemoryText("marginal", 22, 24), "~22 GiB VRAM (tight fit on 24 GiB)");
+  assert.equal(fitMemoryText("tight", 22, 24), "~22 GiB VRAM (tight fit on 24 GiB)");
+  // Marginal is over the VRAM Budget, not a tight fit.
+  assert.match(fitMemoryText("marginal", 22, 24) ?? "", /^~22 GiB memory, over your VRAM Budget \(GPU: 24 GiB\)/);
+  // Streamed keeps its disk caveat; the size counts tables that stay on disk.
+  assert.match(fitMemoryText("streamed", 40, 24) ?? "", /lookup tables streamed from disk/);
   // No GPU or no estimate: the generic hint stays.
   assert.equal(fitMemoryText("oom", 40, 0), null);
   assert.equal(fitMemoryText("oom", undefined, 24), null);
@@ -268,15 +272,15 @@ test("composer fit marks carry the estimate on Discover rows and quant rows", ()
   // The same smallest-quant bytes the verdict was reached with.
   assert.match(picker, /map\.set\(id, fitOf\(smallestQuantBytes\(r\)\)\);/);
   assert.match(picker, /map\.set\(r\.id\.toLowerCase\(\), requiredGgufMemoryGb\(bytes\)\);/);
-  // A checkpoint cannot offload: its weights are the figure.
+  // A checkpoint is judged by a load estimate the row lacks, so it keeps the plain hint.
   assert.match(
     picker,
-    /const needGb = offering\s*\?\s*hubNeedGb\.get\(row\.id\.toLowerCase\(\)\)\s*:\s*fit\s*\?\s*\(hubSizeOf\(row\.id\) \?\? 0\) \/ 1024 \*\* 3/,
+    /const needGb = offering \? hubNeedGb\.get\(row\.id\.toLowerCase\(\)\) : undefined;/,
   );
   assert.match(picker, /<FitBadge\s+status=\{fit\}\s+needGb=\{needGb\}\s+gpuGb=\{inferenceGpu\.memoryTotalGb\}/);
   assert.match(
     picker,
-    /<FitBadge\s+status=\{fit\}\s+needGb=\{requiredGgufMemoryGb\(quantBytes\(variant\)\)\}\s+gpuGb=\{inferenceGpu\.memoryTotalGb\}/,
+    /<FitBadge\s+status=\{fit\}\s+needGb=\{requiredGgufMemoryGb\(ggufVariantFitSizeBytes\(variant\)\)\}\s+gpuGb=\{inferenceGpu\.memoryTotalGb\}/,
   );
   // The header picker's rows read the same text.
   assert.match(
