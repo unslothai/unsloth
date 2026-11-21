@@ -5509,6 +5509,9 @@ def _unsloth_patch_tree_gdn(original):
         callers = _tree_gdn_callers(target)
         if not callers:
             return stock
+        if not all(all(name in fn.__code__.co_names for name in _TREE_GDN_NAMES) for fn in callers):
+            # A mixer with the conv but another scan (Mamba2, KDA) would still run across samples.
+            return False
         # TRL >= 1.18 trl.kernels; TRL 1.17 next to its packing module.
         errors = []
         for name in (

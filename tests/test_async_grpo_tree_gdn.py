@@ -483,3 +483,20 @@ def test_block_compile_adapters_leave_tree_calls_to_the_tree_kernels(monkeypatch
     )
     assert conv(torch.zeros(1, 8, 4), torch.zeros(8, 4), None, "silu", **tree)[0] == "original"
     assert len(calls) == 2
+
+
+def test_a_conv_mixer_with_another_scan_is_refused(setup):
+    # Mamba2 / KDA mixers call causal_conv1d_fn but scan with another kernel, which no tree wrapper reroutes.
+    space = {
+        "causal_conv1d_fn": lambda *a, **k: a[0],
+        "torch_chunk_gated_delta_rule": lambda *a, **k: (a[0], None),
+        "mamba_scan": lambda x: x,
+    }
+    exec(
+        "def forward(self, x, **kwargs):\n    return mamba_scan(causal_conv1d_fn(x, None, **kwargs))",
+        space,
+    )
+    mixer = type("MambaMixer", (torch.nn.Module,), {"forward": space["forward"]})
+    model = torch.nn.Sequential(mixer())
+    assert setup.ns["_unsloth_patch_tree_gdn"](lambda m: False)(model) is False
+    assert not getattr(space["causal_conv1d_fn"], "_unsloth_tree_gdn", False)
