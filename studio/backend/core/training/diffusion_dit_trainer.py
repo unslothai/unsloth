@@ -413,8 +413,8 @@ def _load_dit_transformer(
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    # int8 stays on host: _int8_quantize_base streams Linears to device so the bf16 base is never whole in VRAM.
-    return transformer if base_precision == "int8" else transformer.to(device)
+    # int8 / fp8 stay on host: their conversions stream Linears to device so the bf16 base is never whole in VRAM.
+    return transformer if base_precision in ("int8", "fp8") else transformer.to(device)
 
 
 def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
@@ -540,27 +540,41 @@ def _require_lowp_modules(transformer, mode: str) -> bool:
     return True
 
 
-def _convert_fp8(transformer, family: Optional[str] = None) -> bool:
+def _convert_fp8(
+    transformer,
+    family: Optional[str] = None,
+    device = None,
+) -> bool:
     """Frozen base linears to weight-cached fp8 (``diffusion_frozen_fp8``): rowwise float scales, as DiT activation
-    outliers (Z-Image ~2.7e6) crush a tensorwise one."""
+    outliers (Z-Image ~2.7e6) crush a tensorwise one. With ``device``, host Linears are quantized on it one at a time."""
     from core.training.diffusion_frozen_fp8 import convert_frozen_fp8
 
     _, failed = convert_frozen_fp8(
-        transformer, {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+        transformer,
+        {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)},
+        device = device,
     )
     transformer._studio_fp8_failed = failed
     return _require_lowp_modules(transformer, "fp8")
 
 
-def _probe_lowp(convert, transformer) -> None:
-    """Tiny fwd+bwd probe on 48 unaligned rows: an unverified arch falls back to bf16 at load."""
+def _probe_lowp(
+    convert,
+    transformer,
+    device = None,
+) -> None:
+    """Tiny fwd+bwd probe on 48 unaligned rows: an unverified arch falls back to bf16 at load. ``device`` is where
+    the base will train when it is still on the host."""
     import torch
     import torch.nn as nn
 
-    try:
-        device = next(transformer.parameters()).device
-    except StopIteration:
-        return
+    if device is not None:
+        device = torch.device(device)
+    else:
+        try:
+            device = next(transformer.parameters()).device
+        except StopIteration:
+            return
     if device.type != "cuda":
         return
 
@@ -589,12 +603,15 @@ def _apply_fp8_training(
     transformer,
     on_event,
     family: Optional[str] = None,
+    device = None,
 ) -> bool:
-    """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16."""
+    """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16. With ``device``
+    a host-resident base is quantized onto it Linear by Linear (peak: the fp8 base plus one bf16 Linear), then the
+    rest (norms, embedders, excluded Linears, the adapter) follows."""
     from core.training.diffusion_fp8_prequant import dequantize_placeholders
     try:
-        _probe_lowp(_convert_fp8, transformer)
-        converted = _convert_fp8(transformer, family)
+        _probe_lowp(_convert_fp8, transformer, device)
+        converted = _convert_fp8(transformer, family, device)
         # A prequant base's fp8 layers the conversion did not take stay bf16, as on the dense path.
         dequantize_placeholders(transformer)
         failed = getattr(transformer, "_studio_fp8_failed", 0)
@@ -606,14 +623,19 @@ def _apply_fp8_training(
             )
         import torch
 
-        device = next(transformer.parameters()).device.type
-        if device == "cuda":
+        if device is not None:
+            transformer.to(device)
+            gc.collect()
+        kind = next(transformer.parameters()).device.type
+        if kind == "cuda":
             torch.cuda.empty_cache()
-        elif device == "xpu":
+        elif kind == "xpu":
             torch.xpu.empty_cache()
         return converted
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
         dequantize_placeholders(transformer)
+        if device is not None:
+            transformer.to(device)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
 
@@ -739,6 +761,15 @@ def _apply_mxfp8_training(
         return False
 
 
+AUTO_FP8_ENV = "UNSLOTH_DIT_AUTO_FP8"
+# Free VRAM (x the dense bf16 size) above which Auto trains a streamed frozen fp8 base instead of nf4.
+AUTO_FP8_MIN_FREE_RATIO = 0.9
+
+
+def _auto_fp8_enabled() -> bool:
+    return os.environ.get(AUTO_FP8_ENV, "1").strip().lower() not in ("0", "off", "false", "no")
+
+
 def _pick_auto_precision(
     prequant,
     device,
@@ -750,23 +781,25 @@ def _pick_auto_precision(
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
-    decision time. bf16 + regional compile is the measured speed winner (2.3-2.6x over nf4 on
-    B200); fp8 stays an explicit opt-in: it trades e4m3 rounding (~0.5% loss vs bf16) for ~half the base weight
-    memory and only ~7% speed at LoRA-training shapes. int8 must still
-    materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so
-    its band requires the dense-load transient (1.15x dense) to fit -- what int8 buys in that
-    band is steady-state headroom for activations and the latent cache, not load-time memory.
-    int8 also needs torchao at runtime (``_int8_quantize_base`` has no fallback, unlike fp8), so
-    auto only picks it when torchao is importable and drops to nf4 otherwise.
-    ``capability``/``has_fp8`` remain parameters so the policy can be revisited per GPU
-    generation without changing callers."""
-    _ = capability, has_fp8
+    decision time. bf16 + regional compile where the dense base fits with room (free > 1.5x dense).
+    Between 1.15x and 1.5x: the frozen fp8 base on sm89+ (``has_fp8``: the caller's NVIDIA frozen-fp8 check), which
+    is about 2x the speed of eager int8 at less peak memory and trains to the same held-out loss. The fp8 base streams
+    onto the card, so it also takes the top of the nf4 range (free > AUTO_FP8_MIN_FREE_RATIO x dense). Else int8, which
+    must still materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so its band
+    requires the dense-load transient (1.15x dense) to fit. int8 also needs torchao at runtime
+    (``_int8_quantize_base`` has no fallback, unlike fp8), so auto only picks it when torchao is importable and drops
+    to nf4 otherwise. UNSLOTH_DIT_AUTO_FP8=0 keeps int8 in that band."""
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
     if free_gb > dense_gb * 1.5:
         return "bf16"
+    fp8 = has_fp8 and capability is not None and tuple(capability) >= (8, 9)
     if free_gb > dense_gb * 1.15:
-        return "int8" if has_torchao else "nf4"
+        return "fp8" if fp8 else ("int8" if has_torchao else "nf4")
+    # The fp8 base streams onto the card Linear by Linear (never whole in bf16), so it holds about half the dense
+    # weights plus checkpointed activations: nf4 only below that.
+    if fp8 and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
+        return "fp8"
     return "nf4"
 
 
@@ -928,7 +961,14 @@ def _resolve_base_precision(cfg, spec, device) -> str:
 
             free_gb = trusted_mem_get_info()[0] / 1e9
             capability = torch.cuda.get_device_capability()
-            has_fp8 = hasattr(torch, "float8_e4m3fn")
+            # The frozen fp8 base runs torch._scaled_mm on NVIDIA sm89+; ROCm reports gfx capabilities that are not.
+            has_fp8 = (
+                hasattr(torch, "float8_e4m3fn")
+                and hasattr(torch, "_scaled_mm")
+                and not torch_is_rocm()
+                and not is_stubbed("torchao")
+                and _auto_fp8_enabled()
+            )
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
     return _pick_auto_precision(
@@ -3841,9 +3881,12 @@ def _train_dit(
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "fp8" and not _apply_fp8_training(
-        transformer, on_event, cfg.resolved_family
+        transformer, on_event, cfg.resolved_family, device = device
     ):
         base_precision = "bf16"
+    if base_precision in ("bf16", "fp8"):
+        # Re-collect: a host-resident fp8 load just moved, so the optimizer must not hold host tensors.
+        lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "mxfp8" and not _apply_mxfp8_training(
         transformer, on_event, cfg.resolved_family
     ):
