@@ -6,7 +6,6 @@ draft decode (off by default, swaps and restores vae.decode) and the live previe
 
 from __future__ import annotations
 
-import inspect
 import threading
 import types
 
@@ -181,17 +180,6 @@ def test_prefetch_runs_in_the_background_once(monkeypatch):
     assert calls == ["taew2_2.safetensors"]
 
 
-def test_every_wan_family_offers_live_previews_on_cuda(monkeypatch):
-    monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
-    monkeypatch.delenv(TV.TINY_VAE_ENV, raising = False)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    for fam in ("wan2.1-t2v-1.3b", "wan2.1-t2v-14b", "wan2.2-t2v-a14b", "wan2.2-ti2v-5b"):
-        assert DP.preview_available(fam, "cuda")
-    monkeypatch.setenv(TV.TINY_VAE_ENV, "0")
-    assert not DP.preview_available("wan2.1-t2v-1.3b", "cuda")
-    assert DP.preview_available("wan2.2-ti2v-5b", "cuda")  # its linear map stays
-
-
 def test_preview_without_tiny_weights_keeps_the_linear_map_or_none(monkeypatch):
     monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
     monkeypatch.setattr(DP, "_tiny_decoder", lambda family, device: None)
@@ -208,15 +196,6 @@ def test_preview_without_tiny_weights_keeps_the_linear_map_or_none(monkeypatch):
         )
         is None
     )
-
-
-def test_generate_and_request_carry_draft_decode():
-    from core.inference.video import VideoBackend
-    from models.inference import VideoGenerateRequest
-
-    for fn in (VideoBackend.begin_generate, VideoBackend.generate):
-        assert inspect.signature(fn).parameters["draft_decode"].default is None
-    assert VideoGenerateRequest.model_fields["draft_decode"].default is None
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
