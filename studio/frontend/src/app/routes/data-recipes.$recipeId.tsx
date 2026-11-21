@@ -16,7 +16,7 @@ const EditRecipePage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/data-recipes/$recipeId",
-  staticData: { title: "Data Recipes" },
+  staticData: { titleKey: "routes.dataRecipes" },
   beforeLoad: () => requireAuth(),
   component: DataRecipeEditorRoute,
 });

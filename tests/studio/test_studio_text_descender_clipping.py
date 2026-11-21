@@ -27,7 +27,9 @@ def _read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
 
 
-TRIGGER_LABEL_CLASSES = frozenset({"min-w-0", "flex-1", "truncate", "font-heading", "text-ui-16"})
+# The model name truncates in its own span inside the label, inheriting its line height.
+TRIGGER_LABEL_CLASSES = frozenset({"font-heading", "text-ui-16", "whitespace-nowrap"})
+TRIGGER_NAME_SPAN = '<span className="min-w-0 truncate">{triggerTitle}</span>'
 
 
 SIDEBAR_ACCOUNT_CLASSES = frozenset(
@@ -36,15 +38,7 @@ SIDEBAR_ACCOUNT_CLASSES = frozenset(
 
 
 def _class_lists(src: str, required: frozenset) -> list[str]:
-    """Every double-quoted literal in `src` carrying all of `required`.
-
-    Matching the `className="..."` attribute directly is not enough: an element
-    that takes a caller override is written `className={cn("...", override)}`, and
-    the class list then sits in a plain string argument. That is how the trigger
-    label stopped being checked, so both checks below read the literals wherever
-    they are written and select on the class tokens instead. Selecting on four or
-    five specific Tailwind tokens is what makes reading every literal safe.
-    """
+    """Matches literals by their class tokens, not the attribute, so a cn() override is still checked."""
     return [
         literal for literal in re.findall(r'"([^"\n]*)"', src) if required <= set(literal.split())
     ]
@@ -54,6 +48,7 @@ def test_model_selector_trigger_label_uses_leading_tight():
     src = _read(MODEL_SELECTOR)
     matches = _class_lists(src, TRIGGER_LABEL_CLASSES)
     assert matches, "could not find ModelSelectorTrigger model-name span"
+    assert TRIGGER_NAME_SPAN in src, "the model name no longer truncates inside the label"
     for cls in matches:
         assert "leading-tight" in cls.split(), f"expected leading-tight, got: {cls}"
         assert (

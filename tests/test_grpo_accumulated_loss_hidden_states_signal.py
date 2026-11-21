@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The gradient GRPO path must share the no-grad hidden-state signal.
-
-The generated trainer embeds ``unsloth_zoo.grpo_accumulated_loss`` as source.
-Zoo's raw-logits branches dispatch on width, which cannot distinguish logits
-from hidden states when ``vocab_size == hidden_size``. These tests exercise the
-source patch that replaces those comparisons before the function is embedded.
-"""
+"""Zoo dispatches on width, which is ambiguous when vocab_size equals hidden_size; patch the source."""
 
 from __future__ import annotations
 
@@ -189,13 +183,7 @@ def test_source_patch_fails_loudly_if_zoo_removes_the_width_dispatch_contract():
 
 
 def test_source_patch_rejects_a_partially_patched_zoo():
-    """One surviving match must not license the others to stay width-only.
-
-    A zoo that respells some of its dispatches still leaves at least one the
-    strict pattern recognises, which is enough to make `replacements == 0`
-    false. The respelled sites would then keep deciding on width alone, back to
-    silently wrong gradients for a square lm_head.
-    """
+    """A partly patched zoo must fail: unmatched width comparisons would still decide on width alone."""
     source = _FOUR_SITE_SOURCE.replace(
         "    if _pack_h.shape[-1] == lm_head.shape[1]:",
         "    if _pack_h.shape[-1] == lm_head.shape[-1]:",
@@ -231,17 +219,23 @@ def test_source_patch_still_accepts_the_installed_zoo():
 def test_generated_trainer_embeds_the_patched_gradient_function():
     text = SOURCE_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(text, filename = str(SOURCE_PATH))
-    calls = [
-        node
+    appended = [
+        node.args[0]
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "append"
         and ast.unparse(node.func.value) == "RL_PRE_ITEMS['grpo_trainer']"
         and node.args
-        and isinstance(node.args[0], ast.Call)
-        and isinstance(node.args[0].func, ast.Name)
-        and node.args[0].func.id == PATCH_HELPER
+    ]
+    # The dispatch patch may be nested inside further source patches (hooked head, PrefixGrouper gate).
+    calls = [
+        inner
+        for item in appended
+        for inner in ast.walk(item)
+        if isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == PATCH_HELPER
     ]
     assert len(calls) == 1
-    assert ast.unparse(calls[0].args[0].args[0]) == "grpo_accumulated_loss"
+    assert ast.unparse(calls[0].args[0]) == "grpo_accumulated_loss"

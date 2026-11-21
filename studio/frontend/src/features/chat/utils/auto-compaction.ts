@@ -1,120 +1,176 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Local GGUF auto-compaction preferences. Default follows the server policy. */
+/**
+ * Local GGUF, MLX, NPU and managed engine auto-compaction is on or off only; the server chooses how it
+ * compacts (UNSLOTH_CONTEXT_POLICY, default "checkpoint").
+ */
 
 export const DEFAULT_AUTO_COMPACT_ENABLED = true;
-export const DEFAULT_CONTEXT_POLICY = "inherit" as const;
-export const DEFAULT_COMPACTION_HEADROOM_RATIO = 0.25;
 
-export type LocalContextPolicy = "inherit" | "checkpoint" | "rolling";
+export function ggufCompactionRequestFields(options: {
+  isGguf: boolean;
+  isMlx?: boolean;
+  isManagedEngine?: boolean;
+  isNpu?: boolean;
+  autoCompactEnabled: boolean;
+  // /compact: asked for by the user, so it applies with auto-compaction off too
+  compactNow?: boolean;
+}): {
+  context_overflow?: "error" | "truncate_oldest";
+  compact_context?: true;
+} {
+  if (
+    !options.isGguf &&
+    !options.isMlx &&
+    !options.isManagedEngine &&
+    !options.isNpu
+  ) {
+    return {};
+  }
+  if (options.compactNow) {
+    return { context_overflow: "truncate_oldest", compact_context: true };
+  }
+  if (!options.autoCompactEnabled) {
+    // explicit error avoids the UNSLOTH_CONTEXT_OVERFLOW fallback, which may compact
+    return { context_overflow: "error" };
+  }
+  // omit context_policy so the server applies UNSLOTH_CONTEXT_POLICY
+  return { context_overflow: "truncate_oldest" };
+}
 
-export const COMPACTION_HEADROOM_CHOICES = [0.25, 0.1, 0.05, 0] as const;
+// leaves 25% of the window free, matching _EXTERNAL_COMPACTION_HEADROOM for self-hosted servers
+const API_COMPACTION_HEADROOM = 0.25;
+// request schema ceiling for compaction_threshold
+const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
 
-export type CompactionStyleValue =
-  | "inherit"
-  | "checkpoint"
-  | "rolling:0.25"
-  | "rolling:0.1"
-  | "rolling:0.05"
-  | "rolling:0";
+/** Bounds of a connection's "Auto-compact after" setting, matching the backend's. */
+export const AUTO_COMPACT_TOKENS_MIN = 1_000;
+export const AUTO_COMPACT_TOKENS_MAX = API_COMPACTION_THRESHOLD_MAX;
 
-export function sanitizeContextPolicy(
+// Server-side compaction limits, mirrored from external_provider.py so the meter marks the real trigger.
+const NATIVE_COMPACTION_DEFAULT_MAX = 200_000;
+const ANTHROPIC_COMPACTION_MIN = 50_000;
+
+export function normalizeAutoCompactTokens(value: unknown): number | undefined {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < AUTO_COMPACT_TOKENS_MIN ||
+    value > AUTO_COMPACT_TOKENS_MAX
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+/** Unset is "summary"; "rolling" and "checkpoint" drop whole turns into the archive, no summary call. */
+export type ProviderCompactionMode = "summary" | "rolling" | "checkpoint";
+
+export function normalizeCompactionMode(
   value: unknown,
-): LocalContextPolicy | undefined {
-  return value === "inherit" || value === "checkpoint" || value === "rolling"
+): ProviderCompactionMode | undefined {
+  return value === "summary" || value === "rolling" || value === "checkpoint"
     ? value
     : undefined;
 }
 
-export function sanitizeCompactionHeadroomRatio(
-  value: unknown,
-): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const clamped = Math.max(0, Math.min(0.9, Math.round(value * 100) / 100));
-  let nearest: (typeof COMPACTION_HEADROOM_CHOICES)[number] =
-    COMPACTION_HEADROOM_CHOICES[0];
-  let best = Math.abs(clamped - nearest);
-  for (const choice of COMPACTION_HEADROOM_CHOICES) {
-    const distance = Math.abs(clamped - choice);
-    if (distance < best) {
-      nearest = choice;
-      best = distance;
-    }
+/** Blank clears the setting; anything else must be a whole number of tokens in range. */
+export function parseAutoCompactTokens(input: string): number | null {
+  const trimmed = input.trim().replace(/[,_\s]/g, "");
+  if (!trimmed) return null;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error("Auto-compact after must be a whole number of tokens.");
   }
-  return nearest;
-}
-
-export function compactionStyleValue(
-  policy: LocalContextPolicy,
-  ratio: number,
-): CompactionStyleValue {
-  if (policy === "inherit") return "inherit";
-  if (policy !== "rolling") return "checkpoint";
-  const rounded =
-    sanitizeCompactionHeadroomRatio(ratio) ?? DEFAULT_COMPACTION_HEADROOM_RATIO;
-  if (rounded === 0) return "rolling:0";
-  if (rounded === 0.05) return "rolling:0.05";
-  if (rounded === 0.1) return "rolling:0.1";
-  return "rolling:0.25";
-}
-
-export function parseCompactionStyle(value: string): {
-  contextPolicy: LocalContextPolicy;
-  compactionHeadroomRatio: number;
-} {
-  switch (value) {
-    case "inherit":
-      return {
-        contextPolicy: "inherit",
-        compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
-      };
-    case "rolling:0":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0 };
-    case "rolling:0.05":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0.05 };
-    case "rolling:0.1":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0.1 };
-    case "rolling:0.25":
-      return { contextPolicy: "rolling", compactionHeadroomRatio: 0.25 };
-    default:
-      return {
-        contextPolicy: "checkpoint",
-        compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
-      };
+  const value = Number(trimmed);
+  if (value < AUTO_COMPACT_TOKENS_MIN || value > AUTO_COMPACT_TOKENS_MAX) {
+    throw new Error(
+      `Auto-compact after must be between ${AUTO_COMPACT_TOKENS_MIN.toLocaleString()} and ${AUTO_COMPACT_TOKENS_MAX.toLocaleString()} tokens.`,
+    );
   }
+  return value;
 }
 
-export function ggufCompactionRequestFields(options: {
-  isGguf: boolean;
+/** The threshold a request carries: the connection's setting, else 75% of the catalogued window. */
+function requestedCompactionThreshold(
+  contextLength: number | null | undefined,
+  autoCompactTokens: number | null | undefined,
+): { threshold: number; uncapped: boolean } | null {
+  const window = contextLength && contextLength > 0 ? contextLength : null;
+  const override = normalizeAutoCompactTokens(autoCompactTokens);
+  if (override !== undefined) {
+    return { threshold: window ? Math.min(override, window) : override, uncapped: true };
+  }
+  if (!window) return null;
+  return {
+    threshold: Math.min(
+      API_COMPACTION_THRESHOLD_MAX,
+      Math.floor(window * (1 - API_COMPACTION_HEADROOM)),
+    ),
+    uncapped: false,
+  };
+}
+
+/**
+ * Where a cloud chat compacts, in tokens, for the context meter. Anthropic and OpenAI compact
+ * server-side: 200K at most unless the connection sets its own trigger, and never below
+ * Anthropic's 50K floor.
+ */
+export function cloudCompactionTrigger(options: {
+  providerType: string | null | undefined;
+  contextLength: number | null | undefined;
+  autoCompactTokens?: number | null;
+}): number | null {
+  const requested = requestedCompactionThreshold(
+    options.contextLength,
+    options.autoCompactTokens,
+  );
+  if (!requested) return null;
+  let trigger = requested.threshold;
+  const native =
+    options.providerType === "anthropic" || options.providerType === "openai";
+  if (native && !requested.uncapped) {
+    trigger = Math.min(trigger, NATIVE_COMPACTION_DEFAULT_MAX);
+  }
+  if (options.providerType === "anthropic") {
+    trigger = Math.max(trigger, ANTHROPIC_COMPACTION_MIN);
+  }
+  return trigger;
+}
+
+export function apiCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
-  contextPolicy: LocalContextPolicy;
-  compactionHeadroomRatio: number;
+  contextLength: number | null | undefined;
+  /** The connection's "Auto-compact after", which replaces the 75% default. */
+  autoCompactTokens?: number | null;
+  compactionMode?: ProviderCompactionMode | null;
+  // /compact: asked for by the user, so it applies with auto-compaction off too
+  compactNow?: boolean;
 }): {
-  context_overflow?: "error" | "truncate_oldest";
-  context_policy?: Exclude<LocalContextPolicy, "inherit">;
-  compaction_headroom_ratio?: number;
+  context_overflow?: "truncate_oldest";
+  compaction_threshold?: number;
+  compaction_uncapped?: true;
+  context_window?: number;
+  compact_context?: true;
+  compaction_mode?: "rolling" | "checkpoint";
 } {
-  if (!options.isGguf) return {};
-  if (!options.autoCompactEnabled) {
-    // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still compact. "error" is an
-    // explicit refusal of that fallback.
-    return { context_overflow: "error" };
-  }
-  if (options.contextPolicy === "rolling") {
-    return {
-      context_overflow: "truncate_oldest",
-      context_policy: "rolling",
-      compaction_headroom_ratio:
-        sanitizeCompactionHeadroomRatio(options.compactionHeadroomRatio) ??
-        DEFAULT_COMPACTION_HEADROOM_RATIO,
-    };
-  }
-  if (options.contextPolicy === "inherit") {
-    return { context_overflow: "truncate_oldest" };
-  }
+  const { autoCompactEnabled, contextLength, compactNow } = options;
+  const mode = options.compactionMode;
+  const evict =
+    mode === "rolling" || mode === "checkpoint" ? { compaction_mode: mode } : {};
+  // Still sent with auto-compact off: the backend replays a /compact epoch only for "checkpoint".
+  if (!autoCompactEnabled && !compactNow) return evict;
+  const requested = requestedCompactionThreshold(
+    contextLength,
+    options.autoCompactTokens,
+  );
   return {
     context_overflow: "truncate_oldest",
-    context_policy: "checkpoint",
+    // without a catalogued window, the backend reads the self-hosted server's reported window
+    ...(requested ? { compaction_threshold: requested.threshold } : {}),
+    ...(requested?.uncapped ? { compaction_uncapped: true as const } : {}),
+    ...(contextLength && contextLength > 0 ? { context_window: contextLength } : {}),
+    ...(compactNow ? { compact_context: true as const } : {}),
+    ...evict,
   };
 }

@@ -36,8 +36,6 @@ def test_nonblank_chat_template_override_is_preserved_verbatim():
     assert req.chat_template_override == template
 
 
-# ---------- ChatCompletionRequest tool_call_id walkback ----------
-
 from models.inference import ChatCompletionRequest
 
 
@@ -61,7 +59,7 @@ def test_tool_message_inherits_id_from_prior_assistant_tool_call():
                     }
                 ],
             },
-            {"role": "tool", "name": "calc", "content": "4"},  # no tool_call_id
+            {"role": "tool", "name": "calc", "content": "4"},
         ]
     )
     assert req.messages[-1].tool_call_id == "call_real123"
@@ -170,15 +168,13 @@ def test_walkback_does_not_cross_user_turn():
         ]
     )
     last = req.messages[-1].tool_call_id
-    # Walkback must NOT pick old_call across a user turn; falls back to synth.
     assert last is not None
     assert last != "old_call"
     assert last.startswith("call_")
 
 
 def test_walkback_skips_explicitly_consumed_tool_call_id():
-    """An explicit-id tool result reserves its assistant slot so a
-    follow-up missing-id result picks the OTHER tool call."""
+    """An explicit-id tool result reserves its slot, so a later id-less result picks the other tool call."""
     req = _req(
         [
             {
@@ -205,8 +201,7 @@ def test_walkback_skips_explicitly_consumed_tool_call_id():
 
 
 def test_walkback_handles_malformed_function_string():
-    """A tool_call with ``function`` as a string (provider quirk) must not
-    raise; resolution falls back to id selection."""
+    """A string-valued function (provider quirk) must not raise; resolution falls back to id selection."""
     req = _req(
         [
             {
@@ -222,7 +217,6 @@ def test_walkback_handles_malformed_function_string():
     assert req.messages[-1].tool_call_id == "call_a"
 
 
-# ── DiffusionLoadRequest.attention_backend casing (Literal validated before normalizer) ──
 import pytest
 from pydantic import ValidationError
 
@@ -234,7 +228,7 @@ def _diff_load(**kw):
 
 
 def test_attention_backend_casing_and_whitespace_normalized():
-    # The dispatcher accepts case/whitespace variants, so the before-validator must fold them or the lowercase Literal 422s a valid request.
+    # The dispatcher accepts case/whitespace variants, so the before-validator must fold them.
     assert _diff_load(attention_backend = "CuDNN").attention_backend == "cudnn"
     assert _diff_load(attention_backend = "  sage ").attention_backend == "sage"
 
@@ -250,18 +244,12 @@ def test_attention_backend_unknown_still_rejected():
 
 
 def test_load_rejects_a_duplicate_lora_id_like_generate_does():
-    """The load path bakes adapters into the quantized build, so it needs generate's guard too.
-
-    _resolve_lora_set suffixes colliding adapter names, so a repeated id resolves the SAME adapter
-    twice and set_adapters stacks both copies past the per-adapter weight bound. On the generation
-    path that is one bad image; baked into a quantized build it rides every image until a reload.
-    """
+    """A repeated LoRA id stacks one adapter twice past the weight bound, so load must refuse it too."""
     dup = [{"id": "me/adapter", "weight": 0.8}, {"id": "me/adapter", "weight": 0.8}]
     with pytest.raises(ValidationError, match = "duplicate LoRA id"):
         _diff_load(loras = dup)
     with pytest.raises(ValidationError, match = "duplicate LoRA id"):
         DiffusionGenerateRequest(prompt = "a cat", loras = dup)
-    # Distinct ids are untouched.
     assert (
         len(_diff_load(loras = [{"id": "me/a", "weight": 0.8}, {"id": "me/b", "weight": 0.5}]).loras)
         == 2

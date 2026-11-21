@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The consent dialog offered "Continue with custom code" only with nothing to install,
-// or after an install failed. Training now raises it before a run starts, and for a
-// model shipping its own modeling code that hid the only path still loading bnb 4-bit,
-// since installing activates the 16-bit sidecar. So the first dialog offers the fallback
-// next to Install.
+// For custom-code models the fallback is the only 4-bit path, so it is offered next to Install.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { upgradeDialogActions } from "../src/features/transformers-upgrade/lib/upgrade-dialog-actions.ts";
+import {
+  upgradeDialogActions,
+  upgradeInstallVersion,
+} from "../src/features/transformers-upgrade/lib/upgrade-dialog-actions.ts";
 import type { TransformersUpgradeInfo } from "../src/features/transformers-upgrade/types.ts";
 
 const INSTALLABLE: TransformersUpgradeInfo = {
@@ -76,7 +75,7 @@ test("a running install offers nothing that would abandon it", () => {
   assert.equal(actions.customCode, false);
 });
 
-test("a dev-only upgrade has nothing to install and says so", () => {
+test("a main-only upgrade without a known main version has nothing to install", () => {
   const actions = upgradeDialogActions({
     upgrade: DEV_ONLY,
     phase: "consent",
@@ -101,7 +100,42 @@ test("an upgrade no transformers ships at all offers only Cancel", () => {
 
   assert.deepEqual(actions, {
     installable: false,
+    fromMain: false,
     devOnly: false,
     customCode: false,
   });
+});
+
+test("a main-only architecture installs transformers main after consent", () => {
+  const upgrade: TransformersUpgradeInfo = {
+    ...DEV_ONLY,
+    // biome-ignore lint/style/useNamingConvention: API schema
+    main_version: "5.19.0.dev0",
+  };
+  const actions = upgradeDialogActions({
+    upgrade,
+    phase: "consent",
+    trustRemoteCodeFallback: false,
+  });
+
+  assert.equal(actions.installable, true);
+  assert.equal(actions.fromMain, true);
+  assert.equal(actions.devOnly, false);
+  assert.equal(upgradeInstallVersion(upgrade), "5.19.0.dev0");
+});
+
+test("a released version wins over main", () => {
+  const upgrade: TransformersUpgradeInfo = {
+    ...INSTALLABLE,
+    // biome-ignore lint/style/useNamingConvention: API schema
+    main_version: "5.19.0.dev0",
+  };
+  const actions = upgradeDialogActions({
+    upgrade,
+    phase: "consent",
+    trustRemoteCodeFallback: false,
+  });
+
+  assert.equal(actions.fromMain, false);
+  assert.equal(upgradeInstallVersion(upgrade), "5.15.0");
 });

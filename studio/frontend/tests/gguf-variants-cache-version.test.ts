@@ -12,14 +12,12 @@ import {
 const REPO = "unsloth/Qwen3-8B-GGUF";
 const OTHER = "unsloth/Llama-3.1-8B-Instruct-GGUF";
 
-/** What the picker watches: one snapshot over the repos it lists. */
 const snapshot = (repoIds: string[]) =>
   repoIds.map((id) => getGgufVariantsCacheVersion(id)).join(",");
 
 test("a per-repo invalidation does not move the global version", () => {
   const before = getGgufVariantsCacheVersion();
   bumpGgufVariantsCacheVersion(REPO);
-  // Why watching the global version alone leaves a list stale.
   assert.equal(getGgufVariantsCacheVersion(), before);
 });
 
@@ -54,7 +52,6 @@ test("a version carries no comma, so a joined snapshot splits back per repo", ()
   const repos = [REPO, OTHER];
   bumpGgufVariantsCacheVersion(REPO);
   const joined = snapshot(repos);
-  // The picker splits the snapshot and pairs it with its repo list by index.
   assert.deepEqual(
     joined.split(","),
     repos.map((id) => getGgufVariantsCacheVersion(id)),

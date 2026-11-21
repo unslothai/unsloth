@@ -1,18 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// The images and video loads only START the work: the POST returns as soon as
-// the background thread is running. These cover that the "loading" notice
-// outlives the POST and settles from load-progress instead, which is what keeps
-// the indicator row and the page toast on screen for the same span.
-//
-// Two `loading: true` announcements per load, deliberately: one before the POST
-// so the row appears with the toast, and one after it returns, which is the
-// instant the GPU arbiter has committed its eviction. Listeners that re-read
-// another runtime need that second edge, so these assert both.
-//
-// model-lifecycle-events dispatches on `window`, so stand one up as an
-// EventTarget and import the module after it exists.
+// The POST only starts a background load; the notice settles from load-progress. Two loading
+// announcements per load are deliberate: before the POST, and after the arbiter evicts.
 class FakeWindow extends EventTarget {}
 
 const originalWindow = (globalThis as { window?: unknown }).window;
@@ -22,16 +12,10 @@ const { subscribeModelLifecycle, withBackgroundLoadNotice } = await import(
   "../src/lib/model-lifecycle-events.ts"
 );
 
-/** The real cadences are 2s / 10s; these drive the same loop without waiting. */
 const TIMING = { pollMs: 1, readTimeoutMs: 25, stallMs: 5000 };
 
 type Seen = { runtime: string; loading: boolean; model: string | null };
 
-/**
- * Record every announcement, and expose a promise that resolves on the settle.
- * Waiting on the event rather than on a sleep keeps these deterministic however
- * slowly the runner schedules the poll.
- */
 function record(): { seen: Seen[]; settled: Promise<void>; stop: () => void } {
   const seen: Seen[] = [];
   let onSettled: () => void = () => {};
@@ -68,16 +52,12 @@ test("the notice outlives the POST and settles when the load reports ready", asy
     async () => "started",
     async () => {
       const phase = phases[Math.min(read++, phases.length - 1)];
-      // Every non-terminal read must leave the row loading: the whole point is
-      // that the notice spans the background load, not just the POST.
       if (phase !== "ready") assert.equal(seen.length, 2);
       return phase;
     },
     TIMING,
   );
 
-  // The POST has resolved, and the row must still say loading: the second
-  // announcement is the post-commit one, not a settle.
   assert.equal(result, "started");
   assert.deepEqual(seen, [
     { runtime: "image", loading: true, model: "unsloth/flux" },
@@ -136,7 +116,6 @@ test("a load that never started settles at once, not from the poll", async () =>
     { runtime: "image", loading: true, model: "unsloth/flux" },
     { runtime: "image", loading: false, model: "unsloth/flux" },
   ]);
-  // Exactly one settle, and no poll: the two paths must not both fire.
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.equal(polled, false);
   assert.equal(seen.length, 2);
@@ -158,7 +137,6 @@ test("an unreadable progress read does not end a live load", async () => {
     async () => null,
     async () => {
       const answer = answers[Math.min(read++, answers.length - 1)];
-      // A failed read is not proof the load ended, so the row is still up.
       assert.equal(seen.length, 2);
       if (answer instanceof Error) throw answer;
       return answer;
@@ -191,9 +169,7 @@ test("a null phase is terminal, since it means the load left nothing behind", as
     TIMING,
   );
 
-  // An eject or an eviction cancels the background worker, and load-progress
-  // then reports null for good: nothing loading and nothing loaded. Treating it
-  // as non-terminal left a "Loading" row with no eject on it for an hour.
+  // After an eject or eviction, load-progress reports null for good, which is terminal.
   await settled;
   assert.equal(read, 1);
   assert.deepEqual(seen, [
@@ -241,8 +217,6 @@ test("a hung read is abandoned, so the deadline still bounds the loop", async ()
     "image",
     "unsloth/flux",
     async () => null,
-    // Accepts the connection and never answers, which is what parks the loop
-    // and defeats the deadline unless each read is bounded on its own.
     (signal) =>
       new Promise<never>((_resolve, reject) => {
         read += 1;
@@ -255,8 +229,6 @@ test("a hung read is abandoned, so the deadline still bounds the loop", async ()
   );
 
   await settled;
-  // Several reads were started and every one was cut loose, and the notice
-  // settled at the deadline rather than never.
   assert.ok(read >= 2, `expected repeated reads, got ${read}`);
   assert.equal(aborts, read);
   assert.deepEqual(seen.at(-1), {
@@ -285,8 +257,6 @@ test("the read signal is not aborted when the read answers in time", async () =>
   );
 
   await settled;
-  // The per-read timer is cleared on the way out, so a healthy read leaves no
-  // abort behind for a later turn of the loop to trip over.
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(aborted, false);
   stop();
@@ -302,11 +272,8 @@ test("a long but healthy download is never abandoned", async () => {
     async () => null,
     async () => {
       read += 1;
-      // Far more polls than the stall window would allow if it were timed from
-      // the start of the load: a 100 GB checkpoint on a slow link is hours.
       return read < 12 ? "downloading" : "ready";
     },
-    // A stall window shorter than the run of healthy polls it must survive.
     { pollMs: 1, readTimeoutMs: 25, stallMs: 4 },
   );
 
@@ -322,14 +289,7 @@ test("a long but healthy download is never abandoned", async () => {
 
 const STALL_MS = 400;
 
-/**
- * Run the poll loop once, with the first read at least `healthyAfterMs` in
- * reporting progress and every other read unreadable.
- *
- * Milliseconds, not reads: the window is defined in time (`Date.now() -
- * lastHealthy >= stallMs`), and a read count is that divided by poll cost,
- * the one thing here that varies by platform.
- */
+/** One poll run; healthy for `healthyAfterMs`, then unreadable. Timed in ms, not read counts. */
 async function settlingRun(healthyAfterMs: number): Promise<{
   totalMs: number;
   resetAtMs: number | null;
@@ -356,8 +316,6 @@ async function settlingRun(healthyAfterMs: number): Promise<{
       }
       throw new Error("backend restarting");
     },
-    // readTimeoutMs is generous on purpose: the read answers immediately, and a
-    // busy runner must not turn a healthy read into an unreadable one.
     { pollMs: 1, readTimeoutMs: 5_000, stallMs: STALL_MS },
   );
   await settled;
@@ -366,19 +324,11 @@ async function settlingRun(healthyAfterMs: number): Promise<{
 }
 
 test("a healthy read resets the stall window", async (t) => {
-  // One run: subtracting two separately scheduled runs re-imports the noise this
-  // escapes, failing healthy code when a stall lands in one and passing broken
-  // code when it lands in the other. The source restarts the window at the
-  // healthy read, so the loop must outlast THAT moment by a full window. Both
-  // sides come from this run, and a stall only grows totalMs, so the bound is
-  // one-sided: delay cannot fail healthy code.
+  // One run, not two subtracted: scheduling noise then only grows totalMs, so the bound is one-sided.
   const run = await settlingRun(STALL_MS / 2);
   assert.ok(run.resetAtMs !== null, "the fixture never got to report progress");
 
-  // The deadline is only tested at a poll boundary, so the loop may end one gap
-  // early; subtracting the observed gap makes the bound exact. A gap near the
-  // signal means the runner stalled, and then the run is no evidence rather than
-  // a verdict.
+  // The deadline is checked at poll boundaries, so subtract the observed gap; a huge gap voids the run.
   if (run.maxGapMs > STALL_MS / 8) {
     t.skip(
       `runner stalled ${run.maxGapMs}ms mid-loop, which is too close to the ` +
@@ -406,8 +356,6 @@ test("the load is announced again once the POST has committed", async () => {
     "image",
     "unsloth/flux",
     async () => {
-      // The arbiter has not run yet, so a listener re-reading another runtime
-      // here would still see the model this load is about to evict.
       announcedBeforeStart = seen.length;
       return null;
     },

@@ -9,10 +9,10 @@ import {
 import { useMemo } from "react";
 import { useGpuInfo } from "./use-gpu-info";
 
-/** Combine platform and backend state into a media-picker host class. */
 export function useHostClass(): HostClass {
   const gpu = useGpuInfo();
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const appleSilicon = usePlatformStore((s) => s.appleSilicon);
   return useMemo(
     () =>
       classifyHost({
@@ -20,12 +20,21 @@ export function useHostClass(): HostClass {
         deviceBackend: gpu.backend,
         budgetKnown: gpu.budgetKnown,
         denseQuantSupported: gpu.denseQuantSupported,
+        appleSilicon,
       }),
-    [deviceType, gpu.backend, gpu.budgetKnown, gpu.denseQuantSupported],
+    [deviceType, appleSilicon, gpu.backend, gpu.budgetKnown, gpu.denseQuantSupported],
   );
 }
 
-/** The dense quant schemes this host can run, best first. */
+export function useNvfp4Diffusion(): boolean {
+  return useGpuInfo().nvfp4Diffusion;
+}
+
+/** Whether /api/system answered, so a false useNvfp4Diffusion() is not just the unloaded default. */
+export function useNvfp4DiffusionKnown(): boolean {
+  return useGpuInfo().budgetKnown;
+}
+
 export function useDenseQuantSchemes(): readonly string[] {
   return useGpuInfo().denseQuantSchemes;
 }

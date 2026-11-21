@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""wheel_utils must resolve a CUDA-matched xFormers wheel, on Windows too.
-
-The platform-tag helper returned None for Windows, so nothing in the backend could
-resolve a Windows wheel URL at all -- which is why the on-demand xFormers install fell
-back to an unpinned ``pip install xformers`` and landed the PyPI CUDA-12.8 build next to
-a cu130 torch.
-"""
+"""wheel_utils must resolve a CUDA-matched xFormers wheel on Windows, not fall back to unpinned pip."""
 
 from __future__ import annotations
 
@@ -45,11 +39,17 @@ class TestWheelPlatformTag:
         monkeypatch.setattr(wheel_utils.platform, "machine", lambda: "AMD64")
         assert wheel_utils.wheel_platform_tag() == "win_amd64"
 
-    def test_windows_on_arm_has_no_wheel(self, monkeypatch):
-        """No CUDA and no win_arm64 asset on any index -- must stay None."""
+    def test_windows_on_arm_is_named_but_has_no_xformers_wheel(self, monkeypatch):
+        """NVIDIA publishes win_arm64 CUDA torch and flash-attn, so the tag is named; xFormers still has no win_arm64 asset."""
         monkeypatch.setattr(wheel_utils.sys, "platform", "win32")
         monkeypatch.setattr(wheel_utils.platform, "machine", lambda: "ARM64")
-        assert wheel_utils.wheel_platform_tag() is None
+        assert wheel_utils.wheel_platform_tag() == "win_arm64"
+        env = {
+            "platform_tag": "win_arm64",
+            "torch_version": "2.14.0+cu134",
+            "cuda_version": "13.4",
+        }
+        assert wheel_utils.xformers_wheel_url(env) is None
 
     @pytest.mark.parametrize(
         ("machine", "expected"),
@@ -66,9 +66,8 @@ class TestWheelPlatformTag:
         assert wheel_utils.wheel_platform_tag() is None
 
     def test_probe_stays_linux_only_by_default(self, monkeypatch):
-        """flash-attn / causal-conv1d / mamba-ssm publish no win_amd64 assets, so the
-        existing callers must keep getting None on Windows even though the platform tag
-        now resolves. Guarded here because the probe shells out otherwise."""
+        """flash-attn, causal-conv1d and mamba-ssm ship no win_amd64 assets, so existing callers
+        must keep getting None on Windows even though the platform tag now resolves."""
         monkeypatch.setattr(wheel_utils, "wheel_platform_tag", lambda: "win_amd64")
         assert wheel_utils.probe_torch_wheel_env() is None
         assert wheel_utils.probe_torch_wheel_env(timeout = 5) is None
@@ -124,9 +123,8 @@ class TestXformersWheelUrl:
         )
 
     def test_url_is_interpreter_independent(self):
-        """0.0.31..0.0.34 ship a single cp39-abi3 wheel, so the interpreter must not leak
-        into the URL. (0.0.30 and earlier did ship one wheel per cpXY, which is exactly why
-        torch 2.7.0 is not in the matrix.)"""
+        """xformers 0.0.31..0.0.34 ship one cp39-abi3 wheel, so no interpreter may leak into the
+        URL; 0.0.30 and earlier had per-cpXY wheels (why torch 2.7.0 is not in the matrix)."""
         urls = {
             wheel_utils.xformers_wheel_url(_env(python_tag = tag))
             for tag in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314")
@@ -167,7 +165,7 @@ class TestXformersWheelUrl:
     @pytest.mark.parametrize(
         "overrides",
         [
-            {"cuda_version": "", "cuda_major": ""},  # CPU / ROCm torch
+            {"cuda_version": "", "cuda_major": ""},
             {"platform_tag": "linux_aarch64"},  # no aarch64 xFormers wheels
             {"platform_tag": ""},
             {"torch_version": ""},
@@ -181,8 +179,7 @@ class TestXformersWheelUrl:
 
 
 def test_flash_attn_resolution_is_untouched():
-    """direct_wheel_url / flash_attn_wheel_url share the env dict; the two new keys must
-    not change a single flash-attn URL."""
+    """Both resolvers share the env dict; the two new keys must not change any flash-attn URL."""
     env = _env(platform_tag = "linux_x86_64", python_tag = "cp312", cuda_major = "12")
     assert wheel_utils.flash_attn_wheel_url(env) == (
         "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1"
@@ -191,10 +188,7 @@ def test_flash_attn_resolution_is_untouched():
 
 
 def test_filename_python_tag_is_ranged_not_open_ended():
-    """xFormers has changed its wheel filename tag twice. Guessing the tag for an unreleased
-    version is how a resolver starts emitting URLs that 404, so an unknown release must
-    resolve to nothing. Verified against the real WHEEL metadata: 0.0.34 is
-    cp39-abi3-win_amd64, 0.0.35 is py39-none-win_amd64."""
+    """An unknown xFormers release must resolve to nothing: a guessed wheel tag gives 404 URLs."""
     assert wheel_utils.xformers_filename_python_tag("0.0.31.post1") == "cp39-abi3"
     assert wheel_utils.xformers_filename_python_tag("0.0.34") == "cp39-abi3"
     assert wheel_utils.xformers_filename_python_tag("0.0.35") == "py39-none"
@@ -210,9 +204,8 @@ def test_every_matrix_version_has_a_known_filename_tag():
 
 @pytest.mark.parametrize("platform_tag", ["win_amd64", "linux_x86_64"])
 def test_every_url_the_matrix_can_produce_is_live(platform_tag):
-    """The matrix is a hand-maintained list of URLs; the only way to know a row is real is
-    to ask. A 404 fails (that row is wrong); a network outage skips, matching
-    tests/version_compat/_fetch.py."""
+    """The matrix is hand-maintained, so only a live request proves a row is real: a 404 fails that
+    row, a network outage skips, matching tests/version_compat/_fetch.py."""
     import urllib.error
     import urllib.request
 
@@ -240,10 +233,7 @@ def test_every_url_the_matrix_can_produce_is_live(platform_tag):
             with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 30):
                 pass
         except urllib.error.HTTPError as exc:
-            # Only a 404 says the matrix row names a wheel that does not exist. A 403 / 429
-            # / 5xx is the CDN having a moment, and failing the suite on one turns a
-            # correct matrix into a red build whenever download.pytorch.org rate-limits the
-            # 14-request sweep -- the opposite of this test's stated contract.
+            # Only a 404 means a missing wheel; 403/429/5xx are CDN noise.
             if exc.code == 404:
                 dead.append(f"{exc.code} {url}")
             else:
@@ -254,12 +244,7 @@ def test_every_url_the_matrix_can_produce_is_live(platform_tag):
 
 
 class TestStableAbiPatchReleases:
-    """A supported resident build must not be refused for want of a table row.
-
-    The exact-key matrix can only ever list releases that exist when it is written, so
-    2.10.1 / 2.11.1 / 2.12.1 -- all of them builds this repo names as supported elsewhere --
-    resolved to nothing and left Unsloth on native attention with no xFormers at all.
-    """
+    """Supported torch patch releases resolve with no table row; exact-key matrices lag new releases."""
 
     @pytest.mark.parametrize(
         "torch_version",
@@ -298,19 +283,13 @@ class TestStableAbiPatchReleases:
 
 class TestPytorchMirror:
     def test_the_wheel_url_follows_the_configured_mirror(self, monkeypatch):
-        # An air-gapped install has one lever, UNSLOTH_PYTORCH_MIRROR, and the rest of the
-        # installer stack already honours it. A hard-coded download.pytorch.org here was the
-        # one path that could not reach a mirror-only host.
         monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/pytorch/whl/")
         url = wheel_utils.xformers_wheel_url(_env())
         assert url is not None
         assert url.startswith("https://mirror.example/pytorch/whl/cu130/xformers-")
 
     def test_a_query_token_mirror_keeps_its_token(self, monkeypatch):
-        """Private mirrors authenticate by query string as often as by userinfo. Appending
-        after the query buried the wheel path inside the token value -- the request path
-        stayed /whl and the token became "abc/cu130/xformers-..." -- so the one shape this
-        setting exists for was the one that could not resolve a wheel."""
+        """Put the wheel path before the query string, or it lands inside the token value."""
         monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
         url = wheel_utils.xformers_wheel_url(_env())
         assert url is not None
@@ -322,7 +301,6 @@ class TestPytorchMirror:
             wheel_utils.join_wheel_url("https://m/whl#frag", "cu130/x.whl")
             == "https://m/whl/cu130/x.whl#frag"
         )
-        # And the ordinary case is unchanged, trailing slash or not.
         assert wheel_utils.join_wheel_url("https://m/whl/", "cu130/x.whl") == (
             "https://m/whl/cu130/x.whl"
         )

@@ -12,22 +12,17 @@ import {
   isDownloadCancelled,
   urlToBlob,
 } from "@/lib/native-files";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type {
   ImageMessagePart,
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon, ImageIcon, ImageNotFound01Icon, SecurityWarningIcon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import {
-  CopyIcon,
-  ImageIcon,
-  ImageOffIcon,
-  RefreshCwIcon,
-  ShieldAlertIcon,
-} from "lucide-react";
 import {
   type ComponentProps,
   type PropsWithChildren,
@@ -186,7 +181,7 @@ function ImagePreview({
           data-slot="image-preview-loading"
           className="absolute inset-0 flex items-center justify-center bg-muted/50"
         >
-          <ImageIcon className="size-8 animate-pulse text-muted-foreground" />
+          <HugeiconsIcon icon={ImageIcon} className="size-8 animate-pulse text-muted-foreground" />
         </div>
       )}
       {error ? (
@@ -194,7 +189,7 @@ function ImagePreview({
           data-slot="image-preview-error"
           className="flex min-h-32 items-center justify-center bg-muted/50 p-4"
         >
-          <ImageOffIcon className="size-8 text-muted-foreground" />
+          <HugeiconsIcon icon={ImageNotFound01Icon} className="size-8 text-muted-foreground" />
         </div>
       ) : (
         <img
@@ -346,7 +341,7 @@ function ImageContentFilterError({
         className,
       )}
     >
-      <ShieldAlertIcon className="size-8 text-muted-foreground" />
+      <HugeiconsIcon icon={SecurityWarningIcon} className="size-8 text-muted-foreground" />
       <p className="font-medium text-sm">Image could not be generated</p>
       {reason && <p className="text-muted-foreground text-xs">{reason}</p>}
     </div>
@@ -355,7 +350,6 @@ function ImageContentFilterError({
 
 export type ImageActionsProps = {
   part: ImageMessagePart;
-  /** Shows a regenerate button (only when set and the part has a `prompt`). */
   onRegenerate?: () => void | Promise<void>;
   className?: string;
 };
@@ -380,9 +374,9 @@ function RegenerateButton({
       disabled={isRegenerating}
       data-slot="image-regenerate"
       aria-label="Regenerate image"
-      className="inline-flex size-7 items-center justify-center rounded hover:bg-muted disabled:opacity-50"
+      className="inline-flex size-7 items-center justify-center rounded-full hover:bg-muted disabled:opacity-50"
     >
-      <RefreshCwIcon
+      <RefreshGlyph
         className={cn("size-4", isRegenerating && "animate-spin")}
       />
     </button>
@@ -400,7 +394,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         onClick={() => downloadImagePart(part)}
         data-slot="image-download"
         aria-label="Download image"
-        className="inline-flex size-7 items-center justify-center rounded hover:bg-muted"
+        className="inline-flex size-7 items-center justify-center rounded-full hover:bg-muted"
       >
         <HugeiconsIcon icon={Download01Icon} className="size-4" />
       </button>
@@ -413,9 +407,9 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         }}
         data-slot="image-copy"
         aria-label="Copy image"
-        className="inline-flex size-7 items-center justify-center rounded hover:bg-muted"
+        className="inline-flex size-7 items-center justify-center rounded-full hover:bg-muted"
       >
-        <CopyIcon className="size-4" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-4" />
       </button>
       {onRegenerate && <RegenerateButton onRegenerate={onRegenerate} />}
     </div>

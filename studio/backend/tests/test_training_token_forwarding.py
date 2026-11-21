@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""load_and_format_dataset must forward an explicit hf_token to every remote call.
-
-Without it, load_dataset and get_dataset_split_names resolve None through
-huggingface_hub.get_token() and read a gated dataset under the ambient HF_TOKEN
-instead of the request identity. The no-token case is pinned too: that env fallback
-is the only credential a caller without a token has."""
+"""load_and_format_dataset must pass hf_token to every remote call, not ambient HF_TOKEN."""
 
 from __future__ import annotations
 
@@ -17,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from datasets import Dataset
 
 torch = pytest.importorskip("torch")
 
@@ -25,12 +21,7 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Stub a dep the backend pytest job does not install, as test_audio_type_inconclusive.py does.
-
-    core.training.trainer imports unsloth and trl at module scope; that job installs studio.txt
-    plus torch and transformers and stops. __spec__ = None keeps the trainer's own
-    _ensure_real_packages namespace-shadow guard a no-op on the stub.
-    """
+    """Stubs a dep the backend pytest job lacks, so collection succeeds; real installs are left alone."""
     if name in sys.modules:
         return
     try:
@@ -176,7 +167,6 @@ def test_auto_detect_eval_forwards_explicit_token(monkeypatch):
     )
 
     assert result is not None
-    # Auto-detect (no explicit eval_split) probes the splits, then loads a candidate.
     assert probe_calls == [
         {
             "path": "org/gated",
@@ -208,3 +198,52 @@ def test_token_stays_absent_when_not_provided(monkeypatch):
     assert len(load_calls) == 1
     assert "token" not in load_calls[0]
     assert probe_calls == []
+
+
+def _load_texts(
+    monkeypatch,
+    train_texts,
+    formatted = None,
+):
+    errors: list[str] = []
+    monkeypatch.setattr(
+        trainer_mod,
+        "load_dataset",
+        lambda **kwargs: Dataset.from_dict({"text": list(train_texts)}),
+    )
+    if formatted is not None:
+        monkeypatch.setattr(
+            trainer_mod,
+            "format_and_template_dataset",
+            lambda dataset, **kwargs: {
+                "dataset": formatted(dataset),
+                "detected_format": "test",
+                "success": True,
+            },
+        )
+    monkeypatch.setattr(
+        sys.modules["datasets"], "get_dataset_split_names", lambda **kwargs: ["train"]
+    )
+    trainer = _trainer()
+    trainer._update_progress = lambda **kwargs: errors.append(kwargs.get("error"))
+    return trainer.load_and_format_dataset("org/data", dataset_streaming = False), errors
+
+
+def test_empty_loaded_split_fails_before_format_detection(monkeypatch):
+    result, errors = _load_texts(monkeypatch, [])
+    assert result is None
+    assert "The training dataset has no rows. Add at least one example" in errors[-1]
+
+
+def test_formatting_that_drops_every_row_fails_clearly(monkeypatch):
+    result, errors = _load_texts(monkeypatch, ["a"], formatted = lambda ds: ds.select([]))
+    assert result is None
+    assert "has no rows after formatting" in errors[-1]
+
+
+@pytest.mark.parametrize("texts", [["hello"], ["", "hello"], ["   ", "\n"]])
+def test_non_empty_train_split_is_left_to_the_trainer(monkeypatch, texts):
+    result, errors = _load_texts(monkeypatch, texts, formatted = lambda ds: ds)
+    assert result is not None
+    assert result[0]["dataset"]["text"] == texts
+    assert not any(errors)

@@ -30,10 +30,9 @@ type ApiDownloadTransportSettings = {
 
 let cachedTransport: DownloadTransportSettings | null = null;
 let inFlightTransport: Promise<DownloadTransportSettings> | null = null;
-// A refreshing caller cannot ride on a GET answered before it asked: that response predates
-// whatever change it is refreshing to find.
+// A refresh must not reuse a GET answered before it asked.
 let inFlightIsRefresh = false;
-// Newest request wins, or an older overlapping GET lands last and re-caches what it replaced.
+// Newest request wins so an older overlapping GET cannot re-cache a replaced value.
 let latestRequest = 0;
 
 export function subscribeDownloadTransportSettings(
@@ -57,8 +56,7 @@ function fromApi(
   settings: ApiDownloadTransportSettings,
 ): DownloadTransportSettings {
   return {
-    // Auto, as an install with nothing picked runs: a server that answers with something else
-    // must not be read as a choice the user made.
+    // Unknown values read as auto, never as a user choice.
     mode: asMode(settings.mode, "auto"),
     xetAvailable: settings.xet_available,
     xetUnavailableReason: settings.xet_unavailable_reason,
@@ -85,9 +83,7 @@ async function fetchDownloadTransportSettings(): Promise<DownloadTransportSettin
   return fromApi(await res.json());
 }
 
-/** The install's setting. `refresh` skips the cache, for a caller that must not act on a value
- * another browser may since have changed. Refreshing callers share a GET with each other, never
- * with a plain hydration already in flight. */
+/** `refresh` skips the cache; refreshing callers never share a plain hydration GET. */
 export async function loadDownloadTransportSettings(
   opts: { refresh?: boolean } = {},
 ) {
@@ -104,8 +100,7 @@ export async function loadDownloadTransportSettings(
       if (request === latestRequest) {
         return cacheTransport(settings);
       }
-      // Superseded. Callers read the resolved value straight into their own state, so handing
-      // back the stale payload would revert the write that superseded it.
+      // Superseded: returning the stale payload would revert the newer write.
       return cachedTransport ?? settings;
     })
     .finally(() => {
@@ -118,9 +113,7 @@ export async function loadDownloadTransportSettings(
   return pending;
 }
 
-// Writes run one at a time. Two quick selections used to race, and the earlier PUT landing
-// last left the database on the mode the user did NOT pick while this browser showed the one
-// they did. Chained rather than cancelled, so the last selection is also the last write.
+// Serialize writes so the last selection is also the last PUT to land.
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 async function putDownloadTransport(
@@ -136,8 +129,7 @@ async function putDownloadTransport(
       await readFastApiError(res, "Failed to update download transport"),
     );
   }
-  // Advance the generation: a GET issued before this write is now stale, and letting its
-  // response land afterwards republished the mode the user had just replaced.
+  // Any GET issued before this write is now stale.
   latestRequest += 1;
   return cacheTransport(fromApi(await res.json()));
 }
@@ -145,7 +137,7 @@ async function putDownloadTransport(
 export function updateDownloadTransportSettings(
   mode: DownloadTransportMode,
 ): Promise<DownloadTransportSettings> {
-  // The queue must survive a rejected write, or one failure strands every later selection.
+  // Survive a rejected write, or one failure strands every later selection.
   const next = writeQueue.catch(() => undefined).then(() => putDownloadTransport(mode));
   writeQueue = next.catch(() => undefined);
   return next;

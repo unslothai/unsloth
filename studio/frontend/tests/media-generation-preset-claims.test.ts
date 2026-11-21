@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A model pick claims the generation recipe before the settings GET has necessarily answered, so
-// the claim has to be settled on every way out of that load. The progress poll covers the endings
-// it sees; a cancel or an eject tears the poll down first, so the pages hand the pick back
-// themselves. Without that, hydration parked behind the pick never resolves (the stored recipe is
-// never applied and the preset controls stay disabled), and the rollback left behind is the one a
-// later pick inherits in place of its own.
-//
-// The wiring lives inside two ~3000-line page components with no renderer in this suite, so these
-// assert on the source, like the other page-wiring tests here.
+// A pick's recipe claim must settle on every exit, including cancel and eject. Source-level.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -34,14 +26,12 @@ for (const [page, source] of [
 ] as const) {
   test(`${page}: cancelling or ejecting a load hands the pick back`, () => {
     const body = dropResidentState(source);
-    // The same two lines the poll's cancelled/evicted branch runs, which this tears down first.
     assert.match(body, /revertPick\(quantRevert\.current\);/);
     assert.match(body, /quantRevert\.current = null;/);
   });
 
   test(`${page}: every pick baselines supersession on itself`, () => {
-    // A second pick reuses the first one's rollback object, so the claim block is skipped. Reading
-    // the counter outside it is what stops the second pick from inheriting the first's answer.
+    // A second pick reuses the first's rollback object, so the counter is read outside the claim.
     const apply = source.slice(
       source.indexOf("ModelDefaults = useCallback("),
       source.indexOf("const recommended = defaultsFor(repoId);"),
@@ -86,8 +76,6 @@ test("the form claim counter is readable, so a pick can tell it was superseded",
 });
 
 test("a preset write that failed gives its form claim back", () => {
-  // Otherwise a rejected save reads as "something newer owns the form" for the rest of the
-  // session, and a pending pick's model defaults are skipped over a change that never happened.
   for (const name of ["const savePreset = useCallback(", "const deletePreset = useCallback("]) {
     const body = HOOK.slice(HOOK.indexOf(name));
     const failure = body.slice(body.indexOf("} catch (error) {"));
@@ -100,8 +88,7 @@ test("a preset write that failed gives its form claim back", () => {
 });
 
 test("state writes go out one at a time, newest last", () => {
-  // Two PUTs in flight land in whatever order the backend sees them, and the store keeps the last
-  // one, so an older snapshot could outlive the newest recipe.
+  // Concurrent PUTs land in arbitrary order and the store keeps the last.
   assert.match(
     HOOK,
     /inflightWriteRef\.current = inflightWriteRef\.current\s*\n?\s*\.catch\(\(\) => undefined\)\s*\n?\s*\.then\(write\);/,
@@ -121,8 +108,6 @@ test("state writes go out one at a time, newest last", () => {
 });
 
 test("a delete clears the selection even when a pick took the form meanwhile", () => {
-  // The preset is gone either way, and a selection naming it leaves the control on a definition
-  // that no longer exists (and persists that name on the next debounced write).
   const del = HOOK.slice(
     HOOK.indexOf("const deletePreset = useCallback("),
     HOOK.indexOf("const activeDefinition ="),
@@ -135,14 +120,12 @@ test("a delete clears the selection even when a pick took the form meanwhile", (
     HOOK.indexOf("const restoreDefaultAfterDelete = useCallback("),
     HOOK.indexOf("const deletePreset = useCallback("),
   );
-  // Only the form VALUES are conditional; the selection reset is not.
   assert.match(restore, /ownsForm &&/);
   assert.match(restore, /setActivePreset\(DEFAULT_PRESET_NAME\);/);
 });
 
 test("a store with presets but no recipe still hydrates the library", () => {
-  // saved:false means the recipe falls back to the model's defaults, not that the user's named
-  // presets are gone; dropping them would hide a library the response is carrying.
+  // saved:false means recipe defaults, not that named presets are gone.
   assert.match(
     HOOK,
     /hydrateLocalSettings\("fresh", settings\.customPresets \?\? \[\]\)/,
@@ -152,7 +135,7 @@ test("a store with presets but no recipe still hydrates the library", () => {
 });
 
 test("video defers both status seeds to a preset picked during the load", () => {
-  // The duration branch and the steps/guidance branch seed independently, so both have to ask.
+  // Duration and steps/guidance seed independently, so both must ask.
   const asks = VIDEO.match(/pickRecipeSuperseded\.current\?\.\(\) \?\? false,/g) ?? [];
   assert.equal(asks.length, 2);
   const seed = VIDEO.slice(VIDEO.indexOf("const applyDefaults = shouldApplyModelDefaults("));

@@ -1,0 +1,282 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Import-free so node tests can load it.
+
+export interface SttCapabilities {
+  engine: string | null;
+  family: string | null;
+  /** on_request: only when asked (Qwen3-ASR with its aligner); always: every run has them. */
+  timestamps: "on_request" | "always" | "unsupported";
+  speakers: boolean;
+  /** Whether a speaker accent hint reaches the model; missing from an older backend. */
+  accent_hint?: boolean;
+  aligner: {
+    downloaded: boolean;
+    size_bytes: number;
+    id?: string;
+    variant?: string;
+  } | null;
+  cpu_only: boolean;
+  /** The longest audio this model takes; missing from an older backend. */
+  max_seconds?: number | null;
+}
+
+export interface TranscribeSwitch {
+  checked: boolean;
+  disabled: boolean;
+  hint: string;
+  suggestSpeakersModel?: boolean;
+  always?: boolean;
+}
+
+export interface TranscribeAccent {
+  disabled: boolean;
+  hint: string;
+}
+
+export interface TranscribeSwitches {
+  timestamps: TranscribeSwitch;
+  speakers: TranscribeSwitch;
+  accent: TranscribeAccent;
+  notice: string | null;
+  request: { timestamps: boolean; speakers: boolean; speakerAccent: string };
+  sourceHint: string;
+}
+
+const ACCENT_HINT =
+  "Describe how the speaker sounds. The transcript stays in the spoken language, and the hint may not always help.";
+
+const ACCENT_UNSUPPORTED =
+  "This model cannot use an accent hint, so none is sent.";
+
+function accentFor(
+  supported: boolean,
+  speakerAccent: string,
+): { accent: TranscribeAccent; speakerAccent: string } {
+  if (!supported)
+    return {
+      accent: { disabled: true, hint: ACCENT_UNSUPPORTED },
+      speakerAccent: "",
+    };
+  return {
+    accent: { disabled: false, hint: ACCENT_HINT },
+    speakerAccent: speakerAccent.trim().replace(/\s+/g, " ").slice(0, 200),
+  };
+}
+
+export const SPEAKERS_MODEL_NAME = "MOSS-Transcribe-Diarize";
+
+function lengthWords(seconds: number): string {
+  if (seconds >= 3600 && seconds % 3600 === 0) {
+    const hours = seconds / 3600;
+    return hours === 1 ? "1 hour" : `${hours} hours`;
+  }
+  return `${Math.floor(seconds / 60)} minutes`;
+}
+
+/** The source card's hint; without a model's limit it keeps the 30 minutes every engine takes. */
+export function transcribeSourceHint(maxSeconds?: number | null): string {
+  if (maxSeconds == null)
+    return "Up to 30 minutes. Drop a file, record, or reuse a clip.";
+  return `Up to ${lengthWords(maxSeconds)} with this model. Drop a file, record, or reuse a clip.`;
+}
+
+/** The aligner download a timestamped run needs first, staged like any other quant so it shows in
+ *  the Downloads panel; null when the run can start now. */
+export function alignerDownloadEntry(
+  caps: SttCapabilities | null,
+  timestamps: boolean,
+): {
+  repoId: string;
+  files: string[];
+  bytes: number;
+  ggufVariant: string;
+} | null {
+  const aligner = caps?.aligner;
+  if (!timestamps || !aligner || aligner.downloaded) return null;
+  if (!aligner.id || !aligner.variant) return null;
+  return {
+    repoId: aligner.id,
+    files: [],
+    bytes: aligner.size_bytes,
+    ggufVariant: aligner.variant,
+  };
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+const TRANSCRIBE_MODEL_ID =
+  /whisper|transcri|parakeet|voxtral-mini|(?:^|[\W_])(?:asr|stt)(?:[\W_]|$)/i;
+// OpenAI's catalog in Studio keeps only chat models.
+const OPENAI_TRANSCRIBE_MODELS = [
+  "whisper-1",
+  "gpt-4o-transcribe",
+  "gpt-4o-mini-transcribe",
+];
+
+// Azure and other OpenAI-typed endpoints name models by deployment (as speak-connection-models.ts).
+function isOpenAIApi(connection: { providerType: string; baseUrl?: string }): boolean {
+  if (connection.providerType !== "openai") return false;
+  if (!connection.baseUrl) return true;
+  try {
+    return new URL(connection.baseUrl).hostname.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+export function connectionTranscribeModels(
+  connection: {
+    providerType: string;
+    baseUrl?: string;
+    models: readonly string[];
+    availableModels?: readonly string[];
+    sharedByOwner?: boolean;
+  },
+  dictationModel?: string,
+): string[] {
+  const ids = [
+    ...(isOpenAIApi(connection) ? OPENAI_TRANSCRIBE_MODELS : []),
+    ...connection.models,
+    ...(connection.availableModels ?? []),
+  ].filter((id) => TRANSCRIBE_MODEL_ID.test(id) && !/tts/i.test(id));
+  if (dictationModel) ids.push(dictationModel);
+  // An owner-shared connection refuses any model outside the list the owner allowed (403).
+  const allowed = connection.sharedByOwner ? new Set(connection.models) : null;
+  return [...new Set(ids)].filter((id) => !allowed || allowed.has(id));
+}
+
+// OpenAI takes timestamp_granularities from whisper-1 only, so every GPT transcription model is untimed:
+// the aliases, their dated snapshots (gpt-4o-mini-transcribe-2025-12-15), gpt-transcribe and -diarize.
+const OPENAI_UNTIMED_MODEL = /^gpt-(?:[\w.]+-)*transcribe(?:-[\w-]+)?$/i;
+
+export function connectionTranscribeSwitches(
+  prefs: { timestamps: boolean; speakerAccent?: string },
+  model: string,
+): TranscribeSwitches {
+  const untimed = OPENAI_UNTIMED_MODEL.test(model);
+  // Mirrors connection_takes_accent_hint in stt_capabilities.py.
+  const { accent, speakerAccent } = accentFor(
+    !/diarize|whisper/i.test(model),
+    prefs.speakerAccent ?? "",
+  );
+  return {
+    timestamps: untimed
+      ? {
+          checked: false,
+          disabled: true,
+          hint: "This model returns text only. Use whisper-1 for timestamps.",
+        }
+      : {
+          checked: prefs.timestamps,
+          disabled: false,
+          hint: "Asks the connection for the time of each line. Not every model returns them.",
+        },
+    speakers: {
+      checked: false,
+      disabled: true,
+      hint: "A connection returns no speaker labels.",
+    },
+    accent,
+    notice: null,
+    request: {
+      timestamps: !untimed && prefs.timestamps,
+      speakers: false,
+      speakerAccent,
+    },
+    sourceHint: transcribeSourceHint(null),
+  };
+}
+
+export function transcribeSwitches(
+  caps: SttCapabilities | null,
+  prefs: { timestamps: boolean; speakers: boolean; speakerAccent?: string },
+  state: { loading: boolean; hasModel: boolean },
+): TranscribeSwitches {
+  if (!caps) {
+    const hint = state.loading
+      ? "Checking what this model supports…"
+      : state.hasModel
+        ? "Could not check what this model supports. Transcribing still works."
+        : "Pick a speech-to-text model to see what it can add.";
+    const off = { checked: false, disabled: true, hint };
+    return {
+      timestamps: off,
+      speakers: off,
+      accent: { disabled: true, hint },
+      notice: null,
+      request: { timestamps: false, speakers: false, speakerAccent: "" },
+      sourceHint: transcribeSourceHint(null),
+    };
+  }
+
+  const onRequest = caps.timestamps === "on_request";
+  const size =
+    onRequest && caps.aligner && !caps.aligner.downloaded
+      ? formatSize(caps.aligner.size_bytes)
+      : null;
+  const timestamps: TranscribeSwitch =
+    caps.timestamps === "always"
+      ? {
+          checked: true,
+          disabled: true,
+          always: true,
+          hint: "This model always adds timestamps.",
+        }
+      : onRequest
+        ? {
+            checked: prefs.timestamps,
+            disabled: false,
+            hint: `Adds the time of each line, using a separate timing aligner.${size ? ` The first run downloads it (${size}).` : ""}`,
+          }
+        : {
+            checked: false,
+            disabled: true,
+            // No model names: the catalog grows.
+            hint: "This model returns plain text. Timestamps need a model that supports them.",
+            suggestSpeakersModel: true,
+          };
+  const speakers: TranscribeSwitch = caps.speakers
+    ? {
+        checked: prefs.speakers,
+        disabled: false,
+        hint: "Labels who is speaking. You can rename speakers afterwards.",
+      }
+    : {
+        checked: false,
+        disabled: true,
+        hint: "This model cannot tell speakers apart. Speaker labels need a model that can.",
+        suggestSpeakersModel: true,
+      };
+  const { accent, speakerAccent } = accentFor(
+    caps.accent_hint === true,
+    prefs.speakerAccent ?? "",
+  );
+  const request = {
+    timestamps: onRequest && prefs.timestamps,
+    speakers: speakers.checked,
+    speakerAccent,
+  };
+  const aligner = !request.timestamps
+    ? null
+    : size
+      ? `Downloads the timing aligner (${size}) and reloads the model.`
+      : "Reloads the model with its timing aligner if it is not loaded yet.";
+  const notice = !caps.cpu_only
+    ? aligner
+    : aligner
+      ? `${aligner} Runs on the CPU.`
+      : "This model runs on the CPU.";
+  return {
+    timestamps,
+    speakers,
+    accent,
+    notice,
+    request,
+    sourceHint: transcribeSourceHint(caps.max_seconds),
+  };
+}

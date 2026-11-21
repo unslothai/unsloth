@@ -22,7 +22,7 @@ test("account identity supplies the sidebar name and avatar unless a display nam
       import.meta.url,
     ),
     {
-      "@/features/auth": { getAuthToken: () => token },
+      "@/features/auth": { getAuthToken: () => token, OWNER_USERNAME: "unsloth" },
       "../utils/jwt-subject": { decodeJwtSubject },
       "../stores/user-profile-store": {
         useUserProfileStore: (select: (state: typeof profile) => unknown) =>
@@ -31,10 +31,16 @@ test("account identity supplies the sidebar name and avatar unless a display nam
     },
   );
 
-  for (const username of ["unsloth", "alice", "bob"]) {
+  // The owner's reserved id "unsloth" displays as "Unsloth"; other usernames show verbatim.
+  for (const [username, shown] of [
+    ["unsloth", "Unsloth"],
+    ["alice", "alice"],
+    ["bob", "bob"],
+  ]) {
     token = `test.${Buffer.from(JSON.stringify({ sub: username })).toString("base64url")}.test`;
     const effective = renderProfile();
-    assert.equal(effective.displayTitle, username);
+    assert.equal(effective.displayTitle, shown);
+    assert.equal(effective.addressName, shown);
     assert.equal(effective.sessionSub, username);
     assert.equal(
       initialsFromName(effective.displayTitle),

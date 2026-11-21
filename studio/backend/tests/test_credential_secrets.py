@@ -72,6 +72,30 @@ def test_upsert_and_delete_are_idempotent():
     assert credential_secrets.delete_provider_api_key("provider-1") is False
 
 
+def test_one_read_reports_the_value_and_whether_a_row_is_there(isolated_databases):
+    """Unreadable must not read as absent, or an undecryptable credential would authorize."""
+    assert credential_secrets.get_hf_token_with_presence() == (None, False)
+
+    credential_secrets.save_hf_token("hf_saved")
+    assert credential_secrets.get_hf_token_with_presence() == ("hf_saved", True)
+
+    conn = sqlite3.connect(isolated_databases)
+    try:
+        row = conn.execute("SELECT ciphertext FROM credential_secrets").fetchone()
+        damaged = bytearray(row[0])
+        damaged[-1] ^= 1
+        conn.execute("UPDATE credential_secrets SET ciphertext = ?", (bytes(damaged),))
+        conn.commit()
+    finally:
+        conn.close()
+    assert credential_secrets.get_hf_token_with_presence() == (
+        None,
+        True,
+    ), "an undecryptable row is still a credential this host holds"
+    assert credential_secrets.get_hf_token() is None
+    assert credential_secrets.hf_token_row_exists() is True
+
+
 def test_tampering_and_key_loss_fail_closed(isolated_databases):
     credential_secrets.save_hf_token("hf_private")
     conn = sqlite3.connect(isolated_databases)
@@ -233,17 +257,11 @@ assert seen["api_key"] == "sk_restart"
     )
 
 
-# ── API key transport envelope ──────────────────────────────────────
-#
-# Keys reach the backend as "v1.<RSA-wrapped AES key>.<nonce>.<ciphertext||tag>", each part
-# base64. Builds predating the envelope send bare RSA ciphertext instead.
-
 # The reported OVH key length, and the last length bare RSA-OAEP-SHA256 could carry.
 OVH_KEY_LENGTH = 238
 LEGACY_MAX_LENGTH = 190
 
-# Spelled out rather than imported: this is the contract encryptProviderApiKey writes, so
-# reading it from the module would let both sides drift together.
+# Spelled out, not imported: the contract encryptProviderApiKey writes must not drift with it.
 ENVELOPE_VERSION = "v1"
 ENVELOPE_AAD = b"unsloth-studio-provider-key-v1"
 

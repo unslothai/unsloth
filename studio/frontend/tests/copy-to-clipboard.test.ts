@@ -5,16 +5,11 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-// lib/api-base derives `isTauri` once, at module evaluation, from globals that must
-// already be in place. clipboard-resolver.mjs copies a "?bust=N" key down the import
-// chain so each case gets its own evaluation of copy-to-clipboard + api-base, and
-// swaps @tauri-apps/plugin-clipboard-manager for a stub.
+// api-base derives isTauri at module evaluation; the resolver busts the import chain per case
+// and stubs the Tauri clipboard plugin.
 register("./helpers/clipboard-resolver.mjs", import.meta.url);
 
-// A file:// URL, not a native path. `import()` takes a URL or a relative
-// specifier, and on Windows fileURLToPath gives a "D:\..." path, which the default
-// ESM loader rejects with ERR_UNSUPPORTED_ESM_URL_SCHEME. The "?bust=N" suffix
-// below also only means anything on a URL.
+// Must be a file:// URL: Windows native paths fail with ERR_UNSUPPORTED_ESM_URL_SCHEME.
 const MODULE = new URL("../src/lib/copy-to-clipboard.ts", import.meta.url).href;
 
 type StubMode = "ok" | "write-fails" | "module-missing";
@@ -25,15 +20,17 @@ type Recorder = {
   appended: number;
   removed: number;
   nativeWrites: string[];
+  clipboardData: string[];
+  copyHandling: string[];
+  copyListeners: number;
 };
 
 type EnvOptions = {
   tauri: boolean;
-  /** How the stubbed Tauri plugin behaves once it is reached. */
   stub?: StubMode;
-  /** "absent" drops navigator.clipboard entirely, as an insecure context does. */
   clipboard?: "ok" | "reject" | "absent";
   execCommandResult?: boolean;
+  copyEvent?: boolean;
 };
 
 let generation = 0;
@@ -46,16 +43,13 @@ function define(name: string, value: unknown) {
   });
 }
 
-/**
- * Install the globals copy-to-clipboard and api-base read, then import a fresh copy
- * of the module under test. Returns the module plus a recorder of every writer.
- */
 async function load(options: EnvOptions) {
   const {
     tauri,
     stub = "ok",
     clipboard = "ok",
     execCommandResult = true,
+    copyEvent = true,
   } = options;
 
   const recorder: Recorder = {
@@ -64,7 +58,11 @@ async function load(options: EnvOptions) {
     appended: 0,
     removed: 0,
     nativeWrites: [],
+    clipboardData: [],
+    copyHandling: [],
+    copyListeners: 0,
   };
+  const listeners = new Map<(event: unknown) => void, boolean>();
 
   const windowStub: Record<string, unknown> = {
     location: { protocol: tauri ? "tauri:" : "https:" },
@@ -93,8 +91,40 @@ async function load(options: EnvOptions) {
         select() {},
       };
     },
+    addEventListener(
+      type: string,
+      listener: (event: unknown) => void,
+      capture?: boolean,
+    ) {
+      if (type !== "copy") return;
+      listeners.set(listener, capture === true);
+      if (capture === true) recorder.copyHandling.push("capture");
+      recorder.copyListeners = listeners.size;
+    },
+    removeEventListener(
+      type: string,
+      listener: (event: unknown) => void,
+      capture?: boolean,
+    ) {
+      if (type === "copy" && listeners.get(listener) === (capture === true)) {
+        listeners.delete(listener);
+      }
+      recorder.copyListeners = listeners.size;
+    },
     execCommand(command: string) {
       recorder.execCommands.push(command);
+      if (copyEvent) {
+        const event = {
+          clipboardData: {
+            setData: (_type: string, data: string) =>
+              recorder.clipboardData.push(data),
+          },
+          preventDefault: () => recorder.copyHandling.push("preventDefault"),
+          stopImmediatePropagation: () =>
+            recorder.copyHandling.push("stopImmediatePropagation"),
+        };
+        for (const listener of listeners.keys()) listener(event);
+      }
       return execCommandResult;
     },
   });
@@ -114,8 +144,6 @@ async function load(options: EnvOptions) {
           },
   });
 
-  // A fresh array per case, not a truncated shared one: the stub resolves
-  // `control.calls` at call time, so a late write cannot reach an earlier recorder.
   generation += 1;
   const control = ((globalThis as Record<string, unknown>).__TAURI_CLIPBOARD_STUB__ ??=
     {}) as { calls: string[]; mode: StubMode };
@@ -133,7 +161,6 @@ async function load(options: EnvOptions) {
   return { copyToClipboard: mod.copyToClipboard, recorder };
 }
 
-// Silence the module's console.warn on the deliberate-failure cases.
 const realWarn = console.warn;
 test.before(() => {
   console.warn = () => {};
@@ -145,11 +172,7 @@ test.after(() => {
 test("web build writes through navigator.clipboard before yielding", async () => {
   const { copyToClipboard, recorder } = await load({ tauri: false });
 
-  // Not awaited yet: an async function runs synchronously up to its first await, so
-  // if the Tauri gate yielded, writeText would still be unreached at this point and
-  // the browser would have dropped transient activation by the time it ran. Snapshot
-  // before awaiting, and drain before asserting, so a failure cannot leave the
-  // continuation writing into the next case's recorder.
+  // Not awaited yet: writeText must run before the first await to keep transient activation.
   const pending = copyToClipboard("hello");
   const writtenInGesture = [...recorder.webWrites];
   const nativeInGesture = recorder.nativeWrites.length;
@@ -181,7 +204,30 @@ test("web build reaches execCommand in the same tick when clipboard is absent", 
     "the synchronous fallback must also run inside the gesture",
   );
   assert.equal(result, true);
+  assert.deepEqual(
+    recorder.clipboardData,
+    ["hello"],
+    "written by the copy event",
+  );
+  assert.deepEqual(recorder.copyHandling, [
+    "capture",
+    "preventDefault",
+    "stopImmediatePropagation",
+  ]);
   assert.equal(recorder.removed, recorder.appended, "textarea must be cleaned up");
+  assert.equal(recorder.copyListeners, 0, "copy listener must be removed");
+});
+
+test("execCommand fallback reports failure when no copy event carried the text", async () => {
+  const { copyToClipboard, recorder } = await load({
+    tauri: false,
+    clipboard: "absent",
+    copyEvent: false,
+  });
+
+  assert.equal(await copyToClipboard("hello"), false);
+  assert.deepEqual(recorder.execCommands, ["copy"]);
+  assert.equal(recorder.copyListeners, 0);
 });
 
 test("Tauri build copies natively and never touches navigator.clipboard", async () => {
@@ -189,7 +235,6 @@ test("Tauri build copies natively and never touches navigator.clipboard", async 
 
   assert.equal(await copyToClipboard("model/path.gguf"), true);
   assert.deepEqual(recorder.nativeWrites, ["model/path.gguf"]);
-  // Exactly one writer per call, so nothing is left in flight to clobber a later copy.
   assert.deepEqual(recorder.webWrites, []);
   assert.deepEqual(recorder.execCommands, []);
 });

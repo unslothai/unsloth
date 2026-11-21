@@ -1,63 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Deterministic Unsloth training smoke test, sized for a single Tesla T4.
-
-Runs the whole notebook shape end to end -- 4-bit load, LoRA attach, a handful
-of training steps, adapter save, reload-free inference -- against a tiny model
-on ONE GPU, and asserts on what came out.
-
-Every other GPU test in this repo runs on hardware nobody's Colab session has.
-T4 is the card the notebooks are written for: no bf16, no flash-attention 2,
-16GB, sm_75, so a regression that only shows up there is invisible to the rest
-of CI. Driven from ``.github/workflows/kaggle-t4-notebook-ci.yml`` on real
-Kaggle T4s.
-
-What it asserts, in descending order of confidence:
-
-1. **Run-to-run bitwise equality** (``--repeat 2``). Two full runs in one
-   session must produce identical per-step loss and grad_norm to the last bit.
-   The only exact assertion, and it catches uninitialised memory, unseeded RNG,
-   iteration over a set, a nondeterministic kernel new to the backward pass.
-2. **The canary string.** The training data maps a question to the literal
-   target ``__UNSLOTH__!!!``, and after overfitting, greedy decoding of a
-   training prompt must emit that and nothing else. An exact match modulo
-   surrounding whitespace, not a substring: the completion trained on is
-   ``CANARY + eos_token``, so ``'__UNSLOTH__!!!<more text>'`` is a stopping
-   regression rather than a pass. The written adapter is also read back off disk
-   and checked for tensors present, finite and not all zero, since inference
-   runs on the in-memory model and would not notice. This is a binary,
-   tolerance-free check that forward, backward, optimizer step, adapter save and
-   inference are wired together, and it fails loudly if LoRA weights never reach
-   the generate call, which no loss-value assertion would catch.
-3. **Loss and grad_norm inside a band around a committed reference**, a
-   tolerance and never an equality. See ``references/README.md``: the reference
-   was captured on a specific T4 with a specific library set, and a different
-   driver or a transformers bump moves the low bits, so the band is wide enough
-   not to fire on that and narrow enough to catch a real change in the
-   optimisation.
-
-   A reference is only comparable to a run of the SAME EXPERIMENT. The step
-   count is part of what the trace encodes -- step 4 of a 10-step run and of a
-   3-step run are the same iterate only by coincidence, and the fp16 scaler's
-   skip pattern lives at the front where a short run spends all its steps -- and
-   so are the learning rate, the optimizer, the LoRA shape, the model and the
-   commit of the model repository read. The reference records all of them, and
-   comparing against one captured with any of them different is a hard failure,
-   never a quiet pass. See ``check_reference`` and
-   ``REFERENCE_DEFINING_SETTINGS``.
-
-Determinism caveats, stated rather than assumed:
-``torch.use_deterministic_algorithms(True, warn_only=True)`` is warn_only
-because parts of the bitsandbytes 4-bit path register no deterministic kernel,
-and raising would abort the test having proved nothing; assertion 1 is what
-verifies the outcome. Bitwise equality is asserted WITHIN one session only, and
-is not achievable or claimed across GPU architectures, fp16 reduction order
-alone moving the result.
-
-Usage:
-    python run_t4_smoke.py --outdir /kaggle/working/smoke0
-"""
+"""Run-to-run bitwise equality within one session is the exact numeric check; loss is banded."""
 
 from __future__ import annotations
 
@@ -66,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import tempfile
 import sys
@@ -97,16 +42,14 @@ from versions import (  # noqa: E402
     versions_for_pins,
 )
 
-# MUST run before torch is imported anywhere: CUBLAS_WORKSPACE_CONFIG is read
-# when cuBLAS initialises, and setting it afterwards is silently ignored.
+# Must run before torch is imported: CUBLAS_WORKSPACE_CONFIG is read when cuBLAS initialises.
 enable_full_determinism()
 
 CANARY = "__UNSLOTH__!!!"
 PROMPT_TEMPLATE = "### Question:\n{question}\n### Answer:\n"
 SEED = 3407
 
-# The smallest instruct model that still exercises the real loader path. It must
-# fit on ONE T4 alongside a second copy of this test on the session's other T4.
+# Must fit on one T4 alongside a second copy of this test on the other T4.
 DEFAULT_MODEL = "unsloth/Qwen2.5-0.5B-Instruct"
 
 
@@ -127,26 +70,7 @@ def load_canary_rows(path: Path) -> list[dict]:
 
 
 def dataset_digest(path: Path) -> str:
-    """A digest of the rows this run trains on, for the reference identity.
-
-    The reference is a trace of one experiment and the training data is part of
-    which experiment it is: change a question in canary_dataset.jsonl and the
-    loss curve moves for reasons that have nothing to do with the code, with a
-    small change passing the band and a larger one reported as a regression.
-    That file is inside this workflow's paths filter, so editing it is a
-    supported way to trigger the run that would be compared against a trace it
-    has nothing to do with.
-
-    Over the PARSED rows in order rather than the file's bytes: reformatting the
-    JSON or reordering the keys within a row changes neither what trains nor the
-    order it trains in, and forcing a session-costing recapture for whitespace
-    is how a check gets switched off. Row order is kept, being the order the
-    sampler walks.
-
-    Never raises and never returns None: an unreadable dataset yields a value
-    that cannot match any reference, so it lands as a refusal to compare rather
-    than as an unchecked key that reads like a comparison that passed.
-    """
+    """Digest of the parsed rows in order, not file bytes, so reformatting does not force a recapture."""
     try:
         rows = load_canary_rows(path)
     except Exception as exc:  # noqa: BLE001
@@ -156,15 +80,7 @@ def dataset_digest(path: Path) -> str:
 
 
 def build_dataset(rows: list[dict], eos_token: str):
-    """Prompt / completion columns, so the loss lands only on the answer.
-
-    A single ``text`` column would spread the loss across the question tokens,
-    which the model already predicts well. With the prompt masked out, every one
-    of the few steps this test can afford goes on the canary itself, which is
-    what makes an exact string assertion reachable in a run this short. TRL
-    applies the masking when it sees these two columns
-    (``completion_only_loss``).
-    """
+    """Prompt and completion columns, so TRL masks the prompt and the loss lands on the canary alone."""
     from datasets import Dataset
     return Dataset.from_dict(
         {
@@ -175,11 +91,7 @@ def build_dataset(rows: list[dict], eos_token: str):
 
 
 def _make_trainer_class(sft_trainer_cls, sampler):
-    """SFTTrainer with the sampling order pinned.
-
-    ``_get_train_sampler``'s signature moved between TRL versions (it gained a
-    dataset parameter), so absorb whatever is passed.
-    """
+    """Absorbs *args and **kwargs because _get_train_sampler's signature changed across TRL versions."""
 
     class _FixedOrderSFTTrainer(sft_trainer_cls):  # type: ignore[misc,valid-type]
         def _get_train_sampler(self, *args, **kwargs):  # noqa: ANN002, ANN003
@@ -189,25 +101,7 @@ def _make_trainer_class(sft_trainer_cls, sampler):
 
 
 def pin_initial_loss_scale(trainer, value: float) -> dict:
-    """Lower the fp16 gradient scaler's starting scale before training.
-
-    Why, in one measurement: the T4 has no bf16, so the run is fp16 with a
-    dynamic ``GradScaler`` that starts at 65536, halves on every overflow and
-    SKIPS the step it overflowed on. On this model the first three steps
-    overflow every time -- the committed reference has ``grad_norm: NaN`` at
-    steps 1, 2 and 3 and a finite one from step 4, which is 65536 -> 8192 in
-    three halvings -- so a three-step run applies ZERO optimizer updates.
-
-    Starting the scaler low enough not to overflow buys a short run its updates
-    back. It changes the numeric path (a different scale is a different rounding
-    of the same gradients), so a reference captured before this does not apply,
-    which the step-count guard in ``check_reference`` already refuses to ignore.
-
-    Never fatal. ``trainer.accelerator.scaler`` is where transformers keeps it
-    but is not public API, so a version that moved it degrades to "the run is as
-    it was" rather than losing the session. What happened is recorded either
-    way, so whether the pin took is visible when a reference is captured.
-    """
+    """Lowers the fp16 GradScaler start so a short run does not skip every step on overflow."""
     state: dict = {"requested": value}
     if not value:
         state["applied"] = False
@@ -227,11 +121,8 @@ def pin_initial_loss_scale(trainer, value: float) -> dict:
         state["reason"] = f"{type(scaler).__name__} has no _init_scale"
         return state
     state["before"] = float(scaler.get_scale())
-    # _init_scale rather than a fresh GradScaler: the object may be a subclass
-    # (ShardedGradScaler and friends) that replacing would drop. Safe because
-    # training has not started, so the lazy _scale tensor does not exist and
-    # get_scale() still reads _init_scale, which is how the check below can
-    # confirm the pin took.
+    # Set _init_scale instead of replacing the scaler (it may be a subclass); before training,
+    # get_scale() still reads _init_scale.
     scaler._init_scale = float(value)
     state["after"] = float(scaler.get_scale())
     state["applied"] = state["after"] == float(value)
@@ -246,16 +137,8 @@ def train_once(args, run_index: int) -> dict:
     from unsloth import FastLanguageModel
 
     if args.force_sdpa:
-        # LOCAL REPRODUCTION ONLY, never on the target hardware. Unsloth prefers
-        # flash-attention, then xformers, then SDPA, and on a T4 that resolves
-        # to xformers, the path this test exists to cover, so the flag is off by
-        # default and Kaggle does not use it. It exists because xformers ships
-        # no backward kernel for some newer architectures (Blackwell raises
-        # NotImplementedError: No operator found for
-        # memory_efficient_attention_backward), which makes the payload
-        # impossible to reproduce on such a box. Forcing SDPA changes the
-        # numeric path, so a local run under it is evidence about the HARNESS,
-        # not about T4 numerics.
+        # Local reproduction only: forces SDPA where xformers lacks a backward kernel (e.g. Blackwell).
+        # This changes numerics, so it validates the harness, not T4 numerics.
         from unsloth.utils import attention_dispatch
         attention_dispatch.HAS_XFORMERS = False
         _log("force-sdpa: HAS_XFORMERS pinned False (local repro only)")
@@ -268,40 +151,13 @@ def train_once(args, run_index: int) -> dict:
     from phase_timers import FetchTimer
 
     t0 = time.time()
-    # float16 unconditionally: T4 is sm_75 and has no bf16. Pinned rather than
-    # left to the loader so the local reproduction and the Kaggle run take the
-    # same numeric path wherever they can share one.
+    # float16 unconditionally: T4 (sm_75) has no bf16.
     load_kwargs: dict = {}
     if getattr(args, "single_device", False):
-        # Both cards stay VISIBLE -- that is the point of the multi_gpu leg, and
-        # what makes unsloth's DEVICE_COUNT > 1 bindings live -- but the weights
-        # go on one, because a SHARDED model does not train.
-        #
-        # Measured on unsloth-probe-multigpu-r1-18beab: with two T4s visible
-        # accelerate split Qwen3-0.6B 232849408 params on cuda:0 and 155582464
-        # on cuda:1, unsloth printed `Num GPUs used = 2`, and step 0 died in
-        # unsloth/models/llama.py:972 --
-        #
-        #   inputs_embeds = self.embed_tokens(input_ids)
-        #   RuntimeError: Expected all tensors to be on the same device, but got
-        #   index is on cuda:0, different from other tensors on cuda:1
-        #
-        # WHETHER THAT IS A BUG IS NOT SETTLED, and an earlier version of this
-        # comment claimed it was filed. It is not filed, and the repo's own
-        # history is split on it: #2467 was closed with "unsloth runs on only 1
-        # gpu.. It wont run in multi gpu systems. force it to use only 1 gpu",
-        # while #2882 -- the same message, a different call site -- was closed
-        # as fixed. So this may be documented behaviour rather than a defect.
-        #
-        # What is not in doubt is that it is not THIS repo's to work around in a
-        # per-PR check. Training a sharded model here would put a red in front
-        # of every PR for a fault no reader can act on, which is how a check
-        # gets switched off before the day it is right. The binding coverage --
-        # the whole reason this leg exists -- does not depend on it.
+        # Both cards stay visible so DEVICE_COUNT > 1 bindings are live, but weights go on one card:
+        # a sharded model fails at step 0 with a cross-device error.
         load_kwargs["device_map"] = {"": 0}
-    #
-    # The timer splits this one number into fetch and weight load. `load` on
-    # its own cannot say whether the prefetch lane is buying anything.
+    # Splits load time into fetch and weight load.
     with FetchTimer() as fetch_timer:
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name = args.model,
@@ -318,21 +174,13 @@ def train_once(args, run_index: int) -> dict:
         + f"weight_load={load_phases['weight_load_seconds']}s "
         + f"patched={len(load_phases['patched'])}"
     )
-    # Which repository, and which commit of it. `load_in_4bit=True` redirects
-    # through Unsloth's FLOAT_TO_INT_MAPPER, so the config name is not the name
-    # asked for, and the loader explicitly DROPS `revision=` once a remap
-    # happened (unsloth/models/loader.py::_revision_for_resolved_repo). Pinning
-    # the load is therefore unavailable; recording what was loaded is what makes
-    # a silent in-place re-upload attributable.
+    # load_in_4bit remaps the repo and the loader drops `revision=`, so record what was loaded.
     _config = getattr(model, "config", None)
     resolved_checkpoint = getattr(_config, "_name_or_path", None)
     resolved_revision = getattr(_config, "_commit_hash", None)
     _log(f"loaded {resolved_checkpoint} @ {resolved_revision}")
 
-    # AFTER the load and not before, which is measured rather than tidy: on
-    # kernel unsloth-probe-vision-recon-c76ea3 `fla` was NOT importable before
-    # from_pretrained and WAS after, because unsloth reaches for it lazily when
-    # it sees the model. Reading provenance up front reports it absent.
+    # After the load: unsloth imports some kernels (e.g. fla) lazily during from_pretrained.
     if getattr(args, "kernel_provenance", False):
         result_kernels = probe_kernels()
         result_attention = attention_choice(model)
@@ -342,15 +190,11 @@ def train_once(args, run_index: int) -> dict:
         result_kernels = None
         result_attention = None
 
-    # AFTER the load for the same reason as the block above: the rotary caches
-    # are built when the model is, so reading them before from_pretrained finds
-    # nothing and reports it as an absence.
+    # After the load: the rotary caches are built with the model.
     result_multi_gpu = multi_gpu_facts(model) if getattr(args, "require_multi_gpu", False) else None
     if result_multi_gpu is not None:
         _log(f"multi-gpu: {json.dumps(result_multi_gpu)}")
 
-    # Bound to a name so the saved config is checked against the adapter that
-    # was actually requested, rather than against a list repeated further down.
     target_modules = [
         "q_proj",
         "k_proj",
@@ -392,10 +236,7 @@ def train_once(args, run_index: int) -> dict:
         gradient_accumulation_steps = args.grad_accum,
         max_steps = args.max_steps,
         learning_rate = args.learning_rate,
-        # Constant schedule, no warmup: over 3 steps a warmup would spend the
-        # whole run at a fraction of the target LR, and a linear decay would
-        # make step 3's update depend on max_steps. Constant keeps the reference
-        # meaningful and the overfit strong enough for the canary.
+        # Constant LR: a warmup or decay over a few steps would distort the canary run.
         lr_scheduler_type = "constant",
         warmup_steps = 0,
         logging_steps = 1,  # StatisticsCallback only fires on logs
@@ -433,12 +274,8 @@ def train_once(args, run_index: int) -> dict:
             f"expected {args.max_steps} logged steps, got {len(stats.logs)}: " f"{stats.logs}"
         )
 
-    # Adapter save, then read the serialized weights back off disk. A filename
-    # is not evidence: save_pretrained can leave an empty, truncated or all-zero
-    # adapter_model.safetensors and every later assertion still passes, since
-    # inference runs on the in-memory model. A file read rather than a second
-    # FastLanguageModel load answers "can these weights be consumed" without a
-    # second 4-bit load on a card already hosting one.
+    # Read the saved weights back: save_pretrained can write an empty or all-zero file and inference
+    # still passes on the in-memory model.
     adapter_dir = Path(args.outdir) / f"lora_run{run_index}"
     t0 = time.time()
     model.save_pretrained(str(adapter_dir))
@@ -455,26 +292,14 @@ def train_once(args, run_index: int) -> dict:
             "lora_alpha": args.lora_alpha,
             "target_modules": target_modules,
         },
-        # Asked of the model that was just saved, so the file is compared
-        # against what PEFT calls these tensors rather than against a list this
-        # payload would have to keep in step with peft by hand.
         peft_keys = peft_adapter_keys(model),
     )
     _log(f"saved adapter: {json.dumps(saved_adapter)}")
 
-    # Inference on the trained, in-memory model, greedy so the output is a
-    # function of the weights alone.
+    # Greedy so the output depends only on the weights.
     FastLanguageModel.for_inference(model)
     prompt = PROMPT_TEMPLATE.format(question = rows[0]["question"])
-    # `text = ` and not positional, and this cost a leg. A vision model's
-    # tokenizer IS a processor, whose signature is
-    # `__call__(self, images=None, text=None, videos=None, ...)` -- so a
-    # positional list is taken as IMAGES and transformers tries to fetch the
-    # prompt strings as image URLs. Measured on kernel
-    # unsloth-probe-latestcompile-r2-62b54d with gemma-4-E2B-it:
-    #   transformers/image_processing_backends.py, in fetch_images
-    # `text` is the first parameter of a plain tokenizer too, so the keyword is
-    # correct for both and is not a special case for vision.
+    # `text=` keyword: a vision processor takes the first positional arg as images.
     inputs = tokenizer(text = [prompt], return_tensors = "pt").to(model.device)
     t0 = time.time()
     with torch.inference_mode():
@@ -491,17 +316,12 @@ def train_once(args, run_index: int) -> dict:
     infer_seconds = time.time() - t0
     generated = tokenizer.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens = True)
 
-    # Batched generation, on the SAME trained model, immediately after the
-    # single-prompt generation above. Prompts of deliberately different lengths,
-    # because a batch of equal-length prompts pads nothing and would report a
-    # green left-padding check that never padded.
+    # Prompts of different lengths, so left padding is actually exercised.
     batch_prompts = [
         PROMPT_TEMPLATE.format(question = row["question"]) for row in rows[: max(BATCH_SIZES)]
     ]
     while len(batch_prompts) < max(BATCH_SIZES):
-        # The canary dataset is small. Pad the LIST (not the tensors) by
-        # reusing questions with a varying prefix, which keeps the token
-        # lengths spread rather than repeating one length.
+        # Pad the prompt list by reusing questions with varying prefixes to keep lengths spread.
         idx = len(batch_prompts)
         batch_prompts.append(
             PROMPT_TEMPLATE.format(
@@ -518,19 +338,10 @@ def train_once(args, run_index: int) -> dict:
     )
     _log(f"batched generation: {json.dumps({k: v for k, v in batched.items() if k != 'batched'})}")
 
-    # GGUF export, opt-in. Placed AFTER generation deliberately: the export
-    # merges the adapter into the base weights, and doing that before the
-    # canary and batched-generation checks would have them measure a different
-    # model from the one training produced.
+    # After generation: the export merges the adapter, which would change the model under test.
     gguf_export_record = None
     gguf_run_record = None
-    # ONCE per leg, on the first cycle, not once per cycle. Measured: the
-    # conversion is 310.8s and 312.3s on the two Latest_compile cycles and
-    # 99.3s and 117.3s on the two vision ones, so the repeat is 47% of the
-    # longest leg in the suite. The second export is the same base weights and
-    # an adapter trained by the same script with the same seed, so it re-runs
-    # llama.cpp rather than asking a new question; reproducibility is already
-    # asserted on the step tables and on the generated text.
+    # Once per leg: the conversion is slow and a repeat with the same seed asks nothing new.
     if getattr(args, "export_gguf", False) and run_index > 0:
         gguf_export_record = {
             "skipped": "exported on cycle 0; the conversion is the same weights twice"
@@ -538,10 +349,7 @@ def train_once(args, run_index: int) -> dict:
     elif getattr(args, "export_gguf", False):
         from gguf_export import export_gguf, llama_cpp_facts, run_gguf
 
-        # unsloth must be imported before unsloth_zoo.llama_cpp, which raises
-        # "Please install Unsloth via pip install unsloth!" otherwise. It is,
-        # by the time train_once runs, but the import stays local so a payload
-        # that never exports does not pay for it.
+        # unsloth must be imported before unsloth_zoo.llama_cpp; kept local so non-export runs skip it.
         install_log = ""
         llama_dir = None
         try:
@@ -560,23 +368,7 @@ def train_once(args, run_index: int) -> dict:
             facts = {"error": f"{type(exc).__name__}: {exc}"[:2000]}
         _log(f"llama.cpp: {json.dumps(facts)}")
 
-        # NOT under args.outdir. That is `/kaggle/working`, which is 21.0 GB
-        # and is also what `kernels output` ships back, so a merge that fits
-        # there is downloaded and a merge that does not kills the leg. Measured
-        # on unsloth-probe-lcleg-final-a90fbb:
-        #
-        #   RuntimeError: Unsloth: Not enough disk space to convert to GGUF.
-        #   The export needs about 16.6GB on the filesystem holding
-        #   `/kaggle/working/t4_out_Latest_compile/cycle0/gguf_run0`
-        #
-        # /tmp is the same overlay as `/`, 8656.9 GB with ~1100 GB free, which
-        # this file has recorded since the first disk probe. tempfile honours
-        # TMPDIR and lands there. The RECORD travels back -- path, size,
-        # seconds -- and the multi-gigabyte artifact does not, which nobody
-        # wanted collected anyway.
-        #
-        # gpt-oss and the vision run were both moved for this exact reason and
-        # this path was missed, which is why a small model kept passing.
+        # Not under outdir: /kaggle/working is 21GB and shipped back; /tmp has ample space.
         gguf_export_record = export_gguf(
             model,
             tokenizer,
@@ -601,10 +393,7 @@ def train_once(args, run_index: int) -> dict:
         "multi_gpu": result_multi_gpu,
         "metrics": stats.logs,
         "generated": generated,
-        # Both, because they answer different questions when this goes red:
-        # `canary_found` says training reached the weights at all, `canary_exact`
-        # is the assertion, and the gap between them is the signature of a
-        # stopping/EOS regression rather than a training one.
+        # canary_found vs canary_exact: the gap points at a stopping/EOS regression, not training.
         "batched_generation": batched,
         "gguf_export": gguf_export_record,
         "gguf_run": gguf_run_record,
@@ -613,11 +402,7 @@ def train_once(args, run_index: int) -> dict:
         "prompt": prompt,
         "adapter_files": saved_files,
         "saved_adapter": saved_adapter,
-        # The repository the loader actually read, and its commit. The requested
-        # name is not the loaded name (load_in_4bit goes through Unsloth's
-        # FLOAT_TO_INT_MAPPER), and a mirror repo re-uploaded in place moves the
-        # trajectory with no change in this repository. Recorded so the band
-        # check can say so.
+        # The loaded repo differs from the requested one; recorded so the band check can detect re-uploads.
         "resolved_checkpoint": resolved_checkpoint,
         "resolved_revision": resolved_revision,
         "determinism": det_state,
@@ -628,9 +413,7 @@ def train_once(args, run_index: int) -> dict:
             "save": round(save_seconds, 1),
             "infer": round(infer_seconds, 1),
         },
-        # `load` split into the download and everything after it. Kept beside
-        # the totals rather than replacing them, so the existing series stays
-        # comparable across runs that predate this.
+        # Kept beside the totals so older series stay comparable.
         "load_phases": load_phases,
         "peak_reserved_gb": round(peak_gb, 2),
     }
@@ -645,31 +428,7 @@ def train_once(args, run_index: int) -> dict:
 
 
 def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
-    """Ask PEFT to rebuild the saved config, and check it describes THIS run.
-
-    ``json.loads`` succeeding is not the question anyone has about this file.
-    ``{}`` is valid JSON, so a save that wrote no LoRA fields at all read as
-    "config_readable" and the leg passed on an adapter nothing can load -- the
-    same shape as the tensor count that a randomly initialised ``lora_A``
-    satisfied. What is actually being asserted is "PEFT can reconstruct the
-    adapter", so it is asked of PEFT, on the path a reload takes.
-
-    That path is the mapping dispatch, not the base class:
-    ``PeftModel.from_pretrained`` does
-    ``PEFT_TYPE_TO_CONFIG_MAPPING[peft_type].from_pretrained(...)``, while
-    ``PeftConfig.from_pretrained`` alone returns a bare ``PeftConfig`` with
-    ``peft_type=None`` for ``{}`` and reports nothing wrong. Checked against
-    peft 0.20.0: only the dispatch raises, which is why it is what runs here.
-
-    ``expected`` is DERIVED, not restated: the caller passes the very arguments
-    it handed ``get_peft_model``, so a save that writes a well-formed config for
-    a DIFFERENT adapter than the one trained (a dropped ``target_modules``, a
-    rank that did not survive the round trip) is a difference rather than a
-    field list this function had to guess at.
-
-    Never raises; every outcome is a recorded key that ``saved_adapter_failures``
-    turns into a verdict.
-    """
+    """Rebuilds via PEFT_TYPE_TO_CONFIG_MAPPING, the reload path; PeftConfig alone passes {} silently."""
     out: dict = {}
     try:
         from peft import PEFT_TYPE_TO_CONFIG_MAPPING, PeftConfig
@@ -691,24 +450,13 @@ def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
     unchecked: list[str] = []
     for key, wanted in sorted((expected or {}).items()):
         if not hasattr(config, key):
-            # "It does not say" is not "it differs": a PEFT version that
-            # renamed a field is recorded rather than turned into a failure.
+            # A missing field is recorded, not treated as a difference.
             unchecked.append(key)
             continue
         got = getattr(config, key)
         if key == "target_modules" and isinstance(got, str):
-            # PEFT allows target_modules to be a REGEX as well as a list, and
-            # unsloth writes one for vision models so the adapter targets the
-            # language tower and not the vision encoder. Measured on
-            # unsloth-probe-vision-leg-r2-793ec0 with Qwen3.5-2B and again on
-            # gemma-4-E2B-it, where the saved value begins
-            #   (?:.*?(?:language|text).*?(?:self_attn|attention|...
-            #
-            # Comparing that string against the list that was REQUESTED reports
-            # a difference on every vision model, which is correct behaviour
-            # being called a defect. The claim worth keeping is narrower and
-            # still falsifiable: every module name asked for must appear in the
-            # pattern, so a silently dropped projection is still caught.
+            # unsloth writes target_modules as a regex for vision models, so only check that every
+            # requested module name appears in the pattern.
             missing = [name for name in (wanted or []) if name not in got]
             same = not missing
             if not same:
@@ -728,40 +476,13 @@ def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
     return out
 
 
-# Batch sizes to cross-check against one-at-a-time generation. 1 is the
-# baseline and is generated separately; the rest must reproduce it exactly.
+# Batch 1 is the baseline; the rest must reproduce it exactly.
 BATCH_SIZES = (2, 4, 8)
 
 
 def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
-    """Greedy generation one-at-a-time, then batched, and whether they agree.
-
-    WHAT THIS IS FOR. Batched generation with left padding has broken here
-    before, repeatedly and in ways that pass every other check in this file:
-
-    * #3699 batched generation with left-padding and caching produced incorrect
-      output,
-    * #1066 batch inference produced gibberish,
-    * #1456 batch inference was inconsistent for a self-trained model,
-    * #2138 a release silently FORCED the tokenizer padding side to right during
-      inference, which is why the side is recorded as OBSERVED after generating
-      rather than as the value this function set.
-
-    Greedy decoding makes the comparison meaningful: the output is then a
-    function of the weights and the attention mask alone, so any difference
-    between batch sizes is padding or cache handling rather than sampling.
-
-    THE VACUITY TRAP, and it is the whole reason this returns the token lengths:
-    padding only happens when the prompts in a batch have DIFFERENT lengths.
-    A batch of equal-length prompts pads nothing, agrees trivially, and reports
-    a green left-padding check that never once left-padded. The caller asserts
-    the spread; this function measures it.
-    """
-    # Imported here, not at module scope, matching every other torch user in
-    # this file: the module is loaded before unsloth is installed in some
-    # paths, and a top-level torch import would move the failure to import
-    # time. Kernel unsloth-probe-defaultleg-723c28 trained all 10 steps and
-    # then died on `NameError: name 'torch' is not defined` right here.
+    """Equal-length prompts pad nothing, so the token lengths are returned to prove padding happened."""
+    # Local import: this module can load before unsloth (and torch) is installed.
     import torch
 
     tokenizer.padding_side = "left"
@@ -769,8 +490,7 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         tokenizer.pad_token = tokenizer.eos_token
 
     def _gen(batch: list) -> list:
-        # Keyword for the same reason as the single-prompt path above: a
-        # processor reads a positional list as images.
+        # Keyword: a processor reads a positional list as images.
         enc = tokenizer(text = batch, return_tensors = "pt", padding = True).to(model.device)
         with torch.inference_mode():
             out = model.generate(
@@ -781,31 +501,18 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
                 top_p = None,
                 top_k = None,
                 use_cache = True,
-                # `x or y` is wrong here: pad_token_id 0 is a perfectly ordinary
-                # id (Qwen and Llama both use low ids) and is falsy, so `or`
-                # silently substitutes the EOS id for it and pads the batch with
-                # end-of-sequence tokens. Test for None.
+                # Test for None: pad_token_id 0 is valid and falsy.
                 pad_token_id = (
                     tokenizer.pad_token_id
                     if tokenizer.pad_token_id is not None
                     else tokenizer.eos_token_id
                 ),
             )
-        # Slice by the PADDED width, not by each prompt's own length: with left
-        # padding every row starts at the same column, and using the unpadded
-        # length would re-read the tail of the prompt as if it were output.
+        # Slice at the padded width: left padding aligns every row at the same column.
         width = enc["input_ids"].shape[1]
         return [tokenizer.decode(row[width:], skip_special_tokens = True) for row in out]
 
-    # `[0]`, and the missing index made this whole check vacuous. A processor
-    # returns input_ids with a BATCH dimension, so `len(...)` on it is the
-    # number of sequences -- 1 -- for every prompt. Measured on kernel
-    # unsloth-probe-latestcompile-r3-cb1125, where gemma-4 reported
-    # [1, 1, 1, 1, 1, 1, 1, 1] and the vacuity guard below caught it:
-    #   "every batched prompt tokenised to the same length ... so nothing was
-    #    ever padded and the left-padding check proved nothing"
-    # A plain tokenizer given one string returns a flat list, which is why this
-    # read correctly on every text model and only broke on the first vision one.
+    # [0]: a processor returns a batch dimension even for one prompt.
     lengths = [len(tokenizer(text = [p])["input_ids"][0]) for p in prompts]
     singles = [_gen([p])[0] for p in prompts]
     result = {
@@ -817,11 +524,7 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         "agrees": {},
         "empty_outputs": [i for i, text in enumerate(singles) if not text.strip()],
     }
-    # Per batch size, the rows that came back empty INSIDE the batch. The
-    # singles check above cannot see these, and the agreement check excuses
-    # them for a model listed in KNOWN_BATCHED_GENERATION_BREAKAGE, so without
-    # this an empty batched row on gemma-4 was a pass. That is the #9848 shape
-    # exactly: a left-padded row that attends to nothing decodes to "".
+    # Empty rows inside a batch are a separate failure (#9848), never excused by the known-breakage list.
     empty_batched: dict = {}
     for size in BATCH_SIZES:
         outs: list = []
@@ -833,33 +536,13 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         if rows:
             empty_batched[str(size)] = rows
     result["empty_batched_outputs"] = empty_batched
-    # Read AGAIN, after all the generating. #2138 was a silent override applied
-    # inside the inference path, so the value set at the top of this function is
-    # not evidence of the value that was used.
+    # Re-read after generating: #2138 silently overrode padding_side inside inference.
     result["padding_side_after"] = tokenizer.padding_side
     return result
 
 
-# Models where batched greedy generation is EXPECTED to disagree with
-# one-at-a-time output, and why. See unsloth #9708: on both of these, batch
-# sizes 2/4/8 fail to reproduce batch-1 greedy text with real left padding and
-# demonstrably distinct prompt lengths, on both repeats.
-#
-# This is NOT a bug awaiting a fix, in unsloth or anywhere else. It is bf16 /
-# fp16 rounding that depends on the shape of the batch: a padded batch takes a
-# different SDPA kernel from a lone prompt, the prefill projections run at a
-# different GEMM shape, and RMSNorm rounds differently on the result. Plain
-# transformers with unsloth never imported shows the same thing, every
-# transformers release from 4.57.0 to 5.16.1 shows it, and float32 makes every
-# batch size agree. The measurements and a standalone repro are on #9708.
-#
-# So the entry is a STRICT expectation, not a mute. A model listed here that
-# starts AGREEING fails the leg, with a message saying to delete the entry:
-# agreement in bf16 means a kernel or a stack changed under us, and that is
-# worth hearing about rather than quietly keeping a stale excuse. Every other
-# rule in this function stays live for these models: the padding side, the
-# distinct lengths and the empty-output checks are what make the disagreement
-# a shape effect rather than an unpadded batch or a #9848 empty row.
+# Models whose batched greedy output is expected to differ from batch-1 (#9708): fp16/bf16
+# rounding varies with batch shape. Strict: a listed model that starts agreeing fails the leg.
 KNOWN_BATCHED_GENERATION_BREAKAGE = {
     "unsloth/gemma-4-E2B-it": "unsloth#9708",
     "unsloth/Qwen3.5-2B": "unsloth#9708",
@@ -891,8 +574,7 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
             )
     if batch.get("empty_outputs"):
         out.append(f"prompts {batch['empty_outputs']} generated nothing at all")
-    # Never excused by the known-breakage entry: an empty row is not a
-    # disagreement, it is #9848, and the entry only covers #9708.
+    # An empty row is #9848, not the #9708 disagreement, so the entry never excuses it.
     for size, rows in sorted((batch.get("empty_batched_outputs") or {}).items()):
         out.append(
             f"batch size {size}: prompts {rows} generated nothing at all inside "
@@ -907,8 +589,7 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
                 f"{batch.get('singles')!r}"
             )
     if known and agrees and all(agrees.values()):
-        # The strict half. An expectation that only ever excuses is a mute, and
-        # a mute outlives the bug it was written for.
+        # Strict half: a listed model that now agrees must be removed from the list.
         out.append(
             f"{model} is listed in KNOWN_BATCHED_GENERATION_BREAKAGE for "
             f"{known}, and every batch size AGREED. That disagreement is bf16 "
@@ -919,33 +600,12 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
     return out
 
 
-# Set by multi_gpu_facts as soon as it has an answer, so a crash LATER in the
-# cycle still reports what was measured. A reading that exists only inside a
-# frame that is being unwound is a reading nobody has.
+# Set early so a later crash in the cycle still reports what was measured.
 _LAST_MULTI_GPU_FACTS: dict | None = None
 
 
 def multi_gpu_facts(model) -> dict:
-    """What unsloth BOUND, given how many cards this process can see.
-
-    The point of the multi_gpu leg is a branch no pinned payload can reach.
-    `unsloth/kernels/utils.py:170`:
-
-        if DEVICE_COUNT > 1:
-            torch_gpu_device = torch.cuda.device      # a real device switch
-        else:
-            def torch_gpu_device(device): return nullcontext()
-
-    `build_kernel.py` pins every ordinary payload with CUDA_VISIBLE_DEVICES, so
-    every unsloth kernel this CI has run took the nullcontext branch, and so did
-    the DEVICE_COUNT-sized CUDA_STREAMS / WEIGHT_BUFFERS / ABSMAX_BUFFERS arrays
-    and the per-device rotary caches in unsloth/models/llama.py.
-
-    Read off the IMPORTED MODULE, not recomputed from `device_count()`. The
-    binding is made once at import time, so asking torch how many cards there
-    are answers a different question -- and answers it the way the check wants,
-    which is the shape of a rule that cannot fail.
-    """
+    """Reads unsloth's DEVICE_COUNT from the imported module, since it is bound once at import."""
     import torch
 
     global _LAST_MULTI_GPU_FACTS
@@ -959,20 +619,13 @@ def multi_gpu_facts(model) -> dict:
 
     binding = getattr(_kernel_utils, "torch_gpu_device", None)
     facts["module_device_count"] = getattr(_kernel_utils, "DEVICE_COUNT", None)
-    # `torch.cuda.device` is a CLASS; the single-card fallback is a module-level
-    # function closing over nullcontext. Identity against the real thing rather
-    # than a name check, because both are bound to the same name.
+    # Identity check: the single-card fallback shim is bound to the same name.
     facts["torch_gpu_device_is_real_switch"] = binding is torch.cuda.device
     facts["torch_gpu_device_repr"] = repr(binding)[:200]
     for name in ("CUDA_STREAMS", "WEIGHT_BUFFERS", "ABSMAX_BUFFERS"):
         value = getattr(_kernel_utils, name, None)
         facts[name.lower() + "_len"] = None if value is None else len(value)
 
-    # Where the weights actually sit. With two cards visible accelerate may
-    # shard, and whether it does is a MEASUREMENT rather than something to
-    # assert blind: kernel unsloth-probe-vision-recon-c76ea3 saw a model split
-    # 897.7 MB / 1017.1 MB across two T4s, but that was a different model and a
-    # different loader path.
     by_device: dict[str, int] = {}
     try:
         for _, param in model.named_parameters():
@@ -983,9 +636,7 @@ def multi_gpu_facts(model) -> dict:
     facts["parameters_by_device"] = by_device
     facts["cuda_devices_holding_parameters"] = sorted(d for d in by_device if d.startswith("cuda"))
 
-    # The per-device rotary caches, sized by DEVICE_COUNT at construction. A
-    # list of length 1 on a two-card box means the model was built while
-    # unsloth believed there was one card.
+    # Rotary caches are sized by DEVICE_COUNT; length 1 on a two-card box means unsloth saw one card.
     for module in getattr(model, "modules", lambda: [])():
         cached = getattr(module, "multi_gpu_cos_cached", None)
         if cached is not None:
@@ -995,13 +646,7 @@ def multi_gpu_facts(model) -> dict:
 
 
 def multi_gpu_failures(facts: dict | None, *, expected_cards: int) -> list[str]:
-    """The rules, separated from the reading so they can be driven on CPU.
-
-    Deliberately NOT asserting that the parameters are spread across both
-    cards. Whether unsloth shards them or pins them to cuda:0 is exactly what
-    this leg is being run to find out, and a rule written before the answer is
-    a rule written to match whatever happens.
-    """
+    """Does not assert the parameters are spread across cards; that is what the leg is run to find out."""
     if not facts:
         return [
             "the multi-GPU facts are missing, so nothing about the "
@@ -1019,7 +664,6 @@ def multi_gpu_failures(facts: dict | None, *, expected_cards: int) -> list[str]:
             f"every assertion below would measure the single-card branch under "
             f"a multi-GPU name"
         )
-        # Everything after this measures the wrong machine, so say so once.
         return out
 
     if facts.get("module_device_count") != expected_cards:
@@ -1057,23 +701,7 @@ def multi_gpu_failures(facts: dict | None, *, expected_cards: int) -> list[str]:
 
 
 def peft_adapter_keys(model) -> dict:
-    """The names PEFT itself gives this adapter's tensors, off the live model.
-
-    ``PeftModel.save_pretrained`` writes exactly
-    ``get_peft_model_state_dict(self, ...)`` (peft 0.20.0, peft_model.py), so
-    calling the same function on the model that was just saved reproduces the
-    key set the file is SUPPOSED to hold. That is the oracle a raw tensor read
-    is missing: safetensors deserializes any well-formed file, whatever the keys
-    are called, and PEFT's loader then matches by name.
-
-    Derived rather than restated: no key list, no prefix, no target-module names
-    appear here, so a legitimate peft renaming moves both sides at once and only
-    a save that disagrees with the running peft is a difference.
-
-    Returns ``{"keys": [...]}`` or ``{"error": "..."}``; never raises, because
-    every outcome has to reach ``saved_adapter_failures`` as a verdict rather
-    than as a traceback out of the payload.
-    """
+    """Key names come from get_peft_model_state_dict, the function save_pretrained itself writes with."""
     try:
         from peft import get_peft_model_state_dict
         return {"keys": sorted(get_peft_model_state_dict(model))}
@@ -1082,28 +710,7 @@ def peft_adapter_keys(model) -> dict:
 
 
 def _compare_adapter_keys(saved: set, peft_keys: dict | None) -> dict:
-    """Saved tensor names against the ones PEFT names for the live model.
-
-    Three answers, and they are not the same failure:
-
-    * MISSING -- PEFT names a tensor the file does not carry. On reload peft
-      warns ("Found missing adapter keys while loading the checkpoint",
-      peft_model.py) and leaves that module's adapter at its initial value, so
-      the weight is silently dropped.
-    * UNEXPECTED -- the file carries a LoRA tensor under a name PEFT does not
-      use. ``set_peft_model_state_dict`` ends in
-      ``model.load_state_dict(..., strict=False)`` and nothing reads the
-      returned ``unexpected_keys``, so those tensors are ignored without a word.
-      Measured on peft 0.20.0: stripping ``base_model.model.`` from a valid
-      adapter, or leaving the adapter name in (``lora_B.default.weight``, what
-      filtering ``model.state_dict()`` by hand produces instead of using
-      ``get_peft_model_state_dict``), reloads with every lora_B back at zero and
-      raises nothing. The file still holds two nonzero tensors called lora_B, so
-      the count this function exists to reinforce reads green on it.
-    * EXTRA, non-LoRA -- recorded and NOT failed. ``save_pretrained`` may write
-      more than the adapter (an embedding, a modules_to_save copy) and that is
-      not a name PEFT would have to match.
-    """
+    """Unexpected LoRA names fail: PEFT loads with strict=False and silently ignores them."""
     if not peft_keys or not peft_keys.get("keys"):
         return {
             "keys_checked": False,
@@ -1125,30 +732,7 @@ def verify_saved_adapter(
     expected: dict | None = None,
     peft_keys: dict | None = None,
 ) -> dict:
-    """Read the serialized adapter back and say what is in it.
-
-    Everything downstream of the save runs on the in-memory model, so the only
-    thing that ever looked at the file was a filename test. A tensor read rather
-    than a PEFT reload, because it runs on a card already holding a 4-bit model
-    and the failure modes worth naming (unreadable, empty, non-finite, all zero)
-    are visible in the tensors themselves.
-
-    What is NOT visible in the tensors is whether PEFT would consume them, since
-    it matches by NAME and ignores what it does not recognise. ``peft_keys`` is
-    ``peft_adapter_keys(model)`` for the model that was just saved, and
-    comparing the two key sets is what turns "these bytes deserialize" into
-    "these weights land". See ``_compare_adapter_keys``.
-
-    ``nonzero_b_tensors`` is the load-bearing one, counted over the B matrices
-    SPECIFICALLY: ``lora_B`` is zero at initialisation and only becomes non-zero
-    once an update has been applied and saved, while ``lora_A`` is randomly
-    initialised and nonzero before a single step. Counting every tensor
-    therefore passed an adapter whose B matrices were all zero or dropped, whose
-    output is still zero through B, so reloading it restores the base model.
-
-    Returns a dict; never raises. ``saved_adapter_failures`` turns it into a
-    verdict, so the pass/fail rule stays testable without a GPU.
-    """
+    """Counts non-zero lora_B tensors: lora_A starts random, so counting all tensors passes zero B."""
     adapter_dir = Path(adapter_dir)
     state: dict[str, Any] = {"dir": str(adapter_dir)}
     try:
@@ -1223,8 +807,7 @@ def saved_adapter_failures(state: dict) -> list[str]:
             f"the saved adapter's adapter_config.json could not be read, so "
             f"nothing can load it: {state.get('config_error')}"
         )
-    # Syntactically valid JSON is not a loadable adapter: `{}` parses, and used
-    # to pass here, leaving the leg green on a file PEFT cannot reconstruct.
+    # Valid JSON is not enough: `{}` parses but PEFT cannot load it.
     if state.get("config_loadable") is False:
         failures.append(
             f"the saved adapter's adapter_config.json parses but PEFT cannot "
@@ -1249,10 +832,7 @@ def saved_adapter_failures(state: dict) -> list[str]:
         failures.append(
             f"the saved adapter holds non-finite weights: {state['non_finite_tensors']}"
         )
-    # The B matrices, not the tensor count: lora_A is randomly initialised and
-    # nonzero before training starts, so a file whose B matrices were all zero
-    # or dropped still had nonzero tensors and was accepted, while producing
-    # nothing, the adapter's contribution going through B.
+    # Check lora_B: lora_A is random and nonzero before training, so B carries the trained update.
     b_tensors = state.get("b_tensors")
     if not b_tensors:
         failures.append(
@@ -1270,9 +850,7 @@ def saved_adapter_failures(state: dict) -> list[str]:
             f"this adapter contributes nothing and reloading it would restore the "
             f"base model."
         )
-    # Names, after values: peft matches its state dict by key and ignores what
-    # it does not recognise, so a file full of healthy nonzero lora_B tensors
-    # under names it does not use reloads as the base model without raising.
+    # peft silently ignores unknown keys, so wrongly named tensors reload as the base model.
     if state.get("keys_checked") is False:
         failures.append(
             f"the saved adapter's tensor names were never checked against the "
@@ -1296,18 +874,7 @@ def saved_adapter_failures(state: dict) -> list[str]:
 
 
 def canary_failures(run: dict, *, require: bool) -> list[str]:
-    """The canary assertion, as an EXACT match rather than a substring.
-
-    The completion trained on is ``CANARY + eos_token`` and decoding strips the
-    special tokens, so a healthy greedy decode returns the canary and nothing
-    else. ``CANARY in generated`` also accepts ``'__UNSLOTH__!!!<anything>'``,
-    which is what a stopping or EOS regression produces -- the model learned the
-    target and no longer knows where to stop -- reporting green on a broken
-    inference path.
-
-    Surrounding whitespace is the one normalisation allowed, being a decoder
-    artefact rather than a change in what the model emitted.
-    """
+    """Exact match: a substring check would pass a model that no longer knows where to stop."""
     generated = run.get("generated") or ""
     if generated.strip() == CANARY:
         return []
@@ -1351,11 +918,8 @@ def environment_fingerprint() -> dict:
         info["unsloth"] = getattr(unsloth, "__version__", "unknown")
     except Exception:  # noqa: BLE001
         pass
-    # Every package this CI watches, read from the installed distributions, and
-    # what makes a canary-leg failure attributable: control and canary run the
-    # same payload, so the diff of these two blocks is the entire difference
-    # between green and red. The keys above are kept as they were, the committed
-    # reference carrying them and the summary renderer reading them.
+    # Every watched package, so control vs canary failures are attributable by diff. The keys
+    # above stay as they are: the committed reference carries them and report.py reads them.
     info["resolved"] = flatten_versions(resolved_versions(GOAL_PACKAGES))
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
@@ -1368,12 +932,7 @@ def environment_fingerprint() -> dict:
 
 
 def reference_step_count(ref: dict):
-    """The ``max_steps`` a reference file says it was captured at.
-
-    ``None`` means the file does not say, which is not "it matches": a trace
-    with no declared length cannot be shown to describe the run in hand, and the
-    caller treats it as such.
-    """
+    """None means no declared step count, which the caller must treat as a mismatch, not a match."""
     config = ref.get("config")
     if not isinstance(config, dict):
         return None
@@ -1384,19 +943,23 @@ def reference_step_count(ref: dict):
         return None
 
 
-# Every setting that defines which experiment a trace is a trace OF. A run
-# differing in any of them is not comparable to the reference whatever the
-# numbers do, and references/README.md says widening the band is never the
-# answer.
-#
-# `repeat` is deliberately absent: each cycle is a fresh process on identical
-# configuration, so how many ran changes none of them, and refusing on it would
-# reject a --repeat 3 run against a --repeat 2 reference for no reason.
-#
-# `dataset_digest` is here rather than `dataset`: the PATH says nothing about
-# what is in the file, and canary_dataset.jsonl is inside the workflow's paths
-# filter, so a run triggered BY editing it is exactly the run that would
-# otherwise be band-checked against a trace of the old rows.
+# Hub repo ids among the reference-defining fields, compared without case.
+_REPO_ID_KEYS = frozenset({"model", "resolved_checkpoint"})
+_HUB_REPO_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
+
+
+def _is_hub_repo_id(value: Any) -> bool:
+    """``owner/name`` and not a directory here. A local checkpoint path keeps its case:
+    on a case-sensitive filesystem /models/Foo and /models/foo are different weights."""
+    return (
+        isinstance(value, str)
+        and _HUB_REPO_ID_RE.fullmatch(value) is not None
+        and not os.path.exists(value)
+    )
+
+
+# Settings that define the experiment; any mismatch means no comparison. `repeat` is excluded,
+# and dataset_digest is used instead of the path so edited rows are detected.
 REFERENCE_DEFINING_SETTINGS = (
     "max_steps",
     "dataset_digest",
@@ -1425,43 +988,7 @@ def check_reference(
     resolved_revision: str | None = None,
     environment: dict | None = None,
 ) -> dict:
-    """Compare against a committed reference. Never an equality check.
-
-    ``max_steps``, the step count of the run being judged, is mandatory. A
-    reference is a trace of one specific run, and a run of a different length is
-    a different run: the fp16 scaler burns its first few steps on overflows, the
-    learning-rate schedule is constant only because the run is short, and step N
-    of a 3-step run is not the step N the 10-step trace recorded. Comparing
-    across counts is arithmetic that succeeds and means nothing, so the mismatch
-    gets its own status and the numbers are never touched. ``reference_failures``
-    turns it into a failure; nothing here can turn it into a pass.
-
-    ``max_steps`` used to be the only setting checked and is not the only one
-    with that property: the reference records the whole ``config`` block, and
-    README names the learning rate, the optimizer and the model as things that
-    invalidate the file, so ``config``, ``model`` and the resolved checkpoint
-    are compared under the same refuse-before-comparing rule.
-
-    ``environment`` is the same rule applied to the HARDWARE, which is the one
-    thing the reference records about itself that nothing compared. The file
-    carries ``environment.gpu_name`` and ``gpu_capability`` -- "Tesla T4",
-    "sm_75" -- because a loss trace belongs to the card it was captured on: the
-    T4 has no bf16 and resolves attention to xformers, so the same code on
-    another card produces a different curve, and band-checking across them
-    reports a hardware difference as a code regression. The requirement is
-    DERIVED from the reference's own environment block rather than restated as
-    "must be a T4", so a reference recaptured on other hardware moves the gate
-    with it. A reference that DOES name its card and a run that cannot name its
-    own is ``hardware_unverified`` rather than a skip, because the alternative
-    is a gate that switches itself off exactly when the probe fails.
-
-    The settings are optional and default to not-compared, so an older caller
-    and an older reference both keep working: a key the reference does not carry
-    is listed in ``config_unchecked`` rather than treated as a mismatch. "It
-    does not say" is neither "it differs" nor "it matches" -- but that is what
-    the REFERENCE does not say. What the run does not say about hardware the
-    reference does name is a refusal.
-    """
+    """Refuses rather than compares a reference whose steps, config, model or GPU differ from this run."""
     if not reference_path.exists():
         return {"status": "absent", "path": str(reference_path)}
     ref = json.loads(reference_path.read_text(encoding = "utf-8"))
@@ -1479,8 +1006,7 @@ def check_reference(
         "step_differences": [],
     }
 
-    # The step-count gate comes FIRST and returns, so no partially reassuring
-    # "worst relative deviation" is computed from two different runs.
+    # Step-count gate first, so no deviation is computed across different runs.
     if verdict["reference_max_steps"] is None:
         verdict["status"] = "reference_step_count_unknown"
         verdict["note"] = (
@@ -1502,12 +1028,7 @@ def check_reference(
         )
         return verdict
 
-    # The hardware, before any number is compared and on the same terms as the
-    # step count. A trace is of one card: the T4 has no bf16 and resolves
-    # attention to xformers, so another GPU moves the curve for reasons that
-    # have nothing to do with the code under test, and the deviations would be
-    # reported as a regression. Only the count of GPUs was ever checked, on the
-    # kernel, which cannot see this file at all.
+    # Hardware gate: the T4 has no bf16 and uses xformers, so another GPU moves the curve.
     ref_env = ref.get("environment") if isinstance(ref.get("environment"), dict) else {}
     live_env = environment if isinstance(environment, dict) else {}
     hardware_pairs: list[tuple[str, Any, Any]] = []
@@ -1516,25 +1037,15 @@ def check_reference(
         expected = ref_env.get(key)
         observed = live_env.get(key)
         if expected is None:
-            # The reference does not say, which is not "it differs": an older
-            # trace captured before the block carried a card keeps working, and
-            # the skip is recorded rather than silent.
+            # Reference has no card recorded: skip, but record the skip.
             if observed is not None:
                 verdict["config_unchecked"].append(key)
             continue
-        # The reference DOES say. From here the requirement is the reference's
-        # own, so a run that cannot show what it ran on has not met it.
         if observed is None:
             unverified.append(key)
             continue
         hardware_pairs.append((key, expected, observed))
-    # A live probe that produced no card is a refusal, not a skip. main()
-    # records environment = {"error": ...} when environment_fingerprint()
-    # raises, and the fingerprint omits every gpu_* key outright when
-    # torch.cuda.is_available() is False, so both of those -- and a caller that
-    # hands over no environment at all -- used to land in config_unchecked and
-    # let the band check report "ok" without establishing the card. That is the
-    # hardware gate above disabled by the one failure it most needs to survive.
+    # A live probe with no card (error or no CUDA) is a refusal, not a skip.
     if unverified:
         verdict["status"] = "hardware_unverified"
         verdict["config_differences"] = [
@@ -1571,9 +1082,6 @@ def check_reference(
         )
         return verdict
 
-    # The rest of the configuration on the same terms as the step count: refuse
-    # before comparing a single number, since these settings define a different
-    # experiment rather than a drift within one.
     ref_config = ref.get("config") if isinstance(ref.get("config"), dict) else {}
     observed_pairs: list[tuple[str, Any, Any]] = []
     if config:
@@ -1589,12 +1097,7 @@ def check_reference(
         ("resolved_checkpoint", resolved_checkpoint),
         ("resolved_revision", resolved_revision),
     ):
-        # Neither side records it: nothing claimed, nothing to report. Present
-        # on ONE side is a pin that did not run, recorded rather than skipped
-        # silently. Still not a refusal, since "it does not say" is not "it
-        # differs", but an invisible skip reads as a comparison that passed, and
-        # this is exactly where a checkpoint pin sits unenforced for months.
-        # report.py puts config_unchecked on the summary.
+        # Pin present on only one side: record as unchecked rather than refuse or skip silently.
         if observed is None and ref.get(key) is None:
             continue
         if observed is None or ref.get(key) is None:
@@ -1602,6 +1105,10 @@ def check_reference(
             continue
         observed_pairs.append((key, ref[key], observed))
     for key, expected, observed in observed_pairs:
+        if key in _REPO_ID_KEYS and _is_hub_repo_id(expected) and _is_hub_repo_id(observed):
+            # Hub repo ids are case-insensitive; the revision still pins the weights.
+            if expected.casefold() == observed.casefold():
+                continue
         if expected != observed:
             verdict["config_differences"].append(
                 {"key": key, "reference": expected, "observed": observed}
@@ -1621,13 +1128,7 @@ def check_reference(
         verdict["status"] = "length_mismatch"
         return verdict
 
-    # The step coordinates, before any value is compared: the lists are zipped
-    # positionally, so a shifted, duplicated or reordered `step` pairs values
-    # describing different iterates and the band check reports on arithmetic it
-    # invented. Safe to be strict because the leg carrying a reference is the
-    # control, whose library set is pinned to the one the trace was captured
-    # with and whose pin failure is itself fatal, so the trainer cannot renumber
-    # its steps without the pins going red first.
+    # Check step coordinates first: values are zipped positionally.
     for index, (cur, old) in enumerate(zip(metrics, ref_metrics)):
         if cur.get("step") != old.get("step"):
             verdict["step_differences"].append(
@@ -1650,9 +1151,7 @@ def check_reference(
             if not has_cur and not has_old:
                 continue
             if has_cur != has_old:
-                # Present on one side only is a change in the SHAPE of what the
-                # trainer logged, not a numeric drift, and no tolerance covers
-                # it.
+                # Present on one side only is a shape change, not drift.
                 verdict["deviations"].append(
                     {
                         "step": (cur if has_cur else old).get("step"),
@@ -1665,13 +1164,8 @@ def check_reference(
                 )
                 continue
             new, ref_val = float(cur[field]), float(old[field])
-            # NaN, explicitly, which is why the arithmetic is not left to itself.
-            # Under fp16 the gradient scaler logs a NaN grad_norm on every
-            # skipped step, so the committed reference genuinely contains NaNs,
-            # and left to the subtraction abs(x - NaN) is NaN, NaN > rel_tol is
-            # False, and the step passes whatever it holds -- including the case
-            # that matters most, a step that used to overflow and no longer
-            # does. NaN equals NaN here; NaN against a number is a deviation.
+            # Handle NaN explicitly: the fp16 reference contains NaN grad_norms and NaN > tol is False.
+            # NaN equals NaN; NaN against a number is a deviation.
             cur_nan, ref_nan = new != new, ref_val != ref_val
             if cur_nan or ref_nan:
                 if cur_nan != ref_nan:
@@ -1686,15 +1180,8 @@ def check_reference(
                         }
                     )
                 continue
-            # Infinities, for the same reason one step further along. An fp16
-            # overflow logs infinity as readily as NaN, so the reference holds
-            # them, and every pairing an infinity takes part in divides to NaN:
-            # abs(inf - inf) / inf and abs(inf - 1.0) / inf alike. NaN > rel_tol
-            # is False and max(worst, NaN) returns worst, so the entry was
-            # accepted AND left no trace in worst_rel, including a step that
-            # used to be finite and now overflows. Equal signed infinities are
-            # the unchanged case; everything else is a deviation, decided before
-            # the division.
+            # Infinities too: any pairing with inf divides to NaN and would pass silently.
+            # Equal signed infinities match; anything else is a deviation.
             cur_inf = new in (float("inf"), float("-inf"))
             ref_inf = ref_val in (float("inf"), float("-inf"))
             if cur_inf or ref_inf:
@@ -1730,29 +1217,18 @@ def check_reference(
 
 
 def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
-    """Turn a reference verdict into failure strings. Separate so the path from
-    "out of band" to "the job goes red" is testable without a GPU: a band check
-    never observed to fail is not yet a check.
-    """
+    """Kept apart so the path from out-of-band to a failing job can be unit-tested without a GPU."""
     if verdict["status"] == "out_of_band":
         return [f"metrics outside +/-{rel_tol:.0%} of the reference: " f"{verdict['deviations']}"]
     if verdict["status"] == "length_mismatch":
         return ["reference has a different number of logged steps: nothing was compared"]
-    # Refusals, loud and fatal: a reference that cannot be compared is worth
-    # less than no reference, because it looks like cover and is not. Never
-    # demote these to a warning.
+    # Refusals are fatal: an uncomparable reference looks like cover and is not.
     if verdict["status"] in (
         "step_count_mismatch",
         "reference_step_count_unknown",
         "config_mismatch",
         "step_mismatch",
-        # The card the trace was captured on. Same rule as the settings: a
-        # band checked across hardware succeeds arithmetically and means
-        # nothing, and its deviations read as a code regression.
         "hardware_mismatch",
-        # And the same rule when the card is unreadable rather than wrong: a
-        # reference that names its hardware is only comparable against a run
-        # that can name its own.
         "hardware_unverified",
     ):
         return [
@@ -1772,31 +1248,15 @@ def _is_finite(value) -> bool:
 
 
 def optimisation_failures(metrics: list[dict]) -> list[str]:
-    """Did this run optimise anything at all? Cheap checks, loud answers.
-
-    The last of the three is the one a short run needs. Under fp16 the gradient
-    scaler logs ``grad_norm: NaN`` on a skipped step, and a run whose every step
-    was skipped applied no optimizer update at all: the weights at the end are
-    the weights at the start, while the loss is finite, the adapter saves and
-    generation produces text, so the run reports as a training test having done
-    no training. That is exactly what a step count trimmed too far produces.
-    """
+    """A run whose every fp16 step was skipped applied no update, yet still reports healthy otherwise."""
     failures: list[str] = []
     losses = [m["loss"] for m in metrics]
     if any(l != l or l in (float("inf"), float("-inf")) for l in losses):
         failures.append(f"non-finite loss: {losses}")
     if len(losses) > 1 and not losses[-1] < losses[0]:
         failures.append(f"loss did not decrease over the run: {losses}")
-    # Only decidable where grad_norm was logged at all: a trainer version that
-    # stops logging it says nothing about whether steps were applied, and
-    # inferring "all skipped" from that silence would be a failure invented
-    # rather than found.
-    #
-    # Finite, not merely non-NaN. An fp16 overflow reports the norm as inf at
-    # least as readily as NaN (clip_grad_norm_ over an inf gradient returns inf)
-    # and `inf == inf` is True, so a NaN-only test counted every skipped step as
-    # applied and a run that applied nothing reported green. The loss check
-    # above already treats inf as non-finite; this one did not.
+    # Only decidable when grad_norm was logged. Check finiteness, not just NaN: fp16 overflow
+    # also reports inf.
     reported = [m["grad_norm"] for m in metrics if m.get("grad_norm") is not None]
     applied = [g for g in reported if _is_finite(g)]
     if reported and not applied:
@@ -1812,9 +1272,7 @@ def optimisation_failures(metrics: list[dict]) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default = DEFAULT_MODEL)
-    # On by default: batched generation is the surface that has broken most
-    # often here (#3699, #1066, #1456, #2138) and a leg that quietly skips it
-    # is a leg that stops covering it.
+    # On by default: batched generation has broken here repeatedly.
     ap.add_argument(
         "--check-batched-generation",
         dest = "check_batched_generation",
@@ -1826,53 +1284,24 @@ def main() -> int:
         dest = "check_batched_generation",
         action = "store_false",
     )
-    # OFF by default, unlike the batched-generation check above. That one is
-    # pure compute on a model already in memory; this one installs llama.cpp
-    # and merges the adapter, about 40s for a 0.6B on top of a ~10-46s install,
-    # so a leg opts in rather than every payload paying for it.
+    # Off by default: installs llama.cpp and merges the adapter, which is slow.
     ap.add_argument(
         "--export-gguf",
         dest = "export_gguf",
         action = "store_true",
         default = False,
     )
-    # What the exported filename is allowed to say. More than one because a
-    # model may legitimately override the request: gpt-oss answers q8_0 with
-    # "Overriding to MXFP4 format" by design, and failing on documented
-    # behaviour would be a failure invented rather than found.
+    # A model may legitimately override the request (gpt-oss forces MXFP4).
     ap.add_argument("--gguf-quantization", default = "q8_0")
     ap.add_argument(
         "--gguf-accept", default = "", help = "comma separated; defaults to the requested one"
     )
     ap.add_argument("--dataset", default = str(_HERE / "canary_dataset.jsonl"))
     ap.add_argument("--outdir", required = True)
-    # 3 steps, and the whole reason --init-loss-scale exists.
-    #
-    # Measured twice. Under fp16 the dynamic gradient scaler starts at 65536,
-    # halves on every overflow and skips the step it overflowed on, and on this
-    # model the first three steps overflow every time (the committed 10-step
-    # reference has grad_norm NaN at steps 1, 2 and 3). So a 3-step run of the
-    # ORIGINAL configuration applies zero optimizer updates, the loss does not
-    # move and the canary never forms: an early 3-step attempt emitted
-    # '#1\ndef my_function():...'.
-    #
-    # Pinning the scaler's starting scale below the overflow point (see
-    # pin_initial_loss_scale) gives those three steps back as real updates, and
-    # optimisation_failures() asserts that happened. The 10-step trajectory is
-    # the honest yardstick for what 3 updates buy: loss 1.75 after three applied
-    # updates and 0.18 after four, so the canary has less margin at 3 steps than
-    # at 10. A T4 run reporting the canary missing while the scaler shows
-    # updates applied is the signal to raise this back up, not to relax the
-    # canary.
+    # Under fp16 the scaler overflows and skips the first three steps on this model, so short runs
+    # need --init-loss-scale to apply any update. See pin_initial_loss_scale.
     ap.add_argument("--max-steps", type = int, default = 10)
-    # Off by default. The pin is for short runs: the scaler overflows the first
-    # three steps, so anything under about five applies no updates at all. At
-    # the default of 10 the run reaches step 4 on its own and learns the canary,
-    # and leaving the scaler alone keeps the committed reference applicable,
-    # since a different starting scale is a different rounding of the same
-    # gradients. Set it (e.g. 2048, below the 8192 the reference reaches after
-    # three halvings) only with a shorter --max-steps and a reference recaptured
-    # with both.
+    # Off by default: only needed for short --max-steps, and changing it invalidates the reference.
     ap.add_argument(
         "--init-loss-scale",
         type = float,
@@ -1884,8 +1313,7 @@ def main() -> int:
     ap.add_argument("--batch-size", type = int, default = 2)
     ap.add_argument("--grad-accum", type = int, default = 1)
     ap.add_argument("--max-seq-length", type = int, default = 512)
-    # 1e-3 with the prompt masked out. Higher rates overflow fp16 far more often,
-    # and each overflow is a skipped step this short run cannot spare.
+    # Higher rates overflow fp16 more often, and each overflow skips a step.
     ap.add_argument("--learning-rate", type = float, default = 1e-3)
     ap.add_argument("--lora-r", type = int, default = 16)
     ap.add_argument("--lora-alpha", type = int, default = 32)
@@ -1934,18 +1362,15 @@ def main() -> int:
     ap.add_argument("--require-canary", dest = "require_canary", action = "store_true", default = True)
     ap.add_argument("--no-require-canary", dest = "require_canary", action = "store_false")
     ap.add_argument(
-        # The plain-TRL control arm, in its own process. Off by default: it
-        # doubles the leg's train time and only one leg is asking the question.
+        # Off by default: doubles the leg's train time.
         "--compare-naive-trl",
         action = "store_true",
         default = False,
         help = "also train the same rows with plain TRL and report both traces",
     )
     ap.add_argument(
-        # The multi-card leg, and it is the ONLY thing that makes unsloth's
-        # DEVICE_COUNT > 1 bindings reachable. build_kernel.py pins every other
-        # payload with CUDA_VISIBLE_DEVICES, so `torch_gpu_device` is the
-        # nullcontext shim in every run this CI has ever produced.
+        # The only leg where DEVICE_COUNT > 1 bindings are reachable; other payloads pin
+        # CUDA_VISIBLE_DEVICES.
         "--require-multi-gpu",
         dest = "require_multi_gpu",
         action = "store_true",
@@ -1954,9 +1379,7 @@ def main() -> int:
         "the weights landed",
     )
     ap.add_argument(
-        # Keep every card VISIBLE and put the WEIGHTS on one. See the comment at
-        # the from_pretrained call: sharded training is broken upstream, and the
-        # DEVICE_COUNT > 1 bindings this leg exists to cover do not need it.
+        # All cards visible, weights on one: see the from_pretrained call.
         "--single-device",
         dest = "single_device",
         action = "store_true",
@@ -1964,18 +1387,13 @@ def main() -> int:
         help = "load with device_map={'': 0} while leaving both cards visible",
     )
     ap.add_argument(
-        # How many cards this leg was BUILT for, so the check compares against a
-        # declaration rather than against whatever the session happened to give
-        # it. Reading device_count() on both sides of the comparison is how a
-        # rule ends up unable to fail.
+        # Compare against a declared count, not device_count() on both sides.
         "--expected-cards",
         dest = "expected_cards",
         type = int,
         default = 2,
     )
     ap.add_argument(
-        # Off by default: only the vendored-kernel leg is asking, and probing
-        # imports in every leg would add imports to legs that never wanted them.
         "--kernel-provenance",
         dest = "kernel_provenance",
         action = "store_true",
@@ -1983,11 +1401,7 @@ def main() -> int:
         help = "record which fast kernels loaded and where each resolved from",
     )
     ap.add_argument(
-        # A SEPARATE PROCESS, like the plain-TRL control and for a related
-        # reason: the vision run loads a second model, and two 4bit models
-        # resident at once on a 14.56GB T4 is how a leg becomes an OOM blamed
-        # on the thing it was testing. It also runs AFTER the cycles, so a
-        # vision failure cannot be mistaken for a text-training one.
+        # Separate process after the cycles: two 4bit models on one T4 risk OOM.
         "--vision-run",
         dest = "vision_run",
         action = "store_true",
@@ -1995,8 +1409,7 @@ def main() -> int:
         help = "also drive run_vision_t4.py and fold its verdict into this report",
     )
     ap.add_argument(
-        # Only for models the control arm demonstrably cannot LOAD on the card.
-        # An OOM during training stays a failure either way.
+        # Only for models the control arm cannot load; a training OOM still fails.
         "--control-oom-is-ok",
         dest = "control_oom_is_ok",
         action = "store_true",
@@ -2014,16 +1427,8 @@ def main() -> int:
         try:
             run = train_once(args, args.cycle)
         except BaseException as exc:
-            # A crash mid-cycle must not take the readings taken BEFORE it down
-            # with it. On kernel unsloth-probe-multigpu-r1-18beab the multi-card
-            # facts were gathered, logged in full, and then lost: the cycle died
-            # in trainer.train() and wrote no report at all, so the leg reported
-            # `multi_gpu: null` while the driver log held every number. Reading
-            # the report alone said the measurement had not been taken.
-            #
-            # The partial report carries the error, so it can never be mistaken
-            # for a completed cycle: `cycle_error` is what the parent's own
-            # "cycle N did not complete" failure is already keyed on.
+            # Write a partial report on crash so readings taken before it survive; `cycle_error` marks it
+            # as incomplete.
             partial = {
                 "run_index": args.cycle,
                 "cycle_error": f"{type(exc).__name__}: {exc}"[:2000],
@@ -2043,17 +1448,8 @@ def main() -> int:
         (outdir / "cycle_report.json").write_text(json.dumps(run, indent = 2), encoding = "utf-8")
         return 0
 
-    # Parent mode: each cycle in a FRESH process, measured rather than assumed.
-    # Two in-process cycles disagreed from the first logged step (6.4375 vs
-    # 6.2367) while two separate processes agreed bitwise on every step.
-    # Something in the first cycle's model load, patching or allocator state
-    # leaks into the second, so an in-process repeat tests the leak rather than
-    # the code and would report a false regression on a reproducible run. A
-    # fresh process is also what a user re-running a notebook gets.
-    #
-    # The config and environment are read BEFORE the cycles, so a run that dies
-    # in one still says which library set it died with: control red / canary
-    # green is a bisect only if the red leg reported its versions.
+    # Each cycle in a fresh process: in-process repeats leak state and disagree from step one.
+    # Config and environment are read first so a crashed run still reports its versions.
     config = {
         k: getattr(args, k)
         for k in (
@@ -2070,10 +1466,7 @@ def main() -> int:
             "repeat",
         )
     }
-    # WHAT trained, beside the settings that say how. Recorded here, in the
-    # parent, so a run whose cycles all died still says which rows it was asked
-    # to train on, and so the value travels into any reference captured from
-    # this report.
+    # Recorded in the parent so it survives dead cycles and travels into captured references.
     config["dataset_digest"] = dataset_digest(Path(args.dataset))
     try:
         env = environment_fingerprint()
@@ -2108,27 +1501,16 @@ def main() -> int:
             ("--gradient-checkpointing", args.gradient_checkpointing),
             ("--max-new-tokens", args.max_new_tokens),
             ("--label", args.label),
-            # The export settings travel too. Forgetting them is not a
-            # hypothetical: --export-gguf reached the PARENT on kernel
-            # unsloth-probe-default-gguf-637565, was parsed there, and never
-            # reached the child that actually runs train_once, so every cycle
-            # reported `gguf_export: null` and the leg failed with "GGUF export
-            # was never run" while the driver log plainly showed the flag on
-            # the command line.
+            # Export settings must be forwarded to the child, which is what runs train_once.
             ("--gguf-quantization", args.gguf_quantization),
             ("--gguf-accept", args.gguf_accept),
-            # The CYCLE is what loads the model, so it is the only process that
-            # can read where unsloth bound its multi-card helpers. A parent that
-            # parsed this and kept it would report `multi_gpu: null` for every
-            # cycle and the leg would pass having measured nothing.
+            # Only the cycle loads the model, so only it can read the multi-card bindings.
             ("--expected-cards", args.expected_cards),
         ):
             cmd += [flag, str(value)]
         if args.export_gguf:
             cmd.append("--export-gguf")
-        # Forwarded explicitly. A flag parsed in the parent and never passed on
-        # is not hypothetical here: --export-gguf did exactly that on kernel
-        # unsloth-probe-default-gguf-637565 and every cycle reported null.
+        # Forwarded explicitly to the child.
         if args.kernel_provenance:
             cmd.append("--kernel-provenance")
         if args.require_multi_gpu:
@@ -2161,13 +1543,7 @@ def main() -> int:
             return 1
         runs.append(json.loads(report_file.read_text(encoding = "utf-8")))
 
-    # The plain-TRL control arm. AFTER the cycles, not before and not beside:
-    # it wants the same card, and two 4bit models resident at once on a 14.56GB
-    # T4 is how a comparison turns into an OOM blamed on the thing being
-    # compared. A fresh process because unsloth patches transformers, trl and
-    # peft at import; this parent has never imported it (only the cycle
-    # children do), but relying on that would make the control's validity a
-    # property of import order in a file nobody reads for that.
+    # Control arm after the cycles in a fresh process: avoids OOM and unsloth's import-time patches.
     naive = None
     if args.compare_naive_trl:
         naive_dir = outdir / "naive_trl"
@@ -2179,18 +1555,8 @@ def main() -> int:
             "--outdir",
             str(naive_dir),
         ]
-        # The repo UNSLOTH RESOLVED, not the name that was asked for. This is
-        # the difference between a comparison and an OOM: `load_in_4bit=True`
-        # sends unsloth through FLOAT_TO_INT_MAPPER to a pre-quantised
-        # `-unsloth-bnb-4bit` sibling, while the plain path quantises the
-        # ORIGINAL on the fly and therefore has to materialise the 16bit
-        # checkpoint first. On gemma-4-E2B-it that asked for 8.75GiB on top of
-        # 7.25GiB already resident and died (kernel
-        # unsloth-probe-latestcompile-r3-cb1125).
-        #
-        # Pointing both arms at the same weights is also the fairer comparison:
-        # the question is what the two TRAINING stacks do, not which repo each
-        # loader picks.
+        # Use the repo unsloth resolved (a pre-quantised sibling): the plain path quantising the
+        # original materialises 16bit weights and OOMs.
         control_model = runs[0].get("resolved_checkpoint") or args.model
         for flag, value in (
             ("--model", control_model),
@@ -2205,11 +1571,7 @@ def main() -> int:
             ("--optim", args.optim),
         ):
             cmd += [flag, str(value)]
-        # rc is not consulted: the child writes its own report on every path,
-        # including its own crash, and comparison_failures rules on the report.
-        # Reading rc here as well would give two sources of truth for one
-        # outcome, and they would disagree the first time the child died after
-        # writing.
+        # rc ignored: the child always writes a report, which is the single source of truth.
         subprocess.run(cmd)
         naive_file = naive_dir / "naive_trl_report.json"
         if naive_file.exists():
@@ -2231,24 +1593,15 @@ def main() -> int:
             args.model,
             "--max-seq-length",
             str(args.max_seq_length),
-            # Deliberately small and stated here rather than inherited. The
-            # text side runs 10-20 steps in seconds; a vision step on a T4 is
-            # ~100s (317.9s for three, kernel unsloth-probe-vision-train-r3),
-            # so inheriting --max-steps would quietly add half an hour to the
-            # leg. Three steps is what the pixel, adapter and export claims
-            # need; more of them prove nothing extra.
+            # Few steps: a vision step on a T4 takes ~100s.
             "--max-steps",
             "3",
             "--samples",
             "8",
         ]
         if args.export_gguf:
-            # The merged-export half of the vision claim. Same flag the text
-            # side uses, so a leg cannot end up exporting on one path only.
             vision_cmd.append("--export")
-        # rc is not consulted, for the same reason as the control arm: the
-        # child writes a report on every path including its own crash, and
-        # reading rc as well would give two sources of truth for one outcome.
+        # rc ignored, as for the control arm.
         subprocess.run(vision_cmd)
         vision_file = vision_dir / "vision_report.json"
         if vision_file.exists():
@@ -2259,14 +1612,9 @@ def main() -> int:
     report: dict = {
         "label": args.label,
         "model": args.model,
-        # The repo and commit the loader read, travelling into any reference
-        # captured from this report so the band check can refuse against a
-        # mirror re-uploaded in place.
         "resolved_checkpoint": runs[0].get("resolved_checkpoint"),
         "resolved_revision": runs[0].get("resolved_revision"),
-        # The whole block travels into any reference captured from this report:
-        # check_reference refuses to compare a run against a trace captured with
-        # a different configuration.
+        # check_reference refuses runs captured with a different configuration.
         "config": config,
         "environment": env,
         "runs": runs,
@@ -2276,9 +1624,7 @@ def main() -> int:
 
     failures: list[str] = []
 
-    # -2. the vendored fast kernels and the attention choice. Read off cycle 0:
-    # every cycle loads the same model in the same process shape, so a
-    # per-cycle comparison would be comparing a constant with itself.
+    # -2. the vendored fast kernels and the attention choice. Read off cycle 0 (constant per cycle).
     if args.kernel_provenance:
         report["kernels"] = runs[0].get("kernels")
         report["attention"] = runs[0].get("attention")
@@ -2290,9 +1636,7 @@ def main() -> int:
         report["kernel_failures"] = kernel_broken
         failures += kernel_broken
 
-    # -1.5 the multi-card bindings. Read off cycle 0 for the same reason as the
-    # kernels above: the binding is made once, at import, so a per-cycle
-    # comparison compares a constant with itself.
+    # -1.5 the multi-card bindings. Read off cycle 0 (bound once at import).
     if getattr(args, "require_multi_gpu", False):
         report["multi_gpu"] = runs[0].get("multi_gpu")
         multi_broken = multi_gpu_failures(
@@ -2303,19 +1647,13 @@ def main() -> int:
         failures += multi_broken
 
     # -1. the plain-TRL control arm, reported side by side and NOT asserted
-    # equal. Two library stacks do not produce one fp16 trajectory -- frontier
-    # measured transformers 5.5.0 and 5.15.1 disagreeing at step 1 on identical
-    # weights, data and seed -- so the rules are "it ran" and "it converged",
-    # which are the same rules the unsloth arm is held to.
+    # equal: two library stacks do not produce one fp16 trajectory.
     if args.vision_run:
         report["vision"] = vision
         if not vision:
             report["vision_failures"] = ["the vision run produced no report at all"]
         else:
-            # The child already ruled on itself against the same pure function
-            # the CPU guards drive. Re-deriving the verdict here would be a
-            # second implementation of one rule, and they would disagree the
-            # first time one moved.
+            # The child already ruled on itself; do not re-derive the verdict.
             report["vision_failures"] = list(vision.get("failures") or [])
             if vision.get("error"):
                 report["vision_failures"].append(f"the vision run crashed: {vision['error']}"[:400])
@@ -2332,21 +1670,14 @@ def main() -> int:
     # 0. the pins, if this leg claims to be a control
     if args.pins:
         pins = load_pins(args.pins)
-        # The probe list is derived from the pin file: a pin outside
-        # GOAL_PACKAGES was looked up in a table nobody had asked about it and
-        # came back "not installed".
+        # Derive probes from the pin file so every pin is looked up.
         resolved = versions_for_pins(pins)
         broken = pin_failures(pins, resolved)
         report["pins"] = {"file": args.pins, "requested": pins, "failures": broken}
         failures += broken
 
     # 1. bitwise run-to-run, EVERY extra cycle against the baseline rather than
-    # just the second: --repeat 3 asks for three fresh processes, and a third
-    # that disagreed used to be collected, stored and never looked at.
-    #
-    # The top-level keys stay as they were, report.py rendering `identical`,
-    # `first_diff_step` and `max_abs_diff` off this dict, but now summarise
-    # every comparison; the per-cycle detail goes under `cycles`.
+    # just the second. report.py renders the top-level keys; per-cycle detail goes under `cycles`.
     if len(runs) > 1:
         cycles: dict = {}
         for other in runs[1:]:
@@ -2389,10 +1720,7 @@ def main() -> int:
             for f in saved_adapter_failures(run.get("saved_adapter") or {})
         ]
 
-    # 4b. batched generation reproduces one-at-a-time greedy output. Gated on
-    # the flag because the legs that carry no reference still want it, while a
-    # payload run for something else (a bisect, a single-cycle debug) should not
-    # be forced to pay for it.
+    # 4b. batched generation reproduces one-at-a-time greedy output.
     if args.check_batched_generation:
         for run in runs:
             failures += [
@@ -2400,19 +1728,14 @@ def main() -> int:
                 for f in batched_generation_failures(run.get("batched_generation"), args.model)
             ]
 
-    # 4c. the GGUF export, and whether the exported file runs. Both rules live
-    # in gguf_export.py so the gptoss and vision payloads can reuse them
-    # without copying the two traps (the sibling directory, and the tuple that
-    # install_llama_cpp returns) into three files.
+    # 4c. the GGUF export, and whether the exported file runs. Rules live in gguf_export.py.
     if args.export_gguf:
         from gguf_export import export_failures, run_failures
 
         accept = tuple(
             q.strip() for q in (args.gguf_accept or args.gguf_quantization).split(",") if q.strip()
         )
-        # A cycle that deliberately skipped the export is excused ONLY when
-        # another cycle really exported. "No export anywhere" stays a failure,
-        # so the saving cannot turn into missing coverage.
+        # A skipped export is excused only if another cycle exported.
         exported = [run for run in runs if not (run.get("gguf_export") or {}).get("skipped")]
         if not exported:
             failures.append(
@@ -2424,9 +1747,7 @@ def main() -> int:
                 f"run {run['run_index']}: {f}"
                 for f in export_failures(run.get("gguf_export"), accept_quantizations = accept)
             ]
-            # Only ask whether it RUNS once the export produced something; a
-            # missing file already failed above and would otherwise be reported
-            # twice under two different descriptions.
+            # Only check running once a file exists, to avoid double reporting.
             if (run.get("gguf_export") or {}).get("ggufs"):
                 failures += [
                     f"run {run['run_index']}: {f}" for f in run_failures(run.get("gguf_run"))

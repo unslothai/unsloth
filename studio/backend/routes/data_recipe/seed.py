@@ -5,23 +5,34 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
+import functools
 import json
 import os
 import re
 import shutil
 from itertools import islice
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from anyio import CapacityLimiter, to_process
+from anyio import CancelScope, CapacityLimiter, Lock as _AnyioLock, to_process, to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
+from hub.services.datasets.local_options import (
+    _sharded_splits,
+    _IGNORED_DATA_FILENAMES,
+    _MAX_MODULE_INFERENCE_FILES,
+    _METADATA_FILENAMES,
+    _SEP,
+    _SPLIT_KEYWORDS,
+)
 from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
@@ -48,9 +59,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Resolved on first use, not at module scope: the plugin package pulls the data designer engine, pandas and
-# pyarrow, delaying uvicorn binding the port. False means "probed once, not installed", so callers still just see
-# None.
+# Lazy: the plugin pulls heavy deps that delay port binding. False = probed, not installed.
 _CHUNKING: Any = None
 
 
@@ -68,13 +77,23 @@ def _chunking() -> Any:
 
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
-LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
-UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
+DEFAULT_CONFIG = "default"
+LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
+# Each type needs a core.rag parser or MuPDF; a frontend parity test reads this literal.
+UNSTRUCTURED_ALLOWED_EXTS = {
+    ".pdf", ".docx", ".txt", ".md", ".markdown", ".html", ".htm", ".xhtml", ".xht",
+    ".doc", ".docm", ".dotx", ".dotm", ".odt", ".ott", ".rtf",
+    ".epub", ".mobi", ".fb2",
+    ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".ods", ".ots",
+    ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppt", ".pps", ".odp", ".otp",
+    ".eml", ".msg", ".mht", ".mhtml",
+}  # fmt: skip
+# MuPDF is not thread-safe, so these run in the PDF worker pool.
+_MUPDF_EBOOK_EXTS = {".mobi", ".fb2"}
 SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
 UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-# Frontend-generated upload namespace (UUID4 hex); legacy node ids (n1, ...) never match,
-# since those directories can be shared by several recipes.
+# Legacy node ids (n1, ...) never match: their dirs can be shared across recipes.
 _UPLOAD_UID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -101,7 +120,8 @@ def _normalize_optional_text(value: str | None) -> str | None:
     return trimmed if trimmed else None
 
 
-def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
+def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
+    """Lists every repo file, not just loadable ones, so globs are judged against the whole listing."""
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import HfHubHTTPError
@@ -109,51 +129,628 @@ def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
         return []
     try:
         api = HfApi(token = token)
-        repo_files = api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
-        return [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
+        return api.list_repo_files(dataset_name, repo_type = "dataset", token = token)
     except (HfHubHTTPError, OSError, ValueError):
         return []
 
 
-def _select_best_file(data_files: list[str], split: str = DEFAULT_SPLIT) -> str | None:
+def _list_hf_dataset_configs(*, dataset_name: str, token: HfTokenArg) -> list[dict[str, Any]]:
+    """Read configs from the card's configs block; config names need not match folder names."""
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import HfHubHTTPError
+    except ImportError:
+        return []
+    try:
+        api = HfApi(token = token)
+        card_data = api.dataset_info(dataset_name, token = token).card_data
+        configs = (card_data or {}).get("configs") if card_data is not None else None
+    except (HfHubHTTPError, OSError, ValueError, AttributeError):
+        return []
+    return [config for config in (configs or []) if isinstance(config, dict)]
+
+
+def _as_pattern_list(paths: Any) -> list[str]:
+    if isinstance(paths, str):
+        return [paths]
+    if isinstance(paths, list):
+        return [path for path in paths if isinstance(path, str)]
+    return []
+
+
+def _patterns_for_split(
+    data_files: Any,
+    split: str,
+    *,
+    exact: bool = True,
+) -> list[str]:
+    """A bare string or list means the train split; an exact name match is tried before folding."""
+    if isinstance(data_files, str):
+        return [data_files] if _same_split(DEFAULT_SPLIT, split, exact) else []
+    if isinstance(data_files, dict):
+        for name, paths in data_files.items():
+            if _same_split(str(name), split, exact):
+                return _as_pattern_list(paths)
+        return []
+    if isinstance(data_files, list):
+        # Scan every entry; a split may be declared more than once, and stopping early drops the rest.
+        patterns: list[str] = []
+        for entry in data_files:
+            if isinstance(entry, str):
+                if _same_split(DEFAULT_SPLIT, split, exact):
+                    patterns.append(entry)
+            elif isinstance(entry, dict) and _same_split(
+                str(entry.get("split") or ""), split, exact
+            ):
+                patterns.extend(_as_pattern_list(entry.get("path")))
+        return patterns
+    return []
+
+
+def _same_split(declared: str, split: str, exact: bool) -> bool:
+    return declared == split if exact else declared.lower() == split.lower()
+
+
+def _declared_split_patterns(
+    configs: list[dict[str, Any]],
+    split: str = DEFAULT_SPLIT,
+    subset: str | None = None,
+) -> list[str]:
+    """The globs the card declares for this split, under the named config."""
+    config = _pick_config(configs, subset)
+    if config is None:
+        return []
+    declared = config.get("data_files")
+    named = _patterns_for_split(declared, split) or _patterns_for_split(
+        declared, split, exact = False
+    )
+    folder = _config_folder(config)
+    # Mirrors `_resolve_data_files`, which joins data_dir even if the pattern repeats it.
+    return [_normalized_glob(f"{folder}/{p}" if folder else p) for p in named]
+
+
+def _normalized_glob(pattern: str) -> str:
+    """Drop empty and dot segments the way list_repo_files spells paths, or the glob matches nothing."""
+    parts: list[str] = []
+    for part in pattern.strip().split("/"):
+        if part in ("", "."):
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _config_folder(config: dict[str, Any]) -> str:
+    folder = config.get("data_dir")
+    return _normalized_glob(folder) if isinstance(folder, str) else ""
+
+
+def _config_scope(configs: list[dict[str, Any]], subset: str | None) -> str:
+    """The folder a config is confined to, for a card that names one and lists no files."""
+    config = _pick_config(configs, subset)
+    return _config_folder(config) if config else ""
+
+
+def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str, Any] | None:
+    """With no subset, pick the config flagged default, else the only config, whatever its name."""
+    if subset:
+        # Exact name beats a case-folded match (card may carry Foo and foo); no config_name means default.
+        names = [(c, str(c.get("config_name") or DEFAULT_CONFIG)) for c in configs]
+        return next(
+            (c for c, name in names if name == subset),
+            next((c for c, name in names if name.lower() == subset.lower()), None),
+        )
+    flagged = next((c for c in configs if c.get("default") is True), None)
+    if flagged is not None:
+        return flagged
+    if len(configs) == 1:
+        return configs[0]
+    # Exactly `default`: Default and DEFAULT are configs to be asked for.
+    return next(
+        (c for c in configs if str(c.get("config_name") or DEFAULT_CONFIG) == DEFAULT_CONFIG),
+        None,
+    )
+
+
+def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """* stops at a folder boundary, ** crosses it; prefix matching would claim train-notes.json."""
+    parts: list[str] = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "*" and pattern[i + 1 : i + 2] == "*":
+            if pattern[i + 2 : i + 3] == "/":
+                # Whole folders, or none: `data/**/train.*` is not `data/nottrain.x`.
+                parts.append("(?:[^/]+/)*")
+                i += 3
+            else:
+                parts.append(".*")
+                i += 2
+            continue
+        if char == "*":
+            parts.append("[^/]*")
+        elif char == "?":
+            parts.append("[^/]")
+        elif char == "[":
+            end = _class_end(pattern, i)
+            if end < 0:
+                parts.append(r"\[")
+            else:
+                body = pattern[i + 1 : end].replace("\\", "\\\\")
+                # Only `!` negates a glob class; a leading `^` is a character.
+                if body[:1] == "!":
+                    body = f"^{body[1:]}"
+                elif body[:1] == "^":
+                    body = f"\\^{body[1:]}"
+                parts.append(f"[{body}]")
+                i = end
+        else:
+            parts.append(re.escape(char))
+        i += 1
+    return re.compile("".join(parts) + r"\Z")
+
+
+def _class_end(pattern: str, start: int) -> int:
+    """Index of the `]` closing the class opened at `start`, or -1 if unclosed."""
+    i = start + 1
+    if pattern[i : i + 1] in ("!", "^"):
+        i += 1
+    if pattern[i : i + 1] == "]":
+        i += 1
+    closing = pattern.find("]", i)
+    return closing if closing > start else -1
+
+
+def _posix_tail(path: str) -> list[str]:
+    """PurePosixPath(path).parts without the root: split on "/", empty and "." parts dropped."""
+    return [part for part in path.split("/") if part and part != "."]
+
+
+def _name_parts(path: str) -> tuple[str, str]:
+    """Path(path).suffix and .stem; by hand only for plain relative ASCII names, which every pathlib flavour and version reads alike."""
+    if path.isascii() and not path.startswith("/") and "\\" not in path and ":" not in path:
+        name = path[path.rfind("/") + 1 :]
+        dot = name.rfind(".")
+        if name[:1] not in ("", ".") and dot < len(name) - 1:
+            return (name[dot:], name[:dot]) if dot > 0 else ("", name)
+    parsed = Path(path)
+    return parsed.suffix, parsed.stem
+
+
+def _marked_parts(path: str, prefix: str, which: str) -> list[str]:
+    parts = _posix_tail(path)
+    if which != "parts":
+        parts = parts[:-1]
+    return [part for part in parts if part.startswith(prefix) and set(part) != {"."}]
+
+
+def _files_under_patterns(
+    patterns: list[str],
+    data_files: list[str],
+    *,
+    as_the_loader_would: bool = False,
+) -> list[str]:
+    """Card globs obey loader skip rules; module-written patterns are judged on what they plainly match."""
+    matchers = [(pattern, _glob_to_regex(pattern)) for pattern in patterns]
+    if not as_the_loader_would:
+        return [f for f in data_files if any(m.match(f) for _, m in matchers)]
+    rules = [(m, _loader_path_facts(p)) for p, m in matchers]
+    kept = []
+    for f in data_files:
+        facts = None
+        for m, pattern_facts in rules:
+            if not m.match(f):
+                continue
+            if facts is None:
+                facts = _loader_path_facts(f)
+            if not _skipped_by_the_loader(facts, pattern_facts):
+                kept.append(f)
+                break
+    return kept
+
+
+def _loader_path_facts(path: str) -> tuple[int, int, str]:
+    """Hidden parts anywhere, dunder parts in parents, and the name."""
+    return (
+        len(_marked_parts(path, ".", "parts")),
+        len(_marked_parts(path, "__", "parent_parts")),
+        (_posix_tail(path) or [""])[-1],
+    )
+
+
+def _skipped_by_the_loader(
+    path_facts: tuple[int, int, str], pattern_facts: tuple[int, int, str]
+) -> bool:
+    """Loader skips hidden parts anywhere and dunder parts only in parents unless the pattern names them
+    (data/__train.json is read), and drops names in data_files.FILES_TO_IGNORE from globs unless the pattern is that
+    file itself."""
+    if path_facts[:2] != pattern_facts[:2]:
+        return True
+    name = path_facts[2]
+    return name in _IGNORED_DATA_FILENAMES and pattern_facts[2] != name
+
+
+def _common_parent(paths: list[str]) -> str:
+    parts = [Path(path).parent.as_posix().split("/") for path in paths]
+    shared: list[str] = []
+    for segments in zip(*parts):
+        if len(set(segments)) != 1 or segments[0] == ".":
+            break
+        shared.append(segments[0])
+    return "/".join(shared)
+
+
+def _label_in_name(name: str, label: str) -> bool:
+    """Match the label in place, not by tokens, so sample-10BT survives; digits count as separators: train1 is train, training is not."""
+    return _label_matcher(label).search(name) is not None
+
+
+@functools.lru_cache(maxsize = 256)
+def _label_matcher(label: str) -> re.Pattern[str]:
+    return re.compile(rf"(?:^|{_SEP}){re.escape(label)}(?:$|{_SEP})")
+
+
+def _split_folder(lowered_path: str, labels: tuple[str, ...]) -> bool:
+    """Qualified folders like train_a or en-train count as the split, as the loader reads them."""
+    return any(
+        _label_in_name(part, label) for part in lowered_path.split("/")[:-1] for label in labels
+    )
+
+
+def _split_labels(split_lower: str) -> tuple[str, ...]:
+    """The names `datasets` accepts for this split: dev is validation, training is train."""
+    for canonical, aliases in _SPLIT_KEYWORDS.items():
+        if split_lower == canonical or split_lower in aliases:
+            return aliases
+    return (split_lower,)
+
+
+def _carries_another_split(path: str, split_lower: str) -> bool:
+    """The path is labelled with a split, and it is not the one being asked for."""
+    wanted = set(_split_labels(split_lower))
+    return any(
+        canonical not in wanted and _split_rank(path, canonical) <= 1
+        for canonical in _SPLIT_KEYWORDS
+    )
+
+
+def _split_rank(path: str, split_lower: str) -> int:
+    """Rank 0 if a folder carries the split, 1 if the file name does, else 2; labels match as whole
+    words."""
+    lowered = path.lower()
+    labels = _split_labels(split_lower)
+    if _split_folder(lowered, labels):
+        return 0
+    # Only the final extension comes off: questions.train.parquet keeps its split.
+    stem = _name_parts(lowered)[1]
+    if any(_label_in_name(stem, label) for label in labels):
+        return 1
+    return 2
+
+
+def _in_subset(data_files: list[str], subset: str | None, split_lower: str) -> list[str]:
+    """A folder carrying the config label is the config; a name-only match outside the split is dropped."""
+    if not subset:
+        return data_files
+    subset_lower = subset.lower()
+    # Exact folder match first: a repo may hold Foo/ beside foo/, which folding would merge into one.
+    in_folder = [f for f in data_files if subset in f.split("/")[:-1]] or [
+        f for f in data_files if subset_lower in f.lower().split("/")[:-1]
+    ]
+    if in_folder:
+        return in_folder
+    named = [f for f in data_files if _label_in_name(_name_parts(f.lower())[1], subset_lower)]
+    if any(_split_rank(f, split_lower) <= 1 for f in named):
+        return named
+    if any(_split_rank(f, split_lower) <= 1 for f in data_files):
+        return data_files
+    return named or data_files
+
+
+def _select_best_file(
+    data_files: list[str],
+    split: str = DEFAULT_SPLIT,
+    subset: str | None = None,
+) -> str | None:
     if not data_files:
         return None
     split_lower = split.lower()
+    return sorted(
+        _in_subset(data_files, subset, split_lower),
+        key = lambda p: (_split_rank(p, split_lower), len(p)),
+    )[0]
 
-    def score(path: str) -> tuple[int, int]:
-        name = path.lower()
-        if f"/{split_lower}/" in name:
-            return (0, len(path))
-        if (
-            f"_{split_lower}." in name
-            or f"-{split_lower}." in name
-            or f"/{split_lower}." in name
-            or f"/{split_lower}_" in name
-            or f"/{split_lower}-" in name
-        ):
-            return (1, len(path))
-        return (2, len(path))
 
-    return sorted(data_files, key = score)[0]
+def _pattern_fits_the_split(
+    data_files: list[str], wanted: set[str], root: str, pattern: str
+) -> bool:
+    """A glob must take every wanted file under the root and no other, judged on the whole listing."""
+    matcher = _glob_to_regex(pattern)
+    prefix = f"{root}/" if root and root != "." else ""
+    for path in data_files:
+        if not path.startswith(prefix):
+            continue
+        if bool(matcher.match(path[len(prefix) :])) != (path in wanted):
+            return False
+    return True
+
+
+def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
+    """Globs for the split in one folder, narrowest first, built from the stems this file actually uses."""
+    stem_lower = stem.lower()
+    candidates: list[str] = []
+    for label in _split_labels(split_lower):
+        if stem_lower.startswith((f"{label}-", f"{label}_", f"{label}.")):
+            candidates.append(f"{stem[: len(label) + 1]}*{suffix}")
+        if stem_lower == label or stem_lower.endswith((f"_{label}", f"-{label}")):
+            # Keep the star: train.jsonl may be sharded beside train_2.jsonl.
+            candidates.append(f"{stem}*{suffix}")
+        at = stem_lower.find(label)
+        if at >= 0:
+            candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
+    # Last and narrowest: the whole name, which keeps train-main off train-socratic.
+    candidates.append(f"{stem}*{suffix}")
+    return list(dict.fromkeys(candidates))
+
+
+def _with_data_extension(pattern: str, suffix: str) -> str:
+    """A card glob ends where the file name does; the reader picks by extension."""
+    current = Path(pattern).suffix
+    if current.lower() in DATA_EXTS:
+        return pattern
+    if current and any(char in current for char in "*?["):
+        pattern = pattern[: -len(current)]
+    # fsspec refuses data/**.parquet: `**` has to be a whole component.
+    if pattern.endswith("**"):
+        pattern = f"{pattern}/*"
+    return f"{pattern}{suffix}"
+
+
+def _ext_rank(suffix: str) -> int:
+    """Where `datasets` puts this extension in a draw: parquet, jsonl, json, csv."""
+    return -DATA_EXTS.index(suffix) if suffix in DATA_EXTS else -99
+
+
+def _dominant_suffix(paths: list[str]) -> str:
+    """The format the loader builds a split from: most files, with parquet winning ties."""
+    counts: dict[str, int] = {}
+    # Slice the window as the loader does, then drop metadata within it.
+    window = sorted(paths)[:_MAX_MODULE_INFERENCE_FILES]
+    voting = [p for p in window if Path(p).name.lower() not in _METADATA_FILENAMES] or window
+    for path in voting:
+        # Each suffix in the name votes once, as load.infer_module_for_data_files_list counts: a.csv.parquet votes csv too; .json does not vote for .jsonl.
+        for part in Path(path).name.lower().split(".")[1:]:
+            counts[f".{part}"] = counts.get(f".{part}", 0) + 1
+    if not counts:
+        return ""
+
+    # Widen only if the builder extension wins alone; skip a winner no file ends in (matches nothing).
+    for winner in sorted(counts, key = lambda s: (counts[s], _ext_rank(s)), reverse = True):
+        group = _builder_exts(winner)
+        named = next((Path(p).suffix for p in paths if Path(p).suffix.lower() in group), "")
+        if named:
+            return named
+    return ""
+
+
+# Extensions one builder reads: `datasets` loads .json and .jsonl with the same one.
+_BUILDER_EXTS = ((".json", ".jsonl"),)
+
+
+def _builder_exts(suffix: str) -> tuple[str, ...]:
+    lowered = suffix.lower()
+    for group in _BUILDER_EXTS:
+        if lowered in group:
+            return group
+    return (lowered,)
+
+
+def _of_suffix(paths: list[str], suffix: str) -> list[str]:
+    group = _builder_exts(suffix)
+    return [p for p in paths if _name_parts(p)[0].lower() in group]
+
+
+def _extension_glob(paths: list[str], suffix: str, repo_files: list[str]) -> str:
+    """Shared .json/.jsonl glob when a split uses both, unless the repo has .json.gz; else one extension."""
+    group = set(_builder_exts(suffix))
+    used = {Path(path).suffix.lower() for path in paths} & group
+    if len(used) < 2:
+        return suffix
+    stem = os.path.commonprefix(sorted(used))
+    matcher = re.compile(rf"{re.escape(stem)}[^/]*\Z", re.IGNORECASE)
+    # Checks only what the pattern reaches: it is anchored at the declared files' shared folder.
+    scope = _common_parent(paths)
+    prefix = f"{scope}/" if scope else ""
+    if any(
+        path.startswith(prefix)
+        and Path(path).suffix.lower() not in group
+        and matcher.search(Path(path).name)
+        for path in repo_files
+    ):
+        return suffix
+    return f"{stem}*"
+
+
+def _common_name_prefix(paths: list[str]) -> str:
+    """What the file names share before the extension, which the glob supplies."""
+    return os.path.commonprefix([Path(path).stem for path in paths]) if paths else ""
+
+
+def _name_initials(paths: list[str]) -> str:
+    """Only letters and digits go into the glob class, so nothing there can read as glob syntax."""
+    initials = sorted({Path(path).name[:1] for path in paths if Path(path).name[:1].isalnum()})
+    if not initials or len(initials) != len({Path(path).name[:1] for path in paths}):
+        return ""
+    return "".join(initials)
+
+
+def _staged_split_files(
+    data_files: list[str],
+    labels: tuple[str, ...],
+    scope: str = "",
+) -> set[str]:
+    """Sharded names come first: once one is there, a train-named file elsewhere is not in the split; strip the scope first, since sharded names start at data/."""
+    prefix = f"{scope}/" if scope else ""
+    inside = [path[len(prefix) :] for path in data_files if path.startswith(prefix)]
+    grouped = _sharded_splits([PurePosixPath(path) for path in inside])
+    if not grouped:
+        return set()
+    staged = {
+        f"{prefix}{path.as_posix()}"
+        for split, paths in grouped.items()
+        if split.lower() in labels
+        for path in paths
+    }
+    return staged if staged < set(data_files) else set()
+
+
+def _anchor(dataset_name: str, root: str) -> str:
+    """The recipe path up to the folder a pattern is written relative to."""
+    base = f"datasets/{dataset_name}"
+    return f"{base}/{root}" if root and root != "." else base
+
+
+def _name_finals(paths: list[str]) -> str:
+    """The last characters of these names before the extension, as a class body."""
+    finals = {Path(path).stem[-1:] for path in paths}
+    return "".join(sorted(finals)) if finals and all(c.isalnum() for c in finals) else ""
+
+
+def _widened_declared_pattern(
+    declared_files: list[str],
+    data_files: list[str],
+    split_lower: str,
+    suffix: str,
+    *,
+    fallback_glob: bool = False,
+) -> str:
+    """One widened glob over declared files, used only when it takes exactly those files and no others."""
+    parent = _common_parent(declared_files)
+    base = f"{parent}/**" if parent else "**"
+    prefix = f"{parent}/" if parent else ""
+    wanted = set(declared_files)
+    # Split label may be in file names or folders; a validation set may be dev-*.parquet.
+    candidates = [f"{base}/*{label}*{suffix}" for label in _split_labels(split_lower)]
+    candidates += [f"{prefix}**/*{label}*/**/*{suffix}" for label in _split_labels(split_lower)]
+    # Unlabelled declared files may share a name that neighbouring splits lack, e.g. data/part-a.
+    shared_name = _common_name_prefix(declared_files)
+    if shared_name:
+        candidates.append(f"{prefix}{shared_name}*{suffix}")
+        candidates.append(f"{prefix}**/{shared_name}*{suffix}")
+    # A glob class is the only union the reader understands; it rejects `{a,b}`.
+    initials = _name_initials(declared_files)
+    finals = _name_finals(declared_files)
+    if initials:
+        candidates.append(f"{prefix}**/[{initials}]*{suffix}")
+    # Names may share a first letter yet end differently; a class at each end separates them.
+    if finals:
+        candidates.append(f"{prefix}**/*[{finals}]{suffix}")
+    if initials and finals:
+        candidates.append(f"{prefix}**/[{initials}]*[{finals}]{suffix}")
+    # Files no glob can gather fall back to their own names, which read only what the card declared.
+    candidates += sorted(wanted)
+    for candidate in candidates:
+        if set(_files_under_patterns([candidate], data_files)) == wanted:
+            return candidate
+    # No glob selects exactly these files; a card refuses that, while a guess falls back to the folder.
+    return f"{base}/*{suffix}" if fallback_glob else ""
 
 
 def _resolve_seed_hf_path(
     dataset_name: str,
     data_files: list[str],
     split: str = DEFAULT_SPLIT,
+    subset: str | None = None,
+    configs: list[dict[str, Any]] | None = None,
+    repo_files: list[str] | None = None,
 ) -> str | None:
-    selected = _select_best_file(data_files, split)
+    declared = _declared_split_patterns(configs or [], split, subset)
+    declared_files = _files_under_patterns(declared, data_files, as_the_loader_would = True)
+    # The card's own mapping beats any folder-name guess, as long as it resolves to files that exist.
+    if declared_files:
+        suffix = _dominant_suffix(declared_files)
+        declared_files = _of_suffix(declared_files, suffix)
+        exact = suffix
+        suffix = _extension_glob(declared_files, suffix, repo_files or data_files)
+        if suffix == exact and len({Path(f).suffix.lower() for f in declared_files}) > 1:
+            # A card putting both builder extensions in one split is refused, since no glob takes just the two.
+            return None
+        pattern = ""
+        if len(declared) == 1:
+            pattern = _with_data_extension(declared[0], suffix)
+        # The reader skips no hidden folders, so the pattern must match exactly the declared files.
+        if not pattern or set(declared_files) != set(_files_under_patterns([pattern], data_files)):
+            pattern = _widened_declared_pattern(declared_files, data_files, split.lower(), suffix)
+        # Unrepresentable mappings are refused (422), never approximated.
+        return f"datasets/{dataset_name}/{pattern}" if pattern else None
+
+    # No card means the subset is just a label; narrow first so the pattern cannot span other configs.
+    folder = _config_scope(configs or [], subset)
+    scoped = _in_subset(
+        [f for f in data_files if f.startswith(f"{folder}/")] or data_files
+        if folder
+        else data_files,
+        subset,
+        split.lower(),
+    )
+    split_lower = split.lower()
+    labels = _split_labels(split_lower)
+    # Sharded names come first and stop the search, whatever else is labelled.
+    staged = _staged_split_files(scoped, labels, folder)
+    selected = _select_best_file(sorted(staged) or scoped, split)
     if not selected:
         return None
 
-    ext = Path(selected).suffix.lower()
+    suffix = Path(selected).suffix
+    ext = suffix.lower()
     if ext not in DATA_EXTS:
         return f"datasets/{dataset_name}/{selected}"
 
     parent = Path(selected).parent.as_posix()
-    if not parent or parent == ".":
-        return f"datasets/{dataset_name}/**/*{ext}"
-    return f"datasets/{dataset_name}/{parent}/**/*{ext}"
+    base = f"datasets/{dataset_name}"
+    if parent and parent != ".":
+        base = f"{base}/{parent}"
+
+    if _split_folder(selected.lower(), labels):
+        # train_a and train_b are one split, so rooting at either drops half.
+        folders = staged or {f for f in scoped if _split_rank(f, split_lower) == 0}
+        root = _common_parent(sorted(folders | {selected}))
+        if root != parent:
+            for label in labels:
+                # The four shapes `local_options._DIR_NAME_KEYWORD_PATTERNS` accepts.
+                for shape in (
+                    f"**/{label}/**/*{ext}",
+                    f"**/{label}{_SEP}*/**/*{ext}",
+                    f"**/*{_SEP}{label}/**/*{ext}",
+                    f"**/*{_SEP}{label}{_SEP}*/**/*{ext}",
+                    # train/ beside sets/train_a/ needs a looser pattern, taken only where the listing confirms it.
+                    f"**/{label}*/**/*{ext}",
+                    f"**/*{label}*/**/*{ext}",
+                ):
+                    if _pattern_fits_the_split(data_files, folders, root, shape):
+                        return f"{_anchor(dataset_name, root)}/{shape}"
+    else:
+        # The files this request is for: in the chosen subset, and of this split.
+        wanted = staged or {f for f in scoped if _split_rank(f, split_lower) <= 1}
+        # Sibling-folder shards anchor at their shared parent, since the loader reads them as one split.
+        spread = any(Path(f).parent.as_posix() != parent for f in wanted)
+        root = _common_parent(sorted(wanted | {selected})) if spread else parent
+        stem = Path(selected).name[: -len(suffix)]
+        for candidate in _candidate_patterns(stem, suffix, split_lower):
+            pattern = f"**/{candidate}" if spread else candidate
+            if _pattern_fits_the_split(data_files, wanted, root, pattern):
+                return f"{_anchor(dataset_name, root)}/{pattern}"
+        # Widen only if every neighbour is labelled, since an unlabelled file may belong to this split.
+        prefix = f"{root}/" if root and root != "." else ""
+        neighbours = [f for f in data_files if f.startswith(prefix) and f not in wanted]
+        if len(wanted) > 1 and all(_carries_another_split(f, split_lower) for f in neighbours):
+            widened = _widened_declared_pattern(
+                sorted(wanted), data_files, split_lower, suffix, fallback_glob = True
+            )
+            return f"datasets/{dataset_name}/{widened}"
+    return f"{base}/**/*{ext}"
 
 
 def _build_stream_load_kwargs(
@@ -182,7 +779,71 @@ def _load_preview_rows(
     *, load_dataset_fn, load_kwargs: dict[str, Any], preview_size: int
 ) -> list[dict[str, Any]]:
     streamed_ds = load_dataset_fn(**load_kwargs)
-    return [row for row in islice(streamed_ds, preview_size)]
+    features = getattr(streamed_ds, "features", None) if managed_account() else None
+    undecoded = _images_undecoded(features) if features else None
+    if undecoded is None or undecoded == features:
+        return [row for row in islice(streamed_ds, preview_size)]
+    # Image cells, nested ones too, stay dicts so a local path is checked against the account before it is opened; Hub images decode here.
+    tokens = getattr(streamed_ds, "_token_per_repo_id", None)
+    return [
+        _decode_hub_images(undecoded, row, tokens)
+        for row in islice(streamed_ds.cast(undecoded), preview_size)
+    ]
+
+
+def _images_undecoded(feature):
+    import dataclasses
+
+    from datasets import Image
+
+    if isinstance(feature, Image):
+        return dataclasses.replace(feature, decode = False)
+    if isinstance(feature, dict):
+        return type(feature)({key: _images_undecoded(value) for key, value in feature.items()})
+    if isinstance(feature, list):
+        return [_images_undecoded(value) for value in feature]
+    if dataclasses.is_dataclass(feature) and getattr(feature, "feature", None) is not None:
+        return dataclasses.replace(feature, feature = _images_undecoded(feature.feature))
+    return feature
+
+
+def _is_hub_path(path) -> bool:
+    from datasets import config
+
+    if not isinstance(path, str):
+        return False
+    parts = path.split("::")
+    source = parts[-1]
+    return (source.startswith("hf://") or source.startswith(f"{config.HF_ENDPOINT}/")) and not any(
+        part.startswith("file:") for part in parts
+    )
+
+
+def _decode_hub_images(feature, value, tokens):
+    from datasets import Image
+
+    if isinstance(feature, Image):
+        if (
+            isinstance(value, dict)
+            and value.get("bytes") is None
+            and _is_hub_path(value.get("path"))
+        ):
+            try:
+                return Image(mode = feature.mode).decode_example(value, token_per_repo_id = tokens)
+            except Exception:
+                return value
+        return value
+    if isinstance(feature, dict) and isinstance(value, dict):
+        return {
+            key: _decode_hub_images(feature[key], item, tokens) if key in feature else item
+            for key, item in value.items()
+        }
+    inner = (
+        feature[0] if isinstance(feature, list) and feature else getattr(feature, "feature", None)
+    )
+    if inner is not None and isinstance(value, list):
+        return [_decode_hub_images(inner, item, tokens) for item in value]
+    return value
 
 
 def _extract_columns(rows: list[dict[str, Any]]) -> list[str]:
@@ -210,6 +871,10 @@ def _decode_base64_payload(content_base64: str) -> bytes:
         raise HTTPException(status_code = 400, detail = "invalid base64 payload") from exc
 
 
+# Match the recipe's DuckDB read: inference made "007" -> 7 and a created_at number a date.
+_JSON_READ_OPTIONS = {"dtype": False, "convert_dates": False}
+
+
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
     account_path(path)
     try:
@@ -226,24 +891,40 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
     ext = path.suffix.lower()
     try:
         if ext == ".csv":
-            df = pd.read_csv(path, nrows = preview_size, encoding = "utf-8-sig")
+            # Keep text as written: inference made 007 -> 7, 3 -> 3.0, NA/None -> missing.
+            csv_options = {
+                "encoding": "utf-8-sig",
+                "dtype": str,
+                "keep_default_na": False,
+                "na_values": [""],
+            }
+            df = pd.read_csv(path, nrows = preview_size, **csv_options)
             df.columns = df.columns.str.strip()
             unnamed = [c for c in df.columns if c == "" or c.startswith("Unnamed:")]
             if unnamed:
                 df = df.drop(columns = unnamed)
-                full_df = pd.read_csv(path, encoding = "utf-8-sig")
+                full_df = pd.read_csv(path, **csv_options)
                 full_df.columns = full_df.columns.str.strip()
                 full_df = full_df.drop(columns = unnamed)
                 tmp_csv = path.with_suffix(".tmp.csv")
                 full_df.to_csv(tmp_csv, index = False, encoding = "utf-8")
                 tmp_csv.replace(path)
         elif ext == ".jsonl":
-            df = pd.read_json(path, lines = True).head(preview_size)
+            df = pd.read_json(path, lines = True, **_JSON_READ_OPTIONS).head(preview_size)
         elif ext == ".json":
             try:
-                df = pd.read_json(path).head(preview_size)
+                df = pd.read_json(path, **_JSON_READ_OPTIONS).head(preview_size)
             except ValueError:
-                df = pd.read_json(path, lines = True).head(preview_size)
+                df = pd.read_json(path, lines = True, **_JSON_READ_OPTIONS).head(preview_size)
+        elif ext == ".parquet":
+            import pyarrow.parquet as pq
+
+            # Decode only the preview rows: a 100MB compressed upload can inflate to GBs.
+            parquet_file = pq.ParquetFile(path)
+            batch = next(parquet_file.iter_batches(batch_size = preview_size), None)
+            df = (
+                batch if batch is not None else parquet_file.schema_arrow.empty_table()
+            ).to_pandas()
         else:
             raise HTTPException(status_code = 422, detail = f"unsupported file type: {ext}")
     except HTTPException:
@@ -298,7 +979,7 @@ def _read_preview_rows_from_multi_files(
     preview_size: int,
     chunk_size: int | None,
     chunk_overlap: int | None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], int]:
     chunking = _chunking()
     if chunking is None:
         raise HTTPException(
@@ -306,6 +987,17 @@ def _read_preview_rows_from_multi_files(
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
 
+    return chunking.build_multi_file_preview(
+        file_entries = _multi_file_entries(block_id, file_ids, file_names),
+        preview_size = preview_size,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
+    )
+
+
+def _multi_file_entries(
+    block_id: str, file_ids: list[str], file_names: list[str]
+) -> list[tuple[Path, str]]:
     _validate_safe_id(block_id, "block_id")
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     file_entries: list[tuple[Path, str]] = []
@@ -314,13 +1006,31 @@ def _read_preview_rows_from_multi_files(
         if not extracted.exists():
             raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
         file_entries.append((extracted, fname))
+    return file_entries
 
-    return chunking.build_multi_file_preview_rows(
-        file_entries = file_entries,
-        preview_size = preview_size,
-        chunk_size = chunk_size,
-        chunk_overlap = chunk_overlap,
+
+def _require_own_seed_source(dataset_name: str) -> None:
+    """load_dataset also reads a local folder, its dataset card's data_files and any links in it, and a
+    check before the read cannot pin what the read opens. A managed account previews Hub ids only, as
+    the UI does; its own files go through /seed/inspect-upload."""
+    if not managed_account():
+        return
+    parts = dataset_name.split("/")
+    hub_id = len(parts) == 2 and all(
+        part not in {"", ".", ".."} and all(c.isalnum() or c in "-_." for c in part)
+        for part in parts
     )
+    if hub_id:
+        # Only a well-formed id reaches the filesystem: a UNC name would start SMB auth on Windows.
+        try:
+            hub_id = not Path(dataset_name).expanduser().exists()
+        except (ValueError, RuntimeError, OSError):
+            hub_id = False
+    if not hub_id:
+        raise HTTPException(
+            status_code = 403,
+            detail = "dataset_name must be a Hugging Face repo id like org/repo",
+        )
 
 
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
@@ -333,6 +1043,7 @@ def inspect_seed_dataset(
             status_code = 400,
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
+    _require_own_seed_source(dataset_name)
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
@@ -356,9 +1067,22 @@ def inspect_seed_dataset(
         ) from exc
 
     preview_rows: list[dict[str, Any]] = []
-    data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
+    repo_files = _list_hf_repo_files(dataset_name = dataset_name, token = token)
+    data_files = [file for file in repo_files if file.lower().endswith(DATA_EXTS)]
+    configs = _list_hf_dataset_configs(dataset_name = dataset_name, token = token)
 
-    selected_file = _select_best_file(data_files, split)
+    # Preview the same files the recipe will read, not from a config the resolved path excludes.
+    declared_files = _files_under_patterns(
+        _declared_split_patterns(configs, split, subset),
+        data_files,
+        as_the_loader_would = True,
+    )
+    # Same format the resolved path reads, or the preview rows come from a file the recipe never opens.
+    declared_files = _of_suffix(declared_files, _dominant_suffix(declared_files))
+    # A folder-only config declares no files; its name may differ, so the fallback previews that folder.
+    folder = _config_scope(configs, subset)
+    in_folder = [f for f in data_files if f.startswith(f"{folder}/")] if folder else []
+    selected_file = _select_best_file(declared_files or in_folder or data_files, split, subset)
     if selected_file:
         try:
             single_file_kwargs = _build_stream_load_kwargs(
@@ -406,7 +1130,9 @@ def inspect_seed_dataset(
     if not data_files:
         resolved_path = f"datasets/{dataset_name}/**/*.parquet"
     else:
-        resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
+        resolved_path = _resolve_seed_hf_path(
+            dataset_name, data_files, split, subset, configs, repo_files
+        )
         if not resolved_path:
             raise HTTPException(status_code = 422, detail = "unable to resolve seed dataset path")
 
@@ -423,15 +1149,17 @@ def inspect_seed_dataset(
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
     """Extract text from an uploaded file by extension, to markdown where possible."""
     if ext in {".txt", ".md"}:
-        raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
+        from core.rag import parsers
+        raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     elif ext == ".pdf":
         from core.rag import config, pdf_ocr
         raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)
-    elif ext == ".docx":
-        import mammoth
-        with open(str(file_path), "rb") as f:
-            result = mammoth.convert_to_markdown(f)
-            raw = result.value
+    elif ext in _MUPDF_EBOOK_EXTS:
+        from core.rag import parsers
+        raw = parsers.mupdf_document_text(str(file_path))
+    elif ext in UNSTRUCTURED_ALLOWED_EXTS:
+        from core.rag import parsers
+        raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
@@ -442,11 +1170,26 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
 
 
 _pdf_extraction_limiter = CapacityLimiter(2)
+_document_extraction_limiter = CapacityLimiter(2)
 
 
 async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
+    if ext in _MUPDF_EBOOK_EXTS:
+        from core.rag import parsers
+
+        raw = await to_process.run_sync(
+            parsers.mupdf_document_text,
+            str(file_path),
+            cancellable = True,
+            limiter = _pdf_extraction_limiter,
+        )
+        chunking = _chunking()
+        return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
     if ext != ".pdf":
-        return _extract_text_from_file(file_path, ext)
+        # A large spreadsheet must not stall the event loop, nor several fill the shared thread pool.
+        return await to_thread.run_sync(
+            _extract_text_from_file, file_path, ext, limiter = _document_extraction_limiter
+        )
     from core.rag import config, pdf_ocr
 
     # MuPDF is not thread-safe; each worker owns its document and OCR state.
@@ -462,6 +1205,26 @@ async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
     return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
 
 
+# One upload per block between its budget check and its raw write: the scan, read and write await threads.
+_BLOCK_UPLOAD_LOCKS: dict[str, _AnyioLock] = {}
+
+
+async def _write_to_completion(write_fn, *args) -> None:
+    """A threaded write that, if cancelled, still waits for the thread so cleanup cannot race it."""
+    write = asyncio.ensure_future(to_thread.run_sync(write_fn, *args))
+    try:
+        await asyncio.shield(write)
+    except BaseException:
+        # Neither a repeated task cancel nor an AnyIO cancel scope may run cleanup before the thread ends.
+        with CancelScope(shield = True):
+            while not write.done():
+                try:
+                    await asyncio.wait([write])
+                except asyncio.CancelledError:
+                    continue
+        raise
+
+
 def _get_block_total_size(block_dir: Path) -> int:
     """Sum raw upload sizes for the whole block from server-owned files."""
     if not block_dir.exists():
@@ -475,7 +1238,11 @@ def _get_block_total_size(block_dir: Path) -> int:
         # remove_unstructured_file keys on the name up to the first dot.
         if is_appledouble_metadata(f):
             continue
-        total += f.stat().st_size
+        # Runs in a worker thread now, so a delete on the loop can remove a file mid-scan.
+        try:
+            total += f.stat().st_size
+        except FileNotFoundError:
+            continue
     return total
 
 
@@ -505,12 +1272,7 @@ def _require_unstructured_ext(filename: str) -> str:
 
 
 def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
-    """Read a desktop drop; returns (filename, content). The webview never names a path directly: Rust
-    signs what the OS handed it, and this re-verifies and re-stats that grant before reading a byte.
-    Same contract as the RAG route's ``_save_native_path_upload``. ``budget`` is what is still
-    allowed for this block. The path is a local file of any size, so it is refused on its stat
-    rather than after a multi-gigabyte read, and the read itself stops one byte past the budget in
-    case the file grew between the two."""
+    """Read a desktop drop only via its signed lease, re-verified and size-checked; read stops one byte past the budget in case the file grew."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
     try:
@@ -541,29 +1303,29 @@ def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     return grant.canonical_path.name, content
 
 
-@router.post("/seed/upload-unstructured-file")
-async def upload_unstructured_file(
-    file: UploadFile | None = FastAPIFile(None),
-    block_id: str = Form(...),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
-) -> UnstructuredFileUploadResponse:
-    _validate_safe_id(block_id, "block_id")
+async def _store_unstructured_raw(file, block_dir: Path, native_path_lease):
+    # Reads 0 for a block with no dir yet, without creating it, so an upload about to be refused leaves no directory behind.
+    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - await to_thread.run_sync(
+        _get_block_total_size, block_dir
+    )
 
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
-    # Reads 0 for a block with no directory yet, so this does not create one for
-    # an upload that is about to be refused.
-    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
-
-    # Desktop drops arrive as a signed path: Tauri hands the webview a path, never a File (#9036); isinstance,
-    # not a truth test, since an unfilled Form param is still truthy.
+    # Tauri drops arrive as a signed path; isinstance since an unfilled Form param is truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
-        original_filename, content = _read_native_drop(lease, budget)
+        original_filename, content = await to_thread.run_sync(_read_native_drop, lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
         # Before the read: a rejected 500 MB upload must not be pulled into memory first.
         _require_unstructured_ext(original_filename)
-        content = await file.read()
+        limit = max(0, min(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES, budget))
+        content = await file.read(limit + 1)
+        if len(content) > limit:
+            # Only limit + 1 bytes were read: report the real size the full read used to.
+            declared = getattr(file, "size", None)
+            _require_within_budget(
+                declared if isinstance(declared, int) and declared > limit else len(content),
+                budget,
+            )
     else:
         raise HTTPException(400, "No file was provided.")
 
@@ -578,12 +1340,40 @@ async def upload_unstructured_file(
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
-    raw_path.write_bytes(content)
+    try:
+        await _write_to_completion(raw_path.write_bytes, content)
+    except BaseException:
+        raw_path.unlink(missing_ok = True)
+        raise
+    return original_filename, content, raw_path, file_id
+
+
+@router.post("/seed/upload-unstructured-file")
+async def upload_unstructured_file(
+    file: UploadFile | None = FastAPIFile(None),
+    block_id: str = Form(...),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+) -> UnstructuredFileUploadResponse:
+    _validate_safe_id(block_id, "block_id")
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    lock = _BLOCK_UPLOAD_LOCKS.setdefault(block_id, _AnyioLock())
+    try:
+        async with lock:
+            original_filename, content, raw_path, file_id = await _store_unstructured_raw(
+                file, block_dir, native_path_lease
+            )
+    finally:
+        if not lock.locked() and not lock.statistics().tasks_waiting:
+            _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
+    ext = Path(original_filename).suffix.lower()
+    size_bytes = len(content)
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
         extracted_text = await _extract_text_from_file_async(raw_path, ext)
-        if not extracted_text or not extracted_text.strip():
+        # isspace() == (not strip()) on a non-empty str, without copying a 500 MB text on the event loop.
+        if not extracted_text or extracted_text.isspace():
             raw_path.unlink(missing_ok = True)
             return UnstructuredFileUploadResponse(
                 file_id = file_id,
@@ -592,13 +1382,21 @@ async def upload_unstructured_file(
                 status = "error",
                 error = "No extractable text found in file",
             )
-        extracted_path.write_text(extracted_text, encoding = "utf-8")
+        await _write_to_completion(
+            functools.partial(extracted_path.write_text, extracted_text, encoding = "utf-8")
+        )
     except ImportError as e:
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
         missing = getattr(e, "name", None)
-        expected_missing = {".pdf": "pymupdf4llm", ".docx": "mammoth"}.get(ext)
+        expected_missing = {
+            ".pdf": "pymupdf4llm",
+            **dict.fromkeys((".docx", ".docm", ".dotx", ".dotm"), "docx"),
+            **dict.fromkeys(_MUPDF_EBOOK_EXTS, "pymupdf"),
+        }.get(ext)
         if isinstance(e, ModuleNotFoundError) and missing == expected_missing:
+            # Name what to install: python-docx imports as docx, and PyPI's "docx" is another package.
+            package = {"docx": "python-docx"}.get(missing, missing)
             logger.error(
                 "data_recipe.seed.text_extraction_dependency_missing",
                 error = str(e),
@@ -610,7 +1408,7 @@ async def upload_unstructured_file(
                 filename = original_filename,
                 size_bytes = size_bytes,
                 status = "error",
-                error = f"Cannot read {ext} files: the '{missing}' package is not installed.",
+                error = f"Cannot read {ext} files: the '{package}' package is not installed.",
             )
         logger.error(
             "data_recipe.seed.text_extraction_failed",
@@ -741,7 +1539,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         _validate_safe_id(payload.block_id, "block_id")
         for fid in payload.file_ids:
             _validate_safe_id(fid, "file_id")
-        preview_rows = _read_preview_rows_from_multi_files(
+        preview_rows, total_rows = _read_preview_rows_from_multi_files(
             block_id = payload.block_id,
             file_ids = payload.file_ids,
             file_names = payload.file_names,
@@ -760,6 +1558,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             resolved_paths = resolved_paths,
             columns = columns,
             preview_rows = _serialize_preview_rows(preview_rows),
+            total_rows = total_rows,
         )
 
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import forge from "node-forge";
+import type forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
+import type { CustomReasoningConfig } from "../custom-reasoning";
+import type { ProviderCompactionMode } from "../utils/auto-compaction";
 
 
 export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
@@ -31,11 +33,16 @@ export interface ProviderRegistryEntry {
   model_list_mode?: "remote" | "curated";
 
   auth_kind?: ProviderAuthKind;
+  api_key_url?: string | null;
   base_url_editable?: boolean;
   model_ids_editable?: boolean;
 }
 
+export type ProviderApiType = "chat_completions" | "responses";
+export type ConnectionApiType = ProviderApiType | "systemone";
+
 export interface ProviderConfig {
+  api_type?: ConnectionApiType;
   id: string;
   provider_type: string;
   display_name: string;
@@ -49,6 +56,12 @@ export interface ProviderConfig {
   models?: string[];
   available_models?: string[];
   max_output_tokens?: number | null;
+  auto_compact_tokens?: number | null;
+  compaction_mode?: ProviderCompactionMode | null;
+  reasoning_config?: CustomReasoningConfig | null;
+  extra_headers?: Record<string, string>;
+  shared?: boolean;
+  shared_by_owner?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +73,8 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
+  /** Only Ollama's /api/tags reports these; absent is not the same as none. */
+  capabilities?: string[] | null;
 }
 
 export interface ProviderModelReasoningInfo {
@@ -82,10 +97,22 @@ export interface ModelCatalogResponse {
   providers: Record<string, Record<string, ModelCatalogSnapshotEntry>>;
 }
 
+export type ProviderTestErrorKind =
+  | "auth"
+  | "billing"
+  | "rate_limit"
+  | "not_found"
+  | "unreachable"
+  | "timeout"
+  | "invalid_url"
+  | "other";
+
 export interface ProviderTestResult {
   success: boolean;
   message: string;
   models_count?: number | null;
+  /** Absent on older backends. */
+  error_kind?: ProviderTestErrorKind | null;
 }
 
 function parseErrorText(status: number, body: unknown): string {
@@ -116,6 +143,11 @@ export function isProviderKeyRotationError(error: unknown): boolean {
   );
 }
 
+// node-forge (~270 KB) loads with the first key encryption, not with the app.
+function loadForge(): Promise<typeof forge> {
+  return import("node-forge").then((module) => module.default);
+}
+
 let cachedPublicKeyPem: string | null = null;
 let cachedForgeKey: forge.pki.rsa.PublicKey | null = null;
 
@@ -139,7 +171,8 @@ async function importProviderPublicKey(
   if (!forceRefresh && cachedPublicKeyPem === publicKeyPem && cachedForgeKey) {
     return cachedForgeKey;
   }
-  const forgeKey = forge.pki.publicKeyFromPem(publicKeyPem);
+  const { pki } = await loadForge();
+  const forgeKey = pki.publicKeyFromPem(publicKeyPem);
   cachedPublicKeyPem = publicKeyPem;
   cachedForgeKey = forgeKey;
   return forgeKey;
@@ -162,6 +195,7 @@ export async function encryptProviderApiKey(
   forceRefresh = false,
 ): Promise<string> {
   const key = await importProviderPublicKey(forceRefresh);
+  const forge = await loadForge();
   const aesKey = randomBinaryString(AES_KEY_BYTES);
   const nonce = randomBinaryString(NONCE_BYTES);
 
@@ -185,12 +219,21 @@ export async function encryptProviderApiKey(
   ].join(".");
 }
 
+let registryRequest: Promise<ProviderRegistryEntry[]> | null = null;
+
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
-  // studio-tools capability the composer gates on. An older backend ignores the parameter and
-  // returns the visible entries, so the capability reads as unknown and the pills stay closed.
-  const response = await authFetch("/api/providers/registry?include_hidden=true");
-  return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
+  // The settings page and the sync it starts both ask in the same tick: share that one request.
+  registryRequest ??= (async () => {
+    // include_hidden returns the self-hosted presets carrying the studio-tools capability; older
+    // backends ignore it, leaving the capability unknown.
+    const response = await authFetch(
+      "/api/providers/registry?include_hidden=true&include_oauth=true",
+    );
+    return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
+  })().finally(() => {
+    registryRequest = null;
+  });
+  return registryRequest;
 }
 
 export async function listProviderConfigs(): Promise<ProviderConfig[]> {
@@ -202,9 +245,15 @@ export async function createProviderConfig(payload: {
   providerType: string;
   displayName: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
+  autoCompactTokens?: number | null;
+  compactionMode?: ProviderCompactionMode | null;
+  reasoningConfig?: CustomReasoningConfig | null;
+  extraHeaders?: Record<string, string>;
+  shared?: boolean;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -215,11 +264,25 @@ export async function createProviderConfig(payload: {
         provider_type: payload.providerType,
         display_name: payload.displayName,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         models: payload.models ?? [],
         available_models: payload.availableModels ?? [],
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.autoCompactTokens === undefined
+          ? {}
+          : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.compactionMode === undefined
+          ? {}
+          : { compaction_mode: payload.compactionMode }),
+        ...(payload.reasoningConfig === undefined
+          ? {}
+          : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
+        ...(payload.shared === undefined ? {} : { shared: payload.shared }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -231,8 +294,7 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
-  // Treat 404 as success: another tab already deleted this provider, so pruning the stale cache is
-  // correct. Otherwise the caller throws and the user is stuck with an entry they cannot remove.
+  // 404 means another tab deleted it; prune the cache instead of throwing.
   if (response.status === 404) {
     return;
   }
@@ -247,10 +309,16 @@ export async function updateProviderConfig(
   payload: {
     displayName?: string;
     baseUrl?: string | null;
+    apiType?: ConnectionApiType;
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
     maxOutputTokens?: number | null;
+    autoCompactTokens?: number | null;
+    compactionMode?: ProviderCompactionMode | null;
+    reasoningConfig?: CustomReasoningConfig | null;
+    extraHeaders?: Record<string, string>;
+    shared?: boolean;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -262,6 +330,7 @@ export async function updateProviderConfig(
       body: JSON.stringify({
         ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
         ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
         ...(payload.models === undefined ? {} : { models: payload.models }),
         ...(payload.availableModels === undefined
@@ -270,6 +339,19 @@ export async function updateProviderConfig(
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.autoCompactTokens === undefined
+          ? {}
+          : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.compactionMode === undefined
+          ? {}
+          : { compaction_mode: payload.compactionMode }),
+        ...(payload.reasoningConfig === undefined
+          ? {}
+          : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
+        ...(payload.shared === undefined ? {} : { shared: payload.shared }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),
@@ -320,6 +402,8 @@ export async function testProviderConnection(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
+  extraHeaders?: Record<string, string>;
   modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
@@ -332,6 +416,10 @@ export async function testProviderConnection(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
         model_id: payload.modelId ?? null,
       }),
     });
@@ -345,6 +433,8 @@ export async function listProviderModels(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
+  extraHeaders?: Record<string, string>;
 }): Promise<ProviderModelInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/models", {
@@ -356,6 +446,10 @@ export async function listProviderModels(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
       }),
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
@@ -372,6 +466,7 @@ export async function listProviderModelCapabilities(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ProviderApiType;
 }): Promise<ProviderModelCapabilityInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/model-capabilities", {
@@ -382,6 +477,7 @@ export async function listProviderModelCapabilities(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
       }),
     });
     return parseJsonOrThrow<ProviderModelCapabilityInfo[]>(response);

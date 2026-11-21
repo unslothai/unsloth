@@ -114,8 +114,7 @@ def test_generic_sft_config_args(trainer, tmp_path, monkeypatch, save_steps, str
     trainer.model_name = "unsloth/spark-tts"
 
     rows = [{"text": "a"}, {"text": "b"}]
-    # _train_worker runs past config construction into stubbed-out training; only the
-    # captured config matters here, so let it unwind on the stubs.
+    # Only the captured config matters; let the stubbed-out training unwind.
     with contextlib.suppress(AttributeError, TypeError, ValueError, KeyError):
         trainer._train_worker(
             {"dataset": rows, "final_format": "audio_bicodec"},

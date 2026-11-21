@@ -13,7 +13,6 @@ const { selectExportProgressPercent, isExportPanelActive } = await import(
 
 type Percentable = Parameters<typeof selectExportProgressPercent>[0];
 
-/** Only the fields the selectors read; the rest of the store is irrelevant here. */
 function state(partial: Record<string, unknown>): Percentable {
   return {
     phase: "idle",
@@ -36,7 +35,6 @@ test("an active export never reaches 100 - the band stops at 87", () => {
   assert.equal(band(0, 4), 15);
   assert.equal(band(2, 4), 51);
   assert.equal(band(4, 4), 87);
-  // 100% must mean "finished", never "still working".
   for (let i = 0; i <= 8; i++) {
     assert.ok(band(i, 4) < 100, `quantIndex=${i} reached 100 while exporting`);
   }
@@ -54,9 +52,7 @@ test("quantIndex beyond quantTotal clamps instead of overshooting", () => {
 });
 
 test("a zero or negative quantTotal does not divide by zero", () => {
-  // NaN is deliberately not covered: runExport always sets quantTotal to
-  // Math.max(1, quantLevels.length) and applyBackendStatus never touches it, so
-  // a non-numeric quantTotal is unreachable. Math.max(1, NaN) would be NaN.
+  // NaN is unreachable: runExport sets quantTotal to Math.max(1, quantLevels.length).
   for (const quantTotal of [0, -1]) {
     const value = selectExportProgressPercent(
       state({ phase: "exporting", quantIndex: 1, quantTotal }),

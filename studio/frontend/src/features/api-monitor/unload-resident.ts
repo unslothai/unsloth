@@ -1,38 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The monitor's Unload button releases whatever the backend has resident. /unload matches
-// on the internal id, which the monitor rows do not carry, so the id has to be read from
-// the status first. Its own plain module because the page is .tsx (router, motion, icons)
-// and cannot be imported by the node --test suite.
+// /unload matches the internal id, so read it from status first. Plain module for node --test.
 
-/** The model the backend has resident right now, as the Unload button needs it. */
 export type ResidentModel = {
-  /** The id POST /api/inference/unload matches on. */
   checkpoint: string;
-  /** Every spelling of that same model (load path, advertised repo id), for the store clear. */
   aliases: string[];
 };
 
 export type UnloadResidentDeps = {
-  /** One GET /api/inference/status, resolved to the resident model or null. */
   readResident: () => Promise<ResidentModel | null>;
-  /** One POST /api/inference/unload naming that id. */
   unload: (checkpoint: string) => Promise<void>;
 };
 
 export type UnloadResidentResult = {
-  /** Aliases of every model this run really unloaded, in the order they were unloaded. */
   unloadedAliases: string[];
-  /** A model still resident when the run ended, or null once nothing is loaded. */
   stillResident: string | null;
 };
 
-// One retry. An API auto-switch can replace the model between the status read and the
-// unload reaching the backend's lifecycle gate, and /unload naming a model a load already
-// replaced is a documented 200 no-op, so a single pass reports success with the new model
-// still holding the VRAM. A model that arrives after the retry is a fresh load rather than
-// this click's target, so the run names it instead of chasing it.
+// One retry: an auto-switch can replace the model between read and unload, and /unload on a
+// replaced model is a 200 no-op.
 export const UNLOAD_RESIDENT_PASSES = 2;
 
 export async function unloadResident(

@@ -4,6 +4,7 @@
 """Progress and durable results for the Studio transcription screen."""
 
 import asyncio
+import collections
 import contextlib
 import json
 import time
@@ -18,23 +19,33 @@ logger = get_logger(__name__)
 
 async def stream_transcript(transcribe, title: str):
     loop = asyncio.get_running_loop()
-    updates = asyncio.Queue(maxsize = 1)
+    # Text progress is latest-wins; phase changes are never replaced, so "loading" is never lost.
+    updates = collections.deque()
+    ready = asyncio.Event()
     closed = False
     last_update = 0.0
 
     def publish(update):
         if closed:
             return
-        if updates.full():
-            updates.get_nowait()
-        updates.put_nowait({"type": "progress", **update})
+        if updates and not updates[-1].get("phase"):
+            updates.pop()
+        updates.append({"type": "progress", **update})
+        ready.set()
+
+    async def next_update():
+        while not updates:
+            ready.clear()
+            await ready.wait()
+        return updates.popleft()
 
     def on_progress(update):
         nonlocal last_update
         if closed:
             return
         now = time.monotonic()
-        if now - last_update >= 0.25:
+        # A phase change ("loading", "downloading_aligner", "transcribing") is never throttled away.
+        if update.get("phase") or now - last_update >= 0.25:
             last_update = now
             loop.call_soon_threadsafe(publish, update)
 
@@ -49,7 +60,7 @@ async def stream_transcript(transcribe, title: str):
         return {"type": "complete", **result, "record": record}
 
     task = asyncio.create_task(run())
-    pending = asyncio.create_task(updates.get())
+    pending = asyncio.create_task(next_update())
     try:
         yield json.dumps({"type": "progress", "text": ""}) + "\n"
         while not task.done():
@@ -58,9 +69,18 @@ async def stream_transcript(transcribe, title: str):
             )
             if pending in done:
                 yield json.dumps(pending.result()) + "\n"
-                pending = asyncio.create_task(updates.get())
+                pending = asyncio.create_task(next_update())
             elif not done:
                 yield json.dumps({"type": "heartbeat"}) + "\n"
+        # Stop the reader first, or an update it takes while we are suspended is never sent.
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+        if not pending.cancelled():
+            yield json.dumps(pending.result()) + "\n"
+        while updates:
+            yield json.dumps(updates.popleft()) + "\n"
         yield json.dumps(task.result()) + "\n"
     except HTTPException as exc:
         yield json.dumps({"type": "error", "message": exc.detail}) + "\n"

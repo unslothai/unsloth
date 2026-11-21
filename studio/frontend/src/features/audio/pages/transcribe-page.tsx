@@ -1,0 +1,589 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
+import {
+  Download01Icon,
+} from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { StopIcon } from "@/lib/media-control-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { type ReactNode, type Ref, useEffect, useState } from "react";
+import type { AudioGalleryClip } from "../api";
+import { RECORDING_MAX_SECONDS } from "../audio-workspace-constants";
+import { formatClipDuration } from "../audio-workspace-utils";
+import { CLIPS_TOP_ROW } from "../components/clips-card";
+import {
+  AudioHistoryProvider,
+  AudioSourceInput,
+  type AudioSourceInputHandle,
+} from "../components/audio-source-input";
+import { SendToItems } from "../components/clip-card";
+import { Field, FieldLabel } from "../components/field";
+import { TranscriptView } from "../components/transcript-view";
+import {
+  TranscriptExportItems,
+  TranscriptGallery,
+  type TranscriptSendHandlers,
+} from "../transcript-gallery";
+import { TranscriptionProgress } from "../transcription-progress";
+import type { AudioHostState } from "../hooks/audio-host-state";
+import type { AudioSourceStatus } from "../hooks/audio-source-state";
+import type { Transcription } from "../hooks/use-transcription";
+import { useAudioTranscribeStore } from "../stores/audio-transcribe-store";
+import {
+  SPEAKERS_MODEL_NAME,
+  type TranscribeSwitch,
+  type TranscribeSwitches,
+} from "../transcribe-capabilities";
+import { transcribeLanguageFor } from "../transcribe-languages";
+import type { TranscriptExportFormat } from "../transcript-export";
+import { formatTimestamp } from "../transcript-model";
+import type { TranscriptProgress } from "../transcript-stream";
+import {
+  AUDIO_ACTION_BUTTON,
+  AUDIO_GO_BUTTON,
+  AUDIO_NOTE_SLOT,
+  AUDIO_STOP_BUTTON,
+  BlockerNote,
+  GenerateActions,
+  type GenerateBlocker,
+} from "./tts-workspace";
+import { ArrowUpIcon } from "lucide-react";
+
+// Radix Select cannot hold an empty value, so "detect" travels as this.
+const AUTO = "__auto__";
+
+function SwitchRow({
+  name,
+  label,
+  value,
+  disabled,
+  onUseSpeakersModel,
+  hintShared = false,
+}: {
+  name: "timestamps" | "speakers";
+  label: string;
+  value: TranscribeSwitch;
+  disabled: boolean;
+  onUseSpeakersModel?: () => void;
+  /** The rail says this hint once for all its options; keep it for screen readers only. */
+  hintShared?: boolean;
+}) {
+  const id = `transcribe-${name}`;
+  return (
+    <div className="grid gap-2">
+      <FieldLabel
+        htmlFor={id}
+        className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
+      >
+        {label}
+        {value.always ? (
+          <span
+            id={id}
+            className="text-ui-11p5 font-normal text-muted-foreground"
+          >
+            Always on
+          </span>
+        ) : (
+          <Switch
+            id={id}
+            checked={value.checked}
+            disabled={disabled || value.disabled}
+            onCheckedChange={(checked) =>
+              useAudioTranscribeStore.setState({ [name]: checked })
+            }
+            aria-describedby={`${id}-hint`}
+          />
+        )}
+      </FieldLabel>
+      <p
+        id={`${id}-hint`}
+        className={
+          hintShared
+            ? "sr-only"
+            : "text-ui-12 leading-normal text-muted-foreground"
+        }
+      >
+        {value.hint}
+        {value.suggestSpeakersModel && onUseSpeakersModel ? (
+          <GenerateActions
+            actions={[
+              {
+                label: `Use ${SPEAKERS_MODEL_NAME}`,
+                onClick: onUseSpeakersModel,
+              },
+            ]}
+          />
+        ) : null}
+      </p>
+    </div>
+  );
+}
+
+export function TranscribeRail({
+  historyClips,
+  disabled,
+  sourceHandle,
+  onSourceStatusChange,
+  switches,
+  languages,
+  onUseSpeakersModel,
+}: {
+  historyClips: readonly AudioGalleryClip[];
+  disabled: boolean;
+  sourceHandle: Ref<AudioSourceInputHandle>;
+  onSourceStatusChange: (status: AudioSourceStatus) => void;
+  switches: TranscribeSwitches;
+  languages: readonly { code: string; name: string }[];
+  onUseSpeakersModel?: () => void;
+}) {
+  const source = useAudioTranscribeStore((state) => state.source);
+  const language = useAudioTranscribeStore((state) => state.language);
+  const speakerAccent = useAudioTranscribeStore((state) => state.speakerAccent);
+  // A saved language the model no longer lists falls back to Auto rather than vanishing.
+  const languageValue = transcribeLanguageFor(language, languages) || AUTO;
+  const sharedHint =
+    switches.accent.hint === switches.timestamps.hint &&
+    switches.timestamps.hint === switches.speakers.hint
+      ? switches.accent.hint
+      : null;
+  return (
+    <AudioHistoryProvider value={historyClips}>
+      <div data-tour="audio-record">
+        <AudioSourceInput
+          id="transcribe-source"
+          label="Audio"
+          hint={switches.sourceHint}
+          value={source}
+          onChange={(next) => useAudioTranscribeStore.setState({ source: next })}
+          disabled={disabled}
+          handleRef={sourceHandle}
+          onStatusChange={onSourceStatusChange}
+          maxRecordSeconds={RECORDING_MAX_SECONDS}
+          expiredMessage="This upload expired. Add it again."
+          usesFirstSeconds={null}
+          recordHint="Record up to 30 minutes, then transcribe it."
+        />
+      </div>
+
+      {languages.length > 1 ? (
+        <Field
+          label="Language"
+          htmlFor="transcribe-language"
+          hint="Picking the spoken language helps with short or noisy clips."
+        >
+          <Select
+            value={languageValue}
+            onValueChange={(next) =>
+              useAudioTranscribeStore.setState({
+                language: next === AUTO ? "" : next,
+              })
+            }
+            disabled={disabled}
+          >
+            <SelectTrigger
+              id="transcribe-language"
+              size="sm"
+              className="w-full"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {languages.map((entry) => (
+                <SelectItem key={entry.code || AUTO} value={entry.code || AUTO}>
+                  {entry.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+      ) : null}
+
+      <Field
+        label="Speaker accent"
+        optional
+        htmlFor="transcribe-accent"
+        hint={sharedHint ? undefined : switches.accent.hint}
+      >
+        <Input
+          id="transcribe-accent"
+          value={speakerAccent}
+          onChange={(event) =>
+            useAudioTranscribeStore.setState({
+              speakerAccent: event.target.value,
+            })
+          }
+          placeholder="For example, Chinese-accented English"
+          maxLength={200}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={disabled || switches.accent.disabled}
+          aria-describedby={sharedHint ? "transcribe-options-hint" : undefined}
+        />
+      </Field>
+
+      <div className={sharedHint ? "grid gap-4" : "contents"}>
+        {(["timestamps", "speakers"] as const).map((name) => (
+          <SwitchRow
+            key={name}
+            name={name}
+            label={name === "timestamps" ? "Timestamps" : "Speakers"}
+            value={switches[name]}
+            disabled={disabled}
+            hintShared={sharedHint !== null}
+            onUseSpeakersModel={
+              name === "speakers" && switches.timestamps.suggestSpeakersModel
+                ? undefined
+                : onUseSpeakersModel
+            }
+          />
+        ))}
+        {sharedHint ? (
+          <p
+            id="transcribe-options-hint"
+            className="text-ui-12 leading-normal text-muted-foreground"
+          >
+            {sharedHint}
+          </p>
+        ) : null}
+      </div>
+    </AudioHistoryProvider>
+  );
+}
+
+const FORMAT_LABELS: Record<TranscriptExportFormat, string> = {
+  txt: "Text (.txt)",
+  srt: "Subtitles (.srt)",
+  vtt: "Web subtitles (.vtt)",
+  json: "JSON with timings (.json)",
+};
+
+export function TranscribeOutput({
+  transcriptionStartedAt,
+  transcriptionFinishedAt,
+  transcriptionStopping,
+  transcriptionProgress,
+  setTranscriptionStopping,
+  transcriptionAbort,
+  transcript,
+  handleCopyTranscript,
+  handleDownloadTranscript,
+  transcribedName,
+  transcriptModel,
+  transcriptRecord,
+  transcriptExported,
+  transcriptError,
+  busy,
+  active,
+  mode,
+  confirmTranscriptReplacement,
+  clearTranscript,
+  transcriptDetails,
+  speakerNames,
+  renameSpeaker,
+  selectRecord,
+  sendHandlersFor,
+}: Pick<
+  Transcription,
+  | "transcriptionStartedAt"
+  | "transcriptionFinishedAt"
+  | "transcriptionStopping"
+  | "transcriptionProgress"
+  | "setTranscriptionStopping"
+  | "transcriptionAbort"
+  | "transcript"
+  | "handleCopyTranscript"
+  | "handleDownloadTranscript"
+  | "transcribedName"
+  | "transcriptModel"
+  | "transcriptRecord"
+  | "transcriptExported"
+  | "transcriptError"
+  | "confirmTranscriptReplacement"
+  | "clearTranscript"
+  | "transcriptDetails"
+  | "speakerNames"
+  | "renameSpeaker"
+  | "selectRecord"
+> &
+  Pick<AudioHostState, "busy" | "active" | "mode"> & {
+    sendHandlersFor: TranscriptSendHandlers;
+  }) {
+  const language = transcriptDetails.language ?? transcriptRecord?.language;
+  const duration = transcriptDetails.duration ?? transcriptRecord?.duration;
+  const sendHandlers = sendHandlersFor({
+    text: transcript,
+    source: transcriptDetails.source ?? transcriptRecord?.source,
+    duration: duration ?? null,
+  });
+  const iconAction =
+    "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
+  // A finished run that failed shows its error, not a stopped progress row.
+  const top = (currentMenu: ReactNode) =>
+    transcriptionStartedAt !== null &&
+    !transcript &&
+    (transcriptionFinishedAt === null || !transcriptError) ? (
+      <div className={CLIPS_TOP_ROW}>
+        <TranscriptionProgress
+          startedAt={transcriptionStartedAt}
+          finishedAt={transcriptionFinishedAt}
+          stopping={transcriptionStopping}
+          progress={transcriptionProgress}
+          onCancel={() => {
+            setTranscriptionStopping(true);
+            transcriptionAbort.current?.abort();
+          }}
+        />
+      </div>
+    ) : transcript ? (
+      <section
+        id="transcribe-result"
+        tabIndex={-1}
+        aria-label="Transcript"
+        aria-busy={busy === "loading" ? true : undefined}
+        className={cn(
+          CLIPS_TOP_ROW,
+          "gap-3 transition-opacity duration-150 focus-visible:outline-none motion-reduce:transition-none",
+          busy === "loading" && "opacity-50",
+        )}
+      >
+        <TranscriptView
+          text={transcript}
+          details={transcriptDetails}
+          names={speakerNames}
+          onRename={renameSpeaker}
+          durationS={duration ?? null}
+          title={transcribedName}
+          meta={
+            <>
+              <span title={transcriptModel}>
+                {transcriptModel.split("/").pop() || transcriptModel}
+              </span>
+              {language ? ` · ${language}` : ""}
+              {duration ? (
+                <>
+                  {" · "}
+                  <span className="font-mono tabular-nums">
+                    {formatTimestamp(duration)}
+                  </span>
+                </>
+              ) : null}
+              {!transcriptRecord && !transcriptExported ? " · Not saved" : ""}
+            </>
+          }
+          actions={
+            <div className="flex shrink-0 items-center">
+              <Button
+                variant="ghost"
+                size="icon"
+                className={iconAction}
+                aria-label="Copy transcript"
+                title="Copy"
+                onClick={handleCopyTranscript}
+              >
+                <HugeiconsIcon icon={Copy01Icon} className="size-4" />
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={iconAction}
+                    aria-label="Download transcript"
+                    title="Download"
+                  >
+                    <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <TranscriptExportItems
+                    timed={transcriptDetails.segments.length > 0}
+                    label={(format) => <span>{FORMAT_LABELS[format]}</span>}
+                    onExport={(format) => void handleDownloadTranscript(format)}
+                  />
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {Object.keys(sendHandlers).length > 0 ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild={true}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={iconAction}
+                      aria-label="Send transcript to"
+                      title="Send to"
+                    >
+                      <ArrowUpIcon className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <SendToItems handlers={sendHandlers} />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+              {currentMenu}
+            </div>
+          }
+        />
+      </section>
+    ) : transcriptError ? (
+      <div className={cn(CLIPS_TOP_ROW, "gap-1 ps-4")} role="alert">
+        <p className="text-ui-13 font-medium text-destructive">
+          Could not transcribe {transcribedName ?? "that audio"}.
+        </p>
+        <p className="text-ui-13 text-muted-foreground">{transcriptError}</p>
+      </div>
+    ) : null;
+  return (
+    <>
+        <TranscriptGallery
+          top={top}
+          emptyText="Record or upload audio, then press Transcribe. Finished transcripts are kept here."
+          autoSelect={!transcript && !transcribedName && busy === null}
+          active={active && mode === "transcribe"}
+          currentId={transcriptRecord?.id ?? null}
+          latest={transcriptRecord}
+          canSelect={confirmTranscriptReplacement}
+          onSelect={selectRecord}
+          sendHandlersFor={sendHandlersFor}
+          onDelete={(ids) => {
+            if (
+              transcriptRecord &&
+              (ids === null
+                ? !transcriptRecord.archived
+                : ids.includes(transcriptRecord.id))
+            )
+              clearTranscript();
+          }}
+        />
+    </>
+  );
+}
+
+export function TranscribeFooter({
+  busy,
+  blocker,
+  notice,
+  shortcutLabel,
+  stopping,
+  onTranscribe,
+  onStop,
+  modelName,
+  progress,
+}: Pick<AudioHostState, "busy"> & {
+  blocker: GenerateBlocker | null;
+  notice: string | null;
+  shortcutLabel: string;
+  stopping: boolean;
+  onTranscribe: () => void;
+  onStop: () => void;
+  modelName: string;
+  progress: TranscriptProgress | null;
+}) {
+  const running = busy === "transcribing";
+  const working = running || busy === "loading";
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!working) {
+      setStartedAt(null);
+      return;
+    }
+    setStartedAt((value) => value ?? Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [working]);
+  const elapsed =
+    startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
+  const status =
+    busy === "loading" || progress?.phase === "loading"
+      ? `Loading ${modelName || "the model"}…`
+      : progress?.phase === "downloading_aligner"
+        ? "Downloading the timing aligner…"
+        : stopping
+          ? "Stopping…"
+          : "Transcribing…";
+  return (
+    <div className="flex w-full flex-col gap-2.5">
+      {working ? (
+        <>
+          <output
+            aria-live="polite"
+            aria-atomic="true"
+            className="text-center text-ui-12 text-muted-foreground"
+          >
+            {status}
+            <span className="ml-1.5 font-mono tabular-nums">
+              {formatClipDuration(elapsed)}
+            </span>
+          </output>
+          <Progress
+            indeterminate
+            aria-label="Transcription in progress"
+            className="h-1.5"
+          />
+        </>
+      ) : null}
+      <div className="flex items-center justify-center gap-2">
+        <Button
+          className={cn(
+            AUDIO_ACTION_BUTTON,
+            running ? AUDIO_STOP_BUTTON : AUDIO_GO_BUTTON,
+          )}
+          onClick={running ? onStop : onTranscribe}
+          disabled={running ? stopping : busy !== null || blocker !== null}
+          variant={running ? "outline" : "primary"}
+          aria-describedby={
+            blocker
+              ? "transcribe-blocker"
+              : notice
+                ? "transcribe-notice"
+                : undefined
+          }
+          aria-keyshortcuts="Control+Enter Meta+Enter"
+          title={running ? undefined : `Transcribe (${shortcutLabel})`}
+        >
+          {running ? (
+            <>
+              <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+              {stopping ? "Stopping…" : "Stop"}
+            </>
+          ) : busy === "loading" ? (
+            "Loading model…"
+          ) : (
+            "Transcribe"
+          )}
+        </Button>
+      </div>
+      <div className={AUDIO_NOTE_SLOT}>
+        {blocker && !running ? (
+          <BlockerNote id="transcribe-blocker" blocker={blocker} />
+        ) : notice && !running ? (
+          <p
+            id="transcribe-notice"
+            className="text-center text-ui-12 leading-normal text-muted-foreground"
+          >
+            {notice}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}

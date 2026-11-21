@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A status-only update must not replay the previous step's metrics.
-
-UnslothTrainer keeps metrics and status on one TrainingProgress and notifies its
-callbacks on every change, so publishing an evaluation status carries the last
-logged step's loss, learning rate, grad norm and eval loss along with it. The
-parent appends every progress event to loss_history / grad_norm_history /
-eval_loss_history and to the metric buffer it persists, without deduplicating the
-step, so a long evaluation would plot the same point once per status line.
-"""
+"""A status-only update must not replay the last step's metrics, which the parent appends again."""
 
 from __future__ import annotations
 
@@ -40,8 +32,7 @@ class _Progress:
 
 
 def _emitter():
-    """The publish rule from worker._create_trainer_progress_callback, returning the
-    steps it would have published as metric events."""
+    """Publish rule of worker._create_trainer_progress_callback; returns the steps published."""
     last_metrics: list = [None]
     published: list = []
 
@@ -68,8 +59,7 @@ def _emitter():
 
 
 def test_evaluation_status_lines_do_not_replot_the_last_step():
-    # A 4-minute evaluation after step 200 publishes a status roughly every 15s; each
-    # one arrives with step 200's loss still on the shared progress object.
+    # Eval status lines carry step 200's loss on the shared progress object; never replot.
     on_progress, published = _emitter()
     step_200 = _Progress(step = 200, total_steps = 1000, loss = 0.42, learning_rate = 1e-4)
     on_progress(step_200)
@@ -90,8 +80,7 @@ def test_a_new_step_is_still_published():
 
 
 def test_the_same_step_with_a_new_measurement_is_still_published():
-    # Evaluation ends and reports eval_loss while global_step has not moved yet; that
-    # is a real new number, not a replay.
+    # eval_loss may arrive with global_step unchanged: a new measurement, not a replay.
     on_progress, published = _emitter()
     on_progress(_Progress(step = 200, total_steps = 1000, loss = 0.42))
     on_progress(_Progress(step = 200, total_steps = 1000, loss = 0.42, eval_loss = 0.55))
@@ -99,7 +88,6 @@ def test_the_same_step_with_a_new_measurement_is_still_published():
 
 
 def test_a_warning_mid_run_does_not_replot_either():
-    # _record_warning notifies the same callbacks with the metrics untouched.
     on_progress, published = _emitter()
     progress = _Progress(step = 12, total_steps = 100, loss = 1.5, grad_norm = 0.9)
     on_progress(progress)

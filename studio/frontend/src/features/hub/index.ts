@@ -2,18 +2,24 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  clearDownloadTransportCapabilitiesCache,
+  DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
   finishExternalJob,
   jobKeyOf,
   pendingDrafterPresentation,
+  scopedVariant,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
   updateExternalJob,
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
   useDownloadManagerStore,
   useHttpPartialsResumable,
+  useRepoDownload,
   useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
@@ -24,8 +30,19 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
+export type { Capability, CapabilityKey } from "./lib/model-capabilities";
+export { detectCapabilities as detectHubCapabilities } from "./lib/model-capabilities";
+export { CapabilityGlyph } from "./catalog/shared";
+export {
+  detectBaseModel,
+  HUB_CAPABILITY_FILTERS,
+  type HubCapabilityFilter,
+} from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
-export { useOnlineStatus } from "./hooks/use-online-status";
+export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
+export { useSelectedModelMetadata } from "./hooks/use-selected-model-metadata";
+export { isHuggingFaceOffline } from "./lib/network";
+export { HubFailureHint } from "./catalog/catalog-states";
 export {
   INVENTORY_HINT_KIND,
   INVENTORY_HINT_KINDS,
@@ -39,6 +56,7 @@ export {
   type DeviceInventoryRows,
   type DeviceInventorySource,
   type DeviceInventorySourceState,
+  type EngramTableDetail,
   type GgufVariantDetail,
   type GgufVariantsResponse,
   type HubInventory,
@@ -63,7 +81,11 @@ export {
   dedupeSameSourceHubCacheRows,
   defaultCapabilities,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  deleteUploadedDataset,
+  revealLocalModel,
   epochMillisecondsToSeconds,
   fetchInventorySource,
   findCompleteHfCacheLocalRow,
@@ -100,6 +122,19 @@ export {
 export { useInventoryVersion } from "./stores/inventory-events";
 export { looksLikeLocalPath, localPathCacheKey } from "./lib/local-path";
 export { scanFolderStatusCopy } from "./lib/scan-folder-status";
+export {
+  countModelsPerFolder,
+  folderDisplayName,
+} from "./lib/scan-folder-models";
+export {
+  addScanFolderToStore,
+  refreshScanFolders,
+  removeScanFolderFromStore,
+  setScanFolderRecursive,
+  useScanFolders,
+  type AddScanFolderResult,
+  type ScanFoldersState,
+} from "./inventory/scan-folders-store";
 export type { ScanFolderStatus } from "./lib/scan-folder-status";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
@@ -134,4 +169,16 @@ export { DotTag } from "./catalog/dot-tag";
 export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
 export { TrainIcon } from "./components/train-icon";
 export { isHiddenModelId } from "./lib/hidden-models";
-export { classifyUnslothSupport, studioPageForTask } from "./lib/unsloth-support";
+export {
+  classifyUnslothSupport,
+  studioPageForTask,
+} from "./lib/unsloth-support";
+export {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory/inventory-freshness";
+export { withAbort } from "./lib/abort-signals";
+export { OwnerAvatar } from "./catalog/owner-avatar";
+export { resolveOwnerProviderLogo } from "./lib/provider-logos";
+export { matchesRecommendedBrowse } from "./lib/recommended-browse";
+export { formatParamCount } from "./lib/view-models";

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Parse a standard ``mcpServers`` JSON config (Claude Desktop / Cursor / Cline
-/ VS Code) into entries the existing MCP storage understands. See issue #5936.
-
-A stdio entry (``command`` + ``args`` + ``env``) is joined into the single
-command string the ``url`` field already stores; a remote entry (``url`` +
-``headers``) maps straight through. Parsing never raises on a single bad entry:
-it returns ``(entries, errors)`` so one malformed server can't sink the import.
-"""
+"""Parses mcpServers JSON into (entries, errors) so one bad entry cannot sink the import."""
 
 from __future__ import annotations
 
@@ -146,9 +139,7 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
 
 
 def parse_mcp_config(config: object) -> tuple[list[ParsedMcpEntry], list[str]]:
-    """Parse a Claude-Desktop/Cursor/Cline/VS Code config. Accepts the
-    ``mcpServers`` key (primary) or ``servers`` (VS Code alias). Returns
-    ``(entries, errors)``; a bad entry adds an error rather than raising."""
+    """Accepts the mcpServers key or the servers VS Code alias; bad entries are reported, not raised."""
     if not isinstance(config, dict):
         return [], ["Config must be a JSON object."]
     servers_key = "mcpServers" if "mcpServers" in config else "servers"

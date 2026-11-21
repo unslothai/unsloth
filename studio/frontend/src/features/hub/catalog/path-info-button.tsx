@@ -8,12 +8,11 @@ import {
 } from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { MouseEvent } from "react";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 
-/** Copies the on-disk path straight to the clipboard, no dialog. */
 export function PathInfoButton({
   path,
   className,

@@ -25,7 +25,7 @@ function FieldLabel({
   hintLabel?: string;
 }) {
   return (
-    <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
       {children}
       {hint ? <FieldHint text={hint} label={hintLabel ?? hint} /> : null}
     </span>
@@ -38,41 +38,34 @@ export function DatasetPanel() {
     datasetSource,
     restoreBrowseDatasetSource,
     isVisionModel,
-    isAudioModel,
     modelType,
   } = useTrainingConfigStore(
     useShallow((state) => ({
       datasetSource: state.datasetSource,
       restoreBrowseDatasetSource: state.restoreBrowseDatasetSource,
       isVisionModel: state.isVisionModel,
-      isAudioModel: state.isAudioModel,
       modelType: state.modelType,
     })),
   );
   const localDatasetInventory = useLocalDatasetInventory(datasetSource);
   const uploads = useDatasetUploads();
-  const effectiveModelType = modelType ?? "text";
-  const isMultimodalModel =
-    effectiveModelType === "vision" ||
-    effectiveModelType === "audio" ||
-    isVisionModel ||
-    isAudioModel;
+  const isVisionTraining = (modelType ?? "text") === "vision" || isVisionModel;
 
   useEffect(() => {
-    if (datasetSource === "s3" && isMultimodalModel) {
+    if (datasetSource === "s3" && isVisionTraining) {
       restoreBrowseDatasetSource();
       toast.info(t("studio.training.validation.s3MultimodalUnsupported"), {
         id: "training-s3-multimodal-source-reset",
       });
     }
-  }, [datasetSource, isMultimodalModel, restoreBrowseDatasetSource, t]);
+  }, [datasetSource, isVisionTraining, restoreBrowseDatasetSource, t]);
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
       {datasetSource === "s3" && <S3ConfigForm />}
 
       {datasetSource !== "s3" && (
-        <div className="grid grid-cols-1 items-start gap-4 @xl/train-section:grid-cols-2 @xl/train-section:gap-5">
+        <div className="grid grid-cols-1 items-start gap-4 @lg/train-section:grid-cols-2 @lg/train-section:gap-5">
           <div className="flex flex-col gap-2">
             <FieldLabel
               hint={t("studio.wizard.datasetTooltip")}

@@ -47,10 +47,6 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     )
 
 
-def _load_disk_cache(repo: str) -> Optional[tuple[float, Optional[str]]]:
-    return _flow.load_disk_cache(repo, _cache_dir())
-
-
 def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
     _flow.save_disk_cache(
         repo, latest_tag, _cache_dir(), log_message = "freshness cache write failed"
@@ -129,10 +125,6 @@ def update_download_size_bytes(
     return None
 
 
-def _parse_installed_at(value: object) -> Optional[datetime]:
-    return _flow.parse_installed_at(value)
-
-
 def parse_base_build(tag: object) -> Optional[int]:
     """Numeric base build from a release tag. Handles both a plain ``bNNNN`` and a mix-build tag like ``b9596-mix-<sha>`` (anchored at the start, so the mix suffix does not defeat it). None for anything not starting with ``bNNNN``."""
     if not isinstance(tag, str):
@@ -164,7 +156,7 @@ def check_prebuilt_freshness(
     now: Optional[datetime] = None,
 ) -> dict:
     """Returns {has_marker, stale, behind, installed_tag, latest_tag, installed_at_utc, age_days, published_repo, threshold_days}. behind = installed genuinely older than latest (see is_behind), stale = behind AND age >= threshold. Fails open on missing data (behind/stale stay False)."""
-    # Display prefers the normalized base tag, comparison uses the FULL identity, since /releases/latest returns the full tag_name and comparing the two produced a permanent "downgrade" banner. The marker records a normalized base tag ("tag", e.g. b9596) and the full "release_tag" (b9596-mix-<sha>), with deliberately opposite fallbacks.
+    # Display uses the base tag, comparison the full release_tag, else a false downgrade shows.
     return _flow.check_freshness(
         binary_path,
         threshold_days = threshold_days,

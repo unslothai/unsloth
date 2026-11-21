@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Regression guard for the pinned-device single-compile-worker block.
-
-The trap: that block runs AFTER `import unsloth_zoo`, which has already built its
-module-level Inductor options dicts from the original thread count. Those snapshots go
-to torch.compile as `options`, which Inductor applies as a config patch outranking
-both TORCHINDUCTOR_COMPILE_THREADS and config.compile_threads, so replacing
-determine_compile_threads alone leaves every already-decorated compile site unguarded.
-
-The guard block is extracted from the shipped source and run against a synthetic
-unsloth_zoo module graph, so this exercises the real code rather than a copy.
-"""
+"""unsloth_zoo's Inductor options snapshot the thread count at import and outrank the thread env var."""
 
 from __future__ import annotations
 
@@ -72,7 +62,7 @@ def _install_fake_zoo(monkeypatch) -> dict:
     shared = {"epilogue_fusion": True, "compile_threads": ORIGINAL_THREADS}
     fused = {"triton.cudagraphs": True, "compile_threads": ORIGINAL_THREADS}
     no_combo = {"combo_kernels": False, "compile_threads": ORIGINAL_THREADS}
-    unrelated = {"compile_threads": ORIGINAL_THREADS}  # in a non-zoo module
+    unrelated = {"compile_threads": ORIGINAL_THREADS}
 
     def _fake_determine_compile_threads():
         return ORIGINAL_THREADS
@@ -89,7 +79,7 @@ def _install_fake_zoo(monkeypatch) -> dict:
     common.torch_compile = functools.partial(lambda *a, **k: None, options = shared)
     gpt_oss.fused_torch_compile_options = fused
     gpt_oss.no_combo_fused_torch_compile_options = no_combo
-    loss_utils.torch_compile_options = shared  # same object, re-exported
+    loss_utils.torch_compile_options = shared
     patches.torch_compile_options = shared
     outsider.torch_compile_options = unrelated
 

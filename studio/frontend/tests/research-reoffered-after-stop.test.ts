@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The backend re-points a stopped run at the next question instead of refusing it, so the
-// composer has to offer deep research again. If either half of this drifts the user is locked
-// out of research for a chat the server would happily research.
+// The backend re-points a stopped run, so the composer must re-offer deep research.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -25,7 +23,6 @@ test("a finished research reply holds the thread", () => {
       status,
     );
   }
-  // No status at all is older metadata: count it, to stay on the safe side.
   assert.equal(
     messageHasResearchRunId(message({ researchRunId: "run_1" })),
     true,

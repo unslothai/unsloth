@@ -100,25 +100,25 @@ def test_owner_api_key_binds_the_owner(auth_db):
     assert bound == OWNER
 
 
-def test_deactivated_account_keeps_full_access_closed_until_deleted(auth_db):
-    assert policy.full_access_permitted() is True
+def test_deactivated_account_keeps_isolation_until_deleted(auth_db):
+    assert policy.installation_has_managed_accounts() is False
     alice = _managed("alice")
     assert policy.login_mode() == "multi"
-    assert policy.full_access_permitted() is False
+    assert policy.installation_has_managed_accounts() is True
 
     storage.set_account_active(alice["account_id"], False)
     assert policy.login_mode() == "single"
     assert policy.installation_is_multi_user() is False
     assert policy.managed_account_count() == 1
-    assert policy.full_access_permitted() is False
+    assert policy.installation_has_managed_accounts() is True
 
     storage.set_account_active(alice["account_id"], True)
-    assert policy.full_access_permitted() is False
+    assert policy.installation_has_managed_accounts() is True
 
     storage.delete_account(alice["account_id"], lambda account: None)
     assert policy.login_mode() == "single"
     assert policy.managed_account_count() == 0
-    assert policy.full_access_permitted() is True
+    assert policy.installation_has_managed_accounts() is False
 
 
 def test_status_reports_full_access_with_a_deactivated_account(auth_db):
@@ -178,7 +178,7 @@ def test_unreadable_auth_db_keeps_the_host_closed(auth_db, monkeypatch):
     monkeypatch.setattr(storage, "account_counts", boom)
     policy.invalidate_account_cache()
     assert policy.login_mode() == "single"
-    assert policy.full_access_permitted() is False
+    assert policy.installation_has_managed_accounts() is True
 
 
 def test_a_transient_auth_db_failure_is_not_cached(auth_db, monkeypatch):
@@ -189,6 +189,6 @@ def test_a_transient_auth_db_failure_is_not_cached(auth_db, monkeypatch):
 
     monkeypatch.setattr(storage, "account_counts", boom)
     policy.invalidate_account_cache()
-    assert policy.full_access_permitted() is False
+    assert policy.installation_has_managed_accounts() is True
     monkeypatch.setattr(storage, "account_counts", counts)
-    assert policy.full_access_permitted() is True
+    assert policy.installation_has_managed_accounts() is False

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Consent gate for loads that would execute model repo code.
-
-The LOAD-path counterpart to the capability probes (which read raw config and never need remote code). A deliberate load calls ``evaluate_remote_code_consent`` right before passing ``trust_remote_code=True``, and decides by the severity of a static scan of the repo's ``auto_map`` ``.py``: no ``auto_map`` in any config (model/tokenizer/processor) means nothing runs, so allow; CRITICAL (reverse shell, IMDS, credential theft, droppers) is a hard block, never approvable even first-party, defending a compromised trusted repo; HIGH/MEDIUM (subprocess/exec/eval/network/b64decode, or a large embedded blob) blocks but is user-approvable, with the dialog pinning approval to the scanned ``fingerprint``, for EVERY repo since first-party is not a blanket bypass; an ``auto_map`` present but unscannable (gated/offline/listing failure) fails closed as a hard block, since unseen code cannot be verified or fingerprinted.
-
-Hardening plus consent, not a sandbox: static patterns are evadable, so subprocess / venv isolation remains the containment layer.
-"""
+"""Remote-code consent: CRITICAL always blocks; HIGH/MEDIUM need approval; unscannable fails closed."""
 
 import os
 from dataclasses import dataclass, field
@@ -15,11 +10,19 @@ from typing import Optional
 from loggers import get_logger
 
 from utils.account_context import is_owner_context
+from utils.security.file_security import (
+    CRITICAL_FINDINGS,
+    MANAGED_REFUSED,
+    NOT_ON_SOURCE,
+    UNSCANNABLE,
+)
 from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
     MEDIUM,
     RemoteCodeUnscannable,
+    config_declares_auto_map,
+    hub_config_path,
     remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
@@ -36,8 +39,7 @@ MANAGED_REMOTE_CODE_REFUSAL = (
 
 
 def managed_remote_code_refused() -> bool:
-    """Remote code runs unconfined as the Studio user, so a managed account may not
-    enable it unless the owner opted in for the whole installation."""
+    """Remote code runs unconfined, so managed accounts need the owner's whole-install opt-in."""
     if is_owner_context():
         return False
     return os.environ.get(MANAGED_REMOTE_CODE_OVERRIDE, "").lower() not in ("1", "true", "yes")
@@ -55,11 +57,22 @@ class RemoteCodeDecision:
     findings_summary: str
     reason: str
     findings: list = field(default_factory = list)
-    approvable: bool = True  # False only for CRITICAL (user cannot override)
+    approvable: bool = True  # False for a hard block (user cannot override)
+    block_cause: Optional[str] = None
+
+    def blocked_message(self, subject: str = "Model") -> str:
+        """Only a scan that ran can have flagged anything; other blocks state their own cause."""
+        if self.max_severity:
+            return (
+                f"{subject} '{self.model_name}' ships custom code flagged as "
+                f"{self.max_severity} by the security scan. Review and approve it to proceed."
+            )
+        return self.findings_summary or self.reason
 
     def response_payload(self) -> dict:
-        """Machine-readable detail for the frontend. ``error_kind`` splits a user-approvable prompt (``remote_code_consent_required``) from a CRITICAL hard block (``remote_code_blocked``)."""
+        """Machine-readable detail for the frontend. ``error_kind`` splits a user-approvable prompt (``remote_code_consent_required``) from a hard block (``remote_code_blocked``), whose ``block_cause`` says why."""
         return {
+            "block_cause": self.block_cause,
             "error_kind": (
                 "remote_code_consent_required" if self.approvable else "remote_code_blocked"
             ),
@@ -80,19 +93,23 @@ def _config_has_auto_map(
     *,
     load_subdirs = (),
 ) -> Optional[bool]:
-    """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load would execute. Reads raw JSON with ``hf_token``; returns None when a config is unreadable (transient/auth) so the caller treats it as "unknown" and scans, False when the repo genuinely ships none.
-
-    GGUF-inertness is the LOADER's property, decided upstream by the caller's ``is_gguf`` check, not here. Every path that reaches this helper (export, training, non-GGUF inference) loads via ``from_pretrained``, which imports ``auto_map`` even for a ``.gguf``-only repo, so a GGUF-classified repo id MUST still be scanned. Only a direct ``.gguf`` FILE reference is inert, a genuine single-file llama.cpp load.
-    """
-    # A direct .gguf FILE loads via llama.cpp (auto_map inert); a bare repo id ending in .gguf can still ship safetensors + auto_map, so it falls through to the scan.
+    """A repo id ending in .gguf can still ship auto_map, so only a direct .gguf file is skipped; returns None when a config is unreadable, so the caller scans."""
     if _is_direct_gguf_file_ref(model_name):
         return False
     configs = _load_remote_code_configs(model_name, hf_token, load_subdirs = load_subdirs)
     if configs is None:
         return None
-    if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
+    # Check every nesting level: composite models declare auto_map on a sub-config.
+    if not any(
+        config_declares_auto_map(cfg or {}) or _config_declares_model_file(cfg) for cfg in configs
+    ):
         return False
     return True
+
+
+def _config_declares_model_file(cfg) -> bool:
+    """MLX loaders exec a config's ``model_file`` like an ``auto_map`` entry."""
+    return isinstance(cfg, dict) and bool(cfg.get("model_file"))
 
 
 def _is_direct_gguf_file_ref(model_name: str) -> bool:
@@ -132,34 +149,66 @@ def _load_remote_code_configs(
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
             return configs
 
-        from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import EntryNotFoundError
-        from utils.hf_cache_settings import active_hf_hub_cache
-        from utils.hf_probe import hf_file_definitely_absent
-
         configs = []
         for name in remote_code_config_paths(load_subdirs):
-            # Probe optional configs without caching 404s; other failures still fail closed.
-            if hf_file_definitely_absent(model_name, name, token = hf_token):
-                continue
             try:
-                p = hf_hub_download(
-                    repo_id = model_name,
-                    filename = name,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
-                )
-            except EntryNotFoundError:
-                continue
+                p = hub_config_path(model_name, name, hf_token)
             except Exception:
                 # Transient/auth failure is not "absent" -> fail closed to "unknown" so the caller scans.
                 return None
-            configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
+            if p is not None:
+                configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
         # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:
         logger.debug("auto_map check could not read config for %s: %s", model_name, exc)
         return None
+
+
+def _unscannable_decision(target: str, *, declared: bool, missing: bool) -> RemoteCodeDecision:
+    """Fails closed either way; only a declaration read from a config says the repo has code."""
+    from utils.hf_probe import repo_not_found_message
+    from utils.hub_settings import active_source_label
+
+    if not declared and missing:
+        logger.warning(
+            "Blocking load of '%s': the repo was not found on %s, so it could not be scanned.",
+            target,
+            active_source_label(),
+        )
+        return RemoteCodeDecision(
+            target,
+            False,
+            True,
+            None,
+            None,
+            repo_not_found_message(target),
+            "blocked: repo not found on the model source",
+            approvable = False,
+            block_cause = NOT_ON_SOURCE,
+        )
+    logger.warning(
+        "Blocking trust_remote_code load of '%s': %s could not be downloaded and scanned.",
+        target,
+        "remote code present (auto_map) but it" if declared else "its configs or code",
+    )
+    return RemoteCodeDecision(
+        target,
+        True,
+        True,
+        None,
+        None,
+        (
+            "Remote code is present (auto_map) but could not be downloaded and scanned."
+            if declared
+            else f"Could not read this model from {active_source_label()} to check it for "
+            "custom code, so it could not be downloaded and scanned."
+        )
+        + " Retry when the repo is reachable and the correct token is set.",
+        "blocked: remote code could not be scanned",
+        approvable = False,
+        block_cause = UNSCANNABLE,
+    )
 
 
 def evaluate_remote_code_consent(
@@ -206,10 +255,7 @@ def evaluate_remote_code_consent_for_targets(
     subject: Optional[str] = None,
     load_subdirs_by_target = None,
 ) -> RemoteCodeDecision:
-    """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose code the load would execute. A LoRA load runs adapter AND base code, so all targets are scanned as ONE unit and pinned by ONE fingerprint over the union of their ``.py``: one approval covers every repo, and a base-only fingerprint cannot leave an adapter's own ``auto_map`` unreviewed. On ``blocked``, the caller surfaces ``response_payload()`` and retries with ``approved_fingerprint`` if the user accepts.
-
-    When ``subject`` is given, a prior approval by that user can skip the DIALOG (never the scan): the stored fingerprint seeds the authoritative content check below, so an unchanged repo auto-approves while any change re-prompts. A genuine approval is recorded for next time.
-    """
+    """Scans every target as one unit under one fingerprint, so adapter code is never unreviewed; a prior approval skips the dialog, never the scan."""
     targets = [t for t in dict.fromkeys(targets) if t]
     primary = targets[0] if targets else ""
 
@@ -237,29 +283,36 @@ def evaluate_remote_code_consent_for_targets(
     for target in targets:
         load_subdirs = tuple(load_subdirs_by_target.get(target, ()))
         scan_kwargs = {"load_subdirs": load_subdirs} if load_subdirs else {}
-        if _config_has_auto_map(target, hf_token, **scan_kwargs) is False:
+        declares_code = _config_has_auto_map(target, hf_token, **scan_kwargs)
+        if declares_code is False:
             continue
-        has_remote_code = True
         try:
             files = repo_remote_code_files(target, hf_token = hf_token, **scan_kwargs)
         except RemoteCodeUnscannable:
-            logger.warning(
-                "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
-                "but could not be downloaded and scanned.",
-                target,
+            from utils.hf_probe import hub_repo_not_found
+            from utils.hub_settings import MODELSCOPE, active_source
+            from utils.paths import is_local_path
+            from utils.utils import hf_cache_snapshot_dir_for_repo
+
+            declared = declares_code is True
+            on_modelscope = active_source() == MODELSCOPE
+            missing = (
+                (on_modelscope or not declared)
+                and not is_local_path(target)
+                and hub_repo_not_found(target, hf_token)
             )
-            return RemoteCodeDecision(
-                target,
-                True,
-                True,
-                None,
-                None,
-                "Remote code is present (auto_map) but could not be downloaded and "
-                "scanned. Retry when the repo is reachable and the correct Hugging Face "
-                "token is set.",
-                "blocked: remote code could not be scanned",
-                approvable = False,
-            )
+            # Hugging Face's 404 may only mean private to this caller, so only ModelScope's counts.
+            snapshot = hf_cache_snapshot_dir_for_repo(target) if missing and on_modelscope else None
+            if snapshot is None:
+                return _unscannable_decision(target, declared = declared, missing = missing)
+            # The hub falls back to this snapshot on a 404, so judge what it holds.
+            if _config_has_auto_map(str(snapshot), hf_token, **scan_kwargs) is False:
+                continue
+            try:
+                files = repo_remote_code_files(str(snapshot), hf_token = hf_token, **scan_kwargs)
+            except RemoteCodeUnscannable:
+                return _unscannable_decision(target, declared = True, missing = False)
+        has_remote_code = True
         # Namespace filenames by (casing-normalized) target so two repos' same-named files stay distinct.
         target_key = _fingerprint_target_key(target)
         for filename, body in files.items():
@@ -284,7 +337,15 @@ def evaluate_remote_code_consent_for_targets(
 
     if managed_remote_code_refused():
         return RemoteCodeDecision(
-            primary, True, True, None, None, "", MANAGED_REMOTE_CODE_REFUSAL, approvable = False
+            primary,
+            True,
+            True,
+            None,
+            None,
+            "",
+            MANAGED_REMOTE_CODE_REFUSAL,
+            approvable = False,
+            block_cause = MANAGED_REFUSED,
         )
 
     result = scan_remote_code_files(combined)
@@ -340,4 +401,5 @@ def evaluate_remote_code_consent_for_targets(
         reason,
         findings = result.findings_payload(),
         approvable = approvable,
+        block_cause = CRITICAL_FINDINGS if sev == CRITICAL else None,
     )

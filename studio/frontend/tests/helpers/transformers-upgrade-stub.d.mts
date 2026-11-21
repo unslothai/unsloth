@@ -60,3 +60,5 @@ export declare const useTransformersUpgradeDialogStore: {
     consumeServerUnloadedChat(): boolean;
   };
 };
+
+export declare function upgradeInstallVersion(upgrade: unknown): string | null;

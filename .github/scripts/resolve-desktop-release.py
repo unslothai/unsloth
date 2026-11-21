@@ -59,12 +59,9 @@ def fetch_assets(tag: str, repo: str) -> Any:
 
 
 def resolve_newest(releases: Any, asset_suffix: str, fetch) -> str | None:
-    """Newest SemVer release carrying the asset, hydrating one release at a time.
-
-    Newest first and stop on the first match: hydrating every entry cost one
-    subprocess per release per matrix leg, and let a transient lookup on an
-    irrelevant historical release fail a leg whose answer was the newest one.
-    """
+    """Returns the newest SemVer release carrying the asset, hydrating newest first and stopping at
+    the first match; hydrating every entry cost a subprocess per release per leg and let a
+    transient lookup on an old release fail a leg."""
     if not isinstance(releases, list):
         raise ValueError("release listing must be a JSON array")
 

@@ -4,14 +4,19 @@
 // Pure helpers for model-row presentation: owner/name split, lora trigger label, format pills,
 // param chip, tabular size. No React/DOM deps so they stay easy to test.
 
+import {
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
 import type { LoraModelOption } from "./types";
 
-export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";
+export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter" | "npu";
 
-// Format keyword to DotTag tone. Looked up by full token and by first word, so "Full finetune" resolves via "full".
+// Looked up by full token and by first word, so "Full finetune" resolves via "full".
 export const FORMAT_TONE: Record<string, FormatTone> = {
   gguf: "gguf",
   mlx: "mlx",
+  npu: "npu",
   local: "checkpoint",
   safetensors: "checkpoint",
   checkpoint: "checkpoint",
@@ -22,7 +27,6 @@ export const FORMAT_TONE: Record<string, FormatTone> = {
   full: "adapter",
 };
 
-/** Split "owner/name" on the last slash. No slash means name only. */
 export function splitRepoLabel(label: string): {
   owner: string | null;
   name: string;
@@ -34,11 +38,19 @@ export function splitRepoLabel(label: string): {
   return { owner: label.slice(0, slash), name: label.slice(slash + 1) };
 }
 
-/** Our official Hub owners. Rows drop the owner prefix, since the Unsloth section already carries
- *  it; the full repo id stays in the row tooltip. */
 export function isUnslothOwner(owner: string | null | undefined): boolean {
   const normalized = owner?.toLowerCase();
   return normalized === "unsloth" || normalized === "unslothai";
+}
+
+/** On Device label: an audio.cpp umbrella folder reads as its folder, any other id as itself. */
+export function onDeviceRepoLabel(id: string): string {
+  return isAudioCppFolderId(id) ? audioCppDisplayName(id) : id;
+}
+
+/** On Device rows grouped with Unsloth's: our Hub owners and the audio.cpp catalog folders. */
+export function isFeaturedOnDeviceRepoId(id: string): boolean {
+  return isUnslothOwner(splitRepoLabel(id).owner) || isAudioCppFolderId(id);
 }
 
 /** Selector trigger label. Training and exported runs are named "<run>/<model>", so the run is the
@@ -56,18 +68,24 @@ export type MetaToken =
   | { kind: "format"; label: string; tone: FormatTone }
   | { kind: "size"; label: string }
   | { kind: "param"; label: string }
+  | { kind: "resident"; label: string }
   | { kind: "text"; label: string };
 
 const META_SIZE_RE = /(?:KB|MB|GB|TB)\b/i;
 const META_APPROX_RE = /^~/;
-const META_PARAM_RE = /^\d+(?:\.\d+)?B$/i;
+const META_RUN_RE = /\bto run$/i;
+const META_PARAM_RE = /^\d+(?:\.\d+)?[MB]$/i;
 const META_WHITESPACE_RE = /\s+/;
 
-/** Classify a meta token: size (has KB/MB/GB/TB or leading "~"), param (bare "<n>B"), format
- *  keyword, or plain text. */
+/** Classify a meta token: size (has KB/MB/GB/TB or leading "~"), param (bare "<n>B" or "<n>M";
+ *  never "<n>K", which is a context length), format keyword, or plain text. */
 export function classifyMetaToken(raw: string): MetaToken | null {
   const t = raw.trim();
   if (!t) return null;
+  // Before the size test, which "12.2 GB to run" (an audio.cpp estimate) also matches.
+  if (META_RUN_RE.test(t)) {
+    return { kind: "resident", label: t.replace(META_RUN_RE, "").trim() };
+  }
   if (META_SIZE_RE.test(t) || META_APPROX_RE.test(t)) {
     return { kind: "size", label: t };
   }
@@ -83,17 +101,18 @@ export function classifyMetaToken(raw: string): MetaToken | null {
   return { kind: "text", label: t };
 }
 
-/** Parse the dot-separated meta string into structured tokens. */
 export function parseMetaTokens(meta?: string | null): {
   formats: { label: string; tone: FormatTone }[];
   param?: string;
   size?: string;
+  resident?: string;
   texts: string[];
 } {
   const formats: { label: string; tone: FormatTone }[] = [];
   const texts: string[] = [];
   let param: string | undefined;
   let size: string | undefined;
+  let resident: string | undefined;
   if (!meta) return { formats, texts };
   for (const part of meta.split("·")) {
     const token = classifyMetaToken(part);
@@ -104,9 +123,11 @@ export function parseMetaTokens(meta?: string | null): {
       size ??= token.label;
     } else if (token.kind === "param") {
       param ??= token.label;
+    } else if (token.kind === "resident") {
+      resident ??= token.label;
     } else {
       texts.push(token.label);
     }
   }
-  return { formats, param, size, texts };
+  return { formats, param, size, resident, texts };
 }

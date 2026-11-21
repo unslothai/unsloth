@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""`revision` must reach the config, weight and tokenizer loads (issue #3544).
-
-FastLlamaModel.from_pretrained took a `revision` argument and never read it, so the
-config, weights and tokenizer silently came from the repo's default branch. These are
-AST-structural so they need no GPU, no network and no gated checkpoint; importing
-unsloth on a CPU runner is what tests/conftest.py exists to work around.
-"""
+"""`revision` must reach the config, weight and tokenizer loads, or they use the default branch."""
 
 import ast
 import types
@@ -49,12 +43,17 @@ def _params(function):
 
 
 def _calls(function, callee):
-    """Every Call whose dotted name ends with `callee`."""
-    return [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == callee
-    ]
+    found = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if ast.unparse(node.func) == "_memo_config_probe" and node.args:
+            node = ast.copy_location(
+                ast.Call(func = node.args[0], args = node.args[1:], keywords = node.keywords), node
+            )
+        if ast.unparse(node.func).split(".")[-1] == callee:
+            found.append(node)
+    return found
 
 
 def _revision_kwarg(call):
@@ -100,8 +99,7 @@ def test_llama_loads_forward_revision(callee, minimum):
 
 
 def test_llama_does_not_pass_revision_to_load_vllm():
-    """load_vllm has no `revision` parameter and load_vllm_kwargs is not filtered,
-    so putting one in that dict is an unconditional TypeError on the vLLM path."""
+    """load_vllm takes no revision and kwargs are not filtered, so the key raises TypeError."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
     dicts = [
         node.value
@@ -131,6 +129,12 @@ def test_vision_loads_forward_revision(callee, minimum):
     function = _function(_tree(VISION), "from_pretrained", "FastBaseModel")
     calls = [
         c for c in _calls(function, "from_pretrained") if ast.unparse(c.func).startswith(callee)
+    ]
+    # Processor loads go through the padding_side retry, which forwards its kwargs.
+    calls += [
+        c
+        for c in _calls(function, "_from_pretrained_left_padded")
+        if c.args and ast.unparse(c.args[0]) == callee
     ]
     assert len(calls) >= minimum, f"expected >= {minimum} {callee} loads, found {len(calls)}"
     for call in calls:
@@ -169,22 +173,24 @@ def _load_gate():
 
 
 def test_revision_survives_when_the_repo_is_unchanged():
-    # The reported case: a user's own repo is never in the mapper tables.
     gate = _load_gate()
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
+
+
+def test_revision_survives_a_spelling_only_change():
+    assert _load_gate()("release", "unsloth/Qwen3-30B-A3B", "unsloth/qwen3-30b-a3b") == "release"
 
 
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [
-        ("unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B"),  # prequant mirror
-        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),  # suffix strip
-        ("/tmp/unsloth-fp8-cache/model", "meta-llama/Meta-Llama-3-8B"),  # fp8 temp dir
+        ("unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B"),
+        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),
+        ("/tmp/unsloth-fp8-cache/model", "meta-llama/Meta-Llama-3-8B"),
     ],
 )
 def test_revision_is_dropped_once_the_repo_is_remapped(model_name, old_model_name):
-    # The ref only exists on the repo the caller named: elsewhere it 404s or, worse, resolves a same-named branch on a
-    # different repo.
+    # The ref only exists on the named repo; elsewhere it 404s or hits a same-named branch.
     assert _load_gate()("abc123", model_name, old_model_name) is None
 
 
@@ -209,7 +215,6 @@ def test_the_gate_warns_exactly_once_when_it_drops_a_revision():
     gate("abc123", "unsloth/x-bnb-4bit", "org/x", True)
     assert len(warnings) == 1
     message = warnings[0]
-    # Both repos have to be named or the user cannot tell which load was silently redirected.
     assert "abc123" in message and "org/x" in message and "unsloth/x-bnb-4bit" in message
 
 
@@ -262,7 +267,7 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             assert probe.lineno > early.lineno, "the gate must precede the config probes"
             keyword = _revision_kwarg(probe)
             if keyword is None:
-                continue  # the PEFT base-model probe deliberately pins nothing
+                continue
             assert getattr(keyword.value, "id", None) in (
                 "base_revision",
                 "adapter_revision",
@@ -270,7 +275,6 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             gated += 1
         assert gated >= 2, f"{class_name} must gate its AutoConfig and PeftConfig probes"
 
-        # The late gate feeds on base_revision so an already-dropped one warns only once.
         assert getattr(late.args[0], "id", None) == "base_revision"
 
 
@@ -324,7 +328,7 @@ def test_a_pinned_load_does_not_mix_refs_with_vllm(path, flag):
         and n.value.value is None
     ]
     assert clears, f"{path.name} never drops the revision on the vLLM path"
-    # It must happen before the config load, or the config is pinned and the weights are not.
+    # Must happen before the config load, or only the config is pinned.
     configs = [
         c
         for c in _calls(function, "from_pretrained")
@@ -380,8 +384,7 @@ def test_the_vllm_drop_only_fires_when_vllm_owns_the_weights():
 
 
 def test_the_tokenizer_revision_is_resolved_by_the_loader():
-    """The tokenizer repo is not always the base model's: a PEFT load whose
-    tokenizer_name is the adapter keeps the caller's ref, which the base model cannot."""
+    """The tokenizer repo can be the PEFT adapter, so the caller's ref is kept for it."""
     tree = _tree(LOADER)
     helper = _function(tree, "_revision_for_tokenizer_repo")
     assert helper, "the loader must resolve the tokenizer repo's revision"
@@ -445,29 +448,31 @@ def test_an_adapter_ref_never_reaches_the_base_tokenizer():
     """On a PEFT load the late gate is skipped, so the gated value still names the
     adapter. The base repo's tokenizer must take the model load's ref, which is None."""
     gate = _load_tokenizer_gate()
-    # Remote adapter, no explicit tokenizer_name: the tokenizer follows the base model.
     assert gate(None, "org/base", "org/adapter", "v2", None) is None
 
 
 def test_an_adapter_hosted_tokenizer_keeps_the_callers_ref():
-    """An adapter is a separate repo with its own history, so the caller's ref still
-    names it even though the base model it sits on cannot answer to it."""
+    """An adapter is its own repo with its own history, so the caller's ref still names it."""
     gate = _load_tokenizer_gate()
     assert gate("org/adapter", "org/base", "org/adapter", "v2", None, True) == "v2"
 
 
 def test_a_remapped_plain_load_drops_the_tokenizer_pin_too():
-    """Naming the requested repo as tokenizer_name must not smuggle the ref back in: the
-    weights now come off a mirror's default branch, and a pinned tokenizer beside them is
-    the ref mismatch the gate exists to prevent. Only a PEFT adapter is a separate repo."""
+    """A remapped plain load drops the tokenizer pin even when tokenizer_name is the requested repo,
+    since its weights come off a default branch; only a PEFT adapter is a separate repo"""
     gate = _load_tokenizer_gate()
     assert gate("org/model", "unsloth/model-bnb-4bit", "org/model", "v2", None) is None
+
+
+def test_a_case_only_tokenizer_name_keeps_the_model_ref():
+    gate = _load_tokenizer_gate()
+    requested, resolved = "unsloth/qwen3-30b-a3b", "unsloth/Qwen3-30B-A3B"
+    assert gate(requested, resolved, requested, "v2", "v2") == "v2"
 
 
 def test_a_plain_load_gives_the_tokenizer_the_model_ref():
     gate = _load_tokenizer_gate()
     assert gate(None, "org/model", "org/model", "v2", "v2") == "v2"
-    # A third-party tokenizer repo is pinned by neither.
     assert gate("other/tok", "org/model", "org/model", "v2", "v2") is None
 
 
@@ -528,8 +533,7 @@ def test_a_direct_llama_call_still_pins_its_tokenizer():
     ],
 )
 def test_the_vllm_drop_clears_the_tokenizer_pin_too(path, cls, name):
-    """Clearing only the model pin left vLLM on the default branch while the tokenizer
-    stayed on the requested ref."""
+    """Clearing only the model pin left vLLM on the default branch; the tokenizer kept the ref."""
     function = _function(ast.parse(path.read_text(encoding = "utf-8")), "from_pretrained", cls)
     clears = [
         n
@@ -586,9 +590,7 @@ def _simulate_loader():
             None,
             None,
         ),
-        # The adapter's ref is not the base repo's, and the tokenizer follows the base.
         ("PEFT, remote adapter", "org/ad", "org/base", True, None, "v2", False, None, None),
-        # ... unless the tokenizer is the adapter itself, which the caller did pin.
         (
             "PEFT, adapter-hosted tokenizer",
             "org/ad",
@@ -611,7 +613,6 @@ def _simulate_loader():
             "v2",
             None,
         ),
-        # Naming the requested repo back does not survive the remap: the weights moved.
         (
             "remapped, tokenizer named as the requested repo",
             "org/m",
@@ -672,8 +673,7 @@ def test_the_fp8_quantizer_takes_the_requested_revision():
 
 
 def test_the_fp8_cache_name_is_revision_specific():
-    """A shared temp dir keyed only on the repo name would serve one ref's artifact to
-    another, and the artifact outlives the process that built it."""
+    """A temp dir keyed only on the repo name would serve one ref's artifact to another ref."""
     function = _function(_tree(LOADER_UTILS), "_offline_quantize_to_fp8")
     writes = [
         n
@@ -706,9 +706,7 @@ def test_both_loaders_hand_the_fp8_quantizer_the_revision():
 
 
 def test_the_vllm_drop_happens_before_the_config_probe():
-    """model_types, auto_model and the text-only decision all come off the probed config.
-    Reading it at a ref vLLM will not fetch picks the dispatch for a different model, so
-    the pin has to be gone before the probe, not just before the dispatch."""
+    """Config probe must run unpinned: reading it at a ref vLLM will not fetch picks the wrong dispatch."""
     function = _function(_tree(LOADER), "from_pretrained", "FastModel")
     drops = [
         n
@@ -733,7 +731,6 @@ def test_the_vllm_drop_happens_before_the_config_probe():
     assert drops[0].end_lineno < min(
         c.lineno for c in probes
     ), "the probe would read a ref the weights will not be at"
-    # The probed config goes down untouched again, so nothing may re-gate it at dispatch.
     dispatches = [
         c
         for c in _calls(function, "from_pretrained")
@@ -760,9 +757,8 @@ def test_the_fp8_cache_key_survives_a_lossy_sanitization():
 
 
 def test_the_peft_probe_keeps_the_adapter_ref_under_vllm():
-    """The vLLM drop runs before is_peft is known. An adapter is loaded in-process by peft,
-    so zeroing its probe would read the default branch and either miss PEFT entirely or
-    resolve a different base model before attaching the pinned adapter."""
+    """The vLLM drop runs before is_peft is known, so the PEFT probe keeps the adapter ref; zeroing
+    it reads the default branch and may miss PEFT or resolve the wrong base model"""
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
@@ -781,8 +777,7 @@ def test_the_peft_probe_keeps_the_adapter_ref_under_vllm():
 
 
 def test_both_loaders_drop_the_vllm_pin_before_the_probe():
-    """model_types picks the architecture class off the probed config, so reading it at a
-    ref vLLM will not fetch dispatches the wrong one."""
+    """The vLLM pin must go before the probe, or model_types picks the wrong architecture."""
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)

@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { revealCachedModel } from "@/features/chat";
+import { useRevealLabel } from "@/features/library/reveal";
+import { toast } from "@/lib/toast";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
@@ -16,7 +19,12 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  LayerIcon,
+  LinkSquare02Icon,
+} from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -28,9 +36,13 @@ import {
 import { useOnlineStatus } from "../hooks/use-online-status";
 import {
   type BaseModelSource,
+  type GgufVariantDetail,
   type LocalModelInfo,
   type ModelInventoryFormat,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
@@ -41,6 +53,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
+  localGgufMemoryBarVariant,
   resolveLocalGgufVariant,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
@@ -49,9 +62,9 @@ import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
+import { CHIP_BASE, CHIP_DEFAULT, QuantBadge } from "./gguf-download-card";
 import {
   CardDeleteButton,
-  CardDivider,
   CardUpdateButton,
   DeleteConfirmDialog,
   ModelRunActionButton,
@@ -61,6 +74,10 @@ import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
+import {
+  classifyGgufVariantFit,
+  ggufVariantLookupTableBytes,
+} from "@/lib/gguf-fit";
 
 interface LocalOnDeviceCardProps {
   modelId: string;
@@ -69,10 +86,7 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
-  /** False for a local diffusion / audio / video GGUF: it runs through the media
-   *  planner rather than llama.cpp, so the KV estimator describes the wrong
-   *  runtime -- and it still falls back to the file size, so it draws a
-   *  confident weights-only verdict rather than nothing. */
+  /** False for media GGUFs: they run through the media planner, so the KV estimate is wrong. */
   showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
@@ -90,8 +104,8 @@ interface LocalOnDeviceCardProps {
   preferredFileIntent?: number;
 
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
   onRun?: (selection: HubModelRunSelection) => void;
@@ -131,10 +145,10 @@ function BaseModelReference({
   const hfEndpoint = useHfEndpoint();
   const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-[10px] border border-border/55 bg-muted/35 px-3 py-2">
-      <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-background/70 text-muted-foreground">
+    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/55 bg-muted/35 px-3 py-2">
+      <div className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-background/70 text-muted-foreground">
         <HugeiconsIcon
-          icon={CubeIcon}
+          icon={LayerIcon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -171,7 +185,7 @@ function BaseModelReference({
               }}
             >
               <HugeiconsIcon
-                icon={Share05Icon}
+                icon={LinkSquare02Icon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />
@@ -183,6 +197,36 @@ function BaseModelReference({
         </Tooltip>
       )}
     </div>
+  );
+}
+
+/** Null unless this is the owner on the backend's own machine with a file manager. */
+function CardRevealButton({ onReveal }: { onReveal: () => Promise<unknown> }) {
+  const revealLabel = useRevealLabel();
+  if (!revealLabel) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={revealLabel}
+          onClick={(e) => {
+            e.stopPropagation();
+            onReveal().catch((err) => {
+              toast.error(
+                err instanceof Error ? err.message : "Failed to open file manager",
+              );
+            });
+          }}
+          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100"
+        >
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        {revealLabel}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -211,6 +255,7 @@ export function LocalOnDeviceCard({
 
   gpuGb,
   gpuCount,
+  audioCppCardGb,
   systemRamGb,
   unsupportedReason,
   onRun,
@@ -243,23 +288,24 @@ export function LocalOnDeviceCard({
     setUpdateConflictKey(null);
   }, [updateConflictKey]);
   const hfToken = useHfTokenStore((s) => s.token);
-  // Update availability is derived from the GGUF variant metadata; offline rows
-  // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const isCacheRow = source === "hf_cache";
   const deleteImpact = useDeleteImpact(
-    deleteOpen && Boolean(repoId),
+    deleteOpen && isCacheRow && Boolean(repoId),
     repoId ?? "",
   );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
+      if (!isCacheRow) {
+        await deleteLocalModel(path, modelId);
+        return;
+      }
       if (!repoId) return;
-      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
-      // the cache snapshot path: pass it so the delete targets the cache this
-      // card shows instead of falling back to the active cache.
+      // Pass the cache snapshot path so delete targets this card's cache, not the active one.
       await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
-    successMessage: () => `Deleted ${repoId}`,
+    successMessage: () => `Deleted ${isCacheRow ? repoId : displayName}`,
     onSuccess: () => {
       setDeleteOpen(false);
       onChange?.();
@@ -268,6 +314,7 @@ export function LocalOnDeviceCard({
   const localGgufPath = path.trim();
   const needsVariantSelection =
     isGguf && requiresVariant && !localGgufPath.toLowerCase().endsWith(".gguf");
+  const folderVariants = needsVariantSelection && source !== "hf_cache";
   const currentVariantState = useGgufVariantFetchState({
     repoId: modelId,
     hfToken,
@@ -295,8 +342,7 @@ export function LocalOnDeviceCard({
   }));
 
   const canDelete =
-    source === "hf_cache" &&
-    !!repoId &&
+    (isCacheRow ? !!repoId : DELETABLE_LOCAL_SOURCES.has(source) && !!path) &&
     !isActive &&
     !isLoading &&
     !runPending;
@@ -313,8 +359,11 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
-        // Both sides measure the same cache; keep the local reading and let the
-        // remote one cover a row the local listing could not price.
+        // An update's reading wins, even 0: the local header is the old revision.
+        lookup_table_bytes: remoteVariant.update_available
+          ? (remoteVariant.lookup_table_bytes ?? 0)
+          : variant.lookup_table_bytes || remoteVariant.lookup_table_bytes,
+        // Both sides measure the same cache; prefer local, fall back to remote.
         download_remaining_bytes:
           variant.download_remaining_bytes ??
           remoteVariant.download_remaining_bytes,
@@ -322,10 +371,17 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
-  // The same live VRAM Budget the memory bar on this card reads. Without it the quant menu ranked
-  // against the 0.97 default while the bar beside it used the saved fraction, so an over-budget
-  // variant could sit above a smaller one that actually fits.
+  // Same live VRAM budget the memory bar reads, so the quant menu ranks consistently.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
+  const showFitInfo = showMemoryBar && (Boolean(gpuGb) || Boolean(systemRamGb));
+  const fitOf = (variant: GgufVariantDetail) =>
+    classifyGgufVariantFit(variant, {
+      gpuGb,
+      gpuCount,
+      audioCppCardGb,
+      systemRamGb,
+      budgetFraction,
+    });
   const sortedVariants = useMemo(
     () =>
       variants
@@ -333,6 +389,7 @@ export function LocalOnDeviceCard({
             defaultVariant: currentVariantState.defaultVariant,
             gpuGb,
             gpuCount,
+            audioCppCardGb,
             systemRamGb,
             budgetFraction,
           })
@@ -342,6 +399,7 @@ export function LocalOnDeviceCard({
       currentVariantState.defaultVariant,
       gpuGb,
       gpuCount,
+      audioCppCardGb,
       systemRamGb,
       budgetFraction,
     ],
@@ -367,7 +425,10 @@ export function LocalOnDeviceCard({
     defaultVariant: currentVariantState.defaultVariant,
   });
   const selectedQuant = selectedVariant?.quant ?? null;
-  // True while a managed download/update for this repo+variant is in flight.
+  const memoryBarVariant = localGgufMemoryBarVariant(
+    selectedVariant,
+    currentVariantState.variants,
+  );
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId
       ? Boolean(
@@ -396,9 +457,7 @@ export function LocalOnDeviceCard({
     !runPending &&
     !updateJobActive &&
     updateAvailable;
-  // Update runs as a MANAGED download (same path as a normal download) so it shows in the Downloads
-  // panel with manifest-based progress and a working Cancel. The worker re-resolves `main` and
-  // pulls changed blobs while the old cached copy stays runnable until the new revision verifies.
+  // Update runs as a managed download so it gets Downloads-panel progress and Cancel.
   const handleConfirmUpdate = () => {
     if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);
@@ -439,7 +498,7 @@ export function LocalOnDeviceCard({
   return (
     <div className="flex w-full flex-col gap-2">
       {showOldCacheHint && (
-        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={1.75}
@@ -454,111 +513,245 @@ export function LocalOnDeviceCard({
       )}
       <div className="hub-download-card">
         <div className="group/dl flex items-center">
-          <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-            <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
-              <DotTag tone="success" label="On device" />
-              <DotTag tone={formatTone} label={formatLabel} />
-              {needsVariantSelection && (
-                <Popover
-                  open={runPending ? false : variantOpen}
-                  onOpenChange={(nextOpen) => {
-                    if (!runPending) setVariantOpen(nextOpen);
-                  }}
-                >
-                  <PopoverTrigger asChild={true}>
-                    <button
-                      type="button"
-                      disabled={currentVariantState.loading || runPending}
-                      className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <span className="truncate">
-                        {currentVariantState.loading
-                          ? "Loading"
-                          : currentVariantState.error
-                            ? "Unavailable"
-                            : selectedVariant
-                              ? ggufVariantDisplayLabel(selectedVariant)
-                              : "Select"}
-                      </span>
-                      {selectedVariant && (
-                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
-                          {formatBytes(selectedVariant.size_bytes)}
+          <div
+            className={cn(
+              "relative flex h-9 min-w-0 flex-1 items-center pr-2",
+              folderVariants ? "gap-1" : "pl-3",
+            )}
+          >
+            {folderVariants ? (
+              <Popover
+                open={runPending ? false : variantOpen}
+                onOpenChange={(nextOpen) => {
+                  if (!runPending) setVariantOpen(nextOpen);
+                }}
+              >
+                <PopoverTrigger asChild={true}>
+                  <button
+                    type="button"
+                    disabled={currentVariantState.loading || runPending}
+                    className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)] dark:data-[state=open]:bg-accent dark:disabled:hover:bg-transparent"
+                  >
+                    <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground max-[360px]:gap-1">
+                      {selectedVariant ? (
+                        <QuantBadge
+                          quant={ggufVariantDisplayLabel(selectedVariant)}
+                          fit={fitOf(selectedVariant)}
+                          lookupTableBytes={ggufVariantLookupTableBytes(
+                            selectedVariant,
+                          )}
+                          showFit={showFitInfo}
+                        />
+                      ) : (
+                        <span className="text-ui-12p5 text-muted-foreground">
+                          {currentVariantState.loading
+                            ? "Loading"
+                            : currentVariantState.error
+                              ? "Unavailable"
+                              : "Select quantization"}
                         </span>
                       )}
-                      <HugeiconsIcon
-                        icon={ChevronDownStandardIcon}
-                        className="size-3 shrink-0"
+                      <DotTag
+                        tone="success"
+                        label="On device"
+                        className="max-sm:border-0 max-sm:px-0"
+                        labelClassName="max-sm:sr-only"
                       />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    side="bottom"
-                    sideOffset={8}
-                    avoidCollisions={false}
-                    className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[220px] gap-0 overflow-hidden p-0 py-2 ring-0"
-                  >
-                    <div className="max-h-[280px] overflow-y-auto [scrollbar-width:thin]">
-                      {sortedVariants?.map((variant) => {
-                        const label = ggufVariantDisplayLabel(variant);
-                        const isSelected = ggufVariantsMatch(
-                          variant.quant,
-                          selectedQuant,
-                        );
-                        return (
-                          <button
-                            key={variant.filename}
-                            type="button"
-                            onClick={() => {
-                              setSelectedVariantState({
-                                key: variantKey,
-                                quant: variant.quant,
-
-                                preferredFile,
-                                preferredFileIntent,
-                              });
-                              setVariantOpen(false);
-                            }}
-                            className={cn(
-                              "mx-2 flex w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
-                              isSelected
-                                ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-                                : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
-                            )}
-                          >
-                            <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
-                              {label}
-                            </span>
-                            <span className="flex shrink-0 items-center gap-1.5">
-                              <span className="text-ui-10 text-muted-foreground tabular-nums">
+                      <DotTag
+                        tone={formatTone}
+                        label={formatLabel}
+                        className="max-sm:hidden"
+                      />
+                      {sourceLabel && (
+                        <span className="truncate text-muted-foreground/85">
+                          {sourceLabel}
+                        </span>
+                      )}
+                    </span>
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                    />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  side="bottom"
+                  sideOffset={8}
+                  avoidCollisions={false}
+                  className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(300px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
+                >
+                  <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
+                    {sortedVariants?.map((variant) => {
+                      const isSelected = ggufVariantsMatch(
+                        variant.quant,
+                        selectedQuant,
+                      );
+                      return (
+                        <button
+                          key={variant.filename}
+                          type="button"
+                          aria-pressed={isSelected}
+                          onClick={() => {
+                            setSelectedVariantState({
+                              key: variantKey,
+                              quant: variant.quant,
+                              preferredFile,
+                              preferredFileIntent,
+                            });
+                            setVariantOpen(false);
+                          }}
+                          className={cn(
+                            "mx-2 flex w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
+                            isSelected
+                              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"
+                              : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]",
+                          )}
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
+                            <QuantBadge
+                              quant={ggufVariantDisplayLabel(variant)}
+                              fit={fitOf(variant)}
+                              lookupTableBytes={ggufVariantLookupTableBytes(
+                                variant,
+                              )}
+                              showFit={showFitInfo}
+                              variant="menu"
+                              tooltipMode="lazy"
+                            />
+                            <DotTag tone="success" label="On device" />
+                          </span>
+                          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                            <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
+                              <span className="cap-centered">
                                 {formatBytes(variant.size_bytes)}
                               </span>
                             </span>
-                          </button>
-                        );
-                      })}
-                      {!currentVariantState.loading &&
-                        !currentVariantState.error &&
-                        sortedVariants?.length === 0 && (
-                          <div className="px-4 py-2 text-xs text-muted-foreground">
-                            No quantizations found.
-                          </div>
-                        )}
-                      {currentVariantState.error && (
-                        <div className="px-4 py-2 text-xs text-destructive">
-                          {currentVariantState.error}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {!currentVariantState.loading &&
+                      !currentVariantState.error &&
+                      sortedVariants?.length === 0 && (
+                        <div className="px-4 py-2 text-xs text-muted-foreground">
+                          No quantizations found.
                         </div>
                       )}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              )}
-              {source !== "hf_cache" && (
-                <span className="truncate text-muted-foreground/85">
-                  {sourceLabel}
-                </span>
-              )}
-            </span>
+                    {currentVariantState.error && (
+                      <div className="px-4 py-2 text-xs text-destructive">
+                        {currentVariantState.error}
+                      </div>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            ) : (
+              <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
+                <DotTag tone="success" label="On device" />
+                <DotTag tone={formatTone} label={formatLabel} />
+                {needsVariantSelection && (
+                  <Popover
+                    open={runPending ? false : variantOpen}
+                    onOpenChange={(nextOpen) => {
+                      if (!runPending) setVariantOpen(nextOpen);
+                    }}
+                  >
+                    <PopoverTrigger asChild={true}>
+                      <button
+                        type="button"
+                        disabled={currentVariantState.loading || runPending}
+                        className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <span className="cap-centered truncate">
+                          {currentVariantState.loading
+                            ? "Loading"
+                            : currentVariantState.error
+                              ? "Unavailable"
+                              : selectedVariant
+                                ? ggufVariantDisplayLabel(selectedVariant)
+                                : "Select"}
+                        </span>
+                        {selectedVariant && (
+                          <span className="cap-centered shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
+                            {formatBytes(selectedVariant.size_bytes)}
+                          </span>
+                        )}
+                        <HugeiconsIcon
+                          icon={ChevronDownStandardIcon}
+                          className="size-3 shrink-0"
+                        />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="start"
+                      side="bottom"
+                      sideOffset={8}
+                      avoidCollisions={false}
+                      className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(220px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
+                    >
+                      <div className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
+                        {sortedVariants?.map((variant) => {
+                          const label = ggufVariantDisplayLabel(variant);
+                          const isSelected = ggufVariantsMatch(
+                            variant.quant,
+                            selectedQuant,
+                          );
+                          return (
+                            <button
+                              key={variant.filename}
+                              type="button"
+                              onClick={() => {
+                                setSelectedVariantState({
+                                  key: variantKey,
+                                  quant: variant.quant,
+
+                                  preferredFile,
+                                  preferredFileIntent,
+                                });
+                                setVariantOpen(false);
+                              }}
+                              className={cn(
+                                "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
+                                isSelected
+                                  ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
+                                  : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
+                              )}
+                            >
+                              <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
+                                {label}
+                              </span>
+                              <span className="flex shrink-0 items-center gap-1.5">
+                                <span className="text-ui-10 text-muted-foreground tabular-nums">
+                                  {formatBytes(variant.size_bytes)}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {!currentVariantState.loading &&
+                          !currentVariantState.error &&
+                          sortedVariants?.length === 0 && (
+                            <div className="px-4 py-2 text-xs text-muted-foreground">
+                              No quantizations found.
+                            </div>
+                          )}
+                        {currentVariantState.error && (
+                          <div className="px-4 py-2 text-xs text-destructive">
+                            {currentVariantState.error}
+                          </div>
+                        )}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                )}
+                {source !== "hf_cache" && (
+                  <span className="truncate text-muted-foreground/85">
+                    {sourceLabel}
+                  </span>
+                )}
+              </span>
+            )}
             <div className="ml-auto flex items-center gap-0.5">
               {canUpdate && (
                 <CardUpdateButton
@@ -569,36 +762,42 @@ export function LocalOnDeviceCard({
               )}
               {canDelete && (
                 <CardDeleteButton
-                  label={`Delete ${repoId}`}
+                  label={`Delete ${isCacheRow ? repoId : displayName}`}
                   onClick={() => setDeleteOpen(true)}
+                />
+              )}
+              {(isCacheRow ? repoId : path) && (
+                <CardRevealButton
+                  onReveal={() =>
+                    isCacheRow && repoId
+                      ? revealCachedModel(repoId)
+                      : revealLocalModel(path, modelId)
+                  }
                 />
               )}
               <PathInfoButton path={path} />
             </div>
           </div>
           {showRunAction && onRun && (
-            <>
-              <CardDivider />
-              <ModelRunActionButton
-                label={`Configure and run ${displayName.trim() || "this model"}`}
-                loading={runPending}
-                onClick={() =>
-                  onRun(
-                    needsVariantSelection && selectedVariant
-                      ? {
-                          ggufVariant: selectedVariant.quant,
-                          ggufFilename: selectedVariant.filename,
-                          expectedBytes:
-                            selectedVariant.download_size_bytes &&
-                            selectedVariant.download_size_bytes > 0
-                              ? selectedVariant.download_size_bytes
-                              : selectedVariant.size_bytes,
-                        }
-                      : {},
-                  )
-                }
-              />
-            </>
+            <ModelRunActionButton
+              label={`Configure and run ${displayName.trim() || "this model"}`}
+              loading={runPending}
+              onClick={() =>
+                onRun(
+                  needsVariantSelection && selectedVariant
+                    ? {
+                        ggufVariant: selectedVariant.quant,
+                        ggufFilename: selectedVariant.filename,
+                        expectedBytes:
+                          selectedVariant.download_size_bytes &&
+                          selectedVariant.download_size_bytes > 0
+                            ? selectedVariant.download_size_bytes
+                            : selectedVariant.size_bytes,
+                      }
+                    : {},
+                )
+              }
+            />
           )}
         </div>
         {/* Render the full-width memory bar below the horizontal card row so it
@@ -609,13 +808,16 @@ export function LocalOnDeviceCard({
         (repoId || localGgufPath) &&
         (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
           <ModelMemoryBarFor
-            // The card's exact path identifies the downloaded artifact across
-            // cache roots and revisions. It is also the only identity available
-            // for a custom or local GGUF when repoId is null.
+            // The exact path identifies the artifact across caches; it is the only id for local GGUFs.
             repoId={repoId || localGgufPath}
             loadId={localGgufPath}
             quant={selectedQuant ?? ""}
-            sizeBytes={selectedVariant?.size_bytes}
+            sizeBytes={memoryBarVariant?.size_bytes}
+            lookupTableBytes={
+              memoryBarVariant
+                ? ggufVariantLookupTableBytes(memoryBarVariant)
+                : 0
+            }
             gpuGb={gpuGb}
             className="px-3 pb-2"
           />
@@ -634,19 +836,27 @@ export function LocalOnDeviceCard({
         onOpenChange={(o) => {
           if (!o && !deleting) setDeleteOpen(false);
         }}
-        title="Delete cached model?"
+        title={isCacheRow ? "Delete cached model?" : "Delete local model?"}
         deleting={deleting}
-        // Same gate the model row menu applies: when an installed image model still needs these
-        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        // Same gate as the row menu: blocked deletes would otherwise just return a 400.
         blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">{repoId}</span> and
-            its downloaded files from disk. You can re-download it later.
-            <DeleteImpactSummary impact={deleteImpact} />
-          </>
+          isCacheRow ? (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">{repoId}</span> and
+              its downloaded files from disk. You can re-download it later.
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          ) : (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{displayName}</span>{" "}
+              from{" "}
+              <span className="break-all font-mono text-xs">{path}</span>.
+            </>
+          )
         }
       />
       <UpdateConfirmDialog

@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fromMarkdown } from "mdast-util-from-markdown";
 
 import type {
   MessageRecord,
@@ -10,6 +11,9 @@ import type {
   ThreadRecord,
 } from "../src/features/chat/types.ts";
 import { filterArchivedChatExport } from "../src/features/chat/utils/archived-chat-export.ts";
+import type { ImportOptions } from "../src/features/chat/utils/chat-import.ts";
+import { buildNamedConversationsMarkdown } from "../src/features/chat/utils/conversation-markdown-export.ts";
+import { buildConversationMarkdown } from "../src/features/chat/utils/conversation-markdown.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type ImportSource = {
@@ -18,8 +22,7 @@ type ImportSource = {
   chunks(): AsyncIterable<{ text: string; bytes: number }>;
 };
 
-/** Stands in for the api module's ChatThreadWriteError: chat-import receives this very class
- *  through the stub, so its instanceof check sees what a real rejection would look like. */
+/** Stands in for ChatThreadWriteError so chat-import's instanceof check sees a real class. */
 class ChatThreadWriteError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
@@ -33,18 +36,25 @@ type Module = {
   importConversationsFromSource: (
     source: ImportSource,
     projectId?: string | null,
+    options?: ImportOptions,
   ) => Promise<{ imported: number; failed: number }>;
 };
 
-function harness(existingProjects: ProjectRecord[] = []) {
+function harness(
+  existingProjects: ProjectRecord[] = [],
+  rejectAt?: "thread" | "messages",
+) {
   const threads: ThreadRecord[] = [];
   const messages = new Map<string, MessageRecord[]>();
   const projects = [...existingProjects];
+  const events = { historyUpdated: 0 };
+  const deleted: string[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
-        notifyChatHistoryUpdated: () => {},
+        notifyChatHistoryUpdated: () => { events.historyUpdated++; },
         listChatProjects: async () => projects,
         saveChatProject: async (project: ProjectRecord) => {
           projects.push(project);
@@ -54,6 +64,9 @@ function harness(existingProjects: ProjectRecord[] = []) {
       },
       "./chat-history-storage": {
         saveStoredChatThread: async (thread: ThreadRecord) => {
+          if (rejectAt === "thread" && thread.title === "Rejected") {
+            throw new ChatThreadWriteError("Request failed (500)", 500);
+          }
           threads.push(thread);
           return thread;
         },
@@ -61,19 +74,36 @@ function harness(existingProjects: ProjectRecord[] = []) {
           threadId: string,
           records: MessageRecord[],
         ) => {
+          if (
+            rejectAt === "messages" &&
+            threads.find(({ id }) => id === threadId)?.title === "Rejected"
+          ) {
+            throw new Error("Message sync failed");
+          }
           messages.set(threadId, records);
           return records;
         },
-        deleteStoredChatThreads: async () => [],
+        deleteStoredChatThreads: async (ids: string[]) => {
+          deleted.push(...ids);
+          for (const id of ids) {
+            const index = threads.findIndex((thread) => thread.id === id);
+            if (index !== -1) threads.splice(index, 1);
+            messages.delete(id);
+          }
+          return ids;
+        },
       },
     },
     { relativePassthrough: true },
   );
-  return { module, threads, messages, projects };
+  return { module, threads, messages, projects, events, deleted };
 }
 
 function sourceOf(name: string, data: unknown): ImportSource {
-  const text = JSON.stringify(data, null, 2);
+  return sourceText(name, JSON.stringify(data, null, 2));
+}
+
+function sourceText(name: string, text: string): ImportSource {
   const half = Math.floor(text.length / 2);
   return {
     name,
@@ -83,6 +113,44 @@ function sourceOf(name: string, data: unknown): ImportSource {
       yield { text: text.slice(half), bytes: text.length - half };
     },
   };
+}
+
+for (const rejectAt of ["thread", "messages"] as const) {
+  test(`combined markdown continues after a ${rejectAt} save failure`, async () => {
+    const { module, threads, messages, events, deleted } = harness([], rejectAt);
+    const conversations = ["First", "Rejected", "Last"].map((title) => ({
+      id: title,
+      title,
+    }));
+    const text = await buildNamedConversationsMarkdown(
+      conversations,
+      async (id) => buildConversationMarkdown([{ role: "user", content: id }]),
+    );
+    const saved: string[] = [];
+    const progress: Array<{ imported: number; failed: number }> = [];
+    const result = await module.importConversationsFromSource(
+      sourceText("combined.md", text),
+      null,
+      {
+        onSaved: (id) => saved.push(id),
+        onProgress: ({ imported, failed }) => progress.push({ imported, failed }),
+      },
+    );
+
+    assert.deepEqual(result, { imported: 2, failed: 1 });
+    assert.deepEqual(threads.map(({ title }) => title), ["First", "Last"]);
+    assert.deepEqual(saved, threads.map(({ id }) => id));
+    assert.deepEqual(
+      threads.map(({ id }) => messages.get(id)?.[0]?.content),
+      [
+        [{ type: "text", text: "First" }],
+        [{ type: "text", text: "Last" }],
+      ],
+    );
+    assert.equal(events.historyUpdated, 1);
+    assert.deepEqual(progress.at(-1), { imported: 2, failed: 1 });
+    assert.equal(deleted.length, rejectAt === "messages" ? 1 : 0);
+  });
 }
 
 function message(
@@ -138,6 +206,8 @@ function backup() {
       updatedAt: 2100,
       forkedFromThreadId: "t1",
       forkedFromMessageId: "m2",
+      forkBoundaryMessageId: "m5",
+      forkTitleBase: "Recipe",
     },
   ];
   const messages: MessageRecord[] = [
@@ -181,7 +251,6 @@ test("a Studio backup restores one chat per thread, with titles, branches, archi
   assert.deepEqual(
     projects.map(({ id, name, instructions, rootPath }) => ({ id, name, instructions, rootPath })),
     [
-      // instructions dropped: they land in the system prompt, see the test below.
       { id: "p1", name: "Research", instructions: "", rootPath: undefined },
       { id: "p2", name: "Unused", instructions: "", rootPath: undefined },
     ],
@@ -202,6 +271,9 @@ test("a Studio backup restores one chat per thread, with titles, branches, archi
   assert.equal(recipeMessages[1].parentId, recipeMessages[0].id);
   assert.equal(recipe.forkedFromThreadId, trip.id);
   assert.equal(recipe.forkedFromMessageId, tripMessages[1].id);
+  assert.equal(recipe.forkBoundaryMessageId, recipeMessages[1].id);
+  assert.notEqual(recipe.forkBoundaryMessageId, "m5");
+  assert.equal(recipe.forkTitleBase, "Recipe");
 });
 
 test("importing the same backup twice reuses the project and never reuses a thread or message id", async () => {
@@ -264,7 +336,7 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
     ],
     messages: [
       { id: "a1", threadId: "a", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
-      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5 },
+      { id: "a2", threadId: "a", role: "assistant", content: [{ type: "text", text: "yo" }], createdAt: 5, metadata: { note: "kept", createdAtEstimated: false } },
       { id: "b1", threadId: "b", role: "user", content: [{ type: "text", text: "hi" }], createdAt: 5 },
       { id: "orphan", threadId: "gone", role: "user", content: [{ type: "text", text: "lost" }], createdAt: 5 },
     ],
@@ -278,6 +350,8 @@ test("a compare pair stays paired under a new pair id, and legacy rows without p
   const left = messages.get(threads.find(({ title }) => title === "Left")?.id ?? "") as MessageRecord[];
   assert.deepEqual(left.map(({ role }) => role), ["user", "assistant"]);
   assert.deepEqual(left.map(({ createdAt }) => createdAt), [5, 6]);
+  assert.notEqual(left[0].metadata?.createdAtEstimated, true);
+  assert.deepEqual(left[1].metadata, { note: "kept", createdAtEstimated: true });
   assert.ok(left.every((record) => !("parentId" in record)));
 });
 
@@ -392,16 +466,14 @@ test("a fork keeps its badge when only the branch-point message is gone", async 
 });
 
 test("a settings snapshot this build rejects costs the settings, not the chat", async () => {
-  // routes/chat_history.py validates ChatThreadSettings with ge/le bounds, so a backup from a
-  // newer Studio that widened a range writes a value this build 422s. Restoring fewer chats than
-  // the backup holds is worse than restoring one without its settings. An unknown KEY cannot get
-  // this far any more (the restorable allowlist drops it), but an out-of-range value of a
-  // restorable key still can: temperature is bounded 0..2.
+  // The backend bounds settings with ge/le, so a newer backup's value can 422 this build;
+  // retry without settings rather than drop the chat.
   const saved: ThreadRecord[] = [];
   const attempts: (ThreadRecord["settings"] | undefined)[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
         notifyChatHistoryUpdated: () => {},
         listChatProjects: async () => [],
@@ -441,16 +513,11 @@ test("a settings snapshot this build rejects costs the settings, not the chat", 
   assert.deepEqual(result, { imported: 2, failed: 0 });
   assert.deepEqual(saved.map(({ title }) => title).sort(), ["Old recipe", "Trip plan"]);
   assert.equal(saved.find(({ title }) => title === "Trip plan")?.settings, undefined);
-  // One rejected write, one retry without the snapshot, and nothing extra for the other chat.
   assert.equal(attempts.length, 3);
 });
 
 test("a backup cannot arm a restored chat with tools, bypassed approval or a system prompt", async () => {
-  // A backup is a file that arrived from somewhere. Restoring permissionMode "off"
-  // alongside the tool switches and a systemPrompt would let a sent file configure a
-  // chat that runs MCP and code tools unattended, under the importer's account, on
-  // their first message. permission_mode "off" is documented in llama_cpp.py as
-  // "never pauses" and sets confirm_tool_calls false in models/inference.py.
+  // A backup is untrusted: restoring permissionMode "off" would run tools unattended.
   const { module, threads } = harness();
   const data = backup();
   data.threads[0].settings = {
@@ -475,7 +542,6 @@ test("a backup cannot arm a restored chat with tools, bypassed approval or a sys
 
   assert.deepEqual(result, { imported: 2, failed: 0 });
   const trip = threads.find(({ title }) => title === "Trip plan") as ThreadRecord;
-  // The harmless half survives, so this is a filter and not a blanket drop.
   assert.deepEqual(trip.settings, { temperature: 0.4, reasoningEffort: "high" });
 });
 
@@ -494,9 +560,7 @@ test("a settings snapshot with nothing restorable in it leaves no settings behin
 });
 
 test("a restored project cannot carry instructions into the system prompt", async () => {
-  // chat-adapter.ts resolveProjectInstructions wraps a project's instructions in
-  // <project_instructions> and unshifts them as a role:"system" message on the next
-  // send, so a backup that carries them writes the importer's system prompt.
+  // Project instructions become a system message on the next send, so they are dropped.
   const { module, threads, projects } = harness();
   const data = backup();
   data.projects[0].instructions =
@@ -507,7 +571,6 @@ test("a restored project cannot carry instructions into the system prompt", asyn
   );
 
   assert.deepEqual(result, { imported: 2, failed: 0 });
-  // The project itself still restores, and the chat is still grouped into it.
   assert.deepEqual(projects.map(({ id }) => id).sort(), ["p1", "p2"]);
   assert.equal(projects.find(({ id }) => id === "p1")?.instructions, "");
   assert.equal(
@@ -517,14 +580,13 @@ test("a restored project cannot carry instructions into the system prompt", asyn
 });
 
 test("a backend that is merely down keeps the settings instead of quietly dropping them", async () => {
-  // The retry exists for a snapshot this build rejects. A 500 or a timeout says nothing about
-  // the snapshot, so retrying without it would trade the user's temperature and seed for an
-  // unrelated blip and still report the chat imported.
+  // Only a rejected snapshot is retried; a 500 or timeout says nothing about it.
   const attempts: (ThreadRecord["settings"] | undefined)[] = [];
   let failures = 1;
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
         notifyChatHistoryUpdated: () => {},
         listChatProjects: async () => [],
@@ -558,15 +620,12 @@ test("a backend that is merely down keeps the settings instead of quietly droppi
     sourceOf("backup.json", data),
   );
 
-  // One write for the chat that failed, one for the other. No second, settings-less attempt.
   assert.deepEqual(attempts, [{ temperature: 0.7 }, undefined]);
   assert.deepEqual(result, { imported: 1, failed: 1 });
 });
 
 test("choosing Recents as the destination puts the chats in Recents, backup or not", async () => {
-  // projects-page.tsx offers Recents as an explicit destination and its toast says the
-  // chats went there, so null has to mean Recents rather than "no preference". Only an
-  // absent destination, which is what the Data tab passes, lets the backup group itself.
+  // null means Recents explicitly; only an absent destination lets the backup group itself.
   const chosen = harness();
   const result = await chosen.module.importConversationsFromSource(
     sourceOf("backup.json", backup()),
@@ -575,7 +634,6 @@ test("choosing Recents as the destination puts the chats in Recents, backup or n
 
   assert.deepEqual(result, { imported: 2, failed: 0 });
   assert.deepEqual(chosen.threads.map(({ projectId }) => projectId), [null, null]);
-  // Nor may it create the projects the user declined to import into.
   assert.deepEqual(chosen.projects, []);
 
   const unspecified = harness();
@@ -588,10 +646,7 @@ test("choosing Recents as the destination puts the chats in Recents, backup or n
 });
 
 test("a backup cannot restore a message that speaks with the system role", async () => {
-  // toOpenAIMessages in chat-adapter.ts serialises a stored role "system" into the next
-  // request unchanged, so restoring one would let the sender of a backup instruct the model on
-  // the importer's account. It comes back as a user turn: the text survives, the authority
-  // does not.
+  // A stored system role is sent unchanged, so it is restored as a user turn.
   const { module, threads, messages } = harness();
   const data = {
     exportedAt: "2026-09-18T00:00:00.000Z",
@@ -628,9 +683,7 @@ test("a backup cannot restore a message that speaks with the system role", async
 });
 
 test("a message whose content was stored as a plain string keeps its text", async () => {
-  // The backend stores content_json verbatim and _chat_message_from_row hands it back
-  // unchanged, so the export can carry a string from a legacy or previously imported
-  // row. Restoring that as [] would blank the message, and a backup is the last copy.
+  // The export can carry a legacy string content; restoring it as [] would blank the message.
   const { module, threads, messages } = harness();
   const data = {
     exportedAt: "2026-09-18T00:00:00.000Z",
@@ -656,8 +709,19 @@ test("a message whose content was stored as a plain string keeps its text", asyn
   assert.deepEqual(records.map(({ content }) => content), [
     [{ type: "text", text: "plain string turn" }],
     [{ type: "text", text: "array turn" }],
-    // Whitespace-only carries no text to lose, so it stays empty rather than
-    // becoming a blank bubble.
     [],
   ]);
+});
+
+test("backup import preserves estimated-time provenance and marks missing dates", async () => {
+  const data = backup();
+  delete (data.messages[0] as Partial<MessageRecord>).createdAt;
+  data.messages[1].metadata = { createdAtEstimated: true };
+  const { module, messages } = harness();
+  await module.importConversationsFromSource(sourceOf("backup.json", data));
+  const restored = [...messages.values()].flat();
+  const byText = (text: string) => restored.find(({ content }) => (content[0] as { text: string }).text === text);
+  assert.equal(byText("Where to?")?.metadata?.createdAtEstimated, true);
+  assert.equal(byText("Lisbon")?.metadata?.createdAtEstimated, true);
+  assert.notEqual(byText("Porto")?.metadata?.createdAtEstimated, true);
 });

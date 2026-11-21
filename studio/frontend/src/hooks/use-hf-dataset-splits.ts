@@ -2,7 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { getHfDatasetsServerBase, useHfDatasetsServer } from "@/lib/hf-endpoint";
+import { hubTokenHeader } from "@/features/hub";
+import {
+  getHfDatasetsServerBase,
+  useHfDatasetsServer,
+  useHfEndpoint,
+  useHubSource,
+} from "@/lib/hf-endpoint";
+import { hubFetch } from "@/lib/hub-fetch";
 import { useEffect, useState } from "react";
 import {
   type DatasetSplitFetchers,
@@ -15,9 +22,7 @@ import {
 export type { HfSplitEntry } from "./hf-dataset-split-sources";
 
 // ---------------------------------------------------------------------------
-// Types
 // ---------------------------------------------------------------------------
-
 export interface HfSplitsResponse {
   splits: HfSplitEntry[];
   pending: unknown[];
@@ -25,25 +30,17 @@ export interface HfSplitsResponse {
 }
 
 export interface HfDatasetSplitsResult {
-  /** All unique subset names found in the dataset */
   subsets: string[];
-  /** All split names available for the currently selected subset */
   splits: string[];
-  /** Raw split entries from the API */
   entries: HfSplitEntry[];
-  /** Whether the dataset has more than one subset */
   hasMultipleSubsets: boolean;
-  /** Whether the selected subset has more than one split */
   hasMultipleSplits: boolean;
-  /** True while the request is in-flight */
   isLoading: boolean;
-  /** Error message if the fetch failed */
   error: string | null;
   requiresManualEntry: boolean;
 }
 
-// Datasets-server base is independent of the Hub mirror: HF_ENDPOINT does not
-// redirect it, only HF_DATASETS_SERVER (surfaced via /api/health) does.
+// HF_ENDPOINT does not redirect datasets-server; only HF_DATASETS_SERVER (via /api/health) does.
 function getHfSplitsApi(): string {
   return `${getHfDatasetsServerBase()}/splits`;
 }
@@ -110,7 +107,7 @@ async function fetchRemoteSplits({
   if (accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
-  const response = await fetch(url, { headers, signal });
+  const response = await hubFetch(url, { headers, signal });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(
@@ -121,15 +118,40 @@ async function fetchRemoteSplits({
   return validatedEntries(payload.splits);
 }
 
+async function fetchHubSplits({
+  accessToken,
+  datasetName,
+  signal,
+}: LoadHfDatasetSplitsArgs): Promise<HfSplitEntry[]> {
+  const response = await authFetch("/api/hub/datasets/hub-options", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...hubTokenHeader(accessToken),
+    },
+    body: JSON.stringify({ dataset_name: datasetName }),
+    signal,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      typeof body?.detail === "string"
+        ? body.detail
+        : `Failed to read dataset options (${response.status})`,
+    );
+  }
+  const payload = (await response.json()) as { splits?: unknown };
+  return validatedEntries(payload.splits);
+}
+
 const DEFAULT_FETCHERS: DatasetSplitFetchers = {
   local: fetchLocalSplits,
   remote: fetchRemoteSplits,
+  hub: fetchHubSplits,
 };
 
 // ---------------------------------------------------------------------------
-// Hook
 // ---------------------------------------------------------------------------
-
 export function useHfDatasetSplits(
   datasetName: string | null,
   selectedSubset: string | null,
@@ -143,15 +165,18 @@ export function useHfDatasetSplits(
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
   const [isLoading, setIsLoading] = useState(datasetName !== null);
   const [error, setError] = useState<string | null>(null);
-  // In the request identity, or a server arriving later leaves the selector on
-  // the official one, or on the failure it reached there.
+  // In the request identity, so a server arriving later triggers a refetch.
   const hfDatasetsServer = useHfDatasetsServer();
+  const hubSource = useHubSource();
+  const hfEndpoint = useHfEndpoint();
   const requestKey = JSON.stringify([
     datasetName,
     options?.preferLocalCache === true,
     options?.localPath ?? null,
     options?.online !== false,
     hfDatasetsServer,
+    hubSource,
+    hfEndpoint,
   ]);
   const [previousRequestKey, setPreviousRequestKey] = useState(requestKey);
   if (requestKey !== previousRequestKey) {
@@ -219,13 +244,11 @@ export function useHfDatasetSplits(
       });
 
     return () => controller.abort();
-  }, [accessToken, datasetName, localPath, online, preferLocalCache, hfDatasetsServer]);
+  }, [accessToken, datasetName, localPath, online, preferLocalCache, hfDatasetsServer, hubSource, hfEndpoint]);
 
-  // Derive unique subsets
   const subsets = Array.from(new Set(entries.map((e) => e.config)));
 
-  // Splits for the active subset. With >1 subset and none selected, return no
-  // splits so the UI doesn't auto-pick before a subset is chosen.
+  // With >1 subset and none selected, return no splits so the UI does not auto-pick.
   const activeSubset =
     selectedSubset ?? (subsets.length === 1 ? subsets[0] : null);
   const filteredEntries = activeSubset

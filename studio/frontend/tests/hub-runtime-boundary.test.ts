@@ -87,11 +87,11 @@ test("residency remains a cache mutation safety input", () => {
     "utf8",
   );
 
-  assert.match(hubPage, /getInferenceStatus\(\)/);
+  assert.match(hubPage, /getInferenceStatus\(\s*undefined,/);
   assert.match(hubPage, /adoptResidentModelStatus\(/);
   assert.match(
     hubPage,
-    /Promise\.all\(\[getInferenceStatus\(\), readIdleUnloadArmed\(\)\]\)\s*\.then\(\(\[status, idleUnloadArmed\]\) => \{/,
+    /Promise\.all\(\[\s*getInferenceStatus\([\s\S]*?\),\s*readIdleUnloadArmed\(\),\s*\]\)\s*\.then\(\(\[status, idleUnloadArmed\]\) => \{/,
   );
   assert.match(
     hubPage,
@@ -191,13 +191,13 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   assert.match(HUB_RENDER_SOURCES, />\s*Run\s*</);
   assert.match(
     hubPage,
-    /clearNewChatDraft\(\);[\s\S]*?setActiveThreadId\(null\);[\s\S]*?setActiveProjectId\(null\);[\s\S]*?setIncognito\(false\);[\s\S]*?requestModelConfigHandoff\(request\)/,
+    /setActiveThreadId\(null\);[\s\S]*?setActiveProjectId\(null\);[\s\S]*?setIncognito\(false\);[\s\S]*?requestModelConfigHandoff\(request\)/,
   );
   assert.match(hubPage, /requestModelConfigHandoff\(request\)/);
   assert.match(hubPage, /to: "\/chat", search: \{ new: requestId \}/);
   assert.match(
     modelInspector,
-    /const mediaPage = studioPageForTask\([\s\S]*?taskForMediaPick\(model\.pipelineTag, model\.task\)/,
+    /const mediaTask = taskForMediaPick\(model\.pipelineTag, model\.task\);\s*const mediaPage = studioPageForTask\(mediaTask \?\? undefined\);/,
   );
   assert.match(
     hubPage,
@@ -205,7 +205,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   );
   assert.match(
     hubPage,
-    /to: `\/\$\{mediaPage\}`,[\s\S]*?diffusionRouteSearch\(selectedModel\.hubRepoId, selection\)/,
+    /to: `\/\$\{mediaPage\}`,[\s\S]*?mediaPage === "audio"[\s\S]*?audioPickSearch\(selectedModel\.hubRepoId,[\s\S]*?diffusionRouteSearch\(selectedModel\.hubRepoId, selection\)/,
   );
   assert.match(
     hubPage,
@@ -260,7 +260,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   assert.match(modelInspector, /const runEligible = isHubModelRunEligible\(/);
   assert.match(
     modelInspector,
-    /\? \(selection: HubModelRunSelection\) => onRun\(selection, mediaPage\)/,
+    /\? \(selection: HubModelRunSelection\) =>\s*onRun\(selection, audioPage \? "audio" : mediaPage\)/,
   );
   assert.match(
     ggufCard,
@@ -306,35 +306,56 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
     /active,\s*newChatId: search\.new,\s*threadId: search\.thread,\s*compareId: search\.compare,\s*projectId: search\.project,/,
   );
   assert.match(chatPage, /modelSelectorOpen \|\| modelConfigRequest !== null/);
-  assert.match(modelSelector, /requestedConfigTarget \?\? configTarget/);
+  // The handoff lands in the composer picker; the task pages' picker only opens its own settings.
+  assert.match(modelSelector, /const visibleConfigTarget = open \? configTarget : null;/);
+  assert.doesNotMatch(modelSelector, /configRequest/);
   assert.match(
     modelSelector,
     /aria-label=\{\s*visibleConfigTarget\s*\? `Run settings for \$\{visibleConfigTarget\.displayName\}`\s*:\s*undefined\s*\}/,
   );
   assert.match(
     modelSelector,
-    /modelConfigInstanceKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*visibleLoadedConfig,/,
+    /modelConfigInstanceKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*null,/,
   );
   assert.match(
     modelSelector,
     /onRun=\{\(config, isDiffusion\) =>\s*onSelect\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*\{/,
   );
   assert.match(
-    modelSelector,
-    /setAdoptedConfigRequestId\(configRequest\.requestId\);\s*setConfigTarget\(requestedConfigTarget\)/,
-  );
-  assert.match(
-    modelSelector,
-    /onConfigRequestAdopted\?\.\(configRequest\.requestId\)/,
-  );
-  assert.match(
     chatPage,
-    /setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
+    /setOwnedConfigRequest\(\(owned\) =>\s*request\?\.requestId === requestId \? request : owned,\s*\);\s*setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
   );
   assert.match(
     chatPage,
     /open=\{active && modelConfigRequest === null && settingsOpen\}/,
   );
+  // On a first Chat mount the new composer's autofocus would dismiss the handed-off settings.
+  const thread = readFileSync(
+    path.join(FRONTEND_ROOT, "src/components/assistant-ui/thread.tsx"),
+    "utf8",
+  );
+  assert.match(
+    chatPage,
+    /<ChatComposerFocusableContext\.Provider\s*value=\{modelConfigRequest === null && !handoffOwnsPicker\}/,
+  );
+  // Released when the picker closes, or the composer would never autofocus again.
+  assert.match(
+    chatPage,
+    /if \(handoffOwnsPicker && !modelSelectorOpen\)\s*\{?\s*setOwnedConfigRequest\(null\)/,
+  );
+  assert.match(
+    thread,
+    /const composerFocusable = useContext\(\s*ChatComposerFocusableContext,?\s*\);/,
+  );
+  assert.match(
+    thread,
+    // A layout effect, so the override is in place before the input's own autofocus effect.
+    /useLayoutEffect\(\(\) => \{\s*const input = inputRef\.current;\s*if \(composerFocusable \|\| !input\)\s*\{?\s*return;\s*\}?\s*input\.focus = \(\) => \{\};\s*return \(\) => \{\s*Reflect\.deleteProperty\(input, "focus"\);\s*\};\s*\}, \[composerFocusable, isDictating\]\);/,
+  );
+  // Neither gated autoFocus, which focuses the composer when the picker closes, nor inert, which
+  // blocks a press on it and reads as Chat being covered.
+  assert.match(thread, /autoFocus=\{!disabled\}/);
+  assert.doesNotMatch(thread, /inert=\{!composerFocusable\}/);
 });
 
 test("the shared model row menu no longer offers Hub model settings", () => {
@@ -347,6 +368,6 @@ test("the shared model row menu no longer offers Hub model settings", () => {
     "utf8",
   );
 
-  assert.doesNotMatch(rowMenu, /ModelRowMenuSettings|Settings02Icon/);
+  assert.doesNotMatch(rowMenu, /ModelRowMenuSettings|Settings01Icon/);
   assert.doesNotMatch(rowMenu, />\s*Settings\s*</);
 });

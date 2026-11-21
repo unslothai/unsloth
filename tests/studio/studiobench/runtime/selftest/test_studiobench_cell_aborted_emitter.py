@@ -1,31 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The EMITTER of `cell_aborted`, driven through the real `CellRunner` and a real `Recorder`.
-
-Registering a row type in `ROW_TYPES` and emitting a hand-built copy of it in a test proves the
-schema accepts the row. It does not prove the harness still WRITES it, or still writes it with the
-keys the schema demands, and those are the two ways this fix can rot.
-
-Both were confirmed reachable by mutation, against the whole suite:
-
-    emitter omits the required `reason` key    449 tests pass, and the real CellRunner then dies
-                                               on the first failed cell with `ValueError:
-                                               cell_aborted row is missing required keys`
-    emitter stops writing the row entirely     449 tests pass, and the orphan windows are silent
-                                               again
-
-The first is defect 10 reintroduced one field lower: a guard that crashes the run it protects,
-invisible to every test. The second is defect 4 reintroduced whole -- window rows are written as
-the film runs and the `cell` row when it ends, so a cell that dies leaves a complete-looking set of
-windows behind with nobody owning them. Reading those without a guard reported the 1M rung at
-28.7 fps against a 46.7 fps baseline, drawn entirely from a cell that never finished.
-
-So this drives the real thing: a real `Recorder` writing a real payload, the real `CellRunner.run`,
-and a `_run_inner` that raises, which is exactly the aborted-cell path. Then it reads the payload
-back the way the analysis that published 28.7 fps read it -- scanning FORWARD -- and asks whether a
-forward reader could have discarded the orphans without joining backwards to the cell row.
-"""
+"""Drives the real CellRunner and Recorder: a schema entry alone cannot show cell_aborted is written."""
 
 from __future__ import annotations
 
@@ -57,7 +33,6 @@ def _aborted_payload(tmp_path: Path) -> list[dict]:
     runner.log = lambda *_a, **_k: None
     runner.paths = type("P", (), {"logs": tmp_path})()
 
-    # The film gets some way in and writes its windows, exactly as the real one does.
     for i in range(7):
         rec.emit(
             {
@@ -113,12 +88,7 @@ def test_a_cell_that_dies_writes_a_terminal_cell_aborted_row(tmp_path):
 
 
 def test_the_emitted_row_carries_the_keys_the_schema_demands(tmp_path):
-    """Written through a real `Recorder`, so the schema check the run would hit is the one here.
-
-    This is the mutation that survived the whole suite: drop `reason` from the emitter's dict and
-    every test still passes, while the first failed cell of a real run raises out of its own
-    failure handler. A guard that crashes the run it protects is worse than no guard.
-    """
+    """Omitting a required key such as `reason` makes the real CellRunner raise on its first failed cell."""
     rows = _aborted_payload(tmp_path)
     aborted = [r for r in rows if r["row_type"] == "cell_aborted"]
     assert len(aborted) == 1
@@ -129,12 +99,7 @@ def test_the_emitted_row_carries_the_keys_the_schema_demands(tmp_path):
 
 
 def test_a_forward_reader_can_discard_the_orphans_without_joining_backwards(tmp_path):
-    """The property the row exists for, asserted the way the wrong number was produced.
-
-    `floor_table.cell_metrics` guarded the orphans by joining back to the cell row. The analysis
-    that published 28.7 fps did not, because it read window rows in one forward pass. This asserts
-    that the same one-pass reader now has what it needs.
-    """
+    """A one-pass reader must be able to drop orphan window rows without joining back to the cell row."""
     rows = _aborted_payload(tmp_path)
     disowned: set[str] = set()
     windows: list[dict] = []

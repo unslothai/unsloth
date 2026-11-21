@@ -19,7 +19,6 @@ const STATUS_TONE: Record<string, string> = {
   stopped: "text-muted-foreground",
 };
 
-/** Training-side counterpart to the chat stats: runs, steps, GPU time, loss. */
 export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
   const locale = useLocale();
@@ -67,8 +66,6 @@ export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
               className="flex items-center justify-between gap-3 py-2"
             >
               <div className="flex min-w-0 flex-col gap-0.5">
-                {/* A renamed run leads with the name the user chose, so the
-                    model moves down beside the dataset to stay visible. */}
                 <span
                   className="min-w-0 truncate text-sm text-foreground"
                   title={run.name}

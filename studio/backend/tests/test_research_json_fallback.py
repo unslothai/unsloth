@@ -5,11 +5,12 @@
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
@@ -23,9 +24,9 @@ from .test_sf_client_tools_passthrough import _ScriptedBackend, _fixed, _install
 
 
 _NO_GRAMMAR_ENGINE = (
-    "response_format needs the llama.cpp grammar engine; load a GGUF model to use it."
+    "response_format needs a grammar engine, and the transformers backend has none; load an "
+    "MLX or GGUF model to use it."
 )
-# Same code and param, different cause. The real-route cases keep these strings honest.
 _AUDIO_REFUSAL_MESSAGE = (
     "response_format cannot be honored by an audio reply; send the request to a text model "
     "to use guided decoding."
@@ -107,6 +108,10 @@ def research_call(monkeypatch):
 def test_local_json_research_recovers_through_the_real_route(
     monkeypatch, research_call, is_mlx, phase, forced_tools
 ):
+    from core.inference import grammar_constraint
+
+    # MLX refuses only without its engine; pinned so a Mac with llguidance tests this too.
+    monkeypatch.setattr(grammar_constraint, "LLGUIDANCE_AVAILABLE", False)
     backend = _ScriptedBackend(_fixed('{"ok": true}'))
     backend.models[backend.active_model_name]["is_mlx"] = is_mlx
     _install(monkeypatch, backend, supports_tools = forced_tools)
@@ -138,6 +143,32 @@ def test_local_json_research_recovers_through_the_real_route(
     assert first == second
     assert second["tool_choice"] == "none"
     assert second["enabled_tools"] == []
+    assert research_call.revoked == [1]
+
+
+def test_the_npu_refusal_permits_the_prompt_only_retry(research_call):
+    """FastFlowLM's own refusal wording must still read as a missing grammar engine."""
+    payload = ChatCompletionRequest(
+        model = "lemonade:qwen3-0.6b-FLM",
+        messages = [ChatMessage(role = "user", content = "Return only JSON.")],
+        response_format = {"type": "json_object"},
+    )
+    with pytest.raises(HTTPException) as caught:
+        inference_route._refuse_npu_chat_request(
+            payload, supports_vision = False, supports_tools = False
+        )
+    refusal = caught.value.detail
+    sent = []
+
+    def serve(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(400, json = refusal) if len(sent) == 1 else _completion()
+
+    research_call.install(httpx.MockTransport(serve))
+    assert json.loads(research_call.complete()[0]) == {"ok": True}
+    assert len(sent) == 2
+    assert sent[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in sent[1]
     assert research_call.revoked == [1]
 
 
@@ -275,7 +306,6 @@ def test_fallback_uses_the_refused_request_not_an_intervening_model(
 
     class SwitchingTransport(httpx.ASGITransport):
         async def handle_async_request(self, request):
-            # Model loading is scripted; requests and the refusal use the real route.
             backend.active_model_name = "sf-model"
             response = await super().handle_async_request(request)
             statuses.append(response.status_code)
@@ -509,8 +539,12 @@ def test_json_fallback_does_not_refund_transport_retries(monkeypatch, research_c
     sent = []
     delays = []
     real_sleep = asyncio.sleep
+    owner = threading.get_ident()
 
-    async def sleep(delay):
+    # research_runs.asyncio is the real module, so only this thread's sleeps are the retry loop's.
+    async def sleep(delay, *args, **kwargs):
+        if threading.get_ident() != owner:
+            return await real_sleep(delay, *args, **kwargs)
         delays.append(delay)
         await real_sleep(0)
 

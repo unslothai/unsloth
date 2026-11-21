@@ -14,15 +14,23 @@ import type {
   ModelFormatFilter,
 } from "../types";
 import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
+import { ggufRepoParams } from "@/lib/model-size";
 import {
   type CapabilityKey,
   detectBaseModel,
   detectCapabilities,
+  generationKinds,
+  isVideoFamilyName,
+  HUB_CAPABILITY_FILTERS,
+  type HubCapabilityFilter,
 } from "./model-capabilities";
 export {
   detectResultFormat,
+  hasRecommendedCheckpointLikes,
   isUnslothFinetunable,
   matchesFormat,
+  matchesRecommended,
+  matchesRecommendedDiffusion,
 } from "./format-filters";
 export {
   formatLocalUpdated,
@@ -31,15 +39,17 @@ export {
 export { isGgufLike } from "./hf-model-meta";
 
 export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
-  value: CapabilityFilter;
+  value: HubCapabilityFilter;
   label: string;
 }> = [
-  { value: "all", label: "All capabilities" },
+  // Models with none of the others, so ticking every box lists every model.
+  { value: "text", label: "Text only" },
   { value: "reasoning", label: "Reasoning" },
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
-  { value: "diffusion", label: "Image generation" },
+  { value: "image-gen", label: "Image gen" },
+  { value: "video-gen", label: "Video gen" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -47,9 +57,11 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
   label: string;
 }> = [
   { value: "all", label: "All formats" },
+  { value: "recommended", label: "Recommended" },
   { value: "gguf", label: "GGUF" },
   { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
+  { value: "unsloth", label: "Exports & Fine-tunes" },
 ];
 
 const BILLION = 1_000_000_000;
@@ -176,7 +188,10 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
     private: model.private,
     gated: model.gated,
     totalParams:
-      finiteNumber(model.safetensors?.total) ?? finiteNumber(model.gguf?.total),
+      finiteNumber(model.safetensors?.total) ??
+      (model.gguf
+        ? ggufRepoParams(model.name, finiteNumber(model.gguf.total))
+        : undefined),
     estimatedSizeBytes: estimateSizeFromDtypes(model.safetensors?.parameters),
     isGguf,
     baseModel: detectBaseModel(model.tags),
@@ -188,6 +203,37 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
     libraryName: model.library_name,
     quantMethod: model.config?.quantization_config?.quant_method,
   };
+}
+
+// Must cover every row field buildDiscoverRows reads, or the memoised grid goes stale.
+export function discoveryInventorySignature(
+  cachedRows: readonly CachedInventoryRow[],
+  localRows: readonly LocalInventoryRow[],
+): string {
+  const state = (row: {
+    partial?: boolean;
+    downloading?: boolean;
+    companionPrefetch?: boolean;
+  }) =>
+    row.companionPrefetch
+      ? "x"
+      : row.partial
+        ? row.downloading
+          ? "d"
+          : "p"
+        : "c";
+  const parts: string[] = [];
+  for (const row of cachedRows) {
+    parts.push(
+      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  for (const row of localRows) {
+    parts.push(
+      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  return parts.sort().join("|");
 }
 
 export function buildDiscoverRows(
@@ -202,16 +248,28 @@ export function buildDiscoverRows(
       localRows,
       formatHint: result.isGguf ? "gguf" : "non-gguf",
     });
-    const partial = Boolean(
-      resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
-    );
+    const companionPrefetch =
+      (resource.cachedRow?.companionPrefetch ??
+        resource.localRow?.companionPrefetch) === true;
+    const partial =
+      !companionPrefetch &&
+      Boolean(
+        resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
+      );
+    const downloading =
+      partial &&
+      Boolean(
+        resource.cachedRow?.downloading ?? resource.localRow?.downloading,
+      );
     return {
       id: result.id,
       owner: ownerOf(result.id),
       repo: repoOf(result.id),
       result,
-      isAvailableOnDevice: Boolean(resource.cachedRow || resource.localRow),
+      isAvailableOnDevice:
+        !companionPrefetch && Boolean(resource.cachedRow || resource.localRow),
       isPartialOnDevice: partial,
+      isDownloadingOnDevice: downloading,
       summary: buildSummary(result),
       capabilities: detectCapabilities(
         result.tags,
@@ -220,6 +278,63 @@ export function buildDiscoverRows(
       ),
     };
   });
+}
+
+// Pipelines that make pictures, video or sound, which Text only must never list.
+const MEDIA_OUTPUT_TASKS: ReadonlySet<string> = new Set([
+  "text-to-image",
+  "image-to-image",
+  "image-text-to-image",
+  "unconditional-image-generation",
+  "text-to-video",
+  "image-to-video",
+  "image-text-to-video",
+  "video-to-video",
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+  "text-to-3d",
+  "image-to-3d",
+]);
+
+/** One Hub filter pick against a row; image and video gen split the shared "diffusion" capability. */
+export function matchesHubCapability(
+  row: {
+    capabilities: Array<{ key: CapabilityKey }>;
+    result: Pick<HfModelResult, "tags" | "pipelineTag" | "id">;
+  },
+  key: HubCapabilityFilter,
+): boolean {
+  if (key === "text") {
+    return (
+      !HUB_CAPABILITY_FILTERS.some(
+        (other) => other !== "text" && matchesHubCapability(row, other),
+      ) &&
+      // A generator neither box claims (video-to-video), or a media task the detector misses.
+      !matchesCapability(row.capabilities, "diffusion") &&
+      !MEDIA_OUTPUT_TASKS.has(row.result.pipelineTag?.toLowerCase() ?? "") &&
+      !(row.result.tags ?? []).some((tag) =>
+        MEDIA_OUTPUT_TASKS.has(tag.toLowerCase()),
+      )
+    );
+  }
+  if (key !== "image-gen" && key !== "video-gen")
+    return matchesCapability(row.capabilities, key);
+  // A video family is video gen from its name alone: LTX GGUFs carry no pipeline tag.
+  // Still through generationKinds, so a video-to-video family repo stays out.
+  if (key === "video-gen" && isVideoFamilyName(row.result.id))
+    return generationKinds(
+      row.result.tags,
+      row.result.pipelineTag,
+      row.result.id,
+    ).video;
+  if (!matchesCapability(row.capabilities, "diffusion")) return false;
+  const kinds = generationKinds(
+    row.result.tags,
+    row.result.pipelineTag,
+    row.result.id,
+  );
+  return key === "image-gen" ? kinds.image : kinds.video;
 }
 
 export function matchesCapability(

@@ -1,43 +1,42 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool-call healing for the client-tool passthrough.
+"""Turns text tool calls into structured ones for declared tools only, response side; never deletes
+unmatched output; response_format requests untouched; auto_heal_tool_calls false and
+UNSLOTH_DISABLE_TOOL_CALL_HEALING=1 opt out"""
 
-With server-side tools disabled (``unsloth run --disable-tools``, every
-``unsloth start`` coding agent), requests carrying the client's own ``tools``
-bypass Unsloth's tool loop and are relayed to/from llama-server verbatim. Small
-GGUF models often emit their tool calls as TEXT (``<tool_call>{...}</tool_call>``,
-Gemma ``<|tool_call>...``, ``<function=...>`` XML) instead of structured
-``tool_calls`` -- on the passthrough that text reaches the agent as prose and
-the turn dies. This module promotes such text back into structured calls on the
-RESPONSE side only: the upstream request body is never touched, no extra
-generation is issued, so llama-server slot/KV-cache reuse is byte-identical.
-
-Healing only ever fires when the request declared client tools, and only
-promotes calls whose function name exactly matches a declared tool. Promotion
-removes EXACTLY the promoted calls' markup spans (the parser reports them):
-undeclared calls, unparseable blocks, and suppressed alternate formats keep
-every byte and relay as text, so healing can never silently delete model
-output. Responses without a tool signal, requests without tools, and Unsloth's
-own enable-tools loop are untouched. Per-request opt-out:
-``auto_heal_tool_calls: false``. Process kill-switch:
-``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
-"""
-
+import bisect
 import json
 import os
+import re
 from collections.abc import Mapping
-from typing import Any, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
+from core.inference.chat_template_helpers import _template_strings
+from core.inference.tool_call_parser import (
+    _ATTR_FUNC_OPEN_RE,
+    _MINIMAX_INVOKE_CLOSE,
+    _MINIMAX_INVOKE_OPEN_RE,
+    TOOL_XML_SIGNALS,
+    _MinimaxValueIndex,
+    _parse_deepseek_tool_calls,
+    _parse_glm_tool_calls,
+    _parse_kimi_tool_calls,
+    _parse_minimax_tool_calls,
+)
 from core.inference.tool_loop_controller import (
     coerce_arguments_by_schema,
     coerce_tool_arguments,
 )
-from core.tool_healing import parse_tool_calls_from_text
+from core.tool_healing import (
+    _MISTRAL_ARRAY_RE,
+    _MISTRAL_BRACKET_RE,
+    _THINK_OPEN_RE,
+    _THINK_TAG_RE,
+    parse_tool_calls_from_text,
+)
 
-# Only the formats this healer's parser can promote -- narrower than the loops' broader TOOL_XML_SIGNALS. A loop-only
-# marker (Llama <|python_tag|>, bare [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
-# healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
+# Only formats this parser can promote, narrower than TOOL_XML_SIGNALS: a loop-only marker would buffer a streamed call as prose unpromoted.
 _HEAL_SIGNALS = (
     "<tool_call>",
     "<|tool_call>",
@@ -54,42 +53,40 @@ def _has_heal_signal(text: str) -> bool:
 
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
-# Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process default with UNSLOTH_TOOL_CALL_NUDGE=1 (e.g.
-# an `unsloth run` operator).
+# Nudging is opt-in: per-request nudge_tool_calls=true or UNSLOTH_TOOL_CALL_NUDGE=1 by default.
 _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
-def nudge_enabled(request_flag: Optional[bool]) -> bool:
+def response_format_constrains_decoding(response_format: Any) -> bool:
+    return response_format is not None and response_format != {"type": "text"}
+
+
+def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) -> bool:
+    if response_format_constrains_decoding(response_format):
+        return False
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
-# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a
-# model rambling XML-lookalike text.
+# Hold limit: a suspected tool block longer than this is declared a false alarm and flushed as text, bounding memory on a rambling model.
 _MAX_HOLD_CHARS = 64 * 1024
+# Each closer a native block fails to parse at costs a reparse of the whole block.
+_MAX_NATIVE_CLOSERS = 16
 
 
 def heal_gate(
     auto_heal: Optional[bool],
     tools: Optional[list],
     tool_choice: Any = None,
+    *,
+    response_format: Any = None,
 ) -> Optional[set]:
-    """Return the declared client-tool name set when healing applies, else None.
-
-    ``tools`` is the OpenAI-shaped list forwarded to llama-server
-    (``[{"type": "function", "function": {"name": ...}}, ...]``). The name set
-    doubles as the promotion allowlist so healed calls can never invent a tool
-    the client did not declare.
-
-    ``tool_choice`` (OpenAI shape) constrains the allowlist so healing never
-    contradicts the request: ``"none"`` forbids tool calls outright (text-form
-    markup stays text), and a forced ``{"type": "function", "function":
-    {"name": N}}`` narrows promotion to that one function. ``"auto"`` /
-    ``"required"`` / absent keep the full declared set.
-    """
+    """Declared tool names, the promotion allowlist so healing never invents a tool; none under tool_choice none or a constraining response_format."""
     if _HEALING_DISABLED or auto_heal is False:
         return None
     if tool_choice == "none":
+        return None
+    if response_format_constrains_decoding(response_format):
         return None
     names = set()
     for tool in tools or []:
@@ -148,9 +145,7 @@ def _string_arg_key_from_schema(schema: Any) -> Optional[str]:
 def _coerce_promoted_arguments(
     raw_args: Any, tool_name: str, tool_schemas: Optional[dict]
 ) -> Optional[dict]:
-    """Promoted arguments, typed against the client's declared schema: the call was TEXT a
-    moment ago, so its XML parameters arrive as raw strings and closing a truncated container
-    is this healer's own job rather than something to gate."""
+    """Promoted args are typed to the schema; XML arrives as raw strings and truncation is healed here."""
     parameters = (tool_schemas or {}).get(tool_name)
     properties = parameters.get("properties") if isinstance(parameters, Mapping) else None
     parsed = raw_args
@@ -175,12 +170,7 @@ def _promote(
     id_offset: int = 0,
     tool_schemas: Optional[dict] = None,
 ) -> list:
-    """Filter parsed calls to declared tools and normalize their arguments.
-
-    Bare string arguments on the client-tool passthrough use the declared
-    schema's single required string property. If the schema is ambiguous, the
-    call stays text instead of inventing a generic key.
-    """
+    """Ambiguous schemas keep the call as text rather than inventing a key for bare string arguments."""
     promoted = []
     for call in calls:
         function = call.get("function") if isinstance(call, dict) else None
@@ -203,34 +193,320 @@ def _promote(
     return promoted
 
 
-def _remove_spans(text: str, spans: list) -> str:
-    """Text with the given non-overlapping, sorted (start, end) ranges removed."""
-    pieces = []
-    pos = 0
-    for start, end in spans:
-        pieces.append(text[pos:start])
+class NativeToolFormat(NamedTuple):
+    """A model's own tool-call block format. llama-server parses these itself, but an in-process
+    model's output reaches the client healer raw; as there, only the template's format is healed."""
+
+    open: str
+    close: str
+    call: re.Pattern
+    parse: Callable[..., list]
+    # GLM shares <tool_call> with Hermes; its own blocks have this shape.
+    shape: Optional[re.Pattern] = None
+
+
+def _loaded_arguments(call: dict) -> Any:
+    arguments = call["function"].get("arguments")
+    try:
+        return json.loads(arguments) if isinstance(arguments, str) else arguments
+    except ValueError:
+        return arguments
+
+
+def _string_leaves(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _string_leaves(key)
+            yield from _string_leaves(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _string_leaves(item)
+
+
+_SEED_OPEN = "<seed:tool_call>"
+_FOREIGN_SIGNALS = frozenset({*_HEAL_SIGNALS, *TOOL_XML_SIGNALS, _SEED_OPEN})
+
+
+def _parse_seed_block(
+    block: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list:
+    body = block[len(_SEED_OPEN) :]
+    calls = parse_tool_calls_from_text(body, id_offset = id_offset, allow_incomplete = allow_incomplete)
+    # Strict parsing reads a JSON function body as no arguments, so a disagreement is a misread.
+    lenient = parse_tool_calls_from_text(body, id_offset = id_offset, allow_incomplete = True)
+    if [_loaded_arguments(c) for c in calls] != [_loaded_arguments(c) for c in lenient]:
+        return []
+    return calls
+
+
+def _parse_minimax_block(
+    block: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list:
+    calls = _parse_minimax_tool_calls(block, id_offset = id_offset, allow_incomplete = allow_incomplete)
+    # The parser skips a body it cannot read, so a call with no arguments must have had none.
+    inside = _MinimaxValueIndex(block).inside
+    invokes = [m for m in _MINIMAX_INVOKE_OPEN_RE.finditer(block) if not inside(m.start())]
+    for call, invoke in zip(calls, invokes) if len(calls) == len(invokes) else ():
+        close = block.find(_MINIMAX_INVOKE_CLOSE, invoke.end())
+        if (
+            not _loaded_arguments(call)
+            and block[invoke.end() : close if close >= 0 else None].strip()
+        ):
+            return []
+    return calls
+
+
+def _parse_glm_block(
+    block: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list:
+    # Raw, so the client's schema decides a value's type: a string parameter keeps JSON-looking text.
+    return _parse_glm_tool_calls(
+        block, id_offset = id_offset, allow_incomplete = allow_incomplete, raw_values = True
+    )
+
+
+# Most specific marker first.
+_NATIVE_TOOL_FORMATS = (
+    (
+        "<minimax:tool_call>",
+        NativeToolFormat(
+            "<minimax:tool_call>",
+            "</minimax:tool_call>",
+            re.compile(r"<invoke\s"),
+            _parse_minimax_block,
+        ),
+    ),
+    (
+        _SEED_OPEN,
+        NativeToolFormat(
+            _SEED_OPEN, "</seed:tool_call>", re.compile("<function="), _parse_seed_block
+        ),
+    ),
+    (
+        "<|tool_calls_section_begin|>",
+        NativeToolFormat(
+            "<|tool_calls_section_begin|>",
+            "<|tool_calls_section_end|>",
+            re.compile(re.escape("<|tool_call_begin|>")),
+            _parse_kimi_tool_calls,
+        ),
+    ),
+    (
+        "<｜tool▁calls▁begin｜>",
+        NativeToolFormat(
+            "<｜tool▁calls▁begin｜>",
+            "<｜tool▁calls▁end｜>",
+            re.compile("<｜tool▁call▁begin｜>"),
+            _parse_deepseek_tool_calls,
+        ),
+    ),
+    (
+        "<arg_key>",
+        NativeToolFormat(
+            "<tool_call>",
+            "</tool_call>",
+            re.compile("<tool_call>"),
+            _parse_glm_block,
+            # Anything but arg pairs after the name is a body the parser would skip.
+            re.compile(r"<tool_call>\s*[\w.\-]+\s*(?:<arg_key>|</tool_call>)"),
+        ),
+    ),
+)
+
+
+_FORCED_CALL_OPENERS = {
+    "hermes": ('<tool_call>\n{"name":', lambda name: f' {json.dumps(name)}, "arguments":'),
+    "qwen3_coder": ("<tool_call>\n<function=", lambda name: f"{name}>\n"),
+    "gemma4": ("<|tool_call>call:", lambda name: f"{name}{{"),
+}
+
+
+def forced_call_prefix(names: Optional[set], *templates: Any) -> str:
+    """Opening of the model's own call markup for a forced tool_choice (in-process engines have no
+    grammar to force one); empty unless every template body with a call format agrees on it."""
+    from core.inference.engine_adapters import tool_parser_for_template
+
+    parsers = {
+        "gemma4" if "<|tool_call>call:" in body else tool_parser_for_template(body, "vllm")
+        for template in templates
+        for body in _template_strings(template)
+    } - {None}
+    opener = _FORCED_CALL_OPENERS.get(parsers.pop()) if len(parsers) == 1 else None
+    if not names or opener is None:
+        return ""
+    head, named = opener
+    return head + named(next(iter(names))) if len(names) == 1 else head
+
+
+def native_tool_format(*templates: Any) -> Optional[NativeToolFormat]:
+    """The block format the model's chat template writes tool calls in, if it is one of these."""
+    bodies = [body for template in templates for body in _template_strings(template)]
+    for marker, fmt in _NATIVE_TOOL_FORMATS:
+        if any(marker in body for body in bodies):
+            return fmt
+    return None
+
+
+def _native_block_calls(
+    fmt: NativeToolFormat, block: str, allow_incomplete: bool
+) -> Optional[list]:
+    """The block's calls when each of its call markers parsed to exactly one call."""
+    if fmt.shape is not None and not fmt.shape.match(block):
+        return None
+    try:
+        calls = fmt.parse(block, id_offset = 0, allow_incomplete = allow_incomplete)
+        leaves = [leaf for call in calls for leaf in _string_leaves(_loaded_arguments(call))]
+    except RecursionError:
+        return None
+
+    # Markers inside a parsed argument are that argument's data; the rest must be one envelope.
+    def bare(count: Callable[[str], int]) -> int:
+        return count(block) - sum(map(count, leaves))
+
+    if (
+        not calls
+        or bare(lambda s: len(fmt.call.findall(s))) != len(calls)
+        or bare(lambda s: s.count(fmt.close)) != block.endswith(fmt.close)
+        # Other formats' markup is refused even in arguments: decoded text does not locate it.
+        or _ATTR_FUNC_OPEN_RE.search(block)
+        or any(m in block for m in _FOREIGN_SIGNALS if m != fmt.open and not fmt.call.fullmatch(m))
+    ):
+        return None
+    return calls
+
+
+def _native_block(
+    text: str, begin: int, fmt: NativeToolFormat, allow_incomplete: bool
+) -> Optional[tuple]:
+    close = text.find(fmt.close, begin + len(fmt.open))
+    if close < 0:
+        calls = _native_block_calls(fmt, text[begin:], True) if allow_incomplete else None
+        return None if calls is None else (begin, len(text), calls)
+    for _attempt in range(_MAX_NATIVE_CLOSERS):
+        end = close + len(fmt.close)
+        calls = _native_block_calls(fmt, text[begin:end], False)
+        if calls is not None:
+            return begin, end, calls
+        # An argument may hold the closer, so the block may end at a later one.
+        close = text.find(fmt.close, end)
+        if close < 0:
+            return None
+    return None
+
+
+def _heal_native_text(
+    text: str,
+    fmt: NativeToolFormat,
+    allowed_tools: set,
+    tool_schemas: Optional[dict],
+    *,
+    allow_incomplete: bool,
+    start: int = 0,
+) -> Optional[tuple[list, dict]]:
+    """Events for ``text[start:]`` with every block promoted, and each call's source; None keeps the
+    text. All or nothing: other-format markup outside the blocks could quote a block that would run."""
+    blocks: list = []
+    # Markup quoted in a leading JSON answer is data, as on the generic path.
+    lead = len(text) - len(text.lstrip())
+    try:
+        lead = (
+            json.JSONDecoder().raw_decode(text, lead)[1] if text.startswith(("{", "["), lead) else 0
+        )
+    except (ValueError, RecursionError):
+        lead = 0
+    pos = lead
+    while (begin := text.find(fmt.open, pos)) >= 0:
+        think = _THINK_OPEN_RE.search(text, pos, begin)
+        if think is not None:
+            pos = _THINK_TAG_RE.match(text, think.start()).end()
+            continue
+        block = _native_block(text, begin, fmt, allow_incomplete)
+        if block is None:
+            return None
+        blocks.append(block)
+        pos = block[1]
+    if not blocks:
+        return None
+    bounds = [lead, *(edge for begin, end, _calls in blocks for edge in (begin, end)), len(text)]
+    outside = "".join(text[a:b] for a, b in zip(bounds[::2], bounds[1::2]))
+    foreign = _FOREIGN_SIGNALS - {fmt.open}
+    if any(m in outside for m in foreign) or _ATTR_FUNC_OPEN_RE.search(outside):
+        return None
+    calls = [call for _begin, _end, block_calls in blocks for call in block_calls]
+    promoted = _promote(calls, allowed_tools, tool_schemas = tool_schemas)
+    if len(promoted) != len(calls):
+        return None
+    ids = [call["id"] for call in calls]
+    if len(set(ids)) == len(ids):
+        # Kimi's functions.NAME:IDX ids replay through its template; generated ones restart per block.
+        for call, call_id in zip(promoted, ids):
+            call["id"] = call_id
+    events: list = []
+    sources: dict = {}
+    order = iter(promoted)
+    pos = start
+    for begin, end, block_calls in blocks:
+        if text[pos:begin]:
+            events.append(("text", text[pos:begin]))
+        for index in range(len(block_calls)):
+            call = next(order)
+            events.append(("tool_call", call))
+            # One source per block, so un-promoting every call relays it once.
+            sources[call["id"]] = "" if index else text[begin:end]
         pos = end
-    pieces.append(text[pos:])
-    return "".join(pieces)
+    if text[pos:]:
+        events.append(("text", text[pos:]))
+    return events, sources
 
 
 def heal_openai_message_events(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
+    native: Optional[NativeToolFormat] = None,
 ) -> Optional[list]:
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return None
     content = msg.get("content")
-    if not isinstance(content, str) or not _has_heal_signal(content):
+    if not isinstance(content, str):
+        return None
+    if native is not None:
+        tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
+        healed = _heal_native_text(
+            content, native, allowed_tools, tool_schemas, allow_incomplete = allow_incomplete
+        )
+        return healed[0] if healed else None
+    if not _has_heal_signal(content):
         return None
     parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
+    # A strict parse alone would promote calls quoted inside a rejected unfinished call.
+    closed = (
+        None
+        if allow_incomplete
+        else set(parse_tool_calls_from_text(content, allow_incomplete = False, with_spans = True)[1])
+    )
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
     events: list = []
     pos = 0
     call_count = 0
     for call, (start, end) in zip(parsed, spans):
-        promoted = _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+        promoted = (
+            _promote([call], allowed_tools, id_offset = call_count, tool_schemas = tool_schemas)
+            if closed is None or (start, end) in closed
+            else None
+        )
         if promoted:
             if content[pos:start]:
                 events.append(("text", content[pos:start]))
@@ -250,16 +526,11 @@ def heal_openai_message(
     msg: dict,
     allowed_tools: set,
     tools: Optional[list] = None,
+    allow_incomplete: bool = True,
+    native: Optional[NativeToolFormat] = None,
 ) -> bool:
-    """Promote text-form tool calls in a non-streaming OpenAI message. In place.
-
-    No-op (returns False) unless the message has NO structured ``tool_calls``
-    (grammar mode already worked when it does) and its content carries a tool
-    signal that parses into at least one declared call. Only the promoted
-    calls' markup spans are removed from the content; undeclared calls and
-    anything the parser did not consume stay in the text byte-intact.
-    """
-    events = heal_openai_message_events(msg, allowed_tools, tools)
+    """Edits in place; only promoted calls' markup is removed, undeclared calls stay byte-intact."""
+    events = heal_openai_message_events(msg, allowed_tools, tools, allow_incomplete, native)
     if not events:
         return False
     calls = [value for kind, value in events if kind == "tool_call"]
@@ -295,11 +566,181 @@ def _closed_signal_span(buffer: str) -> Optional[tuple[int, int]]:
     return min(spans, key = lambda span: span[0]) if spans else None
 
 
-def _partial_signal_suffix(buffer: str) -> int:
+def _inside_open_wrapper(buffer: str, start: int) -> bool:
+    for open_tag, close_tag in (("<tool_call>", "</tool_call>"), ("<|tool_call>", "<tool_call|>")):
+        opened = buffer.rfind(open_tag, 0, start)
+        if opened >= 0 and buffer.find(close_tag, opened) < 0:
+            return True
+    return False
+
+
+# A strict parse needs a JSON/Gemma close tag or </function>; else only a balanced Mistral/rehearsal bracket call parses.
+_STRICT_CLOSE_TOKENS = ("</tool_call>", "<|end_message|>", "<tool_call|>", "</function>")
+_CALLS_TAG = "[TOOL_CALLS]"
+_ARGS_TAG = "[ARGS]"
+_WS_RE = re.compile(r"\s*")
+# A rehearsal name[ARGS] needs a name character right before the tag.
+_NAME_CHAR_RE = re.compile(r"[\w-]")
+_SPAN_SKIP_RE = re.compile(r'[^"{}\\]*')
+_STRING_SKIP_RE = re.compile(r'[^"\\]*')
+_BRACKET_SKIP_RE = re.compile(r'[^"\[\]{}]*')
+
+
+def _resume_json_span(text: str, state: list) -> Optional[int]:
+    """``_balanced_json_span`` resumed from ``state`` (i, depth, in_string, escape) over appended text."""
+    i, depth, in_string, escape = state
+    n = len(text)
+    while i < n:
+        if escape:
+            escape = False
+            i += 1
+            continue
+        i = (_STRING_SKIP_RE if in_string else _SPAN_SKIP_RE).match(text, i).end()
+        if i >= n:
+            break
+        ch = text[i]
+        if ch == "\\":
+            escape = True
+        elif in_string:
+            in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    state[:] = (i, depth, in_string, escape)
+    return None
+
+
+def _resume_bracket_end(text: str, state: list) -> Optional[int]:
+    """``_balanced_bracket_end`` resumed from ``state`` (i, depth, in_string); a string escape at EOF waits."""
+    i, depth, in_string, _escape = state
+    n = len(text)
+    while i < n:
+        if in_string:
+            i = _STRING_SKIP_RE.match(text, i).end()
+            if i >= n:
+                break
+            if text[i] == "\\":
+                if i + 1 >= n:
+                    break
+                i += 2
+                continue
+            in_string = False
+            i += 1
+            continue
+        i = _BRACKET_SKIP_RE.match(text, i).end()
+        if i >= n:
+            break
+        ch = text[i]
+        if ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    state[:] = (i, depth, in_string, False)
+    return None
+
+
+class _StrictParseGate:
+    """Per-healer scan of a held, append-only buffer: False only when a strict parse of it is provably empty.
+
+    Each chunk scans only the appended text; any buffer that does not extend the last one starts over."""
+
+    __slots__ = ("_buf", "_closer", "_calls", "_args", "_scans", "_brace_close", "_any_close")
+
+    def __init__(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
+        self._buf = ""
+        self._closer = False
+        self._calls: list = []
+        self._args: list = []
+        # (open index, is array) -> resumable scan state, or the close index once balanced.
+        self._scans: dict = {}
+        # Last "}" and last "]" or "}": an opener after them cannot balance yet.
+        self._brace_close = -1
+        self._any_close = -1
+
+    def release(self) -> None:
+        """Drop the scan once the healer lets go of its held text."""
+        if self._buf:
+            self._reset()
+
+    def may_parse(self, buffer: str) -> bool:
+        prev_len = len(self._buf)
+        if not buffer.startswith(self._buf):
+            self._reset()
+            prev_len = 0
+        self._buf = buffer
+        if self._closer:
+            return True
+        for token in _STRICT_CLOSE_TOKENS:
+            # Back off so a token split across chunks is still found.
+            if buffer.find(token, max(0, prev_len - len(token) + 1)) >= 0:
+                self._closer = True
+                return True
+        for tag, found in ((_CALLS_TAG, self._calls), (_ARGS_TAG, self._args)):
+            pos = buffer.find(tag, max(0, prev_len - len(tag) + 1))
+            while pos >= 0:
+                if found is self._calls or (pos and _NAME_CHAR_RE.match(buffer, pos - 1)):
+                    found.append(pos)
+                pos = buffer.find(tag, pos + len(tag))
+        if not self._calls and not self._args:
+            return False
+        brace_close = buffer.rfind("}", prev_len)
+        if brace_close >= 0:
+            self._brace_close = brace_close
+        brace_close = self._brace_close
+        any_close = max(buffer.rfind("]", prev_len), brace_close, self._any_close)
+        self._any_close = any_close
+        # Openers _iter_bracket_spans would scan; regexes rerun since a tail match can still change.
+        opens = []
+        calls = self._calls
+        for pos in calls[: bisect.bisect_right(calls, any_close)]:
+            m = _MISTRAL_BRACKET_RE.match(buffer, pos)
+            if m is not None and m.end() < brace_close:
+                opens.append((m.end(), False))
+            m = _MISTRAL_ARRAY_RE.match(buffer, pos)
+            if m is not None and m.end() < any_close:
+                opens.append((m.end(), True))
+        args = self._args
+        for pos in args[: bisect.bisect_right(args, brace_close)]:
+            brace = _WS_RE.match(buffer, pos + len(_ARGS_TAG)).end()
+            if brace < brace_close and buffer.startswith("{", brace):
+                opens.append((brace, False))
+        scans = self._scans
+        for key in opens:
+            state = scans.get(key)
+            if state is None:
+                state = scans[key] = [key[0], 0, False, False]
+            elif not isinstance(state, list):
+                return True
+            end = (_resume_bracket_end if key[1] else _resume_json_span)(buffer, state)
+            if end is not None:
+                scans[key] = end
+                return True
+        return False
+
+
+def _partial_signal_suffix(
+    buffer: str,
+    signals: tuple = _HEAL_SIGNALS,
+    longest: int = _MAX_SIGNAL_LEN,
+) -> int:
     """Length of the longest buffer suffix that is a proper prefix of a signal."""
-    for length in range(min(len(buffer), _MAX_SIGNAL_LEN - 1), 0, -1):
+    for length in range(min(len(buffer), longest - 1), 0, -1):
         tail = buffer[-length:]
-        if any(signal.startswith(tail) for signal in _HEAL_SIGNALS):
+        if any(signal.startswith(tail) for signal in signals):
             return length
     return 0
 
@@ -320,20 +761,21 @@ class StreamToolCallHealer:
         self,
         allowed_tools: set,
         tools: Optional[list] = None,
+        native: Optional[NativeToolFormat] = None,
     ) -> None:
         self._allowed = set(allowed_tools)
+        # With a native format, text from its first opener is held to the end and healed whole.
+        self._native = native
+        self._relayed: Optional[str] = ""
 
         self._tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
-        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span
-        # never reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at
-        # finish_reason "length" cannot be executed) has no other way to give the model's own words back. Bounded by
-        # _MAX_HOLD_CHARS per span.
+        # Promotion is destructive; keep spans so a discarded call can return the model's words.
         self._promoted_spans: dict[str, str] = {}
-        # Structured delta.tool_calls seen upstream: grammar mode already worked, so healing goes dormant and text
-        # relays verbatim.
+        self._strict_gate = _StrictParseGate()
+        # Structured delta.tool_calls upstream: grammar mode already works, so healing goes dormant.
         self.dormant = False
 
     @property
@@ -341,29 +783,52 @@ class StreamToolCallHealer:
         return self._id_offset > 0
 
     def promoted_source(self, call_id: str) -> str:
-        """The exact markup span a promoted call was cut from, or "".
-
-        Only for a caller that has to un-promote: relaying this alongside the
-        call would double the output, since the call already carries it.
-        """
+        """Only for un-promoting: relaying it next to the call would double the output."""
         return self._promoted_spans.get(call_id, "")
 
     def structured_tool_call_seen(self) -> list:
         """Go dormant; flush anything held so no text is swallowed."""
         self.dormant = True
+        self._strict_gate.release()
         held, self._buffer, self._holding = self._buffer, "", False
         return [("text", held)] if held else []
 
     def feed(self, text: str) -> list:
         if self.dormant:
             return [("text", text)] if text else []
+        if self._native is not None:
+            return self._feed_native(text)
         self._buffer += text
         return self._drain()
+
+    def _feed_native(self, text: str) -> list:
+        if self._relayed is None:
+            return [("text", text)] if text else []
+        self._buffer += text
+        events: list = []
+        if not self._holding:
+            start = self._buffer.find(self._native.open)
+            cut = (
+                start
+                if start >= 0
+                else len(self._buffer)
+                - _partial_signal_suffix(self._buffer, (self._native.open,), len(self._native.open))
+            )
+            if cut:
+                events.append(("text", self._buffer[:cut]))
+                self._relayed += self._buffer[:cut]
+                self._buffer = self._buffer[cut:]
+            self._holding = start >= 0
+        if self._holding and len(self._buffer) > _MAX_HOLD_CHARS:
+            events.append(("text", self._buffer))
+            self._buffer, self._holding, self._relayed = "", False, None
+        return events
 
     def _drain(self) -> list:
         events: list = []
         while True:
             if not self._holding:
+                self._strict_gate.release()
                 start = _earliest_signal(self._buffer)
                 if start >= 0:
                     if start:
@@ -377,14 +842,36 @@ class StreamToolCallHealer:
                         events.append(("text", emit))
                     self._buffer = self._buffer[len(self._buffer) - keep :]
                     return events
-            parsed, spans = parse_tool_calls_from_text(
-                self._buffer,
-                id_offset = self._id_offset,
-                allow_incomplete = False,
-                with_spans = True,
+            # A whole-buffer reparse per chunk is quadratic in the held size.
+            may_parse = self._strict_gate.may_parse(self._buffer)
+            parsed, spans = (
+                parse_tool_calls_from_text(
+                    self._buffer,
+                    id_offset = self._id_offset,
+                    allow_incomplete = False,
+                    with_spans = True,
+                )
+                if may_parse
+                else ([], [])
             )
+            # A bracket call after a still-open tag block is that block's argument text.
+            if (
+                parsed
+                and self._buffer.startswith("<")
+                and not self._buffer.startswith("<", spans[0][0])
+                and _closed_signal_span(self._buffer) is None
+            ):
+                parsed, spans = [], []
+            # Qwen3.5's <function=...> closes inside a still-open <tool_call>; promoting it now would relay the wrapper as text.
+            if (
+                parsed
+                and len(self._buffer) <= _MAX_HOLD_CHARS
+                and _inside_open_wrapper(self._buffer, spans[0][0])
+            ):
+                return events
             if not parsed:
-                closed_span = _closed_signal_span(self._buffer)
+                # Its close tags are gate tokens, so a closed gate means no closed span.
+                closed_span = _closed_signal_span(self._buffer) if may_parse else None
                 if closed_span:
                     _start, end = closed_span
                     events.append(("text", self._buffer[:end]))
@@ -400,8 +887,7 @@ class StreamToolCallHealer:
             pos = 0
             run_end = spans[0][1]
             for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
-                # Stop at the first gap or incomplete trailing block: leave it for the next pass to re-hold and stream
-                # incrementally, not flush as text early.
+                # Stop at the first gap or incomplete trailing block, so it re-holds and does not flush text early.
                 if order and start != run_end:
                     break
                 promoted = _promote(
@@ -426,17 +912,32 @@ class StreamToolCallHealer:
             self._buffer = self._buffer[run_end:]
             self._holding = False
 
-    def finalize(self) -> list:
-        """End of stream: last-chance heal of the residue, else flush it.
-
-        Events keep document order; only the promoted calls' markup spans are
-        dropped, every other residue byte flushes as text.
-        """
+    def finalize(self, promote: bool = True) -> list:
+        """Keeps event order; only promoted call markup is dropped and all other residue flushes as text."""
+        self._strict_gate.release()
         if not self._buffer:
             return []
         residue, self._buffer = self._buffer, ""
         holding, self._holding = self._holding, False
         if self.dormant or not holding:
+            return [("text", residue)]
+        if self._native is not None:
+            # Held whole, so its closed blocks promote even when cut-off calls may not.
+            healed = _heal_native_text(
+                self._relayed + residue,
+                self._native,
+                self._allowed,
+                self._tool_schemas,
+                allow_incomplete = promote,
+                start = len(self._relayed),
+            )
+            if healed is None:
+                return [("text", residue)]
+            events, sources = healed
+            self._promoted_spans.update(sources)
+            self._id_offset += len(sources)
+            return events
+        if not promote:
             return [("text", residue)]
         parsed, spans = parse_tool_calls_from_text(
             residue,
@@ -473,11 +974,7 @@ class StreamToolCallHealer:
 
 
 def _first_choice_message(data: Any) -> Optional[dict]:
-    """First-choice message dict of a non-streaming chat response, else None.
-
-    Upstream error bodies can carry ``"message": null`` (or no choices at all),
-    so never assume the shape: a non-dict message means "nothing to heal".
-    """
+    """Upstream error bodies can carry a null message or no choices, so the shape is never assumed."""
     try:
         message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
@@ -508,18 +1005,13 @@ def response_has_promotable_calls(
     allowed_tools: set,
     tools: Optional[list] = None,
 ) -> bool:
-    """True when a non-streaming chat response carries a usable tool call
-    (structured naming a DECLARED tool, or text-form that healing would
-    promote). Used to decide whether a nudge retry actually improved on the
-    original response; a hallucinated undeclared call is not an improvement."""
+    """Used to judge a nudge retry: an undeclared hallucinated call is not an improvement."""
     message = _first_choice_message(data)
     if not message:
         return False
     tool_calls = message.get("tool_calls")
     if tool_calls:
-        # ALL structured calls must be declared: the caller forwards the whole list (and a parallel cap could keep only
-        # the FIRST one), so a mixed response with a single hallucinated name could still hand the client an undeclared
-        # tool.
+        # ALL structured calls must be declared: one hallucinated name would reach the client.
         return all(
             isinstance(tc, dict)
             and isinstance(tc.get("function"), dict)
@@ -537,12 +1029,7 @@ def nudge_should_retry(
     allowed_tools: Optional[set],
     tools: Optional[list] = None,
 ) -> bool:
-    """True when the first response tried to call a tool but nothing healed.
-
-    Trigger only on: healing enabled (allowed_tools set), zero structured
-    calls, a tool signal present in the text, and zero promotable calls -- the
-    exact failure a single re-ask can fix. Clean prose never retries.
-    """
+    """Retry only when text has a tool signal that healing did not promote; clean prose never retries."""
     if not allowed_tools:
         return False
     message = _first_choice_message(data)
@@ -555,12 +1042,7 @@ def nudge_should_retry(
 
 
 def nudge_messages(data: Any, allowed_tools: set) -> list:
-    """The two-message suffix appended for the single nudge retry.
-
-    The retry body is the original body plus this suffix, so the prompt prefix
-    is byte-identical and llama-server's slot/prefix cache is reused (same
-    shape as the enable-tools loop's reprompt).
-    """
+    """Appended to the original body so the prompt prefix stays byte-identical for llama-server's cache."""
     tool_hint = " or ".join(f"`{name}`" for name in sorted(allowed_tools)) or "an available tool"
     return [
         {"role": "assistant", "content": _last_assistant_text(data)},

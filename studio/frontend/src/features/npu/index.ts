@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+export {
+  isNpuModelId,
+  NPU_MODEL_PREFIX,
+  type NpuDownloadPhase,
+  type NpuLocalModel,
+  type NpuModel,
+  type NpuStatus,
+  npuCapabilities,
+  npuContextLabel,
+  npuDeleteDescription,
+  npuDownloadLabel,
+  npuReadmeNote,
+  npuMemoryTag,
+  npuMemoryWarning,
+  npuResumeLabel,
+  npuRowDetails,
+  npuRowsFor,
+  npuRowTooltip,
+  npuSizeLabel,
+} from "./api";
+export {
+  NPU_CATALOG_TAG,
+  NPU_TAG_TEXT,
+  type NpuCompat,
+  type NpuFit,
+  type NpuTag,
+  npuFit,
+} from "./compat";
+export {
+  npuDisplayName,
+  npuDisplayNameOf,
+  npuRepoLabel,
+} from "./display-name";
+export { refreshNpuModels, useNpuCatalogStore } from "./npu-catalog-store";
+export { NpuSetupNotice } from "./npu-setup-notice";
+export { npuEngineVersions, npuVersionTag } from "./runtime-versions";
+export {
+  type NpuCatalog,
+  type NpuPickerSource,
+  useNpuCatalog,
+} from "./use-npu-catalog";
+export {
+  npuDisplayNameNow,
+  useNpuDisplayName,
+  useNpuDisplayNames,
+} from "./use-npu-display-name";
+export { useNpuCompat } from "./use-npu-compat";
+export { useNpuStatus } from "./use-npu-status";

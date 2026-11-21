@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The preview shell picks its CSP from ``allow_network`` and nothing else, so
-both directions of that switch are worth pinning: the permissive variant must
-require the flag, and its absence must land on the strict one. Every canvas
-reaches this route now, fenced HTML included, not just approved render_html
-output."""
+"""The preview CSP is picked by allow_network alone, so both directions of that flag are pinned."""
 
 import asyncio
 import pathlib
@@ -19,7 +15,6 @@ def _csp(*args) -> str:
 
 
 def test_omitting_the_flag_serves_the_strict_csp():
-    # The fail-closed direction: a caller that says nothing gets no network.
     csp = _csp()
     assert "default-src 'none';" in csp
     assert "script-src 'unsafe-inline';" in csp
@@ -38,7 +33,6 @@ def test_the_flag_is_what_changes_the_policy():
 
 
 def test_the_sandbox_holds_in_both_variants():
-    # Network access widens what the canvas may fetch, never how it is isolated.
     for csp in (_csp(False), _csp(True)):
         assert "sandbox allow-scripts" in csp
         assert "object-src 'none';" in csp
@@ -50,8 +44,7 @@ def test_the_sandbox_holds_in_both_variants():
 def test_the_shell_reports_blocked_resources():
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert '"unsloth:artifact-blocked"' in shell
-    # document.close() drops listeners bound before it, so binding earlier
-    # reports nothing and the banner never appears.
+    # document.close() drops listeners bound before it.
     write, listen = (
         shell.index("document.close();"),
         shell.index('document.addEventListener("securitypolicyviolation"'),
@@ -60,10 +53,7 @@ def test_the_shell_reports_blocked_resources():
 
 
 def test_blocked_reports_carry_the_load_they_came_from():
-    # event.source survives the swap navigation, so without the stamp a report
-    # from the outgoing canvas reads as the incoming one's and prompts a grant
-    # for a canvas that never hit the CSP. Read once at load, not per report,
-    # so a rewritten document cannot forge a different one.
+    # Stamp at load so a report from the outgoing canvas is not misattributed.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert 'get("v")' in shell
     assert "v: loadVersion," in shell
@@ -86,34 +76,25 @@ def _directives(csp: str) -> dict:
 
 
 def test_the_shell_reports_which_directive_was_violated():
-    # Without it the banner cannot tell a blocked CDN script from an object-src
-    # violation, and offers a grant that cannot fix the latter.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert "effectiveDirective: event.effectiveDirective" in shell
 
 
 def test_the_grant_widens_everything_but_the_locked_directives():
-    # Pins GRANT_CANNOT_FIX in html-frame.tsx: lock a fourth directive down in
-    # both policies and this fails, rather than the banner silently starting to
-    # prompt for something the grant cannot fix.
+    # Locking another directive fails this, so the banner never prompts for a grant that cannot fix it.
     strict = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_STRICT_CSP)
     network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
     unchanged = {
         name for name, value in strict.items() if name in network and network[name] == value
     }
-    # frame-ancestors and sandbox are not resource loads, so they never report.
     assert unchanged == {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
     for locked in ("object-src", "base-uri", "form-action"):
         assert network[locked] == "'none'"
 
 
 def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
-    # Pins GRANT_CANNOT_FIX_SCHEME in html-frame.tsx. A non-HTTP(S) violation
-    # reports a bare scheme, so the banner may only offer the grant where the
-    # permissive policy actually allows that scheme for that directive. Verified
-    # in Chromium: a data: Worker reports worker-src/data under both policies.
+    # Non-HTTP(S) violations report a bare scheme, so offer the grant only where that scheme is allowed.
     network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
-    # Locked or not a resource load, so they never reach the scheme check.
     skip = {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
     gaps = {
         name: scheme
@@ -126,7 +107,6 @@ def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
 
 
 def test_the_shell_restores_randomuuid_for_insecure_canvases():
-    # This test cannot execute the shell, so pin the fallback's required pieces.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert 'typeof crypto.randomUUID === "function"' in shell
     assert "crypto.randomUUID = () =>" in shell
@@ -134,7 +114,6 @@ def test_the_shell_restores_randomuuid_for_insecure_canvases():
 
 
 def test_the_shell_generator_matches_the_app_one():
-    # The strict CSP forbids sharing crypto-boot.js, so keep both copies aligned.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     boot = (
         pathlib.Path(__file__).resolve().parents[2] / "frontend/public/crypto-boot.js"
@@ -145,3 +124,90 @@ def test_the_shell_generator_matches_the_app_one():
     ):
         assert expression in boot
         assert expression in shell
+
+
+def test_the_shell_reports_runtime_errors_and_console_output():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert '"unsloth:artifact-error"' in shell
+    assert '"unsloth:artifact-console"' in shell
+    assert 'window.addEventListener("error", reportError)' in shell
+    assert 'window.addEventListener("unhandledrejection", reportRejection)' in shell
+    assert "captureConsole();" in shell
+
+
+def test_error_listeners_bind_between_open_and_write():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    opened = shell.index("document.open();")
+    wrote = shell.index("document.write(html);")
+    for listener in (
+        'window.addEventListener("error", reportError)',
+        'window.addEventListener("unhandledrejection", reportRejection)',
+        "captureConsole();",
+    ):
+        assert opened < shell.index(listener) < wrote
+
+
+def test_error_and_console_reports_carry_the_load_stamp():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert shell.index("const loadVersion") < shell.index("const report = (fields) =>")
+    assert "{ ...fields, v: loadVersion }" in shell
+
+
+def test_only_the_embedder_can_drive_render():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    listener = shell.index('window.addEventListener("message"')
+    guard = shell.index("if (event.source !== parent) return;", listener)
+    assert guard < shell.index("unslothRenderArtifact(data.html);", listener)
+
+
+def test_the_shell_caps_and_clips_what_it_reports():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert (
+        'const REPORTS_MAX = { "unsloth:artifact-error": 100, "unsloth:artifact-console": 1000 };'
+        in shell
+    )
+    assert "if (!(reportsLeft[fields.type] > 0)) return;" in shell
+    assert "const REPORT_MAX_CHARS = 2048;" in shell
+
+
+def test_console_serialization_stops_at_the_report_budget():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    serialize = shell[shell.index("const serialize = (root)") : shell.index("const describe = ")]
+    assert "let left = REPORT_MAX_CHARS;" in serialize
+    assert 'if (left <= 0) return "…";' in serialize
+    assert (
+        "JSON.stringify(value)"
+        not in shell[shell.index("const describe = ") : shell.index("const report = ")]
+    )
+
+
+def test_the_strict_csp_is_exactly_the_reviewed_policy():
+    # React previews run compiled user code under this policy, so it is pinned whole: any
+    # widening (a script host, 'unsafe-eval', connect-src) has to change this literal too.
+    assert inf_mod._ARTIFACT_PREVIEW_FRAME_STRICT_CSP == (
+        "default-src 'none'; "
+        "script-src 'unsafe-inline'; "
+        "style-src 'unsafe-inline'; "
+        "img-src data: blob:; "
+        "font-src data:; "
+        "media-src data: blob:; "
+        "connect-src 'none'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'none'; "
+        "frame-ancestors 'self' tauri://localhost http://tauri.localhost "
+        "http://localhost:* http://127.0.0.1:*; "
+        "sandbox allow-scripts"
+    )
+
+
+def test_annotation_factory_is_served_before_the_document_can_add_a_meta_csp():
+    from routes.browser import _ANNOTATE_JS
+
+    response = asyncio.run(inf_mod.artifact_preview_frame())
+    shell = response.body.decode()
+    assert _ANNOTATE_JS in shell
+    assert "/* ANNOTATE_JS */" not in shell
+    assert shell.index("const annotationFactory") < shell.index("document.write(html)")
+    assert "annotation = annotationFactory(postAnnotation)" in shell
+    assert "__unslothInstallAnnotation" not in shell

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Which side of the connection the Code pill runs code on. `code_execution` runs in the
+/** Which side of the connection the Tools pill runs code on. `code_execution` runs in the
  *  provider's own sandbox and is billed by them; `python` / `terminal` are Unsloth's tools and
  *  run on the machine Unsloth is installed on. They are two different trust boundaries, so which
  *  one a stored toggle means must not change underneath the user. Until Unsloth's tool loop
@@ -12,7 +12,7 @@
  *  user's machine. Unsloth's local tools are for connections with no sandbox at all. */
 
 export interface CodeToolPlacementInput {
-  /** The composer's Code pill (persisted as unsloth_chat_code_tools_enabled). */
+  /** The composer's Tools pill (persisted as unsloth_chat_code_tools_enabled). */
   codeToolsEnabled: boolean;
   /** This provider AND this model expose the provider's own code sandbox. */
   hostedCodeExecutionForThisTurn: boolean;
@@ -31,12 +31,11 @@ export function selectCodeToolNames(input: CodeToolPlacementInput): CodeToolName
   if (!input.codeToolsEnabled) return { local: [], hosted: [] };
   if (input.hostedCodeExecutionForThisTurn) return { local: [], hosted: ["code_execution"] };
   if (input.providerHostsCodeExecution) return { local: [], hosted: [] };
-  // edit_file is local-only: when the provider hosts execution the files live in its sandbox, so a
-  // local editor would patch a copy nothing else sees.
-  return { local: ["python", "terminal", "edit_file"], hosted: [] };
+  // edit_file is local-only: hosted execution keeps files in the provider's sandbox.
+  return { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] };
 }
 
-/** Whether the Code pill can do anything on this connection, so the composer can offer it and a
+/** Whether the Tools pill can do anything on this connection, so the composer can offer it and a
  *  stored preference can be restored. Read out of the placement itself rather than restated,
  *  because the two must not drift: a pill offered where the placement runs nothing is a toggle
  *  the user turns on to no effect. That is the case for a model on a sandbox-owning provider

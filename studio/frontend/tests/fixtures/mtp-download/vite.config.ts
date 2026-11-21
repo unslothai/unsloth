@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A/B config for tests/studio/playwright_mtp_download_visibility.py. The
-// harness and dependencies stay identical while @ resolves to the checkout
-// named by PW_SOURCE_FRONTEND_DIR, so base and fix compile separate sources.
+// A/B config: @ resolves to the checkout named by PW_SOURCE_FRONTEND_DIR.
 
 // biome-ignore lint/correctness/noNodejsModules: Vite configs execute in Node.
 import path from "node:path";
@@ -27,8 +25,7 @@ export default defineConfig({
     fs: { allow: [frontendRoot, sourceFrontend] },
   },
   resolve: {
-    // Source files live in a second worktree during the negative control. Keep
-    // one React runtime even when that checkout has its own dependency tree.
+    // Source may live in a second worktree; keep one React runtime even if it has its own deps.
     dedupe: ["react", "react-dom"],
     alias: {
       "@": path.resolve(sourceFrontend, "src"),

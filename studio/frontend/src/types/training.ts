@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type ModelType = "vision" | "audio" | "embeddings" | "text";
+export type ModelType = "vision" | "audio" | "embeddings" | "text" | "decision";
 export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
 
 export function isTrainingMethod(value: unknown): value is TrainingMethod {
@@ -15,7 +15,6 @@ export function isAdapterMethod(method: TrainingMethod): boolean {
 }
 export type DatasetSource = "huggingface" | "upload" | "s3";
 
-/** S3 bucket configuration for loading datasets */
 export interface S3Config {
   bucket: string;
   region: string;

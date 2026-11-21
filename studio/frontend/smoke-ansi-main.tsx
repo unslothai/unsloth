@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createRoot } from "react-dom/client";
+// Mounted bare, so supply providers here: `Tooltip` throws outside its provider.
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToolResultOutput } from "@/components/assistant-ui/tool-result-output";
 import { ToolFallbackResult } from "@/components/assistant-ui/tool-fallback";
 
@@ -21,7 +23,7 @@ if (!root) {
 }
 
 createRoot(root).render(
-  <>
+  <TooltipProvider>
     <section data-smoke="tool-result-output">
       <h1>ToolResultOutput</h1>
       <ToolResultOutput text={coloured} />
@@ -44,5 +46,5 @@ createRoot(root).render(
     </section>
 
 
-  </>,
+  </TooltipProvider>,
 );

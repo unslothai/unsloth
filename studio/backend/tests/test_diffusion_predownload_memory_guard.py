@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic tests for the pre-download unified-memory guard from issue #9130.
-
-Hub sizes recorded on 2026-08-24 are aggregated by component directory.
-"""
+"""Hermetic tests for the pre-download unified-memory guard, using per-component Hub size totals."""
 
 from __future__ import annotations
 
@@ -29,7 +26,7 @@ def _files(**dirs: int) -> list:
     return [(f"{name}/model.safetensors", mib * MIB) for name, mib in dirs.items()]
 
 
-# unsloth/Qwen-Image-2512 @ b96dde7f, 57.70 GB total.
+# unsloth/Qwen-Image-2512 @ b96dde7f, 57.70 GB total
 QWEN_IMAGE_2512 = _files(transformer = 38966, text_encoder = 15812, vae = 240, tokenizer = 10)
 
 FLUX2_DEV = _files(transformer = 61461, text_encoder = 45798, vae = 321, tokenizer = 16)
@@ -211,9 +208,7 @@ def test_declared_sizes_are_converted_to_their_resident_precision(
     )
 
 
-# stabilityai/stable-diffusion-xl-base-1.0, 12.9 GB: unet, both text encoders and the vae are
-# all stored F32 in the DEFAULT variant (headers read 2026-08-25), and the loader skips the fp16
-# twins, so the download is twice the bf16 residency.
+# SDXL base stores every component F32 by default and the loader skips fp16 twins
 SDXL_BASE = [
     ("unet/diffusion_pytorch_model.safetensors", 9794 * MIB),
     ("text_encoder/model.safetensors", 469 * MIB),
@@ -223,9 +218,8 @@ SDXL_BASE = [
 
 
 def test_an_fp32_stored_pipeline_is_not_priced_at_its_download_size(monkeypatch):
-    """SDXL is the one U-Net family, so its denoiser sits in ``unet/`` and lands in the
-    companion bucket rather than the denoiser one. Both factors therefore have to halve, or
-    a 6.5 GB bf16 pipeline prices as 12.9 GB and is refused on every 16 GB pool."""
+    """SDXL's U-Net lands in the companion bucket, so both factors must halve or a 6.5 GB bf16
+    pipeline prices as 12.9 GB and is refused on every 16 GB pool."""
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
 
     declared = sum(size for _name, size in SDXL_BASE)

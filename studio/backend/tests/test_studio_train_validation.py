@@ -87,14 +87,13 @@ class TestVisionImageSizeCap:
 
     @pytest.mark.parametrize("value", [True, False])
     def test_bool_error_says_integer_not_range(self, value):
-        # Regression guard: bools say "integer or null", not "in [256, 2048]".
+        # Bools must say "integer or null", not "in [256, 2048]".
         with pytest.raises(ValidationError) as exc:
             _check_field("vision_image_size", value)
         assert "integer or null" in str(exc.value)
 
     @pytest.mark.parametrize("value", ["++512", "--256", "+-+512", "+", "-"])
     def test_multi_sign_string_says_integer_not_raw(self, value):
-        # Regression guard: multi-sign strings say "integer or null", not int()'s raw message.
         with pytest.raises(ValidationError) as exc:
             _check_field("vision_image_size", value)
         assert "integer or null" in str(exc.value)
@@ -134,3 +133,21 @@ class TestLoraAlphaCap:
     def test_below_min_rejects(self):
         with pytest.raises(ValidationError):
             _check_field("lora_alpha", 0)
+
+
+class TestRandomSeedRange:
+    @pytest.mark.parametrize("value", [0, 3407, 2**32 - 1])
+    def test_in_range_accepts(self, value):
+        _check_field("random_seed", value)
+
+    @pytest.mark.parametrize("value", [-1, 2**32])
+    def test_out_of_range_rejects(self, value):
+        with pytest.raises(ValidationError) as exc:
+            _check_field("random_seed", value)
+        assert "random_seed" in str(exc.value)
+
+    @pytest.mark.parametrize("value", [-1, 2**32])
+    def test_out_of_range_is_what_set_seed_refuses(self, value):
+        np = pytest.importorskip("numpy")
+        with pytest.raises(ValueError):
+            np.random.seed(value)

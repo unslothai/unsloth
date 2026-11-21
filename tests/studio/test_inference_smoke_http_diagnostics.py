@@ -1,23 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""
-The inference smoke probes must say what the server said when a request 4xx's.
-
-#8883 broke the Mac GGUF job's `/v1/chat/completions` call and stayed broken for
-three main runs. The only thing CI printed was:
-
-    urllib.error.HTTPError: HTTP Error 400: Bad Request
-
-The server's own explanation went out with the unread response body, so the cause
-had to be reconstructed by hand from the workflow source. These probes are the
-only place a real llama-server answers a real request, so their diagnostics are
-the whole value of a red run; a status line with no body is a red run that costs
-an investigation instead of paying for one.
-
-The tests parse the Python actually embedded in the workflows rather than
-matching text, so a rewrite that keeps the behaviour keeps passing and a rewrite
-that drops it fails.
-"""
+"""Probes must report the server's response body on an HTTP 4xx, not just the status line."""
 
 from __future__ import annotations
 
@@ -60,8 +43,6 @@ def _python_blocks(path: Path) -> list[tuple[int, str]]:
         assert i < len(lines), f"{path.name}:{start} heredoc never closed"
         blocks.append((start + 1, textwrap.dedent("\n".join(body)) + "\n"))
         i += 1
-    # The indent is stripped by textwrap, so a block whose lines are indented inconsistently would fail to parse below
-    # rather than pass silently.
     del indent
     return blocks
 
@@ -116,11 +97,7 @@ def test_every_embedded_probe_is_valid_python(name: str) -> None:
 
 @pytest.mark.parametrize("name", SMOKE_WORKFLOWS)
 def test_every_request_helper_has_an_http_error_handler(name: str) -> None:
-    """
-    Without a dedicated handler an HTTPError falls into the URLError branch it
-    subclasses and gets retried as a transport stall, which spends the job's
-    whole timeout budget re-asking a question the server already refused.
-    """
+    """Each request helper needs its own HTTPError handler, or a 4xx is retried as a transport stall."""
     path = WORKFLOWS / name
     helpers = [helper for _, source in _python_blocks(path) for helper in _request_helpers(source)]
     assert helpers, f"{name}: no request helper found"
@@ -138,11 +115,7 @@ def test_every_request_helper_has_an_http_error_handler(name: str) -> None:
 
 @pytest.mark.parametrize("name", SMOKE_WORKFLOWS)
 def test_an_http_error_reports_the_response_body(name: str) -> None:
-    """
-    The regression this guards: a handler that is a bare `raise`. CI then prints
-    the status line and nothing else, and the server's explanation is lost with
-    the unread body.
-    """
+    """An HTTPError handler must read and report the response body, not just re-raise the status line."""
     path = WORKFLOWS / name
     for _, source in _python_blocks(path):
         for helper in _request_helpers(source):
@@ -185,22 +158,18 @@ def test_an_http_error_reports_the_response_body(name: str) -> None:
                     f"it, so the diagnosis never reaches the CI log"
                 )
 
-                # Reading the body is only useful if the printed text carries it, and the status code alongside it names
-                # which request.
                 printed = "\n".join(ast.dump(call) for call in prints)
                 assert (
                     "code" in printed
                 ), f"{name}: {helper.name}() prints on HTTPError without the status code"
 
-                # A read can raise (a truncated or already-consumed body), and
-                # that must not replace the real HTTPError with a confusing one.
+                # A body read can raise and must not replace the real HTTPError.
                 guarded = any(isinstance(node, ast.Try) for node in ast.walk(handler))
                 assert guarded, (
                     f"{name}: {helper.name}() reads the HTTPError body "
                     f"unguarded, so a failed read masks the real status"
                 )
 
-                # And the original error must still propagate: reporting is not the same as tolerating.
                 assert any(isinstance(node, ast.Raise) for node in handler.body), (
                     f"{name}: {helper.name}() reports the HTTPError but does "
                     f"not re-raise it, so a 4xx would pass as success"

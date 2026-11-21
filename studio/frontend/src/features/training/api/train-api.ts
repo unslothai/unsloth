@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+// eslint-disable-next-line no-restricted-imports
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import {
@@ -10,6 +13,7 @@ import {
   consumeTrainingProgressStream,
 } from "../lib/training-sse-stream";
 import type {
+  DrafterCapability,
   TrainingResetResponse,
   TrainingStartRequest,
   TrainingStartRequestStatusResponse,
@@ -150,6 +154,9 @@ export async function startTraining(
   payload: TrainingStartRequest,
   startRequestId: string,
 ): Promise<TrainingStartResponse> {
+  // The worker downloads the base model and datasets itself, bypassing requestStart. Only the pre
+  // reading belongs here; useTrainingCompletionWatch takes the post-download one. Never gates the start.
+  void checkDiskSpace();
   let result: TrainingStartResponse;
   try {
     result = await runRequestWithTimeout(
@@ -349,6 +356,23 @@ export function getTrainingMetrics(
   return options?.fresh
     ? requestTrainingMetrics.refresh(scope, expectedJobId)
     : requestTrainingMetrics.run(scope, expectedJobId);
+}
+
+/** Which drafter `modelName` can train after fine-tuning (MTP retrain or EAGLE-3) and where it runs. */
+export async function getDrafterCapability(
+  modelName: string,
+  signal?: AbortSignal,
+  hfToken?: string | null,
+): Promise<DrafterCapability> {
+  // The token rides a header, never the query string (private / gated models).
+  const response = await authFetch(
+    `/api/train/drafter-capability?model_name=${encodeURIComponent(modelName)}`,
+    { signal, headers: hubTokenHeader(hfToken?.trim() || null) },
+  );
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  return (await response.json()) as DrafterCapability;
 }
 
 export async function streamTrainingProgress(options: {

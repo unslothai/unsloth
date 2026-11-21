@@ -1,10 +1,7 @@
-# Model defaults for unsloth/Qwen3-Embedding-0.6B
-# Based on Qwen3_Embedding_(0_6B).py embedding notebook
 # Also applies to: unsloth/Qwen3-Embedding-4B
 
 training:
   max_seq_length: 512
-  # num_epochs: 2
   num_epochs: 0
   learning_rate: 3e-5
   batch_size: 256

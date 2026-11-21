@@ -14,6 +14,7 @@ from .seed import (
     PASSWORD,
     SENTINEL,
     THREAD_ID,
+    legacy_studio_rows,
     old_auth_row,
     seed_legacy_install,
 )
@@ -23,6 +24,7 @@ def main() -> None:
     home = Path(os.environ["UNSLOTH_STUDIO_HOME"])
     original = seed_legacy_install(home)
     auth_row = old_auth_row(home / "auth" / "auth.db")
+    studio_rows = legacy_studio_rows(home / "studio.db")
     application = importlib.import_module("main")
     for name, payload in original.items():
         assert (home / name).read_bytes() == payload, f"Import changed {name}"
@@ -66,10 +68,17 @@ def main() -> None:
         assert login.json()["access_token"]
     finally:
         client.close()
+    # auth.db and studio.db gain columns when opened by a current build, so compare content.
     for name, payload in original.items():
-        if name != "auth/auth.db":
+        if name not in ("auth/auth.db", "studio.db"):
             assert (home / name).read_bytes() == payload, f"Owner read changed {name}"
     assert old_auth_row(home / "auth" / "auth.db") == auth_row
+    # Derived cache: its bookkeeping row moves by design.
+    derived = "chat_attachment_inventory_state"
+    after = legacy_studio_rows(home / "studio.db")
+    assert {t: r for t, r in after.items() if t != derived} == {
+        t: r for t, r in studio_rows.items() if t != derived
+    }, "Owner read changed legacy studio.db rows"
     assert not (home / "accounts").exists()
     print(json.dumps({"preserved_files": len(original), "owner_login": True}))
 

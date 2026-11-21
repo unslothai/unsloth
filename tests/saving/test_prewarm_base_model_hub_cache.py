@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression tests for #6890: repeated base-model downloads across checkpoint exports.
-
-merge_and_overwrite_lora downloads missing 16-bit shards with hf_hub_download(local_dir),
-which never populates the persistent HF hub cache; a temporary merge directory (Unsloth
-GGUF exports delete it) means every checkpoint export re-downloads the full base model.
-_prewarm_base_model_hub_cache snapshot-downloads the base into the hub cache first so
-the zoo's cache-copy fast path is hit on later exports.
-
-unsloth.save cannot be imported on GPU-less hosts, so these tests extract the helper's
-source via ast and exec it against fakes, mirroring the other GPU-free tests.
-"""
+"""Pre-warm the hub cache: hf_hub_download(local_dir) never fills it, so later exports re-download."""
 
 from __future__ import annotations
 
@@ -108,8 +98,7 @@ def _build_env(
     hf_hub_download = _Recorder(result = str(tmp_path / "cached"))
     if not cached:
         hf_hub_download.exc = _LocalMiss("not cached")
-    # Serve model.safetensors.index.json (the merge's shard filter) while shard cache probes still miss, so the
-    # index-filter path can be exercised without a network.
+    # Serve the index (the merge's shard filter) while shard probes miss, so no network is needed.
     if index_weight_map is not None:
         _idx_path = tmp_path / "model.safetensors.index.json"
         _idx_path.write_text(json.dumps({"weight_map": index_weight_map}))
@@ -127,8 +116,7 @@ def _build_env(
         hf_hub_download.results_fn = _hub_dl
     snapshot_download = _Recorder()
     determine_base_model_source = _Recorder(result = base_source)
-    # For the FP8 -> 16bit sibling swap: return the sibling's (16bit) source when the helper re-resolves the sibling,
-    # else the original base source.
+    # FP8 -> 16bit sibling swap: re-resolving the sibling returns its 16bit source.
     if fp8_sibling is not None:
         _sib_src = sibling_source or (fp8_sibling, False, None, False, None)
         determine_base_model_source.results_fn = (
@@ -151,7 +139,6 @@ def _build_env(
         determine_base_model_source = determine_base_model_source,
         _resolve_fp8_16bit_sibling = resolve_fp8_16bit_sibling,
     )
-    # Stub the live-env cache resolver the pre-warm uses (matches what the merge reads).
     _live = (
         (hub_cache if hub_cache is not None else str(cache_dir))
         if live_hub_cache == "__same__"
@@ -199,7 +186,7 @@ def test_downloads_base_into_hub_cache(monkeypatch, tmp_path):
     assert len(stubs.snapshot_download.calls) == 1
     _, kwargs = stubs.snapshot_download.calls[0]
     assert kwargs["repo_id"] == "unsloth/gemma-4-31b-it"
-    # No local_dir: the whole point is populating the persistent cache.
+    # No local_dir: the point is populating the persistent cache.
     assert "local_dir" not in kwargs
     assert "model-00001-of-00002.safetensors" in kwargs["allow_patterns"]
     assert "model.safetensors.index.json" in kwargs["allow_patterns"]
@@ -209,7 +196,6 @@ def test_skips_download_when_already_cached(monkeypatch, tmp_path):
     fn, stubs = _build_env(monkeypatch, tmp_path, cached = True)
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.snapshot_download.calls == []
-    # The cached check must not hit the network.
     assert all(kwargs.get("local_files_only") for _, kwargs in stubs.hf_hub_download.calls)
 
 
@@ -240,6 +226,15 @@ def test_kaggle_and_colab_skip(monkeypatch, tmp_path):
         fn, stubs = _build_env(monkeypatch, tmp_path, **{flag: True})
         fn(_FakePeftModel(), save_method = "merged_16bit")
         assert stubs.snapshot_download.calls == [], f"{flag} must skip pre-warm"
+
+
+def test_modelscope_skips(monkeypatch, tmp_path):
+    # The merge fetches the base from ModelScope (#3726), so a Hub copy would go unused.
+    monkeypatch.setenv("UNSLOTH_USE_MODELSCOPE", "1")
+    fn, stubs = _build_env(monkeypatch, tmp_path)
+    fn(_FakePeftModel(), save_method = "merged_16bit")
+    assert stubs.snapshot_download.calls == []
+    assert stubs.determine_base_model_source.calls == []
 
 
 @pytest.mark.parametrize("save_method", ["merged_4bit", "forced_merged_4bit", "lora"])
@@ -303,7 +298,7 @@ def test_consolidated_only_repo_is_kept(monkeypatch, tmp_path):
 def test_listing_failure_is_swallowed(monkeypatch, tmp_path):
     fn, stubs = _build_env(monkeypatch, tmp_path)
     stubs.determine_base_model_source.exc = RuntimeError("HF is down")
-    fn(_FakePeftModel(), save_method = "merged_16bit")  # must not raise
+    fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.snapshot_download.calls == []
 
 
@@ -317,10 +312,9 @@ def test_gpt_oss_bf16_mxfp4_swap_skips(monkeypatch, tmp_path):
 
 
 def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
-    # A model whose config is None must skip silently, not fall into the outer exception handler that prints a
-    # misleading "Could not pre-cache" warning.
+    # A None config must skip silently, not print a misleading "Could not pre-cache" warning.
     fn, stubs = _build_env(monkeypatch, tmp_path)
-    model = _FakePeftModel()  # a PeftModel instance so the isinstance guard passes
+    model = _FakePeftModel()
     model.config = None
     fn(model, save_method = "merged_16bit")
     assert stubs.determine_base_model_source.calls == []
@@ -331,8 +325,7 @@ def test_missing_config_skips_cleanly(monkeypatch, tmp_path):
 
 
 def test_relative_hub_cache_does_not_falsely_skip(monkeypatch, tmp_path):
-    # A relative HF_HUB_CACHE whose leaf does not exist yet must still resolve to a real root for the disk probe;
-    # without abspath the walk-up hits "" and pre-warm is skipped.
+    # Without abspath a relative, missing HF_HUB_CACHE walks up to "" and pre-warm is skipped.
     monkeypatch.chdir(tmp_path)
     fn, stubs = _build_env(monkeypatch, tmp_path, hub_cache = "relcache/hub")
     fn(_FakePeftModel(), save_method = "merged_16bit")
@@ -356,15 +349,14 @@ def test_generic_save_calls_prewarm_before_merge():
 
 
 def test_prewarm_downloads_into_live_env_cache(monkeypatch, tmp_path):
-    # Download must target the live-env cache (what the merge reads), via cache_dir.
+    # Download must target the live-env cache (what the merge reads).
     fn, stubs = _build_env(monkeypatch, tmp_path, live_hub_cache = "/mnt/persistent/hf/hub")
     fn(_FakePeftModel(), save_method = "merged_16bit")
     assert stubs.snapshot_download.calls[0][1]["cache_dir"] == "/mnt/persistent/hf/hub"
 
 
 def test_prewarm_survives_runtime_cache_redirect(monkeypatch, tmp_path):
-    # Frozen constants (stale dir) vs the merge's runtime-redirected dir: the pre-warm must follow the redirect, else
-    # the cache-copy fast path misses and #6890 is unfixed.
+    # The pre-warm must follow the merge's runtime redirect, not the frozen constants.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
@@ -376,7 +368,6 @@ def test_prewarm_survives_runtime_cache_redirect(monkeypatch, tmp_path):
 
 
 def test_cached_probe_uses_live_env_cache(monkeypatch, tmp_path):
-    # The already-cached fast path must probe the live-env cache dir too.
     fn, stubs = _build_env(
         monkeypatch, tmp_path, cached = True, live_hub_cache = "/mnt/persistent/hf/hub"
     )
@@ -388,8 +379,7 @@ def test_cached_probe_uses_live_env_cache(monkeypatch, tmp_path):
 
 
 def test_fp8_base_prewarms_16bit_sibling_not_fp8_repo(monkeypatch, tmp_path):
-    # A merged_16bit export of an FP8 base with a 16bit sibling merges onto the sibling,
-    # so the pre-warm must cache the sibling (what the merge downloads), not the FP8 repo.
+    # An FP8 base with a 16bit sibling merges onto the sibling, so cache the sibling, not the FP8 repo.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
@@ -403,7 +393,6 @@ def test_fp8_base_prewarms_16bit_sibling_not_fp8_repo(monkeypatch, tmp_path):
 
 
 def test_fp8_base_without_sibling_still_prewarms_fp8_repo(monkeypatch, tmp_path):
-    # No sibling: the merge dequants the FP8 base in place, so caching the FP8 repo helps.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
@@ -416,9 +405,7 @@ def test_fp8_base_without_sibling_still_prewarms_fp8_repo(monkeypatch, tmp_path)
 
 
 def test_prewarm_filters_shards_through_index(monkeypatch, tmp_path):
-    # A repo with a leftover shard not referenced by the index: the merge keeps only the
-    # indexed shards, so the pre-warm must too (else the disk gate over-counts and
-    # snapshot_download fetches the unused leftover).
+    # The merge keeps only indexed shards, so the pre-warm must skip an unreferenced leftover too.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,
@@ -440,7 +427,6 @@ def test_prewarm_filters_shards_through_index(monkeypatch, tmp_path):
 
 
 def test_prewarm_keeps_all_shards_when_index_matches(monkeypatch, tmp_path):
-    # No leftover: every listed shard is indexed, so none are dropped.
     fn, stubs = _build_env(
         monkeypatch,
         tmp_path,

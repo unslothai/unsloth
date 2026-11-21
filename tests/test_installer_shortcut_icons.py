@@ -141,8 +141,7 @@ def _wsl_packaged_icon_block() -> str:
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "bash is unavailable")
 def test_wsl_shortcut_reads_the_packaged_ico_out_of_site_packages(tmp_path):
-    """A WSL install that found the .ico in site-packages must hand the shortcut script a
-    Windows path."""
+    """A WSL install that finds the .ico in site-packages must hand the shortcut script a Windows path."""
     dist = (
         tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "studio" / "frontend" / "dist"
     )
@@ -227,8 +226,7 @@ def test_windows_shortcut_prefers_the_packaged_icon_over_the_download(tmp_path):
                 block,
             ]
         )
-        # run_pwsh, not subprocess.run: a pwsh killed at startup never read $packagedIcon,
-        # and check = True would report that as the precedence being wrong.
+        # run_pwsh: a pwsh killed at startup would read as the precedence being wrong.
         return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             check = True,

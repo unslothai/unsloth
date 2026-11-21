@@ -76,17 +76,11 @@ test("preselects the training base paired with a loaded distilled checkpoint", (
 test("returns null rather than inventing a base the backend would refuse", () => {
   assert.equal(resolveDiffusionTrainingBase(undefined, "black-forest-labs/FLUX.2-klein-9B"), null);
   assert.equal(resolveDiffusionTrainingBase(klein, ""), null);
-  // Loaded checkpoint the family declares no pairing for.
   assert.equal(resolveDiffusionTrainingBase(klein, "krea/Krea-2-Turbo"), null);
-  // A repo whose name matches nothing the family offers stays null.
   assert.equal(resolveDiffusionTrainingBase(klein, "unsloth/FLUX.2-klein-42B"), null);
 });
 
 test("a mirror-loaded checkpoint preselects the vendor base it copies", () => {
-  // Deploy hands a LoRA trained on unsloth/FLUX.2-klein-base-9B the mirror checkpoint
-  // unsloth/FLUX.2-klein-9B, so that is what /images/status reports afterwards. Its pairing names
-  // the mirror TRAINING id, which base_repos does not offer, and the panel then fell back to the
-  // first base: the 4B, seeding a 9B workflow from 4B weights. A mirror keeps the upstream name.
   assert.equal(
     resolveDiffusionTrainingBase(klein, "unsloth/FLUX.2-klein-9B"),
     "black-forest-labs/FLUX.2-klein-base-9B",
@@ -98,12 +92,92 @@ test("a mirror-loaded checkpoint preselects the vendor base it copies", () => {
 });
 
 test("the Train panel preselect actually consults the pairing", async () => {
-  // The helper on its own changes nothing: the bug was in the preselect chain, which fell from an
-  // exact base_repos match straight to base_repos[0]. Assert the pairing sits BETWEEN the two.
   const source = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
   const paired = source.indexOf("pairedTrainingBase ??");
   const first = source.indexOf("family.base_repos[0]");
   assert.ok(paired > 0, "the preselect no longer falls back to the paired training base");
   assert.ok(paired < first && first - paired < 40, "base_repos[0] is no longer the last resort");
   assert.match(source, /resolveDiffusionTrainingBase\(reportedFamily, loadedBaseRepo\)/);
+});
+
+// What the backend's family_train_infos returns for Qwen-Image-2.1: both training ids deploy on upstream Turbo.
+const qwen21 = {
+  name: "qwen-image-2.1",
+  label: "Qwen-Image-2.1",
+  default_base: "Qwen/Qwen-Image-2.1",
+  base_repos: ["Qwen/Qwen-Image-2.1"],
+  deploy_bases: {
+    "Qwen/Qwen-Image-2.1": "Qwen/Qwen-Image-2.1-Turbo",
+    "unsloth/Qwen-Image-2.1": "Qwen/Qwen-Image-2.1-Turbo",
+  },
+};
+
+test("a Qwen-Image-2.1 adapter deploys on Turbo, and a loaded Turbo preselects 2.1", () => {
+  assert.equal(
+    resolveDiffusionDeployBase(qwen21, "Qwen/Qwen-Image-2.1"),
+    "Qwen/Qwen-Image-2.1-Turbo",
+  );
+  assert.equal(
+    resolveDiffusionDeployBase(qwen21, "unsloth/Qwen-Image-2.1"),
+    "Qwen/Qwen-Image-2.1-Turbo",
+  );
+  assert.equal(
+    resolveDiffusionTrainingBase(qwen21, "Qwen/Qwen-Image-2.1-Turbo"),
+    "Qwen/Qwen-Image-2.1",
+  );
+  // 2.1 itself is the training base, not a distilled pair, so the reverse lookup does not claim it.
+  assert.equal(resolveDiffusionTrainingBase(qwen21, "Qwen/Qwen-Image-2.1"), null);
+});
+
+// Qwen-Image-2.1 and Turbo load int8 / fp8 by default, and those builds refuse an adapter picked after the load.
+test("Deploy to Create bakes the trained adapter into the load", async () => {
+  const source = await readSrcAsync("features/images/images-page.tsx");
+  const start = source.indexOf("const handleDeployAdapter = useCallback(");
+  const deploy = source.slice(start, source.indexOf("const deployFromVideo", start));
+  assert.match(deploy, /const deployLoras: LoraSpecInput\[\] = \[\{ id: stem, weight: 1 \}\];/);
+  assert.match(
+    deploy,
+    /handleLoad\(args\.baseRepo, \{ kind: "pipeline" \}, \{\s*\.\.\.currentLoadAdvanced\(args\.baseRepo\),\s*loras: deployLoras,\s*\}\)/,
+  );
+  // A load that never starts leaves the previous model resident, so its own selection comes back.
+  assert.match(deploy, /if \(!started\) \{\s*pendingDeploy\.current = null;\s*setLoras\(prevLoras\);/);
+});
+
+// What family_train_infos returns for FLUX.3 Klein Base: the adapter deploys on the distilled Klein, a different family.
+const flux3 = {
+  name: "flux.3-klein-base",
+  label: "FLUX.3 Klein Base",
+  default_base: "black-forest-labs/flux-3-image-klein-base",
+  base_repos: ["black-forest-labs/flux-3-image-klein-base"],
+  deploy_bases: {
+    "black-forest-labs/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein",
+    "unsloth/flux-3-image-klein-base-FP8": "unsloth/flux-3-image-klein-FP8",
+  },
+  lora_families: ["flux.3-klein-base", "flux.3-klein"],
+};
+
+test("a FLUX.3 Klein Base adapter deploys on Klein, and a loaded Klein preselects the base", () => {
+  assert.equal(
+    resolveDiffusionDeployBase(flux3, "black-forest-labs/flux-3-image-klein-base"),
+    "black-forest-labs/flux-3-image-klein",
+  );
+  assert.equal(
+    resolveDiffusionDeployBase(flux3, "unsloth/flux-3-image-klein-base-FP8"),
+    "unsloth/flux-3-image-klein-FP8",
+  );
+  assert.equal(
+    resolveDiffusionTrainingBase(flux3, "black-forest-labs/flux-3-image-klein"),
+    "black-forest-labs/flux-3-image-klein-base",
+  );
+});
+
+// Klein is its own family, so matching the loaded family against the trained one alone dropped the adapter.
+test("Deploy to Create keeps an adapter on every family it was published for", async () => {
+  const panel = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
+  assert.match(panel, /\?\.lora_families \?\? \[famName\]/);
+  assert.equal((panel.match(/families: loraFamiliesFor\(/g) ?? []).length, 2);
+  const page = await readSrcAsync("features/images/images-page.tsx");
+  assert.match(page, /families: args\.families\?\.length \? args\.families : \[args\.family\]/);
+  assert.match(page, /deploy\.families\.includes\(fam\)/);
+  assert.doesNotMatch(page, /deploy\.family === fam/);
 });

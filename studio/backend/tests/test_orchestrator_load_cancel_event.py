@@ -10,6 +10,8 @@ from core.inference.orchestrator import InferenceOrchestrator
 
 def test_safetensors_load_event_interrupts_worker_wait(monkeypatch):
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator._stop_ledger = None
+    orchestrator._pending_teardowns = None
     orchestrator.__dict__.update(
         loading_models = set(), active_model_name = None, models = {}, _proc = None, _resp_queue = object()
     )

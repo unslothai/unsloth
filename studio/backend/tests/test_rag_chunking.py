@@ -23,13 +23,13 @@ def test_chunk_token_bounds_and_overlap():
     assert all(c.token_count <= 128 for c in chunks)
     a, b = chunks[0].text.split(), chunks[1].text.split()
     shared = next((n for n in range(60, 0, -1) if a[-n:] == b[:n]), 0)
-    assert shared == 24  # exactly overlap tokens carried
+    assert shared == 24
 
 
 def test_chunk_never_exceeds_max_with_overlap_carry():
     """Overlap carry is trimmed so no chunk exceeds max_tokens (else the embedder overflows)."""
     s1 = " ".join("a" for _ in range(10))
-    s2 = " ".join("b" for _ in range(95))  # near max
+    s2 = " ".join("b" for _ in range(95))
     chunks = chunk_pages([_page(f"{s1}. {s2}")], max_tokens = 100, overlap = 24, count = WORDS)
     assert all(c.token_count <= 100 for c in chunks), [c.token_count for c in chunks]
 
@@ -50,7 +50,6 @@ def test_chunk_tracks_source_page_index():
 
 
 def test_chunk_char_offsets_locate_text_in_page():
-    # Each chunk's char span must slice back to text containing it.
     page_text = "alpha bravo charlie delta echo foxtrot golf hotel " * 30
     pages = [_page(page_text, 1)]
     chunks = chunk_pages(pages, max_tokens = 16, overlap = 0, count = WORDS)
@@ -73,7 +72,6 @@ def test_parse_text_single_page():
 
 
 def test_large_document_does_not_retokenize_every_piece_after_cache_eviction():
-    # Merging must not repeat HTTP requests after the 4096-entry cache fills.
     requests = Counter()
 
     @lru_cache(maxsize = 4096)

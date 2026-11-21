@@ -14,6 +14,8 @@ import pytest
 from core.training.provenance import (
     ExactResumeResourcesUnavailable,
     RESOURCE_PROVENANCE_KEY,
+    _MODEL_WEIGHT_RE,
+    _snapshot_has_model_weights,
     attest_loaded_dataset,
     build_worker_provenance_event,
     effective_training_load_in_4bit,
@@ -21,8 +23,10 @@ from core.training.provenance import (
     exact_resume_resource_requirements,
     exact_dataset_snapshot_path,
     exact_model_snapshot_path,
+    local_model_resume_expectation,
     normalize_worker_provenance_event,
     resource_provenance_allows_resume,
+    validate_exact_model_pin,
 )
 from hub.utils import dataset_cache, hf_cache_state
 
@@ -186,22 +190,13 @@ def test_exact_direct_snapshots_produce_complete_resumable_provenance(tmp_path):
 
 
 def test_a_4bit_run_declares_that_the_latest_sidecar_would_strand_it(tmp_path):
-    """The question the upgrade gate asks before it offers an install ahead of a resume.
-
-    Installing the latest transformers is not undoable: the sidecar is a persistent
-    overlay, and from then on ``effective_training_load_in_4bit`` refuses this
-    checkpoint outright. So the gate has to know beforehand, from the STORED config --
-    which is exactly where ``require_exact_resume_resources`` and
-    ``require_exact_model_resource`` do not exist, because ``_sanitize_db_config``
-    strips both before the row is written.
-    """
+    """The upgrade gate must decide from stored config, since a sidecar install cannot be undone."""
     config, event, model, _dataset = _complete_event(tmp_path, load_in_4bit = True)
     persisted = {**config, **normalize_worker_provenance_event(event, config)}
     assert "require_exact_resume_resources" not in persisted
     assert "require_exact_model_resource" not in persisted
 
     assert exact_resume_requires_current_4bit(persisted) is True
-    # And the refusal it is predicting, from the flags routes/training.py rebuilds.
     with patch("utils.transformers_version.latest_tier_active_for", return_value = True):
         with pytest.raises(ExactResumeResourcesUnavailable):
             effective_training_load_in_4bit(
@@ -216,7 +211,6 @@ def test_a_16bit_run_has_no_4bit_load_mode_to_lose(tmp_path):
 
 
 def test_an_unresumable_provenance_is_not_made_worse_by_the_install(tmp_path):
-    # Already refused, so there is no working resume for the install to take away.
     config, event, _model, _dataset = _complete_event(tmp_path, load_in_4bit = True)
     persisted = {**config, **normalize_worker_provenance_event(event, config)}
     persisted[RESOURCE_PROVENANCE_KEY] = {
@@ -334,7 +328,7 @@ def test_resume_route_restores_attested_actual_model_repo(tmp_path):
         hf_dataset = "org/dataset",
     )
 
-    actual_repo_id, _, _, _, _ = route._prepare_resume_resource_provenance(
+    actual_repo_id, _, _, _, _, _ = route._prepare_resume_resource_provenance(
         request,
         {
             "model_name": "org/selected",
@@ -451,12 +445,7 @@ def test_mlx_runtime_4bit_metadata_attests_unpinned_hub_load(tmp_path):
 
 
 class _MappingModel(dict):
-    """Stand-in for the shape ``mlx.nn.Module`` has: an object that is also a ``dict``.
-
-    MLX models keep their parameters in the mapping and everything unsloth_zoo records
-    about the load (``_hf_repo``, ``_unsloth_quantized_source``, ...) as plain attributes,
-    so a mapping-first read answers ``None`` for all of them.
-    """
+    """Stand-in for mlx.nn.Module, which is also a dict; its metadata lives in attributes, not keys."""
 
     def __init__(self, **attrs):
         super().__init__()
@@ -490,12 +479,7 @@ def _real_mlx_module(attrs):
     ],
 )
 def test_mlx_runtime_4bit_attests_however_the_model_stores_metadata(tmp_path, make_model):
-    """A model that is also a mapping must attest exactly like a plain object.
-
-    ``mlx.nn.Module`` subclasses ``dict``. Reading its metadata through the mapping
-    protocol finds nothing, which left every runtime-quantized MLX run unattested and so
-    non-resumable, while the plain-object doubles in the tests above kept passing.
-    """
+    """A model that is also a dict must attest like a plain object, or MLX 4-bit runs go unattested."""
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
     config = _shared_setup_6(dataset)
@@ -559,18 +543,21 @@ def test_mlx_top_level_quantization_attests_prequantized_snapshot(tmp_path):
     assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
-def test_mlx_top_level_8bit_quantization_does_not_attest_as_4bit(tmp_path):
+def test_mlx_top_level_8bit_quantization_attests_prequantized_8bit_snapshot(tmp_path):
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     (model_snapshot / "config.json").write_text(
         json.dumps({"quantization": {"bits": 8, "group_size": 64}}),
         encoding = "utf-8",
     )
     config, event = _shared_setup_2(model_snapshot, tmp_path)
+    updates = normalize_worker_provenance_event(event, config)
 
-    assert event["model"]["status"] == "incomplete"
+    assert event["model"]["load_mode"] == "prequantized_8bit"
+    assert updates[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+    assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
-def test_mlx_conflicting_quantization_widths_do_not_attest_as_4bit(tmp_path):
+def test_mlx_mixed_quantization_widths_attest_prequantized_4_8bit_snapshot(tmp_path):
     model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
     (model_snapshot / "config.json").write_text(
         json.dumps(
@@ -582,6 +569,121 @@ def test_mlx_conflicting_quantization_widths_do_not_attest_as_4bit(tmp_path):
                 }
             }
         ),
+        encoding = "utf-8",
+    )
+    config, event = _shared_setup_2(model_snapshot, tmp_path)
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["load_mode"] == "prequantized_4_8bit"
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
+def test_mlx_top_level_8bit_quantization_attests_regardless_of_the_4bit_toggle(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 8, "group_size": 64}}),
+        encoding = "utf-8",
+    )
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": False,
+    }
+    event = build_worker_provenance_event(
+        config,
+        SimpleNamespace(),
+        model_load_target = str(model_snapshot),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["load_mode"] == "prequantized_8bit"
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
+def test_prequantized_8bit_pin_refuses_resume_once_the_snapshot_declares_4bit(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 8}}),
+        encoding = "utf-8",
+    )
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "load_in_4bit": True,
+        "resume_model_load_mode": "prequantized_8bit",
+    }
+    assert validate_exact_model_pin(config) == str(model_snapshot.resolve())
+
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 4}}),
+        encoding = "utf-8",
+    )
+    with pytest.raises(ExactResumeResourcesUnavailable):
+        validate_exact_model_pin(config)
+
+
+def test_legacy_unquantized_marker_resumes_even_if_the_snapshot_now_declares_8bit(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 8}}),
+        encoding = "utf-8",
+    )
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "load_in_4bit": False,
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "complete",
+            "model_load_mode": "unquantized",
+        },
+    }
+    assert validate_exact_model_pin(config) == str(model_snapshot.resolve())
+
+
+@pytest.mark.parametrize(
+    ("stored_mode", "canonical_mode", "quantization"),
+    [
+        ("prequantized_08bit", "prequantized_8bit", {"bits": 8}),
+        ("prequantized_8_8bit", "prequantized_8bit", {"bits": 8}),
+        (
+            "prequantized_8_4bit",
+            "prequantized_4_8bit",
+            {"bits": 8, "overrides": {"decoder.layers.0": {"bits": 4}}},
+        ),
+        ("prequantized_bit", "prequantized_8bit", {"bits": 8}),
+    ],
+)
+def test_non_canonical_stored_load_mode_refuses_resume(
+    tmp_path, stored_mode, canonical_mode, quantization
+):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": quantization}),
+        encoding = "utf-8",
+    )
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "load_in_4bit": True,
+    }
+
+    assert validate_exact_model_pin({**config, "resume_model_load_mode": canonical_mode}) == str(
+        model_snapshot.resolve()
+    )
+    with pytest.raises(ExactResumeResourcesUnavailable):
+        validate_exact_model_pin({**config, "resume_model_load_mode": stored_mode})
+
+
+def test_snapshot_declaring_out_of_range_width_does_not_attest(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 32}}),
         encoding = "utf-8",
     )
     config, event = _shared_setup_2(model_snapshot, tmp_path)
@@ -620,6 +722,24 @@ def test_config_only_snapshot_cannot_attest_model_weights(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "model.safetensors-00001-of-00001.safetensors",
+        "model.safetensors-00001-of-00001",
+        "model-00000-of-00001.safetensors",
+        "model.safetensors",
+    ],
+)
+def test_extension_before_shard_weight_names_count_as_model_weights(tmp_path, filename):
+    """Qwen3.5 Hub shards use model.safetensors-00001-of-00001.safetensors (#15405)."""
+    assert _MODEL_WEIGHT_RE.fullmatch(filename)
+    snapshot = _model_snapshot(tmp_path, "unsloth/Qwen3.5-2B", "qwen35", weights = False)
+    (snapshot / filename).write_bytes(b"weights")
+    assert _snapshot_has_model_weights(snapshot)
+    assert exact_model_snapshot_path(str(snapshot), "unsloth/Qwen3.5-2B") == str(snapshot.resolve())
+
+
 def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
     snapshot = _model_snapshot(
         tmp_path,
@@ -633,6 +753,45 @@ def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
     (snapshot / "model.safetensors").symlink_to(os.path.relpath(blob, snapshot))
 
     assert exact_model_snapshot_path(str(snapshot), "org/model") == str(snapshot.resolve())
+
+
+def _shared_store_blob_symlink(repo: Path, link: Path, payload: bytes) -> Path:
+    sha = "c791637d" * 8
+    shared = repo.parent / "blobs" / sha[:2] / sha
+    shared.parent.mkdir(parents = True, exist_ok = True)
+    shared.write_bytes(payload)
+    (shared.parent / f"{sha}.lock").touch()
+    (repo / "blobs").mkdir(exist_ok = True)
+    repo_blob = repo / "blobs" / ("fe5874" + "0" * 58)
+    repo_blob.symlink_to(os.path.relpath(shared, repo_blob.parent))
+    link.symlink_to(os.path.relpath(repo_blob, link.parent))
+    return shared
+
+
+def test_exact_model_snapshot_accepts_hub_shared_blob_store(tmp_path):
+    snapshot = _model_snapshot(tmp_path, "org/model", "xet-backed", weights = False)
+    _shared_store_blob_symlink(snapshot.parent.parent, snapshot / "model.safetensors", b"weights")
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") == str(snapshot.resolve())
+
+
+@pytest.mark.parametrize("target", ["outside-cache", "other-repo-blobs"])
+def test_exact_model_snapshot_rejects_blob_symlink_escaping_repo(
+    tmp_path, tmp_path_factory, target
+):
+    snapshot = _model_snapshot(tmp_path, "org/model", "escaping", weights = False)
+    if target == "outside-cache":
+        escaped = tmp_path_factory.mktemp("elsewhere") / "blobs" / "c7" / "weights"
+    else:
+        escaped = tmp_path / "models--org--other" / "blobs" / "weights"
+    escaped.parent.mkdir(parents = True)
+    escaped.write_bytes(b"weights")
+    repo_blob = snapshot.parent.parent / "blobs" / "weight-blob"
+    repo_blob.parent.mkdir()
+    repo_blob.symlink_to(escaped)
+    (snapshot / "model.safetensors").symlink_to(os.path.relpath(repo_blob, snapshot))
+
+    assert exact_model_snapshot_path(str(snapshot), "org/model") is None
 
 
 @pytest.mark.parametrize("filename", ["model.safetensors", "config.json"])
@@ -841,6 +1000,17 @@ def test_loaded_hub_dataset_accepts_snapshot_blob_symlink(tmp_path):
     assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
 
 
+def test_loaded_hub_dataset_accepts_hub_shared_blob_store(tmp_path):
+    repo = tmp_path / "datasets--org--dataset"
+    snapshot = repo / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    _shared_store_blob_symlink(repo, snapshot / "train.parquet", b"dataset")
+    loaded = _loaded_dataset(str(snapshot / "train.parquet"))
+
+    assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
+    assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") == str(snapshot.resolve())
+
+
 def test_loaded_hub_dataset_rejects_local_source_symlink_outside_repo(tmp_path):
     snapshot = _shared_setup_1(tmp_path)
     external = tmp_path / "external.parquet"
@@ -866,6 +1036,46 @@ def test_loaded_hub_dataset_rejects_cross_snapshot_symlink(tmp_path):
     loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/validation.parquet")
 
     assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_loaded_hub_dataset_validates_each_snapshot_once_per_call(tmp_path, monkeypatch, local):
+    files = 60
+    snapshot = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    for index in range(files):
+        (snapshot / f"train-{index:03d}.parquet").write_bytes(b"dataset")
+    sources = [
+        str(snapshot / f"train-{index:03d}.parquet")
+        if local
+        else f"hf://datasets/org/dataset@dataset-commit/train-{index:03d}.parquet"
+        for index in range(files)
+    ]
+    original = dataset_cache.resolved_dataset_snapshot_file
+    calls = []
+
+    def counting(snapshot_path, source_path):
+        calls.append(source_path)
+        return original(snapshot_path, source_path)
+
+    monkeypatch.setattr(dataset_cache, "resolved_dataset_snapshot_file", counting)
+    train = _loaded_dataset(*sources[: files // 2])
+    evaluation = _loaded_dataset(*sources[files // 2 :])
+
+    for _ in range(2):
+        calls.clear()
+        assert attest_loaded_dataset("org/dataset", train, evaluation) == (
+            str(snapshot.resolve()),
+            None,
+        )
+        per_source = 2 if local else 1
+        assert len(calls) == files + per_source * files
+
+    (snapshot / "train-059.parquet").write_bytes(b"datase")
+    assert attest_loaded_dataset("org/dataset", train, evaluation) == (
+        None,
+        "dataset_snapshot_unavailable",
+    )
 
 
 def test_loaded_hub_dataset_rejects_mixed_train_eval_commits(tmp_path):
@@ -1478,3 +1688,361 @@ def test_provenance_continues_after_failed_finalization(tmp_path):
     assert backend._run_finalized is False
     assert backend._db_config[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
     update.assert_called_once()
+
+
+def _continued_adapter_run(tmp_path):
+    adapter = tmp_path / "outputs" / "adapter"
+    adapter.mkdir(parents = True)
+    base = _model_snapshot(tmp_path, "org/base", "base-commit")
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    source_config = {
+        "model_name": str(adapter),
+        "actual_model_repo_id": "org/base",
+        "model_snapshot_path": str(base),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "training_type": "LoRA/QLoRA",
+        "format_type": "alpaca",
+        "load_in_4bit": False,
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "complete",
+            "model_status": "attested",
+            "model_load_mode": "unquantized",
+            "dataset_status": "attested",
+            "reasons": [],
+        },
+    }
+    return adapter, base, dataset, source_config
+
+
+def test_a_continued_adapter_run_resumes_with_its_base_checked_after_load(tmp_path):
+    from core.training import worker
+    from core.training.training import _apply_cache_pins, _build_training_worker_config
+    from models.training import TrainingStartRequest
+
+    route = _load_training_route()
+    adapter, base, dataset, source_config = _continued_adapter_run(tmp_path)
+    request = TrainingStartRequest(
+        model_name = str(adapter),
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+        load_in_4bit = False,
+    )
+
+    actual, exact_model, exact_dataset, exact_all, load_mode, overrides = (
+        route._prepare_resume_resource_provenance(
+            request, {"model_name": str(adapter), "config_json": source_config}
+        )
+    )
+
+    # The base is not pinned as the load target, or the bare base would load without the adapter.
+    assert (actual, exact_model, exact_dataset, exact_all, load_mode) == (
+        None,
+        False,
+        True,
+        False,
+        None,
+    )
+    expected = {"repo_id": "org/base", "snapshot_path": str(base), "load_mode": "unquantized"}
+    assert overrides == {"resume_expected_model": expected}
+    # Kwargs shaped like the route's, through the real builder and pin steps.
+    config = _build_training_worker_config(
+        {
+            **request.model_dump(),
+            "actual_model_repo_id": actual,
+            "resume_from_checkpoint": str(tmp_path / "outputs" / "run" / "checkpoint-5"),
+            "require_exact_resume_resources": exact_all,
+            "require_exact_model_resource": exact_model,
+            "require_exact_dataset_resource": exact_dataset,
+            **overrides,
+        }
+    )
+    _apply_cache_pins(config)
+    events: list[dict] = []
+    assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is True, events
+    assert config["model_snapshot_path"] is None
+    assert config["dataset_snapshot_path"] == str(dataset.resolve())
+    assert config["resume_expected_model"] == expected
+
+    # Refused for a moved base, the resume records its dataset alone, so a retry checks the same base.
+    from core.training.provenance import initialize_resource_provenance
+    from core.training.training import _sanitize_db_config
+
+    _model_snapshot(tmp_path, "org/base", "newer-commit")
+    moved = SimpleNamespace(
+        config = SimpleNamespace(_name_or_path = "org/base", _commit_hash = "newer-commit")
+    )
+    initialize_resource_provenance(config)
+    events = []
+    assert not worker._emit_resource_provenance(
+        SimpleNamespace(put = events.append),
+        config,
+        moved,
+        model_load_target = str(adapter),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    row = {**_sanitize_db_config(config), **normalize_worker_provenance_event(events[0], config)}
+    *_, retry = route._prepare_resume_resource_provenance(
+        request, {"model_name": str(adapter), "config_json": row}
+    )
+    assert retry == overrides
+
+
+@pytest.mark.parametrize(
+    "loaded_commit, quantized_base, expected_error",
+    [
+        ("base-commit", False, None),
+        ("newer-commit", False, "no longer resolves"),
+        ("base-commit", True, "trained on a 'unquantized' load"),
+    ],
+)
+def test_a_resumed_adapter_run_stops_unless_it_loaded_the_base_it_trained_on(
+    tmp_path, loaded_commit, quantized_base, expected_error
+):
+    from core.training import worker
+
+    adapter, base, _dataset, source_config = _continued_adapter_run(tmp_path)
+    if loaded_commit != "base-commit":
+        _model_snapshot(tmp_path, "org/base", loaded_commit)
+    if quantized_base:
+        (base / "config.json").write_text(
+            json.dumps({"quantization_config": {"load_in_4bit": True}}), encoding = "utf-8"
+        )
+    model = SimpleNamespace(
+        config = SimpleNamespace(_name_or_path = "org/base", _commit_hash = loaded_commit)
+    )
+    config = {
+        **source_config,
+        "resume_expected_model": local_model_resume_expectation(source_config),
+    }
+    events: list[dict] = []
+
+    ok = worker._emit_resource_provenance(
+        SimpleNamespace(put = events.append),
+        config,
+        model,
+        model_load_target = str(adapter),
+        model_load_in_4bit = quantized_base,
+        dataset_loaded_from_exact_snapshot = False,
+    )
+
+    assert ok is (expected_error is None)
+    assert [event["type"] for event in events] == (
+        ["resource_provenance"] if expected_error is None else ["resource_provenance", "error"]
+    )
+    # A refused load's base is not recorded, or it would become the next resume's reference.
+    assert (events[0]["model"]["status"] == "attested") is (expected_error is None)
+    assert expected_error is None or expected_error in events[1]["error"]
+
+
+def test_a_continued_adapter_resume_under_the_latest_runtime_is_refused_before_loading(tmp_path):
+    expected = {"repo_id": "org/base", "snapshot_path": "/base", "load_mode": "runtime_4bit"}
+    # A failed resume's row, whose only check is the expectation it carries.
+    stored = {
+        "model_name": str(tmp_path),
+        "load_in_4bit": True,
+        "resume_expected_model": expected,
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+    }
+    assert exact_resume_requires_current_4bit(stored) is True
+
+    with patch("utils.transformers_version.latest_tier_active_for", return_value = True):
+        with pytest.raises(ExactResumeResourcesUnavailable, match = "original 4-bit"):
+            effective_training_load_in_4bit(
+                {"load_in_4bit": True, "resume_expected_model": expected}, "/adapter", None
+            )
+
+
+def test_only_a_local_model_run_gets_a_loaded_base_expectation(tmp_path):
+    _adapter, _base, _dataset, source_config = _continued_adapter_run(tmp_path)
+
+    assert local_model_resume_expectation({**source_config, "model_name": "org/base"}) is None
+    assert local_model_resume_expectation({**source_config, "actual_model_repo_id": None}) is None
+
+
+_STREAM_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _streaming_config(revision = _STREAM_COMMIT):
+    return {
+        "model_name": "org/model",
+        "hf_dataset": "org/dataset",
+        "dataset_streaming": True,
+        "dataset_revision": revision,
+        "load_in_4bit": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "revision, attested",
+    [(_STREAM_COMMIT, True), (None, False), ("main", False)],
+)
+def test_a_stream_is_attested_by_the_commit_it_was_pinned_to(tmp_path, revision, attested):
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    config = {**_streaming_config(revision), "model_snapshot_path": str(model)}
+
+    event = build_worker_provenance_event(
+        config,
+        object(),
+        model_load_target = str(model),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = False,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    marker = updates[RESOURCE_PROVENANCE_KEY]
+    assert marker["dataset_status"] == ("attested" if attested else "incomplete")
+    assert marker["status"] == ("complete" if attested else "incomplete")
+    assert ("dataset_streaming_unattested" in marker["reasons"]) is not attested
+
+
+def test_a_stream_attests_only_the_commit_this_process_pinned(tmp_path):
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    config = {**_streaming_config(), "model_snapshot_path": str(model)}
+    event = build_worker_provenance_event(
+        config,
+        object(),
+        model_load_target = str(model),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = False,
+    )
+    event["dataset"]["revision"] = "f" * 40
+
+    marker = normalize_worker_provenance_event(event, config)[RESOURCE_PROVENANCE_KEY]
+
+    assert marker["dataset_status"] == "incomplete"
+
+
+@pytest.mark.parametrize("revision", [_STREAM_COMMIT, None])
+def test_a_pinned_stream_resumes_at_its_commit(tmp_path, revision):
+    from fastapi import HTTPException
+
+    from core.training import worker
+    from core.training.training import _apply_cache_pins, _build_training_worker_config
+    from models.training import TrainingStartRequest
+
+    route = _load_training_route()
+    model = _model_snapshot(tmp_path, "org/model", "model-commit")
+    source_config = {
+        **_streaming_config(revision),
+        "actual_model_repo_id": "org/model",
+        "model_snapshot_path": str(model),
+        "training_type": "LoRA/QLoRA",
+        "format_type": "alpaca",
+        "max_steps": 10,
+        RESOURCE_PROVENANCE_KEY: {
+            "version": 1,
+            "status": "complete",
+            "model_status": "attested",
+            "model_load_mode": "unquantized",
+            "dataset_status": "attested",
+            "reasons": [],
+        },
+    }
+    request = TrainingStartRequest(
+        model_name = "org/model",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+        dataset_streaming = True,
+        max_steps = 10,
+    )
+    if revision is None:
+        with pytest.raises(HTTPException, match = "exact snapshots are no longer available"):
+            route._prepare_resume_resource_provenance(
+                request, {"model_name": "org/model", "config_json": source_config}
+            )
+        return
+
+    repo, exact_model, exact_dataset, exact_all, mode, overrides = (
+        route._prepare_resume_resource_provenance(
+            request, {"model_name": "org/model", "config_json": source_config}
+        )
+    )
+
+    assert overrides == {"dataset_revision": _STREAM_COMMIT}
+    config = _build_training_worker_config(
+        {
+            "model_name": "org/model",
+            "hf_dataset": "org/dataset",
+            "dataset_streaming": True,
+            "model_snapshot_path": request.model_snapshot_path,
+            "actual_model_repo_id": repo,
+            "resume_model_load_mode": mode,
+            "resume_from_checkpoint": "/outputs/run/checkpoint-5",
+            "require_exact_resume_resources": exact_all,
+            "require_exact_model_resource": exact_model,
+            "require_exact_dataset_resource": exact_dataset,
+            "load_in_4bit": False,
+            **overrides,
+        }
+    )
+    _apply_cache_pins(config)
+    events: list[dict] = []
+    assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is True, events
+    assert config["dataset_revision"] == _STREAM_COMMIT
+
+
+@pytest.mark.parametrize("hub_commit", [_STREAM_COMMIT, None])
+def test_a_new_stream_is_pinned_to_the_current_hub_commit(monkeypatch, hub_commit):
+    import huggingface_hub
+    from core.training.training import _apply_cache_pins
+
+    def _info(self, repo_id, **kw):
+        if hub_commit is None:
+            raise ConnectionError("hub unreachable")
+        return SimpleNamespace(sha = hub_commit)
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "dataset_info", _info)
+    config = {"model_name": "org/model", "hf_dataset": "org/dataset", "dataset_streaming": True}
+
+    _apply_cache_pins(config)
+
+    assert config["dataset_revision"] == hub_commit
+    assert config["dataset_snapshot_path"] is None
+    assert any("cannot be resumed" in m for m in config["cache_pin_warnings"]) is (
+        hub_commit is None
+    )
+
+
+def test_a_resume_that_dies_before_attesting_hands_on_its_checks(tmp_path):
+    from core.training.provenance import initialize_resource_provenance
+    from core.training.training import (
+        _apply_cache_pins,
+        _build_training_worker_config,
+        _sanitize_db_config,
+    )
+    from models.training import TrainingStartRequest
+
+    route = _load_training_route()
+    adapter, _base, _dataset, source_config = _continued_adapter_run(tmp_path)
+    source_config = {**source_config, **_streaming_config(), "model_name": str(adapter)}
+    source_config.pop("dataset_snapshot_path")
+    request = TrainingStartRequest(
+        model_name = str(adapter),
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+        dataset_streaming = True,
+        load_in_4bit = False,
+    )
+
+    def resume_from(stored):
+        *_, overrides = route._prepare_resume_resource_provenance(
+            request, {"model_name": str(adapter), "config_json": stored}
+        )
+        return overrides
+
+    first = resume_from(source_config)
+    assert set(first) == {"dataset_revision", "resume_expected_model"}
+    config = _build_training_worker_config(
+        {**request.model_dump(), "resume_from_checkpoint": "/outputs/run/checkpoint-5", **first}
+    )
+    _apply_cache_pins(config)
+    initialize_resource_provenance(config)
+
+    # The row a resume leaves when it is refused or dies before its worker attests.
+    assert resume_from(_sanitize_db_config(config)) == first

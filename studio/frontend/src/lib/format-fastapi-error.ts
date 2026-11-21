@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-/**
- * Render a FastAPI error response body into a human-readable string.
- *
- * FastAPI emits 422s as `{detail: Array<{loc, msg, type, input?}>}`. The
- * naive `body.detail || body.message` stringifies the array as
- * `[object Object]` (the #5409 regression). Shared here across chat,
- * export, history, datasets, and recipe-studio.
- *
- * Falls back through: array detail -> string detail -> message -> null.
- */
+/** 422 `detail` arrays would stringify as `[object Object]` (#5409). Falls back through: array
+ * detail -> string detail -> message -> null. */
 
 export type FastApiValidationError = {
   loc?: unknown[];
@@ -70,16 +62,10 @@ function formatErrorBody(body: unknown, depth: number): string | null {
   return null;
 }
 
-/** Render FastAPI and OpenAI-compatible error bodies into a message. */
 export function formatApiErrorBody(body: unknown): string | null {
   return formatErrorBody(body, 0);
 }
 
-/**
- * Convert a (likely non-ok) Response into the best human-readable error
- * message. Used by *-api.ts wrappers so toasts read `field: msg` instead
- * of `[object Object]` or `Request failed (422)`.
- */
 export async function readFastApiError(
   response: Response,
   fallbackPrefix: string = "Request failed",

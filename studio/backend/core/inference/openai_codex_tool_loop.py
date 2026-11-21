@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth-owned tool execution loop for the ChatGPT Codex subscription transport.
-
-The loop itself now lives in ``core.inference.studio_tool_loop`` and is shared
-with every other external provider. What stays here is the Codex transport: the
-app-server call signature, its conversation-affinity ids, and the encrypted
-reasoning replay that only this provider emits.
-"""
+"""Codex transport only; the shared tool loop lives in core.inference.studio_tool_loop."""
 
 from __future__ import annotations
 
@@ -50,6 +44,8 @@ class CodexToolPolicy:
     bypass_permissions: bool
     rag_scope: dict[str, Any] | None
     nudge_tool_calls: bool | None = None
+    deduplicate_tool_calls: bool | None = None
+    sandbox_level: str = "high"
 
 
 class CodexTransport:
@@ -94,6 +90,7 @@ def stream_codex_with_studio_tools(
     run: CodexRunContext,
     policy: CodexToolPolicy,
     cancel_event: threading.Event,
+    mcp_image = None,
 ) -> AsyncIterator[str]:
     """Stream Codex, execute requested Unsloth tools, and continue until a final answer."""
     return stream_with_studio_tools(
@@ -102,9 +99,7 @@ def stream_codex_with_studio_tools(
             messages = run.messages,
             session_id = run.session_id,
             thread_id = run.thread_id,
-            # Before this loop was shared, Codex relayed the provider's own usage chunks and they carried the Codex
-            # model id. The shared loop sums them into one synthetic chunk instead, so dropping the model here would
-            # relabel that accounting "external" and move behaviour the Codex path is meant to keep.
+            # Keep the Codex model id on the summed usage chunk, else it is labelled "external".
             model = run.model,
             tool_choice = run.tool_choice,
             continue_final_message = run.continue_final_message,
@@ -121,6 +116,9 @@ def stream_codex_with_studio_tools(
             rag_scope = policy.rag_scope,
             auto_heal = False,
             nudge_tool_calls = policy.nudge_tool_calls,
+            deduplicate_tool_calls = policy.deduplicate_tool_calls,
+            sandbox_level = policy.sandbox_level,
         ),
         cancel_event = cancel_event,
+        mcp_image = mcp_image,
     )

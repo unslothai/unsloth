@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so skip collection unless opted in.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -65,7 +64,7 @@ print(f"{'='*80}")
 
 try:
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # Treat warnings as errors
+        warnings.simplefilter("error")
         model.save_pretrained("test_output")
         print("✅ Standard save_pretrained completed successfully!")
 except Exception as e:

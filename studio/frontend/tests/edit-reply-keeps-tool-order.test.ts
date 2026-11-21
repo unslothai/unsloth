@@ -51,22 +51,15 @@ function harness() {
           saved.push(record);
           return record;
         },
-        // delete-thread-message loads for real under the passthrough below, and it
-        // reads the thread back; nothing here drives that path.
         listChatMessages: async () => [],
       },
       "@assistant-ui/core/internal": { MessageRepository: class {} },
-      // The persistence boundary. Cut here so the passthrough stops before db.ts and
-      // its IndexedDB driver, which no node test can load: this suite is about the
-      // record's shape and part order, not about storing it.
+      // Cut here so the passthrough never loads db.ts and its IndexedDB driver.
       "./chat-history-storage": {
         ensureStoredChatThread: async () => undefined,
         syncStoredChatMessages: async () => undefined,
       },
     },
-    // The record this test asserts on is built by the real exportedItemToRecord, and
-    // the metadata it strips comes from the real RESEARCH_METADATA_KEYS, so those
-    // siblings load rather than being faked.
     { relativePassthrough: true },
   );
   return { module, saved };
@@ -229,8 +222,6 @@ test("deleting one marker leaves the other card where its own marker is", async 
     shown.replace(/<TOOL 1:[^>]*>\n\n/, ""),
   );
 
-  // The python card is still the one between "Then I compute." and "Done."; only the
-  // card whose marker went away is moved, and it is moved to the end rather than lost.
   assert.deepEqual(result, [
     { type: "text", text: "First I search.\n\nThen I compute." },
     PYTHON,
@@ -271,11 +262,8 @@ test("a half-deleted marker keeps the prose that follows it", async () => {
     { type: "text", text: tail },
   ];
   const shown = await save(content).then((r) => r.text);
-  // Whatever the marker looks like, it is what sits between the two sentences.
   const marker = shown.slice(head.length + 2, shown.length - tail.length - 2);
 
-  // Backspacing into the marker used to turn every following sentence into a part the
-  // save silently dropped, and the loss was written to the server.
   const broken = [
     marker.slice(0, -1),
     marker.slice(1),
@@ -326,6 +314,7 @@ const shapes: any[][] = [
    { type: "text", text: "B" }],
   [{ type: "text", text: "A" }, tool("1"), tool("2"), { type: "text", text: "B" }],
   [{ type: "reasoning", text: "R" }],
+  [{ type: "reasoning", text: "R </THINK> tail" }, { type: "text", text: "A" }],
   [tool("1")],
 ];
 
@@ -355,14 +344,10 @@ test("prose that mentions the marker tag is not mistaken for one", async () => {
     { type: "text", text: "Done." },
   ];
   const out = await roundTrip(content);
-  // Not just the count: the sentence has to come back whole, with the card still
-  // between it and "Done." rather than wedged into the middle of it.
   assert.deepEqual(out, content);
 });
 
 test("prose that spells a real marker is not mistaken for that card's marker", async () => {
-  // A reply explaining the marker syntax, that itself used the tool it names: the
-  // literal occurrence sits BEFORE the card's own marker and reads exactly like it.
   const content = [
     { type: "text", text: "Your edit box shows <TOOL 1: web_search> where the card sits." },
     SEARCH,
@@ -382,9 +367,195 @@ test("text that already contains an escaped marker round-trips too", async () =>
   assert.deepEqual(await roundTrip(content), content);
 });
 
+test("prose that spells the reasoning marker is not mistaken for one", async () => {
+  const content = [
+    { type: "text", text: "The tag is <THINK> on this surface." },
+    SEARCH,
+    { type: "text", text: "Done." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a literal closing reasoning tag is not swallowed mid-sentence", async () => {
+  const content = [
+    { type: "text", text: "Write </THINK> to close the block." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a closing tag inside reasoning keeps the rest of the thought", async () => {
+  const content = [
+    { type: "reasoning", text: "First half </THINK> second half." },
+    { type: "text", text: "The answer." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("an opening tag inside reasoning stays reasoning text", async () => {
+  const content = [
+    { type: "reasoning", text: "It emitted <THINK> literally." },
+    { type: "text", text: "The answer." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("text that already contains an escaped reasoning marker round-trips too", async () => {
+  const content = [
+    { type: "text", text: "Escape reads <\\THINK> in the box." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a backslash before the slash is not an escape and stays put", async () => {
+  const content = [
+    { type: "text", text: "The form <\\/THINK> does nothing." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a card marker spelled inside reasoning stays reasoning text", async () => {
+  const content = [
+    { type: "reasoning", text: "Ran <TOOL 1: web_search> for this." },
+    SEARCH,
+    { type: "text", text: "Done." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a closing literal at the end of reasoning keeps the real close", async () => {
+  const content = [{ type: "reasoning", text: "It ended </THINK>" }];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a literal open beside a real reasoning block stays separate", async () => {
+  const content = [
+    { type: "text", text: "Tags read <THINK> here." },
+    { type: "reasoning", text: "Actual thought." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("adjacent literal markers round-trip as one run of prose", async () => {
+  const content = [
+    { type: "text", text: "A pair </THINK><THINK> together." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a raw string part that spells a marker is prose, not a tag", async () => {
+  const content = ["it says </THINK> plainly", SEARCH] as unknown as Part[];
+
+  const { result } = await save(content);
+
+  assert.equal(result, content);
+});
+
+test("a run of backslashes in front of a marker loses none", async () => {
+  const content = [
+    { type: "text", text: "Two backslashes <\\\\THINK> stay two." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("a part without text becomes a card instead of crashing the box", async () => {
+  const content = [
+    { type: "text", text: 5 },
+    SEARCH,
+    { type: "text", text: "Done." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("prose after a text card starts a new part instead of rewriting the card", async () => {
+  const content = [{ type: "text", text: 5 }];
+
+  const { result } = await save(content, "<TOOL 1: text>\n\nhello");
+
+  assert.deepEqual(result, [
+    { type: "text", text: 5 },
+    { type: "text", text: "hello" },
+  ]);
+  assert.equal(content[0].text, 5, "the stored part was mutated");
+});
+
+test("a card whose text field is an empty string still cannot absorb prose", async () => {
+  const content = [
+    { type: "text", text: "", content: { custom: 1 } },
+    { type: "text", text: "B" },
+  ];
+
+  const { result } = await save(content);
+
+  assert.deepEqual(result, content);
+  assert.equal(content[0].text, "", "the stored part was mutated");
+});
+
+test("a no-op save writes back the stored parts, fields and all", async () => {
+  const content = [
+    { type: "text", text: "the reply", status: { type: "complete" } },
+    SEARCH,
+  ];
+
+  const { result } = await save(content);
+
+  assert.deepEqual(result, content);
+  assert.equal(result[0], content[0], "the stored part was rebuilt");
+});
+
+test("indenting a reasoning line is saved, not mistaken for a no-op", async () => {
+  const content = [{ type: "reasoning", text: "print(1)" }, { type: "text", text: "A" }];
+
+  const { result } = await save(content, "<THINK>\n    print(1)\n</THINK>\n\nA");
+
+  assert.deepEqual(result, [
+    { type: "reasoning", text: "    print(1)" },
+    { type: "text", text: "A" },
+  ]);
+});
+
+test("a hole in the parts list does not shift a card's slot", async () => {
+  const content = [
+    { type: "text", text: "A" },
+    null,
+    SEARCH,
+    { type: "text", text: "B" },
+  ] as unknown as Part[];
+
+  const { result } = await save(content);
+
+  assert.equal(result, content);
+  assert.equal(result[2], SEARCH);
+});
+
+test("a tool name carrying a carriage return cannot kill its marker", async () => {
+  const odd = {
+    type: "tool-call",
+    toolCallId: "call-cr",
+    toolName: "read\rfile",
+    args: {},
+    result: {},
+  };
+  const content = [{ type: "text", text: "A" }, odd];
+  const { text, result } = await save(content);
+
+  assert.ok(!text.includes("\r"));
+  assert.deepEqual(result, content);
+});
+
 test("an indented code block after a card keeps its indentation", async () => {
-  // Four leading spaces are a Markdown code block, not padding: trimming them at the
-  // marker boundary would render the reply differently after a no-op Save.
+  // Four leading spaces are a Markdown code block; trimming them would change rendering.
   const content = [
     { type: "text", text: "Here is the fix:" },
     SEARCH,
@@ -395,21 +566,14 @@ test("an indented code block after a card keeps its indentation", async () => {
 });
 
 test("a raw string part is prose, and does not consume a card's slot", async () => {
-  // Legacy and imported rows can hold a bare string. extractTaggedText emits it as
-  // prose without numbering it, so restoration must not count it as a card either.
   const legacy = ["intro", SEARCH, { type: "text", text: "answer" }] as unknown as Part[];
   const { result } = await save(legacy);
 
-  assert.deepEqual(result, [
-    { type: "text", text: "intro" },
-    SEARCH,
-    { type: "text", text: "answer" },
-  ]);
+  assert.equal(result, legacy);
+  assert.equal(result[1], SEARCH);
 });
 
 test("a reply stored as one plain string round-trips, markers and all", async () => {
-  // Legacy and imported rows can hold the whole reply as a top-level string, which
-  // takes its own path out of extractTaggedText and has to be escaped there too.
   const content = "Use <TOOL 1: web_search> literally" as unknown as Part[];
 
   const { result } = await save(content);

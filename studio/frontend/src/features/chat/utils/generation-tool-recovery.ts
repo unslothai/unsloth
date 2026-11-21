@@ -3,6 +3,7 @@
 
 import {
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
 } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -24,11 +25,39 @@ import {
   parseSourcesFromResult,
 } from "./document-citation-source";
 import { mergeGoogleNativeParts } from "./google-native-parts";
+import { extractMcpUiEnvelope } from "../mcp-apps/mcp-ui";
+import {
+  providerCompactionPart,
+  providerCompactionReplayToolCallCount,
+} from "./provider-compaction";
+import { toolModelNoteTarget, withToolModelSuffix } from "../tool-model-suffix";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function mcpImages(
+  text: string,
+): { at: number; images: { data: string; mimeType: string }[] } | null {
+  const marker = "\n__MCP_IMAGES__:";
+  const at = text.lastIndexOf(marker);
+  if (at === -1) return null;
+  try {
+    const images: unknown = JSON.parse(text.slice(at + marker.length));
+    return Array.isArray(images) &&
+      images.length > 0 &&
+      images.every(
+        (image) =>
+          typeof record(image)?.data === "string" &&
+          typeof record(image)?.mimeType === "string",
+      )
+      ? { at, images: images as { data: string; mimeType: string }[] }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function recoveredToolResult(
@@ -51,29 +80,21 @@ function recoveredToolResult(
   }
   const sandbox =
     typeof toolName === "string" && SANDBOX_FILE_TOOLS.has(toolName);
-  const { text, files } = sandbox
+  const { text: withUi, files } = sandbox
     ? extractCreatedFiles(event.result)
     : { text: event.result, files: [] };
-  const mcpMarker = "\n__MCP_IMAGES__:";
-  const mcpAt = text.lastIndexOf(mcpMarker);
-  if (mcpAt !== -1) {
-    try {
-      const images: unknown = JSON.parse(text.slice(mcpAt + mcpMarker.length));
-      if (
-        Array.isArray(images) &&
-        images.length > 0 &&
-        images.every(
-          (image) =>
-            typeof record(image)?.data === "string" &&
-            typeof record(image)?.mimeType === "string",
-        )
-      ) {
-        return { text: text.slice(0, mcpAt), images };
-      }
-    } catch {
-      // Keep malformed envelopes as text.
-    }
+  const { text, ui } = extractMcpUiEnvelope(
+    withUi,
+    typeof toolName === "string" ? toolName : "",
+  );
+  if (ui) {
+    const images = mcpImages(text);
+    return images
+      ? { text: text.slice(0, images.at), images: images.images, ui }
+      : { text, ui };
   }
+  const images = mcpImages(text);
+  if (images) return { text: text.slice(0, images.at), images: images.images };
   const imageMarker = "\n__IMAGES__:";
   const imageAt = text.lastIndexOf(imageMarker);
   if (imageAt !== -1) {
@@ -91,7 +112,7 @@ function recoveredToolResult(
       // Keep malformed envelopes as text.
     }
   }
-  if (sandbox) {
+  if (sandbox && (SANDBOX_RUN_TOOLS.has(toolName as string) || files.length > 0)) {
     return { text, images: [], sessionId, files };
   }
   if (toolName === SEARCH_IMAGE_TOOL) {
@@ -103,19 +124,58 @@ function recoveredToolResult(
   return text;
 }
 
+/** Re-arms a tool call still waiting on approval after a tab reopens; the caller owns the store.
+ *  Both calls must be idempotent: a card can be re-raised from the seed and its frame. */
+export type RecoveredToolConfirmations = {
+  /** `partId` is the card's toolCallId; `sessionId` scopes the decision and "Always allow". */
+  register: (partId: string, approvalId: string, sessionId: string) => void;
+  resolve: (partId: string) => void;
+};
+
 export function createGenerationToolRecovery(
   carried: CarriedPart[],
   runId: string,
   snapshotSeq = 0,
+  toolConfirmations?: RecoveredToolConfirmations,
 ) {
   const pending = new Map<string, CarriedPart>();
+  /** The store is shared with other cards on screen, so only resolve the ones armed here. */
+  const armed = new Set<string>();
+  /** Approvals the stream reported granted. Never armed again: a seeded check can predate the frame. */
+  const approved = new Set<string>();
+  const armApproval = (
+    entry: CarriedPart,
+    approvalId: unknown,
+    sessionId: string,
+  ) => {
+    if (
+      !toolConfirmations ||
+      typeof approvalId !== "string" ||
+      !approvalId ||
+      approved.has(approvalId)
+    )
+      return;
+    const partId = record(entry.part)?.toolCallId;
+    if (typeof partId === "string" && partId) {
+      armed.add(partId);
+      toolConfirmations.register(partId, approvalId, sessionId);
+    }
+  };
+  const disarmApproval = (entry: CarriedPart) => {
+    const partId = record(entry.part)?.toolCallId;
+    if (!toolConfirmations || typeof partId !== "string" || !armed.has(partId))
+      return;
+    armed.delete(partId);
+    toolConfirmations.resolve(partId);
+  };
+  /** For runs ending without tool_end (backend failed or restarted), which would orphan the card. */
+  const disarmAll = () => {
+    if (!toolConfirmations) return;
+    for (const partId of armed) toolConfirmations.resolve(partId);
+    armed.clear();
+  };
   const researchHandoff = newDeepResearchHandoff();
-  /** The sources a finished search card yields, parsed once per card rather than per publish.
-   *  Every rebuild used to re-run the parse over every finished search result in the turn,
-   *  which measured as the bulk of a recovery's per-publish cost on a long tool-using reply.
-   *  `apply` replaces a card object wholesale rather than editing one, so an entry that is
-   *  still the same object still holds the same result; the result is compared as well, so
-   *  an in-place edit somewhere else could not make this serve a stale list either. */
+  /** Parsed once per card; `apply` replaces cards wholesale, so identity implies same result. */
   const parsedSources = new WeakMap<
     object,
     { result: unknown; sources: ReturnType<typeof parseSourcesFromResult> }
@@ -135,11 +195,7 @@ export function createGenerationToolRecovery(
     parsedSources.set(card, { result: card.result, sources });
     return sources;
   };
-  // A source a previous recovery appended is carried at the offset it was appended AT, so text
-  // replayed after it lands behind it and cuts the reply in two, breaking any markdown that
-  // spans the cut. `withSources` rebuilds these from the card, so drop them and let every
-  // rebuild re-append them, which is also where the live adapter puts them. A citation source
-  // is anchored where it arrived and has no card to rebuild it, so it stays.
+  // Drop rebuildable sources so withSources re-appends them at the end; citations stay in place.
   const rebuildableSourceIds = new Set(
     carried.flatMap(({ part }) => {
       const card = searchCard(part);
@@ -176,6 +232,31 @@ export function createGenerationToolRecovery(
       pending.set(id || `#idless:saved:${savedIdless++}`, entry);
     }
   }
+  /** Re-arm calls parked before the tab closed; the seed is the only place they still exist. */
+  /*  `stillPending` avoids arming a call already answered; a saved card looks the same either way. */
+  const armSeededApprovals = async (
+    sessionId: unknown,
+    stillPending?: (approvalId: string) => Promise<boolean>,
+  ) => {
+    if (!toolConfirmations) return;
+    const session = typeof sessionId === "string" ? sessionId : "";
+    for (const entry of savedPending) {
+      const approvalId = record(entry.part)?.toolApprovalId;
+      if (stillPending && typeof approvalId === "string" && approvalId) {
+        // A failed check falls back to arming, so the user keeps their buttons.
+        let pending = true;
+        try {
+          pending = await stillPending(approvalId);
+        } catch {
+          pending = true;
+        }
+        if (!pending) continue;
+      }
+      // Re-read after the await: tool_end can fold this card concurrently.
+      if (record(entry.part)?.result !== undefined) continue;
+      armApproval(entry, approvalId, session);
+    }
+  };
   const replayFrom = savedPending.some(
     (entry) => typeof record(entry.part)?.backendToolCallId !== "string",
   )
@@ -189,9 +270,7 @@ export function createGenerationToolRecovery(
     if (at !== -1) legacyPending.splice(at, 1);
     return entry;
   };
-  // Seeded from saves: a reload between two completions of one card leaves it in no other lookup.
   const completed = new Map<string, CarriedPart>();
-  /** Most recent finished card a provider gave no id, for a repeated id-less ending. */
   let lastIdless: CarriedPart | undefined;
   for (const entry of carried) {
     const part = record(entry.part);
@@ -200,8 +279,7 @@ export function createGenerationToolRecovery(
     if (typeof id === "string" && id) completed.set(id, entry);
     else if (id === "") lastIdless = entry;
   }
-  /** A card the previous frontend saved carries its backend id inside toolCallId and nowhere
-   *  else, so a later completion has to recognise it the way the pending lookup already does. */
+  /** Legacy saved cards carry their backend id only inside toolCallId. */
   const findCompletedLegacy = (backendId: string) => {
     if (!backendId) return undefined;
     for (let i = carried.length - 1; i >= 0; i--) {
@@ -251,20 +329,46 @@ export function createGenerationToolRecovery(
     if (
       event?.type !== "tool_start" &&
       event?.type !== "tool_end" &&
-      event?.type !== "document_citations"
+      event?.type !== "tool_model_note" &&
+      event?.type !== "document_citations" &&
+      event?.type !== "compaction_block" &&
+      event?.type !== "tool_approved"
     ) {
       return;
     }
     if (seq <= appliedSeq) return;
     appliedSeq = seq;
+    if (event.type === "compaction_block") {
+      const providerCompaction = providerCompactionPart(event);
+      if (!providerCompaction) return;
+      return {
+        providerCompaction,
+        providerCompactionAfterToolCalls:
+          providerCompactionReplayToolCallCount(
+            carried.map((entry) => entry.part),
+          ),
+      };
+    }
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
+    // Answered, possibly in another tab: disarm now, not at tool_end. Remembered first so an in-flight
+    // seeded check cannot re-arm it; a frame at or below the snapshot names no card armed here yet.
+    if (event.type === "tool_approved") {
+      if (typeof event.approval_id === "string" && event.approval_id) {
+        approved.add(event.approval_id);
+      }
+      if (seq <= snapshotSeq) return;
+      const entry =
+        (backendId ? pending.get(backendId) : undefined) ??
+        findSavedEntry(backendId, event.approval_id);
+      if (entry) disarmApproval(entry);
+      return;
+    }
     if (event.tool_name === "deep_research") {
       if (event.type === "tool_start")
         researchHandoff.hiddenCallIds.delete(backendId);
       if (readDeepResearchToolEvent(researchHandoff, event)) return;
     }
-    // Older approval cards need their original start event to recover the backend id.
     if (seq <= snapshotSeq) {
       const entry =
         event.type === "tool_start"
@@ -280,6 +384,23 @@ export function createGenerationToolRecovery(
           generationToolCallId: `${runId}:${seq}`,
         };
         pending.set(backendId || `#idless:legacy:${seq}`, entry);
+      }
+      return;
+    }
+    if (event.type === "tool_model_note") {
+      const suffix = typeof event.suffix === "string" ? event.suffix : "";
+      const at = toolModelNoteTarget(
+        carried.map((carriedEntry) => record(carriedEntry.part) ?? {}) as unknown as Parameters<
+          typeof toolModelNoteTarget
+        >[0],
+        backendId,
+      );
+      const part = at === -1 ? undefined : record(carried[at].part);
+      if (part && suffix) {
+        carried[at].part = {
+          ...part,
+          provenance: withToolModelSuffix(record(part.provenance), suffix),
+        } as CarriedPart["part"];
       }
       return;
     }
@@ -345,14 +466,17 @@ export function createGenerationToolRecovery(
       if (!toolName) {
         return;
       }
+      const toolCallId = `${backendId || "tool"}:${runId}:${seq}`;
+      entry ??= carried.find(({ part }) => {
+        const card = record(part);
+        return (
+          card?.type === "tool-call" &&
+          (card.toolCallId === toolCallId ||
+            card.generationToolCallId === `${runId}:${seq}`)
+        );
+      });
       if (!entry) {
-        entry = {
-          at,
-          part: {
-            type: "tool-call",
-            toolCallId: `${backendId || "tool"}:${runId}:${seq}`,
-          },
-        };
+        entry = { at, part: { type: "tool-call", toolCallId } };
         carried.push(entry);
       }
       const args = record(event.arguments) ?? {};
@@ -371,6 +495,10 @@ export function createGenerationToolRecovery(
       pending.set(backendId || `#idless:${runId}:${seq}`, entry);
       if (backendId) completed.delete(backendId);
       else lastIdless = undefined;
+      // The backend parks for the returning session, and this tab is that session.
+      if (event.awaiting_confirmation === true) {
+        armApproval(entry, event.approval_id, sessionId);
+      }
       return;
     }
     if (!entry) {
@@ -408,21 +536,18 @@ export function createGenerationToolRecovery(
         pending.delete(id);
       }
     }
+    disarmApproval(entry);
     if (backendId) completed.set(backendId, entry);
     else lastIdless = entry;
   };
-  // Recovery never reaches the live path's end-of-stream source yield, so rebuild those entries.
-  // Per occurrence, not per url, because the live path flat-maps the cards: two rounds finding
-  // the same page carry their own title and snippet, and the Sources panel lists both.
+  // Recovery never hits the live end-of-stream source yield; rebuild per occurrence, not per url.
   const withSources = <TPart>(parts: TPart[]): TPart[] => {
     const out: TPart[] = [...parts];
     for (const { part } of carried) {
       const card = searchCard(part);
       if (!card) continue;
       for (const source of cardSources(card)) {
-        // Copied rather than handed out from the cache, `metadata` included: before the
-        // cache each rebuild yielded its own objects all the way down, and a caller that
-        // edits a part it was given must not reach back into what the next rebuild yields.
+        // Copy cached parts so callers editing them cannot alter the next rebuild.
         out.push({
           ...source,
           ...(source.metadata ? { metadata: { ...source.metadata } } : {}),
@@ -431,5 +556,5 @@ export function createGenerationToolRecovery(
     }
     return out;
   };
-  return { replayFrom, apply, withSources };
+  return { replayFrom, apply, withSources, armSeededApprovals, disarmAll };
 }

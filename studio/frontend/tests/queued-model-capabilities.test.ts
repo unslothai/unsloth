@@ -3,11 +3,7 @@ import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
-// image-input-support.ts imports ./mmproj-fallback without an extension, which is
-// what 2314 of the 2367 relative imports under src/ do -- vite and tsconfig's
-// "bundler" mode resolve it, the bare node loader does not. A static import here
-// resolves before any registration can run, so the module has to come in
-// dynamically, after the resolver is registered.
+// Extensionless imports need the bundler resolver, so import dynamically after registering it.
 registerBundlerResolver();
 
 const { getImageInputUnavailableReason } = await import(

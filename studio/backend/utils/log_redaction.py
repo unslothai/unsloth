@@ -1,21 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Mask credentials in log text before it leaves the process.
-
-Nothing redacts secrets today: loggers/handlers.py:filter_sensitive_data only masks native path leases, and raw output (faulthandler dumps, uvicorn, third party prints) never passes through a structlog processor at all. The log viewer invites users to copy lines into a bug report, so the masking happens on read.
-
-Every pattern is anchored on a known credential prefix or a key name. There is deliberately NO generic "long high entropy string" rule: that would eat sha256 blob digests, HF revisions, snapshot paths and GGUF tensor names, exactly the content someone opened the log to read.
-"""
+"""Masks credentials in logs on read; anchored on known prefixes or key names, never generic entropy."""
 
 from __future__ import annotations
 
+import json
 import re
 
 REDACTED = "<redacted>"
 
-# Stripped BEFORE anything is matched: a colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
-# _strip_ansi replaces one alternation of lazy `[\s\S]*?` bodies whose FAILURE was quadratic: an unterminated introducer scanned to end of record, failed, and the engine retried from the next position. Its output is identical to that pattern on every input, by differential fuzzing, and must stay so: a redactor is the wrong place to smuggle a behaviour change into a performance fix, and every attempt to also improve the truncated cases moved a leak rather than removing one (unslothai/unsloth#10721).
+# Strip ANSI first, as escapes defeat the anchored rules. Output must stay identical to the old regex: fixing truncated cases moved a leak.
 _CSI_7BIT_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CSI_8BIT_RE = re.compile(r"\x9b[0-?]*[ -/]*[@-~]")
 # Fe covers 0x40-0x5F, so it also claims a "]" or "P" whose control string never terminated. Hence tried last.
@@ -101,7 +96,7 @@ _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Hugging Face
-    (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "hf_" + REDACTED),
+    (re.compile(r"\bhf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
     # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
         re.compile(r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"),
@@ -213,6 +208,117 @@ def _redact_cookie(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{REDACTED}{tail}"
 
 
+# Per _PATTERNS rule, literals every match contains (None = always run). Those rules are case-sensitive, so substring tests are exact.
+_PATTERN_LITERALS: tuple[tuple[str, ...] | None, ...] = (
+    ("hf_",),
+    ("sk-",),
+    (
+        "gsk_",
+        "xai-",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "glpat-",
+        "xox",
+        "ya29.",
+    ),
+    ("AIza",),
+    ("AKIA", "ASIA"),
+    ("eyJ",),
+    None,
+    ("=",),
+)
+_PATTERN_GATES: tuple[re.Pattern[str] | None, ...] = tuple(
+    None if literals is None else re.compile("|".join(re.escape(literal) for literal in literals))
+    for literals in _PATTERN_LITERALS
+)
+if len(_PATTERN_GATES) != len(_PATTERNS):
+    raise RuntimeError("every _PATTERNS rule needs an entry in _PATTERN_GATES")
+
+_SECRET_KEY_WORDS = ("authorization", "key", "token", "secret", "pass")
+if not all(any(word in key for word in _SECRET_KEY_WORDS) for key in _SECRET_KEYS.split("|")):
+    raise RuntimeError("every _SECRET_KEYS alternative needs a word in _SECRET_KEY_WORDS")
+# Off ASCII, IGNORECASE folds e.g. the Kelvin sign onto "k", so the engine decides.
+_FOLDED_GATE_RES = {
+    words: re.compile("(?i)" + "|".join(words))
+    for words in (("authorization",), ("bearer",), ("cookie",), _SECRET_KEY_WORDS)
+}
+
+
+def _has_folded(text: str, lowered: str | None, words: tuple[str, ...]) -> bool:
+    if lowered is None:
+        return _FOLDED_GATE_RES[words].search(text) is not None
+    for word in words:
+        if word in lowered:
+            return True
+    return False
+
+
+def _lowered(text: str) -> str | None:
+    return text.lower() if text.isascii() else None
+
+
+# _KV_RE cannot match across an escaped quote, so decode the JSON strings nested in a message. The optional closing quote takes a truncated token whole.
+_JSON_STRING = re.compile(r'"(?:[^"\\\x00-\x1f]|\\.)*"?')
+_JSON_COLON = re.compile(r"\s*:\s*")
+_JSON_SECRET_KEY = re.compile(_KEY_START + r"(?:" + _SECRET_KEYS + r")$", re.IGNORECASE)
+_JSON_DECODER = json.JSONDecoder()
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _mask_json_strings(text: str, *, inside_message: bool = False) -> str:
+    parts: list[str] = []
+    written = pos = 0
+    while match := _JSON_STRING.search(text, pos):
+        pos = match.end()
+        token = match[0]
+        if inside_message and (colon := _JSON_COLON.match(text, pos)):
+            try:
+                key = json.loads(token) if "\\" in token else token[1:-1]
+            except ValueError:
+                continue
+            if _JSON_SECRET_KEY.search(key):
+                # A string value may be cut off by truncation, so take its token extent rather than decoding it.
+                if value := _JSON_STRING.match(text, colon.end()):
+                    end = value.end()
+                    if value[0] == '""':
+                        continue
+                else:
+                    try:
+                        parsed, end = _JSON_DECODER.raw_decode(text, colon.end())
+                    except (ValueError, RecursionError):
+                        continue
+                    # null, a flag or a count shows whether a credential is set, not its value (as in _redact_kv).
+                    if parsed is None or isinstance(parsed, bool):
+                        continue
+                    is_number = isinstance(parsed, (int, float))
+                    if is_number and not _NUMERIC_IS_STILL_SECRET.search(key):
+                        continue
+                parts.extend((text[written : colon.end()], '"<redacted>"'))
+                written = pos = end
+            continue
+        if r"\"" in token and ":" in token:
+            try:
+                message = json.loads(token)
+            except ValueError:
+                continue
+            masked = _mask_json_strings(message, inside_message = True)
+            if masked != message:
+                # Keep raw characters raw, or redact_native_paths no longer matches a non-ASCII path. A lone surrogate stays escaped: it cannot be written as UTF-8.
+                encoded = json.dumps(masked, ensure_ascii = token.isascii())
+                if not token.isascii():
+                    encoded = _SURROGATE_RE.sub(lambda m: f"\\u{ord(m[0]):04x}", encoded)
+                parts.extend((text[written : match.start()], encoded))
+                written = pos
+    if not parts:
+        return text
+    parts.append(text[written:])
+    return "".join(parts)
+
+
 def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
@@ -220,14 +326,27 @@ def redact_log_text(text: str) -> str:
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
-    for pattern, replacement in _PATTERNS:
-        text = pattern.sub(replacement, text)
+    if r"\"" in text and ":" in text:
+        text = _mask_json_strings(text)
+    for (pattern, replacement), gate in zip(_PATTERNS, _PATTERN_GATES):
+        if gate is None or gate.search(text) is not None:
+            text = pattern.sub(replacement, text)
+    lowered = _lowered(text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
-    text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
-    text = _SCHEME_RE.sub(_redact_shaped, text)
-    text = _COOKIE_RE.sub(_redact_cookie, text)
-    text = _KV_RE.sub(_redact_kv, text)
-    text = _FLAG_RE.sub(_redact_kv, text)
+    if _has_folded(text, lowered, ("authorization",)):
+        text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
+        lowered = _lowered(text)
+    if _has_folded(text, lowered, ("bearer",)):
+        text = _SCHEME_RE.sub(_redact_shaped, text)
+        lowered = _lowered(text)
+    if _has_folded(text, lowered, ("cookie",)):
+        text = _COOKIE_RE.sub(_redact_cookie, text)
+        lowered = _lowered(text)
+    if (":" in text or "=" in text) and _has_folded(text, lowered, _SECRET_KEY_WORDS):
+        text = _KV_RE.sub(_redact_kv, text)
+        lowered = _lowered(text)
+    if "--" in text and _has_folded(text, lowered, _SECRET_KEY_WORDS):
+        text = _FLAG_RE.sub(_redact_kv, text)
     try:
         from utils.native_path_leases import redact_native_paths
         text = redact_native_paths(text)

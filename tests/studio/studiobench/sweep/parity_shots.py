@@ -44,16 +44,22 @@ from tests.studio.studiobench.analysis import parity as P  # noqa: E402
 from tests.studio.studiobench.scoring.from_payload import latest_attempt_rows  # noqa: E402
 from tests.studio.studiobench.sweep.ui_parity import (  # noqa: E402
     compare_all,
+    WINDOWED,
+    compare_all_with,
     confine_to_runner,
     corroborated,
+    decide_modes,
     in_arm_repeatability,
     is_unstable,
+    rung_of_cell,
     shards_of,
+    swapped_between_arms,
     unstable_set,
+    visible_unstable_set,
 )
 
-BANNER = 46  # px of label strip above each half
-GUTTER = 14  # px between the two halves
+BANNER = 46
+GUTTER = 14
 BG = (24, 24, 27)
 FG = (244, 244, 245)
 ACCENT = (248, 113, 113)
@@ -135,22 +141,18 @@ def differing_actions(
     report's -- excused by the null control, then corroborated at the verdict's own `--min-reps`.
     """
     unstable, derived, _checks = unstable_set(null_paths or None)
-    # THE SAME EFFECTIVE SET THE VERDICT SCORED WITH. The verdict confines the imported exemptions to
-    # what the scored runner reproduces, so reading the raw imported set here would put the artifact
-    # out of step with the job it illustrates: an action the verdict failed on would have no picture.
+    # Use the same effective exemption set the verdict scored with.
     if derived:
         unstable, _dropped = confine_to_runner(unstable, *in_arm_repeatability(result_paths))
     out = []
-    # `compare_all` returns (results, capture tally); only the results are wanted here.
     results, _tally = compare_all(result_paths)
+    swapped = swapped_between_arms(results, min_reps)
     stable = [
         (action, shard, cell, r.get("moved", []))
-        for action, shard, cell, r in results
-        if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell)
+        for i, (action, shard, cell, r) in enumerate(results)
+        if r["verdict"] == P.DIFFER and not is_unstable(unstable, action, cell) and i not in swapped
     ]
-    # Carrying the DIRECTION as the fifth element, exactly as `report` does, so the artifact
-    # illustrates the same set the verdict counted. Without it a direction-reversing pair would be
-    # firm here and uncorroborated there.
+    # Carry the direction as `report` does so the artifact matches the verdict's set.
     one_sided = [
         (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
         for action, shard, cell, r in results
@@ -158,9 +160,7 @@ def differing_actions(
         and r.get("one_sided")
         and not P.racy_execution(action, r.get("idle_reason") or "")
     ]
-    # The third way `report` returns 1: the action ran on both arms and its own assertion failed on
-    # one. Not filtered by the unstable set, for the same reason the verdict does not filter it: that
-    # set measures digest stability, and this is not a digest.
+    # Not filtered by the unstable set: that set measures digest stability, not assertions.
     expect_bad = [
         (action, shard, cell, [r.get("expect_reason", "")], r["expect_regressed"])
         for action, shard, cell, r in results
@@ -171,6 +171,20 @@ def differing_actions(
     firm_expect, _weak_expect = corroborated(expect_bad, min_reps)
     for action, shard, cell, moved, *_dir in firm + firm_one_sided + firm_expect:
         out.append({"action": action, "shard": shard, "cell": cell, "moved": moved})
+    # The verdict's own visible-mode pairs and floor, so a declared change found only there gets a picture.
+    windowed = {key for key, (mode, _why) in decide_modes(result_paths).items() if mode == WINDOWED}
+    if windowed:
+        floor = visible_unstable_set(null_paths or None)
+        visible, _tally = compare_all_with(result_paths, P.compare_visible, "visible", windowed)
+        for action, shard, cell, r in visible:
+            if (
+                r.get("_ran")
+                and r["verdict"] == P.DIFFER
+                and (r.get("severe") or (rung_of_cell(cell), action) not in floor)
+            ):
+                out.append(
+                    {"action": action, "shard": shard, "cell": cell, "moved": r.get("moved", [])}
+                )
     return out
 
 
@@ -193,7 +207,6 @@ def composite(before: Path, after: Path, out: Path, meta: dict) -> bool:
     if Image is None:
         return False
     a, b = Image.open(before).convert("RGB"), Image.open(after).convert("RGB")
-    # PADDED onto one canvas, never scaled: see the module docstring.
     w = max(a.width, b.width)
     h = max(a.height, b.height)
     canvas = Image.new("RGB", (w * 2 + GUTTER, h + BANNER), BG)
@@ -241,7 +254,6 @@ def build(
     print(f"\nSCREENSHOT EVIDENCE for {len(diffs)} stable difference(s)")
     made = missing = 0
     for d in diffs:
-        # `cell` is "<rung> <rep>", and a cell id is "<rung>.<arm>.<rep>".
         rung, rep = d["cell"].split(" ", 1)
         base_id, treat_id = f"{rung}.base.{rep}", f"{rung}.treatment.{rep}"
         b = index.get((d["shard"], base_id, d["action"], "base"))
@@ -261,9 +273,7 @@ def build(
             missing += 1
             print(f"  {d['action']:<26} {d['cell']}: shot file absent on disk; not a pair")
             continue
-        # The shard is in the FILENAME as well as the key: two shards produce the same
-        # `<action>__<rung>_<rep>` stem, so without it the second composite silently overwrites the
-        # first.
+        # Shard in the filename too, or two shards overwrite each other's composite.
         stem = f"{d['shard']}__{d['action']}__{rung}_{rep}"
         ok = composite(
             bp,
@@ -317,8 +327,6 @@ def prune(payload_dir: Path, shots_dir: Path) -> int:
     for action, _shard, cell, r in results:
         if r["verdict"] == P.MATCH:
             continue
-        # The prune reads one arm's own output dir, but key by the shard it came from anyway so the index
-        # has one shape everywhere.
         rung, rep = cell.split(" ", 1)
         for arm in ("base", "treatment"):
             got = index.get((_shard, f"{rung}.{arm}.{rep}", action, arm))
@@ -370,9 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.null) if args.null else None,
         Path(args.shots),
         Path(args.out),
-        # FORWARDED, and the omission here was the whole bug: the workflow passes --min-reps 2 to match the
-        # verdict, `build` defaulted it back to 1, and the artifact carried composites of one-repetition
-        # flakes beside the change that failed the job.
+        # Must forward --min-reps to match the verdict.
         min_reps = args.min_reps,
     )
 

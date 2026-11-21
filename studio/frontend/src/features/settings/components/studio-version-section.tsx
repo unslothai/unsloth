@@ -64,16 +64,11 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   }
 }
 
-// Shared "Unsloth" version block, shown in both General and About. The About
-// tab passes llamaCppVersion to surface the installed llama.cpp build alongside
-// the version rows; General omits it, so the row only shows on About. Children
-// are appended below the version rows, for controls that act on them.
+// Shared "Unsloth" version block (General and About); engine builds live in EngineVersionsSection.
 export function StudioVersionSection({
-  llamaCppVersion,
   desktopAppVersion,
   children,
 }: {
-  llamaCppVersion?: string | null;
   desktopAppVersion?: string | null;
   children?: ReactNode;
 } = {}) {
@@ -94,7 +89,7 @@ export function StudioVersionSection({
   }, []);
 
   return (
-    <SettingsSection title="Unsloth">
+    <SettingsSection title="Unsloth" hideHeading={true}>
       <SettingsRow label={t("settings.about.studioVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {studioVersion}
@@ -110,13 +105,6 @@ export function StudioVersionSection({
           <code className="font-mono text-xs text-muted-foreground">
             {desktopAppVersion ??
               t("settings.about.desktopAppVersionUnavailable")}
-          </code>
-        </SettingsRow>
-      ) : null}
-      {llamaCppVersion ? (
-        <SettingsRow label={t("settings.about.llamaCppVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
-            {llamaCppVersion}
           </code>
         </SettingsRow>
       ) : null}

@@ -165,3 +165,61 @@ test("preserves explicit, locked, and offline tab decisions", () => {
     "device",
   );
 });
+
+test("an empty settled inventory overrides a saved On Device preference", () => {
+  assert.equal(
+    resolvePickerTab({
+      ...inferredBase,
+      hasDeviceItems: false,
+      isDeviceInventorySettled: true,
+      hasExplicitTabPreference: true,
+      selectedTab: "device",
+      lockedInferredTab: null,
+    }),
+    "hub",
+  );
+});
+
+test("an empty inventory replaces a stale inferred Device tab after scanning", () => {
+  assert.equal(
+    resolvePickerTab({
+      ...inferredBase,
+      hasDeviceItems: false,
+      isDeviceInventorySettled: true,
+      lockedInferredTab: "device",
+    }),
+    "hub",
+  );
+});
+
+test("a current visit's deliberate Device choice remains available when empty", () => {
+  const input = {
+    ...inferredBase,
+    hasDeviceItems: false,
+    isDeviceInventorySettled: true,
+    hasExplicitTabPreference: true,
+    hasCurrentTabChoice: true,
+    selectedTab: "device" as const,
+    lockedInferredTab: null,
+  };
+  assert.equal(resolvePickerTab(input), "device");
+  // Closing clears the current choice; reopening defaults to recommendations again.
+  assert.equal(resolvePickerTab({ ...input, hasCurrentTabChoice: false }), "hub");
+  assert.equal(resolvePickerTab({ ...input, hasDeviceItems: true }), "device");
+});
+
+test("a saved Device preference keeps the Hub search tab when a model lands", () => {
+  const savedDevice = {
+    ...inferredBase,
+    hasExplicitTabPreference: true,
+    isDeviceInventorySettled: true,
+    selectedTab: "device" as const,
+  };
+  const opening = { ...savedDevice, hasDeviceItems: false, lockedInferredTab: null };
+  assert.equal(resolvePickerTab(opening), "hub");
+  // Typing locks the shown tab; a model appearing mid-search must not flip it.
+  assert.equal(
+    resolvePickerTab({ ...savedDevice, hasDeviceItems: true, lockedInferredTab: "hub" }),
+    "hub",
+  );
+});

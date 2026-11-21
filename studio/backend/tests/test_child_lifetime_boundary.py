@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where the Windows orphan guarantee holds, and where it stops.
-
-Children inherit a Job Object with KILL_ON_JOB_CLOSE. The desktop updater clears
-that flag before launching the installer, so both sides are pinned here with
-real processes.
-"""
+"""Child processes inherit a KILL_ON_JOB_CLOSE Job Object on Windows; the desktop updater clears it."""
 
 import os
 import subprocess
@@ -71,8 +66,7 @@ PARENT = textwrap.dedent(
 
 
 def _run_case(tmp_path: Path, mode: str) -> bool:
-    """Start a parent, let it spawn a shell-wrapped payload, hard-kill the
-    parent, and report whether the payload survived."""
+    """Returns True if a shell-wrapped payload survives a hard kill of its parent."""
     pidfile = tmp_path / f"{mode}.pid"
     script = tmp_path / f"parent_{mode}.py"
     script.write_text(PARENT)
@@ -85,18 +79,12 @@ def _run_case(tmp_path: Path, mode: str) -> bool:
         payload_pid = int(pidfile.read_text().strip())
         assert _alive(payload_pid)
 
-        # Hard kill, no tree flag: exactly what "End Task" / a crash does.
         if IS_WINDOWS:
             subprocess.run(["taskkill", "/PID", str(parent.pid), "/F"], capture_output = True)
         else:
             os.kill(parent.pid, 9)
         parent.wait(timeout = 30)
-        # Poll the 5s reaping grace out instead of sleeping through it. The verdict
-        # is identical -- "still alive after 5s" is still "survived" -- but where the
-        # payload does die (Linux PR_SET_PDEATHSIG) it dies in milliseconds, so the
-        # answer is available long before the window ends. Only the platforms that
-        # genuinely leak the payload now pay the full 5s, and they are the ones the
-        # window was written for.
+        # Poll out the 5s reaping grace; payloads that die (PR_SET_PDEATHSIG) die in ms.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and _alive(payload_pid):
             time.sleep(0.05)
@@ -119,9 +107,7 @@ def test_job_object_reaps_the_whole_tree(tmp_path):
 
 @pytest.mark.skipif(not IS_WINDOWS, reason = "job objects are Windows-only")
 def test_without_the_job_the_grandchild_is_orphaned(tmp_path):
-    """This is the state the desktop updater leaves the app in: the job is
-    still there but KILL_ON_JOB_CLOSE has been cleared and nothing restores
-    it, so a hard exit leaks every child."""
+    """The desktop updater leaves KILL_ON_JOB_CLOSE cleared on the job, so a hard exit leaks every child."""
     assert _run_case(tmp_path, "nojob") is True
 
 

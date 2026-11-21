@@ -112,9 +112,7 @@ test("classifies native drops before truncating long display filenames", () => {
   });
 });
 
-// Only WebView2 reports a device-pixel drop position; macOS and GTK already
-// report CSS pixels at 100% zoom, so scaling those by the monitor factor halved
-// every hit test on a HiDPI display and the zone never matched.
+// Only WebView2 reports device pixels; macOS and GTK already report CSS pixels.
 test("hit testing scales a Windows drop position to CSS pixels", () => {
   Object.defineProperty(globalThis, "navigator", {
     value: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64)" },
@@ -183,7 +181,7 @@ test("frontend, backend, and Rust accept the same native dataset extensions", ()
   );
 });
 
-test("training document redirects match Data Recipes", () => {
+test("Data Recipes document types match the backend and cover training redirects", () => {
   const backendSource = readText("../../backend/routes/data_recipe/seed.py");
   const recipeSource = readSrc(
     "features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
@@ -199,6 +197,20 @@ test("training document redirects match Data Recipes", () => {
   const training = [...TRAINING_DOCUMENT_REDIRECT_EXTENSIONS].sort();
 
   assert.deepEqual(training, [".docx", ".md", ".pdf", ".txt"]);
-  assert.deepEqual(training, backend);
-  assert.deepEqual(training, recipe);
+  assert.deepEqual(recipe, backend);
+  // The Training page redirects only the common types; Data Recipes takes every one it can extract.
+  for (const extension of training) {
+    assert.ok(backend.includes(extension), extension);
+  }
+  for (const extension of [
+    ".epub",
+    ".mobi",
+    ".doc",
+    ".xlsx",
+    ".pptx",
+    ".odt",
+    ".rtf",
+  ]) {
+    assert.ok(recipe.includes(extension), extension);
+  }
 });

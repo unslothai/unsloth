@@ -13,9 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
 
-/** Confirmation for applying a model or reload-required setting while chats are generating. They
- *  share one llama-server, so the swap ends all of them: name them and make the user opt in
- *  rather than truncating silently. */
+/** Chats share one llama-server, so a swap ends all of them: confirm explicitly. */
 export function StopRunningChatsDialog() {
   const open = useStopRunningChatsDialogStore((s) => s.open);
   const count = useStopRunningChatsDialogStore((s) => s.count);
@@ -25,8 +23,6 @@ export function StopRunningChatsDialog() {
   const effect = useStopRunningChatsDialogStore((s) => s.effect);
   const resolve = useStopRunningChatsDialogStore((s) => s.resolve);
 
-  // Embeddings, raw completions and audio share the model but are not conversations, so name them
-  // generically rather than offering to stop chats that do not exist.
   const noun = hasNonChat
     ? count === 1
       ? "request"
@@ -37,10 +33,14 @@ export function StopRunningChatsDialog() {
   const sharer = hasNonChat ? "request" : "conversation";
   // Ejecting leaves no model loaded. Saying it "reloads the model" and offering "Stop and reload"
   // promised the opposite of what confirming does, for the destructive one.
-  const unloads = effect === "unload";
-  const lead = unloads
-    ? `${action || "Unloading the model"} leaves no model loaded, and every open ${sharer} shares it, `
-    : `${action ? `${action} reloads the model, ` : "Reloading the model "}which every open ${sharer} shares, `;
+  const unloads = effect !== "reload";
+  // Model-neutral: a cached standard-backend unload also stops the active model's chats.
+  const lead =
+    effect === "unloadOne"
+      ? `${action || "Unloading this model"} cannot wait for running ${sharer}s, `
+      : unloads
+        ? `${action || "Unloading the model"} leaves no model loaded, and every open ${sharer} shares it, `
+        : `${action ? `${action} reloads the model, ` : "Reloading the model "}which every open ${sharer} shares, `;
   const shown = titles.slice(0, 5);
   const remaining = Math.max(0, titles.length - shown.length);
 
@@ -63,7 +63,7 @@ export function StopRunningChatsDialog() {
           </AlertDialogDescription>
         </AlertDialogHeader>
         {shown.length > 0 && (
-          <ul className="max-h-40 overflow-y-auto rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <ul className="max-h-40 overflow-y-auto scroll-rounded rounded-xl border bg-muted/40 px-3 py-2 text-sm">
             {shown.map((title) => (
               <li key={title} className="truncate py-0.5">
                 {title}

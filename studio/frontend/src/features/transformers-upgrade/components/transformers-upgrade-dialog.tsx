@@ -11,11 +11,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { PackageIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { upgradeDialogActions } from "../lib/upgrade-dialog-actions";
+import {
+  upgradeDialogActions,
+  upgradeInstallVersion,
+} from "../lib/upgrade-dialog-actions";
 import { useTransformersUpgradeDialogStore } from "../stores/transformers-upgrade-dialog-store";
 
 function modelDisplayName(modelName: string | null): string {
@@ -23,8 +33,6 @@ function modelDisplayName(modelName: string | null): string {
   return modelName.split("/").pop() || modelName;
 }
 
-/** Root-mounted consent dialog for models needing a newer transformers;
- *  Install runs the sidecar install and resumes the paused load on success. */
 export function TransformersUpgradeDialog() {
   const open = useTransformersUpgradeDialogStore((s) => s.open);
   const modelName = useTransformersUpgradeDialogStore((s) => s.modelName);
@@ -39,9 +47,8 @@ export function TransformersUpgradeDialog() {
 
   const displayName = modelDisplayName(modelName);
   const modelType = upgrade?.model_type ?? "unknown";
-  const version = upgrade?.pypi_version ?? null;
-  // Only released PyPI versions are installable; dev (main) builds are never offered.
-  const { installable, devOnly, customCode } = upgradeDialogActions({
+  const version = upgradeInstallVersion(upgrade);
+  const { installable, fromMain, devOnly, customCode } = upgradeDialogActions({
     upgrade,
     phase,
     trustRemoteCodeFallback,
@@ -56,7 +63,8 @@ export function TransformersUpgradeDialog() {
         if (!next && !installing) resolve(false);
       }}
     >
-      <AlertDialogContent className="max-w-lg">
+      {/* A plain max-w loses to the size rule, whose 28rem can't fit a dev version's button row. */}
+      <AlertDialogContent className="sm:!max-w-[calc(34rem*var(--ui-space-scale,1))]">
         <AlertDialogHeader className="min-w-0">
           <div className="flex w-full min-w-0 items-start gap-3">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400">
@@ -69,41 +77,28 @@ export function TransformersUpgradeDialog() {
                   <span className="font-medium text-foreground">
                     {displayName}
                   </span>{" "}
-                  uses the{" "}
-                  <span className="font-mono text-foreground">{modelType}</span>{" "}
-                  architecture, which your installed transformers does not
-                  support yet.{" "}
+                  uses{" "}
+                  <span className="font-mono text-foreground">{modelType}</span>
                   {installable ? (
                     <>
-                      Install transformers{" "}
+                      , which needs transformers{" "}
                       <span className="font-medium text-foreground">
                         {version}
-                      </span>{" "}
-                      from PyPI to load it. The install runs once and can take a
-                      minute; loading continues automatically afterwards.
+                      </span>
+                      {fromMain ? " (development build)" : ""}. Updating takes
+                      about a minute.
                     </>
                   ) : devOnly ? (
                     <>
-                      Even the latest transformers release on PyPI does not
-                      support it yet: the architecture is only available on the
-                      transformers development branch (main), and Unsloth does
-                      not install development builds. Support arrives with the
-                      next transformers release on PyPI.
+                      , which only the transformers development build supports.
+                      Its version can't be checked right now; try again later.
                     </>
                   ) : (
-                    <>
-                      No released transformers version supports it yet, so it
-                      cannot be loaded.
-                    </>
+                    <>, which no transformers version supports yet.</>
                   )}
-                  {customCode ? (
-                    <>
-                      {" "}
-                      This model also ships its own modeling code; you can
-                      continue and review enabling that custom code instead,
-                      which loads it on the transformers you already have.
-                    </>
-                  ) : null}
+                  {customCode && !installable
+                    ? " You can still load it with the model's own code."
+                    : null}
                 </AlertDialogDescription>
               </div>
 
@@ -116,28 +111,35 @@ export function TransformersUpgradeDialog() {
               {installing ? (
                 <p className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Spinner className="size-3.5" />
-                  Installing transformers {version}... This can take a minute.
+                  Updating transformers to {version}...
                 </p>
               ) : null}
             </div>
           </div>
         </AlertDialogHeader>
 
-        <AlertDialogFooter>
+        <AlertDialogFooter className="sm:flex-wrap">
           <AlertDialogCancel disabled={installing}>Cancel</AlertDialogCancel>
           {installable ? (
             <>
               {customCode ? (
-                // The model ships custom code, so the caller's trust_remote_code gate
-                // loads it on the installed transformers. Offered next to Install, not
-                // only after one fails: installing activates the 16-bit sidecar, so this
-                // is the only way a 4-bit run on this model can start.
-                <AlertDialogAction
-                  className="bg-transparent text-foreground hover:bg-accent"
-                  onClick={() => resolve(true)}
-                >
-                  Continue with custom code
-                </AlertDialogAction>
+                // Installing forces 16-bit, so this is a 4-bit run's only path; the code scan follows.
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild={true}>
+                    <Button variant="outline">
+                      Other
+                      <HugeiconsIcon
+                        icon={ArrowDown01Icon}
+                        className="size-4"
+                      />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-auto">
+                    <DropdownMenuItem onSelect={() => resolve(true)}>
+                      Continue with custom code
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : null}
               <AlertDialogAction
                 disabled={installing}
@@ -151,18 +153,16 @@ export function TransformersUpgradeDialog() {
                 {installing ? (
                   <>
                     <Spinner className="size-4" />
-                    Installing...
+                    Updating...
                   </>
                 ) : phase === "error" ? (
-                  "Retry install"
+                  "Retry update"
                 ) : (
-                  `Install transformers ${version}`
+                  `Update transformers to ${version}`
                 )}
               </AlertDialogAction>
             </>
           ) : customCode ? (
-            // No installable release but the model ships custom code: continue
-            // into the caller's trust_remote_code gate as the last resort.
             <AlertDialogAction onClick={() => resolve(true)}>
               Continue with custom code
             </AlertDialogAction>

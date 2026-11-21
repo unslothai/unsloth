@@ -5,6 +5,7 @@ import pytest
 from datasets import Dataset, IterableDataset
 
 from utils.datasets import convert_chatml_to_alpaca, format_and_template_dataset
+from utils.datasets.dataset_utils import format_dataset
 
 SHAREGPT_ROLES = {"system": "system", "user": "human", "assistant": "gpt"}
 
@@ -78,6 +79,26 @@ def test_a_single_exchange_converts_as_before():
 
     assert converted.select_columns(["instruction", "input", "output"]).to_list() == [
         {"instruction": "Hello", "input": "", "output": "Hi there"}
+    ]
+
+
+def test_role_names_are_matched_case_and_whitespace_insensitively():
+    dataset = Dataset.from_dict(
+        {
+            "messages": [
+                [
+                    {"role": "System", "content": "Be brief."},
+                    {"role": "User", "content": "Hello"},
+                    {"role": " ASSISTANT ", "content": "Hi there"},
+                ]
+            ]
+        }
+    )
+
+    converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
+
+    assert converted.to_list() == [
+        {"instruction": "Hello", "input": "Be brief.", "output": "Hi there"}
     ]
 
 
@@ -186,5 +207,40 @@ def test_alpaca_format_trains_on_every_sharegpt_exchange():
     assert len(texts) == 6
     assert texts[5].endswith(
         "### Instruction:\nQ3-2\n\n### Input:\nSYS-2\n\nUser: Q1-2\nAssistant: A1-2\n"
-        "User: Q2-2\nAssistant: A2-2\n\n### Response:\nA3-2"
+        "User: Q2-2\nAssistant: A2-2\n\n### Response:\nA3-2</s>"
     )
+
+
+def test_unanswered_conversations_report_a_drop_warning():
+    dataset = Dataset.from_dict(
+        {
+            "messages": [
+                [
+                    {"role": "user", "content": "Q1"},
+                    {"role": "assistant", "content": "A1"},
+                ],
+                [{"role": "user", "content": "no answer yet"}],
+            ]
+        }
+    )
+
+    info = format_dataset(dataset, format_type = "alpaca")
+
+    assert [row["instruction"] for row in info["dataset"]] == ["Q1"]
+    assert any(
+        "Dropped 1 of 2 conversations with no assistant response" in warning
+        for warning in info["warnings"]
+    )
+
+
+def test_drop_count_spans_parallel_shards():
+    answered = [{"role": "user", "content": "Q"}, {"role": "assistant", "content": "A"}]
+    convos = [answered if i % 3 else [{"role": "user", "content": "Q"}] for i in range(30)]
+    stats = {}
+    converted = convert_chatml_to_alpaca(
+        Dataset.from_dict({"messages": convos}), 4, 2, chat_column = "messages", stats = stats
+    )
+
+    assert stats == {"conversations": 30, "dropped": 10}
+    assert converted.column_names == ["instruction", "input", "output"]
+    assert len(converted) == 20

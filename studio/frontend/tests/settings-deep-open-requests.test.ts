@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `archivedRequested` and `scrollTarget` are one-shot deep-link requests, cleared only by
-// the panel that performs the jump. Panels load on first view, so a navigation can move
-// before the chunk arrives: clearing too widely loses a deep-link still being served,
-// too narrowly replays a stale one. Both live while the dialog is open on their tab.
+// One-shot deep-link requests; panels lazy-load, so clearing too widely or narrowly breaks.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -54,7 +51,6 @@ test("an ordinary open does not inherit an abandoned deep-open", () => {
 });
 
 test("reselecting Data navigates nowhere, so the deep-open still stands", () => {
-  // The nav button fires on the active tab too, and the panel is still on the wire.
   reset();
   store.getState().openArchivedChats();
   store.getState().setActiveTab("data");
@@ -133,20 +129,27 @@ test("consuming a scroll target clears it", () => {
   assert.equal(store.getState().scrollTarget, null);
 });
 
-test("the canvas network target lands on Chat and stays until Chat reads it", () => {
-  reset();
-  store.getState().openDialog("chat", { scrollTarget: "chat-canvas-network" });
-  assert.equal(store.getState().activeTab, "chat");
-  assert.equal(store.getState().scrollTarget, "chat-canvas-network");
-  store.getState().setActiveTab("about");
-  assert.equal(store.getState().scrollTarget, null);
+test("browser network and Library storage land on their tab and stay until it reads them", () => {
+  for (const [tab, target, from] of [
+    ["browser", "browser-html-network", null],
+    ["library", "library-storage", "data"],
+    ["general", "general-hub", "data"],
+  ] as const) {
+    reset();
+    if (from) store.getState().openDialog(from);
+    store.getState().openDialog(tab, { scrollTarget: target });
+    assert.equal(store.getState().activeTab, tab);
+    assert.equal(store.getState().scrollTarget, target);
+    store.getState().setActiveTab(from ?? "about");
+    assert.equal(store.getState().scrollTarget, null);
+  }
 });
 
 test("a deep link can provide a stable focus fallback", () => {
   reset();
   const fallback = {} as HTMLElement;
-  store.getState().openDialog("chat", {
-    scrollTarget: "chat-canvas-network",
+  store.getState().openDialog("browser", {
+    scrollTarget: "browser-html-network",
     focusFallback: fallback,
   });
   assert.equal(store.getState().openerFallback, fallback);

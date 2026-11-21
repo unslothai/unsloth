@@ -1,0 +1,29 @@
+# Model defaults for convaiinnovations/laya decision models
+# learning_rate is for LoRA; Full Finetuning starts at 2.5e-5 instead, Laya's own encoder learning rate
+# Local Laya checkpoints, earlier Studio decision fine-tunes included, use these too
+
+training:
+  num_epochs: 4
+  learning_rate: 8e-4
+  batch_size: 8
+  gradient_accumulation_steps: 8
+  warmup_steps: 0
+  max_steps: 0
+  weight_decay: 0.01
+  random_seed: 3407
+  packing: false
+  train_on_completions: false
+  gradient_checkpointing: "unsloth"
+  optim: "adamw_torch"
+  lr_scheduler_type: "cosine"
+
+lora:
+  lora_r: 64
+  lora_alpha: 64
+  lora_dropout: 0.0
+
+logging:
+  enable_wandb: false
+  wandb_project: "decision-finetuning"
+  enable_tensorboard: false
+  log_frequency: 1

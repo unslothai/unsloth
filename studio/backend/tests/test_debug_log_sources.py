@@ -118,9 +118,8 @@ def test_the_running_session_is_marked_current():
 
 
 def test_a_retained_log_whose_pid_merely_starts_with_ours_is_not_current():
-    """Retention keeps the newest 20 session logs, so a file from pid 12345 can
-    still be sitting there while we are pid 1234. A substring test called both
-    of them the running session and could hand the picker the wrong default."""
+    """Retention keeps 20 session logs, so pid 12345 can sit beside our pid 1234; a substring match
+    wrongly marks both as current."""
     ours = _seed("server", f"server-20260813-101012-pid{os.getpid()}.log")
     other = _seed("server", f"server-20260101-090000-pid{os.getpid()}9.log")
     current = {s.label: s.is_current for s in debug_log_sources.list_sources()}
@@ -138,9 +137,8 @@ def test_only_the_newest_files_per_family_are_offered():
 
 
 def test_a_runtime_log_under_the_other_root_is_still_found(monkeypatch, tmp_path):
-    """studio_root() infers a root from the installer venv and the llama runner
-    does not, so on such an install the two disagree. Scanning one root only
-    would lose exactly the logs a failed model load writes."""
+    """studio_root() infers a root from the installer venv but the llama runner does not, so the two
+    can disagree; scanning one root loses failed-load logs."""
     other_home = tmp_path / "legacy-home"
     (other_home / "logs" / "llama-server").mkdir(parents = True)
     stray = other_home / "logs" / "llama-server" / "llama-1765009999-port-9099.log"
@@ -165,10 +163,7 @@ def test_the_default_source_prefers_the_running_session():
 
 
 def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
-    """ntpath.realpath decides per call whether to keep the \\\\?\\ prefix, so
-    the directory and the file in it can come back spelled differently. pathlib
-    reads that as two different drives, and the whole family disappears with no
-    error anywhere."""
+    """Extended-length prefixes can differ between dir and file, so pathlib sees two drives."""
     import ntpath
 
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
@@ -177,16 +172,13 @@ def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
     directory = "C:\\Users\\dan\\.unsloth\\studio\\logs\\server"
     entry = "\\\\?\\C:\\Users\\dan\\.unsloth\\studio\\logs\\server\\server-1-pid2.log"
     assert debug_log_sources._is_inside(entry, directory) is True
-    # The protection it exists for must still hold under the same spelling.
     assert debug_log_sources._is_inside("\\\\?\\C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
     assert debug_log_sources._is_inside("C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
-    # A sibling directory whose name merely starts with ours is not inside it.
     assert debug_log_sources._is_inside(directory + "-old\\x.log", directory) is False
 
 
 def test_a_case_insensitive_volume_does_not_list_a_file_twice(monkeypatch):
-    """On APFS or NTFS a home reached as /Users/Bob and as /Users/bob is one
-    directory. Case-sensitive dedup offered every log twice, under two ids."""
+    """On APFS/NTFS, /Users/Bob equals /Users/bob; case-sensitive dedup listed each log twice."""
     import ntpath
 
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
@@ -218,9 +210,8 @@ DESKTOP_FIXTURES = [
     "family,subdir,name", DESKTOP_FIXTURES, ids = [f[2] for f in DESKTOP_FIXTURES]
 )
 def test_the_desktop_shell_logs_are_offered(family, subdir, name):
-    """The Tauri shell writes these beside the Python logs, and backend-*.log is
-    the ONLY record when the backend dies before its own file logging starts.
-    Without them a user whose app failed to start is told nothing was logged."""
+    """Tauri shell logs sit beside the Python logs; backend-*.log is the only record if the backend
+    dies before file logging starts, so a failed app start is otherwise silent."""
     directory = _home() / subdir if subdir else _home()
     directory.mkdir(parents = True, exist_ok = True)
     (directory / name).write_text("desktop output\n", encoding = "utf-8")
@@ -240,8 +231,7 @@ def test_a_desktop_log_resolves_and_reads_back():
 
 
 def test_a_python_log_is_not_claimed_by_a_desktop_family():
-    """logs/ now has both flat desktop files and the per-family subdirectories,
-    so the globs must not overlap."""
+    """logs/ mixes flat desktop files with family subdirectories; the globs must not overlap."""
     _seed("server", f"server-20260813-101015-pid{os.getpid()}.log")
     (_home() / "logs").mkdir(parents = True, exist_ok = True)
     (_home() / "logs" / "backend-backend-1-2-s01.log").write_text("x\n", encoding = "utf-8")
@@ -253,8 +243,7 @@ def test_a_python_log_is_not_claimed_by_a_desktop_family():
 
 
 def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
-    """logs/llama-server is never pruned and reaches five figures on a real
-    install, while this endpoint is polled once a second."""
+    """Never-pruned llama-server logs reach five figures; this endpoint is polled each second."""
     directory = _home() / "logs" / "llama-server"
     directory.mkdir(parents = True, exist_ok = True)
     for i in range(400):
@@ -270,8 +259,7 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
     monkeypatch.setattr(Path, "stat", _counting_stat)
     files = debug_log_sources._family_files("llama-server")
     assert len(files) == debug_log_sources.MAX_SOURCES_PER_FAMILY
-    # Cost must track the presort slice (MAX * 3 candidates, an is_file plus a
-    # stat each), not the 400 files present.
+    # Cost tracks the presort slice (MAX * 3 candidates, is_file + stat each), not the 400 files.
     ceiling = debug_log_sources.MAX_SOURCES_PER_FAMILY * 3 * 2 + 8
     assert (
         calls["n"] <= ceiling
@@ -279,14 +267,32 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
     assert calls["n"] < 400, "cost still scales with the directory"
 
 
-def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):
-    """The writer and the reader disagreed about the tilde.
+def test_a_huge_directory_builds_paths_only_for_the_presort_slice(monkeypatch):
+    """The 1 Hz poll lists names instead of building a Path per directory entry."""
+    directory = _home() / "logs" / "llama-server"
+    directory.mkdir(parents = True, exist_ok = True)
+    for i in range(400):
+        (directory / f"llama-17660000{i:03d}-port-8080.log").write_text("x\n", encoding = "utf-8")
+    (directory / "LLAMA-1766999999-port-8080.log").write_text("x\n", encoding = "utf-8")
+    (directory / "notes.txt").write_text("x\n", encoding = "utf-8")
 
-    _swa_cache_path builds Path(home) raw, so a value passed literally (systemd
-    EnvironmentFile, dotenv) makes the runners write into a directory NAMED
-    "~", while expanduser sent discovery to the real home. Scanning one of the
-    two lost the llama logs the viewer exists to reach.
-    """
+    def _no_glob(self, *args, **kwargs):
+        raise AssertionError("glob builds a Path per directory entry")
+
+    monkeypatch.setattr(Path, "glob", _no_glob)
+    names = sorted(
+        (path.name for path in debug_log_sources._family_files("llama-server")), reverse = True
+    )
+    assert len(names) == debug_log_sources.MAX_SOURCES_PER_FAMILY
+    if os.name != "nt":  # Case folds on Windows only, so LLAMA-... is newest there.
+        expected = sorted(
+            (f"llama-17660000{i:03d}-port-8080.log" for i in range(400)), reverse = True
+        )
+        assert names == expected[: debug_log_sources.MAX_SOURCES_PER_FAMILY]
+
+
+def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):
+    """Runners may write to a literal ~ dir, so scan both spellings or llama logs vanish."""
     monkeypatch.chdir(tmp_path)
     literal = tmp_path / "~" / "studio"
     (literal / "logs" / "llama-server").mkdir(parents = True)
@@ -303,7 +309,6 @@ def test_no_live_session_defaults_to_the_newest_log_not_an_old_server_one(tmp_pa
     llama_dir = tmp_path / "logs" / "llama-server"
     server_dir.mkdir(parents = True)
     llama_dir.mkdir(parents = True)
-    # A retained log from a previous run: a pid that is not ours.
     old = server_dir / "server-20260101-000000-pid1.log"
     old.write_text("previous run\n", encoding = "utf-8")
     newest = llama_dir / "llama-1786000000.log"
@@ -330,3 +335,58 @@ def test_a_live_server_session_still_wins(tmp_path, monkeypatch):
 
     chosen = debug_log_sources.resolve_source_id(debug_log_sources.default_source_id())
     assert chosen == current
+
+
+def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
+    """Only the backend can match the raw path llama_cpp.py printed to a listed source."""
+    path = _seed("llama-server", "llama-1765000101-port-8080.log")
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
+    assert debug_log_sources.source_id_for_path(str(path)) == expected
+    assert debug_log_sources.source_id_for_path(os.path.realpath(path)) == expected
+
+
+def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
+    """A relative UNSLOTH_STUDIO_HOME makes the runner print a relative path; it still matches."""
+    path = _seed("llama-server", "llama-1765000102-port-8080.log")
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
+    monkeypatch.chdir(_home())
+    relative = os.path.join("logs", "llama-server", path.name)
+    assert not os.path.isabs(relative)
+    assert relative != str(path), "the two spellings must differ for this to mean anything"
+    assert debug_log_sources.source_id_for_path(relative) == expected
+
+
+def test_an_unexpanded_home_spelling_resolves_to_the_same_source(monkeypatch, tmp_path):
+    """An unexpanded home (systemd EnvironmentFile, dotenv) still matches its listed source."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
+    directory = tmp_path / "~" / "studio" / "logs" / "llama-server"
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "llama-1765000103-port-8080.log"
+    path.write_text("boom\n", encoding = "utf-8")
+
+    listed = [s for s in debug_log_sources.list_sources() if s.label == path.name]
+    assert listed, "the runner's own directory must be discoverable at all"
+    raw = os.path.join("~", "studio", "logs", "llama-server", path.name)
+    assert debug_log_sources.source_id_for_path(raw) == listed[0].id
+    assert raw != listed[0].realpath, "the spellings must differ for this to mean anything"
+
+
+def test_a_path_naming_nothing_listed_matches_nothing():
+    """An unmatched path falls back to family recency rather than inventing a match."""
+    _seed("llama-server", "llama-1765000104-port-8080.log")
+    for absent in ("", "   ", None, "/nowhere/llama-9.log", "/etc/passwd"):
+        assert debug_log_sources.source_id_for_path(absent) is None, absent
+
+
+def test_a_path_is_matched_against_the_listing_it_is_given(monkeypatch):
+    """The sources route already listed every file; matching must not walk the logs again."""
+    path = _seed("llama-server", "llama-1765000104-port-8080.log")
+    sources = debug_log_sources.list_sources()
+    expected = next(s for s in sources if s.label == path.name).id
+
+    def _no_second_walk():
+        raise AssertionError("listed the logs a second time")
+
+    monkeypatch.setattr(debug_log_sources, "list_sources", _no_second_walk)
+    assert debug_log_sources.source_id_for_path(str(path), sources) == expected

@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A tool result has to fit the room the conversation has LEFT, not a share of the window.
-
-`test_web_page_cap_fits_window.py` made the cap a share of the loaded window, which fixed
-one result being larger than the whole prompt budget. It does not fall as the thread fills,
-so the last result before an overflow is allowed exactly as much as the first:
-
-    ctx 4096 -> min(16000, max(2000, 4096 * 4 * 0.35)) = 5734 chars
-
-which is roughly 1,900 tokens of the dense ASCII these tools print, about 47% of the whole
-window, granted no matter how little is left. Reported live: `Qwen3.6-35B-A3B-GGUF` at 4096
-with code execution, "Create a Flappy Bird and save it to game.html", then "Print and show
-game.html verbatim" repeatedly. Each `cat` is individually under the cap and they accumulate
-until the turn cannot be served, and nothing downstream recovers -- the fit protects the
-newest turn, so compaction may not drop the very result that does not fit.
-"""
+"""A tool result must fit the room the thread has left, not a fixed share of the window."""
 
 from __future__ import annotations
 
@@ -57,19 +43,13 @@ def _spill_path(out: str) -> str:
 
 @pytest.fixture(autouse = True)
 def _records(tmp_path_factory, monkeypatch):
-    """Ownership records live in Unsloth's own storage, so tests get their own copy of it
-    rather than writing into the real one."""
+    """Tests get their own spill-record directory so they never write into the real one."""
     where = tmp_path_factory.mktemp("tool-output-records")
     monkeypatch.setattr(tools, "_spill_records_dir", lambda: str(where))
 
 
 def _own(workdir) -> "os.PathLike":
-    """The spill directory as Unsloth itself would leave it: created, and recorded as ours.
-
-    Tests that pre-create it are standing in for a sandbox this process has already
-    spilled into. A directory made any other way has no record, which is the case
-    `_own_spill_root` deliberately refuses.
-    """
+    """Creates the spill directory and records it as ours; _own_spill_root refuses unrecorded ones."""
     root = workdir / tools._SPILL_DIR
     assert tools._own_spill_root(str(root))
     return root
@@ -100,7 +80,6 @@ class TestTheBudgetFollowsTheRoom:
         late = tool_result_budget(ctx, None, target - 100)
 
         assert early > middle > late
-        # And never more than the budget it is measured against.
         assert early <= target
 
     def test_a_full_thread_gets_nothing_rather_than_a_share(self):
@@ -111,19 +90,16 @@ class TestTheBudgetFollowsTheRoom:
         assert tool_result_budget(4096, None, target + 5_000) == 0
 
     def test_it_reserves_the_reply_room_rather_than_filling_the_window(self):
-        """Sized against prompt_budget, not context_length. Filling to 99% of the physical
-        window leaves the prompt fitting and nothing to answer in, which is the
-        reserve-missing case the rolling fit already has to rescue."""
+        """Sized against prompt_budget, not context_length: filling to 99% leaves no reply room to
+        answer in."""
         room = tool_result_budget(4096, None, 0)
         assert room < prompt_budget(4096, None) <= 4096
-        # The gap is the reply reserve, and it is most of the difference from the window.
         assert 4096 - room > 1_000
 
 
 class TestTheCharacterCapHonoursIt:
     def test_a_nearly_full_thread_cannot_spend_the_window_share(self, monkeypatch):
-        """5,734 characters is what the window share allows at ctx 4096. With 120 tokens
-        of room left it must not be handed anything close to that."""
+        """With 120 tokens of room, the 5,734-character window share must not be granted."""
         _window(monkeypatch, 4096)
         text = _dense(40_000)
 
@@ -132,13 +108,11 @@ class TestTheCharacterCapHonoursIt:
         narrow = tools._dense_char_limit(text, tools._MAX_OUTPUT_CHARS)
 
         assert narrow < wide
-        # 120 tokens of dense ASCII is a few hundred characters, nowhere near the share.
         assert narrow < 2_000
 
     def test_the_floor_yields_when_the_room_is_smaller_than_it(self, monkeypatch):
-        """_MIN_PAGE_CHARS keeps a result worth reading, but it is a comfort and not a
-        right: holding 2,000 characters of dense output when 30 tokens remain reinstates
-        the overflow the budget exists to prevent."""
+        """_MIN_PAGE_CHARS is a comfort, not a right: 2,000 dense characters with 30 tokens left
+        overflows."""
         _window(monkeypatch, 4096)
         _room(30)
 
@@ -147,13 +121,7 @@ class TestTheCharacterCapHonoursIt:
         assert limit < tools._MIN_PAGE_CHARS
 
     def test_the_floor_yields_on_the_measured_leg_too(self, monkeypatch):
-        """The leg the test above misses, and the one that matters most.
-
-        `_exact_prefix_chars` bottoms out on the floor, so with a tokenizer serving the
-        request it returned the legacy 2,000 characters however little room was left:
-        100 tokens of room bought 2,000 characters, 666 tokens of dense output, 6.6x the
-        budget. The accurate leg was the leaky one.
-        """
+        """The room floor must yield on the measured tokenizer leg too, or the cap overshoots the budget."""
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         _room(100)
@@ -164,8 +132,7 @@ class TestTheCharacterCapHonoursIt:
         assert limit < tools._MIN_PAGE_CHARS
 
     def test_an_unpriced_call_behaves_exactly_as_before(self, monkeypatch):
-        """The blast radius. External providers and the hosted path never set a room, and
-        must see the window-share cap they saw before this existed."""
+        """Unpriced callers (external providers, hosted path) keep the old window-share cap."""
         _window(monkeypatch, 4096)
         text = _dense(40_000)
 
@@ -180,10 +147,7 @@ class TestTheCharacterCapHonoursIt:
         assert tools._dense_char_limit(_dense(40_000), 9_000) == 9_000
 
     def test_a_known_room_holds_even_with_an_unknown_window(self, monkeypatch):
-        """The native case: no resident GGUF, so `_window_context_tokens` sees nothing,
-        while the loop that called it knows exactly how full the thread is. Reading the
-        window as "no limits" there leaves every result uncapped on the one path with no
-        rolling fit to recover."""
+        """A known room must still cap results when the window size is unknown, as on the native path."""
         monkeypatch.setattr(tools, "_loaded_token_counter", lambda ctx: None)
         _room(50)
 
@@ -194,9 +158,7 @@ class TestTheCharacterCapHonoursIt:
 
 class TestPagingTheRest:
     def test_the_hint_names_a_range_that_resumes_where_the_head_stopped(self, tmp_path):
-        """A truncation the model can act on. The line the hint names must be the line
-        after the last one shown -- off by one either repeats a line of the user's file or
-        loses it."""
+        """The hint must name the line after the last one shown; off by one repeats or loses a line."""
         text = "\n".join(f"line {i}" for i in range(1, 501))
 
         out = tools._truncate(text, 200, workdir = str(tmp_path))
@@ -205,7 +167,6 @@ class TestPagingTheRest:
         shown = head.count("\n") + 1
         assert f"showing lines 1-{shown} of 500" in out
         assert f"sed -n '{shown + 1}," in out
-        # The named line really is the next one, read back off the spill.
         spill = _spill_path(out)
         full = (tmp_path / spill).read_text().splitlines()
         assert full[shown] == f"line {shown + 1}"
@@ -221,26 +182,18 @@ class TestPagingTheRest:
         assert head.splitlines()[-1] == f"line {head.count(chr(10)) + 1}"
 
     def test_one_enormous_line_is_still_cut_rather_than_dropped(self, tmp_path):
-        """Minified JS and base64 have no newline to rewind to. Rewinding anyway would
-        throw the whole result away to keep the hint tidy."""
+        """No newline to rewind to in minified text; rewinding would discard the whole result."""
         out = tools._truncate("A" * 40_000, 500, workdir = str(tmp_path))
 
         head = out.split("\n\n... (truncated")[0]
         assert len(head) == 500
 
     def test_a_mid_line_cut_resumes_by_bytes_rather_than_by_line(self, tmp_path):
-        """A line number cannot describe a cut that landed inside a line.
-
-        `shown` counts the partial line as complete, so a line-based resume starts at the
-        line AFTER the one the reader is standing in the middle of and skips everything
-        still unread in it. On single-line output -- minified JS, base64, one long JSON --
-        that is the entire remainder, and `sed` returns nothing at all.
-        """
+        """A mid-line cut resumes by byte offset; a line number would skip the rest of that line."""
         out = tools._truncate("A" * 40_000, 500, workdir = str(tmp_path))
 
         assert "sed -n" not in out, "a line number cannot resume a mid-line cut"
         assert "tail -c +501" in out
-        # And it really does resume at the first unseen byte.
         spill = _spill_path(out)
         assert (tmp_path / spill).read_text()[500:501] == "A"
 
@@ -309,15 +262,7 @@ class TestPagingTheRest:
         assert "sed -n" in out
 
     def test_the_spill_is_written_without_newline_translation(self, tmp_path, monkeypatch):
-        """The byte offset in the hint is counted from the untranslated text, so the file
-        has to hold those same bytes. The default text mode writes os.linesep, which on
-        Windows adds a byte per line and moves every later offset, resuming early and
-        repeating output.
-
-        Asserted on the open() call rather than on the bytes, because this platform does
-        not translate: comparing the file here would pass with or without the fix and
-        prove nothing about the platform the bug is on.
-        """
+        """Spill is written untranslated; on Windows os.linesep would shift the byte offsets in the hint."""
         seen = {}
         real_fdopen = os.fdopen
 
@@ -327,8 +272,7 @@ class TestPagingTheRest:
             *args,
             **kwargs,
         ):
-            # os.fdopen since the spill is opened O_NOFOLLOW by descriptor; the kwarg the
-            # newline behaviour rides on is the same one either way.
+            # Spill is opened O_NOFOLLOW by descriptor; the newline kwarg matches either way.
             if "w" in mode:
                 seen.update(kwargs)
             return real_fdopen(fd, mode, *args, **kwargs)
@@ -349,8 +293,7 @@ class TestPagingTheRest:
         assert "saved to" not in out
 
     def test_spills_do_not_accumulate_without_bound(self, tmp_path):
-        # Distinct bodies, so each really is a new spill: identical output is content
-        # addressed onto one file and would never exercise the prune at all.
+        # Identical output is content-addressed onto one file and would never exercise the prune.
         for n in range(tools._SPILL_KEEP + 6):
             tools._truncate(
                 f"run {n}\n" + "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
@@ -359,9 +302,8 @@ class TestPagingTheRest:
         assert len(_spills(tmp_path / tools._SPILL_DIR)) <= tools._SPILL_KEEP
 
     def test_the_same_output_twice_reuses_one_spill(self, tmp_path):
-        """Content addressed, so the notice is identical between the streaming and
-        non-streaming runs of one call, and printing the same file twice does not fill
-        the sandbox with copies."""
+        """Content-addressed, so streaming and non-streaming runs share one notice and no duplicate
+        spills."""
         text = "\n".join(f"line {i}" for i in range(1, 2_000))
 
         first = tools._truncate(text, 200, workdir = str(tmp_path))
@@ -371,15 +313,13 @@ class TestPagingTheRest:
         assert len(_spills(tmp_path / tools._SPILL_DIR)) == 1
 
 
-# Three characters per token, which is what the code tools actually print: minified HTML,
-# base64 and hexdumps all run nearer three than the four the character estimate assumes.
-# `_loaded_token_counter` is the same seam llama_cpp fills with the serving model.
+# Code tools print nearer three chars per token than the estimate's four.
+# `_loaded_token_counter` is the seam llama_cpp fills with the serving model.
 _CHARS_PER_TOKEN = 3
 
 
 def _tokenizer(monkeypatch):
-    # `token_budget` is the counter's own early-out and defaults to "no budget", exactly
-    # as the real one does.
+    # The stub's token_budget defaults to no budget, as the real counter's does.
     monkeypatch.setattr(
         tools,
         "_loaded_token_counter",
@@ -390,23 +330,19 @@ def _tokenizer(monkeypatch):
 def _cat_game_html(monkeypatch, page, *, price_the_room):
     """Run `cat game.html` three times and return what the thread ends up spending."""
     ctx = 4096
-    spent = 300  # system turn plus the first question
+    spent = 300
     for _ in range(3):
         _room(tool_result_budget(ctx, None, spent) if price_the_room else None)
         limit = tools._dense_char_limit(page, tools._tool_result_char_budget())
         served = tools._truncate(page, limit, workdir = None)
-        spent += len(served) // _CHARS_PER_TOKEN + 40  # the result plus the turn's framing
+        spent += len(served) // _CHARS_PER_TOKEN + 40
     return spent
 
 
 class TestTheReportedScenario:
     def test_repeated_prints_of_one_file_stay_inside_the_window(self, monkeypatch):
-        """The user's repro, as arithmetic. `cat game.html` three times at ctx 4096.
-
-        Reported against Qwen3.6-35B-A3B at 4096: each result is individually under the
-        cap, and the third turn cannot be served. Priced against the room left, and with
-        the serving model pricing the characters, the three together never pass the budget.
-        """
+        """Three cat game.html reads at ctx 4096 each fit alone; priced against room left, together
+        they fit."""
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         target = prompt_budget(4096, None)
@@ -430,14 +366,7 @@ class TestTheReportedScenario:
         assert spent > target
 
     def test_without_a_tokenizer_the_margin_still_keeps_it_inside(self, monkeypatch):
-        """The native path, where nothing can price a string exactly.
-
-        `_loaded_token_counter` answers only for a resident GGUF, so a safetensors model
-        converts its room with the four-characters-per-token English estimate, and the
-        dense ASCII these tools print runs nearer three. Left alone that overspends by
-        about a third, on the one loop with no rolling fit to recover with, so the
-        conversion is halved instead (`_UNMEASURED_ROOM_MARGIN`).
-        """
+        """Without a tokenizer the room is halved, as the English estimate overspends on dense output."""
         _window(monkeypatch, 4096)  # deliberately NO _tokenizer()
         target = prompt_budget(4096, None)
 
@@ -447,24 +376,14 @@ class TestTheReportedScenario:
 
 
 def _within_room(out: str, room: int) -> None:
-    """The body and the notice explaining the cut both fit inside the room.
-
-    `_RESULT_NOTICE_RESERVE` is charged by `_truncate` at the point the cut is decided, so
-    the number the caller was given covers the whole result rather than the body alone.
-    """
+    """The body and its cut notice must together fit the room the caller was given."""
     body = out.split("\n\n... (")[0]
     assert len(body) // _CHARS_PER_TOKEN <= room, "the body alone overruns the room"
     assert len(out) // _CHARS_PER_TOKEN <= room, "the notice is not inside the room"
 
 
 class TestEveryToolIsHeldToTheRoom:
-    """`python` and `terminal` truncate themselves; the rest hand their string back whole.
-
-    An MCP response is unbounded and an edit receipt or a search result runs to thousands
-    of characters, so a tool that is not the code sandbox can overflow the same nearly full
-    thread and land in the newest turn, which the next fit protects. Whatever the tool, the
-    result has to be held to the room.
-    """
+    """Every tool is held to the room; only python and terminal cap themselves, and MCP is unbounded."""
 
     def test_a_web_search_result_is_capped_by_the_room(self, monkeypatch):
         _window(monkeypatch, 4096)
@@ -600,13 +519,7 @@ class TestPruningOnlyTouchesStudioSpills:
 
 
 class TestTheFrontendEnvelopeSurvivesTheCap:
-    """Only what the model is shown is measured, and only it is cut.
-
-    An MCP screenshot comes back as a trailing `__MCP_IMAGES__` JSON array that can run to
-    megabytes of base64. `strip_result_for_model` removes it before the result is replayed,
-    so it costs the window nothing, and every consumer needs the whole valid array: a cut
-    inside it does not lose the image quietly, it hands the model the broken fragment.
-    """
+    """The trailing __MCP_IMAGES__ array is stripped before measuring, never cut into a fragment."""
 
     @staticmethod
     def _envelope(pixels: int) -> str:
@@ -635,7 +548,6 @@ class TestTheFrontendEnvelopeSurvivesTheCap:
         out = self._mcp(monkeypatch, _dense(40_000) + envelope)
 
         assert out.endswith(envelope), "the image envelope was cut"
-        # And the part that is replayed to the model is the capped one.
         _within_room(strip_result_for_model(out, "mcp"), 120)
 
     def test_the_envelope_is_not_charged_to_the_room(self, monkeypatch):
@@ -661,10 +573,7 @@ class TestTheFrontendEnvelopeSurvivesTheCap:
 
 
 class TestTheSpillStaysInsideTheSandbox:
-    """The workdir is a directory the model runs commands in, and can be a project the
-    user opened. Anything there may be a symlink it made or one that came with the
-    project, and following it writes this result outside the sandbox with the backend's
-    own permissions."""
+    """A symlinked spill directory is refused: following it would write outside the sandbox."""
 
     def test_a_symlinked_spill_directory_is_refused(self, tmp_path):
         workdir = tmp_path / "sandbox"
@@ -676,7 +585,6 @@ class TestTheSpillStaysInsideTheSandbox:
         out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(workdir))
 
         assert list(outside.iterdir()) == [], "the spill was written outside the sandbox"
-        # Refused, not crashed: the notice is still served, just without a paging hint.
         assert "truncated to" in out
         assert "saved to" not in out
 
@@ -693,11 +601,14 @@ class TestTheSpillStaysInsideTheSandbox:
         out = tools._truncate(text, 200, workdir = str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
-        # Refused rather than replaced: whatever is at that path is not a spill this
-        # recorded, so it is the user's, and the notice does without a paging hint.
+        # Whatever is at that path is not a recorded spill, so it is the user's.
         assert "saved to" not in out
         assert (target / f"{digest}.txt").is_symlink()
 
+    @pytest.mark.skipif(
+        os.utime not in os.supports_follow_symlinks,
+        reason = "cannot date a symlink itself here (Windows), so it cannot be made the oldest",
+    )
     def test_pruning_does_not_follow_symlinks_either(self, tmp_path):
         target = _own(tmp_path)
         victim = tmp_path / "victim.txt"
@@ -718,9 +629,8 @@ class TestTheSpillStaysInsideTheSandbox:
 
 class TestSpillsAreBoundedInBytes:
     def test_one_enormous_result_is_capped_on_disk(self, tmp_path, monkeypatch):
-        """The result arrives here whole, and the sandbox file-size limit does not apply to
-        output that came through a pipe. Without a byte cap a single `cat` of a huge file
-        is retained in full."""
+        """Pipe output escapes the sandbox file-size limit, so a byte cap is needed or one cat is
+        kept whole."""
         monkeypatch.setattr(tools, "_SPILL_MAX_BYTES", 4_096)
         text = _dense(50_000)
 
@@ -728,7 +638,6 @@ class TestSpillsAreBoundedInBytes:
 
         spill = tmp_path / _spill_path(out)
         assert spill.stat().st_size <= 4_096
-        # And the notice says so rather than promising the whole thing.
         assert "Full output saved to" not in out
         assert "first 4096 bytes" in out
 
@@ -743,8 +652,7 @@ class TestSpillsAreBoundedInBytes:
         assert spills, "the newest spill has to survive; it is the one just named"
 
     def test_the_spill_just_named_is_never_pruned(self, tmp_path, monkeypatch):
-        """The notice returned with it names that path, so a budget that deletes it on the
-        way out leaves the model a hint pointing at nothing."""
+        """The notice names this spill, so pruning it would leave a dangling hint."""
         monkeypatch.setattr(tools, "_SPILL_MAX_TOTAL_BYTES", 100)
 
         out = tools._truncate(_dense(50_000), 200, workdir = str(tmp_path))
@@ -752,9 +660,7 @@ class TestSpillsAreBoundedInBytes:
         assert (tmp_path / _spill_path(out)).exists()
 
     def test_a_result_served_whole_leaves_no_spill_behind(self, tmp_path):
-        """At zero room a short result is served as it is, so nothing was cut and there is
-        nothing to page through. Writing a file (and creating the directory) for it is a
-        side effect with nothing on the other side of it."""
+        """At zero room a short result is served whole, so no spill file or directory is written for it."""
         assert tools._truncate("done", 0, workdir = str(tmp_path)) == "done"
 
         assert not (tmp_path / tools._SPILL_DIR).exists()
@@ -775,9 +681,7 @@ class TestTheHintCountsTheLinesItShowed:
 
 class TestTheSpillCannotBeAimedElsewhere:
     def test_a_hard_link_at_the_spill_path_is_not_written_through(self, tmp_path):
-        """The name is a digest of content the model produced, so it can predict it and
-        pre-create it. A hard link reports islink() false and shares the inode of a file
-        outside the sandbox, so an O_TRUNC open writes through to it."""
+        """A hard link at the predictable spill name shares an outside inode, so O_TRUNC writes through."""
         workdir = tmp_path / "sandbox"
         workdir.mkdir()
         victim = tmp_path / "victim.txt"
@@ -790,8 +694,6 @@ class TestTheSpillCannotBeAimedElsewhere:
         out = tools._truncate(text, 200, workdir = str(workdir))
 
         assert victim.read_text() == "do not overwrite me"
-        # And nothing is written at that name either: it is not a spill this recorded, so
-        # it is the user's, whatever it is linked to.
         assert "saved to" not in out
         assert (target / f"{digest}.txt").read_text() == "do not overwrite me"
 
@@ -804,10 +706,7 @@ class TestTheSpillCannotBeAimedElsewhere:
 
 class TestAZeroCapStaysZero:
     def test_real_tokenizer_framing_does_not_buy_a_character(self, monkeypatch):
-        """A thread at its budget measures a room of zero, and a real tokenizer charges for
-        the framing around even an empty string. Handing back one character puts _truncate
-        past its stub path and onto the ordinary notice, which is the ~90 tokens the stub
-        exists not to spend when the measurement just said there are none."""
+        """A zero room must not return one character, which skips the stub path and spends a full notice."""
         _window(monkeypatch, 4096)
         # Nonzero for an empty probe, which is what a chat template does.
         monkeypatch.setattr(
@@ -823,11 +722,7 @@ class TestAZeroCapStaysZero:
 
 
 class TestOneChatsOutputStaysItsOwn:
-    """`_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
-    one session by design (`project_session_id`). A spill in either outlives the call under
-    a path the next chat can list and read, and can be pruned out from under the chat that
-    was told to page through it. Before this change that output existed only in the
-    originating response."""
+    """Spills in the shared default or project sandbox would be readable by other chats."""
 
     @staticmethod
     def _spill_args(
@@ -837,8 +732,6 @@ class TestOneChatsOutputStaysItsOwn:
         thread_id = None,
     ):
         seen = {}
-        # A real directory: the command runs with it as cwd, and a path that is not there
-        # fails the call long before anything is truncated.
         monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
         real = tools._truncate
 
@@ -852,8 +745,7 @@ class TestOneChatsOutputStaysItsOwn:
             return real(text, limit if limit is not None else 200)
 
         monkeypatch.setattr(tools, "_truncate", _recording)
-        # Builtin printf over a brace expansion: no command substitution, because the
-        # sandbox caps processes and a fork fails the call before it ever truncates.
+        # Builtin printf, no command substitution: the sandbox caps processes.
         tools._bash_exec("printf 'x%.0s' {1..5000}", None, 30, session_id, thread_id = thread_id)
         return seen
 
@@ -868,17 +760,14 @@ class TestOneChatsOutputStaysItsOwn:
         assert self._spill_args(monkeypatch, tmp_path, session)["scope"] is None
 
     def test_a_project_chat_retains_nothing_even_with_a_thread(self, monkeypatch, tmp_path):
-        """A sub-directory is not access control, it is a name: every sibling chat in the
-        project has a terminal in that same sandbox and can read and prune whatever is in
-        it. So a project chat truncates with a notice and no continuation."""
+        """A sub-directory is a name, not access control: sibling chats share the sandbox, so no spill."""
         session = tools.project_session_id("proj-1")
 
         assert self._spill_args(monkeypatch, tmp_path, session, "chat-a")["scope"] is None
         assert self._spill_args(monkeypatch, tmp_path, session, "chat-b")["scope"] is None
 
     def test_a_private_session_still_spills(self, monkeypatch, tmp_path):
-        """The control: the feature has to keep working where the sandbox is the
-        conversation's own."""
+        """Control: spilling must still work where the sandbox belongs to the conversation."""
         seen = self._spill_args(monkeypatch, tmp_path, "chat-1")
 
         assert seen["workdir"] == str(tmp_path)
@@ -903,10 +792,7 @@ class TestOneChatsOutputStaysItsOwn:
 
 
 class TestTheRetryHintIsInsideTheCap:
-    """`_missing_path_hint` is appended to the result and goes to the model with it, so it
-    is part of what has to fit. Added after the cap it is unbudgeted, and a failing
-    absolute path is dense text: on a thread with no room left those characters are the
-    overflow the cap exists to prevent."""
+    """The missing-path hint goes to the model with the result, so it is charged to the cap too."""
 
     _HINT = " " + "x" * 400
 
@@ -931,12 +817,8 @@ class TestTheRetryHintIsInsideTheCap:
         assert self._HINT not in capped
 
     def test_a_dense_hint_costs_more_than_its_length(self, monkeypatch):
-        """The point of pricing it in tokens. A punctuation-heavy absolute path tokenises
-        far more densely than the prose characters that would be dropped to make room for
-        it, so subtracting its LENGTH from the character cap buys less than it spends."""
+        """Paths tokenise densely, so subtracting the hint's LENGTH from the cap buys less than it costs."""
         _window(monkeypatch, 4096)
-        # A separator is its own token and a letter is a quarter of one, which is roughly
-        # what a tokenizer does to a path next to prose.
         monkeypatch.setattr(
             tools,
             "_loaded_token_counter",
@@ -953,10 +835,7 @@ class TestTheRetryHintIsInsideTheCap:
 
         assert with_hint.endswith(hint)
         body = with_hint.split("\n\n... (")[0]
-        # The hint is 100 tokens and the body runs four characters to the token, so the
-        # body has to give up about 400 characters to pay for it. Charged as prose it
-        # gives up its length, which line rounding can inflate a little: three times over
-        # is comfortably past anything that rounding explains.
+        # The 100-token hint costs ~400 chars of body; 3x is past any line-rounding.
         assert len(without) - len(body) >= 3 * len(
             hint
         ), "the body gave up about the hint's length, so the hint was charged as prose"
@@ -966,9 +845,7 @@ class TestTheRetryHintIsInsideTheCap:
 
 
 class TestTheSafetensorsLoopPricesItToo:
-    """The native path runs the same tools against the same window, and has no rolling fit
-    behind it: a `cat` of a file the model just wrote lands in the newest exchange with
-    nothing downstream able to evict it."""
+    """The native path has no rolling fit, so a cat of a fresh file cannot be evicted later."""
 
     @staticmethod
     def _run(
@@ -1024,19 +901,7 @@ class TestTheSafetensorsLoopPricesItToo:
         assert self._run(4096).get("context_tokens") == 4096
 
     def test_a_result_already_in_the_thread_is_priced_densely(self):
-        """The estimator charges ASCII four characters per token, an English rate, and the
-        results these tools return run nearer two. Priced at the English rate the second
-        call is handed room the first call already occupies, and this loop has no exact
-        count and no rolling fit to catch it.
-
-        Differential, so it cannot pass on the arithmetic alone: the same characters in a
-        user turn are ordinary prose and stay at the estimator's rate, while in a tool
-        result every ASCII character is charged at the dense one.
-
-        Spaced deliberately. An unbroken run of 4,000 characters is priced as a blob
-        wherever it appears, so a body without spaces would compare the two rates against
-        each other and find them equal.
-        """
+        """Results already in the thread are priced densely, unlike the same text in a user turn."""
         body = "abcd " * 800
         as_result = self._run(
             4096,
@@ -1056,10 +921,7 @@ class TestTheSafetensorsLoopPricesItToo:
         assert as_result < as_prose
 
     def test_a_parallel_batch_splits_the_room(self):
-        """One turn can call several tools, and each call is appended only as it runs, so
-        the spend knows nothing about the rest of the batch. Sized as if it were alone, the
-        first result takes the room the other calls and their results still need, and the
-        finished exchange is protected as the newest turn."""
+        """A parallel batch splits the room, since each result is appended only as its call runs."""
         alone = self._run(4096)["result_budget_tokens"]
         first_of_three = self._run(4096, calls = 3)["result_budget_tokens"]
 
@@ -1096,17 +958,13 @@ class TestAProjectIsBoundedAsOneWorkspace:
 
         root = tmp_path / tools._SPILL_DIR
         scopes = [p for p in root.iterdir() if p.is_dir()]
-        # The budget holds two of the four, so the other two were emptied by the prune and
-        # then removed rather than left standing.
         assert len(scopes) < 4
         assert all(any(scope.iterdir()) for scope in scopes)
 
 
 class TestDeletingAChatIsNotBlockedByItsSpills:
     def test_a_sandbox_holding_only_spills_is_still_removable(self, tmp_path):
-        """Spills are Unsloth's own, written by this process and deliberately kept off the
-        file cards. Counted as the user's content they leave an unreachable sandbox behind,
-        reported as holding files the user never created."""
+        """Spills are Unsloth's own, so counting them as user files would block deleting the chat."""
         tools._truncate(
             "\n".join(str(i) for i in range(5_000)),
             200,
@@ -1141,8 +999,7 @@ class TestDeletingAChatIsNotBlockedByItsSpills:
         assert not tools._holds_no_user_files(str(tmp_path))
 
     def test_a_file_named_like_a_spill_but_placed_elsewhere_counts(self, tmp_path):
-        """The name alone is not the test: twelve hex characters is a plausible name for
-        anything, and outside the spill root nothing here wrote it."""
+        """A spill-like name proves nothing; outside the spill root, nothing here wrote it."""
         (tmp_path / "abcdef123456.txt").write_text("mine")
 
         assert not tools._holds_no_user_files(str(tmp_path))
@@ -1164,8 +1021,7 @@ class TestTheNativePathIsBoundedWithoutATokenizer:
         )
 
     def test_a_measurable_room_is_not(self, monkeypatch):
-        """The control: where the serving model can price the string, the exact fit does
-        the work and no blanket margin is applied on top of it."""
+        """Control: a measurable room uses the exact fit, with no blanket margin on top."""
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         _room(400)
@@ -1177,10 +1033,7 @@ class TestTheNativePathIsBoundedWithoutATokenizer:
 
 
 class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
-    """The sandbox is a directory the model runs commands in, so nothing kept inside it is
-    evidence about it. A marker file there can be replaced with a link, and once it is a
-    plain file its contents can be rewritten to name the user's own files as Unsloth's,
-    which turns the cleanup into a delete. The record lives in Unsloth's own storage."""
+    """Ownership is recorded in Unsloth's own storage, never in the sandbox the model can rewrite."""
 
     def test_nothing_about_ownership_is_written_into_the_sandbox(self, tmp_path):
         out = tools._truncate("\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path))
@@ -1208,9 +1061,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         root = tmp_path / tools._SPILL_DIR
         shutil.rmtree(root)
         root.mkdir()
-        # The same NAME the record already knows, which is what makes the path alone
-        # insufficient: this file is the user's and the record was written about another
-        # directory that no longer exists.
+        # Same NAME the record knows, so the path alone is insufficient.
         theirs = root / name
         theirs.write_text("mine")
         for n in range(tools._SPILL_KEEP + 5):
@@ -1220,9 +1071,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         assert not tools._is_spill_artifact(str(tmp_path), str(root), name)
 
     def test_a_spill_written_over_stops_being_ours(self, tmp_path):
-        """A recorded path is not the file. Tool code can write its own content over a
-        spill, in place, and from then on it is the user's: not something to prune, and
-        not something the cleanup may delete the sandbox on top of."""
+        """Content written over a spill in place is the user's, so pruning and cleanup must leave it."""
         spilled = tools._truncate(
             "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
         )
@@ -1236,8 +1085,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
         assert not tools._holds_no_user_files(str(tmp_path))
 
     def test_an_untouched_spill_is_still_ours(self, tmp_path):
-        """The control: reading a spill back, which is the whole point of writing it, must
-        not turn it into user content."""
+        """Control: reading a spill back must not turn it into user content."""
         spilled = tools._truncate(
             "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
         )
@@ -1248,10 +1096,7 @@ class TestOwnershipIsNotKeptWhereToolCodeCanWriteIt:
 
 class TestConcurrentSpillsKeepTheirRecords:
     def test_a_spill_recorded_during_a_prune_is_not_dropped(self, tmp_path):
-        """A project's chats share one sandbox. Appending a spill and rewriting the
-        manifest after a prune are a read-modify-write over one file, and a pruner that
-        read it before another call appended would discard the newer entry, leaving a
-        file nothing counts, prunes, or recognises as Unsloth's."""
+        """Append and prune both rewrite one manifest, so a concurrent spill must not be lost."""
         import threading
 
         workdir = str(tmp_path)
@@ -1274,14 +1119,15 @@ class TestConcurrentSpillsKeepTheirRecords:
 
         root = tmp_path / tools._SPILL_DIR
         recorded = set(tools._spill_manifest(str(root)))
-        on_disk = {str(p.relative_to(root)) for p in root.rglob("*.txt") if p.name != "victim.txt"}
+        # The manifest keys are "/"-joined on every OS.
+        on_disk = {
+            p.relative_to(root).as_posix() for p in root.rglob("*.txt") if p.name != "victim.txt"
+        }
         assert on_disk, results[:1]
         assert on_disk <= recorded, "a spill on disk that the manifest does not record"
 
     def test_a_spill_restored_to_its_old_mtime_is_still_not_ours(self, tmp_path):
-        """mtime alone is forgeable: same-sized content and `os.utime` put it back, and a
-        coarse-grained filesystem can leave it unchanged without any help. ctime moves on
-        any write and cannot be set from userspace, and the content is checked besides."""
+        """mtime is forgeable via os.utime; ctime moves on any write and cannot be set from userspace."""
         spilled = tools._truncate(
             "\n".join(str(i) for i in range(5_000)), 200, workdir = str(tmp_path)
         )
@@ -1298,13 +1144,8 @@ class TestConcurrentSpillsKeepTheirRecords:
         not tools._DIR_FD_WRITES, reason = "no dir_fd support; the path-based write stands"
     )
     def test_the_spill_write_never_follows_a_swapped_directory(self, tmp_path):
-        """A shared project sandbox can lose the race between checking the directory and
-        writing into it by name: another call can put a symlink there in between, and a
-        path-based create and rename both follow it.
-
-        Checked on the writer itself, since by construction the swap happens after every
-        check the caller makes.
-        """
+        """A by-name write after the directory check can follow a symlink swapped in between by
+        another call."""
         outside = tmp_path / "outside"
         outside.mkdir()
         swapped = tmp_path / "scope"
@@ -1321,8 +1162,7 @@ class TestConcurrentSpillsKeepTheirRecords:
 
 
 class TestARemovedSandboxTakesItsRecordWithIt:
-    """Session workdirs are unique, so a record left behind is one small file per deleted
-    chat, for the life of the installation."""
+    """Deleting a sandbox must remove its record too, or one file per chat piles up."""
 
     @staticmethod
     def _sandbox(tmp_path, monkeypatch, session):
@@ -1352,9 +1192,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         assert not os.path.exists(record)
 
     def test_the_fallback_deletion_takes_it_too(self, tmp_path, monkeypatch):
-        """The rename can fail (a cross-device sandbox root, a locked tree on Windows), and
-        the rmtree that stands in for it deletes just as much, so it has to forget just as
-        much."""
+        """The rmtree fallback deletes as much as the rename would, so it must forget the record too."""
         workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill444")
 
         def _no_rename(*args, **kwargs):
@@ -1368,8 +1206,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         assert not os.path.exists(record)
 
     def test_a_sandbox_that_stays_keeps_its_record(self, tmp_path, monkeypatch):
-        """The control: the files are the user's, the sandbox stays, and so does the
-        record of what in it is Unsloth's."""
+        """Control: user files keep the sandbox and its record of Unsloth's own spills."""
         workdir, record = self._sandbox(tmp_path, monkeypatch, "__LOCALID_spill333")
         open(os.path.join(workdir, "game.html"), "w").close()
 
@@ -1378,10 +1215,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
         assert os.path.exists(record)
 
     def test_rerunning_a_command_does_not_overwrite_replaced_content(self, tmp_path):
-        """The name comes from the content, so running the same command again lands on the
-        same path. If the user's code put its own data there in between, the rename would
-        replace it: the manifest already knows it stopped being ours, and the write has to
-        ask."""
+        """A rerun must not overwrite a user file that replaced the spill, since it is no longer ours."""
         text = "\n".join(str(i) for i in range(5_000))
         spilled = tools._truncate(text, 200, workdir = str(tmp_path))
         theirs = tmp_path / _spill_path(spilled)
@@ -1429,9 +1263,7 @@ class TestARemovedSandboxTakesItsRecordWithIt:
 
 
 class TestTheContinuationChunkDecodes:
-    """`head -c` counts bytes. A round number of them lands inside a code point on any
-    mixed-width text, and the terminal runner decodes with errors="replace", so the
-    continuation the notice advertises would hand back a mangled character every time."""
+    """head -c counts bytes; a round offset can split a code point and mangle the continuation."""
 
     @staticmethod
     def _resume(out: str) -> "tuple[int, int]":
@@ -1440,9 +1272,7 @@ class TestTheContinuationChunkDecodes:
         return int(tail.split()[0]), int(head.rstrip(")").strip())
 
     def test_the_chunk_ends_on_a_character_boundary(self, tmp_path):
-        # One long line, so the cut is mid-line and the hint is byte-based. 299 ASCII
-        # characters and then three-byte ones: the head is 302 bytes, and 302 bytes of
-        # what follows is 100 characters plus two bytes of the next.
+        # Mid-line cut with multi-byte chars: the hint is byte-based.
         text = "a" * 299 + "€" * 4_000
 
         out = tools._truncate(text, 300, workdir = str(tmp_path))
@@ -1468,9 +1298,7 @@ class TestTheContinuationChunkDecodes:
 
 
 class TestInstallingASpillNeverReplacesAnything:
-    """The caller checks the destination, then the write takes as long as it takes. In
-    that window another call sharing the workspace can put a file at the name, and a
-    rename would replace it silently: POSIX rename overwrites, link does not."""
+    """Another call can create the name during the write; POSIX rename would overwrite it, link does not."""
 
     def test_a_name_taken_during_the_write_is_not_overwritten(self, tmp_path):
         theirs = tmp_path / "abcdef123456.txt"
@@ -1501,13 +1329,10 @@ class TestInstallingASpillNeverReplacesAnything:
         assert tools._truncate(text, 200, workdir = str(tmp_path)) == first
 
     def test_the_record_names_what_was_installed_not_what_is_there_now(self, tmp_path):
-        """Between the install and the record, another call sharing the sandbox can replace
-        the file. Stating the path then records THAT content as Unsloth's, and a later prune
-        or cleanup deletes the user's data on the strength of it."""
+        """Record the installed content, not a later stat: a file replaced after install is the user's."""
         root = _own(tmp_path)
         name = "abcdef123456.txt"
         stamp = tools._write_spill_file(str(root), name, "the spill")
-        # The replacement, in the window the record must not read across.
         (root / name).write_text("the user's own data")
 
         tools._record_spill(str(root), name, stamp, hashlib.sha256(b"the spill").hexdigest())
@@ -1519,17 +1344,11 @@ class TestInstallingASpillNeverReplacesAnything:
 
 
 class TestPruningDeletesOnlyWhatItChecked:
-    """The manifest lock orders Unsloth's own threads; the thing racing here is the sandbox.
-    A background process can replace a recorded spill between the check and the unlink, and
-    a delete by name then takes the replacement."""
+    """Manifest lock covers only Unsloth's threads, not other processes swapping files mid-delete."""
 
     @staticmethod
     def _swap_after_check(monkeypatch, victim, content):
-        """Replace the file after the prune has verified it and before it deletes it.
-
-        Hooked on the sort that runs between the two, since a swap during the verification
-        is caught by the verification itself and proves nothing about the window after it.
-        """
+        """Swaps the file between verification and delete, since an earlier swap is caught by the check."""
         real = os.path.getmtime
 
         def _getmtime(path):
@@ -1541,14 +1360,11 @@ class TestPruningDeletesOnlyWhatItChecked:
         monkeypatch.setattr(os.path, "getmtime", _getmtime)
 
     def test_a_file_swapped_after_the_check_is_not_deleted(self, tmp_path, monkeypatch):
-        # Enough that the oldest are on their way out: a prune with nothing to delete
-        # would prove nothing about what it deletes.
         for n in range(tools._SPILL_KEEP + 5):
             tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
         root = tmp_path / tools._SPILL_DIR
         victim = sorted(_spills(root), key = lambda p: p.stat().st_mtime)[0]
-        # Lowered so this pass has files to delete: the prune after each spill has already
-        # brought the directory back to the limit.
+        # Lowered so there are files to prune; each spill already prunes back to the limit.
         monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
         self._swap_after_check(monkeypatch, str(victim), "the user's own data")
 
@@ -1574,9 +1390,7 @@ class TestPruningDeletesOnlyWhatItChecked:
 
 
 class TestReadingASpillCannotBeRedirected:
-    """The stamp is taken a moment before the content is read, and this runs in the
-    sandbox's own directory. A plain open by name would follow a symlink installed in
-    between and block forever on a FIFO or a device, with no timeout above it."""
+    """Open by name would follow a symlink swapped in after the stamp and block forever on a FIFO."""
 
     def test_a_symlink_at_the_name_is_not_followed(self, tmp_path):
         elsewhere = tmp_path / "elsewhere.txt"
@@ -1586,6 +1400,39 @@ class TestReadingASpillCannotBeRedirected:
 
         assert tools._file_digest(str(link)) is None
 
+    def test_without_o_nofollow_a_symlink_is_still_refused(self, tmp_path, monkeypatch):
+        """Windows has no O_NOFOLLOW, so the guard above cannot rest on the open flag alone."""
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising = False)
+        elsewhere = tmp_path / "elsewhere.txt"
+        elsewhere.write_text("someone else's file")
+        link = tmp_path / "abcdef123456.txt"
+        link.symlink_to(elsewhere)
+        plain = tmp_path / "fedcba654321.txt"
+        plain.write_text("a spill")
+
+        assert tools._file_digest(str(link)) is None
+        assert tools._file_digest(str(plain)) == hashlib.sha256(b"a spill").hexdigest()
+
+    def test_without_o_nofollow_a_link_swapped_in_before_the_open_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising = False)
+        elsewhere = tmp_path / "elsewhere.txt"
+        elsewhere.write_text("someone else's file")
+        name = tmp_path / "abcdef123456.txt"
+        name.write_text("a spill")
+        real_open = os.open
+
+        def _swap_then_open(path, *args, **kwargs):
+            if os.fspath(path) == str(name):
+                os.unlink(name)
+                name.symlink_to(elsewhere)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", _swap_then_open)
+        assert tools._file_digest(str(name)) is None
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this OS")
     def test_a_fifo_is_refused_rather_than_read(self, tmp_path):
         fifo = tmp_path / "abcdef123456.txt"
         os.mkfifo(fifo)
@@ -1610,14 +1457,7 @@ class TestReadingASpillCannotBeRedirected:
 
 
 class TestPruningNeverMovesSomethingItCannotPutBack:
-    """A rename moves whatever is at the name, and the sandbox can put anything there.
-
-    The prune moves a spill to a private name so the inode it verified is the inode it
-    deletes. If the sandbox replaced that name with a directory first, the rename takes
-    the directory, the stamp check then rejects it, and `os.link` cannot put a directory
-    back: the user's data ends up stranded under a hidden temporary name. So nothing but
-    the regular file the record remembers is moved in the first place.
-    """
+    """Prune moves only the regular file its record names; a moved directory cannot be put back."""
 
     @staticmethod
     def _a_recorded_spill(tmp_path) -> "tuple[str, str, dict]":
@@ -1633,8 +1473,7 @@ class TestPruningNeverMovesSomethingItCannotPutBack:
 
     @staticmethod
     def _watch_renames(monkeypatch) -> list:
-        """Every source `os.rename` was asked to move. Putting a thing back afterwards is
-        the backstop; not moving it at all is the fix."""
+        """Records each source os.rename is asked to move; restoring it is only a backstop."""
         moved = []
         real = os.rename
 
@@ -1658,6 +1497,7 @@ class TestPruningNeverMovesSomethingItCannotPutBack:
         assert open(os.path.join(spill, "receipts.csv")).read() == "the user's own data"
         assert not self._private_names(root)
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this OS")
     def test_a_fifo_left_at_the_name_is_not_moved(self, tmp_path, monkeypatch):
         root, spill, owned = self._a_recorded_spill(tmp_path)
         os.unlink(spill)
@@ -1671,8 +1511,7 @@ class TestPruningNeverMovesSomethingItCannotPutBack:
         assert not self._private_names(root)
 
     def test_a_file_written_over_in_place_is_not_moved(self, tmp_path, monkeypatch):
-        """Same name, same inode, different content: the identity check is not just a
-        file-type check."""
+        """Same name and inode, new content: identity is checked beyond the file type."""
         root, spill, owned = self._a_recorded_spill(tmp_path)
         open(spill, "w").write("the user's own data")
         moved = self._watch_renames(monkeypatch)
@@ -1720,10 +1559,7 @@ def _refuses_directories(*args, **kwargs):
 
 
 class TestARejectedToolCallIsHeldToTheRoomToo:
-    """`python` and `terminal` cap the output of a run, but a call that never gets that
-    far returns straight out of the validator. The Python analyzer names every occurrence
-    it found, so code repeating one forbidden construct reports back a result larger than
-    the room that is left, which is the overflow the budget exists to prevent."""
+    """A rejected call returns before any output cap, so its message is held to the room too."""
 
     @staticmethod
     def _tampering(times: int) -> str:
@@ -1763,11 +1599,7 @@ class TestARejectedToolCallIsHeldToTheRoomToo:
 
 
 class TestTheNoticeIsChargedWhereTheCutIsDecided:
-    """A result that fits carries no notice, so reserving for one before the size is known
-    cuts results that would have fitted, and spends more of the window doing it: 200 tokens
-    of room and a 100-token result leaves 72 for the body and appends ~70 tokens of notice
-    to explain the 28 that were dropped. The reserve belongs at the point the cut is
-    decided, not in the number the caller is handed."""
+    """The notice reserve is charged only where a cut is decided, so fitting results pay nothing."""
 
     @staticmethod
     def _room_for(text: str, spare: int) -> int:
@@ -1782,8 +1614,7 @@ class TestTheNoticeIsChargedWhereTheCutIsDecided:
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
         text = _dense(3_000)
-        # Comfortably inside the room and well inside the reserve, which is the band where
-        # holding the reserve back turns a whole result into a truncated one.
+        # Inside the reserve band, where holding the reserve back truncates a whole result.
         room = self._room_for(text, _RESULT_NOTICE_RESERVE // 2)
         _room(room)
 
@@ -1805,9 +1636,7 @@ class TestTheNoticeIsChargedWhereTheCutIsDecided:
         _within_room(out, room)
 
     def test_a_caller_with_no_priced_room_is_unchanged(self, monkeypatch):
-        """The legacy leg: with no room the caller's character cap is the whole budget and
-        the notice has always been appended past it. Charging a token reserve against a
-        character cap there would cut every one of those callers to nothing."""
+        """With no priced room, a token reserve would cut legacy callers' character cap to nothing."""
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
 
@@ -1818,11 +1647,7 @@ class TestTheNoticeIsChargedWhereTheCutIsDecided:
 
 
 class TestACounterThatCannotAnswerIsNotACounter:
-    """`_loaded_token_counter` hands back a callable that returns None whenever the probe
-    does not come back with a number: `/apply-template` failing, or a template that drops
-    the probe role. `_exact_prefix_chars` then keeps the caller's estimate, which charges
-    ASCII the English four characters per token, and the margin that exists for exactly
-    this case was skipped because a counter was, technically, present."""
+    """A counter that answers None for every probe must not count as present, so the margin applies."""
 
     @staticmethod
     def _mute(monkeypatch):
@@ -1842,7 +1667,6 @@ class TestACounterThatCannotAnswerIsNotACounter:
         absent = tools._dense_char_limit(text, 1_000_000)
 
         assert mute == absent, "a counter that cannot measure was trusted anyway"
-        # 200 tokens at the estimate's four ASCII characters per token, halved.
         assert mute <= 200 * 4 * tools._UNMEASURED_ROOM_MARGIN
 
     def test_a_hint_is_priced_conservatively_too(self, monkeypatch):
@@ -1872,14 +1696,7 @@ class TestACounterThatCannotAnswerIsNotACounter:
 
 
 class TestADenseNativeTurnIsPricedAsOne:
-    """The native loop has no tokenizer and no rolling fit, so the number it computes for
-    what the thread has already spent is the whole defence. Charging a pasted blob the
-    English four characters per token reports a third of what it costs, and the result
-    admitted against that difference is what puts the next prompt over the window.
-
-    Measured with Qwen3 over 16-20k character samples, in characters per token: base64
-    1.35, hex 1.13, minified JSON 2.75, English prose 3.27, Python source 4.38.
-    """
+    """The native loop has no tokenizer, so dense pasted text must be priced by its real density."""
 
     @staticmethod
     def _turn(text: str) -> list:
@@ -1904,8 +1721,7 @@ class TestADenseNativeTurnIsPricedAsOne:
             )
 
     def test_wrapped_base64_is_still_a_blob(self):
-        """Conventionally wrapped at 76 characters, which is why the run threshold is 64
-        rather than a rounder number above it."""
+        """Wrapped base64 lines run 76 characters, so the 64 threshold must sit below that."""
         wrapped = self._turn("\n".join("QUJDREVG" * 9 + "QUJD" for _ in range(250)))
 
         assert estimate_messages_tokens_conservative(wrapped) > (
@@ -1913,10 +1729,7 @@ class TestADenseNativeTurnIsPricedAsOne:
         )
 
     def test_the_loop_hands_out_less_room_after_a_blob(self):
-        """End to end through the real loop: the same number of characters, priced as what
-        they are, leaves less room for the result that follows."""
-        # Sized to leave room either way at this window: two threads that both fit, one
-        # of which has spent twice what the other has on the same character count.
+        """Through the loop, a blob priced as tokens leaves less room for the next result."""
         blob = TestTheSafetensorsLoopPricesItToo._run(
             4096, messages = [{"role": "user", "content": _dense(4_000).replace("\n", "")}]
         )["result_budget_tokens"]
@@ -1928,10 +1741,7 @@ class TestADenseNativeTurnIsPricedAsOne:
 
 
 class TestSpillingDoesNotCopyTheResultAgain:
-    """The output this path runs on is by definition the output that did not fit. Encoding
-    all of it to hash it and all of it again to cut it puts two more copies of a `cat` of a
-    file the model just wrote through memory, at the point the result is already in hand,
-    when at most `_SPILL_MAX_BYTES` of the second is ever written."""
+    """Spilling copies at most _SPILL_MAX_BYTES, so memory stays bounded however large the result is."""
 
     def test_the_pass_is_bounded_by_the_cap_rather_than_the_result(self, tmp_path, monkeypatch):
         import tracemalloc
@@ -1982,10 +1792,7 @@ class TestSpillingDoesNotCopyTheResultAgain:
 
 
 class TestAToolResultIsPricedOnceOnTheNativePath:
-    """The conservative estimate prices every message it is handed, results included, so
-    adding a separately priced result total on top charges those messages twice. On text
-    it already charges a token a character, that is two tokens per character, and a thread
-    holding one sizable earlier result reports no room while it still has plenty."""
+    """A tool result is priced once on the native path; a separate result total double-charges it."""
 
     @staticmethod
     def _budget(message: dict) -> int:
@@ -2016,16 +1823,11 @@ class TestAToolResultIsPricedOnceOnTheNativePath:
 
 
 class TestTheResultIsPricedAsItWillBeSent:
-    """A tool result is swept for control markup before it is sent (#7066), and the sweep
-    costs tokens: a live `<|eot_id|>` is one special token in the raw text and several
-    ordinary ones once it has been broken up. Measured on the raw prefix, a result full of
-    them fits the room here and does not fit the prompt that follows, which is the overflow
-    this budget exists to prevent reached through the accurate leg."""
+    """Price a result as it will be sent: control-markup sweeping changes its token count."""
 
     @staticmethod
     def _serving(monkeypatch, ctx):
-        """A loaded backend that charges a token per character, so the count moves with
-        exactly what the sweep does to the text."""
+        """A loaded backend charging one token per character, so counts track the sweep."""
         from types import SimpleNamespace
 
         backend = SimpleNamespace(
@@ -2094,12 +1896,10 @@ class TestWhatTheLoopAppendsIsPricedToo:
     def test_an_error_result_is_shortened_by_what_the_nudge_costs(self, monkeypatch):
         from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
 
-        # The same length, so the only thing between them is the nudge one of them will be
-        # given: "Error: " opens with a `TOOL_ERROR_PREFIXES` entry and "Alpha: " does not.
+        # Same length; only "Error: " (a TOOL_ERROR_PREFIXES entry) gets the nudge.
         failed = self._fitted(monkeypatch, "Error: ")
         fine = self._fitted(monkeypatch, "Alpha: ")
 
-        # In characters, at the rate the fixture's counter charges them.
         assert fine - failed >= len(TOOL_ERROR_NUDGE) * 0.9, (failed, fine)
 
     def test_the_result_and_its_nudge_fit_the_room_together(self, monkeypatch):
@@ -2114,35 +1914,21 @@ class TestWhatTheLoopAppendsIsPricedToo:
         _within_room(out + TOOL_ERROR_NUDGE, 400)
 
     def test_a_result_whose_first_byte_is_a_newline_pays_for_one_too(self, monkeypatch):
-        """`is_tool_error` lstrips before it matches, so a result that opens with a blank
-        line and then an error prefix does carry the nudge. Measured on the unstripped
-        text it reserved nothing, and the room was then overspent by the whole nudge."""
+        """is_tool_error lstrips first, so a result starting with a newline still reserves the nudge."""
         from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
 
-        # As above, and the leading newline is the whole difference: the same prefixes,
-        # one byte further in.
         failed = self._fitted(monkeypatch, "\nError: ")
         fine = self._fitted(monkeypatch, "\nAlpha: ")
 
         assert fine - failed >= len(TOOL_ERROR_NUDGE) * 0.9, (failed, fine)
 
     def test_an_ordinary_result_does_not_pay_for_one(self, monkeypatch):
-        """The control: charged to the results that carry it, not to every result. A
-        reserve taken from all of them spends room the thread has."""
+        """Control: the nudge is charged only to results that carry it, not to every result."""
         assert self._fitted(monkeypatch, "Alpha: ") == self._fitted(monkeypatch, "Bravo: ")
 
 
 class TestATimedOutCallIsPricedWithItsStatusLine:
-    """A timed-out `python` or `terminal` call hands back the output it had already
-    printed with the status line after it. The two are fitted separately against the same
-    `_request_result_room`, so without a reserve the output takes all of it and the line
-    is spent on top -- and `python` and `terminal` are the tools that cap themselves, so
-    no `_fit_result_to_room` downstream corrects the overspend.
-
-    Measured the way the retry nudge is: the same captured output, fitted once with a
-    status line coming after it and once without, and the difference is what the line
-    costs.
-    """
+    """A timed-out call's status line shares the room with its output, so it must be reserved."""
 
     PRINTED = 40_000
 
@@ -2164,9 +1950,8 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         return tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = room)
 
     def _captured_everything(self, out: str) -> None:
-        """The notice counts the whole captured text, so this is what says the drain got
-        all of it. Without it a short capture would satisfy the size comparison below for
-        the wrong reason."""
+        """The notice's total shows the drain got all output, so a short capture cannot pass the
+        size check."""
         assert f"{self.PRINTED + 1} chars total" in out, out[-200:]
 
     def test_the_status_line_is_deducted_from_what_the_output_may_take(self, monkeypatch):
@@ -2179,7 +1964,6 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         assert timed_out.endswith(line)
         body = timed_out[: -len(line)]
 
-        # In characters, at the rate the fixture's counter charges them.
         assert len(completed) - len(body) >= len(line) * 0.9, (len(body), len(completed))
 
     def test_the_terminal_side_pays_for_it_too(self, monkeypatch):
@@ -2235,8 +2019,7 @@ class TestATimedOutCallIsPricedWithItsStatusLine:
         assert roomy.startswith("Error: failed"), roomy
 
     def test_a_silent_timeout_pays_nothing_for_output_it_never_had(self, monkeypatch):
-        """The control: charged to the calls that carry output, and a command that printed
-        nothing still gets exactly the sentence it always did."""
+        """Control: a silent timeout is charged nothing and keeps its old sentence."""
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
 
@@ -2256,14 +2039,11 @@ class TestTheResultIsFittedAsItIsReplayed:
     measured, and the text replayed to the model is larger than the prefix admitted."""
 
     def test_the_body_is_the_length_the_notice_claims(self, monkeypatch):
-        """Through the real terminal path, on output that is all marker lines. The notice
-        names the number of characters the body was cut to, so a body longer than that is
-        text that was added after the measurement."""
+        """The notice names the cut length, so a longer body means text was added after the measurement."""
         import re
 
         _window(monkeypatch, 4096)
         _tokenizer(monkeypatch)
-        # Anchored on the line start, so the text has to carry the break with it.
         lines = "\n__FILES__:x" * 3
         assert tools._defuse_sentinels(lines) != lines, "not a marker line any more"
 
@@ -2275,7 +2055,81 @@ class TestTheResultIsFittedAsItIsReplayed:
 
         head, _, notice = out.partition("\n\n... (truncated to ")
         assert notice, out[:200]
-        # At most, not exactly: the head stops on a line boundary, so it comes in under
-        # the limit. Over it is text that was added after the measurement.
+        # At most: the head stops on a line boundary.
         assert len(head) <= int(re.match(r"(\d+) chars", notice).group(1)), len(head)
         assert head == tools._defuse_sentinels(head)
+
+
+class TestAPruneReadsTheRecordOnce:
+    def test_the_rewrite_reuses_the_identity_it_already_read(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        before = open(record, encoding = "utf-8").read().splitlines()[0]
+        reads = []
+        real = tools._spill_record
+
+        def _counting(path):
+            reads.append(path)
+            return real(path)
+
+        monkeypatch.setattr(tools, "_spill_record", _counting)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert len(reads) == 1, reads
+        assert open(record, encoding = "utf-8").read().splitlines()[0] == before
+        assert len(_spills(root)) == 5
+
+    def test_a_record_forgotten_during_the_prune_does_not_get_its_identity_back(
+        self, tmp_path, monkeypatch
+    ):
+        """Sandbox removal drops the record without the spill lock; a recreated directory must not inherit it."""
+        for n in range(tools._SPILL_KEEP + 5):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        record = tools._spill_record_path(str(root))
+        real = tools._unlink_verified_spill
+
+        def _forget_first(*args, **kwargs):
+            tools._forget_spill_record(record)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(tools, "_unlink_verified_spill", _forget_first)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", 5)
+
+        tools._prune_spills(str(root))
+
+        assert tools._spill_record(str(root))[0] is None
+
+    def test_kept_spills_are_not_hashed_again(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        hashed = []
+        real = tools._file_digest
+        monkeypatch.setattr(
+            tools, "_file_digest", lambda *a, **k: hashed.append(a) or real(*a, **k)
+        )
+
+        tools._prune_spills(str(root))
+
+        assert hashed == []
+        assert len(_spills(root)) == tools._SPILL_KEEP
+
+    def test_a_spill_whose_content_no_longer_matches_is_not_deleted(self, tmp_path, monkeypatch):
+        for n in range(tools._SPILL_KEEP + 1):
+            tools._truncate(f"run {n}\n" + _dense(3_000), 200, workdir = str(tmp_path))
+        root = tmp_path / tools._SPILL_DIR
+        identity, owned = tools._spill_record(str(root))
+        oldest = min(_spills(root), key = os.path.getmtime)
+        name = os.path.relpath(oldest, root).replace(os.sep, "/")
+        owned[name] = (owned[name][0], "0" * 64)
+        tools._write_spill_manifest(str(root), owned, identity = identity)
+        monkeypatch.setattr(tools, "_SPILL_KEEP", tools._SPILL_KEEP - 1)
+
+        tools._prune_spills(str(root))
+
+        assert os.path.exists(oldest)

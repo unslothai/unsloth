@@ -14,8 +14,7 @@ function deferred() {
 }
 
 test("a second caller waits rather than running alongside the first", async () => {
-  // Two sidebars can be mounted at once; overlapping passes would make the
-  // write concurrency cap per pass only.
+  // Two sidebars can be mounted at once; overlapping passes would break the concurrency cap.
   const run = createSerialQueue();
   const first = deferred();
   let active = 0;

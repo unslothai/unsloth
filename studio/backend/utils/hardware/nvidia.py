@@ -5,9 +5,13 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
+
+from . import gpu_query
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
@@ -55,11 +59,10 @@ def _uuid_visible_ordinal_map(
     parent_cuda_visible_devices: Optional[str], gpu_rows: list[tuple[int, str]]
 ) -> Optional[dict[int, int]]:
     """Resolve an ordered full-GPU UUID mask against nvidia-smi rows."""
-    tokens = [
-        token.strip().lower()
-        for token in (parent_cuda_visible_devices or "").split(",")
-        if token.strip()
-    ]
+    tokens = [token.strip().lower() for token in (parent_cuda_visible_devices or "").split(",")]
+    # CUDA stops at the first empty entry: a leading one hides every GPU, so leave it unresolved.
+    if "" in tokens:
+        tokens = tokens[: tokens.index("")]
     if not tokens or any(not token.startswith("gpu-") for token in tokens):
         return None
 
@@ -72,11 +75,28 @@ def _uuid_visible_ordinal_map(
     return visible_ordinals
 
 
-def get_physical_gpu_count() -> Optional[int]:
-    """Return physical GPU count via nvidia-smi, or None on failure."""
+_UUID_MASK_TTL_S = 30.0
+_uuid_mask_cache: dict[tuple[str, int], tuple[float, Optional[list[int]]]] = {}
+
+
+def resolve_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
+    """Physical nvidia-smi indices for a full-GPU UUID mask, in mask order; None if any token is unresolvable."""
+    # Keyed on the static generation so invalidate_static() (eGPU hotplug, driver reset) drops it;
+    # gpu_query never caches failures, so a hung nvidia-smi costs its timeout per call.
+    key = (parent_cuda_visible_devices, gpu_query._static_gen)
+    hit = _uuid_mask_cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < _UUID_MASK_TTL_S:
+        return None if hit[1] is None else list(hit[1])
+    ids = _query_uuid_mask(parent_cuda_visible_devices)
+    _uuid_mask_cache.clear()
+    _uuid_mask_cache[key] = (time.monotonic(), ids)
+    return None if ids is None else list(ids)
+
+
+def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "-L"],
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,uuid", "--format=csv,noheader"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -85,22 +105,231 @@ def get_physical_gpu_count() -> Optional[int]:
             env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed while resolving a UUID mask: %s", e)
+        return None
+    if result.returncode != 0:
+        return None
+    gpu_rows = []
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) == 2 and parts[0].isdecimal():
+            gpu_rows.append((int(parts[0]), parts[1]))
+    visible_ordinals = _uuid_visible_ordinal_map(parent_cuda_visible_devices, gpu_rows)
+    if visible_ordinals is None:
+        return None
+    return sorted(visible_ordinals, key = visible_ordinals.__getitem__)
+
+
+def get_physical_gpu_count(gpu_rows_only: bool = False) -> Optional[int]:
+    """Return physical GPU count via nvidia-smi, or None on failure. ``gpu_rows_only`` skips the indented MIG child rows."""
+    probe = _mig_probe_start()
+    published = False
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "-L"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        # Same listing get_mig_gpu_indices parses: publish it so memory polls reuse it.
+        published = True
+        _mig_finish(probe, result)
         if result.returncode == 0 and result.stdout.strip():
-            return len(result.stdout.strip().splitlines())
+            lines = result.stdout.strip().splitlines()
+            if gpu_rows_only:
+                return sum(1 for line in lines if line.startswith("GPU "))
+            return len(lines)
         logger.warning(
             "nvidia-smi -L returned code %d; caller should fall back to torch",
             result.returncode,
         )
     except Exception as e:
+        if not published:
+            # This probe is the latest started: a raise must leave MIG unknown, not the old answer.
+            _mig_finish(probe, None)
         logger.warning("nvidia-smi -L failed: %s; caller should fall back to torch", e)
     return None
 
 
+# MIG discovery cache: one entry (gen, seq, at, indices), indices None meaning unknown
+# (the probe failed, answered empty, or its listing was already superseded). Every probe
+# takes a sequence number when it starts and may only replace an entry of its own static
+# generation from an earlier-started probe, so the latest-started probe always wins. An
+# answer lives for gpu_query's static TTL from when its listing was taken; an unknown
+# for a short backoff, so a broken nvidia-smi adds no work per poll.
+_MIG_FAILURE_RETRY_S = 5.0
+_mig_entry: Optional[tuple[int, int, float, Optional[frozenset[int]]]] = None
+_mig_seq = 0
+_mig_lock = threading.Lock()
+_MISS = object()
+
+
+def _mig_probe_start() -> tuple[int, int, float]:
+    global _mig_seq
+    with _mig_lock:
+        _mig_seq += 1
+        return gpu_query._static_gen, _mig_seq, time.monotonic()
+
+
+def _mig_cached() -> Any:
+    """The fresh entry's indices (None = unknown), or _MISS when a probe is due."""
+    entry = _mig_entry
+    if entry is None or entry[0] != gpu_query._static_gen:
+        return _MISS
+    # Same lifetime as gpu_query's static inventory: UNSLOTH_GPU_QUERY_STATIC_TTL (0 too).
+    ttl = gpu_query.ttl_for(gpu_query.STATIC)
+    life = ttl if entry[3] is not None else min(ttl, _MIG_FAILURE_RETRY_S)
+    return entry[3] if time.monotonic() - entry[2] < life else _MISS
+
+
+def _mig_finish(probe: tuple[int, int, float], result: Any) -> Optional[frozenset[int]]:
+    """Publishes a probe's outcome (None if the query raised); returns the indices or None."""
+    global _mig_entry
+    gen, seq, started = probe
+    stdout = getattr(result, "stdout", None)
+    indices: Optional[frozenset[int]] = None
+    at = time.monotonic()
+    if getattr(result, "returncode", 1) == 0 and isinstance(stdout, str) and stdout.strip():
+        taken = _listing_taken_at(started, stdout)
+        if taken is None:
+            # A newer listing replaced this one: never publish or act on it.
+            cached = _mig_cached()
+            return None if cached is _MISS else cached
+        indices, at = _parse_mig_gpu_indices(stdout), taken
+    with _mig_lock:
+        if gen != gpu_query._static_gen:
+            return None
+        cur = _mig_entry
+        if cur is not None and cur[0] == gen and cur[1] > seq:
+            return cur[3]
+        _mig_entry = (gen, seq, at, indices)
+        return indices
+
+
+def _listing_taken_at(started: float, stdout: Any) -> Optional[float]:
+    """Start time of the gpu_query entry holding this -L stdout answer (or the query start when the
+    cache is off); None if a newer listing replaced it."""
+    if not gpu_query.enabled():
+        return started
+    try:
+        at = gpu_query.answered_at([_nvidia_smi_executable(), "-L"], stdout)
+    except Exception:
+        return None
+    return None if at is None else min(at, started)
+
+
+def _parse_mig_gpu_indices(stdout: Any) -> frozenset[int]:
+    if not isinstance(stdout, str):
+        return frozenset()
+    indices: set[int] = set()
+    current: Optional[int] = None
+    for line in stdout.splitlines():
+        if line.startswith("GPU "):
+            head = line[4:].split(":", 1)[0].strip()
+            current = int(head) if head.isdecimal() else None
+        elif current is not None and line.strip().startswith("MIG "):
+            indices.add(current)
+    return frozenset(indices)
+
+
+_mig_mode_entry: Optional[tuple[int, float, Optional[frozenset[int]]]] = None
+
+
+def get_mig_mode_gpu_indices_or_none() -> Optional[set[int]]:
+    """Physical indices of cards in MIG mode, with instances or not, or None when the query fails.
+    A MIG-mode card with no instances has no ``-L`` MIG row and no CUDA device either."""
+    global _mig_mode_entry
+    entry = _mig_mode_entry
+    if entry is not None and entry[0] == gpu_query._static_gen:
+        ttl = gpu_query.ttl_for(gpu_query.STATIC)
+        if time.monotonic() - entry[1] < (
+            ttl if entry[2] is not None else min(ttl, _MIG_FAILURE_RETRY_S)
+        ):
+            return None if entry[2] is None else set(entry[2])
+    gen, indices = gpu_query._static_gen, None
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [
+                _nvidia_smi_executable(),
+                "--query-gpu=index,mig.mode.current",
+                "--format=csv,noheader",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        stdout = getattr(result, "stdout", None)
+        if getattr(result, "returncode", 1) == 0 and isinstance(stdout, str) and stdout.strip():
+            found: set[int] = set()
+            for line in stdout.splitlines():
+                parts = [part.strip() for part in line.split(",")]
+                if len(parts) != 2 or not parts[0].isdecimal():
+                    found = None
+                    break
+                if parts[1].lower() == "enabled":
+                    found.add(int(parts[0]))
+            indices = None if found is None else frozenset(found)
+    except Exception:
+        indices = None
+    _mig_mode_entry = (gen, time.monotonic(), indices)
+    return None if indices is None else set(indices)
+
+
+def get_mig_gpu_indices() -> set[int]:
+    """Physical indices of GPUs with MIG instances (indented ``MIG`` rows under their
+    ``GPU N:`` row in ``nvidia-smi -L``). CUDA sees such a card as one slice, so its
+    ``--query-gpu`` memory is the whole card's, not the device's. Empty when discovery
+    is unknown: placement uses get_mig_gpu_indices_or_none to tell the two apart."""
+    return set(_mig_gpu_lookup() or ())
+
+
+def get_mig_gpu_indices_or_none() -> Optional[set[int]]:
+    """``get_mig_gpu_indices``, but None when MIG discovery is unknown: the latest-started
+    probe of this generation failed, answered empty or was superseded, or none has run.
+    An empty set means a listing answered and no card has MIG instances."""
+    indices = _mig_gpu_lookup()
+    return None if indices is None else set(indices)
+
+
+def _mig_gpu_lookup() -> Optional[frozenset[int]]:
+    cached = _mig_cached()
+    if cached is not _MISS:
+        return cached
+    probe = _mig_probe_start()
+    return _mig_finish(probe, _run_mig_listing())
+
+
+def _run_mig_listing() -> Any:
+    """``nvidia-smi -L`` through gpu_query, or None when it raised."""
+    try:
+        return gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "-L"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        return None
+
+
 def get_primary_gpu_utilization() -> dict[str, Any]:
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--query-gpu=utilization.gpu,temperature.gpu,"
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
@@ -147,9 +376,9 @@ def get_visible_gpu_utilization(
         "utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     )
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 f"--query-gpu={query_fields}",
                 "--format=csv,noheader,nounits",
             ],
@@ -238,12 +467,18 @@ def get_visible_gpu_utilization(
     }
 
 
+_WSL_NVIDIA_SMI = "/usr/lib/wsl/lib/nvidia-smi"
+
+
 def _nvidia_smi_executable() -> str:
     """The nvidia-smi to run, resolving the standard Windows locations off PATH. A driver install can leave nvidia-smi.exe in the NVSMI directory or the driver store without putting either on PATH, and a bare "nvidia-smi" then raises FileNotFoundError, leaving the physical inventory empty on exactly the host this inventory exists for: real GPUs, a PyTorch that cannot see them. Same two locations setup.ps1 falls back to. Returns the bare name when nothing better is found, so the caller's existing OSError handling still applies."""
     found = shutil.which("nvidia-smi")
     if found:
         return found
     if platform.system() != "Windows":
+        # WSL: often off PATH (secure_path strips it), and no /proc/driver/nvidia fallback.
+        if platform.system() == "Linux" and os.path.isfile(_WSL_NVIDIA_SMI):
+            return _WSL_NVIDIA_SMI
         return "nvidia-smi"
     for base, tail in (
         (os.environ.get("ProgramFiles"), r"NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
@@ -261,15 +496,14 @@ def _nvidia_smi_executable() -> str:
 NVIDIA_SMI_ABSENT = object()
 
 
+# This thread's last inventory exit code: exit 6 is nvidia-smi's own "No devices were found".
+_inventory_exit = threading.local()
+
+
 def _query_gpu_inventory(caller: str) -> Any:
-    """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
-
-    ``None`` when the query could not be answered at all (no nvidia-smi on PATH, a driver that hung past the timeout, a non-zero exit), which callers report as "unknown" and is not the same as the empty list a working driver with no cards returns. Never raises.
-
-    Split out of get_backend_visible_gpu_info so the same rows can be read WITHOUT a ``DeviceType.CUDA`` precondition: get_physical_gpu_inventory below is reached on exactly the host where torch reports no CUDA device, and that host still has its GPUs. Rows a caller cannot make sense of are dropped rather than raised on: a name holding commas is rejoined, and a malformed index or memory column skips the row.
-    """
+    """None when nvidia-smi could not answer at all, not the empty list of a working driver with no cards; never raises, and needs no DeviceType.CUDA precondition."""
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
                 _nvidia_smi_executable(),
                 "--query-gpu=index,name,memory.total",
@@ -291,6 +525,7 @@ def _query_gpu_inventory(caller: str) -> Any:
         # Past this point an nvidia-smi WAS found, so a failure is a real fault on this host.
         logger.warning("nvidia-smi query failed in %s: %s", caller, e)
         return None
+    _inventory_exit.code = result.returncode
     if result.returncode != 0:
         return None
 
@@ -305,6 +540,9 @@ def _query_gpu_inventory(caller: str) -> Any:
             continue
         # Rejoin in case the GPU name contains commas
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
+        # RTX Spark's MCDM NPU: listed by nvidia-smi, not a CUDA GPU, no memory metrics.
+        if name.casefold() == "nvidia npu":
+            continue
         # A capacity this build of nvidia-smi will not report ("[N/A]", as _parse_smi_value already recognises) is a missing metric, not a missing card. Dropping the row hid the GPU from the whole inventory, and the Linux procfs fallback does not run either since it answers for a query that FAILED rather than one that came back short: the host lost its mismatch and its repair guidance over an unknown size.
         mem_total_mb = _parse_smi_value(parts[-1])
         rows.append(
@@ -328,6 +566,323 @@ def _linux_nvidia_procfs_gpu_count() -> int:
     except OSError:
         return 0
     return len(entries)
+
+
+def has_nvidia_driver() -> bool:
+    return (
+        shutil.which(_nvidia_smi_executable()) is not None or _linux_nvidia_procfs_gpu_count() > 0
+    )
+
+
+# Native tensor-core support: FP8 from Ada / Hopper (sm_89), NVFP4 from Blackwell (sm_100, sm_120).
+_CHECKPOINT_QUANT_MIN_CAPABILITY = (("fp8", (8, 9)), ("nvfp4", (10, 0)))
+
+
+def get_checkpoint_quant_formats() -> list[str]:
+    """Prequantized checkpoint formats every NVIDIA card runs natively (Hub Recommended filter).
+    A load may land on any card, so the least capable one answers; an unreadable card counts as none."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    capabilities: list[tuple[int, int]] = []
+    for line in result.stdout.strip().splitlines():
+        major, _, minor = line.strip().partition(".")
+        if not (major.isdigit() and minor.isdigit()):
+            return []
+        capabilities.append((int(major), int(minor)))
+    if not capabilities:
+        return []
+    floor = min(capabilities)
+    return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
+
+
+def get_compute_capabilities() -> dict[int, tuple[int, int]]:
+    """nvidia-smi row index -> (major, minor), no mask and no torch; {} when unreadable."""
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    capabilities: dict[int, tuple[int, int]] = {}
+    for line in result.stdout.strip().splitlines():
+        index, _, cap = (part.strip() for part in line.partition(","))
+        major, _, minor = cap.partition(".")
+        if not (index.isdigit() and major.isdigit() and minor.isdigit()):
+            return {}
+        capabilities[int(index)] = (int(major), int(minor))
+    return capabilities
+
+
+def get_card_identities() -> dict[int, tuple[str, ...]]:
+    """nvidia-smi row index -> (name, total memory, compute cap, max SM clock), no mask and no torch.
+
+    Equal rows pick the same precision and artifacts on either card. {} when unreadable.
+    """
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [
+                _nvidia_smi_executable(),
+                "--query-gpu=index,name,memory.total,compute_cap,clocks.max.sm",
+                "--format=csv,noheader",
+            ],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    identities: dict[int, tuple[str, ...]] = {}
+    for line in result.stdout.strip().splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 5 or not parts[0].isdigit():
+            return {}
+        # nvidia-smi csv does not quote: a name holding commas spans several parts, so rejoin it.
+        identities[int(parts[0])] = (", ".join(parts[1:-3]), *parts[-3:])
+    return identities
+
+
+def _normalize_bus_id(bus_id: str) -> Optional[tuple[int, str]]:
+    """'00000000:3B:00.0' (nvidia-smi) and '0000:3b:00.0' (driver API) -> (domain, 'BUS:DEV.FN')."""
+    domain, sep, rest = bus_id.strip().partition(":")
+    if not sep:
+        return None
+    try:
+        return int(domain, 16), rest.upper()
+    except ValueError:
+        return None
+
+
+def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
+    """nvidia-smi row index for each CUDA ordinal of this process's environment, matched by PCI bus id.
+
+    Establishes the ordinal mapping under any CUDA_DEVICE_ORDER / numeric mask without opening a CUDA
+    context here: the ordinals come from the driver query (get_cuda_device_info), the rows from nvidia-smi.
+    None when either side is unreadable or the two do not join; [] when an integrated card is among them,
+    whose nvidia-smi memory is a carve-out rather than its shared pool.
+    """
+    devices = get_cuda_device_info()
+    if not devices or any(device is None for device in devices):
+        return None
+    try:
+        smi = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if smi.returncode != 0:
+        return None
+    row_by_bus: dict[tuple[int, str], int] = {}
+    for line in smi.stdout.strip().splitlines():
+        index, _, bus_id = (part.strip() for part in line.partition(","))
+        key = _normalize_bus_id(bus_id)
+        if not index.isdigit() or key is None:
+            return None
+        row_by_bus[key] = int(index)
+    rows = []
+    for bus_id, integrated, _total, _name in devices:
+        key = _normalize_bus_id(bus_id)
+        if key not in row_by_bus:
+            return None
+        if integrated:
+            # The row is a carve-out or N/A; only torch reports the shared pool. Known, so cacheable.
+            return []
+        rows.append(row_by_bus[key])
+    return rows
+
+
+# Exit 2 (no NVIDIA driver) and no output (no device) are definite answers.
+_CUDA_DEVICE_INFO_SCRIPT = r"""
+import ctypes, sys
+try:
+    lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
+except OSError:
+    sys.exit(2)
+rc = lib.cuInit(0)
+if rc == 100:  # CUDA_ERROR_NO_DEVICE
+    sys.exit(0)
+if rc != 0:
+    sys.exit(3)
+count = ctypes.c_int(0)
+if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
+    sys.exit(4)
+total_mem = lib.cuDeviceTotalMem_v2
+total_mem.argtypes = [ctypes.POINTER(ctypes.c_size_t), ctypes.c_int]
+for ordinal in range(count.value):
+    dev = ctypes.c_int(0)
+    bus = ctypes.create_string_buffer(64)
+    name = ctypes.create_string_buffer(256)
+    integrated = ctypes.c_int(0)
+    total = ctypes.c_size_t(0)
+    if (
+        lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
+        or lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, dev) != 0  # CU_DEVICE_ATTRIBUTE_INTEGRATED
+        or total_mem(ctypes.byref(total), dev) != 0
+        or lib.cuDeviceGetName(name, 256, dev) != 0
+    ):
+        print("ERR")  # this ordinal did not answer; the others still count
+        continue
+    # The bus id is informational: a driver that cannot report it (some virtualised ones) still answers.
+    bus_id = bus.value.decode() if lib.cuDeviceGetPCIBusId(bus, 64, dev) == 0 and bus.value else "-"
+    print(bus_id, integrated.value, total.value, name.value.decode(errors = "replace"))
+"""
+
+
+_CUDA_DEVICE_INFO_RETRY_S = 60.0
+_CUDA_DEVICE_INFO_CACHE: dict[tuple, tuple[Optional[float], Any]] = {}
+
+
+def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
+    """(bus id or "", integrated, total bytes, name) per CUDA ordinal (None: no answer); [] no device, None unknown.
+    A driver-API child, never get_device_properties: that initialises CUDA here, then device calls pin contexts."""
+    # Per mask and inventory generation: hardware re-detection (gpu_query.invalidate_static) asks again.
+    key = (
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("CUDA_DEVICE_ORDER"),
+        gpu_query.static_generation(),
+    )
+    hit = _CUDA_DEVICE_INFO_CACHE.get(key)
+    if hit is not None and (
+        hit[0] is None or time.monotonic() - hit[0] < _CUDA_DEVICE_INFO_RETRY_S
+    ):
+        return None if hit[1] is None else list(hit[1])
+    info = _query_cuda_device_info()
+    complete = info is not None and all(device is not None for device in info)
+    _CUDA_DEVICE_INFO_CACHE[key] = (None if complete else time.monotonic(), info)
+    return None if info is None else list(info)
+
+
+def cuda_device_info_or_torch(
+    torch_mod: Any = None,
+) -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
+    """get_cuda_device_info() with unanswered ordinals filled from get_device_properties: detection only widens."""
+    import sys
+
+    info = get_cuda_device_info()
+    torch = sys.modules.get("torch") if torch_mod is None else torch_mod
+    cuda = getattr(torch, "cuda", None)
+    try:
+        count = int(cuda.device_count()) if cuda is not None else None
+    except Exception:
+        count = None
+    if count is None or (
+        info is not None and len(info) == count and all(d is not None for d in info)
+    ):
+        return info
+    out = list(info) if info is not None and len(info) == count else [None] * count
+    for ordinal, device in enumerate(out):
+        if device is not None:
+            continue
+        try:
+            props = cuda.get_device_properties(ordinal)
+        except Exception:
+            continue
+        integrated = bool(
+            getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
+        )
+        out[ordinal] = ("", integrated, int(props.total_memory), str(props.name or ""))
+    return out if info is not None or any(d is not None for d in out) else None
+
+
+def _query_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
+    import sys
+
+    from utils.child_stdio import utf8_child_env
+
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", _CUDA_DEVICE_INFO_SCRIPT],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
+            env = utf8_child_env(child_env_without_native_path_secret()),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if child.returncode == 2:
+        return []
+    if child.returncode != 0:
+        return None
+    devices: list[Optional[tuple[str, bool, int, str]]] = []
+    for line in child.stdout.strip().splitlines():
+        if line.strip() == "ERR":
+            devices.append(None)
+            continue
+        parts = line.strip().split(" ", 3)
+        if len(parts) < 3 or parts[1] not in ("0", "1") or not parts[2].isdigit():
+            return None
+        devices.append(
+            (
+                "" if parts[0] == "-" else parts[0],
+                parts[1] == "1",
+                int(parts[2]),
+                parts[3] if len(parts) > 3 else "",
+            )
+        )
+    return devices
+
+
+def get_pci_bus_ids() -> dict[int, tuple[int, str]]:
+    """nvidia-smi row index -> normalized PCI bus id; {} when nvidia-smi does not answer."""
+    try:
+        smi = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if smi.returncode != 0:
+        return {}
+    bus_ids: dict[int, tuple[int, str]] = {}
+    for line in smi.stdout.strip().splitlines():
+        index, _, bus_id = (part.strip() for part in line.partition(","))
+        key = _normalize_bus_id(bus_id)
+        if index.isdigit() and key is not None:
+            bus_ids[int(index)] = key
+    return bus_ids
 
 
 def get_physical_gpu_inventory() -> dict[str, Any]:
@@ -391,15 +946,22 @@ def get_backend_visible_gpu_info(
             "index_kind": "unresolved",
         }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
+    _inventory_exit.code = None
     rows = _query_gpu_inventory("get_backend_visible_gpu_info")
     if rows is None or rows is NVIDIA_SMI_ABSENT:
-        return {
+        out = {
             "available": False,
             "backend_cuda_visible_devices": backend_cuda_visible_devices,
             "parent_visible_gpu_ids": parent_visible_ids or [],
             "devices": [],
             "index_kind": "physical",
         }
+        if rows is NVIDIA_SMI_ABSENT:
+            out["smi_absent"] = True
+        elif getattr(_inventory_exit, "code", None) != 6:
+            # No answer is unknown, not "no cards"; exit 6 ("No devices were found") is an answer.
+            out["probe_failed"] = True
+        return out
 
     devices = []
     for row in rows:

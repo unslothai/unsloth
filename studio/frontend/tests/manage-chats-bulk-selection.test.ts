@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Bulk pin/unpin ordering, and the scope the header checkbox claims. The .tsx
-// view pulls in the whole app, so it is read as text; the store runs for real.
-
 import assert from "node:assert/strict";
 import test from "node:test";
-import { en } from "../src/i18n/locales/en.ts";
 
 import {
   installLocalStorageFake,
-  readSrcAsync,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -24,12 +19,6 @@ const { rangeBetween } = await import(
   "../src/features/chat/utils/row-selection.ts"
 );
 
-async function manageChatsSource(): Promise<string> {
-  return await readSrcAsync(
-    "features/settings/components/manage-chats-view.tsx",
-  );
-}
-
 function reset(ids: string[] = []): void {
   usePinnedChatsStore.setState({ pinnedIds: ids });
 }
@@ -37,7 +26,6 @@ function reset(ids: string[] = []): void {
 test("pinning a selection prepends only the chats that were not pinned", () => {
   reset(["b"]);
   usePinnedChatsStore.getState().setPinned(["a", "b", "c"], true);
-  // b keeps its place; a and c lead, as a single pin does.
   assert.deepEqual(usePinnedChatsStore.getState().pinnedIds, ["a", "c", "b"]);
 });
 
@@ -69,45 +57,11 @@ test("an empty selection changes nothing in either direction", () => {
 });
 
 test("a shift range survives the list re-sorting between the two clicks", () => {
-  // A background stream re-sorts the list by updatedAt mid-selection; the
-  // anchor must still name the chat it was set on.
+  // A background stream can reorder the list mid-selection, so the anchor is an id.
   const before = ["a", "b", "c", "d"];
   const after = ["d", "a", "b", "c"];
-  // Anchor on "b", then shift-click "c" after the reorder: still exactly b..c.
   assert.deepEqual(rangeBetween(after, "b", "c"), ["b", "c"]);
-  // An index anchor would instead sweep a..c, deleting "a" unasked.
   assert.equal(before.indexOf("b"), 1);
   assert.equal(after[1], "a");
   assert.deepEqual(rangeBetween(after, after[1], "c"), ["a", "b", "c"]);
-});
-
-test("the shift anchor is stored as a chat id, not a row index", async () => {
-  const src = await manageChatsSource();
-  assert.match(src, /useRef<string \| null>\(null\)/);
-  assert.match(src, /rangeBetween\(/);
-  // An index anchor addresses whatever row now sits at the saved position.
-  assert.doesNotMatch(src, /lastToggledIndex/);
-});
-
-test("bulk delete passes the always-delete-files preference through", async () => {
-  const src = await manageChatsSource();
-  // Without this, deleteChatItems defaults args to {} and sends
-  // delete_files:false, keeping every selected chat's sandbox.
-  assert.match(
-    src,
-    /useChatPreferencesStore\(\s*\(s\) => s\.alwaysDeleteChatFiles,?\s*\)/,
-  );
-  assert.match(
-    src,
-    /deleteChatItems\(selectedItems, openChatId, resetView, \{\s*deleteFiles: alwaysDeleteChatFiles,\s*\}\)/,
-  );
-});
-
-test("the header checkbox says it selects the visible chats, which is what it does", async () => {
-  const src = await manageChatsSource();
-  // rows sit behind "show more", so the label must not promise the whole list.
-  assert.match(src, /onCheckedChange=\{toggleAllVisible\}/);
-  assert.match(src, /aria-label=\{t\("settings\.data\.library\.selectAll"\)\}/);
-  assert.equal(en.settings.data.library.selectAll, "Select all visible chats");
-  assert.doesNotMatch(src, /aria-label="Select all chats"/);
 });

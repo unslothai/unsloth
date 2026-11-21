@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { validateTrainingConfig } = await import(
+const { validateS3Source, validateTrainingConfig } = await import(
   "../src/features/training/lib/validation.ts"
 );
 
@@ -204,13 +204,6 @@ test("training validation rejects Hub IDs that backend preflight rejects", () =>
 
 test("training validation rejects MLX-incompatible training modes", () => {
   assert.deepEqual(
-    validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, "mac"),
-    {
-      ok: false,
-      errorKey: "studio.params.notSupportedAppleSilicon",
-    },
-  );
-  assert.deepEqual(
     validateTrainingConfig(
       { ...validConfig, modelType: "embeddings", isEmbeddingModel: true },
       "mac",
@@ -222,7 +215,7 @@ test("training validation rejects MLX-incompatible training modes", () => {
   );
 });
 
-test("training validation rejects audio training on MLX", () => {
+test("training validation rejects non-VLM audio training on MLX", () => {
   assert.deepEqual(
     validateTrainingConfig(
       {
@@ -244,6 +237,22 @@ test("training validation rejects audio training on MLX", () => {
       ok: false,
       errorKey: "studio.params.notSupportedAppleSilicon",
     },
+  );
+});
+
+test("training validation allows audio-capable vision models on MLX with audio data", () => {
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        modelType: "vision",
+        isVisionModel: true,
+        isAudioModel: true,
+        isDatasetAudio: true,
+      },
+      "mac",
+    ),
+    { ok: true, errorKey: null },
   );
 });
 
@@ -290,19 +299,18 @@ test("training validation accepts DoRA on MLX under an adapter method", () => {
         { ...validConfig, trainingMethod, loraVariant: "dora" },
         "mac",
       ),
-      // cpt is refused on MLX for its own reason, not for DoRA.
-      trainingMethod === "cpt"
-        ? { ok: false, errorKey: "studio.params.notSupportedAppleSilicon" }
-        : { ok: true, errorKey: null },
+      { ok: true, errorKey: null },
     );
   }
 });
 
-test("training validation keeps CPT and embedding training available off MLX", () => {
-  assert.deepEqual(
-    validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, "linux"),
-    { ok: true, errorKey: null },
-  );
+test("training validation keeps CPT on every device and embedding training off MLX", () => {
+  for (const deviceType of ["linux", "mac"]) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, deviceType),
+      { ok: true, errorKey: null },
+    );
+  }
   assert.deepEqual(
     validateTrainingConfig(
       { ...validConfig, modelType: "embeddings", isEmbeddingModel: true },
@@ -321,5 +329,92 @@ test("training validation keeps CPT and embedding training available off MLX", (
       "linux",
     ),
     { ok: true, errorKey: null },
+  );
+});
+
+const s3Config = {
+  ...validConfig,
+  datasetSource: "s3" as const,
+  s3Config: { bucket: "my-bucket", region: "us-east-1", useIamRole: true },
+};
+
+test("an audio model can start from S3 (#4539: the audio is downloaded beside its manifest)", () => {
+  assert.deepEqual(
+    validateS3Source({ ...s3Config, modelType: "audio", isAudioModel: true }),
+    { ok: true, errorKey: null },
+  );
+});
+
+test("a vision model still cannot start from S3", () => {
+  assert.deepEqual(
+    validateS3Source({ ...s3Config, modelType: "vision", isVisionModel: true }),
+    {
+      ok: false,
+      errorKey: "studio.training.validation.s3MultimodalUnsupported",
+    },
+  );
+});
+
+test("training validation lets LoRA and CPT continue from a saved adapter (#13140)", () => {
+  const adapter = {
+    ...validConfig,
+    selectedModel: "/outputs/run/checkpoint-30",
+    modelFormat: "adapter" as const,
+  };
+  for (const trainingMethod of ["lora", "qlora", "cpt"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...adapter, trainingMethod } as never, "linux"),
+      { ok: true, errorKey: null },
+    );
+  }
+  for (const trainingMethod of ["lora", "qlora", "cpt"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...adapter, trainingMethod } as never, "mac"),
+      { ok: true, errorKey: null },
+    );
+  }
+});
+
+test("training validation refuses an adapter where a fresh adapter would be built", () => {
+  const adapter = {
+    ...validConfig,
+    selectedModel: "/outputs/run/checkpoint-30",
+    modelFormat: "adapter" as const,
+  };
+  const refused = { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, trainingMethod: "full" } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, modelType: "decision" } as never,
+      "linux",
+    ),
+    refused,
+  );
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...adapter, isEmbeddingModel: true } as never,
+      "linux",
+    ),
+    refused,
+  );
+});
+
+test("training validation refuses continuing a Hub adapter repo", () => {
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        selectedModel: "org/adapter",
+        modelFormat: "adapter",
+      } as never,
+      "linux",
+    ),
+    { ok: false, errorKey: "studio.modelPicker.reasonAdapter" },
   );
 });

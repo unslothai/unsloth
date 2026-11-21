@@ -47,12 +47,17 @@ export type BlockKind =
   | "expression"
   | "seed"
   | "note";
-export type BlockType =
-  | SamplerType
-  | LlmType
+export type ValidatorBlockType =
   | "validator_python"
   | "validator_sql"
   | "validator_oxc"
+  | "validator_json"
+  | "validator_markdown";
+
+export type BlockType =
+  | SamplerType
+  | LlmType
+  | ValidatorBlockType
   | "expression"
   | "markdown_note"
   | "seed"
@@ -161,7 +166,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "seed",
     type: "seed_local",
     title: "CSV or JSON file",
-    description: "Upload CSV, JSON, or JSONL and use its rows as source data.",
+    description: "Upload CSV, JSON, JSONL, or Parquet and use its rows as source data.",
     icon: DocumentCodeIcon,
     dialogKey: "seed",
     createConfig: (id, existing) => makeSeedConfig(id, existing, "local"),
@@ -170,7 +175,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "seed",
     type: "seed_unstructured",
     title: "Document file",
-    description: "Upload PDF, DOCX, or TXT and turn it into source rows.",
+    description: "Upload documents, ebooks, spreadsheets or slides and turn them into source rows.",
     icon: DocumentAttachmentIcon,
     dialogKey: "seed",
     createConfig: (id, existing) => makeSeedConfig(id, existing, "unstructured"),
@@ -359,6 +364,26 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
       makeValidatorConfig(id, "oxc", "javascript", existing),
   },
   {
+    kind: "validator",
+    type: "validator_json",
+    title: "JSON check",
+    description: "Verify a field contains valid JSON and filter out rows that fail.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "json", "json", existing),
+  },
+  {
+    kind: "validator",
+    type: "validator_markdown",
+    title: "Markdown check",
+    description: "Verify a field contains well-formed markdown and filter out rows that fail.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "markdown", "markdown", existing),
+  },
+  {
     kind: "expression",
     type: "expression",
     title: "Formula",
@@ -416,6 +441,12 @@ export function getBlockDefinitionForConfig(
     return getBlockDefinition("llm", config.llm_type);
   }
   if (config.kind === "validator") {
+    if (config.validator_type === "json") {
+      return getBlockDefinition("validator", "validator_json");
+    }
+    if (config.validator_type === "markdown") {
+      return getBlockDefinition("validator", "validator_markdown");
+    }
     if (config.validator_type === "oxc") {
       return getBlockDefinition("validator", "validator_oxc");
     }

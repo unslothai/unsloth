@@ -29,6 +29,7 @@ const NULLABLE_NUMERIC_FIELDS = [
   "epoch",
   "elapsed_seconds",
   "eta_seconds",
+  "session_start_step",
   "grad_norm",
   "num_tokens",
   "eval_loss",
@@ -88,6 +89,9 @@ function parseTrainingProgressPayload(
     epoch: normalizeNullableFiniteNumber(payload.epoch),
     elapsed_seconds: normalizeNullableFiniteNumber(payload.elapsed_seconds),
     eta_seconds: normalizeNullableFiniteNumber(payload.eta_seconds),
+    session_start_step: normalizeNullableFiniteNumber(
+      payload.session_start_step,
+    ),
     grad_norm: normalizeNullableFiniteNumber(payload.grad_norm),
     num_tokens: normalizeNullableFiniteNumber(payload.num_tokens),
     eval_loss: normalizeNullableFiniteNumber(payload.eval_loss),

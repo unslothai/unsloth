@@ -1,6 +1,4 @@
-# ModelMeta.quant_types below is a dataclass field annotated with a PEP 604 union,
-# which evaluates at class creation and is a TypeError on the 3.9 floor pyproject
-# declares.
+# PEP 604 union in a dataclass field annotation is a TypeError on the 3.9 floor without this.
 from __future__ import annotations
 
 import warnings
@@ -44,6 +42,8 @@ class ModelInfo:
     description: str = None
 
     def __post_init__(self):
+        if self.quant_type is None:
+            self.quant_type = QuantType.NONE
         self.name = self.name or self.construct_model_name(
             self.base_name,
             self.version,
@@ -60,7 +60,8 @@ class ModelInfo:
 
     @staticmethod
     def append_quant_type(key: str, quant_type: QuantType = None):
-        if quant_type != QuantType.NONE:
+        # register_model passes the raw None default here, before __post_init__ normalizes it.
+        if quant_type is not None and quant_type != QuantType.NONE:
             key = "-".join([key, QUANT_TAG_MAP[quant_type]])
         return key
 
@@ -168,8 +169,7 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
             else:
                 _quant_types = quant_types
             for quant_type in _quant_types:
-                # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of
-                # QUANT_TYPE.UNSLOTH
+                # org="unsloth" with QuantType.NONE is an alias of QuantType.UNSLOTH.
                 _org = "unsloth"  # quantized versions of the original model
                 register_model(
                     model_info_cls = model_info_cls,

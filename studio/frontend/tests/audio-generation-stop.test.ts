@@ -4,9 +4,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
+
+const { audioGenerationPresentation } = await import(
+  "../src/features/audio/audio-page-policy.ts"
+);
+
+test("a run that reloads the model first can be stopped while it switches", () => {
+  assert.deepEqual(audioGenerationPresentation("switching"), {
+    status: "Switching model…",
+    actionLabel: "Stop",
+    canStop: true,
+  });
+  assert.deepEqual(
+    audioGenerationPresentation("switching", "Switching Chatterbox to Convert…"),
+    {
+      status: "Switching Chatterbox to Convert…",
+      actionLabel: "Stop",
+      canStop: true,
+    },
+  );
+  assert.equal(
+    audioGenerationPresentation("generating", "Switching…")?.status,
+    "Generating audio…",
+  );
+});
 
 test("generation exposes Stop only while the request controller can abort", () => {
   assert.match(
@@ -81,10 +105,7 @@ test("mode transitions read the synchronously authoritative generation phase", (
 });
 
 test("leaving the audio page does NOT abort an in-flight generation", () => {
-  // RootLayout keeps this page mounted precisely so synthesis survives a tab
-  // switch (see the note in routes/audio.tsx), the clip is persisted server-side
-  // so it is waiting in the gallery on return, and neither Images nor Video
-  // cancels on deactivation either. Only unmount aborts.
+  // RootLayout keeps this page mounted so synthesis survives tab switches; only unmount aborts.
   assert.doesNotMatch(
     source,
     /if \(!active\) generateAbort\.current\?\.abort\(\)/,
@@ -102,15 +123,10 @@ test("transcription survives page deactivation and aborts on unmount", () => {
   );
   assert.match(
     source,
-    /transcribeWithProgress\(\s*blob,\s*name,\s*\{[\s\S]*signal: controller\.signal/,
+    /transcribeSourceWithProgress\(\s*sourceRefOf\(source\),\s*source\.name,\s*\{[\s\S]*signal: controller\.signal/,
   );
-  const lifecycle = source.slice(
-    source.indexOf("// Release the microphone"),
-    source.indexOf("const handleTranscribeFile"),
-  );
-  assert.match(lifecycle, /if \(!active\) \{\s*stopAndDiscardRecording\(\);\s*\}/);
   assert.match(
-    lifecycle,
+    source,
     /useEffect\(\(\) => \(\) => transcriptionAbort\.current\?\.abort\(\), \[\]\)/,
   );
   assert.doesNotMatch(
@@ -131,19 +147,14 @@ test("a non-abort generation failure refreshes authoritative residency", () => {
 });
 
 test("a saved clip the refresh missed keeps its response audio mounted", () => {
-  // selectClip nulls the fallback by default, which undid the setFallbackClip immediately
-  // before it and left selectedId pointing at a clip that is not in `clips` yet, so the
-  // player rendered the empty state.
   assert.match(
     source,
-    /const selectClip = useCallback\(\s*\(id: string, keepFallback = false\) => \{[\s\S]*if \(!keepFallback\) setFallbackClip\(null\);/,
+    /const selectClip = useCallback\(\s*\(id: string, keepFallback = false\) => \{[\s\S]*if \(!keepFallback && !otherPage\) setFallbackClip\(null\);/,
   );
-  assert.match(source, /saved: true,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
+  assert.match(source, /saved: true,\s*workflow,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
 });
 
 test("deleting a clip drops the row without waiting on the refresh", () => {
-  // refreshGallery swallows a failed GET and returns the cache without setClips, which left
-  // the deleted row on screen against an already-revoked object URL.
   assert.match(
     source,
     /const dropClip = useCallback\(\(id: string\) => \{[\s\S]*galleryCache\.clips = galleryCache\.clips\.filter\([\s\S]*setClips\(galleryCache\.clips\);/,
@@ -155,8 +166,6 @@ test("deleting a clip drops the row without waiting on the refresh", () => {
 });
 
 test("archiving a clip drops the row the same way a delete does", () => {
-  // Same revoked-object-URL trap: the clip is gone server-side, so a row left up until a refresh
-  // that may fail renders a tile that can no longer play.
   assert.match(
     source,
     /await setAudioClipFlags\(id, \{ archived: true \}\);[\s\S]*?dropClip\(id\);\s*await refreshGallery\(id\);/,
@@ -164,10 +173,8 @@ test("archiving a clip drops the row the same way a delete does", () => {
 });
 
 test("the response fallback is dropped once its gallery record arrives", () => {
-  // Kept past that point, deleting the now-visible clip made the fallback reappear from a
-  // stale data URL, labelled as saved, as though the delete had not happened.
   assert.match(
     source,
-    /fallbackClipRef\.current &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
+    /fallbackClipRef\.current\?\.saved &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
   );
 });

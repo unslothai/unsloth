@@ -6,8 +6,7 @@ import type { RemoteCodeScan } from "../types";
 
 type Resolver = (confirmed: boolean) => void;
 
-// One in-flight consent at a time; a new request resolves any prior pending one as
-// declined so its promise never leaks.
+// A new request resolves any pending one as declined so its promise never leaks.
 let pendingResolver: Resolver | null = null;
 
 interface RemoteCodeConsentDialogStore {

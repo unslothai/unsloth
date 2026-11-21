@@ -6,14 +6,12 @@ import test from "node:test";
 
 import { sttDownloadedArtifacts } from "../src/features/audio/audio-page-policy.ts";
 import {
+  type AudioSttEngine,
   sttEngineForRepoId,
   sttRepoIdForSidecarKey,
 } from "../src/features/audio/stt-artifacts.ts";
 
-const repoIdForSidecarKey = (
-  key: string,
-  engine: "transformers" | "gguf" | "mtmd",
-) => {
+const repoIdForSidecarKey = (key: string, engine: AudioSttEngine) => {
   const repos: Record<string, string> =
     engine === "gguf"
       ? {

@@ -4,6 +4,7 @@
 """Training history API routes: browse, view, and delete past training runs."""
 
 import asyncio
+import functools
 import json
 import shutil
 import uuid
@@ -13,7 +14,11 @@ from typing import Literal, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
 
-from auth.authentication import authenticated_without_credential, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    authenticated_without_credential,
+    get_current_subject,
+)
 from core.training.resume import artifacts_present, can_resume_run
 from utils.training_runs import drop_non_finite
 from models import (
@@ -36,6 +41,7 @@ from utils.models.checkpoints import has_preview_model, preview_ref
 from utils.paths import outputs_root, resolve_output_dir
 from utils.preview_sharing_settings import get_preview_sharing_enabled
 from utils.preview_token import sign_preview_ref
+from utils.scan_memo import in_scan_memo
 
 logger = get_logger(__name__)
 
@@ -65,14 +71,12 @@ def _canonical_output_dir(output_dir: Optional[str]) -> Optional[Path]:
 
 
 def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
-    """Previewability + the signed `/p` share ref for a run's output dir. The signature is what makes the share
-    link a capability: these routes are authenticated, so only the run's owner ever receives it. When public
-    sharing is switched off, omit the signature so the UI hides the copy-link affordance (and the link would 404
-    anyway). ``sharing_on`` is resolved once per request.
-    """
-    ref = preview_ref(output_dir)
+    """The signed /p ref is a capability, omitted when public sharing is off so the UI hides the link."""
+    previewable = has_preview_model(output_dir)
+    # preview_ref is None without a preview model.
+    ref = preview_ref(output_dir) if previewable else None
     return {
-        "has_preview_model": has_preview_model(output_dir),
+        "has_preview_model": previewable,
         "preview_ref": ref,
         "preview_sig": sign_preview_ref(ref) if (ref and sharing_on) else None,
     }
@@ -82,15 +86,14 @@ def _resume_blocked_reason(row: dict) -> Optional[str]:
     """The provenance gate's own explanation, for runs it refuses. Only consulted for a row that is
     already known unresumable, so the extra work is bounded to those. Returns None when the
     checkpoint is what is missing, leaving the client's existing wording in place for that case."""
-    from core.training.provenance import resource_provenance_resume_blocker
-    from core.training.resume import has_resume_state, training_run_config
-
+    from core.training.resume import has_resume_state, resource_resume_blocker, training_run_config
     try:
-        # A row whose checkpoint is gone is refused for that reason, not provenance: asking the gate
-        # anyway hands the client a provenance sentence for a missing checkpoint.
-        if not has_resume_state(row.get("output_dir")):
+        # Gate first: the checkpoint read only changes the answer for refused runs.
+        reason = resource_resume_blocker(training_run_config(row))
+        # A missing checkpoint is refused for that reason, not provenance.
+        if reason is None or not has_resume_state(row.get("output_dir")):
             return None
-        return resource_provenance_resume_blocker(training_run_config(row))
+        return reason
     except Exception:
         return None
 
@@ -116,6 +119,7 @@ def _summary_from_row(
     )
 
 
+@in_scan_memo
 def _summaries_from_rows(rows: list[dict], sharing_on: bool) -> list[TrainingRunSummary]:
     resource_cache: dict[str, bool] = {}
     return [_summary_from_row(row, sharing_on, resource_cache) for row in rows]
@@ -147,9 +151,7 @@ def _delete_run_output_dir(run_id: str, output_dir: str) -> Union[Path, bool]:
 
     staged = resolved.with_name(f".{resolved.name}.deleting-{uuid.uuid4().hex}")
     try:
-        # A same-parent rename, not an rmtree: the run is logically gone immediately but the bytes survive until the
-        # database row is committed, so a failed row delete can roll the whole operation back.
-        # _purge_staged_output_dir does the destructive half.
+        # Rename, not rmtree, so a failed row delete can roll back.
         resolved.rename(staged)
         return staged
     except OSError:
@@ -198,12 +200,7 @@ _ArtifactDeleteOutcome = Literal["deleted", "active", "shared", "failed"]
 def _delete_run_output_dir_guarded(
     run_id: str, output_dir: str
 ) -> tuple[_ArtifactDeleteOutcome, Optional[Path], Optional[Path]]:
-    """Move the run's artifacts aside, reversibly, instead of destroying them. Deleting the directory
-    outright and only then removing the database row leaves an unrecoverable half-state if the row
-    delete fails: the artifacts are gone and the row survives with ``output_dir`` still populated,
-    which is indistinguishable from the legitimate "history kept, files kept" outcome. A same-parent
-    rename is atomic and costs nothing, so the destructive step can wait until the row is actually
-    gone. Returns the outcome plus (original, staged) paths when there is something to purge."""
+    """Stages artifacts by atomic rename so a failed row delete cannot leave files gone but the row kept."""
     from core.training.lifecycle import training_lifecycle_guard
     with training_lifecycle_guard():
         if _output_dirs_overlap(output_dir, _active_training_output_dir()):
@@ -248,10 +245,7 @@ def _restore_staged_output_dir(original: Path, staged: Path) -> bool:
 
 
 def _purge_staged_output_dir(run_id: str, original: Path, staged: Path) -> bool:
-    """Remove the staged copy once the row is gone. Returns whether the bytes are actually gone. The
-    staged name is hidden and randomized and the row is already deleted, so reporting a failed
-    rmtree as success would strand every byte under a name nothing can find again. Put the directory
-    back under its own name instead and let the caller say the artifacts were kept."""
+    """Returns false when bytes remain: the staged name is hidden, so a failed rmtree must restore it."""
     try:
         shutil.rmtree(staged)
         logger.info("Deleted adapter directory for run %s: %s", run_id, staged)
@@ -271,18 +265,22 @@ async def list_training_runs(
     offset: int = Query(0, ge = 0),
     current_subject: str = Depends(get_current_subject),
     no_credential: bool = Depends(authenticated_without_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List training runs, newest first."""
-    result = list_runs(limit = limit, offset = offset)
-    sharing_on = get_preview_sharing_enabled() and not no_credential
+    result = await asyncio.to_thread(functools.partial(list_runs, limit = limit, offset = offset))
+    sharing_on = await asyncio.to_thread(get_preview_sharing_enabled) and not no_credential
     runs = await asyncio.to_thread(
         _summaries_from_rows,
         result["runs"],
         sharing_on,
     )
-    return TrainingRunListResponse(
-        runs = runs,
-        total = result["total"],
+    # Persisted path is `model_name`, and this route answers days later with no handle in context.
+    from hub.utils.host_paths import redact_host_paths
+
+    return redact_host_paths(
+        TrainingRunListResponse(runs = runs, total = result["total"]),
+        via_api_key = via_api_key,
     )
 
 
@@ -291,9 +289,10 @@ async def get_training_run_detail(
     run_id: str,
     current_subject: str = Depends(get_current_subject),
     no_credential: bool = Depends(authenticated_without_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get a single training run with full config and metrics."""
-    run = get_run(run_id)
+    run = await asyncio.to_thread(get_run, run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
 
@@ -304,17 +303,21 @@ async def get_training_run_detail(
         logger.debug("Failed to parse config_json for run %s", run_id)
         config = {}
 
-    metrics_data = get_run_metrics(run_id)
+    metrics_data = await asyncio.to_thread(get_run_metrics, run_id)
+    sharing_on = await asyncio.to_thread(get_preview_sharing_enabled) and not no_credential
 
-    summary = await asyncio.to_thread(
-        _summary_from_row,
-        run,
-        get_preview_sharing_enabled() and not no_credential,
-    )
-    return TrainingRunDetailResponse(
-        run = summary,
-        config = config,
-        metrics = TrainingRunMetrics(**metrics_data),
+    summary = await asyncio.to_thread(_summary_from_row, run, sharing_on)
+    # The same persisted path, in the summary as `model_name` and again inside `config_json`,
+    # so the WHOLE response goes through.
+    from hub.utils.host_paths import redact_host_paths
+
+    return redact_host_paths(
+        TrainingRunDetailResponse(
+            run = summary,
+            config = config,
+            metrics = TrainingRunMetrics(**metrics_data),
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -324,6 +327,7 @@ async def update_training_run(
     payload: TrainingRunUpdateRequest,
     current_subject: str = Depends(get_current_subject),
     no_credential: bool = Depends(authenticated_without_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Update mutable fields on a training run (currently only display_name)."""
     run = get_run(run_id)
@@ -339,11 +343,15 @@ async def update_training_run(
     refreshed = get_run(run_id)
     if refreshed is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
-    return await asyncio.to_thread(
+    summary = await asyncio.to_thread(
         _summary_from_row,
         refreshed,
         get_preview_sharing_enabled() and not no_credential,
     )
+    # Renaming answers with the run, so a no-op PATCH would recover the path.
+    from hub.utils.host_paths import redact_host_paths
+
+    return redact_host_paths(summary, via_api_key = via_api_key)
 
 
 @router.delete("/runs/{run_id}", response_model = TrainingRunDeleteResponse)
@@ -420,8 +428,7 @@ async def delete_training_run(
                 _restore_staged_output_dir, staged_original, staged_path
             )
             if not restored:
-                # Both halves failed: the row survives pointing at a directory that is no longer
-                # there. Name the staged path, or the artifacts are unreachable.
+                # Both halves failed: name the staged path or the artifacts are unreachable.
                 raise HTTPException(
                     status_code = 500,
                     detail = {

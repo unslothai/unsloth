@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Tests UNSLOTH_TORCH_EXTRA plumbing in install.sh: spec rewriter, TheRock gfx map, pin guard.
-# Functions are lifted from install.sh, not restated, so drift fails the test.
-# Follows the same assertion pattern as test_torch_constraint.sh.
+# Tests UNSLOTH_TORCH_EXTRA plumbing in install.sh; functions are lifted, so drift fails.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,7 +31,6 @@ assert_contains() {
     fi
 }
 
-# Lift a shell function body verbatim: from `name() {` to the first column-0 `}`.
 lift_fn() {
     awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{" {p=1} p {print} p && /^\}/ {exit}' "$INSTALL_SH"
 }
@@ -73,16 +70,15 @@ run_gfx() {
 assert_eq "gfx1010 (RX 5700)"  "device-gfx1010" "$(run_gfx gfx1010)"
 assert_eq "gfx1011 (PRO V520)" "device-gfx1011" "$(run_gfx gfx1011)"
 assert_eq "gfx1012 (RX 5500)"  "device-gfx1012" "$(run_gfx gfx1012)"
-# TheRock has no gfx803 target, so Polaris must not be pointed at wheels that do not exist (#8529, #8458).
+# TheRock has no gfx803 target, so Polaris must not point at nonexistent wheels.
 assert_eq "gfx803 (Polaris)"   "__none__"       "$(run_gfx gfx803)"
-# Arches Unsloth's own indexes already cover must never reach this path.
 assert_eq "gfx1030 covered"    "__none__"       "$(run_gfx gfx1030)"
 assert_eq "gfx1100 covered"    "__none__"       "$(run_gfx gfx1100)"
 assert_eq "empty arg"          "__none__"       "$(run_gfx '')"
 
 echo ""
 echo "=== UNSLOTH_TORCH_EXTRA is ignored without a pinned index ==="
-# Restated from install.sh: no auto-picked index publishes extras, so an unpinned extra could only break a working resolve.
+# Restated from install.sh: no auto-picked index publishes extras.
 run_guard() {
     UNSLOTH_TORCH_EXTRA="$1" UNSLOTH_TORCH_INDEX_URL="$2" UNSLOTH_TORCH_INDEX_FAMILY="$3" bash -c '
         _torch_index_pinned=false
@@ -111,23 +107,20 @@ assert_eq "no extra set"                 "__empty__"      "$(run_guard '' 'https
 
 echo ""
 echo "=== torchaudio never carries the extra ==="
-# TheRock leaves torchaudio bare; it reaches the right build through torch's rocm[libraries] dependency.
+# TheRock torchaudio stays bare; torch's rocm[libraries] dependency picks the right build.
 assert_eq "audio bare in _install_torch_default_index" "0" \
     "$(awk '/^_install_torch_default_index\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$INSTALL_SH" \
         | grep -c '_torch_spec_with_extra "\$TORCHAUDIO_CONSTRAINT"')"
-# ...and torch/torchvision always do: three uv invocations, two rewritten specs each.
 assert_eq "torch+vision rewritten on every uv line" "6" \
     "$(awk '/^_install_torch_default_index\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$INSTALL_SH" \
         | grep -o '_torch_spec_with_extra' | wc -l | tr -d ' ')"
 
 echo ""
 echo "=== the extras install reports back instead of failing silently ==="
-# The flavor enforcement is gated on a recognised leaf, which an extras index is not, so
-# without this block a TheRock install landing on CPU looks exactly like one that worked.
+# Flavor enforcement skips unrecognised leaves, so this block is the only CPU-landing check.
 run_probe_block() {
     _stub_out="$1"
     _tmp=$(mktemp -d)
-    # A stand-in for the venv python: prints what a probe of torch.cuda.is_available() would.
     printf '#!/bin/sh\n%s\n' "$_stub_out" > "$_tmp/py"
     chmod +x "$_tmp/py"
     awk '/^# An extras pin lands on a leaf/{p=1} p{print} p&&/^fi$/{exit}' "$INSTALL_SH" > "$_tmp/block.sh"
@@ -142,12 +135,9 @@ run_probe_block() {
         . "$1/block.sh"' _ "$_tmp" 2>&1
     rm -rf "$_tmp"
 }
-# The stubs speak the probe's sentinel, not a bare boolean: the block filters stdout to
-# UNSLOTH_CUDA_OK= lines, so a bare "True" is dropped exactly as a banner would be.
+# The block filters stdout to UNSLOTH_CUDA_OK= lines, so a bare "True" is dropped.
 assert_contains "usable GPU is confirmed, not silent" \
     "$(run_probe_block 'echo UNSLOTH_CUDA_OK=True')" "torch reports the GPU is usable"
-# Why the sentinel exists: reading all of stdout gave "BANNER\nTrue", so a working GPU was
-# reported as landing on CPU.
 assert_contains "a startup banner does not hide the answer" \
     "$(run_probe_block 'echo "sitecustomize: hello"; echo UNSLOTH_CUDA_OK=True')" \
     "torch reports the GPU is usable"
@@ -155,10 +145,8 @@ assert_contains "CPU landing warns" \
     "$(run_probe_block 'echo UNSLOTH_CUDA_OK=False')" "torch.cuda.is_available() is False"
 assert_contains "CPU landing asks for a report" \
     "$(run_probe_block 'echo UNSLOTH_CUDA_OK=False')" "Please report the result"
-# A torch that cannot import at all prints nothing; the message must still be readable.
 assert_contains "unimportable torch is labelled" \
     "$(run_probe_block 'exit 1')" "torch did not import"
-# The block must never fire on a default (no extra) run: that is every existing install.
 assert_eq "no extra: block is inert" "" \
     "$(bash -c '
         set -euo pipefail
@@ -196,8 +184,7 @@ done
 
 echo ""
 echo "=== a migrated venv still reaches the pinned index ==="
-# The repair beside it is gated on _torch_index_is_rocm_family, which whl-multi-arch is not,
-# so without this arm the documented two exports install PyPI torch and stop.
+# The ROCm repair is gated on a family whl-multi-arch is not, so this arm is required.
 _migrated_block=$(awk '/^    # The ROCm repair above cannot reach an extras pin/{p=1} p{print} p&&/^    fi$/{exit}' "$INSTALL_SH")
 assert_contains "the migrated arm exists" "$_migrated_block" "_install_torch_default_index --force-reinstall"
 run_migrated() {

@@ -4,13 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { atDefaultUiScale, readSrc } from "./helpers/kit.ts";
 
-const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+const APP_SIDEBAR = atDefaultUiScale(readSrc("components/app-sidebar.tsx"));
 
-// Both spinners are ml-auto, so each one sits at its row's padding-right plus
-// its own margin-right. The two rows carry different padding, so the margins
-// have to make up the difference or the column visibly steps.
+// The chat spinner is anchored at right-N off the row edge, so measure from that edge.
 const TAILWIND_UNIT = 4;
 
 function inset(classes: string, prefix: string): number {
@@ -36,21 +34,14 @@ test("nav and Recents spinners land on one trailing column", async () => {
     /<Spinner className="(ml-auto[^"]*group-data-\[collapsible=icon\]:hidden)"/,
     "NavItem spinner",
   );
-  const chatRow = grab(
+  const chatSpinnerAnchor = grab(
     APP_SIDEBAR,
-    // Row height is a density choice and moves independently of the trailing
-    // column, so match any h-[Npx]; cursor-pointer is what makes this the chat row.
-    /"(sidebar-nav-btn h-\[\d+px\] cursor-pointer rounded-full[^"]*)"/,
-    "Recents chat row",
-  );
-  const chatSpinner = grab(
-    APP_SIDEBAR,
-    /data-testid="chat-row-spinner"[\s\S]{0,400}?className="(ml-auto[^"]*)"/,
-    "Recents chat spinner",
+    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,1200}?data-testid="chat-row-spinner"/,
+    "Recents chat spinner anchor",
   );
 
   const nav = inset(navRow, "pr") + inset(navSpinner, "mr");
-  const chat = inset(chatRow, "pr") + inset(chatSpinner, "mr");
+  const chat = inset(chatSpinnerAnchor, "right");
 
   assert.equal(
     nav,
@@ -58,50 +49,137 @@ test("nav and Recents spinners land on one trailing column", async () => {
     `nav spinner sits ${nav}px in, chat spinner ${chat}px`,
   );
   assert.equal(nav, 16);
+
+  assert.ok(
+    !/data-testid="chat-row-spinner"[\s\S]{0,400}?className="ml-auto/.test(APP_SIDEBAR),
+    "the chat spinner is back in the flow, where the row's padding-right moves it",
+  );
 });
 
-// The kebab overlays the row's right edge, so a spinner row must pad past it.
+// The kebab overlays the row's right edge, so a spinner row must pad past it; the spinner, approval
+// dot and unread dot share one slot, and a dot off that centre reads as misaligned.
+test("the Recents spinner, the approval mark and the unread dot share one centre", () => {
+  const centre = (anchor: string, box: string) => inset(anchor, "right") + inset(box, "size") / 2;
+  const spinnerAnchor = grab(
+    APP_SIDEBAR,
+    /className=\{cn\(\s*"(pointer-events-none absolute right-[0-9.]+[^"]*)"[\s\S]{0,1200}?data-testid="chat-row-spinner"/,
+    "Recents chat spinner anchor",
+  );
+  const spinner = grab(
+    APP_SIDEBAR,
+    /data-testid="chat-row-spinner"[\s\S]{0,400}?className="([^"]*)"/,
+    "Recents chat spinner",
+  );
+  const approvalBox = grab(
+    APP_SIDEBAR,
+    /<ApprovalMark testId="chat-row-approval" className="([^"]*)"/,
+    "approval mark",
+  );
+  const unreadAnchor = grab(
+    APP_SIDEBAR,
+    /\{hasUnreadActivity \? \([\s\S]{0,200}?className=\{cn\(\s*"([^"]*)"/,
+    "unread dot anchor",
+  );
+
+  const spinnerCentre = centre(spinnerAnchor, spinner);
+  assert.equal(spinnerCentre, 23);
+  assert.equal(centre(spinnerAnchor, approvalBox), spinnerCentre);
+  assert.equal(centre(unreadAnchor, unreadAnchor), spinnerCentre, "the unread dot left the spinner's column");
+});
+
+test("every trailing mark yields to the row actions on hover, an open menu and keyboard focus", () => {
+  const marks: [string, RegExp][] = [
+    ["spinner", /\{showWorkSpinner \? \([\s\S]{0,1600}?\{awaitingApproval \? \(/],
+    ["unread dot", /\{hasUnreadActivity \? \([\s\S]{0,900}?aria-hidden/],
+    ["fork mark", /\{showForkMark \? \([\s\S]{0,1600}?<GitBranchIcon/],
+  ];
+  for (const [name, pattern] of marks) {
+    const block = pattern.exec(APP_SIDEBAR)?.[0] ?? "";
+    assert.ok(block, `could not find the ${name}`);
+    for (const group of ["recent-item", "project-chat-item"]) {
+      for (const fade of [
+        `group-hover/${group}:opacity-0`,
+        // The actions follow the mark in the row, so the mark looks at its later siblings.
+        "[&:has(~.sidebar-row-action[data-state=open])]:opacity-0",
+        "[&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
+      ]) {
+        assert.ok(block.includes(fade), `the ${name} lacks ${fade}`);
+      }
+    }
+  }
+});
+
 test("a working Recents row clears the kebab on hover", async () => {
   const [source, css] = await Promise.all([
-    readSrc("components/app-sidebar.tsx"),
-    readSrc("index.css"),
+    atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
+    atDefaultUiScale(readSrc("index.css")),
   ]);
 
   const kebabInset =
     inset(grab(css, /\.sidebar-row-action \{\s*@apply ([^;]*);/, "row action"), "pr") +
     inset(grab(css, /\.sidebar-row-action-glyph \{\s*@apply ([^;]*);/, "action glyph"), "size");
-  assert.equal(kebabInset, 30);
+  assert.equal(kebabInset, 27);
 
   const working = grab(
     source,
-    // Anchor on the branch comment so nested spinner ternaries cannot redirect
-    // the match to a pinned or project row.
-    /A spinner glyph cannot truncate[\s\S]{0,120}?"(group-hover\/recent-item:pr-[^"]*)"/,
-    "the showWorkSpinner padding branch",
+    /A spinner glyph cannot truncate[\s\S]{0,240}?showWorkSpinner \? "pr-([0-9.]+)"/,
+    "the showWorkSpinner padding",
   );
-  // hover, menu-open and coarse-pointer all reveal the kebab, so all must clear it
-  const pads = [...working.matchAll(/:pr-([0-9.]+)(?: |$)/g)].map(
-    (m) => Number(m[1]) * TAILWIND_UNIT,
+  assert.ok(
+    Number(working) * TAILWIND_UNIT >= kebabInset,
+    `${Number(working) * TAILWIND_UNIT}px padding, needs ${kebabInset}px to clear the kebab`,
   );
-  assert.ok(pads.length >= 3, `expected hover, open and coarse paddings, got ${pads.length}`);
-  for (const pad of pads) {
-    assert.ok(pad >= kebabInset, `${pad}px padding, needs ${kebabInset}px to clear the kebab`);
-  }
 
-  // focus-visible reveals the kebab without hover, so every spinner row reserves room there too.
-  const focusPads = [...source.matchAll(/:focus-visible\]\/[a-z-]+:pr-([0-9.]+)/g)].map(
+  // focus-visible reveals the actions without hover, so rows reserve room there too.
+  const focusPads = [...source.matchAll(/:has\(~\.sidebar-row-action:focus-visible\)\]:pr-([0-9.]+)/g)].map(
     (m) => Number(m[1]) * TAILWIND_UNIT,
   );
-  assert.equal(focusPads.length, 3, `expected 3 focus paddings, got ${focusPads.length}`);
+  assert.equal(focusPads.length, 2, `expected 2 focus paddings, got ${focusPads.length}`);
   for (const pad of focusPads) {
     assert.ok(pad >= kebabInset, `${pad}px focus padding, needs ${kebabInset}px`);
   }
 });
 
-// That same column now carries a second meaning: a row whose capability has not been measured
-// yet. On a Mac the platform store seeds chatOnly from the user agent, so Train and Video used
-// to paint disabled (opacity-50, inert) from first load and only recover once /api/health
-// answered -- indistinguishable from a measured "your machine cannot do this".
+// The later options button would steal pin clicks if their padding overlapped.
+test("the pin and options buttons do not overlap", () => {
+  const css = atDefaultUiScale(readSrc("index.css"));
+
+  const px = (value: string) =>
+    value.trim().endsWith("rem")
+      ? Number.parseFloat(value) * 16
+      : Number.parseFloat(value);
+  // Escape every metacharacter, backslash included.
+  const quote = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const decl = (selector: string, prop: string) => {
+    const block = new RegExp(`${quote(selector)} \\{([^}]*)\\}`).exec(css);
+    assert.ok(block, `could not find ${selector} in index.css`);
+    const m = new RegExp(`(?:^|;|\\n)\\s*${quote(prop)}:\\s*([^;]+)`).exec(
+      block[1],
+    );
+    assert.ok(m, `${selector} does not set ${prop}`);
+    return px(m[1]);
+  };
+
+  const base = grab(css, /\.sidebar-row-action \{\s*@apply ([^;]*);/, "row action");
+  const glyph = inset(
+    grab(css, /\.sidebar-row-action-glyph \{\s*@apply ([^;]*);/, "action glyph"),
+    "size",
+  );
+
+  const optionsWidth =
+    decl(".sidebar-row-action.is-unpin-action + .sidebar-row-action", "padding-left") +
+    glyph +
+    inset(base, "pr");
+  const pinRight = decl(".sidebar-row-action.is-unpin-action", "right");
+
+  assert.ok(
+    pinRight >= optionsWidth,
+    `the pin starts ${pinRight}px in, ${optionsWidth - pinRight}px under the options button`,
+  );
+  assert.ok(pinRight - optionsWidth <= 4, `${pinRight - optionsWidth}px of dead space between them`);
+});
+
+// A pending capability must not look like a measured "cannot".
 test("a pending row spins instead of blacking out", async () => {
   const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
 
@@ -119,9 +197,7 @@ test("a pending row spins instead of blacking out", async () => {
   );
 });
 
-// Detection is a cold `import torch` and can run for minutes, long enough for a silent
-// spinner to read as a hung row, so it says what it is waiting for. The disabled hint is
-// still withheld: no verdict is in yet.
+// Detection is a cold `import torch` and can take minutes, so say what it waits for.
 test("a pending row says what it is waiting for", async () => {
   const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
 
@@ -136,9 +212,7 @@ test("a pending row says what it is waiting for", async () => {
   assert.equal(pending.tooltip, "Checking this machine for training support...");
 });
 
-// Having the tooltip is not the same as showing it. Both renderers hid one by default for
-// an enabled row: SidebarMenuButton only on the collapsed rail, MoreMenuItem only when
-// disabled. A pending row is enabled, so the explanation reached neither.
+// Both renderers hid the tooltip for enabled rows, and a pending row is enabled.
 test("a pending row is marked so both renderers can show its tooltip", async () => {
   const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
 
@@ -152,11 +226,10 @@ test("a pending row is marked so both renderers can show its tooltip", async () 
 
 test("the expanded row and the flyout both show a pending tooltip", async () => {
   const [sidebar, appSidebar] = await Promise.all([
-    readSrc("components/ui/sidebar.tsx"),
-    readSrc("components/app-sidebar.tsx"),
+    atDefaultUiScale(readSrc("components/ui/sidebar.tsx")),
+    atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
   ]);
 
-  // The rail-only rule has to make an exception, or an enabled row is silent while expanded.
   assert.match(
     sidebar,
     /hidden=\{isMobile \|\| \(!isDisabled && !alwaysTooltip && state !== "collapsed"\)\}/,
@@ -164,10 +237,9 @@ test("the expanded row and the flyout both show a pending tooltip", async () => 
   );
   assert.match(
     appSidebar,
-    /alwaysTooltip=\{rowState\.pending\}/,
+    /alwaysTooltip=\{rowState\.pending \|\| Boolean\(row\.dimmed\)\}/,
     "the inline rows never ask for the exception",
   );
-  // The flyout's title is not conditional on the grey-out any more.
   assert.match(appSidebar, /^\s*title=\{tooltip\}$/m, "MoreMenuItem drops a pending title");
   assert.ok(
     !appSidebar.includes("title={disabled ? tooltip : undefined}"),
@@ -199,18 +271,14 @@ test("a measured row is left exactly as it was", async () => {
   assert.equal(measured.tooltip, "Training needs MLX. Run `unsloth studio update` to enable Train.");
   assert.equal(measured.spinner, false);
 
-  // The pre-existing use of the column (a run in progress) is untouched.
   const working = resolveNavRowState({ spinner: true });
   assert.equal(working.spinner, true);
   assert.equal(working.disabled, undefined);
 });
 
-// Two render sites take these props: the inline rows and the More flyout. A row moved into
-// More by Settings -> Appearance must not go back to rendering the guess.
 test("both nav render sites resolve pending the same way", async () => {
   const resolves = APP_SIDEBAR.match(/const rowState = resolveNavRowState\(row\);/g) ?? [];
   assert.equal(resolves.length, 2, `expected both render sites to resolve, got ${resolves.length}`);
-  // And neither passes the raw fields past it.
   for (const raw of ["disabled={row.disabled}", "tooltip={row.tooltip}", "spinner={row.spinner}"]) {
     assert.ok(!APP_SIDEBAR.includes(raw), `a render site still passes ${raw} unresolved`);
   }

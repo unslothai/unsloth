@@ -12,8 +12,7 @@ import pytest
 from unsloth.models._utils import EMPTY_LOGITS, LOGITS_ERROR_STRING
 
 
-# No tensor dunders: the loop under EMPTY_LOGITS binds those as real instance
-# attributes, so only these ever reach `__getattr__`.
+# No tensor dunders: those are bound as real instance attributes and never reach `__getattr__`.
 PROTOCOL_DUNDERS = (
     "__dataclass_fields__",
     "__fields__",

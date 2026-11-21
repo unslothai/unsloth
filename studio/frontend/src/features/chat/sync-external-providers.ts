@@ -7,27 +7,43 @@ import {
 } from "@/features/credentials/reconciliation";
 
 import {
+  type CodexSubscriptionModels,
+  type ModelCatalogResponse,
   type ProviderRegistryEntry,
+  fetchCodexSubscriptionModels,
   fetchModelCatalog,
   listProviderConfigs,
   listProviderModelCapabilities,
+  listProviderModels,
   listProviderRegistry,
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
+import { normalizeCustomReasoningConfig } from "./custom-reasoning";
 import {
   modelsDevCatalogFetchedAt,
   providerModelCatalogFetchedAt,
   setModelsDevCatalog,
   setProviderModelCatalog,
 } from "./model-catalog";
+import { learnModelDisplayNames } from "./model-display-names";
+import { normalizeCompactionMode } from "./utils/auto-compaction";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
+  CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
+  connectionApiFields,
   type ExternalProviderConfig,
+  extraHeadersFromSaved,
   getExternalProviderApiKey,
   isCustomProviderType,
   isPromptCacheTtl,
+  isVertexBaseUrl,
+  learnCatalogModelCapabilities,
+  loadNewModelChecksAt,
+  newModelCheckOf,
+  type NewModelCheckInterval,
+  saveNewModelCheckAt,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   pruneExternalProviderApiKeys,
   removeExternalProviderApiKey,
@@ -39,7 +55,13 @@ import {
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
+  supportsRemoteModelCatalog,
+  toExternalBackendProviderType,
 } from "./external-providers";
+import {
+  providerSavesInFlight,
+  useExternalProvidersStore,
+} from "./stores/external-providers-store";
 
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 // Rejected for every ChatGPT account, so drop it from selections saved earlier.
@@ -52,45 +74,66 @@ const OPENROUTER_EXCLUDED_MODELS = new Set([
   "recraft/recraft-v4-pro",
 ]);
 
-function normalizeUrl(input: string): string {
-  return input.trim().replace(/\/+$/, "");
+function parseHttpEndpointHost(
+  input: string | null | undefined,
+): string | null {
+  const value = (input ?? "").trim();
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+function isOpenAIManagedEndpoint(input: string | null | undefined): boolean {
+  const host = parseHttpEndpointHost(input);
+  return (
+    host === "api.openai.com" ||
+    host?.endsWith(".openai.azure.com") === true ||
+    host?.endsWith(".services.ai.azure.com") === true
+  );
 }
 
 export function resolveUiProviderTypeFromConfig(
   configProviderType: string,
   configDisplayName: string | null | undefined,
   configBaseUrl: string | null | undefined,
-  registryRows: ProviderRegistryEntry[],
-  existingProviderType: string | undefined,
+  _registryRows: ProviderRegistryEntry[],
+  _existingProviderType: string | undefined,
 ): string {
-  if (existingProviderType && isCustomProviderType(existingProviderType)) {
-    return existingProviderType;
+  if (configProviderType === "gemini" && isVertexBaseUrl(configBaseUrl)) {
+    return "vertex";
+  }
+  if (
+    configProviderType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+    (configDisplayName ?? "").trim().toLowerCase() === "sglang"
+  ) {
+    return "sglang";
   }
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
   }
+  if (isOpenAIManagedEndpoint(configBaseUrl)) {
+    return CUSTOM_BACKEND_PROVIDER_TYPE;
+  }
   const displayName = (configDisplayName ?? "").trim().toLowerCase();
+  if (displayName === CUSTOM_PROVIDER_DISPLAY_NAME.toLowerCase()) {
+    return LEGACY_CUSTOM_PROVIDER_TYPE;
+  }
   const matchingCustomPreset = CUSTOM_PROVIDER_PRESETS.find(
     (preset) => preset.displayName.toLowerCase() === displayName,
   );
   if (matchingCustomPreset) {
     return matchingCustomPreset.providerType;
   }
-  const openAiRegistry = registryRows.find(
-    (entry) => entry.provider_type === CUSTOM_BACKEND_PROVIDER_TYPE,
-  );
-  if (!openAiRegistry) {
-    return configProviderType;
-  }
-  const openAiDisplayName = openAiRegistry.display_name.trim().toLowerCase();
-  if (displayName.length > 0 && displayName !== openAiDisplayName) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
-  const configUrl = normalizeUrl(configBaseUrl ?? "");
-  const defaultUrl = normalizeUrl(openAiRegistry.base_url ?? "");
-  if (configUrl.length > 0 && configUrl !== defaultUrl) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
+  // A non-OpenAI host may proxy OpenAI, so without a legacy label we cannot infer custom.
   return configProviderType;
 }
 
@@ -100,9 +143,7 @@ export function mergeLearnedModelCapabilities(
   supportsStudioTools: boolean | undefined,
 ): Record<string, { vision?: boolean; studio_tools?: boolean }> {
   const fromRegistry = registryCapabilities ?? {};
-  // A plan-listed slug is learned at runtime and the registry cannot describe it, so rewriting this
-  // map from the registry alone would drop it and leave the composer reading "unknown" as allowed
-  // again on the next start.
+  // Plan-listed slugs are learned at runtime, so the map cannot be rebuilt from the registry alone.
   const capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> = {};
   for (const [modelId, capability] of Object.entries(stored ?? {})) {
     if (modelId !== PROVIDER_CAPABILITY_WILDCARD && !(modelId in fromRegistry)) {
@@ -124,9 +165,7 @@ export function pruneProviderModelIds(
   providerType: string,
   modelIds: string[],
 ): string[] {
-  // Anthropic has no entry: a `-YYYYMMDD` id is the canonical name for the whole pre-4.6
-  // generation, not a snapshot. This mirrored the backend denylist and outlived it, stripping those
-  // ids from the server catalog, the seeds and saved selections alike.
+  // Anthropic has no entry: a -YYYYMMDD id is the canonical pre-4.6 name, not a snapshot.
   if (providerType === "openai") {
     return modelIds.filter((id) => !OPENAI_DEPRECATED_MODELS.has(id));
   }
@@ -139,10 +178,7 @@ export function pruneProviderModelIds(
   return modelIds;
 }
 
-/** Which model ids a synced connection ends up with: server, else browser-saved, else seed. The
- *  saved list is pruned BEFORE the emptiness test: a browser selection made up entirely of
- *  retired slugs is no selection at all, and resolving to it empties the picker and sends that
- *  empty list to a backend that rejects it. `serverModels` and `defaultModels` arrive pruned. */
+/** Prunes the saved list before the emptiness test so all-retired selections fall through. */
 export function resolveSyncedModelIds(
   providerType: string,
   serverModels: string[],
@@ -155,7 +191,6 @@ export function resolveSyncedModelIds(
 }
 
 
-/** Carry browser-local provider knobs through a backend sync rebuild. */
 export function mergeLocalProviderOptions(
   existing: ExternalProviderConfig | undefined,
   synced: ExternalProviderConfig,
@@ -177,6 +212,9 @@ export function mergeLocalProviderOptions(
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? existing.autoReloadModels === true : undefined,
+    newModelCheck: existing.newModelCheck,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof existing.openaiContainerTtlMinutes === "number" &&
@@ -188,7 +226,6 @@ export function mergeLocalProviderOptions(
 
 
 
-/** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
   isCurrent?: () => boolean,
@@ -199,9 +236,7 @@ export async function syncExternalProvidersFromBackend(
   ]);
 
   for (const entry of registryRows) {
-    // Self-hosted model ids are user-supplied, so there is no per-model entry to key off. The
-    // registry declares studio_tools once per provider type; park it under the wildcard so the
-    // per-model lookup can fall back to it.
+    // Self-hosted ids are user-supplied, so studio_tools is parked under the wildcard.
     const capabilities = mergeLearnedModelCapabilities(
       getProviderModelCapabilities(entry.provider_type),
       entry.model_capabilities,
@@ -209,9 +244,7 @@ export async function syncExternalProvidersFromBackend(
     );
     setProviderModelCapabilities(entry.provider_type, capabilities);
   }
-  // Writing per returned entry can only correct what came back. Capabilities are persisted in
-  // localStorage and outlive the backend that wrote them, so a provider the registry has stopped
-  // listing would otherwise keep its last `studio_tools: true` forever.
+  // Persisted capabilities outlive the backend, so prune providers the registry dropped.
   pruneProviderModelCapabilities(registryRows.map((entry) => entry.provider_type));
   const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
     getLegacyKey: getExternalProviderApiKey,
@@ -225,13 +258,19 @@ export async function syncExternalProvidersFromBackend(
   pruneExternalProviderApiKeys(loadedConfigRows.map((config) => config.id));
 
   const existingById = new Map<string, ExternalProviderConfig>();
+  // Switched-off rows first, so a row in both lists keeps the caller's copy.
+  for (const provider of useExternalProvidersStore.getState().disabledProviders) {
+    existingById.set(provider.id, provider);
+  }
   for (const provider of existingProviders) {
     existingById.set(provider.id, provider);
   }
 
   const backfillTasks: Array<() => Promise<unknown>> = [];
-  const syncedProviders = configRows
-    .filter((config) => config.is_enabled)
+  const enabledIds = new Set(
+    configRows.filter((config) => config.is_enabled).map((config) => config.id),
+  );
+  const syncedRows = configRows
     .map((config) => {
       const existing = existingById.get(config.id);
       const uiProviderType = resolveUiProviderTypeFromConfig(
@@ -280,7 +319,18 @@ export async function syncExternalProvidersFromBackend(
         serverModels.length === 0 && savedModels.length > 0;
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
-      if (needsModelBackfill || needsAvailableBackfill) {
+      // Suggestions, not a listing.
+      const defaultSet = new Set(defaultModels);
+      if (
+        serverAvailableModels.length === 0 ||
+        (serverAvailableModels.length === defaultSet.size &&
+          serverAvailableModels.every((id) => defaultSet.has(id)))
+      ) {
+        suggestedBaselines.add(config.id);
+      } else {
+        suggestedBaselines.delete(config.id);
+      }
+      if (!config.shared_by_owner && (needsModelBackfill || needsAvailableBackfill)) {
         backfillTasks.push(() =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
@@ -291,16 +341,26 @@ export async function syncExternalProvidersFromBackend(
       const synced: ExternalProviderConfig = {
         id: config.id,
         providerType: uiProviderType,
-        // Beside the UI type, which disagrees for a legacy row saved as `openai`: only the stored type
-        // decides what the backend accepts.
+        // Only the stored type decides what the backend accepts (legacy rows differ from the UI type).
         backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
+        ...connectionApiFields(config.api_type),
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        autoCompactTokens: config.auto_compact_tokens ?? undefined,
+        compactionMode: normalizeCompactionMode(config.compaction_mode),
+        extraHeaders: extraHeadersFromSaved(config.extra_headers),
+        reasoningConfig:
+          config.provider_type === "custom" &&
+          config.api_type !== "responses" && config.api_type !== "systemone"
+            ? normalizeCustomReasoningConfig(config.reasoning_config)
+            : undefined,
 
         hasApiKey: config.has_api_key,
+        shared: config.shared === true,
+        sharedByOwner: config.shared_by_owner === true,
 
         authKind: config.auth_kind,
         authStatus: config.auth_status,
@@ -315,17 +375,258 @@ export async function syncExternalProvidersFromBackend(
       };
       return mergeLocalProviderOptions(existing, synced);
     });
+  const syncedProviders = syncedRows.filter((provider) => enabledIds.has(provider.id));
 
   if (isCurrent && !isCurrent()) return existingProviders;
+  useExternalProvidersStore
+    .getState()
+    .setDisabledProviders(syncedRows.filter((provider) => !enabledIds.has(provider.id)));
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
+  void tickNewlyListedModels(
+    syncedProviders,
+    registryRows.find((entry) => entry.provider_type === "openai_codex"),
+    isCurrent,
+  );
   return syncedProviders;
 }
 
+/** Stored list is only the suggestions: adopt the next listing, tick nothing. */
+export const suggestedBaselines = new Set<string>();
+
+type NewlyListed = { models: string[]; availableModels: string[]; added: string[] };
+
+/** null = no change; ids listed before and unticked since stay unticked. */
+export function withNewlyListedModels(
+  savedModels: string[],
+  previouslyListed: string[],
+  listedIds: string[],
+  options: { knownIds?: string[]; maxAdded?: number } = {},
+): NewlyListed | null {
+  if (listedIds.length === 0 || savedModels.length === 0 || previouslyListed.length === 0) {
+    return null;
+  }
+  const before = new Set([...previouslyListed, ...savedModels]);
+  const added = listedIds.filter((id) => !before.has(id));
+  if (added.length === 0) return null;
+  const known = options.knownIds ? new Set(options.knownIds) : null;
+  const stillKnown = (ids: string[]) => (known ? ids.filter((id) => known.has(id)) : ids);
+  // Keep ids seen before, or one unticked while briefly unlisted would come back ticked.
+  const seen = stillKnown(previouslyListed);
+  if (options.maxAdded !== undefined && added.length > options.maxAdded) {
+    // Baseline was the suggestions: adopt the listing, tick nothing.
+    return {
+      models: savedModels,
+      availableModels: [...new Set([...listedIds, ...seen])],
+      added: [],
+    };
+  }
+  const models = [...stillKnown(savedModels), ...added];
+  return { models, availableModels: [...new Set([...listedIds, ...models, ...seen])], added };
+}
+
+export function withNewlyOfferedCodexModels(
+  savedModels: string[],
+  previouslyOffered: string[],
+  listed: CodexSubscriptionModels | null,
+  maxAdded?: number,
+): NewlyListed | null {
+  if (listed?.source !== "subscription") return null;
+  return withNewlyListedModels(
+    savedModels,
+    previouslyOffered,
+    pruneProviderModelIds("openai_codex", listed.models.map((model) => model.id)),
+    { knownIds: (listed.known ?? listed.models).map((model) => model.id), maxAdded },
+  );
+}
+
+export function autoTickLimit(providerId: string, limit?: number): number | undefined {
+  return suggestedBaselines.has(providerId) ? 0 : limit;
+}
+
+// Gateways list new third-party models every week; ticking each would flood the picker.
+const NO_AUTO_TICK_PROVIDER_TYPES = new Set(["openrouter", "huggingface", "vercel"]);
+export const MAX_AUTO_TICKED_MODELS = 3;
+
+export function autoTicksNewlyListedModels(
+  provider: Pick<ExternalProviderConfig, "providerType" | "authKind" | "sharedByOwner">,
+): boolean {
+  return (
+    provider.authKind !== "chatgpt_oauth" &&
+    !provider.sharedByOwner &&
+    !NO_AUTO_TICK_PROVIDER_TYPES.has(provider.providerType) &&
+    !isCustomProviderType(provider.providerType) &&
+    !supportsRemoteModelCatalog(provider.providerType)
+  );
+}
+
+const NEW_MODEL_CHECK_PERIOD_MS: Partial<Record<NewModelCheckInterval, number>> = {
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+};
+
+/** Every focus re-syncs, so listings are rate-limited per connection. */
+export function newModelCheckDue(
+  interval: NewModelCheckInterval,
+  checkedThisLaunch: boolean,
+  lastCheckedAt: number | undefined,
+  now: number,
+): boolean {
+  if (interval === "off") return false;
+  const period = NEW_MODEL_CHECK_PERIOD_MS[interval];
+  if (period === undefined) return !checkedThisLaunch;
+  return lastCheckedAt === undefined || now - lastCheckedAt >= period;
+}
+
+const checkedThisLaunch = new Set<string>();
+const ticksInFlight = new Set<string>();
+// Failed or skipped checks retry after this, not on every focus.
+const RETRY_AFTER_MS = 10 * 60 * 1000;
+const lastAttemptAt = new Map<string, number>();
+
+function markChecked(providerId: string): void {
+  checkedThisLaunch.add(providerId);
+  saveNewModelCheckAt(providerId, Date.now());
+}
+
+type NewlyListedFor = (row: ExternalProviderConfig) => NewlyListed | null;
+
+async function listForNewModels(
+  provider: ExternalProviderConfig,
+  codexEntry: ProviderRegistryEntry | undefined,
+): Promise<NewlyListedFor | null> {
+  const isCodex = provider.authKind === "chatgpt_oauth";
+  if (isCodex ? provider.authStatus !== "connected" : !autoTicksNewlyListedModels(provider)) {
+    return null;
+  }
+  const now = Date.now();
+  const due = newModelCheckDue(
+    newModelCheckOf(currentRow(provider.id) ?? provider),
+    checkedThisLaunch.has(provider.id),
+    loadNewModelChecksAt()[provider.id],
+    now,
+  );
+  const attemptedAt = lastAttemptAt.get(provider.id);
+  if (!due || (attemptedAt !== undefined && now - attemptedAt < RETRY_AFTER_MS)) return null;
+  lastAttemptAt.set(provider.id, now);
+  if (isCodex) {
+    const listed = await fetchCodexSubscriptionModels(provider.id);
+    // A newly ticked text-only slug must not inherit the provider's vision default.
+    const capabilities = codexCapabilitiesWithPlanModels(
+      codexEntry,
+      listed,
+      getProviderModelCapabilities("openai_codex"),
+    );
+    if (capabilities) setProviderModelCapabilities("openai_codex", capabilities);
+    if (listed.source === "subscription") {
+      learnModelDisplayNames("openai_codex", listed.known ?? listed.models);
+    }
+    return (row) =>
+      withNewlyOfferedCodexModels(
+        row.models,
+        row.availableModels ?? [],
+        listed,
+        autoTickLimit(row.id),
+      );
+  }
+  const listed = await listProviderModels({
+    providerType: toExternalBackendProviderType(provider.providerType),
+    providerId: provider.id,
+    apiKey: provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id),
+    baseUrl: provider.baseUrl || null,
+    extraHeaders: provider.extraHeaders,
+  });
+  learnCatalogModelCapabilities(provider.providerType, listed);
+  learnModelDisplayNames(provider.providerType, listed);
+  const listedIds = pruneProviderModelIds(provider.providerType, [
+    ...new Set(listed.map((model) => model.id.trim()).filter((id) => id.length > 0)),
+  ]);
+  return (row) =>
+    withNewlyListedModels(row.models, row.availableModels ?? [], listedIds, {
+      maxAdded: autoTickLimit(row.id, MAX_AUTO_TICKED_MODELS),
+    });
+}
+
+export function codexCapabilitiesWithPlanModels(
+  entry: ProviderRegistryEntry | undefined,
+  listed: CodexSubscriptionModels | null,
+  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> | null {
+  if (!listed || listed.source !== "subscription") return null;
+  // Without the registry row every model reads as unlisted and persisted capabilities go wrong.
+  if (!entry) return null;
+  const registryCapabilities = entry.model_capabilities ?? {};
+  // Keyed by provider type, so merge into what is learned or a second connection drops the first's.
+  const capabilities = mergeLearnedModelCapabilities(
+    stored,
+    registryCapabilities,
+    entry?.supports_studio_tools,
+  );
+  for (const model of listed.known ?? listed.models) {
+    // Only the plan describes unlisted slugs; mirror the backend bool(vision) gate as false, not null.
+    if (!(model.id in registryCapabilities)) {
+      capabilities[model.id] = {
+        ...capabilities[model.id],
+        vision: model.vision === true,
+      };
+    }
+  }
+  return capabilities;
+}
+
+const currentRow = (id: string) =>
+  useExternalProvidersStore.getState().providers.find((candidate) => candidate.id === id);
+
+async function tickNewlyListedModels(
+  providers: readonly ExternalProviderConfig[],
+  codexEntry: ProviderRegistryEntry | undefined,
+  isCurrent?: () => boolean,
+): Promise<void> {
+  for (const provider of providers) {
+    if (
+      provider.sharedByOwner ||
+      ticksInFlight.has(provider.id) ||
+      providerSavesInFlight.has(provider.id)
+    ) {
+      continue;
+    }
+    ticksInFlight.add(provider.id);
+    try {
+      const updateFor = await listForNewModels(provider, codexEntry);
+      if (isCurrent && !isCurrent()) return;
+      if (!updateFor || providerSavesInFlight.has(provider.id)) continue;
+      // A save may have landed during the listing.
+      const latest = currentRow(provider.id);
+      if (newModelCheckOf(latest ?? provider) === "off") continue;
+      const update = updateFor(latest ?? provider);
+      if (!update) {
+        markChecked(provider.id);
+        continue;
+      }
+      const { models, availableModels } = update;
+      await updateProviderConfig(provider.id, { models, availableModels });
+      markChecked(provider.id);
+      if (isCurrent && !isCurrent()) return;
+      if (currentRow(provider.id) !== latest) continue;
+      const store = useExternalProvidersStore.getState();
+      store.setProviders(
+        store.providers.map((candidate) =>
+          candidate.id === provider.id
+            ? { ...candidate, models, availableModels }
+            : candidate,
+        ),
+      );
+    } catch {
+      // Retried on a later sync.
+    } finally {
+      ticksInFlight.delete(provider.id);
+    }
+  }
+}
+
 const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
-// The live catalog is stored per provider type, so only the provider's own endpoint may write it; a connection
-// pointed at a compatible gateway keeps the built-in tables instead of overwriting OpenRouter's entries.
+// Only the provider's own endpoint may write the per-type live catalog, not a gateway.
 const MODEL_CATALOG_PROVIDER_BASE_URLS: Record<string, string> = {
   openrouter: "https://openrouter.ai/api/v1",
 };
@@ -337,28 +638,36 @@ function usesProviderCatalogEndpoint(provider: ExternalProviderConfig): boolean 
   return baseUrl === "" || baseUrl === expected;
 }
 
+let modelsDevRefresh: Promise<ModelCatalogResponse> | null = null;
+
+export async function refreshModelsDevCatalog(isCurrent?: () => boolean): Promise<boolean> {
+  const modelsDevAge = modelsDevCatalogFetchedAt();
+  if (modelsDevAge != null && Date.now() - modelsDevAge * 1000 < MODEL_CATALOG_TTL_MS) {
+    return false;
+  }
+  try {
+    modelsDevRefresh ??= fetchModelCatalog().finally(() => {
+      modelsDevRefresh = null;
+    });
+    const catalog = await modelsDevRefresh;
+    if (isCurrent && !isCurrent()) return false;
+    setModelsDevCatalog(catalog);
+    return true;
+  } catch {
+    // Offline: the bundled snapshot answers until the next sync.
+    return false;
+  }
+}
+
 export async function refreshProviderModelCatalogs(
   providers: readonly ExternalProviderConfig[],
   isCurrent?: () => boolean,
 ): Promise<void> {
-  const modelsDevAge = modelsDevCatalogFetchedAt();
-  if (
-    providers.length > 0 &&
-    (modelsDevAge == null || Date.now() - modelsDevAge * 1000 >= MODEL_CATALOG_TTL_MS)
-  ) {
-    try {
-      const catalog = await fetchModelCatalog();
-      if (isCurrent && !isCurrent()) return;
-      setModelsDevCatalog(catalog);
-    } catch {
-      // Offline: the bundled snapshot answers until the next sync.
-    }
-  }
+  if (providers.length > 0) await refreshModelsDevCatalog(isCurrent);
+  if (isCurrent && !isCurrent()) return;
   for (const provider of providers) {
     const providerType = provider.providerType;
     if (!usesProviderCatalogEndpoint(provider)) continue;
-    // A successful fetch makes the catalog fresh, so later connections of the same type skip;
-    // a failed one leaves it stale and the next connection gets a turn.
     const fetchedAt = providerModelCatalogFetchedAt(providerType);
     if (fetchedAt != null && Date.now() - fetchedAt < MODEL_CATALOG_TTL_MS) continue;
     try {

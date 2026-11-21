@@ -9,6 +9,8 @@ from pathlib import Path
 
 import struct
 
+import pytest
+
 from utils.models.model_config import (
     _detect_family_token,
     detect_mmproj_file,
@@ -20,14 +22,19 @@ _GGUF_MAGIC = 0x46554747
 
 
 def _gguf_with_general(path: Path, fields: dict) -> Path:
-    """Write a minimal GGUF with only ``general.*`` string KVs."""
+    """Write a minimal GGUF with string and unsigned integer KVs."""
     body = b""
     for k, v in fields.items():
         kb = k.encode("utf-8")
-        vb = v.encode("utf-8")
         body += struct.pack("<Q", len(kb)) + kb
-        body += struct.pack("<I", 8)  # STRING vtype
-        body += struct.pack("<Q", len(vb)) + vb
+        if isinstance(v, list):
+            body += struct.pack("<IIQ", 9, 7, len(v)) + bytes(v)
+        elif isinstance(v, int):
+            body += struct.pack("<II", 4, v)
+        else:
+            vb = v.encode("utf-8")
+            body += struct.pack("<I", 8)
+            body += struct.pack("<Q", len(vb)) + vb
     header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, len(fields))
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(header + body)
@@ -35,8 +42,7 @@ def _gguf_with_general(path: Path, fields: dict) -> Path:
 
 
 def _touch(path: Path) -> Path:
-    """A headerless GGUF: selection falls to the filename, but non-empty since zero bytes now
-    means an interrupted download."""
+    """Headerless GGUF stub, non-empty since zero bytes now means an interrupted download."""
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0" * 32)
     return path
@@ -109,9 +115,6 @@ def test_search_root_walk_still_works(tmp_path: Path):
     assert result == str(mmproj.resolve())
 
 
-# -- Family token detection: word-bounded matching ----------------------
-
-
 def test_family_token_phi_does_not_match_sapphire():
     """``phi`` substring inside ``sapphire`` must not tag Phi."""
     assert _detect_family_token("sapphire-7b-q4_k_m.gguf") is None
@@ -154,9 +157,6 @@ def test_family_token_new_families_recognised():
     assert _detect_family_token("LFM2.5-VL-1.6B-BF16.gguf") == "lfm"
 
 
-# -- Cross-family rejection with the expanded token list ----------------
-
-
 def test_blocks_cross_family_for_new_token_pair(tmp_path: Path):
     """Nemotron weight + lone Gemma projector returns None."""
     model = _touch(tmp_path / "NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-MXFP4_MOE.gguf")
@@ -170,9 +170,6 @@ def test_picks_devstral_mmproj_in_mixed_dir(tmp_path: Path):
     dev_mm = _touch(tmp_path / "Devstral-Small-2-mmproj-bf16.gguf")
     _touch(tmp_path / "Qwen3.5-9B-BF16-mmproj.gguf")
     assert detect_mmproj_file(str(model)) == str(dev_mm.resolve())
-
-
-# -- Launcher-level family guard ----------------------------------------
 
 
 def test_mmproj_family_guard_blocks_cross_family():
@@ -217,9 +214,6 @@ def test_mmproj_family_guard_allows_unrecognised_model_family():
     )
 
 
-# -- Metadata-primary pairing in detect_mmproj_file ---------------------
-
-
 def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
     """URL match beats a longer-prefix sibling."""
     weight = _gguf_with_general(
@@ -231,7 +225,6 @@ def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
         },
     )
-    # Closer filename prefix, wrong upstream.
     _gguf_with_general(
         tmp_path / "Qwen3.5-9B-mmproj-bf16.gguf",
         {
@@ -241,7 +234,6 @@ def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-1.5B",
         },
     )
-    # Matching upstream.
     correct = _gguf_with_general(
         tmp_path / "mmproj-BF16.gguf",
         {
@@ -334,9 +326,7 @@ def test_metadata_score_outranks_filename_prefix(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
         },
     )
-    # Headerless: long shared stem, score 0.
     _touch(tmp_path / "Qwen3.5-9B-Q4_K_M-mmproj.gguf")
-    # Headered: generic name, score 100.
     correct = _gguf_with_general(
         tmp_path / "mmproj-BF16.gguf",
         {
@@ -380,6 +370,31 @@ def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
     ) == str(projector.resolve())
 
 
+def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_path: Path):
+    """Root widening must not enter sibling quants, or a foreign projector wins the tie."""
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "Qwen3-VL-235B-UD-Q4_K_XL.gguf")
+    mine = _touch(snapshot / "UD-Q4_K_XL" / "mmproj-UD-Q4_K_XL.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "Qwen3-VL-235B-UD-IQ1_S.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-UD-IQ1_S.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(mine.resolve())
+
+
+def test_a_containing_trusted_root_keeps_its_own_root_level_projector(tmp_path: Path):
+    """Ancestor walk must reach root-level projectors; foreign quants must not win on prefix."""
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "vision-model-UD-Q4_K_XL.gguf")
+    root_level = _touch(snapshot / "mmproj-F16.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-vision-model-UD-Q4_K_XL-F16.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(root_level.resolve())
+
+
 def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
     """Hermes keeps a download's mmproj in models/assets/ so its router never lists it as a
     model; the weight sits one level up. A sibling-only walk loads Qwen3.8-27B text-only."""
@@ -389,8 +404,7 @@ def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
 
 
 def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path):
-    """One assets/ dir serves every Hermes download, so it fills with projectors for
-    different families. The family gate must keep picking the right one."""
+    """Shared assets/ holds many families' projectors; the family gate picks the right one."""
     model = _touch(tmp_path / "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
     gemma = _touch(tmp_path / "assets" / "mmproj-gemma-4-26B-A4B-it-BF16.gguf")
@@ -398,9 +412,8 @@ def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path)
 
 
 def test_assets_holding_two_same_family_projectors_pairs_by_name(tmp_path: Path):
-    """Two Qwen downloads share one assets/ dir. Without header metadata both projectors
-    survive the family gate, so the name tie-break has to read past the mmproj- marker;
-    comparing raw stems ties at zero and the shorter name (the wrong model) won."""
+    """Without header metadata, same-family projectors survive the gate, so the name tie-break must
+    skip the mmproj- marker; raw stems tie and the shorter, wrong name wins."""
     model = _touch(tmp_path / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
     mine = _touch(tmp_path / "assets" / "mmproj-Qwen3.6-35B-A3B-BF16.gguf")
@@ -411,3 +424,163 @@ def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Pa
     model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")
     assert detect_mmproj_file(str(model)) is None
+
+
+@pytest.mark.parametrize("projection_dim", [5376, 2560, 0])
+@pytest.mark.parametrize("identity_matches", [False, True])
+def test_gemma4_finetune_pairs_by_functional_metadata(tmp_path, projection_dim, identity_matches):
+    model = _gguf_with_general(
+        tmp_path / "gembrain.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.basename": "Gemma-4" if identity_matches else "Gemma-4-Gembrain",
+            "general.base_model.0.repo_url": (
+                "https://huggingface.co/google/gemma-4-31B-it"
+                if identity_matches
+                else "https://huggingface.co/community/Gembrain"
+            ),
+            "gemma4.embedding_length": 5376,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-gemma-4-31B-it-BF16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Gemma-4",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-31B-it",
+            "clip.vision.projector_type": "gemma4v",
+            "clip.vision.projection_dim": projection_dim,
+        },
+    )
+    expected = (
+        str(projector)
+        if projection_dim == 5376 or (projection_dim == 0 and identity_matches)
+        else None
+    )
+    assert detect_mmproj_file(str(model)) == expected
+    if projection_dim:
+        assert mmproj_matches_model_family(str(model), str(projector)) == (projection_dim == 5376)
+
+
+@pytest.mark.parametrize("arch", ["qwen35", "qwen35moe"])
+@pytest.mark.parametrize(
+    "projection_dim, deepstack, paired",
+    [(2048, [False, False], True), (1024, [False, False], False), (2048, [False, True], False)],
+)
+def test_qwen35_projector_from_another_quantizer_pairs_by_function(
+    tmp_path, arch, projection_dim, deepstack, paired
+):
+    """#6305: an LM Studio Qwen3.6 weight next to Unsloth's projector; Qwen3-VL's deepstack one stays out."""
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": arch,
+            "general.basename": "Qwen_Qwen3.6",
+            f"{arch}.embedding_length": 2048,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Qwen3.6-35B-A3B",
+            "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+            "clip.projector_type": "qwen3vl_merger",
+            "clip.vision.projection_dim": projection_dim,
+            "clip.vision.is_deepstack_layers": deepstack,
+        },
+    )
+    assert detect_mmproj_file(str(model)) == (str(projector.resolve()) if paired else None)
+    assert mmproj_matches_model_family(str(model), str(projector)) == paired
+
+
+@pytest.mark.parametrize("weight_name", ["Qwen_Qwen3.5 35B A3B", "Qwen3.5 Uncensored"])
+def test_qwen35_same_width_projector_of_another_size_is_not_picked(tmp_path, weight_name):
+    """Qwen3.5 2B and 35B-A3B share width 2048, not vision towers; bartowski-style names tie otherwise."""
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen35moe",
+            "general.name": weight_name,
+            "general.basename": "Qwen_Qwen3.5",
+            "qwen35moe.embedding_length": 2048,
+        },
+    )
+    projectors = {}
+    for size in ("2B", "35B-A3B"):
+        projectors[size] = _gguf_with_general(
+            tmp_path / f"mmproj-Qwen_Qwen3.5-{size}-bf16.gguf",
+            {
+                "general.architecture": "clip",
+                "general.type": "mmproj",
+                "general.name": f"Qwen3.5 {size.replace('-', ' ')}",
+                "general.basename": "Qwen3.5",
+                "clip.projector_type": "qwen3vl_merger",
+                "clip.vision.projection_dim": 2048,
+                "clip.vision.is_deepstack_layers": [False, False],
+            },
+        )
+    assert detect_mmproj_file(str(model)) == str(projectors["35B-A3B"].resolve())
+
+
+def test_size_names_do_not_override_an_exact_repo_match(tmp_path):
+    """Converters name MoE sizes differently; the shared base_model URL is authoritative."""
+    url = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B"
+    model = _gguf_with_general(
+        tmp_path / "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        {
+            "general.architecture": "qwen35moe",
+            "general.name": "Qwen3.6 35B",
+            "general.base_model.0.repo_url": url,
+            "qwen35moe.embedding_length": 2048,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-F16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.name": "Qwen3.6 A3B",
+            "general.base_model.0.repo_url": url,
+            "clip.projector_type": "qwen3vl_merger",
+            "clip.vision.projection_dim": 2048,
+            "clip.vision.is_deepstack_layers": [False, False],
+        },
+    )
+    assert detect_mmproj_file(str(model)) == str(projector.resolve())
+
+
+def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
+    model = _gguf_with_general(tmp_path / "model.gguf", {"general.basename": "Foo"})
+    _gguf_with_general(tmp_path / "mmproj.gguf", {"general.basename": "Bar"})
+    assert detect_mmproj_file(str(model)) is None
+    output = capsys.readouterr().out
+    assert "general.basename" in output
+    assert "Foo" in output and "Bar" in output
+
+
+@pytest.mark.parametrize("projection_dim", [None, 3840, 4096])
+def test_hf_repo_case_mismatch_keeps_compatible_projector(tmp_path, projection_dim):
+    """#6305: repo URL casing must not reject a projector without dimension metadata."""
+    model = _gguf_with_general(
+        tmp_path / "gemma-4-12b-it-Q4_K_M.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-12B-it",
+            "gemma4.embedding_length": 3840,
+        },
+    )
+    fields = {
+        "general.architecture": "clip",
+        "general.type": "mmproj",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-12b-it",
+    }
+    if projection_dim is not None:
+        fields.update(
+            {"clip.vision.projector_type": "gemma4v", "clip.vision.projection_dim": projection_dim}
+        )
+    projector = _gguf_with_general(tmp_path / "mmproj-F16.gguf", fields)
+    expected = None if projection_dim == 4096 else str(projector.resolve())
+    assert detect_mmproj_file(str(model)) == expected

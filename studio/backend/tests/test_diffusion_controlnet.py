@@ -14,9 +14,6 @@ import pytest
 from core.inference import diffusion_controlnet as dc
 
 
-# ── Pure helpers ────────────────────────────────────────────────────────────
-
-
 def test_sanitize_id():
     assert dc.sanitize_id("owner/My ControlNet") == "My_ControlNet"
     assert dc.sanitize_id("weird:<>name") == "weird_name"
@@ -33,7 +30,6 @@ def test_list_controlnets_family_filter():
 def test_resolve_controlnet_catalog_bare_repo_and_unknown():
     r = dc.resolve_controlnet("flux-union-pro", family = "flux.1")
     assert r.path == "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro" and not r.is_local
-    # A bare public repo id passes through.
     r2 = dc.resolve_controlnet("owner/some-controlnet")
     assert r2.path == "owner/some-controlnet" and not r2.is_local
     with pytest.raises(FileNotFoundError):
@@ -41,23 +37,20 @@ def test_resolve_controlnet_catalog_bare_repo_and_unknown():
 
 
 def test_resolve_controlnet_rejects_filesystem_like_ids():
-    # The bare-repo fallback must never accept a path-shaped id: from_pretrained would treat it as a local directory, bypassing controlnets_dir().
+    # Never accept a path-shaped id: from_pretrained would load a local dir outside controlnets_dir().
     for bad in ("/tmp/model", "../some/model", "./x/y", "~/x/y", "a/b/c", "C:\\x/y", ".hidden/x"):
         with pytest.raises(FileNotFoundError):
             dc.resolve_controlnet(bad)
 
 
 def test_resolve_controlnet_enforces_family_match():
-    # A curated entry tagged for another family is rejected before download so it never reaches the wrong ControlNet pipeline class.
     with pytest.raises(ValueError, match = "not the"):
         dc.resolve_controlnet("qwen-union", family = "flux.1")
-    # The matching family resolves fine, and no family (unfiltered) is permissive.
     assert dc.resolve_controlnet("qwen-union", family = "qwen-image").path
     assert dc.resolve_controlnet("qwen-union").path
 
 
 def test_resolve_controlnet_repo_id_still_family_gated():
-    # A curated ControlNet addressed by its full repo id must still hit the family gate, not slip through the bare-repo fallback.
     with pytest.raises(ValueError, match = "is for"):
         dc.resolve_controlnet("InstantX/Qwen-Image-ControlNet-Union", family = "flux.1")
     r = dc.resolve_controlnet("InstantX/Qwen-Image-ControlNet-Union", family = "qwen-image")
@@ -65,7 +58,6 @@ def test_resolve_controlnet_repo_id_still_family_gated():
 
 
 def test_union_control_mode_maps_only_union_entries():
-    # Union entries map a known control type to its integer mode; an unmapped type defaults to 0, and a non-union id returns None.
     assert dc.union_control_mode("flux-union-pro", "canny") == 0
     assert dc.union_control_mode("flux-union-pro", "depth") == 2
     assert dc.union_control_mode("flux-union-pro", "pose") == 4
@@ -74,26 +66,22 @@ def test_union_control_mode_maps_only_union_entries():
 
 
 def test_union_control_mode_rejects_unknown_type():
-    # An unknown / typo'd control type must NOT fall back to the canny head (0): preprocess_control passes non-canny maps through
-    # unchanged, so mode 0 would read a foreign map as canny. Only passthrough (or empty) defaults to 0; anything else raises.
+    # Non-canny maps pass through preprocess_control unchanged, so a typo must not default to canny.
     with pytest.raises(ValueError, match = "Unknown control type"):
         dc.union_control_mode("flux-union-pro", "detph")
     with pytest.raises(ValueError, match = "Unknown control type"):
         dc.union_control_mode("flux-union-pro", "scribble")
-    # passthrough and empty still default to 0; a non-union entry returns None and never raises.
     assert dc.union_control_mode("flux-union-pro", "") == 0
     assert dc.union_control_mode("some/bare-repo", "detph") is None
 
 
 def test_union_control_mode_matches_curated_repo_id():
-    # resolve_controlnet() accepts a curated union model by bare repo id, so union_control_mode() must recognise it too, else control_mode is dropped and the union pipeline runs the wrong head.
+    # resolve_controlnet accepts curated unions by repo id, so union_control_mode must too.
     assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "depth") == 2
     assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "pose") == 4
     assert dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "passthrough") == 0
     assert dc.union_control_mode("InstantX/Qwen-Image-ControlNet-Union", "canny") == 0
-    # A bare repo id that is NOT a curated union model still returns None (caller omits the kwarg).
     assert dc.union_control_mode("some/other-controlnet", "canny") is None
-    # A typo'd type against a repo-id-matched union still raises (route 400), like the short-id path.
     with pytest.raises(ValueError, match = "Unknown control type"):
         dc.union_control_mode("Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", "detph")
 
@@ -104,7 +92,7 @@ def test_resolve_controlnet_local(tmp_path, monkeypatch):
     cn = d / "my-cn"
     cn.mkdir()
     (cn / "config.json").write_text("{}")
-    (cn / "diffusion_pytorch_model.safetensors").write_bytes(b"x")  # a loadable weight
+    (cn / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
     monkeypatch.setattr(dc, "controlnets_dir", lambda: d)
     entries = {e.id for e in dc.list_controlnets()}
     assert "my-cn" in entries
@@ -113,7 +101,6 @@ def test_resolve_controlnet_local(tmp_path, monkeypatch):
 
 
 def test_scan_local_skips_config_only_folder(tmp_path, monkeypatch):
-    # A folder with config.json but no weight/index (interrupted copy) must not be advertised: it would fail deep in from_pretrained as a 500.
     d = tmp_path / "controlnets"
     d.mkdir()
     incomplete = d / "incomplete-cn"
@@ -121,7 +108,6 @@ def test_scan_local_skips_config_only_folder(tmp_path, monkeypatch):
     (incomplete / "config.json").write_text("{}")
     monkeypatch.setattr(dc, "controlnets_dir", lambda: d)
     assert "incomplete-cn" not in {e.id for e in dc.list_controlnets()}
-    # A sharded weight index counts as a loadable weight.
     (incomplete / "diffusion_pytorch_model.safetensors.index.json").write_text("{}")
     assert "incomplete-cn" in {e.id for e in dc.list_controlnets()}
 
@@ -130,7 +116,6 @@ def test_preprocess_control_passthrough_and_canny():
     from PIL import Image
 
     img = Image.new("RGB", (32, 24), (10, 20, 30))
-    # passthrough returns the same object.
     assert dc.preprocess_control(img, "passthrough") is img
     # A flat image has no edges, so the map is all black; passing the source through would condition the ControlNet on raw luminance.
     import numpy as np
@@ -138,24 +123,21 @@ def test_preprocess_control_passthrough_and_canny():
     flat = dc.preprocess_control(img, "canny")
     assert flat.mode == "RGB" and flat.size == (32, 24)
     assert np.asarray(flat).max() == 0
-    # An image with structure yields an edge map: RGB, same size, some white pixels.
 
     arr = np.zeros((24, 32, 3), np.uint8)
-    arr[:, 16:, :] = 255  # a hard vertical edge
+    arr[:, 16:, :] = 255
     edged = dc.preprocess_control(Image.fromarray(arr), "canny")
     assert edged.mode == "RGB" and edged.size == (32, 24)
-    assert np.asarray(edged).max() == 255  # traced the edge
+    assert np.asarray(edged).max() == 255
 
 
 def test_supports_controlnet_matrix():
     ok = dict(engine = "diffusers", family = "flux.1", has_controlnet_pipeline = True)
     assert dc.supports_controlnet(**ok, model_kind = "pipeline", transformer_quant = None)
     assert dc.supports_controlnet(**ok, model_kind = "single_file", transformer_quant = None)
-    # GGUF-via-diffusers and fp8/int8 dense are gated off, like LoRA.
     assert not dc.supports_controlnet(**ok, model_kind = "gguf", transformer_quant = None)
     assert not dc.supports_controlnet(**ok, model_kind = "single_file", transformer_quant = "fp8")
     assert not dc.supports_controlnet(**ok, model_kind = "single_file", transformer_quant = "int8")
-    # native engine + a family without a CN pipeline are off.
     assert not dc.supports_controlnet(
         engine = "sd_cpp",
         family = "flux.1",
@@ -172,9 +154,6 @@ def test_supports_controlnet_matrix():
     )
 
 
-# ── Request-model validation ────────────────────────────────────────────────
-
-
 def test_controlnet_spec_and_request_validation():
     from models.inference import ControlNetSpec, DiffusionGenerateRequest
 
@@ -189,18 +168,13 @@ def test_controlnet_spec_and_request_validation():
         },
     )
     assert req.controlnet.id == "flux-union-pro" and req.controlnet.strength == 0.6
-    # defaults
     s = ControlNetSpec(id = "a", image = "b")
     assert s.control_type == "passthrough" and s.strength == 1.0
     assert s.guidance_start == 0.0 and s.guidance_end == 1.0
-    # bounds
     with pytest.raises(Exception):
         ControlNetSpec(id = "a", image = "b", strength = 3.0)
     with pytest.raises(Exception):
         ControlNetSpec(id = "a", image = "b", guidance_end = 1.5)
-
-
-# ── Family wiring ───────────────────────────────────────────────────────────
 
 
 def test_families_declare_controlnet_classes():
@@ -210,11 +184,7 @@ def test_families_declare_controlnet_classes():
     assert by_name["flux.1"].controlnet_pipeline_class == "FluxControlNetPipeline"
     assert by_name["flux.1"].controlnet_model_class == "FluxControlNetModel"
     assert by_name["qwen-image"].controlnet_pipeline_class == "QwenImageControlNetPipeline"
-    # z-image has no diffusers ControlNet pipeline -> gated off.
     assert by_name["z-image"].controlnet_pipeline_class is None
-
-
-# ── Diffusers ControlNet pipe manager ───────────────────────────────────────
 
 
 class _FakeCNModel:
@@ -257,7 +227,7 @@ class _FakeCNPipe:
         p.base = base
         p.controlnet = controlnet
         _FakeCNPipe.recast_dtype = None
-        p.to(dtype = torch_dtype or "float32")  # from_pipe's terminal cast
+        p.to(dtype = torch_dtype or "float32")
         return p
 
 
@@ -306,17 +276,15 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     assert p1.controlnet.path == "repo/id" and p1.controlnet.device == "cpu"
     # A remote (non-local) ControlNet must force safetensors so a pickle cannot deserialize even if the Hub scan failed open.
     assert p1.controlnet.use_safetensors is True
-    # The cast never reaches the resident base modules the ControlNet pipe shares (#9186).
+    # The cast never reaches the resident base modules the ControlNet pipe shares.
     assert _FakeCNPipe.recast_dtype is None
-    # cached: same id -> same model + same pipe, no reload.
     p2 = b._controlnet_pipe(st, resolved, threading.Event())
     assert p2 is p1
     assert b._cn_models["flux-union-pro"] is p1.controlnet
 
 
 def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):
-    # A bare owner/name ControlNet is accepted by resolve_controlnet without the base trust gate, so the load path must run the
-    # Hub malware preflight: a flagged remote repo raises BEFORE from_pretrained downloads it.
+    # Bare owner/name ControlNets skip the base trust gate, so the Hub malware preflight must run.
     import threading
 
     import utils.security
@@ -358,7 +326,6 @@ def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):
 
 
 def test_controlnet_pipe_skips_scan_for_local_dir(monkeypatch, tmp_path):
-    # A local dir the user picked has no Hub scan, so the preflight must not block it even if the (unused) scan stub says blocked.
     import threading
 
     import utils.security
@@ -376,7 +343,6 @@ def test_controlnet_pipe_skips_scan_for_local_dir(monkeypatch, tmp_path):
     resolved = dc.ResolvedControlNet("my-cn", str(tmp_path), is_local = True)
     p = b._controlnet_pipe(st, resolved, threading.Event())
     assert isinstance(p, _FakeCNPipe)
-    # A local dir the user chose is exempt from the forced-safetensors gate (may be .bin).
     assert p.controlnet.use_safetensors is None
 
 
@@ -393,15 +359,168 @@ def test_controlnet_pipe_rejects_family_without_classes():
 
 
 def test_controlnet_pipe_not_cached_after_unload_race(monkeypatch):
-    # An unload landing while from_pipe assembles must not let the wrapper repopulate the cache around the torn-down base pipe.
     import threading
 
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
     b = DiffusionBackend()
-    st = _state()  # never committed to b._state: the load is already gone
+    st = _state()
     resolved = dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False)
     with pytest.raises(RuntimeError, match = "cancelled"):
         b._controlnet_pipe(st, resolved, threading.Event())
     assert b._cn_pipes == {}
+
+
+@pytest.mark.parametrize(
+    "policy, calibrated, streamed",
+    [("none", False, False), ("none", True, True), ("group", False, True)],
+)
+def test_controlnet_streams_beside_a_calibrated_resident_tier(
+    monkeypatch, policy, calibrated, streamed
+):
+    import threading
+
+    from core.inference import diffusion as d
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    _allow_cn_security(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        d, "_offload_controlnet_module", lambda m, device, logger: calls.append(m) or True
+    )
+    b = d.DiffusionBackend()
+    st = _state()
+    st.offload_policy = policy
+    st.calibrated_placement = calibrated
+    b._state = st
+    p = b._controlnet_pipe(
+        st, dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False), threading.Event()
+    )
+    assert bool(calls) is streamed
+    assert hasattr(p.controlnet, "device") is not streamed
+
+
+def test_a_calibrated_tier_refuses_a_controlnet_it_cannot_stream(monkeypatch):
+    import threading
+
+    from core.inference import diffusion as d
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    _allow_cn_security(monkeypatch)
+    monkeypatch.setattr(d, "_offload_controlnet_module", lambda m, device, logger: False)
+    b = d.DiffusionBackend()
+    st = _state()
+    st.offload_policy = "none"
+    st.calibrated_placement = True
+    b._state = st
+    resolved = dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False)
+    with pytest.raises(ValueError, match = "balanced memory mode"):
+        b._controlnet_pipe(st, resolved, threading.Event())
+    assert b._cn_models == {} and b._cn_pipes == {}
+    st.calibrated_placement = False
+    st.offload_policy = "group"
+    p = b._controlnet_pipe(st, resolved, threading.Event())
+    assert hasattr(p.controlnet, "device")
+
+
+def _fake_group_offload(monkeypatch, with_stream_kwargs = True):
+    """Record _offload_controlnet_module's apply_group_offloading kwargs and the denoiser streaming helpers it calls."""
+    from core.inference import diffusion_memory as dm
+
+    calls = {"apply": [], "helpers": []}
+    if with_stream_kwargs:
+
+        def apply_group_offloading(
+            module,
+            onload_device,
+            offload_device = None,
+            offload_type = "block_level",
+            num_blocks_per_group = None,
+            non_blocking = False,
+            use_stream = False,
+            record_stream = False,
+            low_cpu_mem_usage = False,
+        ):
+            calls["apply"].append(
+                dict(
+                    onload_device = onload_device,
+                    offload_type = offload_type,
+                    num_blocks_per_group = num_blocks_per_group,
+                    non_blocking = non_blocking,
+                    use_stream = use_stream,
+                    record_stream = record_stream,
+                )
+            )
+
+    else:
+
+        def apply_group_offloading(
+            module,
+            onload_device,
+            offload_device = None,
+            offload_type = "block_level",
+            num_blocks_per_group = None,
+            use_stream = False,
+        ):
+            calls["apply"].append(dict(onload_device = onload_device, use_stream = use_stream))
+
+    hooks = types.ModuleType("diffusers.hooks")
+    hooks.apply_group_offloading = apply_group_offloading
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+    for name, ret in (
+        ("install_group_offload_buffer_restore", True),
+        ("install_group_offload_hooks_eager", True),
+        ("_pin_top_level_group", True),
+        ("_skip_top_level_copy_back", True),
+        ("install_group_prefetch", 3),
+    ):
+        monkeypatch.setattr(
+            dm,
+            name,
+            lambda *a, _n = name, _r = ret, **k: calls["helpers"].append(_n) or _r,
+        )
+    return calls
+
+
+def test_streamed_controlnet_uses_the_event_fenced_prefetcher_on_cuda(monkeypatch):
+    from core.inference import diffusion as d
+
+    calls = _fake_group_offload(monkeypatch)
+    module = object()
+    assert d._offload_controlnet_module(module, "cuda", None) is True
+    (kwargs,) = calls["apply"]
+    assert kwargs["use_stream"] and kwargs["record_stream"] and kwargs["non_blocking"]
+    assert kwargs["offload_type"] == "block_level" and kwargs["num_blocks_per_group"] == 1
+    assert calls["helpers"] == [
+        "install_group_offload_buffer_restore",
+        "install_group_offload_hooks_eager",
+        "_pin_top_level_group",
+        "install_group_prefetch",
+    ]
+
+
+def test_streamed_controlnet_falls_back_to_no_copy_back_when_the_top_group_cannot_pin(monkeypatch):
+    from core.inference import diffusion as d
+    from core.inference import diffusion_memory as dm
+
+    calls = _fake_group_offload(monkeypatch)
+    monkeypatch.setattr(
+        dm, "_pin_top_level_group", lambda *a, **k: calls["helpers"].append("pin") and False
+    )
+    assert d._offload_controlnet_module(object(), "cuda", None) is True
+    assert calls["helpers"][-3:] == ["pin", "_skip_top_level_copy_back", "install_group_prefetch"]
+
+
+@pytest.mark.parametrize("device, with_stream_kwargs", [("cpu", True), ("cuda", False)])
+def test_controlnet_offload_unchanged_without_a_cuda_stream_path(
+    monkeypatch, device, with_stream_kwargs
+):
+    from core.inference import diffusion as d
+
+    calls = _fake_group_offload(monkeypatch, with_stream_kwargs)
+    assert d._offload_controlnet_module(object(), device, None) is True
+    (kwargs,) = calls["apply"]
+    assert kwargs["use_stream"] is (device == "cuda")
+    assert not kwargs.get("record_stream") and not kwargs.get("non_blocking")
+    assert calls["helpers"] == []

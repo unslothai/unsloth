@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "repo": "ROCm/FLM_Q4NX_Converter",
+  "converters": {
+    "q4nx": {
+      "commit": "dd0993cc0801c6ef98fbd57d64b8895c0730517f",
+      "archive_sha256": "08e610e638e0bed5b07b22c97c8127b7ebea6d191f42428a5f11ca5a7e773e79",
+      "archive_size": 41472
+    },
+    "q4k": {
+      "commit": "ea1df7ec736fdf2d45dcbc99a79b6300c4301e07",
+      "archive_sha256": "b79053f413f9cb9e619033bee41dabcb7583f6272cf4212718482f1d3969567f",
+      "archive_size": 67352,
+      "config_overrides": {
+        "configs/qwen3.5_0.8b.json": {
+          "name_map.linear_out_proj.default_tensor_type": "Q4_K"
+        },
+        "configs/qwen3.5_2b.json": {
+          "name_map.linear_out_proj.default_tensor_type": "Q4_K"
+        }
+      }
+    }
+  },
+  "q4k_architectures": [
+    "qwen35",
+    "qwen35moe"
+  ]
+}

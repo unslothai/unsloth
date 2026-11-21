@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-// The migration now reads the shared sampling table by extensionless specifier,
-// like the rest of src/, so this test needs the bundler resolver too.
+// The migration imports extensionless specifiers, so this test needs the bundler resolver.
 register("./bundler-resolver.mjs", import.meta.url);
 
 import type { PersistedChatSettings } from "../src/features/chat/api/chat-settings-api.ts";
@@ -173,9 +172,7 @@ test("normalizes a case-insensitive saved key to the active checkpoint", () => {
     migrated.settings.inferenceParamsByModel?.[QWEN38]?.presencePenalty,
     1.5,
   );
-  // The alias is migrated rather than dropped. The server merge only sets keys,
-  // so a spelling removed here would stay legacy there and a later status
-  // naming it would replay the stale row.
+  // The server merge only sets keys, so a dropped alias would stay legacy and replay later.
   assert.equal(
     migrated.settings.inferenceParamsByModel?.[lowerCaseKey]?.presencePenalty,
     1.5,
@@ -242,9 +239,7 @@ test("does not migrate generic Qwen3 or a custom preset", () => {
 });
 
 test("external checkpoints are decoded before the family is matched", () => {
-  // buildExternalModelId percent-encodes, so a provider-namespaced Qwen arrives
-  // as external::<provider>::Qwen%2FQwen3.8-27B. Matching that raw would put an
-  // alphanumeric "f" against the family segment and drop the presence bump.
+  // buildExternalModelId percent-encodes, so the raw %2F would break family matching.
   const encoded = `external::openrouter::${encodeURIComponent("Qwen/Qwen3.8-27B")}`;
   assert.equal(isPresenceBumpQwen(encoded), true);
   assert.equal(
@@ -349,8 +344,6 @@ test("is idempotent after the legacy snapshot has been upgraded", () => {
 });
 
 test("an Ollama manifest reference is decoded before the family is matched", () => {
-  // The inventory ref keeps its quote(safe='') encoding all the way into
-  // inference status, so every separator arrives as %2F.
   const ref = `ollama-manifest:${encodeURIComponent(
     "/home/u/.ollama/manifests/registry.ollama.ai/library/qwen3.8/latest",
   )}`;
@@ -363,7 +356,6 @@ test("an Ollama manifest reference is decoded before the family is matched", () 
     ),
     false,
   );
-  // A malformed escape must not lose the checkpoint entirely.
   assert.equal(isPresenceBumpQwen("ollama-manifest:%E0%A4%A/qwen3.8/latest"), true);
 });
 
@@ -374,8 +366,6 @@ test("POSIX paths differing only by case are not the same model", () => {
 
   const migrated = migrateLegacyQwenDefaults(settings, active, true);
 
-  // The other path is a different file on a case-sensitive filesystem, so its
-  // row must not be moved under the active checkpoint.
   assert.deepEqual(migrated.migratedModelIds, []);
   assert.equal(migrated.patch, null);
 });
@@ -397,7 +387,6 @@ test("filename and tag delimiters end the family segment", () => {
   ]) {
     assert.equal(isPresenceBumpQwen(id), true, id);
   }
-  // The future-version and parameter-count guards still hold.
   for (const id of ["qwen3.80-27b", "qwen3.8b", "qwen3.85-27b"]) {
     assert.equal(isPresenceBumpQwen(id), false, id);
   }
@@ -408,14 +397,12 @@ test("external model keys are matched exactly, not normalized", () => {
   const other = `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`;
   const migrated = migrateLegacyQwenDefaults(settingsFor(other), active, true);
 
-  // Provider-qualified ids are opaque, so the other row is a different model.
   assert.deepEqual(migrated.migratedModelIds, []);
   assert.equal(migrated.patch, null);
 });
 
 test("two aliases normalizing to the active checkpoint are left alone", () => {
-  // One holds the legacy snapshot, the other the user's own sampling. Picking
-  // by insertion order would serve generated defaults over the customization.
+  // Picking by insertion order would serve generated defaults over the customization.
   const settings = settingsFor(QWEN38.toLowerCase());
   settings.inferenceParamsByModel = {
     [QWEN38.toLowerCase()]: LEGACY_SNAPSHOT,
@@ -429,8 +416,6 @@ test("two aliases normalizing to the active checkpoint are left alone", () => {
 });
 
 test("two Ollama manifests differing only by path case stay separate", () => {
-  // The ref wraps a percent-encoded absolute path, and two paths differing only
-  // by case are two files on a case-sensitive filesystem.
   const ref = (path: string): string =>
     `ollama-manifest:${encodeURIComponent(path)}`;
   const active = ref("/home/u/.ollama/models/manifests/Qwen3.8/latest");
@@ -452,7 +437,6 @@ test("two Ollama manifests differing only by path case stay separate", () => {
 });
 
 test("a space or bracket ends the Qwen family name", () => {
-  // A local path or filename separates the family with whatever the user typed.
   for (const id of [
     "/models/Qwen3.8 27B",
     "/models/Qwen3.8 (instruct)/model.gguf",
@@ -460,7 +444,6 @@ test("a space or bracket ends the Qwen family name", () => {
   ]) {
     assert.equal(isPresenceBumpQwen(id), true, id);
   }
-  // Still a future family and a parameter count, not this one.
   for (const id of ["/models/Qwen3.80 27B", "/models/Qwen3.8B", "Qwen3.85"]) {
     assert.equal(isPresenceBumpQwen(id), false, id);
   }

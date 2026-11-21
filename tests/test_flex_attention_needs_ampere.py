@@ -12,21 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Flex attention must not be chosen on a card that cannot run its kernel.
-
-`Gemma3_(4B)-Vision-GRPO` passes on A100 and dies on a Colab and a Kaggle T4 with
-`RuntimeError: expected scalar type Half but found Float`, from torch's own eager
-fallback in `sdpa_dense_backward`:
-
-    grad_value = softmax_scores.to(query.dtype).transpose(-2, -1) @ grad_out
-
-which casts the scores and not `grad_out`. Only reached when the HOP runs
-uncompiled, which is what sm75 gets, and such a card also forces fp16.
-
-`gemma3` is in `_FLEX_PREFERRED_MODELS` with sdpa disabled, so flex is the path
-it took, while the only availability question asked was the torch-version one.
-Measured on a Colab T4: PASS in 1007s with flex off, failure at 1180s with it on.
-"""
+"""Flex attention must not be chosen on sm75: its uncompiled backward dies on Half vs Float."""
 
 import sys
 import types
@@ -84,7 +70,7 @@ def test_rocm_is_not_judged_by_a_cuda_capability():
     """`get_device_capability` answers on ROCm too, with numbers that are not
     CUDA's, so reading them would disable flex on AMD for no reason."""
     cuda, hip = _cuda([(7, 5)], hip = "6.2.0")
-    with cuda, hip:
+    with cuda, hip, mock.patch.object(U, "triton_runs_on_device", lambda index = 0: True):
         assert U._flex_attention_gpu_is_supported() is True
 
 

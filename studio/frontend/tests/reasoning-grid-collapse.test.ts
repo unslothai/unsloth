@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Source-pinned, following the convention the other .tsx tests here use: node's type stripping
-// cannot compile JSX, so a component in a .tsx file is pinned by reading it.
-//
-// Everything asserted below is something whose absence produces a pane that LOOKS fine in a
-// screenshot and is wrong:
-//
-//   * a measurement anywhere in the unmeasured primitive puts the forced layout straight back,
-//     and the change then costs a wrapper element and buys nothing;
-//   * `min-height: 0` or `overflow: hidden` missing from the animating child means `0fr` never
-//     reaches zero and the pane does not close;
-//   * the height keyframes surviving on the flag-on path means both mechanisms run at once;
-//   * the keyframes DISAPPEARING from the shared collapsible breaks `app-sidebar.tsx`, which keys
-//     its scroll fade off `animationName === "collapsible-down" | "collapsible-up"` and would go
-//     silently stale.
+// Source-pinned: node type stripping cannot compile JSX.
+// The shared collapsible keeps its keyframes: app-sidebar.tsx keys its scroll fade off their names.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,8 +17,7 @@ const APP_SIDEBAR = readText("../src/components/app-sidebar.tsx");
 const TOOL_GROUP = readText("../src/components/assistant-ui/tool-group.tsx");
 const TOOL_FALLBACK = readText("../src/components/assistant-ui/tool-fallback.tsx");
 
-// Comments in these files discuss measurement at length, so an assertion on the raw text would
-// pass or fail on prose. Only code lines are considered.
+// Comments here discuss measurement, so only code lines are asserted on.
 function codeOf(source: string): string {
   return source
     .split("\n")
@@ -67,17 +54,23 @@ test("the unmeasured collapsible reads no geometry at all", () => {
   }
 });
 
-test("the animating child carries min-height:0 and overflow:hidden", () => {
-  // Both on one element, and that element is the wrapper the component renders itself, so a
-  // caller cannot omit them.
-  assert.match(UNMEASURED, /className="min-h-0 overflow-hidden"/);
+test("the animating child carries min-height:0 and clips vertically only", () => {
+  // All on one element, and that element is the wrapper the component renders itself, so a
+  // caller cannot omit them. Hidden is the fallback where `overflow: clip` is missing; the x axis
+  // stays visible so list markers hanging past the column are not cut, and min-w-0 stands in
+  // for the shrink that hidden used to give.
+  assert.match(
+    UNMEASURED,
+    /className="min-h-0 min-w-0 overflow-hidden supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip"/,
+  );
 });
 
 test("the collapse is a grid-template-rows transition between 0fr and 1fr", () => {
   const code = codeOf(UNMEASURED);
   assert.ok(code.includes("transition-[grid-template-rows]"));
-  assert.ok(code.includes('"grid-rows-[1fr]"'));
-  assert.ok(code.includes('"grid-rows-[0fr]"'));
+  // minmax(0, ...) on both ends: a bare `1fr` row goes stale in WebKit when the pane narrows.
+  assert.ok(code.includes('"grid-rows-[minmax(0,1fr)]"'));
+  assert.ok(code.includes('"grid-rows-[minmax(0,0fr)]"'));
   // The closed state must switch the display utility, not lean on the `hidden` attribute: the UA
   // sheet's `[hidden] { display: none }` loses to the author-level `display: grid`.
   assert.ok(code.includes('present ? "grid" : "hidden"'));
@@ -90,30 +83,23 @@ test("the unmeasured trigger keeps the accessible collapsible contract", () => {
   assert.ok(code.includes('type="button"'));
   // Content must carry the id the trigger points at, or aria-controls dangles.
   assert.ok(code.includes("id={context.contentId}"));
-  // data-state is what every consumer's `data-[state=...]` and `group-data-[state=...]` class
-  // keys off, on the root, the trigger and the content alike.
+  // Every consumer's data-[state=...] classes key off data-state on root, trigger and content.
   assert.equal(code.match(/data-state=\{getState\(/g)?.length, 3);
 });
 
 test("children unmount while closed, exactly as Radix's presence does", () => {
   const code = codeOf(UNMEASURED);
   assert.ok(code.includes("{present && children}"));
-  // Keeping a closed pane's content mounted would grow the resting DOM of a long thread, which is
-  // the opposite of what this change is for.
   assert.ok(code.includes("setMounted(false)"));
 });
 
 test("the close path unmounts on transitionend for the right property, with a timeout backstop", () => {
   const code = codeOf(UNMEASURED);
-  // transitionend bubbles from descendants and fires once per property; an unfiltered handler
-  // would unmount the content the first time anything inside it finished any transition.
+  // transitionend bubbles and fires per property, so an unfiltered handler unmounts early.
   assert.ok(
     code.includes('event.target === node && event.propertyName === "grid-template-rows"'),
   );
-  // The backstop must be armed BEYOND the transition duration. It starts counting in the same
-  // passive-effect flush that queues `setExpanded(false)`, which is before the browser starts the
-  // transition, so arming it at exactly `closeDurationMs` makes it always beat `transitionend` and
-  // cut the close short.
+  // The backstop starts before the transition, so it must exceed closeDurationMs.
   assert.ok(
     code.includes("window.setTimeout(finish, closeDurationMs + CLOSE_FALLBACK_MARGIN_MS)"),
   );
@@ -122,66 +108,40 @@ test("the close path unmounts on transitionend for the right property, with a ti
 
 test("nothing writes a ref during render", () => {
   const code = codeOf(UNMEASURED);
-  // React does not roll a ref back when a render is abandoned or suspended, so a ref
-  // assigned in the render body can hold a value that was never committed while the DOM
-  // still shows the old one. The toggle closes over `open` instead. (`nodeRef` is written
-  // inside the ref callback, which runs on commit, not during render.)
+  // React does not roll back refs on abandoned renders, so the toggle closes over `open`.
   assert.ok(!code.includes("openRef"));
   assert.ok(code.includes("const next = !open;"));
 });
 
 test("the flag is on", () => {
-  // Was "off by default" while the A/B was outstanding. It has run: two independent waves at the
-  // 100K rung, each with its own in-band null control, and `reasoning_toggle.open_ms` cleared all
-  // three gates in both. The assertion is kept rather than deleted so that the flag's value stays
-  // a deliberate, reviewed choice instead of something that can drift silently in either
-  // direction.
+  // Kept so the flag value stays a deliberate, reviewed choice.
   assert.match(FLAGS, /export const GRID_COLLAPSE_REASONING_ENABLED = true;/);
 });
 
 test("the reasoning pane picks its primitive from the flag on all three slots", () => {
   const code = codeOf(REASONING);
-  // Three primitive slots, plus the streaming-height release and the scroll lock, which both
-  // have to outlast the transition rather than the nominal duration.
-  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 6);
+  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 5);
   assert.ok(code.includes("<UnmeasuredCollapsible {...rootProps}>"));
   assert.ok(code.includes("<Collapsible {...rootProps}>"));
   assert.ok(code.includes("UnmeasuredCollapsibleTrigger"));
   assert.ok(code.includes("<UnmeasuredCollapsibleContent"));
 });
 
-test("the streaming height cap outlives the grid collapse, but only on the grid path", () => {
+test("reasoning and tool scroll locks outlast the grid collapse", () => {
   const code = codeOf(REASONING);
-  // `1fr` resolves against live content every frame, so releasing `max-h-64` before the row has
-  // finished shrinking grows it mid-collapse -- the jump the retention timer exists to prevent.
-  // The height keyframes animate a height captured at toggle time, so the default path is immune
-  // and must keep its exact ANIMATION_DURATION.
-  assert.ok(
-    code.includes("ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS"),
-  );
-  assert.ok(code.includes("const closeDelay = GRID_COLLAPSE_REASONING_ENABLED"));
-});
-
-test("the scroll lock outlasts the grid collapse, and the shared hook's other callers do not move", () => {
-  const code = codeOf(REASONING);
-  // The lock is armed in the click handler, a commit before the transition starts, so an exact
-  // ANIMATION_DURATION releases the container mid-collapse.
+  // The lock arms a commit before the transition starts, so an exact duration releases mid-collapse.
   assert.match(
     code,
     /useCollapseScrollLock\(\s*collapsibleRef,\s*GRID_COLLAPSE_REASONING_ENABLED/,
   );
-  // tool-group and tool-fallback share the hook but keep the height keyframes, so they must
-  // still pass the plain duration.
   for (const other of [TOOL_GROUP, TOOL_FALLBACK]) {
     assert.ok(
-      codeOf(other).includes("useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION)"),
+      codeOf(other).includes("useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS)"),
     );
   }
 });
 
 test("the flag-on reasoning content runs no height keyframes", () => {
-  // Split at the flag branch: everything before the `return` of the flag-off path is the grid
-  // path, and the height keyframes must appear only after it.
   const gridBranch = REASONING.slice(
     REASONING.indexOf("if (GRID_COLLAPSE_REASONING_ENABLED) {"),
     REASONING.indexOf("</UnmeasuredCollapsibleContent>"),
@@ -189,30 +149,32 @@ test("the flag-on reasoning content runs no height keyframes", () => {
   assert.ok(gridBranch.length > 0);
   assert.ok(!gridBranch.includes("animate-collapsible-up"));
   assert.ok(!gridBranch.includes("animate-collapsible-down"));
-  // and the flag-off path is untouched, so flag-off is byte-identical behaviour.
   assert.ok(REASONING.includes('"data-[state=closed]:animate-collapsible-up"'));
   assert.ok(REASONING.includes('"data-[state=open]:animate-collapsible-down"'));
 });
 
-test("the height keyframes stay in use everywhere else, because the sidebar listens for them", () => {
+test("tool panes avoid measurement and height keyframes; the sidebar keeps its animations", () => {
   assert.ok(SHARED_COLLAPSIBLE.includes("animate-collapsible-down"));
   assert.ok(SHARED_COLLAPSIBLE.includes("animate-collapsible-up"));
-  assert.ok(TOOL_GROUP.includes("animate-collapsible-down"));
-  assert.ok(TOOL_FALLBACK.includes("animate-collapsible-down"));
+  for (const source of [TOOL_GROUP, TOOL_FALLBACK]) {
+    assert.ok(source.includes("UnmeasuredCollapsible as Collapsible"));
+    assert.ok(source.includes("UnmeasuredCollapsibleContent as CollapsibleContent"));
+    assert.ok(source.includes("UnmeasuredCollapsibleTrigger as CollapsibleTrigger"));
+    assert.ok(!source.includes("animate-collapsible-"));
+  }
   assert.ok(APP_SIDEBAR.includes('e.animationName === "collapsible-down"'));
   assert.ok(APP_SIDEBAR.includes('e.animationName === "collapsible-up"'));
 });
 
 test("reduced motion is reached by the transition, not bypassed by it", () => {
   const indexCss = readText("../src/index.css");
-  // Two blankets, the OS media query and the in-app override class. Both force
-  // transition-duration as well as animation-duration, which is what makes a transition-based
-  // collapse honour reduced motion without any new rule.
+  // Both reduced-motion blocks shorten an element's transition when a Tailwind class declares it,
+  // which covers the grid collapse (`transition-[grid-template-rows]`), so its transitionend fires.
   assert.ok(indexCss.includes("html.force-reduced-motion *"));
   assert.ok(indexCss.includes("@media (prefers-reduced-motion: reduce)"));
   assert.equal(
-    indexCss.match(/transition-duration: 0\.01ms !important;/g)?.length,
+    indexCss.match(/:is\(\[class\*="transition"\][^{]*\{\s*transition-duration: 0\.01ms !important;/g)?.length,
     2,
-    "both reduced-motion blankets must force transition-duration, not only animation-duration",
+    "both reduced-motion blocks must shorten class-declared transitions, not only animation-duration",
   );
 });

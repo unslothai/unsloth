@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type MediaGenerationKind = "image" | "video";
+export type MediaGenerationKind = "image" | "video" | "training";
 
-// A preset is a generation recipe and nothing else. Model-load options are deliberately absent:
-// they apply only on a reload, follow the hardware and checkpoint rather than the recipe, and the
-// resident build already owns them (see features/resident-load).
+// Model-load options are deliberately absent; the resident build owns them.
 export interface MediaGenerationPreset<Params> {
   name: string;
   params: Params;
@@ -41,4 +39,35 @@ export interface VideoGenerationPresetParams {
   guidance: number;
   flowShift: number | null;
   audioFlowShift: number | null;
+  fps?: number | null;
+}
+
+export interface TrainingPresetParams {
+  familyName: string;
+  baseChoice: string;
+  customBase: string;
+  durationUnit: "steps" | "epochs";
+  steps: number;
+  epochs: number;
+  learningRate: number;
+  rank: number;
+  resolution: number;
+  batchSize: number;
+  gradAccum: number;
+  seed: number;
+  saveSteps: number;
+  sampleEvery: number;
+  saveTotalLimit: number;
+  lrScheduler: "constant" | "constant_with_warmup" | "cosine" | "linear";
+  lrWarmupSteps: number;
+  gradCheckpoint: boolean;
+  bucketing: boolean;
+  randomFlip: boolean;
+  cfgDropout: number;
+  loraDropout: number;
+  flowShiftMode: "default" | "custom";
+  flowShift: number;
+  precision: "bf16" | "fp16" | "no";
+  basePrecision: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto";
+  compileTransformer: "off" | "on" | "auto";
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+import { withTimeFormat } from "../../../lib/time-format.ts";
 
 export type LibrarySort =
   | "default"
@@ -104,12 +105,18 @@ export function groupLibraryItems<T extends LibraryItem>(
 export function formatLibraryDate(ms: number, locale?: string): string {
   const date = new Date(ms);
   return Number.isFinite(date.getTime())
-    ? date.toLocaleString(locale, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      })
+    ? date.toLocaleString(
+        locale,
+        withTimeFormat(
+          {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          },
+          locale,
+        ),
+      )
     : "";
 }

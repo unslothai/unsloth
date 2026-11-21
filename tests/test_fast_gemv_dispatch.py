@@ -12,19 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""`get_lora_parameters` must not treat a `weight_scale` as a quant state for a weight that is
-already dequantized to bf16 (e.g. a compressed-tensors layer at forward time). Otherwise the
-bnb fast_gemv / fast_dequantize path reads a missing `absmax` and crashes.
-"""
+"""Ignore weight_scale on bf16-dequantized layers, or the bnb path reads a missing absmax."""
 
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-# unsloth.kernels.utils imports bitsandbytes unconditionally, so skip the whole module up front on runners without it
-# (e.g. CPU-only) before importing unsloth, otherwise collection errors instead of producing a skip. Any other import
-# error still surfaces as a failure.
+# unsloth.kernels.utils imports bitsandbytes unconditionally; skip up front instead of erroring.
 pytest.importorskip("bitsandbytes")
 
 import unsloth  # noqa: F401  (sets UNSLOTH_IS_PRESENT before transformers)

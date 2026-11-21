@@ -1,3 +1,4 @@
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -7,17 +8,36 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+pub(crate) fn verify_bundle_signature(bytes: &[u8], signature: &str) -> Result<(), String> {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+        .map_err(|error| error.to_string())?;
+    let key = config["plugins"]["updater"]["pubkey"]
+        .as_str()
+        .ok_or("The desktop updater public key is missing.")?;
+    verify_signature_with_key(bytes, signature, key)
+}
+
+fn verify_signature_with_key(bytes: &[u8], signature: &str, key: &str) -> Result<(), String> {
+    let decode = |value: &str| -> Result<String, String> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(|error| format!("Invalid updater signature encoding: {error}"))?;
+        String::from_utf8(bytes).map_err(|error| error.to_string())
+    };
+    let key = minisign_verify::PublicKey::decode(&decode(key)?)
+        .map_err(|error| format!("Invalid updater public key: {error}"))?;
+    let signature = minisign_verify::Signature::decode(&decode(signature)?)
+        .map_err(|error| format!("Invalid updater signature: {error}"))?;
+    key.verify(bytes, &signature, true)
+        .map_err(|error| format!("Desktop update signature verification failed: {error}"))
+}
+
 const DOWNLOAD_EVENT: &str = "desktop-update-download";
 const DOWNLOAD_EVENT_STEP: u64 = 512 * 1024;
 const BUNDLE_FILE: &str = ".desktop-update-bundle";
 const BUNDLE_METADATA_FILE: &str = ".desktop-update-bundle.json";
 
-/// The prepared bundle lives on disk, not in this struct.
-///
-/// Preparation finishes long before the user restarts, and the whole point of the
-/// flow is that they keep training or generating in the meantime. A platform
-/// installer held in memory for that entire window is resident memory taken from
-/// exactly the workloads the background update exists to avoid interrupting.
+/// The prepared bundle lives on disk, not here, so it does not hold memory until restart.
 #[derive(Default)]
 pub(crate) struct DesktopUpdate {
     update: Option<Update>,
@@ -163,15 +183,10 @@ pub(crate) struct DesktopUpdateBundleStatus {
     downloading: bool,
 }
 
-/// Re-arm crash cleanup when the installer never took over.
-///
-/// `on_before_exit` clears kill-on-close assuming the installer is about to
-/// replace this process; a failed or cancelled install leaves the app running
-/// with no reaper for its children.
+/// Re-arm crash cleanup when the installer never took over; `on_before_exit` cleared kill-on-close.
 #[tauri::command]
 pub(crate) async fn resume_desktop_update_cleanup() -> Result<(), String> {
-    // Both halves of what the pre-exit hook consumed: the exit guard it spent, so a
-    // retry actually reaps the backend again, and kill-on-close itself.
+    // Restore the spent exit guard and kill-on-close, so a retry reaps the backend again.
     crate::reset_termination_cleanup();
     #[cfg(windows)]
     {
@@ -180,7 +195,6 @@ pub(crate) async fn resume_desktop_update_cleanup() -> Result<(), String> {
     Ok(())
 }
 
-/// Whether crash cleanup is armed right now, for a UI that has just remounted.
 #[tauri::command]
 pub(crate) async fn desktop_update_cleanup_armed() -> Result<bool, String> {
     #[cfg(windows)]
@@ -213,6 +227,12 @@ pub(crate) async fn check_desktop_update(
         app.cleanup_before_exit();
     });
 
+    #[cfg(target_os = "linux")]
+    let builder = if crate::debian_update::is_debian_bundle() {
+        builder.target(format!("linux-{}-deb", std::env::consts::ARCH))
+    } else {
+        builder
+    };
     let updater = builder.build().map_err(|error| error.to_string())?;
     let update = updater.check().await.map_err(|error| error.to_string())?;
     let mut guard = state.lock().map_err(|error| error.to_string())?;
@@ -292,7 +312,7 @@ pub(crate) async fn download_desktop_update(
     match result {
         Ok(bytes) => {
             if guard.update.as_ref().map(|u| u.version.as_str()) != Some(update.version.as_str()) {
-                // A newer check landed mid-download; these bytes are already stale.
+                // A newer check landed mid-download; these bytes are stale.
                 return Ok(());
             }
             let path = bundle_path();
@@ -318,8 +338,6 @@ pub(crate) async fn install_desktop_update(
         };
         (update, path)
     };
-    // Read back only for the install itself, so the bytes are resident for the
-    // seconds it takes rather than for the whole session.
     let metadata = bundle_metadata_path();
     let bundle = match read_prepared_bundle(&path, &metadata, &update.version) {
         Ok(bundle) => bundle,
@@ -328,9 +346,22 @@ pub(crate) async fn install_desktop_update(
             return Err(format!("Prepared update is invalid: {error}"));
         }
     };
-    if let Err(error) = update.install(&bundle) {
+    if let Err(error) = verify_bundle_signature(&bundle, &update.signature) {
         discard_prepared_bundle(&path, &metadata);
-        return Err(error.to_string());
+        return Err(error);
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "linux")]
+        if crate::debian_update::is_debian_bundle() {
+            return crate::debian_update::install(&bundle, &update.signature, &update.version);
+        }
+        update.install(&bundle).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Desktop installer task failed: {error}"))?;
+    if let Err(error) = result {
+        discard_prepared_bundle(&path, &metadata);
+        return Err(error);
     }
     discard_prepared_bundle(&path, &metadata);
     Ok(())
@@ -351,6 +382,23 @@ pub(crate) fn desktop_update_bundle_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgOEVDM0EzRDFDODFDNjZDNgpSV1RHWmh6STBhUERqdC9BQXhnMEJIcGFLYlVFc2pQbDBid1llM0tRc3FDdERKNVVTbEpZNHQ1bwo=";
+    const TEST_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUlVUR1poekkwYVBEamxUdGdMVDl5VG1NbWJ0ZEYzcE40UGNRU0VBV3MyNiswOGVpclovSGRkbXBTVDI4Y3MzY3JaaHAyYXlrZUtaREVqYytGUXl1Rm1MWHBVRVpCbE5PNUE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRlc3QgZml4dHVyZQpCeWlPRW53ZzF4azBBdHh4WVhOWENDOGJzMjRFM2Zvc1lTM1BKU1JhV2Z1TzJac0ZmVXhMS1J1TnY4aWl1S2xrWTRMMkd6Wis2ZWloT0pmM2NlOXBBdz09Cg==";
+
+    #[test]
+    fn a_rewritten_cache_and_hash_do_not_bypass_the_release_signature() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join(BUNDLE_FILE);
+        let metadata = directory.path().join(BUNDLE_METADATA_FILE);
+        let original = b"verified update fixture";
+        assert!(verify_signature_with_key(original, TEST_SIGNATURE, TEST_PUBLIC_KEY).is_ok());
+        persist_prepared_bundle(&bundle, &metadata, "0.1.811-beta", b"substituted package")
+            .unwrap();
+        let replaced = read_prepared_bundle(&bundle, &metadata, "0.1.811-beta").unwrap();
+        assert!(verify_signature_with_key(&replaced, TEST_SIGNATURE, TEST_PUBLIC_KEY).is_err());
+        assert!(verify_bundle_signature(original, TEST_SIGNATURE).is_err());
+    }
 
     #[test]
     fn a_prepared_bundle_survives_state_recreation() {

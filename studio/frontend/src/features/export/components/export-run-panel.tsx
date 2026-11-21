@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -9,13 +10,6 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -24,32 +18,26 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { FolderBrowser } from "@/features/model-picker";
-import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   CancelCircleIcon,
   CheckmarkCircle02Icon,
-  FolderSearchIcon,
   Key01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronRightIcon,
-} from "lucide-react";
+import { FolderSearchIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { ExportLogEntry } from "../api/export-api";
+import type { ExportDrafterInfo, ExportLogEntry } from "../api/export-api";
 import {
   EXPORT_METHODS,
   type ExportMethod,
   findMergedFormat,
 } from "../constants";
 import {
-  GGUF_SHARD_SIZE_PRESETS,
-  type GgufShardMode,
-  isValidGgufShardSize,
-} from "../lib/gguf-shard-size";
-import { getExportLogLineClass } from "../lib/log-style";
+  getExportLogLineClass,
+  groupExportLogLines,
+} from "../lib/log-style";
 import {
   type ExportDestination,
   selectExportProgressPercent,
@@ -57,9 +45,7 @@ import {
 } from "../stores/export-runtime-store";
 
 function useElapsedSeconds(startedAt: number | null, running: boolean): number {
-  // `now` is only advanced by the interval (never set synchronously in the
-  // effect body), so the elapsed value is derived during render. When `running`
-  // flips false the interval stops and `now` freezes, holding the final time.
+  // `now` only advances in the interval, so it freezes at the final time when running stops.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!running || startedAt == null) return;
@@ -98,9 +84,7 @@ const PHASE_LABELS: Record<string, string> = {
   canceled: "Canceled",
 };
 
-// Shown in the terminal before the first worker line arrives (it can lag a few
-// seconds behind, especially over a tunnel). Reflects the phase so the panel
-// never looks stuck while the progress bar is already advancing.
+// The first worker line can lag seconds over a tunnel, so show the phase meanwhile.
 function waitingMessage(phase: string, stage: string | null): string {
   if (stage) return stage;
   if (phase === "loading") return "Loading model into the export worker...";
@@ -117,6 +101,7 @@ export interface ExportRunPanelProps {
   destination: ExportDestination;
   onDestinationChange: (v: ExportDestination) => void;
   saveDirectory: string;
+  saveDirectoryInput: string;
   defaultSaveDirectory: string;
   saveDirectoryOverridden: boolean;
   onSaveDirectoryChange: (v: string | null) => void;
@@ -128,15 +113,12 @@ export interface ExportRunPanelProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
-  supportsGgufSharding: boolean;
-  ggufShardMode: GgufShardMode;
-  onGgufShardModeChange: (v: GgufShardMode) => void;
-  ggufShardSize: string;
-  onGgufShardSizeChange: (v: string) => void;
-  /** Kick off the export (the page assembles params and calls the store). */
   onStart: () => void;
-  /** Collapse the panel; only offered before a run or after a terminal one. */
   onClose: () => void;
+  /** Decision model: output goes to the run folder's gguf/ only; this note replaces the destination picker. */
+  decisionNote?: string;
+  /** REAP expert pruning on this export, e.g. "25% of experts removed (96 of 128 kept)"; hidden when null. */
+  reapLabel?: string | null;
 }
 
 export function ExportRunPanel(props: ExportRunPanelProps) {
@@ -149,9 +131,12 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     destination,
     onDestinationChange,
     saveDirectory,
+    saveDirectoryInput,
     defaultSaveDirectory,
     saveDirectoryOverridden,
     onSaveDirectoryChange,
+    decisionNote,
+    reapLabel,
     hfUsername,
     onHfUsernameChange,
     modelName,
@@ -160,11 +145,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     onHfTokenChange,
     privateRepo,
     onPrivateRepoChange,
-    supportsGgufSharding,
-    ggufShardMode,
-    onGgufShardModeChange,
-    ggufShardSize,
-    onGgufShardSizeChange,
     onStart,
     onClose,
   } = props;
@@ -173,7 +153,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     useShallow((s) => ({
       phase: s.phase,
       isExporting: s.isExporting,
-      logLines: s.logLines,
+      hasLogs: s.logLines.length > 0,
       connected: s.connected,
       reconnecting: s.reconnecting,
       stage: s.stage,
@@ -194,13 +174,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     run.phase === "error" ||
     run.phase === "canceled";
   const showConfig = run.phase === "idle";
-  // Gate the log area on the active run's method (from the store) as well as the
-  // local form selection, so it stays visible after navigating away and back
-  // (the form `exportMethod` resets on remount, but the run does not).
+  // Use the run's method too: the form's exportMethod resets on remount, the run does not.
   const panelMethod = run.summary?.method ?? exportMethod;
   const showLogPanel =
     isExporting ||
-    run.logLines.length > 0 ||
+    run.hasLogs ||
     panelMethod === "merged" ||
     panelMethod === "gguf" ||
     panelMethod === "lora";
@@ -208,21 +186,8 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const elapsedSeconds = useElapsedSeconds(run.startedAt, isExporting);
 
   const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
-  const logScrollRef = useRef<HTMLDivElement | null>(null);
+  // Here, not in ExportLogBox, so it survives box remounts.
   const [followTail, setFollowTail] = useState(true);
-
-  useEffect(() => {
-    if (!followTail) return;
-    const el = logScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [run.logLines, followTail]);
-
-  const handleLogScroll = () => {
-    const el = logScrollRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    setFollowTail(nearBottom);
-  };
 
   const methodTitle = EXPORT_METHODS.find(
     (m) => m.value === exportMethod,
@@ -236,14 +201,12 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const summaryFormats = (summary?.mergedFormats ?? []).map(
     (v) => findMergedFormat(v)?.label ?? v,
   );
+  const summaryReap = summary ? (summary.reapLabel ?? null) : (reapLabel ?? null);
   const showProgress = isExporting || isTerminal;
-  const shardSizeValid =
-    !supportsGgufSharding ||
-    ggufShardMode === "single" ||
-    isValidGgufShardSize(ggufShardSize);
-  const customShardSize = !GGUF_SHARD_SIZE_PRESETS.some(
-    (preset) => preset === ggufShardSize,
-  );
+  const hubRepoMissing =
+    destination === "hub" &&
+    !decisionNote &&
+    (!hfUsername.trim() || !modelName.trim());
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-muted/20 p-4">
@@ -272,7 +235,12 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       </div>
 
       {/* Destination configuration (only before a run starts) */}
-      {showConfig && (
+      {showConfig && decisionNote && (
+        <p className="break-all rounded-lg border p-3 text-xs text-muted-foreground">
+          {decisionNote}
+        </p>
+      )}
+      {showConfig && !decisionNote && (
         <>
           <div className="flex gap-2">
             <Button
@@ -311,7 +279,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               <div className="flex items-stretch gap-2">
                 <Input
                   className="min-w-0 flex-1 font-mono text-ui-12"
-                  value={saveDirectory}
+                  value={saveDirectoryInput}
                   onChange={(e) => onSaveDirectoryChange(e.target.value)}
                   spellCheck={false}
                   title={saveDirectory}
@@ -348,91 +316,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </div>
           )}
 
-          {supportsGgufSharding && (
-            <fieldset className="flex flex-col gap-1.5">
-              <legend className="text-xs font-medium text-muted-foreground">
-                Full-precision GGUF files
-              </legend>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant={ggufShardMode === "single" ? "dark" : "outline"}
-                  onClick={() => onGgufShardModeChange("single")}
-                  aria-pressed={ggufShardMode === "single"}
-                  className="flex-1"
-                >
-                  Single file
-                </Button>
-                <Button
-                  type="button"
-                  variant={ggufShardMode === "split" ? "dark" : "outline"}
-                  onClick={() => onGgufShardModeChange("split")}
-                  aria-pressed={ggufShardMode === "split"}
-                  className="flex-1"
-                >
-                  Split into shards
-                </Button>
-              </div>
-              {ggufShardMode === "split" ? (
-                <>
-                  <Select
-                    value={customShardSize ? "custom" : ggufShardSize}
-                    onValueChange={(value) =>
-                      onGgufShardSizeChange(value === "custom" ? "" : value)
-                    }
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Choose a shard size" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {GGUF_SHARD_SIZE_PRESETS.map((preset) => (
-                        <SelectItem key={preset} value={preset}>
-                          {preset.replace("GB", " GB").replace("MB", " MB")}
-                        </SelectItem>
-                      ))}
-                      <SelectItem value="custom">Custom</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {customShardSize && (
-                    <Input
-                      className={cn(
-                        "font-mono text-ui-12",
-                        !shardSizeValid &&
-                          "border-destructive focus-visible:ring-destructive",
-                      )}
-                      value={ggufShardSize}
-                      onChange={(event) =>
-                        onGgufShardSizeChange(event.target.value)
-                      }
-                      spellCheck={false}
-                      aria-invalid={!shardSizeValid}
-                      aria-describedby="gguf-shard-size-help"
-                      maxLength={24}
-                      placeholder="e.g. 512MB or 6GB"
-                    />
-                  )}
-                  <p
-                    id="gguf-shard-size-help"
-                    className={cn(
-                      "text-ui-11",
-                      shardSizeValid
-                        ? "text-muted-foreground/70"
-                        : "text-destructive",
-                    )}
-                  >
-                    {shardSizeValid
-                      ? "F16 and BF16 outputs use this limit. Quantized outputs and companion files stay single-file."
-                      : "Enter a positive whole number in MB or GB, such as 512MB or 4GB."}
-                  </p>
-                </>
-              ) : (
-                <p className="text-ui-11 text-muted-foreground/70">
-                  F16 and BF16 outputs stay in one file regardless of size.
-                </p>
-              )}
-            </fieldset>
-          )}
-
           {destination === "hub" && (
             <div className="flex flex-col gap-4 px-0.5">
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -457,6 +340,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                       />
                     </div>
                   </div>
+                  {hubRepoMissing && (
+                    <p className="-mt-2 text-ui-11 text-muted-foreground/70">
+                      Enter a Username / Org and Model Name to push to the Hub.
+                    </p>
+                  )}
 
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center justify-between">
@@ -470,7 +358,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         className="flex items-center gap-1 text-ui-11 text-emerald-600 hover:text-emerald-700 transition-colors"
                       >
                         Get token
-                        <ChevronRightIcon className="size-3" />
+                        <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                       </a>
                     </div>
                     <InputGroup>
@@ -510,7 +398,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         </>
       )}
 
-      {/* Result banners */}
       {run.phase === "success" && (
         <div className="flex items-start gap-2 rounded-lg bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
           <HugeiconsIcon
@@ -524,7 +411,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 : "Export finished successfully."}
             </span>
             {(() => {
-              // List every folder written; a multi-format merged run created one per format.
               const paths = run.result?.outputPaths ?? [];
               const items =
                 paths.length > 0
@@ -532,7 +418,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   : run.result?.outputPath
                     ? [{ label: "", path: run.result.outputPath }]
                     : [];
-              const showLabels = items.length > 1;
+              const showLabels = items.length > 1 || !!decisionNote;
               return items.map((o, i) => (
                 <div
                   key={`${o.path}-${i}`}
@@ -552,6 +438,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 </div>
               ));
             })()}
+            {run.result?.drafter ? (
+              <ExportDrafterNote drafter={run.result.drafter} />
+            ) : null}
           </div>
         </div>
       )}
@@ -571,7 +460,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       {run.phase === "error" && run.error && (
         <div className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
           <HugeiconsIcon
-            icon={AlertCircleIcon}
+            icon={Alert02Icon}
             className="size-4 mt-0.5 shrink-0"
           />
           <span>{run.error}</span>
@@ -579,7 +468,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       )}
 
       {/* Summary */}
-      <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
+      <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
         <div className="flex justify-between">
           <span>Base Model</span>
           <span className="font-medium text-foreground">
@@ -614,23 +503,20 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </span>
           </div>
         )}
-        {summaryMethod === "gguf" && summary?.ggufShardSize && (
-          <div className="flex justify-between">
-            <span>Full-precision files</span>
-            <span className="font-medium text-foreground">
-              {summary.ggufShardSize === "0"
-                ? "Single file"
-                : `Shards up to ${summary.ggufShardSize}`}
+        {summaryReap && (
+          <div className="flex justify-between gap-3">
+            <span>Expert pruning</span>
+            <span className="font-medium text-foreground text-right">
+              REAP, {summaryReap}
             </span>
           </div>
         )}
       </div>
 
-      {/* Progress */}
       {showProgress && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-foreground/10 px-2.5 py-1 text-ui-10 font-semibold">
+            <span className="rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] px-2.5 py-1 text-ui-10 font-semibold">
               {PHASE_LABELS[run.phase] ?? run.phase}
             </span>
             {summaryMethod === "gguf" && run.quantTotal > 1 && (
@@ -652,7 +538,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
           </div>
           <Progress
             value={progress}
-            className="h-2 bg-foreground/[0.05]"
+            className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]"
             indicatorClassName={
               run.phase === "error"
                 ? "bg-destructive"
@@ -672,8 +558,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         </div>
       )}
 
-      {/* Live export output */}
-      {showLogPanel && (isExporting || run.logLines.length > 0) && (
+      {showLogPanel && (isExporting || run.hasLogs) && (
         <div className="flex flex-col gap-1.5 pt-1">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-medium text-muted-foreground">
@@ -700,39 +585,21 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   </span>
                 </div>
               </div>
-              <div
-                ref={logScrollRef}
-                onScroll={handleLogScroll}
-                className="h-56 w-full overflow-auto rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
-              >
-                {run.logLines.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-muted-foreground/70">
-                    <span className="flex items-center gap-2">
-                      <Spinner className="size-3" />
-                      {waitingMessage(run.phase, run.stage)}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="whitespace-pre-wrap break-words">
-                    {run.logLines.map((entry, idx) => (
-                  <div key={idx} className={getExportLogLineClass(entry)}>
-                        {formatLogLine(entry)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <ExportLogBox
+                waiting={waitingMessage(run.phase, run.stage)}
+                followTail={followTail}
+                onFollowTailChange={setFollowTail}
+              />
             </div>
         )}
 
-      {/* Footer actions */}
       <div className="flex justify-end gap-2">
         {showConfig && (
           <>
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart} disabled={!shardSizeValid}>
+            <Button variant="dark" onClick={onStart} disabled={hubRepoMissing}>
               Start Export
             </Button>
           </>
@@ -753,6 +620,115 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         }
         onSelect={(path) => onSaveDirectoryChange(path)}
       />
+    </div>
+  );
+}
+
+const ExportLogRow = memo(function ExportLogRow({
+  entry,
+}: {
+  entry: ExportLogEntry;
+}) {
+  return (
+    <div className={getExportLogLineClass(entry)}>{formatLogLine(entry)}</div>
+  );
+});
+
+const ExportLogBlock = memo(
+  function ExportLogBlock({
+    start,
+    entries,
+  }: {
+    start: number;
+    entries: ExportLogEntry[];
+  }) {
+    return (
+      <div>
+        {entries.map((entry, idx) => (
+          <ExportLogRow key={start + idx} entry={entry} />
+        ))}
+      </div>
+    );
+  },
+  (a, b) =>
+    a.start === b.start &&
+    a.entries.length === b.entries.length &&
+    a.entries[0] === b.entries[0] &&
+    a.entries[a.entries.length - 1] === b.entries[b.entries.length - 1],
+);
+
+// Own subscription so the 1 s elapsed tick skips the list.
+const ExportLogBox = memo(function ExportLogBox({
+  waiting,
+  followTail,
+  onFollowTailChange,
+}: {
+  waiting: string;
+  followTail: boolean;
+  onFollowTailChange: (follow: boolean) => void;
+}) {
+  const { logLines, logBase } = useExportRuntimeStore(
+    useShallow((s) => ({ logLines: s.logLines, logBase: s.logBase })),
+  );
+  const logScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!followTail) return;
+    const el = logScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logLines, followTail]);
+
+  const handleLogScroll = () => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    onFollowTailChange(nearBottom);
+  };
+
+  return (
+    <div
+      ref={logScrollRef}
+      onScroll={handleLogScroll}
+      // Head trims would let scroll anchoring drag a scrolled-up view; pin the offset.
+      style={logBase > 0 ? { overflowAnchor: "none" } : undefined}
+      className="h-56 w-full overflow-auto scroll-rounded rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
+    >
+      {logLines.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-muted-foreground/70">
+          <span className="flex items-center gap-2">
+            <Spinner className="size-3" />
+            {waiting}
+          </span>
+        </div>
+      ) : (
+        <div className="whitespace-pre-wrap break-words">
+          {groupExportLogLines(logLines, logBase).map((group) => (
+            <ExportLogBlock
+              key={group.key}
+              start={group.start}
+              entries={group.entries}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+function ExportDrafterNote({ drafter }: { drafter: ExportDrafterInfo }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span>
+        Includes trained drafter ({drafter.strategy === "mtp" ? "MTP" : "EAGLE-3"})
+      </span>
+      {drafter.vllm_command ? (
+        <code
+          className="select-all whitespace-pre-wrap break-all font-mono text-ui-12 text-foreground/90"
+          title={drafter.vllm_command}
+        >
+          {drafter.vllm_command}
+        </code>
+      ) : null}
     </div>
   );
 }

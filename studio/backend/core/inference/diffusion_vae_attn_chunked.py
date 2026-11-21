@@ -1,0 +1,383 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Query-chunked VAE attention on ROCm/MPS (no fused SDPA takes head dim 384/512), exact; ROCm bf16
+keeps bf16 in math SDPA (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps fp32 upcast); fp16 always upcasts, as
+scores reach 5e7 past 65504"""
+
+from __future__ import annotations
+
+import math
+import os
+from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
+
+VAE_ATTN_CHUNK_ENV = "UNSLOTH_VAE_ATTN_CHUNKED"
+VAE_ATTN_CHUNK_MB_ENV = "UNSLOTH_VAE_ATTN_CHUNK_MB"
+VAE_ATTN_HALF_MATH_ENV = "UNSLOTH_VAE_ATTN_HALF_MATH"
+_FALSE = ("0", "false", "no", "off")
+# fp32 score bytes per chunk; a full matrix at or under this runs unchunked (FLUX.1 1024x1024 is exactly 1 GiB).
+DEFAULT_SCORE_BUDGET_MB = 1024
+MPS_SCORE_BUDGET_MB = 256
+_PATCHED = "_unsloth_vae_attn_chunked"
+
+
+def chunking_disabled() -> bool:
+    return os.environ.get(VAE_ATTN_CHUNK_ENV, "").strip().lower() in _FALSE
+
+
+def half_math_enabled() -> bool:
+    return os.environ.get(VAE_ATTN_HALF_MATH_ENV, "").strip().lower() not in _FALSE
+
+
+def half_math_sdpa(
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float] = None,
+) -> Any:
+    """Math SDPA as with ``allow_fp16_bf16_reduction_math_sdp(True)``, without touching that process-global flag."""
+    import torch
+
+    s = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
+    root = math.sqrt(abs(s))
+    attn = torch.matmul(q * (-root if s < 0 else root), k.transpose(-2, -1) * root)
+    # torch < 2.5 has no _safe_softmax; its math SDPA used plain softmax
+    softmax = getattr(torch.ops.aten, "_safe_softmax", None)
+    attn = softmax(attn, -1) if softmax is not None else attn.softmax(-1)
+    return torch.matmul(attn, v)
+
+
+def fp32_math_sdpa(
+    q: Any,
+    k: Any,
+    v: Any,
+    scale: Optional[float] = None,
+) -> Any:
+    """Math SDPA with half inputs upcast to fp32 (as ROCm's math kernel does), returned in ``q``'s dtype; fp32 and
+    fp64 run in their own precision (fp64 through fp32 overflows where stock SDPA stays finite)."""
+    import torch
+
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        return half_math_sdpa(q, k, v, scale)
+    return half_math_sdpa(q.float(), k.float(), v.float(), scale).to(q.dtype)
+
+
+def _autocast_dtype(device_type: str) -> Any:
+    import torch
+    try:
+        return (
+            torch.get_autocast_dtype(device_type)
+            if torch.is_autocast_enabled(device_type)
+            else None
+        )
+    except (AttributeError, TypeError):  # torch without per-device autocast queries
+        return None
+
+
+def _half_math_call(q: Any) -> bool:
+    # bf16 only: bf16 has fp32's range, fp16 overflows real VAE scores to inf and softmax turns the rows NaN (ROCm
+    # cards without native bf16, gfx103x and older, run the VAE in fp16).
+    import torch
+    return (
+        getattr(getattr(q, "device", None), "type", None) == "cuda"
+        and q.dtype == torch.bfloat16
+        and is_rocm_torch(torch)
+        and half_math_enabled()
+    )
+
+
+def score_budget_bytes(default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
+    raw = os.environ.get(VAE_ATTN_CHUNK_MB_ENV, "").strip()
+    try:
+        mb = int(raw) if raw else default_mb
+    except ValueError:
+        mb = default_mb
+    return max(1, mb) * 2**20
+
+
+# Widest head the Windows ROCm fused SDPA kernels compute correctly. AMD's Windows torch 2.11.0+rocm7.14.0 on gfx1151
+# accepts head dim 512 (the VAE's single-head mid-block) in flash and efficient attention and returns garbage: relative
+# error 19-38 against math in fp32 and bf16, NaN through the default dispatch, with or without the AOTriton experimental
+# switch; 128 and 256 match math. That wrecked every Windows AMD VAE encode / decode (renders and training latents).
+WINDOWS_ROCM_FUSED_MAX_HEAD_DIM = 256
+
+
+def windows_rocm(torch: Any = None) -> bool:
+    import sys
+
+    if sys.platform != "win32":
+        return False
+    if torch is None:
+        try:
+            import torch
+        except Exception:  # noqa: BLE001
+            return False
+    return is_rocm_torch(torch)
+
+
+def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
+    shape = getattr(q, "shape", None) or ()
+    return (
+        len(shape) > 0 and int(shape[-1]) > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM and windows_rocm(torch)
+    )
+
+
+def _attention_head_dim(module: Any) -> Optional[int]:
+    # diffusers Attention; the single-head blocks (Wan, Qwen-Image, HunyuanImage) carry no ``heads``: unknown.
+    heads, inner = getattr(module, "heads", None), getattr(module, "inner_dim", None)
+    try:
+        return int(inner) // int(heads) if heads and inner else None
+    except (TypeError, ValueError):
+        return None
+
+
+def vae_has_untrusted_head(vae: Any) -> bool:
+    """Whether ``vae`` may run an attention head wider than the Windows ROCm fused kernels compute right; a VAE or
+    attention module it cannot inspect counts as yes."""
+    named = getattr(vae, "named_modules", None)
+    if not callable(named):
+        return True
+    try:
+        for _, module in named():
+            if _is_attention_module(module):
+                head = _attention_head_dim(module)
+                if head is None or head > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM:
+                    return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
+def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
+    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes.
+    A Windows ROCm head wider than 256 counts as no: the kernels that take it there compute it wrong."""
+    import torch
+
+    device_type = getattr(getattr(q, "device", None), "type", None)
+    if device_type == "mps":
+        from .diffusion_attention import mps_prefill_attention
+        return mps_prefill_attention(q, k, v)
+    if device_type != "cuda":
+        return True
+    if _windows_rocm_untrusted_head(q, torch):
+        return False
+    cb = torch.backends.cuda
+    try:
+        try:
+            params = cb.SDPAParams(q, k, v, None, 0.0, False, False)
+        except TypeError:  # torch without the enable_gqa field
+            params = cb.SDPAParams(q, k, v, None, 0.0, False)
+        for name in (
+            "can_use_flash_attention",
+            "can_use_efficient_attention",
+            "can_use_cudnn_attention",
+        ):
+            fn = getattr(cb, name, None)
+            if fn is not None and fn(params, False):
+                return True
+    except Exception:  # noqa: BLE001 - unknown: keep the stock kernel
+        return True
+    return False
+
+
+def _score_bytes(q: Any, k: Any) -> int:
+    rows = 1
+    for s in q.shape[:-1]:
+        rows *= int(s)
+    return rows * int(k.shape[-2]) * 4
+
+
+def chunked_sdpa(
+    sdpa: Any,
+    q: Any,
+    k: Any,
+    v: Any,
+    budget: int,
+    scale: Optional[float] = None,
+) -> Any:
+    """``sdpa(q, k, v)`` over query-row chunks whose fp32 score tile stays within ``budget`` bytes."""
+    import torch
+
+    length = int(q.shape[-2])
+    per_row = max(1, _score_bytes(q, k) // max(1, length))
+    rows = max(1, min(length, budget // per_row))
+    kw = {} if scale is None else {"scale": scale}
+    out = torch.empty((*q.shape[:-1], v.shape[-1]), dtype = q.dtype, device = q.device)
+    for i in range(0, length, rows):
+        out[..., i : i + rows, :] = sdpa(q[..., i : i + rows, :], k, v, **kw)
+    return out
+
+
+def _plain_call(args: tuple, kwargs: dict) -> Optional[tuple]:
+    """(q, k, v, scale) for an unmasked, dropout-free, non-causal, non-GQA call; else None."""
+    if len(args) > 4:
+        return None
+    extra = dict(kwargs)
+    # diffusers' dispatch_attention_fn passes query= / key= / value= by keyword
+    qkv = list(args[:3])
+    for name in ("query", "key", "value")[len(qkv) :]:
+        if name not in extra:
+            return None
+        qkv.append(extra.pop(name))
+    q, k, v = qkv
+    if len(args) == 4:
+        extra["attn_mask"] = args[3]
+    scale = extra.pop("scale", None)
+    if extra.pop("attn_mask", None) is not None:
+        return None
+    if extra.pop("dropout_p", 0.0) not in (0, 0.0):
+        return None
+    if extra.pop("is_causal", False):
+        return None
+    if extra.pop("enable_gqa", False) or extra:
+        return None
+    if q.ndim < 3 or q.ndim != k.ndim or k.ndim != v.ndim or q.shape[:-2] != k.shape[:-2]:
+        return None
+    if q.requires_grad or k.requires_grad or v.requires_grad:
+        return None
+    return q, k, v, scale
+
+
+def _mode_class() -> Any:
+    import torch
+    import torch.nn.functional as F
+    from torch.overrides import TorchFunctionMode
+
+    _BUILTIN_SDPA = torch._C._nn.scaled_dot_product_attention
+
+    class ChunkedVaeAttentionMode(TorchFunctionMode):
+        def __init__(self, budget: int):
+            super().__init__()
+            self.budget = budget
+            self.chunked = 0
+            self.half = 0
+
+        def __torch_function__(
+            self,
+            func: Any,
+            types: Any,
+            args: tuple = (),
+            kwargs: Any = None,
+        ) -> Any:
+            kwargs = kwargs or {}
+            # A non-redispatching wrapper leaves the mode seeing torch's builtin: match both.
+            if func is F.scaled_dot_product_attention or func is _BUILTIN_SDPA:
+                call = _plain_call(args, kwargs)
+                if call is not None:
+                    q, k, v, scale = call
+                    if not fused_sdpa_available(q, k, v):
+                        # Autocast casts SDPA's inputs before any kernel runs: gate on that dtype, not the caller's (a
+                        # bf16 query under fp16 autocast runs fp16 scores, which overflow).
+                        cast = _autocast_dtype(q.device.type)
+                        if cast is not None:
+                            q, k, v = (t.to(cast) for t in (q, k, v))
+                        if _half_math_call(q):
+                            self.half += 1
+                            with torch.autocast(q.device.type, enabled = False):
+                                if _score_bytes(q, k) > self.budget:
+                                    self.chunked += 1
+                                    return chunked_sdpa(half_math_sdpa, q, k, v, self.budget, scale)
+                                return half_math_sdpa(q, k, v, scale)
+                        if _windows_rocm_untrusted_head(q, torch):
+                            # fp32, or half with UNSLOTH_VAE_ATTN_HALF_MATH=0: the default dispatch would still pick the
+                            # fused kernels that miscompute this head, so run the math (fp32, as ROCm's math kernel does).
+                            with torch.autocast(q.device.type, enabled = False):
+                                if _score_bytes(q, k) > self.budget:
+                                    self.chunked += 1
+                                    return chunked_sdpa(fp32_math_sdpa, q, k, v, self.budget, scale)
+                                return fp32_math_sdpa(q, k, v, scale)
+                        if _score_bytes(q, k) > self.budget:
+                            self.chunked += 1
+                            return chunked_sdpa(func, q, k, v, self.budget, scale)
+            return func(*args, **kwargs)
+
+    return ChunkedVaeAttentionMode
+
+
+_MODE_CLS: Any = None
+
+
+def chunked_attention_mode(budget: Optional[int] = None) -> Any:
+    global _MODE_CLS
+    if _MODE_CLS is None:
+        _MODE_CLS = _mode_class()
+    return _MODE_CLS(score_budget_bytes() if budget is None else budget)
+
+
+def _is_attention_module(module: Any) -> bool:
+    name = type(module).__name__
+    # diffusers Attention (AutoencoderKL, FLUX.2) and the single-head blocks of Wan / Qwen-Image / HunyuanImage VAEs
+    return name == "Attention" or name.endswith(("AttentionBlock", "AttnBlock"))
+
+
+def _patch(module: Any, default_mb: int) -> None:
+    import torch
+
+    inner = module.forward
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        if chunking_disabled() or torch.compiler.is_compiling():
+            return inner(*args, **kwargs)
+        with chunked_attention_mode(score_budget_bytes(default_mb)):
+            return inner(*args, **kwargs)
+
+    forward._unsloth_vae_attn_chunked = True
+    forward._unsloth_vae_attn_inner = inner
+    module.forward = forward
+    setattr(module, _PATCHED, True)
+
+
+def wants_install(vae: Any, target: Any = None) -> bool:
+    if vae is None or chunking_disabled() or not callable(getattr(vae, "modules", None)):
+        return False
+    backend = getattr(target, "backend", None)
+    if target is not None and backend not in ("rocm", "mps"):
+        return False
+    if backend == "mps":
+        return True
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return False
+    return is_rocm_torch(torch)
+
+
+def patch_attention_modules(vae: Any, default_mb: int = DEFAULT_SCORE_BUDGET_MB) -> int:
+    """Patch every attention module of ``vae`` (outermost only, idempotent). Returns the number newly patched."""
+    n = 0
+    covered: list = []
+    for name, module in vae.named_modules():
+        if not _is_attention_module(module):
+            continue
+        if any(name.startswith(prefix + ".") for prefix in covered):
+            continue
+        covered.append(name)
+        if getattr(module, _PATCHED, False):
+            continue
+        _patch(module, default_mb)
+        n += 1
+    return n
+
+
+def install(
+    vae: Any,
+    target: Any = None,
+    logger: Any = None,
+) -> int:
+    try:
+        if not wants_install(vae, target):
+            return 0
+        mps = getattr(target, "backend", None) == "mps"
+        n = patch_attention_modules(vae, MPS_SCORE_BUDGET_MB if mps else DEFAULT_SCORE_BUDGET_MB)
+        if n and logger is not None:
+            logger.info(
+                "diffusion.vae_attn_chunked: %d %s attention modules chunk SDPA calls no fused kernel takes",
+                n,
+                type(vae).__name__,
+            )
+        return n
+    except Exception as exc:  # noqa: BLE001 - stock attention on any failure
+        if logger is not None:
+            logger.warning("diffusion.vae_attn_chunked: not installed (%s)", exc)
+        return 0

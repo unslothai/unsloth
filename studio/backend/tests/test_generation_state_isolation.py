@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Account fences must not outlive the test that set them.
-
-``state.active_generations`` keeps ``_ACTIVE`` and ``_FENCED`` on the module, so a fence set
-by one test is still there for the next test in the same process. Retirement and deactivation
-tests fence on purpose, and that is their correct end state, so the fix is isolation in
-conftest rather than a cleanup obligation on each of them.
-
-Without it, ``tests/multi_account/test_routing_invariance.py`` failed on
-``assert active_generations._FENCED == set()`` carrying an account id it never created, but
-only when an xdist worker happened to run a retirement test first. It passed alone, passed on
-some pull requests and failed on others, which is the shape that gets a real test deleted for
-being flaky.
-"""
+"""Generation fences must be reset between tests in conftest, since they persist on module state."""
 
 from __future__ import annotations
 
@@ -39,21 +27,12 @@ def test_reset_for_tests_clears_both_globals():
 
 
 def test_this_test_did_not_inherit_a_fence():
-    """Whatever ran before this in the worker, the fence starts empty.
-
-    Cheap, and it is the exact assertion that was failing in CI, so if the isolation regresses
-    this fails in the same place rather than in an unrelated multi_account test.
-    """
+    """Fence set starts empty for every test, regardless of what ran earlier in the worker."""
     assert active_generations._FENCED == set()
 
 
 def test_conftest_isolates_the_generation_state_for_every_test():
-    """Read from the source, so deleting the fixture or dropping autouse is caught here.
-
-    A functional check cannot do this job: it would have to depend on test ORDER to observe a
-    leak, and this suite runs under pytest-randomly, where order is not a thing a test may
-    assume. So the guard is structural, and the two tests above cover the behaviour.
-    """
+    """Checks conftest source structurally, so deleting the autouse isolation fixture fails here."""
     tree = ast.parse(_CONFTEST.read_text(encoding = "utf-8"))
     fixtures = [
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == _FIXTURE
@@ -73,9 +52,7 @@ def test_conftest_isolates_the_generation_state_for_every_test():
     ]
     assert autouse, f"{_FIXTURE} is no longer autouse, so it only isolates tests that ask"
 
-    # Before AND after: clearing only on the way in leaves the last test of a worker holding a
-    # fence for whatever the next file does, and clearing only on the way out trusts every
-    # other conftest and plugin to have left it alone.
+    # Reset before and after: either alone leaks state across files or trusts other plugins.
     resets = [
         node
         for node in ast.walk(fixture)

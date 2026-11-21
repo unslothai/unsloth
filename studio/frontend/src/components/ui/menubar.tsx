@@ -7,8 +7,10 @@ import { Menubar as MenubarPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
+import { useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
-import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Menubar({
@@ -19,7 +21,7 @@ function Menubar({
     <MenubarPrimitive.Root
       data-slot="menubar"
       className={cn(
-        "bg-background h-9 rounded-2xl border p-1 flex items-center",
+        "bg-background h-9 rounded-full border p-1 flex items-center",
         className,
       )}
       {...props}
@@ -61,7 +63,7 @@ function MenubarTrigger({
     <MenubarPrimitive.Trigger
       data-slot="menubar-trigger"
       className={cn(
-        "hover:bg-muted aria-expanded:bg-muted rounded-xl px-2.5 py-1 text-sm font-medium flex items-center outline-hidden select-none",
+        "hover:bg-muted aria-expanded:bg-muted rounded-full px-2.5 py-1 text-sm font-medium flex items-center outline-hidden select-none",
         className,
       )}
       {...props}
@@ -74,17 +76,22 @@ function MenubarContent({
   align = "start",
   alignOffset = -4,
   sideOffset = 0,
+  collisionPadding,
+  ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Content>) {
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     <MenubarPortal>
       <MenubarPrimitive.Content
+        ref={snappedRef}
         data-slot="menubar-content"
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         alignOffset={alignOffset}
         sideOffset={sideOffset}
         className={cn(
-          "bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-foreground/5 min-w-48 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
+          "bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] min-w-48 rounded-lg p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
           className,
         )}
         {...props}
@@ -108,7 +115,7 @@ function MenubarItem({
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 dark:data-[variant=destructive]:focus:bg-destructive/20 data-[variant=destructive]:focus:text-destructive data-[variant=destructive]:*:[svg]:!text-destructive not-data-[variant=destructive]:focus:**:text-accent-foreground gap-2.5 rounded-xl px-3 py-2 text-sm data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg:not([class*='size-'])]:size-4 group/menubar-item relative flex cursor-default items-center outline-hidden select-none data-[disabled]:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 dark:data-[variant=destructive]:focus:bg-destructive/20 data-[variant=destructive]:focus:text-destructive data-[variant=destructive]:*:[svg]:!text-destructive not-data-[variant=destructive]:focus:**:text-accent-foreground gap-2.5 rounded-md px-3 py-2 text-sm data-[disabled]:opacity-50 data-[inset]:pl-8 [&_svg:not([class*='size-'])]:size-4 group/menubar-item relative flex cursor-default items-center outline-hidden select-none data-[disabled]:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
@@ -126,13 +133,13 @@ function MenubarCheckboxItem({
     <MenubarPrimitive.CheckboxItem
       data-slot="menubar-checkbox-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-xl py-2 pr-3 pl-8 text-sm data-disabled:opacity-50 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-md py-2 pr-9 pl-3 text-sm data-disabled:opacity-50 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       checked={checked}
       {...props}
     >
-      <span className="left-2 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
+      <span className="right-3 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
         <MenubarPrimitive.ItemIndicator>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
         </MenubarPrimitive.ItemIndicator>
@@ -151,12 +158,12 @@ function MenubarRadioItem({
     <MenubarPrimitive.RadioItem
       data-slot="menubar-radio-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-xl py-2 pr-3 pl-8 text-sm data-disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-md py-2 pr-9 pl-3 text-sm data-disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
     >
-      <span className="left-2 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
+      <span className="right-3 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
         <MenubarPrimitive.ItemIndicator>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
         </MenubarPrimitive.ItemIndicator>
@@ -207,7 +214,7 @@ function MenubarShortcut({
     <span
       data-slot="menubar-shortcut"
       className={cn(
-        "text-muted-foreground group-focus/menubar-item:text-accent-foreground text-xs tracking-widest ml-auto",
+        "text-muted-foreground group-focus/menubar-item:text-accent-foreground text-xs tracking-widest ml-auto -mr-[0.1em]",
         className,
       )}
       {...props}
@@ -234,16 +241,16 @@ function MenubarSubTrigger({
       data-slot="menubar-sub-trigger"
       data-inset={inset}
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground data-open:bg-accent data-open:text-accent-foreground gap-2 rounded-xl px-3 py-2 text-sm data-[inset]:pl-8 [&_svg:not([class*='size-'])]:size-4 flex cursor-default items-center outline-none select-none",
+        "focus:bg-accent focus:text-accent-foreground data-open:bg-accent data-open:text-accent-foreground gap-2 rounded-md px-3 py-2 text-sm data-[inset]:pl-8 [&_svg:not([class*='size-'])]:size-4 flex cursor-default items-center outline-none select-none",
         className,
       )}
       {...props}
     >
       {children}
       <HugeiconsIcon
-        icon={ChevronRightStandardIcon}
+        icon={MenuChevronRightIcon}
         strokeWidth={1.5}
-        className="ml-auto size-[12px]"
+        className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
       />
     </MenubarPrimitive.SubTrigger>
   );
@@ -251,13 +258,18 @@ function MenubarSubTrigger({
 
 function MenubarSubContent({
   className,
+  collisionPadding,
+  ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.SubContent>) {
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     <MenubarPrimitive.SubContent
+      ref={snappedRef}
       data-slot="menubar-sub-content"
+      collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
       className={cn(
-        "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-foreground/5 min-w-32 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
+        "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] min-w-32 rounded-lg p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
         className,
       )}
       {...props}

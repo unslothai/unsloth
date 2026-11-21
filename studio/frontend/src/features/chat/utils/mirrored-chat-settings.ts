@@ -1,12 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Composer, RAG and model-load toggles the chat runtime store mirrors to /api/chat/settings so
-// they follow the installation rather than one browser's localStorage. Every value has to
-// survive a round trip through a browser's storage, so each is re-validated here before it
-// reaches the backend, which rejects the whole patch on a single out-of-contract field.
+// Re-validate before sending: the backend rejects the whole patch on one bad field.
 
 import type { PersistedChatSettings } from "../api/chat-settings-api";
+import type { ResearchMcpSource } from "../types/research";
+
+export const MAX_RESEARCH_MCP_SOURCES = 20;
+
+export function normalizeResearchMcpSources(value: unknown): ResearchMcpSource[] {
+  if (!Array.isArray(value)) return [];
+  const sources: ResearchMcpSource[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const serverId = item?.serverId;
+    const tool = item?.tool;
+    if (
+      typeof serverId !== "string" ||
+      serverId.length < 1 ||
+      serverId.length > 200 ||
+      typeof tool !== "string" ||
+      tool.length < 1 ||
+      tool.length > 500
+    ) {
+      continue;
+    }
+    const key = `${serverId}\0${tool}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push({ serverId, tool });
+    if (sources.length === MAX_RESEARCH_MCP_SOURCES) break;
+  }
+  return sources;
+}
 
 const MIRRORED_BOOLEAN_KEYS = [
   "reasoningEnabled",
@@ -15,8 +41,6 @@ const MIRRORED_BOOLEAN_KEYS = [
   "imageToolsEnabled",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
-  "artifactsEnabled",
-  "showCanvasMenuItem",
   "searchImages",
   "mcpEnabledForChat",
   "confirmToolCalls",
@@ -30,6 +54,7 @@ const MIRRORED_BOOLEAN_KEYS = [
 const MIRRORED_ENUM_VALUES = {
   // "full" (Full access) is session-only and never persisted.
   permissionMode: ["ask", "auto", "off"],
+  sandboxLevel: ["high", "low"],
   ragMode: ["hybrid", "lexical", "dense"],
   ragAutoInject: ["auto", "on", "off"],
   speculativeType: ["auto", "ngram", "off"],
@@ -38,14 +63,12 @@ const MIRRORED_ENUM_VALUES = {
   Record<keyof PersistedChatSettings, readonly string[]>
 >;
 
-// One year, the ceiling ChatSettingsPayload and the run route both enforce. A larger value would
-// be dropped from the patch and then 400 the run, so it is bounded where it is set.
+// One year, the ceiling the backend payload and run route enforce.
 export const MAX_RESEARCH_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600;
-// 0 is the unlimited sentinel, not a very short budget, so it sits below the run route's finite
-// floor. A stored 1..9 would 400 every run.
+// 0 is the unlimited sentinel; a stored 1..9 would 400 every run.
 export const MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS = 10;
 
-// Bounds match the ge/le the backend payload enforces on the same fields.
+// Must match the backend payload's ge/le bounds.
 const MIRRORED_NUMBER_BOUNDS = {
   ragTopK: { min: 1, max: 50, integer: true },
   ragAutoInjectMinScore: { min: 0, max: 1, integer: false },
@@ -71,11 +94,11 @@ export const MIRRORED_SETTING_KEYS = [
     MIRRORED_NUMBER_BOUNDS,
   ) as (keyof typeof MIRRORED_NUMBER_BOUNDS)[]),
   "researchWebsitePolicy",
+  "researchMcpSources",
   "ragSource",
 ] as const satisfies readonly (keyof PersistedChatSettings)[];
 
 const MAX_RESEARCH_POLICY_DOMAINS = 1000;
-// 253 is the maximum length of a DNS name.
 const MAX_DOMAIN_LENGTH = 253;
 const MAX_RAG_KB_ID_LENGTH = 256;
 
@@ -130,14 +153,12 @@ export function sanitizeBoundedNumber(
 ): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   if (integer && !Number.isInteger(value)) return undefined;
-  // A sentinel below the floor stays legal; anything between the two is not.
   if (minPositive !== undefined && value > min && value < minPositive) {
     return undefined;
   }
   return value >= min && value <= max ? value : undefined;
 }
 
-/** Copy the mirrored settings `value` holds in-contract onto `settings`. */
 export function assignSanitizedMirroredSettings(
   value: Record<string, unknown>,
   settings: PersistedChatSettings,
@@ -165,13 +186,16 @@ export function assignSanitizedMirroredSettings(
   if (researchWebsitePolicy) {
     settings.researchWebsitePolicy = researchWebsitePolicy;
   }
+  if (Array.isArray(value.researchMcpSources)) {
+    settings.researchMcpSources = normalizeResearchMcpSources(
+      value.researchMcpSources,
+    );
+  }
   const ragSource = sanitizeRagSource(value.ragSource);
   if (ragSource) settings.ragSource = ragSource;
 }
 
-/** Map a stored RAG auto-inject value onto the three-way control. Storage predating that control
- *  holds "true"/"false", which the backend rejects, so the migration has to run before a
- *  backfill sends the stored value. */
+/** Legacy "true"/"false" values are rejected by the backend, so migrate before backfill. */
 export function normalizeStoredRagAutoInject(
   raw: string,
 ): "auto" | "on" | "off" {
@@ -179,11 +203,7 @@ export function normalizeStoredRagAutoInject(
   return raw === "false" ? "off" : "auto";
 }
 
-/** Whether a resident model's own baseline currently owns a mirrored setting. speculativeType and
- *  gpuMemoryMode are each written with a loaded* shadow that hydration cannot set, so moving the
- *  editable half alone while a shadow holds the other splits the pair. With no shadow the stored
- *  preference is what the next load reads, and hydration has to apply it or the load sends a
- *  default and persists that default back over the server's value. */
+/** speculativeType and gpuMemoryMode pair with loaded* shadows; never move just one half. */
 export function loadShadowOwnsMirroredSetting(
   key: string,
   shadows: {
@@ -208,7 +228,6 @@ export function normalizeStoredPermissionMode(
   return legacyConfirm ? "ask" : "off";
 }
 
-/** Whether `settings` carries none of the mirrored values. */
 export function hasNoMirroredSettings(
   settings: PersistedChatSettings,
 ): boolean {

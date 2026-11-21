@@ -4,13 +4,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// remote-access-section.tsx pulls in the router, motion and hugeicons, so it
-// cannot be imported here. These drive the pure state helpers it consumes.
+// The section pulls in router, motion and hugeicons, so only its pure helpers are tested.
 import {
   type ApiRemoteAccessStatus,
   normalizeRemoteAccessStatus,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
+  remoteAccessErrorMessage,
   remoteAccessPollDelay,
   remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
@@ -38,8 +38,6 @@ function apiStatus(
     ...over,
   };
 }
-
-// ── normalizeRemoteAccessStatus ──
 
 test("normalize maps every snake_case field onto its camelCase name", () => {
   const s = normalizeRemoteAccessStatus(
@@ -80,7 +78,6 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     passwordPending: true,
     streamingSupported: true,
   });
-  // No field may normalize to undefined -- a wrong key would silently do so.
   for (const [k, v] of Object.entries(s)) {
     assert.notEqual(v, undefined, `${k} normalized to undefined`);
   }
@@ -115,8 +112,6 @@ test("passwordPending is strict: only a real true counts", () => {
   );
 });
 
-// ── remoteAccessPollDelay ──
-
 test("poll delay is fast only while a transition is in flight", () => {
   assert.equal(remoteAccessPollDelay(null), 5000);
   for (const state of ["starting", "stopping"] as const) {
@@ -133,19 +128,36 @@ test("poll delay is fast only while a transition is in flight", () => {
   }
 });
 
-// ── remoteApiOrigin ──
-
 test("remote origin prefers the live tunnel and falls back to the local one", () => {
   assert.equal(remoteApiOrigin(TUNNEL, "http://127.0.0.1:8888"), TUNNEL);
   assert.equal(
     remoteApiOrigin(null, "http://127.0.0.1:8888"),
     "http://127.0.0.1:8888",
   );
-  // An empty string is a real origin ("" from a non-browser context), not a miss.
+  // an empty string is a valid origin from a non-browser context, not a missing value
   assert.equal(remoteApiOrigin(null, ""), "");
 });
 
-// ── remoteAccessAutoStartReadOnly ──
+test("a loopback page with LAN access on shows the LAN address", () => {
+  const lan = ["http://192.168.1.24:8888", "http://10.0.0.7:8888"];
+  assert.equal(
+    remoteApiOrigin(null, "http://127.0.0.1:8888", lan),
+    "http://192.168.1.24:8888",
+  );
+  assert.equal(
+    remoteApiOrigin(null, "http://localhost:8888", lan),
+    "http://192.168.1.24:8888",
+  );
+  assert.equal(remoteApiOrigin(TUNNEL, "http://127.0.0.1:8888", lan), TUNNEL);
+  assert.equal(
+    remoteApiOrigin(null, "http://10.0.0.7:8888", lan),
+    "http://10.0.0.7:8888",
+  );
+  assert.equal(
+    remoteApiOrigin(null, "http://127.0.0.1:8888", []),
+    "http://127.0.0.1:8888",
+  );
+});
 
 test("auto-start is read-only with no status, or under Colab ownership", () => {
   assert.equal(remoteAccessAutoStartReadOnly(null), true);
@@ -176,9 +188,7 @@ test("auto-start is read-only with no status, or under Colab ownership", () => {
   );
 });
 
-// ── remoteAccessStopDisconnectsOrigin ──
-// This decides whether the user is warned that Stop will cut their own
-// connection, so a false negative silently drops the warning.
+// A false negative here silently drops the Stop-disconnects warning.
 
 test("stop-disconnects detects the browser sitting on the tunnel origin", () => {
   assert.equal(remoteAccessStopDisconnectsOrigin(TUNNEL, TUNNEL), true);
@@ -210,14 +220,11 @@ test("stop-disconnects is false for a local browser or a different tunnel", () =
 });
 
 test("stop-disconnects does not treat a path prefix as the same origin", () => {
-  // A tunnel URL is an origin; nothing should match a longer path under it.
   assert.equal(
     remoteAccessStopDisconnectsOrigin(`${TUNNEL}/settings`, TUNNEL),
     false,
   );
 });
-
-// ── remoteAccessBlockMessage ──
 
 test("every block reason the backend can emit has a message", () => {
   // Mirrors utils/remote_access_settings.py's block_reason chain.
@@ -247,7 +254,6 @@ test("the pending-password message is desktop-aware", () => {
   );
   const web = remoteAccessBlockMessage("admin_password_change_required", false);
   assert.notEqual(desktop, web);
-  // Only the web copy should send the user to the CLI.
   assert.ok(!desktop?.includes("reset-password"));
   assert.ok(web?.includes("reset-password"));
 });
@@ -258,11 +264,7 @@ test("an unknown or absent reason yields no message", () => {
   assert.equal(remoteAccessBlockMessage("", true), null);
 });
 
-// ── remoteAccessSelfStopPoll ──
-
-// The frames a Settings page loaded from the tunnel actually sees after Stop:
-// the route fabricates a terminal off, the stop worker then answers "stopping"
-// for the ~50ms teardown drain, and finally the origin goes away.
+// After Stop: a fabricated terminal off, ~50ms of "stopping" drain, then the origin dies.
 const TERMINAL_OFF = normalizeRemoteAccessStatus(
   apiStatus({
     state: "off",
@@ -323,8 +325,7 @@ test("polls lead as usual when no self-origin stop is pending", () => {
 test("a self-origin stop settles on off, not a permanent stopping", () => {
   let shown = TERMINAL_OFF;
   let expecting = true;
-  // Polling restarts in perform()'s finally, so the first poll can still land
-  // inside the drain window before cloudflared exits.
+  // Polling restarts in perform()'s finally, so the first poll can land in the drain window.
   for (const frame of [DRAINING, DRAINING]) {
     const settled = remoteAccessSelfStopPoll(frame, expecting);
     expecting = settled.expectingDisconnect;
@@ -333,6 +334,25 @@ test("a self-origin stop settles on off, not a permanent stopping", () => {
     }
   }
   assert.equal(shown.state, "off");
-  // The origin then dies; the section latches polling off on this flag.
   assert.equal(expecting, true);
+});
+
+test("every connector error the backend reports gets a next step", () => {
+  // Mirrors the allowlist in utils/remote_access_settings.py.
+  for (const error of [
+    "cloudflared is unavailable",
+    "cloudflared did not produce a URL",
+    "Cloudflare URL was not reachable",
+    "cloudflared did not register a connection",
+    "cloudflared exited",
+    "cloudflared could not be stopped",
+  ]) {
+    const message = remoteAccessErrorMessage(error);
+    assert.ok(message && message !== error, error);
+  }
+  assert.equal(remoteAccessErrorMessage(null), null);
+  assert.equal(
+    remoteAccessErrorMessage("Cloudflare tunnel failed"),
+    "Cloudflare tunnel failed",
+  );
 });

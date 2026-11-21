@@ -5,10 +5,8 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
-// network.ts resolves the Hub origin through "@/lib/hf-endpoint", the way vite
-// resolves the alias. Bare node does not, so the import has to go through the
-// resolver, which in turn means a dynamic import after register().
-register("./bundler-resolver.mjs", import.meta.url);
+// network.ts imports the "@/lib/hf-endpoint" alias, so import dynamically after register().
+register("./store-stub-resolver.mjs", import.meta.url);
 const {
   classifyFetchFailure,
   clearRemoteBackoff,
@@ -23,13 +21,14 @@ const {
   markRemoteNetworkOnline,
   sanitizeHubErrorMessage,
 } = await import("../src/features/hub/lib/network.ts");
+const { resetHfEndpoints, setHfEndpoints } = await import("../src/lib/hf-endpoint.ts");
+const { updateHubSource } = await import("../src/features/settings/api/hub-settings.ts");
+const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const HF = "https://huggingface.co";
 
-// Installing a window exercises the same event path the app uses, not the
-// no-op branch network.ts falls back to.
 function installWindow() {
   const listeners = new Map<string, Set<() => void>>();
   (globalThis as Record<string, unknown>).window = {
@@ -54,48 +53,72 @@ function reset() {
   markRemoteNetworkOnline();
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// network.ts reads Date.now(). A real sleep raced the 10 ms window: on a loaded runner (Windows ticks
+// about every 15 ms) the window lapsed before the first assert, so the clock is driven by hand.
+function manualClock() {
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  return {
+    advance: (ms: number) => {
+      now += ms;
+    },
+    restore: () => {
+      Date.now = real;
+    },
+  };
+}
 
-test("a lapsed backoff window means probing, never proven-available", async () => {
+test("a lapsed backoff window means probing, never proven-available", () => {
   reset();
-  markRemoteNetworkOffline(HF, 10, {
-    kind: "network-opaque",
-    message: "blocked",
-    origin: HF,
-    retryable: true,
-  });
-  assert.equal(getHubPhase(HF), "unavailable");
+  const clock = manualClock();
+  try {
+    markRemoteNetworkOffline(HF, 10, {
+      kind: "network-opaque",
+      message: "blocked",
+      origin: HF,
+      retryable: true,
+    });
+    clock.advance(9);
+    assert.equal(getHubPhase(HF), "unavailable");
 
-  await sleep(30);
+    clock.advance(21);
 
-  // The old code flipped straight back to "online" here, fired a "Back online"
-  // toast, retried, failed, and looped. Only a successful request may promote.
-  assert.equal(
-    getHubPhase(HF),
-    "probing",
-    "TTL expiry must not be mistaken for a successful probe",
-  );
+    // Only a successful request may promote back to online.
+    assert.equal(
+      getHubPhase(HF),
+      "probing",
+      "TTL expiry must not be mistaken for a successful probe",
+    );
+  } finally {
+    clock.restore();
+  }
 });
 
-test("only a success clears the recorded failure", async () => {
+test("only a success clears the recorded failure", () => {
   reset();
-  markRemoteNetworkOffline(HF, 10, {
-    kind: "timeout",
-    message: "timed out",
-    origin: HF,
-    retryable: true,
-  });
-  await sleep(30);
+  const clock = manualClock();
+  try {
+    markRemoteNetworkOffline(HF, 10, {
+      kind: "timeout",
+      message: "timed out",
+      origin: HF,
+      retryable: true,
+    });
+    clock.advance(30);
 
-  assert.equal(
-    getLastHubFailure(HF)?.kind,
-    "timeout",
-    "the cause must outlive the backoff window or the panel goes generic",
-  );
+    assert.equal(
+      getLastHubFailure(HF)?.kind,
+      "timeout",
+      "the cause must outlive the backoff window or the panel goes generic",
+    );
 
-  markRemoteNetworkOnline(HF);
-  assert.equal(getLastHubFailure(HF), null);
-  assert.equal(getHubPhase(HF), "available");
+    markRemoteNetworkOnline(HF);
+    assert.equal(getLastHubFailure(HF), null);
+    assert.equal(getHubPhase(HF), "available");
+  } finally {
+    clock.restore();
+  }
 });
 
 test("Retry clears the backoff but keeps the diagnosis on screen", () => {
@@ -128,12 +151,11 @@ test("classification separates timeout, abort, offline and opaque failures", () 
   const abort = new DOMException("aborted", "AbortError");
   assert.equal(classifyFetchFailure(abort, HF).kind, "aborted");
 
-  // No navigator.onLine === false in Node, so a bare TypeError stays opaque
-  // rather than being reported as a confirmed loss of connectivity.
+  // No navigator.onLine === false in Node, so a bare TypeError stays opaque.
   const opaque = classifyFetchFailure(new TypeError("Failed to fetch"), HF);
   assert.equal(opaque.kind, "network-opaque");
   assert.match(opaque.message, /huggingface\.co/);
-  assert.match(opaque.message, /extension|antivirus|filter/i);
+  assert.doesNotMatch(opaque.message, /offline/i);
 });
 
 test("a browser reporting itself offline is named as such", () => {
@@ -226,9 +248,7 @@ test("a slow optional asset does not take the whole origin down", async () => {
         return true;
       },
     );
-    // The avatar, README and dataset-size fetches all use a 10s timeout against
-    // huggingface.co. Arming the 30s window here paused discovery and disabled
-    // the metadata and download controls while the API itself was reachable.
+    // Avatar, README and dataset-size fetches must not arm the 30s Hub-wide backoff.
     assert.equal(
       getHubPhase(HF),
       "available",
@@ -252,6 +272,36 @@ test("a connectivity failure still does", async () => {
     assert.equal(getLastHubFailure(HF)?.kind, "network-opaque");
   } finally {
     globalThis.fetch = original;
+  }
+});
+
+test("a relay that cannot reach its endpoint counts as the endpoint unreachable", async () => {
+  reset();
+  const relay = "http://127.0.0.1:8888/api/hub/proxy/t";
+  setHfEndpoints(relay, null, "huggingface", { endpoint: true });
+  const original = globalThis.fetch;
+  let upstream = false;
+  globalThis.fetch = (async () =>
+    new Response("{}", { status: 502, headers: upstream ? { "X-Hub-Upstream": "1" } : {} })) as typeof fetch;
+  try {
+    await assert.rejects(fetchWithTimeout(`${relay}/api/models`, {}, 1_000));
+    assert.equal(getLastHubFailure("http://127.0.0.1:8888")?.kind, "network-opaque");
+    setAuthFetchHandler(() =>
+      Response.json({
+        hf_endpoint: "",
+        datasets_server_follows_endpoint: false,
+        source: "modelscope",
+        active_source: "modelscope",
+      }),
+    );
+    await updateHubSource("modelscope");
+    assert.equal(isRemoteNetworkOffline("http://127.0.0.1:8888"), false);
+    upstream = true;
+    assert.equal((await fetchWithTimeout(`${relay}/api/models`, {}, 1_000)).status, 502);
+  } finally {
+    globalThis.fetch = original;
+    setAuthFetchHandler(null);
+    resetHfEndpoints();
   }
 });
 
@@ -290,8 +340,7 @@ test("an unrelated origin failing does not take the Hub down", () => {
 });
 
 test("the SDK's URL trailer never survives into a rendered message", () => {
-  // Exact shape from @huggingface/hub createApiError: message, then
-  // ". URL: <url>. Request ID: <id>".
+  // Exact shape from @huggingface/hub createApiError.
   const raw =
     "Api error with status 502. URL: https://huggingface.co/api/models?search=my-private-project&limit=100. Request ID: abc123";
   const clean = sanitizeHubErrorMessage(raw);
@@ -318,9 +367,6 @@ test("the cause on screen describes the window that is in force", async () => {
   };
   markRemoteNetworkOffline(HF, 30_000, live);
 
-  // A concurrent request records a second cause with no window of its own.
-  // Taking that cause while keeping the longer window left the panel naming a
-  // spent failure while a different, still-live one held it unavailable.
   markRemoteNetworkOffline(
     HF,
     0,
@@ -337,10 +383,7 @@ test("the cause on screen describes the window that is in force", async () => {
 
 
 test("a generator that threw is not pulled again", async () => {
-  // @huggingface/hub awaits the fetch inside the generator body, so a failed
-  // page finishes the generator and every later next() resolves done. The
-  // auto-fill then cleared the error with it, which undoes the whole point of
-  // keeping the failure on screen.
+  // @huggingface/hub awaits fetch inside the generator, so a failed page finishes it for good.
   let requests = 0;
   async function* listing() {
     for (const page of [1, 2]) {
@@ -356,7 +399,6 @@ test("a generator that threw is not pulled again", async () => {
   assert.equal(requests, 2, "reusing it issues no request, so done is a lie");
 
   const src = await readSrcAsync("features/hub/hooks/use-hub-paginated-search.ts");
-  // Set on the failure path, cleared only where a new generator is built.
   assert.match(src, /iterDeadRef\.current = true;/);
   assert.match(src, /iterRef\.current = iter;\s*\n\s*iterDeadRef\.current = false;/);
   const at = src.indexOf("const fetchMore = useCallback");

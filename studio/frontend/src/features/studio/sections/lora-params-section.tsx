@@ -9,8 +9,7 @@ import {
 } from "@/components/ui/collapsible";
 import { usePlatformStore } from "@/config/env";
 import {
-  TARGET_MODULES,
-  getCptUiTargetModules,
+  getUiTargetModules,
   isCptTargetModuleActive,
   toggleCptTargetModule,
 } from "@/config/training";
@@ -33,6 +32,7 @@ export function LoraParamsSection(): ReactElement | null {
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       trainingMethod: state.trainingMethod,
+      isDecision: state.modelType === "decision",
       isVisionModel: state.isVisionModel,
       isDatasetImage: state.isDatasetImage,
       loraRank: state.loraRank,
@@ -55,12 +55,11 @@ export function LoraParamsSection(): ReactElement | null {
       setTargetModules: state.setTargetModules,
     })),
   );
-  // Only mounted in advanced mode, so start expanded when the user switches to it.
+  // Only mounted in advanced mode, so start expanded.
   const [open, setOpen] = useState(true);
   const isCpt = store.trainingMethod === "cpt";
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
-  // `isVisionModel` can go stale, so this blocks only a NEW selection;
-  // the backend settles an existing one.
+  // `isVisionModel` can go stale, so this blocks only a NEW selection.
   const doraNeedsVisionOff =
     deviceType === "mac" && showVisionLora && store.finetuneVisionLayers;
 
@@ -191,102 +190,95 @@ export function LoraParamsSection(): ReactElement | null {
             </div>
           )}
 
-          {!showVisionLora && (
+          {!(showVisionLora || store.isDecision) && (
             <div className="flex flex-col gap-2 pt-1">
               <span className="text-xs font-medium text-muted-foreground">
                 {t("studio.params.targetModules")}
               </span>
               <div className="flex flex-wrap gap-1.5">
-                {(isCpt ? getCptUiTargetModules() : TARGET_MODULES).map(
-                  (module) => {
-                    const active = isCpt
-                      ? isCptTargetModuleActive(store.targetModules, module)
-                      : store.targetModules.includes(module);
-                    return (
-                      <button
-                        key={module}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() =>
-                          store.setTargetModules(
-                            isCpt
-                              ? toggleCptTargetModule(
-                                  store.targetModules,
-                                  module,
-                                )
-                              : active
-                                ? store.targetModules.filter(
-                                    (candidate) => candidate !== module,
-                                  )
-                                : [...store.targetModules, module],
-                          )
-                        }
-                        className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
-                          active ? "text-foreground" : "text-muted-foreground"
-                        }`}
-                      >
-                        {module}
-                      </button>
-                    );
-                  },
-                )}
+                {getUiTargetModules(isCpt).map((module) => {
+                  const active = isCptTargetModuleActive(
+                    store.targetModules,
+                    module,
+                  );
+                  return (
+                    <button
+                      key={module}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() =>
+                        store.setTargetModules(
+                          toggleCptTargetModule(store.targetModules, module),
+                        )
+                      }
+                      className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
+                        active ? "text-foreground" : "text-muted-foreground"
+                      }`}
+                    >
+                      {module}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {(
-              [
-                {
-                  value: "lora",
-                  label: t("studio.params.enableLora"),
-                  desc: t("studio.params.trainWithLora"),
-                },
-                {
-                  value: "rslora",
-                  label: "RS-LoRA",
-                  desc: t("studio.params.stableRank"),
-                },
-                {
-                  value: "loftq",
-                  label: "LoftQ",
-                  desc: t("studio.params.memoryEfficient"),
-                },
-                {
-                  value: "dora",
-                  label: "DoRA",
-                  desc: t("studio.params.weightDecomposed"),
-                },
-              ] as const
-            ).map((option) => {
-              const unsupportedOnMlx = !isTrainingLoraVariantSupportedOnDevice(
-                option.value,
-                store.trainingMethod,
-                deviceType,
-              );
-              const needsVisionOff =
-                option.value === "dora" && doraNeedsVisionOff;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  disabled={unsupportedOnMlx || needsVisionOff}
-                  aria-pressed={store.loraVariant === option.value}
-                  onClick={() => store.setLoraVariant(option.value)}
-                  className={`flex-1 corner-squircle rounded-[14px] border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
-                >
-                  <p className="text-xs font-medium">{option.label}</p>
-                  <p className="text-ui-10 text-muted-foreground">
-                    {unsupportedOnMlx
-                      ? t("studio.params.notSupportedAppleSilicon")
-                      : needsVisionOff
-                        ? t("studio.params.doraNeedsVisionLayersOff")
-                        : option.desc}
-                  </p>
-                </button>
-              );
-            })}
-          </div>
+          {!store.isDecision && (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {(
+                [
+                  {
+                    value: "lora",
+                    label: t("studio.params.enableLora"),
+                    desc: t("studio.params.trainWithLora"),
+                  },
+                  {
+                    value: "rslora",
+                    label: "RS-LoRA",
+                    desc: t("studio.params.stableRank"),
+                  },
+                  {
+                    value: "loftq",
+                    label: "LoftQ",
+                    desc: t("studio.params.memoryEfficient"),
+                  },
+                  {
+                    value: "dora",
+                    label: "DoRA",
+                    desc: t("studio.params.weightDecomposed"),
+                  },
+                ] as const
+              ).map((option) => {
+                const unsupportedOnMlx =
+                  !isTrainingLoraVariantSupportedOnDevice(
+                    option.value,
+                    store.trainingMethod,
+                    deviceType,
+                  );
+                const needsVisionOff =
+                  option.value === "dora" && doraNeedsVisionOff;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    disabled={unsupportedOnMlx || needsVisionOff}
+                    aria-pressed={store.loraVariant === option.value}
+                    onClick={() => store.setLoraVariant(option.value)}
+                    className={`flex-1 corner-squircle rounded-md border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
+                  >
+                    <p className="text-xs font-medium">{option.label}</p>
+                    <p className="text-ui-10 text-muted-foreground">
+                      {unsupportedOnMlx
+                        ? t("studio.params.notSupportedAppleSilicon")
+                        : needsVisionOff
+                          ? t("studio.params.doraNeedsVisionLayersOff")
+                          : option.desc}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The installers read the NVIDIA inventory from the driver's libraries when nvidia-smi cannot answer.
-
-Measured on a 8x B200 host (driver 590.48.01, CUDA 13.1) with a stub nvidia-smi that exits 1:
-main resolved no prebuilt at all ("runnable by this driver=none", a source build or the CPU)
-and picked the cu126 torch index; with the probe it resolves the cuda13 bundle and cu130.
-"""
+"""NVIDIA inventory falls back to the driver's libraries when nvidia-smi cannot answer."""
 
 from __future__ import annotations
 
@@ -58,9 +53,6 @@ def _inventory(
     )
 
 
-# ── the probe module ──
-
-
 class TestProbeModule:
     def test_mig_rows_are_not_devices_to_the_installers(self):
         payload = {
@@ -99,7 +91,6 @@ class TestProbeModule:
         inv = PROBE._from_payload(payload)
         assert inv.cuda_driver_version == (13, 1)
         assert inv.devices == payload["devices"]
-        # An older payload without the memory fields still reads; they come back empty.
         old = {
             **payload,
             "devices": [{"index": "0", "uuid": "GPU-x", "name": "B200", "compute_cap": "10.0"}],
@@ -223,23 +214,25 @@ class TestProbeModule:
     )
     def test_on_a_real_host_the_library_agrees_with_nvidia_smi(self, monkeypatch):
         monkeypatch.delenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", raising = False)
-        listing = subprocess.run(["nvidia-smi", "-L"], capture_output = True, text = True, timeout = 60)
+        try:
+            listing = subprocess.run(
+                ["nvidia-smi", "-L"], capture_output = True, text = True, timeout = 60
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            pytest.skip(f"nvidia-smi gave no listing: {exc}")
         if listing.returncode != 0 or "GPU " not in listing.stdout:
             pytest.skip("nvidia-smi lists no GPU here")
-        inv = PROBE.probe()
+        # Busy hosts take >50 s for NVML init, past the 20 s default; this tests content, not speed.
+        inv = PROBE.probe(timeout = 180)
         assert inv is not None and inv.source == "nvml"
         assert len(inv.devices) == sum(
             1 for line in listing.stdout.splitlines() if line.startswith("GPU ")
         )
         assert inv.cuda_driver_version is not None and inv.cuda_driver_version[0] >= 11
-        # The memory reading the runtime probe needs; a busy card may legitimately have none free.
         assert all(int(d["memory_total_mib"]) > 0 for d in inv.devices)
         assert all(
             0 <= int(d["memory_free_mib"]) <= int(d["memory_total_mib"]) for d in inv.devices
         )
-
-
-# ── detect_host ──
 
 
 _HOST_TOOLS = {"nvidia-smi", "rocminfo", "amd-smi", "rocm-smi", "hipinfo", "vulkaninfo", "nvcc"}
@@ -321,7 +314,6 @@ class TestDetectHostFallsBackToTheLibraries:
         host = ILP.detect_host()
         assert host.has_physical_nvidia and host.has_usable_nvidia
         assert host.compute_caps == [] and host.physical_compute_caps == ["90"]
-        # An explicit UUID that matches nothing stays unusable.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-00000000-0000-0000-0000-000000000000")
         assert not ILP.detect_host().has_usable_nvidia
 
@@ -354,7 +346,6 @@ class TestDetectHostFallsBackToTheLibraries:
         assert host.driver_cuda_version == (12, 8) and host.compute_caps == ["89"]
 
     def test_the_kernel_module_release_bounds_the_driver_version(self, monkeypatch):
-        # nvidia-smi and the libraries both failed; /proc/driver/nvidia/gpus says NVIDIA.
         _hide_the_real_host(monkeypatch, nvidia_smi = None)
         isdir = ILP.os.path.isdir
         monkeypatch.setattr(
@@ -380,9 +371,6 @@ class TestDetectHostFallsBackToTheLibraries:
         monkeypatch.setattr(ILP, "proc_driver_version", lambda: "")
         host = ILP.detect_host()
         assert not host.has_physical_nvidia and host.driver_cuda_version is None
-
-
-# ── install_python_stack ──
 
 
 class TestTorchIndexFallsBackToTheLibraries:
@@ -455,9 +443,6 @@ class TestTorchIndexFallsBackToTheLibraries:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5")
         monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda: _inventory(source = "cuda"))
         assert IPS._has_usable_nvidia_gpu() is True
-
-
-# ── setup.sh ──
 
 
 SETUP_TEXT = (STUDIO / "setup.sh").read_text(encoding = "utf-8")

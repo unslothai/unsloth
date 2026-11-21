@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Cache selection for multimodal generation (unslothai/unsloth#6028).
-
-A static cache makes transformers skip mask materialisation at prefill and rely
-on `is_causal`, which drops the bidirectional image/audio block overlay the Gemma
-multimodal families build. Image tokens then attend causally and spatial
-grounding degrades. `generate` must fall back to the dynamic cache for those
-requests, and only those.
-"""
+"""Gemma media generation needs the dynamic cache; static prefill drops the bidirectional overlay."""
 
 import sys
 import types
@@ -102,12 +95,7 @@ def test_either_mask_builder_gates_the_guard(request, helper):
 
 
 def test_real_gemma_modules_expose_the_helper():
-    """Pin the upstream symbols the guard keys on, so a rename is caught here.
-
-    These helpers landed in transformers 5.10. Before that neither name exists
-    (measured on 4.57.6 and 5.5.0), the guard is inert by design, and Gemma keeps
-    the static path it always had, so there is nothing to pin.
-    """
+    """Pins the transformers 5.10 helper names the guard keys on, so a rename fails here."""
     transformers = pytest.importorskip("transformers")
     from packaging.version import InvalidVersion, Version
 
@@ -359,12 +347,7 @@ def test_blocked_token_types_match_upstream():
 
 
 def _force_gate(local_cache_implementation, kwargs, is_media):
-    """The force decision from unsloth_base_fast_generate, isolated.
-
-    Deliberately independent of the local default: clearing it does not make the
-    effective cache dynamic, since kwargs and the caller's generation_config are
-    applied afterwards.
-    """
+    """Mirrors the force decision alone; the local default does not settle the effective cache."""
     return kwargs.get("past_key_values") is None and is_media
 
 

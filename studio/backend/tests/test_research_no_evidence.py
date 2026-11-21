@@ -99,7 +99,6 @@ def _run(
     async def fake_stream_completion(run, messages, **kwargs):
         if kwargs.get("phase") == "synthesis":
             return REPORT, "", "stop", None
-        # Unparseable, so every step falls back to the next unused plan seed.
         return "not json", "", "stop", None
 
     monkeypatch.setattr(worker, "execute_tool", fake_execute_tool)

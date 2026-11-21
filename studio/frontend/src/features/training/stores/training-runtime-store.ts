@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-// Module state outlives a logout, so this store clears with the session. Relative and
-// extensioned like the sibling below: the store's test runs under
-// `node --experimental-strip-types`, which cannot resolve the `@/` alias.
+// Clears with the session. Relative and extensioned because the test runs under
+// `node --experimental-strip-types`, which cannot resolve `@/`.
 import { AUTH_SESSION_CLEARED_EVENT } from "../../auth/session-events.ts";
 import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
 import type {
@@ -64,6 +63,7 @@ const initialState: TrainingRuntimeState = {
   startRequestId: null,
   startError: null,
   startModelName: null,
+  modelDownloadRepoId: null,
   startDatasetName: null,
   startHfToken: null,
   startProjectName: null,
@@ -79,6 +79,7 @@ const initialState: TrainingRuntimeState = {
   progressPercent: 0,
   elapsedSeconds: null,
   etaSeconds: null,
+  sessionStartStep: 0,
   currentGradNorm: null,
   currentNumTokens: null,
   outputDir: null,
@@ -88,6 +89,7 @@ const initialState: TrainingRuntimeState = {
   evalLossHistory: [],
   resetGeneration: 0,
   stopRequested: false,
+  configureRequest: 0,
   selectedHistoryRunId: null,
   currentRunViewActive: false,
 };
@@ -253,7 +255,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           return state;
         }
         acquired = true;
-        return { isStarting: true, startRequestId };
+        return { isStarting: true, startRequestId, modelDownloadRepoId: null };
       });
       return acquired;
     },
@@ -284,6 +286,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       set((state) => ({
         ...initialState,
         hasHydrated: state.hasHydrated,
+        configureRequest: state.configureRequest,
         lossHistory: [],
         lrHistory: [],
         gradNormHistory: [],
@@ -308,6 +311,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           warnings: [],
           startError: null,
           phase: "configuring",
+          modelDownloadRepoId: null,
           isStarting: false,
           startRequestId,
           sseConnected: false,
@@ -321,6 +325,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           progressPercent: 0,
           elapsedSeconds: null,
           etaSeconds: null,
+          sessionStartStep: 0,
           currentGradNorm: null,
           currentNumTokens: null,
           outputDir: null,
@@ -400,6 +405,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               progressPercent: 0,
               elapsedSeconds: null,
               etaSeconds: null,
+              sessionStartStep: 0,
               currentGradNorm: null,
               currentNumTokens: null,
               outputDir: null,
@@ -458,6 +464,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             canApplyDetailMetrics && detailEpoch !== null
               ? Math.max(detailEpoch, runtimeState.currentEpoch)
               : runtimeState.currentEpoch,
+          modelDownloadRepoId: payload.details?.model_download_repo_id ?? null,
           outputDir:
             payload.details?.output_dir !== undefined
               ? payload.details.output_dir
@@ -561,7 +568,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             totalSteps !== null && totalSteps > 0
               ? Math.max(totalSteps, state.totalSteps)
               : state.totalSteps,
-          // A null loss at a new step means non-finite; clear the display rather than keep a stale value.
+          // A null loss at a new step means non-finite; clear rather than keep a stale value.
           currentLoss:
             currentLoss ??
             (step > state.currentStep ? null : state.currentLoss),
@@ -579,6 +586,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               : state.currentEpoch,
           elapsedSeconds: payload.elapsed_seconds,
           etaSeconds: payload.eta_seconds,
+          sessionStartStep: payload.session_start_step ?? state.sessionStartStep,
           currentGradNorm,
           currentNumTokens: payload.num_tokens,
           firstStepReceived: state.firstStepReceived || step > 0,
@@ -610,15 +618,14 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
   }),
 );
 
-// startHfToken holds a raw Hub credential in module state that outlives a logout:
-// reconcile() in __root remounts rather than reloading, so the next account in the tab
-// would poll with the previous one's token. useHfTokenStore already clears on this event.
+// startHfToken outlives a logout and reconcile() remounts without reloading, so clear it.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     useTrainingRuntimeStore.getState().resetRuntime();
     useTrainingRuntimeStore.setState({
       startHfToken: null,
       startModelName: null,
+      modelDownloadRepoId: null,
       startDatasetName: null,
       startProjectName: null,
     });

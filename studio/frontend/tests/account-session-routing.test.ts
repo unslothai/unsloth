@@ -6,6 +6,30 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import type * as Session from "../src/features/auth/session.ts";
 
+test("refresh preserves a backfilled session marker when access token is missing", (t) => {
+  const previousWindow = globalThis.window;
+  const previousStorage = globalThis.localStorage;
+  const values = new Map([["unsloth_auth_refresh_token", "old-refresh"]]);
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+  } as unknown as Storage;
+  globalThis.localStorage = storage;
+  globalThis.window = { localStorage: storage, addEventListener() {}, dispatchEvent() {} } as unknown as Window & typeof globalThis;
+  t.after(() => { globalThis.window = previousWindow; globalThis.localStorage = previousStorage; });
+  const session = loadWithStubs<typeof Session>(new URL("../src/features/auth/session.ts", import.meta.url), {
+    "@/lib/api-base": { isTauri: false },
+    "@/lib/account-transition": { installAccountTransitionListener: () => {} },
+    "./login-client": { getLoginMode: () => "single" },
+    "./session-events": { AUTH_SESSION_STORED_EVENT: "stored" },
+  });
+  const mark = session.ensureAuthSessionMark();
+  assert.ok(mark);
+  session.storeAuthTokens("new-access", "new-refresh", true);
+  assert.equal(session.getAuthSessionMark(), mark);
+  assert.equal(session.getRefreshToken(), "new-refresh");
+});
+
 for (const [desktop, loginMode, change, expected] of [
   [true, "single", true, "/chat"],
   [true, "single", false, "/chat"],
@@ -45,5 +69,48 @@ for (const [desktop, loginMode, change, expected] of [
     );
     assert.equal(session.getPostAuthRoute(), expected);
     assert.equal(listening, 1);
+  });
+}
+
+// A session still owing a password change is refused settings (403) though it holds tokens,
+// so the read gate must follow the route, not token presence.
+for (const [desktop, loginMode, token, change, expected] of [
+  [false, "single", false, false, false],
+  [false, "single", true, true, false],
+  [false, "multi", true, true, false],
+  [false, "single", true, false, true],
+  [true, "multi", true, true, false],
+  [true, "single", true, true, true],
+  [true, "single", false, false, false],
+] as const) {
+  test(`${desktop ? "desktop" : "browser"} ${loginMode} session with token=${token} change=${change} is settled=${expected}`, (t) => {
+    const previousWindow = globalThis.window;
+    const previousStorage = globalThis.localStorage;
+    const storage = {
+      getItem: (key: string) => {
+        if (key === "unsloth_auth_token") return token ? "a.b.c" : null;
+        if (key === "unsloth_auth_must_change_password") return change ? "1" : null;
+        return null;
+      },
+    } as unknown as Storage;
+    globalThis.localStorage = storage;
+    globalThis.window = {
+      localStorage: storage,
+      addEventListener() {},
+    } as unknown as Window & typeof globalThis;
+    t.after(() => {
+      globalThis.window = previousWindow;
+      globalThis.localStorage = previousStorage;
+    });
+    const session = loadWithStubs<typeof Session>(
+      new URL("../src/features/auth/session.ts", import.meta.url),
+      {
+        "@/lib/api-base": { isTauri: desktop },
+        "@/lib/account-transition": { installAccountTransitionListener: () => {} },
+        "./login-client": { getLoginMode: () => loginMode },
+        "./session-events": {},
+      },
+    );
+    assert.equal(session.hasSettledAuthSession(), expected);
   });
 }

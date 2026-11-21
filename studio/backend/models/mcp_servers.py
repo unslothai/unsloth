@@ -1,9 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, Field, StrictStr
+from pydantic import AfterValidator, BaseModel, Field, StrictStr
+
+
+class McpImageInputMapping(BaseModel):
+    """A top-level string field of ``tool`` that receives the user's approved image."""
+
+    tool: StrictStr = Field(min_length = 1, max_length = 256)
+    field: StrictStr = Field(min_length = 1, max_length = 256)
+    encoding: Literal["base64", "data_url"] = "base64"
+
+
+def _one_field_per_tool(mappings: list[McpImageInputMapping]) -> list[McpImageInputMapping]:
+    # image_mapping sends the image to one field per tool; a second one could only be a fallback the UI never offered.
+    tools = [mapping.tool for mapping in mappings]
+    if len(tools) != len(set(tools)):
+        raise ValueError("each tool can map only one image field")
+    return mappings
+
+
+McpImageInputMappings = Annotated[list[McpImageInputMapping], AfterValidator(_one_field_per_tool)]
 
 
 class McpServerCreate(BaseModel):
@@ -12,6 +31,9 @@ class McpServerCreate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: bool = True
     use_oauth: bool = False
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    image_input_mappings: McpImageInputMappings = Field(default_factory = list, max_length = 64)
 
 
 class McpServerUpdate(BaseModel):
@@ -21,6 +43,9 @@ class McpServerUpdate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: Optional[bool] = None
     use_oauth: Optional[bool] = None
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    image_input_mappings: Optional[McpImageInputMappings] = Field(None, max_length = 64)
 
 
 class McpServerResponse(BaseModel):
@@ -31,6 +56,11 @@ class McpServerResponse(BaseModel):
     headers: dict[str, str] = Field(default_factory = dict)
     is_enabled: bool = True
     use_oauth: bool = False
+    oauth_client_id: Optional[str] = None
+    has_oauth_client_secret: bool = False
+    image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list)
+    # False when no mapping matches a cached tool schema any more; true while the tools are unknown.
+    image_mappings_active: bool = False
     created_at: str
     updated_at: str
 
@@ -39,6 +69,10 @@ class McpServerTestRequest(BaseModel):
     url: str
     headers: Optional[dict[str, str]] = None
     use_oauth: bool = False
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    # Edit form: reuse this server's stored secret when the secret field is left blank.
+    server_id: Optional[str] = None
 
 
 class BlenderSettings(BaseModel):
@@ -57,14 +91,45 @@ class BlenderSetup(BlenderSettings):
     consent: bool = False
 
 
-class McpBuiltinResponse(BlenderSettings):
+class EditorSettings(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    port: Optional[int] = Field(default = None, ge = 1, le = 65535, strict = True)
+    project_path: StrictStr = Field(default = "", max_length = 4096, pattern = r"^[^\x00]*$")
+
+
+class EditorTest(EditorSettings):
+    consent: bool = Field(default = False, strict = True)
+
+
+class UnrealToolsInstall(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project_path: StrictStr = Field(..., min_length = 1, max_length = 4096, pattern = r"^[^\x00]*$")
+
+
+class UnrealToolsInstallResult(BaseModel):
+    files: list[str]
+    restart_required: bool = True
+
+
+class EditorSetup(EditorSettings):
+    is_enabled: bool
+    consent: bool = False
+
+
+class McpBuiltinResponse(BaseModel):
     builtin_id: str = "blender"
     display_name: str = "Blender"
     server_id: Optional[str] = None
     is_enabled: bool = False
     available: bool
     unavailable_reason: Optional[str] = None
-    min_blender_version: str
+    port: int = 9876
+    blender_path: str = ""
+    min_blender_version: Optional[str] = None
+    project_path: str = ""
+    installed: Optional[bool] = None
 
 
 class McpStdioDecodeRequest(BaseModel):
@@ -86,6 +151,9 @@ class McpServerProbeResult(BaseModel):
     error: Optional[str] = None
     blender_ready: Optional[bool] = None
     blender_error: Optional[str] = None
+    blender_path: Optional[str] = None
+    editor_ready: Optional[bool] = None
+    editor_error: Optional[str] = None
 
 
 class McpServerImportRequest(BaseModel):
@@ -97,3 +165,29 @@ class McpServerImportResult(BaseModel):
     created: list[McpServerResponse] = Field(default_factory = list)
     skipped: list[str] = Field(default_factory = list)
     errors: list[str] = Field(default_factory = list)
+
+
+class McpUiResourceResponse(BaseModel):
+    uri: str
+    mime_type: str
+    text: str
+    # Base64, only for a resource that is not UTF-8 text.
+    blob: Optional[str] = None
+    ui: dict = Field(default_factory = dict)
+    contents: list[dict] = Field(default_factory = list)
+
+
+class McpUiToolCallRequest(BaseModel):
+    tool_name: str
+    arguments: dict = Field(default_factory = dict)
+    thread_id: Optional[str] = None
+    session_id: Optional[str] = None
+    permission_mode: Optional[str] = None
+    approved: bool = False
+
+
+class McpUiToolCallResult(BaseModel):
+    content: list[dict] = Field(default_factory = list)
+    structured_content: Optional[dict] = None
+    is_error: bool = False
+    meta: Optional[dict] = None

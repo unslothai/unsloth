@@ -12,6 +12,7 @@ import {
 import type { TrainingRunSummary } from "../types/history";
 
 const SIDEBAR_LIMIT = 20;
+const MAX_REQUEST_LIMIT = 200;
 const RUNNING_POLL_MS = 5000;
 const INITIAL_RETRY_DELAYS_MS = [500, 1500, 3500];
 const LOAD_FAILURE_TOAST_ID = "training-history-load-failure";
@@ -23,7 +24,12 @@ function isAbortError(err: unknown): boolean {
 export function useTrainingHistorySidebarItems(enabled: boolean) {
   const [items, setItems] = useState<TrainingRunSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [total, setTotal] = useState(0);
   const controllerRef = useRef<AbortController | null>(null);
+  const loadedCountRef = useRef(0);
+  useEffect(() => {
+    loadedCountRef.current = items.length;
+  }, [items.length]);
 
   const fetchRuns = useCallback(async (): Promise<void> => {
     if (controllerRef.current && !controllerRef.current.signal.aborted) {
@@ -32,15 +38,36 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     const controller = new AbortController();
     controllerRef.current = controller;
     try {
-      const result = await listTrainingRuns(
-        SIDEBAR_LIMIT,
-        0,
-        controller.signal,
-      );
+      const wanted = Math.max(SIDEBAR_LIMIT, loadedCountRef.current);
+      let runs: TrainingRunSummary[] = [];
+      let runTotal = 0;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        runs = [];
+        let offset = 0;
+        let firstTotal: number | null = null;
+        let shifted = false;
+        while (offset < wanted) {
+          const result = await listTrainingRuns(
+            Math.min(MAX_REQUEST_LIMIT, wanted - offset),
+            offset,
+            controller.signal,
+          );
+          offset += result.runs.length;
+          firstTotal ??= result.total;
+          const seen = new Set(runs.map((run) => run.id));
+          const fresh = result.runs.filter((run) => !seen.has(run.id));
+          shifted ||= result.total !== firstTotal || fresh.length < result.runs.length;
+          runs.push(...fresh);
+          runTotal = result.total;
+          if (result.runs.length === 0 || offset >= result.total) break;
+        }
+        if (!shifted) break;
+      }
       if (controller.signal.aborted) {
         return;
       }
-      setItems(result.runs);
+      setItems(runs);
+      setTotal(runTotal);
       setLoaded(true);
       toast.dismiss(LOAD_FAILURE_TOAST_ID);
     } finally {
@@ -50,8 +77,37 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     }
   }, []);
 
-  // Background refresh (rename/delete sync, polling): swallow errors so
-  // transient failures don't spam toasts; the next successful fetch heals.
+  const hasMore = loaded && items.length < total;
+  // shares the in-flight guard so a poll and a page never race to write the list
+  const loadMore = useCallback(async (): Promise<void> => {
+    if (controllerRef.current && !controllerRef.current.signal.aborted) {
+      return;
+    }
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    try {
+      const result = await listTrainingRuns(
+        SIDEBAR_LIMIT,
+        loadedCountRef.current,
+        controller.signal,
+      );
+      if (controller.signal.aborted) {
+        return;
+      }
+      setItems((prev) => {
+        const seen = new Set(prev.map((run) => run.id));
+        return [...prev, ...result.runs.filter((run) => !seen.has(run.id))];
+      });
+      setTotal(result.total);
+    } catch {
+    } finally {
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+      }
+    }
+  }, []);
+
+  // Swallow background refresh errors; the next fetch heals.
   const refresh = useCallback(async (): Promise<void> => {
     try {
       await fetchRuns();
@@ -60,8 +116,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     }
   }, [fetchRuns]);
 
-  // Initial load: bounded retry-with-backoff, then a toast with Retry on final
-  // failure so the user isn't stuck on an empty sidebar if the backend is slow.
+  // Bounded retry, then a toast with Retry so a slow backend does not leave the sidebar empty.
   useEffect(() => {
     if (!enabled) {
       return;
@@ -123,9 +178,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     };
   }, [enabled, fetchRuns]);
 
-  // Poll while a run is active, but only when the tab is visible. Browsers
-  // throttle background timers but don't pause them, so gating on visibility
-  // avoids hammering the API for tabs left open during long training runs.
+  // Browsers throttle but do not pause background timers, so also gate on visibility.
   const hasRunning = items.some((r) => r.status === "running");
   useEffect(() => {
     if (!enabled || !hasRunning) {
@@ -178,6 +231,7 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     const offDeleted = onTrainingRunDeleted((runId) => {
       controllerRef.current?.abort();
       setItems((prev) => prev.filter((run) => run.id !== runId));
+      setTotal((count) => Math.max(0, count - 1));
     });
     const offChanged = onTrainingRunsChanged(() => {
       controllerRef.current?.abort();
@@ -190,5 +244,5 @@ export function useTrainingHistorySidebarItems(enabled: boolean) {
     };
   }, [refresh]);
 
-  return { items, loaded, refresh };
+  return { items, loaded, refresh, hasMore, loadMore };
 }

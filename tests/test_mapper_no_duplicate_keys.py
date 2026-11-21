@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Guard against duplicate keys in the ``__INT_TO_FLOAT_MAPPER`` registry.
-
-Duplicate keys in the dict literal silently overwrite earlier entries.
-We inspect the source with ``ast`` to ensure there are no duplicates.
-"""
+"""Duplicate keys in the __INT_TO_FLOAT_MAPPER dict literal silently overwrite earlier entries."""
 
 import ast
 import os
@@ -21,8 +17,7 @@ def _duplicate_int_to_float_keys():
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            # Private names are mangled at code generation, which ``ast.parse`` never reaches, so the identifier reads
-            # exactly as written.
+            # ast.parse never reaches private-name mangling, so the identifier reads as written.
             if isinstance(target, ast.Name) and target.id == "__INT_TO_FLOAT_MAPPER":
                 if not isinstance(node.value, ast.Dict):
                     continue

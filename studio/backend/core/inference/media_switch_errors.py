@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Refusals the media model auto-switch answers a generation request with.
-
-Every one of these is an ordinary outcome rather than a fault. The switch never downloads,
-never cuts a running generation short, and never outlives the ~100 second window Unsloth's
-secure-mode tunnel gives an origin response, so where it cannot serve the request it says which
-of those it hit and asks the caller to retry.
-
-Each refusal is rendered in the error shape of the route that raised it: the OpenAI-compatible
-body for ``/v1``, a plain string for the native media routes.
-"""
+"""Ordinary refusals that ask callers to retry; the switch never downloads, never cuts a running
+generation short, never outlives the ~100 s tunnel window; /v1 gets OpenAI error bodies, native
+routes plain strings."""
 
 from __future__ import annotations
 
@@ -119,11 +112,7 @@ def format_available(ids: list[str]) -> str:
 
 
 async def bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
-    """Await *coro* within the switch budget, refusing rather than outliving the response window.
-
-    The worker thread behind a ``to_thread`` keeps running after this returns; what matters is
-    that the request stops waiting on it, since the caller's connection is the thing on a clock.
-    """
+    """Stops the caller waiting at the deadline; the worker thread itself is left running."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         # shield() yields a Future, which has no close(); a bare coroutine has no cancel().
@@ -139,11 +128,7 @@ async def bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
 
 
 async def probe(fn, arg: Optional[Any], deadline: float, *, kind: str, openai_errors: bool) -> bool:
-    """Run a blocking busy probe off the loop, refusing rather than guessing on an overrun.
-
-    A spent budget is not a busy backend: reporting one sends the caller after a generation
-    that does not exist, where the slow-switch 503 says what actually happened.
-    """
+    """A spent budget is not a busy backend, so an overrun refuses with the slow-switch 503 instead."""
     remaining = deadline - time.monotonic()
     call = asyncio.to_thread(fn, arg) if arg is not None else asyncio.to_thread(fn)
     if remaining <= 0:

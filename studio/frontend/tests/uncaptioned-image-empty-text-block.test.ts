@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// chat-adapter.ts drags in the stores, so lift the source; assistant is a stub.
+// chat-adapter.ts drags in the stores, so lift the source.
 const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftAdapterFunction(opener: string): string {
@@ -21,6 +21,7 @@ function liftAdapterFunction(opener: string): string {
 
 const serializeJs = ts.transpileModule(
   [
+    "function modelVisibleMessage(message) { return message; }",
     "function serializeAssistantReplayMessages() { throw new Error('not under test'); }",
     liftAdapterFunction("function collectTextParts("),
     liftAdapterFunction("function collectImageParts("),

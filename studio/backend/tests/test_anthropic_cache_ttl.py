@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for prompt_cache_ttl threading on the Anthropic path.
-
-Anthropic's ``cache_control`` marker takes an optional ``ttl``: default 5m
-pool, ``ttl:"1h"`` the 1h pool. These tests pin the outbound body shape:
-"1h" puts ``ttl:"1h"`` on both markers; default omits the field; garbage
-values are silently dropped.
-"""
+"""Pins the cache_control ttl body shape: 1h on both markers, omitted by default, garbage dropped."""
 
 import asyncio
 import json
@@ -88,9 +82,6 @@ def _cache_controls(body: dict) -> list[dict]:
     return out
 
 
-# ── default (omitted) writes into the 5m pool ──────────────────────
-
-
 def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
     captured = _capture(monkeypatch, ttl = None)
     ccs = _cache_controls(captured["body"])
@@ -99,18 +90,12 @@ def test_omitted_ttl_uses_default_5m_pool(monkeypatch):
         assert cc == {"type": "ephemeral"}, cc
 
 
-# ── explicit 5m round-trips as-is ─────────────────────────────────
-
-
 def test_explicit_5m_ttl_round_trips(monkeypatch):
     captured = _capture(monkeypatch, ttl = "5m")
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
         assert cc == {"type": "ephemeral", "ttl": "5m"}, cc
-
-
-# ── 1h writes the new pool field on every marker ───────────────────
 
 
 def test_1h_ttl_writes_into_1h_pool(monkeypatch):
@@ -122,9 +107,7 @@ def test_1h_ttl_writes_into_1h_pool(monkeypatch):
 
 
 def test_1h_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
-    # The extended-cache-ttl-2025-04-11 beta header is now GA (verified live
-    # 2026-05-22); 1h TTL works with no beta header. Pin so a regression that
-    # re-adds the header surfaces here.
+    # The 1h TTL beta header is GA; fail if it is re-added.
     captured = _capture(monkeypatch, ttl = "1h")
     beta = captured["headers"].get("anthropic-beta", "")
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
@@ -136,20 +119,13 @@ def test_5m_ttl_does_not_send_extended_cache_ttl_beta_header(monkeypatch):
     assert "extended-cache-ttl-2025-04-11" not in beta, beta
 
 
-# ── unknown values are dropped, not forwarded ──────────────────────
-
-
 @pytest.mark.parametrize("bogus", ["6m", "2h", "", "forever", "1d", "0", "1"])
 def test_unknown_ttl_silently_dropped(monkeypatch, bogus):
     captured = _capture(monkeypatch, ttl = bogus)
     ccs = _cache_controls(captured["body"])
     assert len(ccs) == 2, ccs
     for cc in ccs:
-        # Bogus TTLs must not round-trip; marker stays at default (no ttl = 5m).
         assert cc == {"type": "ephemeral"}, cc
-
-
-# ── opt-out still skips cache_control entirely ─────────────────────
 
 
 def test_opt_out_skips_cache_control(monkeypatch):
@@ -181,10 +157,89 @@ def test_opt_out_skips_cache_control(monkeypatch):
             top_p = 0.95,
             max_tokens = 32,
             enable_prompt_caching = False,
-            prompt_cache_ttl = "1h",  # ignored when caching is off
+            prompt_cache_ttl = "1h",
         ):
             pass
         await client.close()
 
     _drive(run())
     assert _cache_controls(captured["body"]) == []
+
+
+def _oai_compat_body(
+    monkeypatch,
+    model,
+    provider_type = "openrouter",
+    **kwargs,
+) -> dict:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b"data: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = "https://example.test/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}], model = model, **kwargs
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({}, {"type": "ephemeral"}),
+        (
+            {"enable_prompt_caching": True, "prompt_cache_ttl": "1h"},
+            {"type": "ephemeral", "ttl": "1h"},
+        ),
+        ({"prompt_cache_ttl": "6m"}, {"type": "ephemeral"}),
+    ],
+)
+@pytest.mark.parametrize("model", ["anthropic/claude-sonnet-4.6", "~anthropic/claude-opus-latest"])
+def test_openrouter_claude_gets_top_level_cache_control(monkeypatch, model, kwargs, expected):
+    assert _oai_compat_body(monkeypatch, model, **kwargs)["cache_control"] == expected
+
+
+@pytest.mark.parametrize(
+    "model,kwargs",
+    [
+        ("anthropic/claude-sonnet-4.6", {"enable_prompt_caching": False, "prompt_cache_ttl": "1h"}),
+        ("deepseek/deepseek-v3.2", {"enable_prompt_caching": True}),
+        ("openrouter/auto", {}),
+    ],
+)
+def test_openrouter_cache_control_skipped_off_claude_or_when_disabled(monkeypatch, model, kwargs):
+    assert "cache_control" not in _oai_compat_body(monkeypatch, model, **kwargs)
+
+
+@pytest.mark.parametrize("caching", [True, False])
+def test_openrouter_session_id_follows_the_thread(monkeypatch, caching):
+    body = _oai_compat_body(
+        monkeypatch, "deepseek/deepseek-v3.2", thread_id = "t" * 300, enable_prompt_caching = caching
+    )
+    assert body["session_id"] == "t" * 256
+    assert "session_id" not in _oai_compat_body(monkeypatch, "deepseek/deepseek-v3.2")
+    # Strict OpenAI-compatible endpoints 400 on unknown body fields.
+    assert "session_id" not in _oai_compat_body(
+        monkeypatch, "deepseek-chat", "deepseek", thread_id = "t"
+    )

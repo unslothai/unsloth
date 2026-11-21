@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Node cannot load the TSX feature barrels reached by the download manager. Keep
-// this integration test on the real download modules while replacing only those
-// browser-only boundaries and Sonner.
+// Node cannot load the TSX feature barrels; stub only those and Sonner.
 import { resolve as resolveBundler } from "../bundler-resolver.mjs";
 
 const STUBS = new Map([

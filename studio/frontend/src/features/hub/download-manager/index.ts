@@ -48,6 +48,7 @@ export {
 export {
   useStagedDownload,
   type StagedDownloadEntry,
+  type StagedDownloadProgress,
 } from "./use-staged-download";
 export {
   downloadInventoryHintKind,
@@ -70,4 +71,9 @@ export {
   useHttpPartialsResumable,
   useTransportMode,
 } from "./transport-preference";
+export {
+  DOWNLOAD_DIR_STORAGE_KEY,
+  setDownloadDir,
+  useDownloadDir,
+} from "./download-location";
 export type { TransportConflictInfo } from "./types";

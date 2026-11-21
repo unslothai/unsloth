@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tokenizer-based audio_type classification.
-
-Directly under ``utils`` so the cache scanner can classify a snapshot without
-dragging in ``utils/models/__init__.py`` and the model-config stack.
-"""
+"""Tokenizer-based audio_type; lives in utils so the cache scanner avoids importing utils/models"""
 
 from __future__ import annotations
 
 import json
+import os
+import stat
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -51,8 +51,7 @@ def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     return False
 
 
-# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm marker. Orpheus carries 28k
-# <custom_token_N> SNAC codes AND a stray <|audio|>, and audio_vlm first typed it as audio-input.
+# ORDER MATTERS: first match wins, so codec fingerprints precede audio_vlm; Orpheus has a stray <|audio|> and would be typed audio-input.
 AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
@@ -68,10 +67,7 @@ AUDIO_TOKEN_PATTERNS = {
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 
-# Every substring a pattern needs, so text holding none is settled without a parse. The patterns are lambdas, so a codec
-# added there without its marker here silently stops being detected.
-# json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras scan, and test_audio_token_detection.py
-# fails when the two drift.
+# Every substring a pattern needs so text with none skips parsing; a codec missing its marker here goes undetected (test_audio_token_detection.py).
 AUDIO_TOKEN_MARKERS = (
     "<|AUDIO|>",
     "<|startoftranscript|>",
@@ -85,6 +81,8 @@ AUDIO_TOKEN_MARKERS = (
 AUDIO_TOKENIZER_CONFIG_PATHS = (
     "tokenizer_config.json",
     "LLM/tokenizer_config.json",
+    # transformers 5 tokenizer_configs drop added_tokens_decoder (LFM3-Omni); the processor still names its audio_token.
+    "processor_config.json",
 )
 
 # A codebook tokenizer runs to a few MB, and the inventory scan reads one per repo.
@@ -94,15 +92,28 @@ _MAX_TOKENIZER_CONFIG_BYTES = 32 * 1024 * 1024
 def may_hold_audio_tokens(raw: str) -> bool:
     """Whether a tokenizer_config's raw text is worth parsing. A false True costs only
     the parse that would have happened anyway; a false False misclassifies."""
-    return any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
+    # '"audio_token"' too: a JSON-escaped placeholder hides the markers from this raw scan.
+    return '"audio_token"' in raw or any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
+
+
+def declares_audio_token(tok_config: dict) -> bool:
+    """Whether a transformers 5 tokenizer_config names an audio placeholder in its top-level
+    audio_token (Gemma 4) instead of added_tokens_decoder."""
+    token = tok_config.get("audio_token")
+    return isinstance(token, str) and bool(token)
 
 
 def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     """The audio_type a parsed tokenizer_config fingerprints, or None."""
-    added = tok_config.get("added_tokens_decoder", {})
-    if not added:
-        return None
+    added = tok_config.get("added_tokens_decoder") or {}
     token_contents = [value.get("content", "") for value in added.values()]
+    # Only beside a processor that takes input: LFM3-Omni's image processor, LFM3-Audio's feature extractor.
+    if isinstance(tok_config.get("audio_token"), str) and (
+        tok_config.get("image_processor") or tok_config.get("feature_extractor")
+    ):
+        token_contents.append(tok_config["audio_token"])
+    if not token_contents:
+        return None
     for audio_type, check_fn in AUDIO_TOKEN_PATTERNS.items():
         if check_fn(token_contents):
             return audio_type
@@ -172,14 +183,47 @@ def detect_local_tts_audio_type(directory) -> Optional[str]:
     for tok_path in AUDIO_TOKENIZER_CONFIG_PATHS:
         tok_file = root / tok_path
         try:
-            if not tok_file.is_file() or tok_file.stat().st_size > _MAX_TOKENIZER_CONFIG_BYTES:
+            st = tok_file.stat()
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_TOKENIZER_CONFIG_BYTES:
                 continue
-            raw = tok_file.read_text(encoding = "utf-8-sig")
-            if not may_hold_audio_tokens(raw):
-                continue
-            audio_type = classify_audio_tokens(json.loads(raw))
         except Exception:
             continue
+        audio_type = _tokenizer_config_audio_type(tok_file, st)
         if is_tts_audio_type(audio_type):
             return audio_type
     return None
+
+
+# Kept per file version: a rewrite moves mtime/ctime/size/inode and misses.
+_TOKENIZER_AUDIO_TYPE_CACHE: "OrderedDict[tuple, Optional[str]]" = OrderedDict()
+_TOKENIZER_AUDIO_TYPE_CACHE_MAX = 4096
+_TOKENIZER_AUDIO_TYPE_LOCK = threading.Lock()
+
+
+def _tokenizer_config_audio_type(tok_file: Path, st: os.stat_result) -> Optional[str]:
+    key = (
+        os.fspath(tok_file),
+        st.st_dev,
+        st.st_ino,
+        st.st_size,
+        st.st_mtime_ns,
+        st.st_ctime_ns,
+    )
+    with _TOKENIZER_AUDIO_TYPE_LOCK:
+        if key in _TOKENIZER_AUDIO_TYPE_CACHE:
+            _TOKENIZER_AUDIO_TYPE_CACHE.move_to_end(key)
+            return _TOKENIZER_AUDIO_TYPE_CACHE[key]
+    try:
+        raw = tok_file.read_text(encoding = "utf-8-sig")
+        audio_type = classify_audio_tokens(json.loads(raw)) if may_hold_audio_tokens(raw) else None
+    except OSError:
+        # Not cached: a failed read (EMFILE, EIO, a Windows sharing lock) can clear with no change to the file's stat.
+        return None
+    except Exception:
+        # Cached too: a writer that finishes the file moves its mtime or size, so this key misses.
+        audio_type = None
+    with _TOKENIZER_AUDIO_TYPE_LOCK:
+        _TOKENIZER_AUDIO_TYPE_CACHE[key] = audio_type
+        while len(_TOKENIZER_AUDIO_TYPE_CACHE) > _TOKENIZER_AUDIO_TYPE_CACHE_MAX:
+            _TOKENIZER_AUDIO_TYPE_CACHE.popitem(last = False)
+    return audio_type

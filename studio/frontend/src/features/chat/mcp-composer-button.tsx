@@ -1,22 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Tick02Icon } from "@/lib/tick-icon";
-import { McpServerIcon } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { MenuTickIcon } from "@/lib/tick-icon";
+import { McpServerIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ChevronDownIcon,
-  XIcon,
-} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -24,7 +31,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useShortcut } from "@/features/settings";
+import {
+  loadSystemOneSettings,
+  subscribeSystemOneSettings,
+  useShortcut,
+} from "@/features/settings";
 
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
@@ -33,24 +44,35 @@ import {
   listMcpServers,
   updateMcpServer,
 } from "./api/mcp-servers-api";
+import { BlenderMcpSetup } from "./blender-mcp-setup";
+import { EDITOR_MCP } from "./editor-mcp-catalog";
+import { EditorMcpSetup } from "./editor-mcp-setup";
+import type { EditorMcpId } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import {
+  UNSLOTH_STUDIO_TOOLS_MCP_URL,
+  normalizeMcpUrl,
+} from "./mcp-server-url";
 import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
 
-// Matches the Thinking pill chevron so the affordance reads the same.
 type McpPreset = {
   id: string;
-  displayName: string; // stored row name
+  displayName: string;
   url: string;
-  label?: string; // dropdown text, if different from displayName
-  hint?: string; // shown when the row is highlighted
-  disablesWebSearch?: boolean; // turn the built-in Search pill off when enabled
+  label?: string;
+  hint?: string;
+  disablesWebSearch?: boolean;
 };
 
-// Keyless remote MCP presets (rate-limited free tiers, no API key). Hugging Face runs
-// anonymously; add a token via "Manage MCP servers".
+// Unsloth's tools, then keyless remote presets (rate-limited); Hugging Face runs anonymously.
 const MCP_PRESETS: readonly McpPreset[] = [
+  {
+    id: "unsloth-studio",
+    displayName: "Unsloth",
+    url: UNSLOTH_STUDIO_TOOLS_MCP_URL,
+  },
   {
     id: "unsloth-docs",
     displayName: "Unsloth Docs",
@@ -68,14 +90,6 @@ const MCP_PRESETS: readonly McpPreset[] = [
     url: "https://huggingface.co/mcp",
   },
 ] as const;
-
-// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle reuses its row instead of duplicating.
-function normalizeMcpUrl(url: string): string {
-  return (url || "").trim().toLowerCase().replace(/\/+$/, "");
-}
-
-// Static, so it is not rebuilt on every render.
-const PRESET_URLS = new Set(MCP_PRESETS.map((p) => normalizeMcpUrl(p.url)));
 
 export function McpComposerButton({
   side = "bottom",
@@ -96,24 +110,44 @@ export function McpComposerButton({
   const dialogOpen = useMcpServersDialogStore((s) => s.open);
   const setDialogOpen = useMcpServersDialogStore((s) => s.setOpen);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [blenderOpen, setBlenderOpen] = useState(false);
+  const [blenderBusy, setBlenderBusy] = useState(false);
+  const [editorOpen, setEditorOpen] = useState<EditorMcpId | null>(null);
+  // Labels keep the last editor while the dialog fades out after editorOpen is cleared.
+  const [editorShown, setEditorShown] = useState<EditorMcpId>("unity");
+  const [editorBusy, setEditorBusy] = useState(false);
   const [serversLoaded, setServersLoaded] = useState(false);
   const [pendingUrls, setPendingUrls] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
   const pendingUrlsRef = useRef(new Set<string>());
   const [hintKey, setHintKey] = useState<string | null>(null);
+  const [decisionsUrl, setDecisionsUrl] = useState<string | null>(null);
+  const decisionsRefreshGenerationRef = useRef(0);
   const listRefreshGenerationRef = useRef(0);
   const hasLoadedServerSnapshotRef = useRef(false);
 
-  // Grey out only when a loaded model lacks tool support; with no model yet, MCP can still be
-  // pre-selected, like the other composer tools.
   const usable = !modelLoaded || supportsTools;
 
   const refresh = useCallback(
     async (waitForPendingMutations = true, minimumMutationEpoch = 0) => {
       const generation = listRefreshGenerationRef.current + 1;
       listRefreshGenerationRef.current = generation;
+      const decisionsGeneration = decisionsRefreshGenerationRef.current + 1;
+      decisionsRefreshGenerationRef.current = decisionsGeneration;
       setServersLoaded(false);
+      loadSystemOneSettings().then(
+        (settings) => {
+          if (decisionsRefreshGenerationRef.current !== decisionsGeneration)
+            return;
+          setDecisionsUrl(settings.enabled ? settings.mcpUrl : null);
+        },
+        () => {
+          if (decisionsRefreshGenerationRef.current !== decisionsGeneration)
+            return;
+          setDecisionsUrl(null);
+        },
+      );
       try {
         const rows = await listMcpServers({
           waitForPendingMutations,
@@ -135,6 +169,15 @@ export function McpComposerButton({
     [],
   );
 
+  useEffect(
+    () =>
+      subscribeSystemOneSettings((settings) => {
+        decisionsRefreshGenerationRef.current += 1;
+        setDecisionsUrl(settings.enabled ? settings.mcpUrl : null);
+      }),
+    [],
+  );
+
   const applyServer = useCallback((server: McpServerConfig) => {
     setServers((current) => {
       const index = current.findIndex(
@@ -153,6 +196,7 @@ export function McpComposerButton({
     });
     return () => {
       unsubscribe();
+      decisionsRefreshGenerationRef.current += 1;
       listRefreshGenerationRef.current += 1;
     };
   }, [refresh]);
@@ -170,18 +214,55 @@ export function McpComposerButton({
     };
   }, [refresh, dialogOpen]);
 
+  const presets: readonly McpPreset[] = decisionsUrl
+    ? [
+        ...MCP_PRESETS,
+        {
+          id: "unsloth-decisions",
+          displayName: "Unsloth Decisions",
+          url: decisionsUrl,
+        },
+      ]
+    : MCP_PRESETS;
   const enabledUrls = new Set(
     servers.filter((s) => s.is_enabled).map((s) => normalizeMcpUrl(s.url)),
   );
-  // Non-preset servers, shown below the presets so they stay toggleable.
   const customServers = servers.filter(
-    (s) => !s.builtin_id && !PRESET_URLS.has(normalizeMcpUrl(s.url)),
+    (s) =>
+      !s.builtin_id &&
+      normalizeMcpUrl(s.url) !== "studio:decisions" &&
+      normalizeMcpUrl(s.url) !== "studio:tools" &&
+      !presets.some((p) => normalizeMcpUrl(p.url) === normalizeMcpUrl(s.url)),
   );
   const blenderEnabled = servers.some(
     (server) => server.builtin_id === "blender" && server.is_enabled,
   );
-  const enabledCount = servers.filter((s) => s.is_enabled).length;
+  const enabledCount = servers.filter(
+    (s) =>
+      s.is_enabled &&
+      (decisionsUrl !== null || normalizeMcpUrl(s.url) !== "studio:decisions"),
+  ).length;
   const active = usable && mcpEnabledForChat && enabledCount > 0;
+
+  function renderEditorRow(id: EditorMcpId) {
+    const enabled = servers.some((server) => server.builtin_id === id && server.is_enabled);
+    return (
+      <DropdownMenuItem
+        key={id}
+        onSelect={() => {
+          setMenuOpen(false);
+          setEditorShown(id);
+          setEditorOpen(id);
+        }}
+        className={enabled ? "relative text-primary font-medium" : "relative"}
+      >
+        <span className="truncate">{EDITOR_MCP[id].name}</span>
+        {enabled ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    );
+  }
 
   async function toggleServer(args: {
     url: string;
@@ -191,12 +272,11 @@ export function McpComposerButton({
     disablesWebSearch?: boolean;
   }) {
     const norm = normalizeMcpUrl(args.url);
-    if (pendingUrlsRef.current.has(norm)) return; // guard rapid double-clicks
+    if (pendingUrlsRef.current.has(norm)) return;
     pendingUrlsRef.current.add(norm);
     setPendingUrls(new Set(pendingUrlsRef.current));
     try {
       if (args.checked) {
-        // Reuse the already-loaded row, else create one.
         if (args.existing) {
           if (!args.existing.is_enabled) {
             applyServer(
@@ -213,7 +293,6 @@ export function McpComposerButton({
           );
         }
         setMcpEnabledForChat(true);
-        // Search servers turn off the built-in Web Search to avoid overlap.
         if (args.disablesWebSearch) setToolsEnabled(false);
       } else if (args.existing) {
         applyServer(
@@ -242,7 +321,6 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      // Server configuration remains available when the loaded model lacks tools.
       disabled={!serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
@@ -266,14 +344,13 @@ export function McpComposerButton({
     >
       <span className="truncate">{opts.label}</span>
       {opts.enabled ? (
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       ) : null}
       {opts.hint ? (
         <Tooltip open={hintKey === opts.key}>
           <TooltipTrigger asChild={true}>
             <span
               aria-hidden={true}
-              // pointer-events-none so the anchor cannot swallow row clicks.
               className="pointer-events-none absolute inset-y-0 right-0 w-0"
             />
           </TooltipTrigger>
@@ -304,7 +381,6 @@ export function McpComposerButton({
                 : "MCP servers, unavailable for the loaded model"
             }
           >
-            {/* Outside compact mode, the hover X disables MCP without opening the menu. */}
             <span
               role="button"
               aria-label="Turn off MCP"
@@ -324,13 +400,13 @@ export function McpComposerButton({
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
                 strokeWidth={2}
               />
-              <XIcon className="composer-pill-x" />
+              <HugeiconsIcon icon={Cancel01Icon} className="composer-pill-x" />
             </span>
             <span>MCP</span>
-            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -338,7 +414,7 @@ export function McpComposerButton({
           align="start"
           sideOffset={0}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[232px]"
+          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
         >
           <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
           {usable ? null : (
@@ -346,7 +422,7 @@ export function McpComposerButton({
               The loaded model cannot use MCP tools
             </DropdownMenuLabel>
           )}
-          {MCP_PRESETS.map((preset) => {
+          {presets.map((preset) => {
             const norm = normalizeMcpUrl(preset.url);
             return renderRow({
               key: preset.id,
@@ -362,15 +438,26 @@ export function McpComposerButton({
           <DropdownMenuItem
             onSelect={() => {
               setMenuOpen(false);
-              setDialogOpen(true);
+              setBlenderOpen(true);
             }}
             className={blenderEnabled ? "relative text-primary font-medium" : "relative"}
           >
             <span className="truncate">Blender</span>
             {blenderEnabled ? (
-              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+              <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
             ) : null}
           </DropdownMenuItem>
+          {(Object.keys(EDITOR_MCP) as EditorMcpId[])
+            .filter((id) => !EDITOR_MCP[id].more)
+            .map(renderEditorRow)}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>More</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="unsloth-plus-menu mcp-menu">
+              {(Object.keys(EDITOR_MCP) as EditorMcpId[])
+                .filter((id) => EDITOR_MCP[id].more)
+                .map(renderEditorRow)}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           {customServers.length > 0 ? <DropdownMenuSeparator /> : null}
           {customServers.map((server) =>
             renderRow({
@@ -393,11 +480,66 @@ export function McpComposerButton({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <Dialog
+        open={blenderOpen}
+        onOpenChange={(open) => {
+          if (!open && blenderBusy) return;
+          setBlenderOpen(open);
+        }}
+      >
+        <DialogContent
+          className="max-w-lg max-h-[85dvh] overflow-y-auto"
+          showCloseButton={!blenderBusy}
+        >
+          <DialogHeader>
+            <DialogTitle>Blender MCP</DialogTitle>
+            <DialogDescription>
+              Let the model control Blender through MCP.
+            </DialogDescription>
+          </DialogHeader>
+          {blenderOpen && (
+            <BlenderMcpSetup
+              servers={servers}
+              disabled={false}
+              onBusyChange={setBlenderBusy}
+              onClose={() => setBlenderOpen(false)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={editorOpen !== null}
+        onOpenChange={(open) => {
+          if (!open && editorBusy) return;
+          if (!open) setEditorOpen(null);
+        }}
+      >
+        <DialogContent
+          className="max-w-lg max-h-[85dvh] overflow-y-auto"
+          showCloseButton={!editorBusy}
+        >
+          <DialogHeader>
+            <DialogTitle>{EDITOR_MCP[editorShown].name} MCP</DialogTitle>
+            <DialogDescription>
+              Let the model control {EDITOR_MCP[editorShown].name} through MCP.
+            </DialogDescription>
+          </DialogHeader>
+          {editorOpen && (
+            <EditorMcpSetup
+              key={editorOpen}
+              editorId={editorOpen}
+              servers={servers}
+              onBusyChange={setEditorBusy}
+              onClose={() => setEditorOpen(null)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
 
-/** Mount the dialog independently so its shortcut works while MCP is disabled. */
+/** Mounted independently so its shortcut works while MCP is disabled. */
 export function McpServersDialogMount() {
   const open = useMcpServersDialogStore((s) => s.open);
   const setOpen = useMcpServersDialogStore((s) => s.setOpen);
@@ -406,7 +548,6 @@ export function McpServersDialogMount() {
   useEffect(() => {
     if (!chatActive && open) setOpen(false);
   }, [chatActive, open, setOpen]);
-  // Also clear it when logout or expiry unmounts this subtree directly.
   useEffect(() => {
     return () => useMcpServersDialogStore.getState().setOpen(false);
   }, []);

@@ -1,21 +1,47 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { audioWorkflowTab } from "./workflows";
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Archive02Icon,
-  Copy01Icon,
-  Delete02Icon,
+  ArchiveIcon,
   Download01Icon,
+  ClosedCaptionIcon,
   MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  CLIPS_HEADER_LINK,
+  CLIPS_LIST,
+  CLIP_ROW,
+  CLIP_ROW_DURATION,
+  CLIP_ROW_ICON,
+  CLIP_ROW_MENU,
+  CLIP_ROW_SELECT,
+  CLIP_ROW_TILE,
+  ClipsCard,
+  ClipsCardEmpty,
+} from "./components/clips-card";
+import { Copy01Icon } from "@/lib/copy-icon";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -25,10 +51,96 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { downloadTranscript } from "./transcript-download";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
+import {
+  type ClipSendHandlers,
+  ClipSendToMenu,
+} from "./components/clip-card";
+import { getTranscript } from "./transcribe-api";
+import {
+  TRANSCRIPT_EXPORT_FORMATS,
+  type TranscriptExportFormat,
+} from "./transcript-export";
+import {
+  type TranscriptSource,
+  detailsFrom,
+  formatTimestamp,
+} from "./transcript-model";
 import type { TranscriptRecord } from "./transcript-stream";
+
+export function TranscriptExportItems({
+  timed,
+  label,
+  onExport,
+}: {
+  timed: boolean;
+  label: (format: TranscriptExportFormat) => ReactNode;
+  onExport: (format: TranscriptExportFormat) => void;
+}) {
+  return TRANSCRIPT_EXPORT_FORMATS.map((format) => {
+    const blocked = !timed && (format === "srt" || format === "vtt");
+    return (
+      <DropdownMenuItem
+        key={format}
+        disabled={blocked}
+        onClick={() => onExport(format)}
+      >
+        {label(format)}
+        {blocked ? (
+          <span className="ml-auto pl-3 text-ui-11p5 text-muted-foreground">
+            Needs timestamps
+          </span>
+        ) : null}
+      </DropdownMenuItem>
+    );
+  });
+}
+
+// The list carries counts only, so timed formats fetch the full record.
+async function downloadRecord(
+  record: TranscriptRecord,
+  format: TranscriptExportFormat,
+): Promise<void> {
+  let full = record;
+  if ((record.segment_count ?? 0) > 0) {
+    try {
+      full = await getTranscript(record.id);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not load transcript.",
+      );
+      return;
+    }
+  }
+  await downloadTranscript(format, {
+    title: full.title,
+    text: full.text,
+    model: full.model,
+    details: detailsFrom(full),
+    names: full.speaker_names ?? {},
+  });
+}
+
+function recordBadge(record: TranscriptRecord): string | null {
+  const speakers = record.speakers?.length ?? 0;
+  if (speakers > 0)
+    return speakers === 1 ? "1 speaker" : `${speakers} speakers`;
+  return (record.segment_count ?? 0) > 0 ? "Timestamps" : null;
+}
+
+export type TranscriptSendHandlers = (transcript: {
+  text: string;
+  source?: TranscriptSource | null;
+  duration: number | null;
+}) => ClipSendHandlers;
+
+const ROW_MENU_TRIGGER =
+  "size-6 rounded-full text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100";
+const TOP_MENU_TRIGGER =
+  "size-[calc(32px*var(--ui-space-scale,1))] shrink-0 rounded-full text-muted-foreground hover:text-foreground";
 
 export function TranscriptGallery({
   active,
@@ -38,7 +150,12 @@ export function TranscriptGallery({
   onDelete,
   canSelect,
   autoSelect,
+  sendHandlersFor,
+  top,
+  emptyText,
 }: {
+  top: (currentMenu: ReactNode) => ReactNode;
+  emptyText: string;
   active: boolean;
   autoSelect: boolean;
   currentId: string | null;
@@ -46,11 +163,13 @@ export function TranscriptGallery({
   onSelect: (record: TranscriptRecord) => void;
   onDelete: (ids: string[] | null) => void;
   canSelect: () => boolean;
+  sendHandlersFor: TranscriptSendHandlers;
 }) {
   const [records, setRecords] = useState<TranscriptRecord[]>([]);
   const [archived, setArchived] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const generation = useRef(0);
   const loadingRef = useRef(false);
   const currentIdRef = useRef(currentId);
@@ -77,8 +196,7 @@ export function TranscriptGallery({
       })
       .catch((error: unknown) => {
         if (ticket !== generation.current) return;
-        // Rows and cursor belong to the view we just left: keeping them renders History
-        // entries under the Archived heading and pages the wrong cursor onto them.
+        // Rows and cursor belong to the view just left; keeping them mislabels and mispages.
         setRecords([]);
         setCursor(null);
         toast.error(
@@ -96,6 +214,7 @@ export function TranscriptGallery({
   useLayoutEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `latest` is the trigger; a newly saved transcript refetches the list.
   useEffect(() => {
     if (active) void refresh();
     return () => {
@@ -147,139 +266,180 @@ export function TranscriptGallery({
       );
     }
   };
-  return (
-    <div className="flex shrink-0 flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="px-0 text-ui-11p5 text-muted-foreground"
-            >
-              {archived ? "Archived transcripts" : "History"}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            <DropdownMenuItem onClick={() => setArchived(false)}>
-              History
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setArchived(true)}>
-              Archived transcripts
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {!archived && records.length > 0 && (
+  const recordMenu = (record: TranscriptRecord, triggerClassName: string) => (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
-            size="sm"
-            onClick={() => {
-              if (
-                window.confirm(
-                  "Delete all transcripts in history? Archived transcripts will be kept.",
-                )
-              )
-                void mutate(() => deleteTranscript(), null);
-            }}
+            size="icon"
+            className={triggerClassName}
+            title="More"
+            aria-label="Transcript actions"
           >
-            Clear all
+            <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
           </Button>
-        )}
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <ClipSendToMenu handlers={sendHandlersFor(record)} />
+          <TranscriptExportItems
+            timed={(record.segment_count ?? 0) > 0}
+            label={(format) => (
+              <>
+                <HugeiconsIcon icon={Download01Icon} />
+                Download .{format}
+              </>
+            )}
+            onExport={(format) => void downloadRecord(record, format)}
+          />
+          <DropdownMenuItem
+            onClick={() =>
+              void copyToClipboard(record.text).then((ok) =>
+                ok
+                  ? toast.success("Transcript copied")
+                  : toast.error("Could not copy transcript."),
+              )
+            }
+          >
+            <HugeiconsIcon icon={Copy01Icon} />
+            Copy
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={() =>
+              void mutate(
+                () => archiveTranscript(record.id, !record.archived),
+                [record.id],
+              )
+            }
+          >
+            <HugeiconsIcon icon={ArchiveIcon} />
+            {record.archived ? "Unarchive" : "Archive"}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() =>
+              void mutate(() => deleteTranscript(record.id), [record.id])
+            }
+          >
+            <HugeiconsIcon icon={TrashIcon} />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+  );
+  // The open transcript leaves the list, so its row menu moves onto the top row.
+  const current =
+    records.find((record) => record.id === currentId) ??
+    (latest && latest.id === currentId ? latest : null);
+  const topRow = top(current ? recordMenu(current, TOP_MENU_TRIGGER) : null);
+  return (
+    // `contents`: the card is the layout box; this wrapper only holds it and the confirm dialog.
+    <div className="contents">
+      <ClipsCard
+        label="Transcripts"
+        title={
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="-mx-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 transition-colors hover:bg-wash-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {archived ? "Archived transcripts" : "Transcripts"}
+                <HugeiconsIcon
+                  icon={ChevronDownStandardIcon}
+                  className="size-3.5 text-muted-foreground"
+                />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuItem onClick={() => setArchived(false)}>
+                Transcripts
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setArchived(true)}>
+                Archived transcripts
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        }
+        count={records.length}
+        countMore={Boolean(cursor)}
+        action={
+          !archived && records.length > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setConfirmingClear(true)}
+              className={cn(
+                CLIPS_HEADER_LINK,
+                "h-auto px-0 py-0 font-normal hover:bg-transparent dark:hover:bg-transparent",
+              )}
+            >
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-3.5" />
+              Delete all
+            </Button>
+          ) : null
+        }
+      >
+        {topRow}
+        {!topRow && !archived && !loading && records.length === 0 ? (
+          <ClipsCardEmpty
+            icon={audioWorkflowTab("transcribe").icon}
+            title="Transcripts will appear here"
+            text={emptyText}
+          />
+        ) : null}
+        {/* The open transcript is the top row, so the list leaves it out. */}
+        {records.some((record) => !topRow || record.id !== currentId) ||
+        (archived && !loading) ||
+        cursor ? (
       <div
-        className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto"
+        className={cn(CLIPS_LIST, !topRow && "mt-0 border-t-0 pt-0")}
         onScroll={(event) => {
           const el = event.currentTarget;
           if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40)
             void loadMore();
         }}
       >
-        {records.map((record) => (
+        {records
+          .filter((record) => !topRow || record.id !== currentId)
+          .map((record) => (
           <div
             key={record.id}
-            className={cn(
-              "group flex items-center rounded-md pr-1 transition-colors hover:bg-muted",
-              currentId === record.id && "bg-muted",
-            )}
+            className={CLIP_ROW}
           >
+            <span aria-hidden="true" className={CLIP_ROW_TILE}>
+              <HugeiconsIcon icon={ClosedCaptionIcon} strokeWidth={1.75} className={CLIP_ROW_ICON} />
+            </span>
             <button
               type="button"
-              aria-current={currentId === record.id ? "true" : undefined}
-              className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+              className={CLIP_ROW_SELECT}
               onClick={() => {
                 if (canSelect()) onSelect(record);
               }}
             >
-              <span className="min-w-0 flex-1 truncate">{record.title}</span>
-              <span className="shrink-0 text-ui-11p5 text-muted-foreground">
-                {new Date(record.created_at).toLocaleDateString()}
+              <span className="grid min-w-0 flex-1 gap-0.5">
+                <span className="truncate text-ui-13" title={record.title}>
+                  {record.title}
+                </span>
+                <span className="truncate text-ui-11p5 text-muted-foreground">
+                  {new Date(record.created_at).toLocaleDateString()}
+                  {recordBadge(record) ? ` · ${recordBadge(record)}` : ""}
+                </span>
               </span>
+              {record.duration ? (
+                <span className={CLIP_ROW_DURATION}>
+                  {formatTimestamp(record.duration)}
+                </span>
+              ) : null}
             </button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
-                  aria-label="Transcript actions"
-                >
-                  <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() =>
-                    void downloadTranscript(record.text, record.title)
-                  }
-                >
-                  <HugeiconsIcon icon={Download01Icon} />
-                  Download .txt
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() =>
-                    void navigator.clipboard.writeText(record.text).then(
-                      () => toast.success("Transcript copied"),
-                      () => toast.error("Could not copy transcript."),
-                    )
-                  }
-                >
-                  <HugeiconsIcon icon={Copy01Icon} />
-                  Copy
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() =>
-                    void mutate(
-                      () => archiveTranscript(record.id, !record.archived),
-                      [record.id],
-                    )
-                  }
-                >
-                  <HugeiconsIcon icon={Archive02Icon} />
-                  {record.archived ? "Unarchive" : "Archive"}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() =>
-                    void mutate(() => deleteTranscript(record.id), [record.id])
-                  }
-                >
-                  <HugeiconsIcon icon={Delete02Icon} />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <span className={CLIP_ROW_MENU}>{recordMenu(record, ROW_MENU_TRIGGER)}</span>
           </div>
         ))}
-        {!records.length && (
-          <p className="px-2 py-1.5 text-ui-13 text-muted-foreground">
-            {loading
-              ? "Loading transcripts…"
-              : archived
-                ? "No archived transcripts."
-                : "Completed transcripts are saved here."}
+        {archived && !loading && !records.length ? (
+          <p className="px-3 py-1.5 text-ui-13 text-muted-foreground">
+            No archived transcripts.
           </p>
-        )}
+        ) : null}
         {cursor && (
           <Button
             variant="ghost"
@@ -291,6 +451,28 @@ export function TranscriptGallery({
           </Button>
         )}
       </div>
+        ) : null}
+      </ClipsCard>
+      <AlertDialog open={active && confirmingClear} onOpenChange={setConfirmingClear}>
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete all transcripts?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes all transcripts on this page. Archived transcripts are kept. This
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => void mutate(() => deleteTranscript(), null)}
+            >
+              Delete all
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

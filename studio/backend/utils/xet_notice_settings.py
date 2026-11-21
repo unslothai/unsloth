@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Lifetime count of the Xet "download is running" notice.
-
-It lived in localStorage, which is per-origin, and an Unsloth origin is not stable:
-run.py falls back past port 8888 when Jupyter has it, and Colab and the tunnel differ
-again. Each new origin handed out a fresh three, so the notice never stopped.
-"""
+"""Lifetime Xet notice count; localStorage was per-origin and origins change (port fallback, Colab,
+tunnel), so each origin reset it; the notice never stopped."""
 
 from __future__ import annotations
 
@@ -44,15 +40,7 @@ def get_xet_notice_count() -> int:
 
 
 def reserve_xet_notice(seen_hint: int = 0) -> dict[str, Any]:
-    """Take one of the remaining notices, or report that none are left.
-
-    One transaction: get_app_setting and upsert_app_settings open a connection each,
-    so splitting the read and write lets two tabs both be granted. BEGIN IMMEDIATE
-    takes the write lock up front.
-
-    seen_hint is a legacy localStorage count. It can only raise the stored value, so
-    a client cannot talk its way back under the limit.
-    """
+    """One transaction: split read and write over separate connections lets two tabs both be granted; BEGIN IMMEDIATE takes the write lock; seen_hint only raises."""
     from storage.studio_db import get_connection
 
     hint = _coerce_count(seen_hint)

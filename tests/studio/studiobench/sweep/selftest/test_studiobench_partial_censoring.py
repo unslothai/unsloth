@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A metric censored at some rungs and measured at others must not be printed as a ladder number.
-
-THE GUARD EXISTED AND WAS NEVER CALLED. `payload_rules.refuse_partial_censoring` returned the
-correct refusal from the day it landed, and no scoring or sweep code asked it anything -- its only
-caller was its own selftest. A guard that cannot fire is the same defect as a row type that is
-registered nowhere, and it is the more dangerous of the two, because nothing crashes: the reader
-simply believes the case is covered.
-
-What it was supposed to stop is defect 2. `reasoning_toggle.open_ms` is censored on every cell
-above the 100K rung, because the open settle exceeds the budget and the timing is withheld rather
-than guessed. `paired()` then pools only the cells that could answer, and `render()` prints their
-mean under a bare metric name. On a 100K/500K ladder that row is a 100K-only number wearing a
-ladder label, and the only hint is a smaller `n` beside the other rows -- which is exactly what a
-metric with fewer repetitions looks like.
-
-The refusal LABELS rather than raises. Raising would repeat the mistake this branch's own defect 10
-records: `open_ms` is censored above 100K on every standard and full run, so an exiting guard would
-abort the normal case and be deleted within a day.
-"""
+"""A metric censored at some rungs must not print as a ladder number; the refusal labels, not raises."""
 
 from __future__ import annotations
 
@@ -56,7 +38,7 @@ def _payload(tmp_path: Path) -> Path:
                         "completed": True,
                     }
                 )
-                # A control that is measured at BOTH rungs, so the refusal cannot pass by rejecting everything.
+                # Measured at both rungs, so the refusal cannot pass by rejecting everything.
                 rows.append(
                     {
                         "row_type": "action",
@@ -69,7 +51,7 @@ def _payload(tmp_path: Path) -> Path:
                     }
                 )
                 if open_ms is None:
-                    # Censored: the timing is ABSENT from `timings`, announced in `expect`.
+                    # Censored: absent from `timings`, announced in `expect`.
                     rows.append(
                         {
                             "row_type": "action",
@@ -120,7 +102,6 @@ def test_the_partial_metric_is_marked_unpoolable_and_denied_a_verdict(tmp_path):
     stats = floor_table.summarise([path])
     assert stats["reasoning_toggle.open_ms"]["poolable"] is False
     assert "censored" in stats["reasoning_toggle.open_ms"]["censoring"]
-    # The control keeps its verdict: a refusal that swallowed everything would be no refusal.
     assert stats["keystroke.p50_ms"].get("poolable") is not False
     assert stats["reasoning_toggle.close_ms"].get("poolable") is not False
 
@@ -139,7 +120,6 @@ def test_the_rendered_table_says_so_where_the_number_is_printed(tmp_path, capsys
     )
     assert "NOT A LADDER NUMBER" in printed
     assert CENSORED_RUNG in printed
-    # The fully measured control is NOT marked.
     keystroke_line = next(
         line for line in printed.splitlines() if line.strip().startswith("keystroke.p50_ms")
     )
@@ -147,11 +127,7 @@ def test_the_rendered_table_says_so_where_the_number_is_printed(tmp_path, capsys
 
 
 def test_a_metric_censored_at_every_rung_is_not_a_partial_case(tmp_path):
-    """Nothing survives to be biased, so there is no ladder claim to refuse.
-
-    The distinction matters: refusing here as well would mean the refusal fires on any censoring
-    at all, which is a different and much noisier rule than the one that was asked for.
-    """
+    """Censored at every rung is not partial; refusing it too would fire far more often than asked."""
     rows = [
         {"row_type": "run_meta", "tier": "standard", "session_id": "s1", "corpus_hash": "abc"},
     ]
@@ -174,12 +150,7 @@ def test_a_metric_censored_at_every_rung_is_not_a_partial_case(tmp_path):
 
 
 def _peer_censored_payload(tmp_path: Path) -> Path:
-    """`open_ms` censors above 100K; `close_ms` was measured everywhere but is discarded with it.
-
-    `reasoning_toggle`'s `ok` is one conjunction over four clauses, so a censored open fails the
-    whole action and `_action_timings` then drops every timing it carries -- including a `close_ms`
-    that succeeded on its own terms. `close_censored` stays False, so nothing marked the loss.
-    """
+    """open_ms censors above 100K; close_ms is discarded with the failed action and not marked censored."""
     rows: list[dict] = [
         {
             "row_type": "run_meta",
@@ -232,12 +203,7 @@ def _peer_censored_payload(tmp_path: Path) -> Path:
 
 
 def test_a_timing_discarded_with_its_action_counts_as_censored(tmp_path):
-    """The surviving half of a failed action is unavailable too, and must be marked so.
-
-    Unmarked, the close row was pooled from the 100K cells alone and printed +10.0% under a bare
-    metric name on a 100K/500K ladder -- the same survivorship bias the open row is marked for,
-    one level down and completely silent.
-    """
+    """A timing discarded with its failed action counts as censored, or it is pooled from the survivors."""
     path = _peer_censored_payload(tmp_path)
     found = floor_table.partial_censoring([path])
     assert "reasoning_toggle.close_ms" in found, (
@@ -258,12 +224,7 @@ def test_a_fully_measured_action_is_still_poolable(tmp_path):
 
 
 def _within_rung_payload(tmp_path: Path) -> Path:
-    """ONE rung, sitting on the settle budget, so some repetitions censor and others do not.
-
-    This is the expected shape near the cutoff rather than a contrived one: censoring is decided
-    per cell against a fixed budget, and `open_ms`'s own spread is 33 to 42%. The censored
-    repetitions are the slow ones, which is exactly why they were censored.
-    """
+    """A single rung on the settle budget, where only the slow repetitions censor and the rest do not."""
     rows: list[dict] = [
         {
             "row_type": "run_meta",
@@ -320,14 +281,7 @@ def _within_rung_payload(tmp_path: Path) -> Path:
 
 
 def test_censoring_within_a_single_rung_is_still_partial(tmp_path):
-    """Comparing sets of RUNG NAMES cannot see this, and it is the commonest shape.
-
-    Every rung appears in both the censored and the measured set, so a rung-keyed rule stays
-    silent while `paired()` keeps only the repetitions where both arms answered. The survivor
-    reported +10.0% on n=1 with a full SLOWER verdict; the true paired delta over all four
-    repetitions is +35.7%. What survives is not a sample of the effect, it is a selection against
-    it.
-    """
+    """Censoring within one rung is still partial; comparing rung-name sets cannot see it."""
     path = _within_rung_payload(tmp_path)
     stats = floor_table.summarise([path])["reasoning_toggle.open_ms"]
     assert stats["n"] == 1, "fixture no longer reproduces the survivorship case"
@@ -352,12 +306,7 @@ def test_a_metric_measured_on_every_completed_cell_is_untouched(tmp_path):
 
 
 def test_a_ladder_split_across_shards_is_judged_as_one_result(tmp_path):
-    """Per-file evaluation lets a rung-disjoint shard set escape the refusal entirely.
-
-    The shard holding the measured 100K cells sees no censoring; the shard holding the censored
-    500K cells sees censoring at every rung it contains. Neither refuses on its own, and `load()`
-    pools them anyway -- so the same rows are refused in one file and blessed in two.
-    """
+    """Censoring is judged over all shards at once, or a ladder split across files escapes refusal."""
 
     def shard(name: str, rung: str, censored: bool) -> Path:
         rows: list[dict] = [
@@ -409,16 +358,7 @@ def test_a_ladder_split_across_shards_is_judged_as_one_result(tmp_path):
 
 
 def test_one_shards_failed_cell_does_not_censor_another_shards_good_one(tmp_path):
-    """Sharding restarts the repetition counter, so the same `cell_id` names two different cells.
-
-    `CONTRIBUTING-perf.md` prescribes 2 shards of 2 repetitions, and both shards then walk the
-    same ladder writing the same deterministic ids. One ordinary failed cell -- `CellRunner.run`
-    writes `completed: False` and leaves the action row it had already flushed, whose `expect_ok`
-    is False -- is enough: merged on the bare id, that cell is censored in one shard and completed
-    in the other, so the completed-cell filter that exists to discard it stops discarding it. A
-    metric that nothing censored anywhere is then refused as partially censored, and a whole
-    valid row loses its verdict over a cell that contributed nothing to any mean.
-    """
+    """Shards repeat cell ids, so one shard's failed cell must not censor another shard's completed one."""
 
     def shard(name: str, sess: str, failed: set[str]) -> Path:
         rows: list[dict] = [

@@ -29,8 +29,6 @@ def _interrupt(monkeypatch, text, error, channel, final_reason):
             raise error
 
     def respond(request):
-        # Only the report call is interrupted; the steps before it have to land, and their
-        # unparseable bodies make each one take its single seed action.
         if b"untrusted_synthesis_audit_json" in request.content:
             return httpx.Response(200, stream = Stream())
         return httpx.Response(200, content = b'data: {"choices":[{"delta":{"content":"x"}}]}\n\n')
@@ -57,9 +55,7 @@ def _interrupt(monkeypatch, text, error, channel, final_reason):
     [
         (httpx.ReadError("connection reset"), "content", None, "Incomplete report."),
         (worker.ModelWallClockTimeout("timed out"), "content", None, "Incomplete report."),
-        # Some local models write the report only as reasoning, which synthesis accepts.
         (httpx.ReadError("connection reset"), "reasoning_content", None, "Incomplete report."),
-        # Cut after the model said it was done: the report is whole, only delivery was not.
         (httpx.ReadError("connection reset"), "content", "stop", "Report complete."),
     ],
 )
@@ -105,7 +101,6 @@ def test_a_returned_report_is_kept_before_the_checks_that_could_lose_it(research
     monkeypatch.setattr(supervisor, "_stream_completion", streamed)
     asyncio.run(supervisor._process(claimed))
 
-    # Work remains between a returned report and the row storing it; none of it can lose the report.
     assert research_db.get_run(claimed["id"])["report"] == (
         f"> **Report complete.** Research failed: `database is gone`\n\n{REPORT.strip()}"
     )

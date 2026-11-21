@@ -3,7 +3,6 @@
 
 import type { TourStep } from "@/features/tour";
 
-/** The Start button sits inside this card, so one step covers the check and the launch. */
 export const studioPreviewStep: TourStep = {
   id: "preview",
   target: "studio-run-preview",

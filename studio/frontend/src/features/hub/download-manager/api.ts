@@ -44,9 +44,9 @@ export interface DownloadJobStatus {
   state: DownloadJobState;
   error?: string | null;
   generation?: number;
+  attempt?: number;
 }
 
-// "repository_owned": a dictation model download holds this repository's cache.
 export type DownloadStartState =
   | DownloadJobState
   | "deleting"
@@ -56,28 +56,25 @@ export interface DownloadStartResult {
   state: DownloadStartState;
   accepted: boolean;
   generation?: number;
-  // True when the start attached to a job another client had already begun,
-  // rather than starting one. Accepted either way.
   attached?: boolean;
-  // Present only when the start adopted a job another client had already
-  // begun: the transport it is really running on.
+  // Only when attaching to another client's job: the transport it really runs on.
   transport?: TransportMode | null;
-  // And its cancel marker, when that job had fallen back from Xet to HTTP.
   cancel_transport?: TransportMode | null;
 }
 
 export interface ActiveModelDownload {
+  owner?: string | null;
   repo_id?: string;
   variant: string | null;
   transport?: TransportMode | null;
-  // Set only on a Xet run that fell back to HTTP: stopping it still leaves a
-  // restart-only partial, so this and not `transport` decides the stop control.
+  // Set only on a Xet run that fell back to HTTP; this, not `transport`, decides the stop control.
   cancel_transport?: TransportMode | null;
   state: DownloadJobState;
   generation?: number;
-  // Scoped jobs only: the exact files this job is fetching. Every file set of one repo rides the same "@scope" slot, so an
-  // adopting client needs it to tell its own transfer from a sibling's. Absent from an older backend means unprovable.
+  // Scoped jobs only: lets an adopting client tell its transfer from a sibling's in the same slot.
   files?: string[] | null;
+  // The standalone Engram table the job fetches instead of the quant's own; null for its own.
+  engram_precision?: string | null;
 }
 
 export interface ActiveDatasetDownload {
@@ -124,20 +121,16 @@ export interface TransportStatus {
 }
 
 export interface DownloadProgressResponse {
+  progress_scope?: "active_files" | null;
   downloaded_bytes: number;
   completed_bytes: number;
   complete_on_disk: boolean;
   expected_bytes: number;
   progress: number;
   cache_path: string | null;
-  /**
-   * Whether the backend found anything for THIS target (variant), as opposed to the shared
-   * repo cache directory existing. Null where it cannot say, and absent from an older
-   * backend -- both of which leave the repo-level rule in charge.
-   */
+  /** Whether THIS target (variant) was found; null/absent leaves the repo-level rule in charge. */
   target_present?: boolean | null;
-  /** False when the cache could not be scanned at all: unknown, not empty. Absent from an
-   *  older backend, which is also unknown. */
+  /** False when the cache could not be scanned: unknown, not empty. */
   cache_measured?: boolean;
 }
 
@@ -149,6 +142,8 @@ export type DownloadProgressOptions = {
 
 export type GgufDownloadProgressOptions = DownloadProgressOptions & {
   variant: string;
+  /** Measures the swapped plan: this standalone table instead of the quant's own table shard. */
+  engramPrecision?: string | null;
 };
 
 export type {
@@ -161,9 +156,7 @@ import {
 } from "./transport-capabilities";
 import type { DownloadTransportCapabilities } from "./transport-capabilities";
 
-// The Auto verdict is dynamic: a stalled transfer demotes this machine mid-session, so an
-// indefinite cache would keep serving the pre-stall answer until the page reloads. Refreshing is
-// cheap because the endpoint answers from cached health without a network probe.
+// Short TTL: a stalled transfer demotes Auto mid-session; the endpoint is cheap.
 const DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS = 30_000;
 let downloadTransportCapabilitiesCache: {
   expiresAt: number;
@@ -171,21 +164,23 @@ let downloadTransportCapabilitiesCache: {
 } | null = null;
 let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities> | null =
   null;
+let downloadTransportCapabilitiesGeneration = 0;
+
+/** Xet availability depends on the model source (ModelScope has none), so a source switch drops the verdict. */
+export function clearDownloadTransportCapabilitiesCache(): void {
+  downloadTransportCapabilitiesGeneration += 1;
+  downloadTransportCapabilitiesCache = null;
+  downloadTransportCapabilitiesInFlight = null;
+}
 
 export async function getDownloadTransportCapabilities(options: {
   force?: boolean;
-  // Reach for the Xet endpoint instead of answering from the cached verdict. Only the
-  // download-start path sets this; the UI polls on render and must not connect per poll.
+  // Bypass the cached verdict; only download start sets this, never render polls.
   probe?: boolean;
 } = {}): Promise<DownloadTransportCapabilities> {
   const cached = downloadTransportCapabilitiesCache;
-  // No cached answer satisfies a probe, not even an earlier probe's. This request IS the Auto
-  // admission decision for one download, and the backend's verdict subtracts the RAM already
-  // promised to Xet workers that started since (free_ram_pressure_reason -> the reservation
-  // ledger). Replaying the previous answer admits every download started inside the TTL on the
-  // same pre-reservation verdict, and each one is then submitted as an explicit
-  // transport_mode="xet" that the start path honours without re-reading free RAM. A probed answer
-  // still satisfies the render polls below; only the probe itself has to be live.
+  // A probe is the Auto admission decision and must be live: the backend subtracts RAM already
+  // reserved for Xet workers, so a replayed answer would over-admit.
   const cacheUsable =
     cached !== null && cached.expiresAt > Date.now() && !options.probe;
   if (!options.force && cacheUsable) {
@@ -194,12 +189,16 @@ export async function getDownloadTransportCapabilities(options: {
   if (!options.force && !options.probe && downloadTransportCapabilitiesInFlight) {
     return downloadTransportCapabilitiesInFlight;
   }
+  const generation = downloadTransportCapabilitiesGeneration;
   const request = authFetch(
     `/api/studio/download-transport-capabilities${options.probe ? "?probe=1" : ""}`,
   )
     .then(parseJsonOrThrow<unknown>)
     .then(normalizeDownloadTransportCapabilities)
     .then((capabilities) => {
+      if (generation !== downloadTransportCapabilitiesGeneration) {
+        return capabilities;
+      }
       downloadTransportCapabilitiesCache = {
         expiresAt: Date.now() + DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS,
         capabilities,
@@ -221,10 +220,11 @@ export async function startModelDownload(payload: {
   gguf_variant?: string | null;
   hf_token?: string | null;
   use_xet?: boolean;
-  // A partial-by-design download of `files` only (see DownloadRequest.scopeId).
   scope_id?: string | null;
   files?: string[];
   transport_mode?: "auto" | "xet" | "http";
+  download_dir?: string;
+  engram_precision?: string;
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;
   const headers = {
@@ -334,8 +334,6 @@ export async function getActiveDatasetDownloads(
   signal?: AbortSignal,
   repoId?: string,
 ): Promise<ActiveDatasetDownload[]> {
-  // No repo id lists every active dataset download, which is what hydration
-  // wants; one narrows it, which is what a single repo view wants.
   const params = repoId ? `?${new URLSearchParams({ repo_id: repoId })}` : "";
   const response = await authFetch(`/api/hub/datasets/active-downloads${params}`, {
     signal,
@@ -421,12 +419,13 @@ export async function getGgufDownloadProgress(
   repoId: string,
   options: GgufDownloadProgressOptions,
 ): Promise<DownloadProgressResponse> {
-  const { expectedBytes = 0, hfToken, signal, variant } = options;
+  const { expectedBytes = 0, hfToken, signal, variant, engramPrecision } = options;
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) params.set("engram_precision", engramPrecision);
   const response = await authFetch(`/api/hub/gguf-download-progress?${params}`, {
     headers: hubTokenHeader(hfToken),
     signal,

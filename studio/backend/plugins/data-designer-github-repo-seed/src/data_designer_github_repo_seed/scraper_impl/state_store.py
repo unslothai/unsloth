@@ -44,14 +44,8 @@ class _Reading(NamedTuple):
 
 
 def _read_line(raw: bytes, codepage: str) -> _Reading:
-    """Read one line as UTF-8 and as a codepage, for dedup keys only.
-
-    Requiring valid JSON, not merely a successful decode, is what separates a genuine legacy record from a half-written UTF-8 one: a torn multibyte character decodes under cp1252 but leaves the JSON unterminated. Some byte strings parse both ways, e.g. cp1251 ``Р°`` is ``D0 B0``, which is also UTF-8 ``а``.
-
-    The codepage reading is never authoritative, because the file's own encoding cannot be recovered from its bytes: reading a cp1251 shard on a cp1252 machine turns ``Привет`` into ``Ïðèâåò`` and every byte decodes cleanly. It is used only to recover the dedup keys, which are ASCII ids and come back the same under any of these, so the first reading that parses will do.
-
-    That is also why several are tried: latin-1 alone mangles the double-byte codepages, since cp932 ``表`` is ``95 5C`` and latin-1 turns the trail byte into a JSON backslash, so the record fails to parse and its id is forgotten.
-    """
+    """Codepage reading is never authoritative, it only recovers ASCII dedup keys; first valid parse
+    wins."""
     as_utf8 = _parse(raw, "utf-8")
     # A record that reads as UTF-8 needs no second reading: re-parsing cost 2.8x on a 76 MB shard, and these reach gigabytes.
     if isinstance(as_utf8, dict):
@@ -144,14 +138,7 @@ class JsonlWriter:
         self._fh = self.path.open("a", buffering = 1, encoding = encoding, errors = "strict")
 
     def _scan_existing(self) -> _Scan:
-        """Read the shard once to recover dedup keys and judge its encoding.
-
-        Line by line, since these shards reach gigabytes on a large scrape, so neither the bytes nor the decoded text are held whole.
-
-        The verdict weighs the whole file. Each line with non-ASCII bytes votes: one that parses only under the codepage is evidence of a legacy shard, one that parses as UTF-8 is evidence against, since arbitrary codepage text almost never forms valid multibyte UTF-8. So a single corrupt byte cannot outvote the records around it, and a genuinely legacy shard votes on every line carrying an umlaut. More than one such line is required, because a single one is undecidable: a legacy record holding one accented character and an ASCII record holding one stray byte are the same shape, and reading it as damage risks a duplicate while reading it as legacy marks an unreadable record seen and blocks the retry that would replace it. Only one of those is recoverable.
-
-        The verdict only picks which reading supplies the dedup keys. The file itself is never rewritten either way, so a wrong answer costs at most a duplicate, never a corrupted record.
-        """
+        """Vote per non-ASCII line; more than one vote is needed. The file is never rewritten, so a wrong verdict costs at most a duplicate."""
         legacy_votes = 0
         utf8_votes = 0
         saw_non_ascii = False

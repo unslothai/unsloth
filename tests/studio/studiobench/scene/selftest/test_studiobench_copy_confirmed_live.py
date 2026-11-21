@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A KEYSTROKE THAT WENT NOWHERE WAS BEING REPORTED AS A MEASUREMENT.
-
-`select_all_copy` pressed Control+C, slept 250ms for the copy to land, and reported the elapsed
-time as `copy_ms`. On any engine that does not perform the copy, that number is the sleep.
-
-Measured across the eleven WebKit payloads on this machine, 43 rows:
-
-    r1K      258.5 ms
-    r10K     258.8 ms
-    r100K    263.9 ms
-
-A hundredfold change in the quantity under study moved the "measurement" by two percent, because
-it was measuring `wait_for_timeout(250)`. Chromium reads about 1,538 ms at the 100K rung for the
-same action. Playwright's WebKit never performs a clipboard copy on Control+C, so every one of
-those rows was a sleep wearing a timing's name -- and unlike a missing reading, it is perfectly
-stable, so it looks like data.
-
-The guard is on the CLIPBOARD and not on the engine name. A sentinel is written before the
-keystroke; if it survives, nothing was copied. That admits an engine that starts working and
-refuses one that stops, with no list to maintain.
-"""
+"""Writes a sentinel before Control+C; if it survives, nothing was copied and no timing is reported."""
 
 from __future__ import annotations
 
@@ -40,8 +20,7 @@ from studiobench.scene import actions as A  # noqa: E402
 
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 
-#: `navigator.clipboard` does not exist outside a secure context, and `set_content` leaves the page
-#: on about:blank, which is not one. Served from a route so no server is needed.
+# navigator.clipboard needs a secure context; about:blank is not one.
 ORIGIN = "https://studiobench.localhost"
 
 BODY = """<!doctype html><meta charset=utf-8><title>t</title>
@@ -114,14 +93,12 @@ def _ctx(page, log = None) -> ActionContext:
 
 
 def _swallow_the_copy(page) -> None:
-    """An engine that does not copy, reproduced faithfully: the keystroke is delivered, a `copy`
-    event fires, and nothing reaches the clipboard."""
+    """A non-copying engine: the copy event fires, yet nothing reaches the clipboard."""
     page.evaluate("() => document.addEventListener('copy', (e) => { e.preventDefault(); }, true)")
 
 
 def test_a_real_copy_is_still_measured(page):
-    """THE CONTROL. Without it the guard could refuse everything and the tests below would pass on
-    an action that never reports a timing at all."""
+    """Control: a real copy must still be measured, or the guard could refuse everything."""
     got = A.select_all_copy(_ctx(page))
     assert got.ran is True, got.reason
     assert got.timings.get("copy_ms") is not None
@@ -129,8 +106,7 @@ def test_a_real_copy_is_still_measured(page):
 
 
 def test_an_engine_that_does_not_copy_is_NOT_RUN_rather_than_a_timing(page):
-    """THE DEFECT. The keystroke is sent, 250ms passes, and before this the action returned that
-    250ms as `copy_ms` -- stable, plausible, and about nothing."""
+    """A non-copying engine must be NOT RUN, never the 250ms settle returned as `copy_ms`."""
     _swallow_the_copy(page)
     got = A.select_all_copy(_ctx(page))
     assert got.ran is False, got
@@ -140,8 +116,7 @@ def test_an_engine_that_does_not_copy_is_NOT_RUN_rather_than_a_timing(page):
 
 
 def test_the_refusal_says_the_number_would_have_been_the_harness_own_settle(page):
-    """The reason has to name the failure, or the next person reads NOT RUN as a flaky run and adds
-    the action to an allow-list."""
+    """The reason must name the failure, or NOT RUN is read as flakiness and allow-listed."""
     _swallow_the_copy(page)
     said: list[str] = []
     got = A.select_all_copy(_ctx(page, said.append))
@@ -149,13 +124,7 @@ def test_the_refusal_says_the_number_would_have_been_the_harness_own_settle(page
 
 
 def _refuse_the_sentinel_write(page) -> None:
-    """Clipboard WRITE refused, clipboard READ still working.
-
-    Not a hypothetical pairing. `writeText` needs transient user activation or the `clipboard-write`
-    permission and throws `NotAllowedError` without either; `readText` is gated on a separate
-    permission, and runtime/browser.py asks for the two only on Chromium. So the write can fail on
-    its own, and the guard has to survive that rather than switch itself off.
-    """
+    """Makes clipboard writeText fail while readText still works, since the write can be refused alone."""
     page.evaluate(
         """() => {
         Object.defineProperty(navigator.clipboard, "writeText", {
@@ -167,14 +136,8 @@ def _refuse_the_sentinel_write(page) -> None:
 
 
 def test_a_failed_sentinel_write_does_not_re_admit_the_unchanged_clipboard(page):
-    """THE HOLE THIS CLOSES. When the sentinel could not be written, the action used to clear it and
-    carry on -- and with no pre-copy value, `clip == sentinel` can never fire. A Control+C that did
-    nothing then left the clipboard holding what the PREVIOUS action put there, which read back as a
-    plausible non-empty copy of the whole thread with the 250ms settle beside it as `copy_ms`. That
-    is the exact measurement the sentinel exists to refuse, re-admitted by its own fallback.
-    """
-    # Whatever an earlier action in the film left behind. Non-empty and plausible, which is what makes
-    # it dangerous: an empty clipboard would have been caught by `clipboard_chars > 0`.
+    """A failed sentinel write must not let stale clipboard content pass as a fresh copy."""
+    # Plausible stale content: an empty clipboard would already fail clipboard_chars > 0.
     page.evaluate("async () => await navigator.clipboard.writeText('x'.repeat(2400))")
     _refuse_the_sentinel_write(page)
     _swallow_the_copy(page)
@@ -186,9 +149,8 @@ def test_a_failed_sentinel_write_does_not_re_admit_the_unchanged_clipboard(page)
 
 
 def test_a_real_copy_is_still_measured_when_the_sentinel_could_not_be_written(page):
-    """THE CONTROL FOR THE ABOVE. The fallback must not turn a missing write permission into a dead
-    action: a copy that really happened is still a measurement, and the row says which pre-copy
-    value it was confirmed against."""
+    """Control for the fallback: a missing write permission must not kill the action; a real copy is
+    still measured, and the row names the pre-copy value it was confirmed against."""
     page.evaluate("async () => await navigator.clipboard.writeText('stale')")
     _refuse_the_sentinel_write(page)
     got = A.select_all_copy(_ctx(page))
@@ -224,10 +186,7 @@ def test_the_guard_is_on_the_clipboard_and_not_on_the_engine_name():
 
     src = inspect.getsource(A.select_all_copy)
     assert "sentinel" in src
-    # EXECUTABLE LINES ONLY. The engine names belong in the comment explaining which engine was
-    # observed failing and with what numbers; what must not exist is a BRANCH on one. The word
-    # "engine" is allowed because it appears in the refusal MESSAGE; a specific engine's NAME is not,
-    # because a name is what a branch would need.
+    # Executable lines only: no code may branch on a specific engine's name.
     code = "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("#"))
     for name in ("webkit", "WebKit", "firefox", "Firefox", "browser_name", "browser_type"):
         assert name not in code, f"the guard branches on {name!r} rather than on the clipboard"

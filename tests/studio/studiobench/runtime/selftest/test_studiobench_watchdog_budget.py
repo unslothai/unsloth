@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The watchdog may not kill a healthy run during the setup it is waiting for.
-
-`--branch REF` is the advertised self-managed path: studiobench clones this repository and runs
-`install.sh`, a multi-gigabyte download it allows 45 minutes for, and an A/B does that twice
-before the first cell. The deadline was three times the TIER budget -- 15 minutes on fast and
-quick, the two tiers people iterate with -- armed before the first install, so a slow download
-tripped `os._exit(2)` during setup. It exits through `os._exit`, so the `finally` that stops the
-Unsloth instances and the pacer does not run either: the run dies, leaves its processes behind, and never
-reaches the measurement it advertised.
-
-The deadline is asserted at the real entry point, by driving `run()` until the first install.
-"""
+"""The watchdog must not kill a --branch run during setup; each install is allowed 45 minutes."""
 
 from __future__ import annotations
 
@@ -27,7 +16,6 @@ from studiobench import __main__ as cli  # noqa: E402
 from studiobench.runtime import browser as browser_mod  # noqa: E402
 from studiobench.runtime import lifecycle  # noqa: E402
 
-#: What the README documents for one `install.sh`, and what `install_studio` allows it.
 INSTALL_BUDGET_S = 45 * 60
 
 
@@ -78,11 +66,7 @@ def test_a_self_managed_ab_watchdog_covers_both_installs(monkeypatch, tmp_path):
 
 
 def test_an_attached_run_adds_no_install_budget(monkeypatch, tmp_path):
-    """The control: a run that installs nothing keeps the measurement deadline it always had.
-
-    A fast-tier A/B is two 57 second films, so the planned work is nowhere near the tier's own
-    900 seconds and the tier budget still decides. The fast tier stays fast.
-    """
+    """An attached run adds no install budget, so the tier's own deadline still applies."""
 
     deadline = _armed_deadline(
         monkeypatch,
@@ -108,13 +92,7 @@ def _planned_film_s(tier: str, rungs: int, reps: int, arms: int) -> float:
 
 
 def test_a_standard_ab_at_four_reps_is_not_hard_exited_part_way_through(monkeypatch, tmp_path):
-    """The defect. Three rungs, four reps, two arms is 24 cells of the 243 second standard film.
-
-    That is 5,832 seconds of film before a thread is seeded, and the deadline was
-    `TIER_BUDGET_S["standard"] * 3` = 3,600 seconds with nothing added for an attached pair -- so
-    the watchdog fired 40% of the way through a perfectly healthy run, through `os._exit`, taking
-    the `finally` that stops the Unsloth instances with it.
-    """
+    """A standard A/B at four reps must not be hard-exited by the watchdog before its cells finish."""
 
     deadline = _armed_deadline(
         monkeypatch,
@@ -185,11 +163,7 @@ def test_the_scaled_deadline_is_still_capped(monkeypatch, tmp_path):
 
 
 def test_a_single_arm_tier_ladder_keeps_its_documented_budget(monkeypatch, tmp_path):
-    """Every tier's own ladder, run once against one attached Unsloth, is unchanged.
-
-    This is the regression guard on the change: the deadline may only grow where the caller asked
-    for more work than the tier describes.
-    """
+    """The deadline may grow only where the caller asked for more work than the tier describes."""
 
     for tier in ("fast", "quick", "standard", "full"):
         deadline = _armed_deadline(
