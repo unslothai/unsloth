@@ -212,6 +212,26 @@ def test_near_cancellation(dora_mod, device, a_dtype, w_dtype):
         assert err <= peft_err, (err, peft_err)  # bf16 rounds W + s B A to 8 bits; fp16 keeps 11
 
 
+@pytest.mark.parametrize("device", _devices())
+def test_cross_term_transposed_weight_and_partial_tiles(dora_mod, device):
+    mod, _ = dora_mod
+    torch.manual_seed(5)
+    A = torch.randn(9, 1025, device = device)
+    # PEFT transposes the stored Conv1D weight before computing the norm.
+    W = torch.randn(1025, 97, device = device, dtype = torch.float16).t()
+    expected = A.double() @ W.double().t()
+    cross_term = mod._cross_term_fp32
+    if (
+        device == "cuda"
+        and torch.version.cuda is not None
+        and importlib.util.find_spec("triton") is not None
+        and torch.cuda.get_device_capability()[0] >= 8
+    ):
+        # Inductor can elide the round trip through FP16 when splitting the adapter outside the kernel.
+        cross_term = torch.compile(cross_term, fullgraph = True)
+    assert _rel(cross_term(W, A).double(), expected) < 2e-6
+
+
 def test_autocast_does_not_lower_precision(dora_mod):
     mod, _ = dora_mod
     torch.manual_seed(3)
