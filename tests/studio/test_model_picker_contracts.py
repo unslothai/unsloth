@@ -1258,8 +1258,7 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n"
-        "    platformMlxInference,\n  )"
-        in page
+        "    platformMlxInference,\n  )" in page
     )
     assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.

@@ -41,7 +41,13 @@ def _restore_real_logging_modules() -> dict:
     return removed
 
 
-def _health(monkeypatch, *, reason, established, device = None) -> dict:
+def _health(
+    monkeypatch,
+    *,
+    reason,
+    established,
+    device = None,
+) -> dict:
     """The authed /api/health body for a settled chat-only verdict."""
     swapped = _restore_real_logging_modules()
     import auth.authentication as authmod
