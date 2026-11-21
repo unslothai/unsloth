@@ -3236,6 +3236,10 @@ html[data-chat-font] .aui-root {
 			display: none;
 		}
 
+		& .composer-pill-glyph {
+			display: inline-grid;
+		}
+
 		/* Too small for the circle, so show a bare x. */
 		& .composer-pill-x {
 			@apply size-[calc(15px*var(--ui-font-scale,1))] bg-transparent p-0 dark:bg-transparent;
@@ -3282,6 +3286,9 @@ html[data-chat-font] .aui-root {
 	}
 	.dark .composer-pill-btn.composer-pill-permissions {
 		color: var(--foreground);
+	}
+	.composer-pill-btn.composer-pill-permissions > .composer-pill-glyph {
+		display: none;
 	}
 
 	/* Fixed-width slot so labels line up regardless of icon size. */
