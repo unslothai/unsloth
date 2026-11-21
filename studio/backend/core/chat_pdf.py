@@ -56,12 +56,15 @@ hr { border: 0; border-top: 0.7pt solid #dbdcde; margin: 14pt 0; }
 """
 
 
-
 class ChatPdfTooLong(Exception):
     pass
 
 
-def render_chat_pdf(title: str, body_html: str, model: str | None = None) -> bytes:
+def render_chat_pdf(
+    title: str,
+    body_html: str,
+    model: str | None = None,
+) -> bytes:
     """The archive contains only bundled fonts; no filesystem directory is exposed."""
     import pymupdf
 
@@ -117,7 +120,12 @@ def render_chat_pdf(title: str, body_html: str, model: str | None = None) -> byt
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
     mediabox = pymupdf.paper_rect("letter")
-    where = mediabox + (_SIDE_MARGIN_PT, _VERTICAL_MARGIN_PT, -_SIDE_MARGIN_PT, -_VERTICAL_MARGIN_PT)
+    where = mediabox + (
+        _SIDE_MARGIN_PT,
+        _VERTICAL_MARGIN_PT,
+        -_SIDE_MARGIN_PT,
+        -_VERTICAL_MARGIN_PT,
+    )
     width, height = where.width, where.height
     pages = 0
     links = []
@@ -170,23 +178,35 @@ def render_chat_pdf(title: str, body_html: str, model: str | None = None) -> byt
         for (page_number, _), text_rect in block_boxes.items():
             rect = pymupdf.Rect(where.x0, text_rect.y0 - 6, where.x1, text_rect.y1 + 6) & where
             pdf[page_number].draw_rect(
-                rect, color = (0.85, 0.86, 0.87), fill = (0.973, 0.974, 0.978),
-                width = 0.6, radius = 0.12, overlay = False,
+                rect,
+                color = (0.85, 0.86, 0.87),
+                fill = (0.973, 0.974, 0.978),
+                width = 0.6,
+                radius = 0.12,
+                overlay = False,
             )
         for page_number, coordinates in dict.fromkeys(inline_boxes):
             rect = (pymupdf.Rect(coordinates) + (-2, -1, 2, 1)) & where
             pdf[page_number].draw_rect(
-                rect, color = None, fill = (0.93, 0.934, 0.94),
-                radius = 0.12, overlay = False,
+                rect,
+                color = None,
+                fill = (0.93, 0.934, 0.94),
+                radius = 0.12,
+                overlay = False,
             )
-        wordmark = pymupdf.Rect(where.x0, where.y0, where.x0 + 74 * first_page_scale, where.y0 + 23 * first_page_scale)
+        wordmark = pymupdf.Rect(
+            where.x0, where.y0, where.x0 + 74 * first_page_scale, where.y0 + 23 * first_page_scale
+        )
         pdf[0].insert_image(wordmark, filename = str(font_dir / "wordmark.png"))
         if len(pdf) > 1:
             for number, page in enumerate(pdf, start = 1):
                 page.insert_textbox(
                     pymupdf.Rect(where.x0, mediabox.y1 - 40, where.x1, mediabox.y1 - 22),
-                    f"{number} / {len(pdf)}", align = pymupdf.TEXT_ALIGN_RIGHT,
-                    fontname = "helv", fontsize = 8, color = (0.38, 0.39, 0.4),
+                    f"{number} / {len(pdf)}",
+                    align = pymupdf.TEXT_ALIGN_RIGHT,
+                    fontname = "helv",
+                    fontsize = 8,
+                    color = (0.38, 0.39, 0.4),
                 )
         pdf.set_metadata({"title": " ".join(title.split()), "creator": "Unsloth"})
         for number, group in itertools.groupby(links, key = lambda link: link[0]):
@@ -203,7 +223,9 @@ def render_chat_pdf(title: str, body_html: str, model: str | None = None) -> byt
 def main() -> int:
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     try:
-        pdf = render_chat_pdf(str(request.get("title") or ""), str(request["html"]), request.get("model"))
+        pdf = render_chat_pdf(
+            str(request.get("title") or ""), str(request["html"]), request.get("model")
+        )
     except ChatPdfTooLong as error:
         print(error, file = sys.stderr)
         return TOO_LONG_EXIT_CODE

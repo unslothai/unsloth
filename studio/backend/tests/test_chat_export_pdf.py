@@ -261,10 +261,9 @@ def test_registered_under_api_chat_export():
 
 def test_finished_code_block_does_not_paint_background_on_later_pages():
     from core.chat_pdf import render_chat_pdf
-
-    body = '<pre><code>const x = 1;</code></pre>' + "".join(
-        '<section class="message"><h3 class="role">Assistant</h3>'
-        '<p>Answer text.</p></section>' for _ in range(25)
+    body = "<pre><code>const x = 1;</code></pre>" + "".join(
+        '<section class="message"><h3 class="role">Assistant</h3>' "<p>Answer text.</p></section>"
+        for _ in range(25)
     )
     with pymupdf.open("pdf", render_chat_pdf("Chat", body)) as document:
         assert len(document) > 1
@@ -275,14 +274,12 @@ def test_finished_code_block_does_not_paint_background_on_later_pages():
 
 def test_code_background_continues_with_code_across_pages():
     from core.chat_pdf import render_chat_pdf
-
     body = "<pre><code>" + "".join(f"line {index}\n" for index in range(150)) + "</code></pre>"
     with pymupdf.open("pdf", render_chat_pdf("Long code", body)) as document:
         assert len(document) >= 3
         assert "line 149" in document[-1].get_text()
         for page in document:
             assert any(
-                drawing["fill"] and drawing["rect"].width > 400
-                and drawing["rect"].height > 20
+                drawing["fill"] and drawing["rect"].width > 400 and drawing["rect"].height > 20
                 for drawing in page.get_drawings()
             )

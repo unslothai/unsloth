@@ -38,7 +38,11 @@ class ChatPdfRequest(BaseModel):
     html: str = Field(..., min_length = 1, max_length = MAX_EXPORT_HTML_CHARS)
 
 
-def render_chat_pdf_in_child(title: str, body_html: str, model: str | None = None) -> bytes:
+def render_chat_pdf_in_child(
+    title: str,
+    body_html: str,
+    model: str | None = None,
+) -> bytes:
     """PyMuPDF must not run on server threads (it can crash the process); a crash here only loses this export."""
     with _render_slots:
         result = subprocess.run(
@@ -62,7 +66,9 @@ async def export_chat_pdf(
     request: ChatPdfRequest, current_subject: str = Depends(get_current_subject)
 ) -> Response:
     try:
-        content = await asyncio.to_thread(render_chat_pdf_in_child, request.title, request.html, request.model)
+        content = await asyncio.to_thread(
+            render_chat_pdf_in_child, request.title, request.html, request.model
+        )
     except ChatPdfTooLong as error:
         raise log_and_http_error(
             error, 413, "This export is too long for one PDF.", log = logger
