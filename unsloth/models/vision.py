@@ -2435,7 +2435,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         else:
             # v5's own injection is guarded by `"logits_to_keep" not in model_kwargs`, so it is a DEFAULT: an explicit caller value survives, and popping unconditionally would rewrite logits_to_keep=0 (full sequence) into 1. Strip only what the strict validator raises on: num_logits_to_keep everywhere (renamed away in v5), and logits_to_keep on the VLMs whose top-level forward does not take it.
             for _logits_kwarg in ("logits_to_keep", "num_logits_to_keep"):
-                if _logits_kwarg in kwargs and not _unsloth_generate_accepts_kwarg(self, _logits_kwarg):
+                if _logits_kwarg in kwargs and not _unsloth_generate_accepts_kwarg(
+                    self, _logits_kwarg
+                ):
                     kwargs.pop(_logits_kwarg, None)
 
         model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -2538,7 +2540,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if do_bfloat16_mixed_precision:
             cache_implementation = None
         # transformers refuses a static cache beside the caller's cache or assisted decoding (kwarg or generation config) (#4232).
-        generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
+        generation_config = kwargs.get("generation_config") or getattr(
+            self, "generation_config", None
+        )
         if kwargs.get("past_key_values") is not None or any(
             (kwargs[k] if k in kwargs else getattr(generation_config, k, None)) is not None
             for k in ("assistant_model", "prompt_lookup_num_tokens", "assistant_early_exit")
@@ -2565,7 +2569,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             and _compiles_decode(self)
             # transformers compiles only on these devices; elsewhere a bucketed cache only costs memory.
             and getattr(getattr(self, "device", None), "type", None) == "cuda"
-            and not kwargs.get("disable_compile", getattr(generation_config, "disable_compile", False))
+            and not kwargs.get(
+                "disable_compile", getattr(generation_config, "disable_compile", False)
+            )
             and hasattr(self, "_prepare_static_cache")
             and hasattr(self, "_valid_auto_compile_criteria")
             and "_prepare_static_cache" not in self.__dict__
@@ -2611,7 +2617,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
         try:
             with _decode_graphs.generate_scope():
-                if cache_implementation == "static" and not force_dynamic_cache and not compile_decode:
+                if (
+                    cache_implementation == "static"
+                    and not force_dynamic_cache
+                    and not compile_decode
+                ):
                     plan = _generic_decode_graphs.plan(self, args, kwargs, input_ids)
                 else:
                     plan = _generic_decode_graphs.ineligible(self)

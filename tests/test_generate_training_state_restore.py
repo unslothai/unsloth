@@ -135,9 +135,7 @@ def _run(flash, start_training, gc, fail):
 
     def _old_generate(self, *args, **kwargs):
         seen["training"] = self.training
-        seen["gc"] = {
-            id(m): getattr(m, "gradient_checkpointing", "absent") for m in self.modules()
-        }
+        seen["gc"] = {id(m): getattr(m, "gradient_checkpointing", "absent") for m in self.modules()}
         if fail:
             raise fail("boom")
         return "generated"
@@ -187,9 +185,7 @@ def test_generate_restores_training_state(flash, start_training, gc, fail):
 
 
 def test_training_step_works_after_generate():
-    model, _, _, result = _run(
-        flash = False, start_training = True, gc = True, fail = None
-    )
+    model, _, _, result = _run(flash = False, start_training = True, gc = True, fail = None)
     assert result == "generated"
     out = model.lin(torch.ones(2, 4)).sum()
     out.backward()
