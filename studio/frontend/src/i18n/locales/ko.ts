@@ -5059,6 +5059,7 @@ export const ko = {
       showLess: "간단히 보기",
       chats: "채팅",
       noChats: "아직 {name}와(과)의 채팅이 없습니다.",
+      olderChatsHidden: "최근 채팅 {count}개를 표시합니다.",
       groupWith: "{names}와(과) 함께",
       greetingsOne: "인사말 1개",
       greetingsMany: "인사말 {count}개",

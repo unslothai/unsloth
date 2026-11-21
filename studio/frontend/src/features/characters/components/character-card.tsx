@@ -2,10 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useSeen } from "@/hooks/use-seen";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { MoreHorizontalIcon, StarIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useRef } from "react";
 import type { Character } from "../types";
 import { CharacterActionsMenu } from "./character-actions-menu";
 import { Portrait } from "./portrait";
@@ -32,6 +34,9 @@ export function CharacterCard({
   onEdit,
 }: CharacterCardProps) {
   const t = useT();
+  const holder = useRef<HTMLDivElement>(null);
+  // A large library would otherwise fetch every picture at once.
+  const seen = useSeen(holder);
   const subtitle =
     character.chatCount === 0
       ? t("characters.noChatsYet")
@@ -40,6 +45,7 @@ export function CharacterCard({
         : t("characters.chatsMany", { count: character.chatCount });
   return (
     <div
+      ref={holder}
       className={cn(
         "group/char relative isolate overflow-hidden rounded-[22px] bg-muted shadow-[0_1px_0_rgb(0_0_0/0.04)] ring-1 ring-black/[0.04] transition-[transform,box-shadow] duration-200 dark:ring-white/[0.06]",
         "hover:-translate-y-0.5 hover:shadow-[0_14px_32px_-18px_rgb(0_0_0/0.45)]",
@@ -58,7 +64,7 @@ export function CharacterCard({
         aria-label={character.name}
       >
         <Portrait
-          subject={character}
+          subject={seen ? character : { ...character, hasAvatar: false }}
           variant="card"
           className="aspect-[2/3] w-full"
         />

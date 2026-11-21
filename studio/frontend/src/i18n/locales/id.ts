@@ -5413,6 +5413,7 @@ export const id = {
       showLess: "Tampilkan lebih sedikit",
       chats: "Chat",
       noChats: "Belum ada chat dengan {name}.",
+      olderChatsHidden: "Menampilkan {count} chat terbaru.",
       groupWith: "dengan {names}",
       greetingsOne: "1 sapaan",
       greetingsMany: "{count} sapaan",

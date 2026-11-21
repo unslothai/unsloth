@@ -5408,6 +5408,7 @@ export const vi = {
       showLess: "Thu gọn",
       chats: "Cuộc trò chuyện",
       noChats: "Chưa có cuộc trò chuyện nào với {name}.",
+      olderChatsHidden: "Đang hiển thị {count} cuộc trò chuyện mới nhất.",
       groupWith: "cùng {names}",
       greetingsOne: "1 lời chào",
       greetingsMany: "{count} lời chào",

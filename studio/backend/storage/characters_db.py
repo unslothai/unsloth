@@ -594,7 +594,8 @@ def chat_index() -> dict[str, list[str]]:
     return index
 
 
-def chats_for_character(character_id: str, limit: int = 200) -> list[dict]:
+def chats_for_character(character_id: str, limit: int = 200) -> tuple[list[dict], bool]:
+    """The newest *limit* chats, and whether older ones were left out."""
     with _connect() as conn:
         rows = conn.execute(
             """
@@ -608,9 +609,9 @@ def chats_for_character(character_id: str, limit: int = 200) -> list[dict]:
             ORDER BY COALESCE(t.updated_at, t.created_at) DESC
             LIMIT ?
             """,
-            (character_id, limit),
+            (character_id, limit + 1),
         ).fetchall()
-    return [
+    chats = [
         {
             "threadId": row["id"],
             "title": row["title"],
@@ -620,5 +621,6 @@ def chats_for_character(character_id: str, limit: int = 200) -> list[dict]:
             "castSize": row["cast_size"],
             "messageCount": row["message_count"],
         }
-        for row in rows
+        for row in rows[:limit]
     ]
+    return chats, len(rows) > limit

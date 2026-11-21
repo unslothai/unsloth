@@ -5098,6 +5098,7 @@ export const ru = {
       showLess: "Показать меньше",
       chats: "Чаты",
       noChats: "Чатов с {name} пока нет.",
+      olderChatsHidden: "Показаны {count} последних чатов.",
       groupWith: "вместе с: {names}",
       greetingsOne: "1 приветствие",
       greetingsMany: "Приветствий: {count}",

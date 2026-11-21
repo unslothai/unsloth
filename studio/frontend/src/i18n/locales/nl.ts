@@ -5460,6 +5460,7 @@ export const nl = {
       showLess: "Minder weergeven",
       chats: "Chats",
       noChats: "Nog geen chats met {name}.",
+      olderChatsHidden: "De nieuwste {count} chats worden getoond.",
       groupWith: "met {names}",
       greetingsOne: "1 begroeting",
       greetingsMany: "{count} begroetingen",

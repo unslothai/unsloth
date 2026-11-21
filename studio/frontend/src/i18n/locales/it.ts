@@ -5139,6 +5139,7 @@ export const it = {
       showLess: "Mostra meno",
       chats: "Chat",
       noChats: "Ancora nessuna chat con {name}.",
+      olderChatsHidden: "Sono mostrate le {count} chat più recenti.",
       groupWith: "con {names}",
       greetingsOne: "1 saluto",
       greetingsMany: "{count} saluti",

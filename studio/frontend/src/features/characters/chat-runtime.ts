@@ -10,6 +10,7 @@ import { resolvePersona } from "./persona";
 import {
   buildCharacterPrompt,
   replyNameOf,
+  resumedPrefill,
   shapeReplayMessage,
   type BuiltPrompt,
   type PromptCharacter,
@@ -36,6 +37,8 @@ export interface CharacterRun {
   /** Messages that carry a note placed at a depth, so View prompt can show them. */
   notedIds: ReadonlySet<string>;
   stop: string[];
+  /** A resumed reply's partial as the model should see it: named like the rest of a group's replies. */
+  prefill: (partial: string) => string;
   /** Stamped on the reply as `metadata.custom.roleplay`. */
   replyMeta: CharacterReplyMeta;
   built: BuiltPrompt;
@@ -64,7 +67,14 @@ async function ensureLoaded(): Promise<void> {
   ]);
 }
 
+// Edits from another device are picked up within this window; a group round's later speakers reuse the check.
+const REVALIDATE_MS = 30_000;
+const revalidatedAt = new Map<string, number>();
+
 async function revalidateParticipants(scene: ChatScene): Promise<void> {
+  const last = revalidatedAt.get(scene.threadId);
+  if (last !== undefined && Date.now() - last < REVALIDATE_MS) return;
+  revalidatedAt.set(scene.threadId, Date.now());
   await Promise.all([
     ...scene.cast.map((member) =>
       getCharacter(member.characterId).then(
@@ -193,6 +203,7 @@ export async function prepareCharacterRun(args: {
     sends: (messageId) => !unsent.has(messageId),
     notedIds: new Set(chat.filter((_m, index) => built.noted[index] && built.sent[index]).map((m) => m.id)),
     stop: built.stop,
+    prefill: (partial) => resumedPrefill(partial, built.speaker.name, built.namesTurns),
     replyMeta: {
       kind: "reply",
       speakerId: built.speaker.id,

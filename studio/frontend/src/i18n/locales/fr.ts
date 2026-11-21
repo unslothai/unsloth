@@ -5154,6 +5154,7 @@ export const fr = {
       showLess: "Afficher moins",
       chats: "Discussions",
       noChats: "Aucune discussion avec {name} pour l'instant.",
+      olderChatsHidden: "Affichage des {count} discussions les plus récentes.",
       groupWith: "avec {names}",
       greetingsOne: "1 message d'accueil",
       greetingsMany: "{count} messages d'accueil",

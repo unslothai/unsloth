@@ -5391,6 +5391,7 @@ export const fa = {
       showLess: "نمایش کمتر",
       chats: "گفتگوها",
       noChats: "هنوز گفتگویی با {name} نیست.",
+      olderChatsHidden: "{count} گفتگوی جدیدتر نمایش داده می\u200cشود.",
       groupWith: "با {names}",
       greetingsOne: "1 خوشامد",
       greetingsMany: "{count} خوشامد",

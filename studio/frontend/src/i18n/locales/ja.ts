@@ -5019,6 +5019,7 @@ export const ja = {
       showLess: "折りたたむ",
       chats: "チャット",
       noChats: "{name} とのチャットはまだありません。",
+      olderChatsHidden: "最新の {count} 件のチャットを表示しています。",
       groupWith: "{names} と",
       greetingsOne: "挨拶 1 件",
       greetingsMany: "挨拶 {count} 件",

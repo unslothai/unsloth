@@ -5410,6 +5410,7 @@ export const tr = {
       showLess: "Daha az göster",
       chats: "Sohbetler",
       noChats: "Henüz {name} ile sohbet yok.",
+      olderChatsHidden: "En yeni {count} sohbet gösteriliyor.",
       groupWith: "Birlikte: {names}",
       greetingsOne: "1 karşılama",
       greetingsMany: "{count} karşılama",

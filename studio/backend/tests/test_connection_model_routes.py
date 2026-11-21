@@ -1169,3 +1169,26 @@ def test_messages_rejects_a_sampling_value_chat_refuses_with_a_400(v1, field, va
     assert resp.json()["type"] == "error"
     assert field in resp.json()["error"]["message"]
     assert FakeExternalClient.calls == []
+
+
+def test_a_studio_provider_request_stops_at_its_stop_sequence(v1, monkeypatch):
+    # The Studio chat names the provider and model directly; the provider is never sent the stop.
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf, "ExternalProviderClient", _content_stream("Mara waves.\nRi", "n: hello", " there")
+    )
+    body = {
+        "model": "gpt-x",
+        "provider_id": "c1",
+        "external_model": "gpt-x",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop": ["\nRin:"],
+        "stream": True,
+    }
+    resp = v1.post("/v1/chat/completions", json = body)
+
+    assert resp.status_code == 200, resp.text
+    assert _chat_text(resp, True) == "Mara waves."
+    finishes = [c["choices"][0].get("finish_reason") for c in _sse(resp.text.replace("data: [DONE]", "")) if c.get("choices")]
+    assert finishes[-1] == "stop"

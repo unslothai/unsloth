@@ -4970,6 +4970,7 @@ export const zhCN = {
       showLess: "收起",
       chats: "聊天",
       noChats: "还没有与 {name} 的聊天。",
+      olderChatsHidden: "显示最新的 {count} 个聊天。",
       groupWith: "与 {names}",
       greetingsOne: "1 条开场白",
       greetingsMany: "{count} 条开场白",

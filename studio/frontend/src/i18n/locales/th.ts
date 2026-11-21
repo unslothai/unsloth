@@ -5184,6 +5184,7 @@ export const th = {
       showLess: "แสดงน้อยลง",
       chats: "แชท",
       noChats: "ยังไม่มีแชทกับ {name}",
+      olderChatsHidden: "แสดงแชตล่าสุด {count} รายการ",
       groupWith: "กับ {names}",
       greetingsOne: "คำทักทาย 1 แบบ",
       greetingsMany: "คำทักทาย {count} แบบ",

@@ -5435,6 +5435,7 @@ export const cs = {
       showLess: "Zobrazit méně",
       chats: "Chaty",
       noChats: "Zatím žádné chaty s postavou {name}.",
+      olderChatsHidden: "Zobrazuje se {count} nejnovějších chatů.",
       groupWith: "s: {names}",
       greetingsOne: "1 pozdrav",
       greetingsMany: "Pozdravy: {count}",
