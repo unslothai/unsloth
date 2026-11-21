@@ -269,3 +269,19 @@ def test_neither_card_records_or_replays_a_graph_during_a_split(monkeypatch):
     assert split and all(flag for _, flag in split)
     assert {True, False} == {replica for replica, _ in split}
     assert not capture_suppressed()
+
+
+def test_a_denoiser_with_per_call_activation_scaling_is_not_split_by_tokens():
+    # A dynamic NVFP4 linear takes its global scale from the whole call's activation amax: a token half would take
+    # its own, which is not the one-card computation.
+    class ComfyNVFP4DynamicLinear(torch.nn.Linear):
+        pass
+
+    model = _model()
+    model.blocks[0].ffn.net[2] = ComfyNVFP4DynamicLinear(32, 12 * 4)
+    ref = _loop(model)
+    router, built = _router(model)
+    out = _loop(model)
+    assert torch.equal(out, ref)
+    assert router.stats["sequence_splits"] == 0 and not built
+    assert "per-call activation scaling" in router.stats["sequence_split_skip"]

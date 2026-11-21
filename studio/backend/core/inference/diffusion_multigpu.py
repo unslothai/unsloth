@@ -3640,6 +3640,13 @@ class CfgParallelRouter:
             why = "positional or opaque inputs"
         if why is None and self.secondary.type != self.primary.type:
             why = "the replica is on another device type"
+        if why is None:
+            if self._split_scaled is None:
+                from .diffusion_cfg_batch import per_call_scaled
+                self._split_scaled = (per_call_scaled(module),)
+            if self._split_scaled[0] is not None:
+                # each token half would take its own activation amax (dynamic NVFP4): not the one-card computation
+                why = f"per-call activation scaling ({self._split_scaled[0]})"
         if why is not None:
             self.stats["sequence_split_skip"] = why
             return None
