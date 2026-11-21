@@ -6277,7 +6277,7 @@ export const uk = {
     checking: "Перевірка...",
     installPrompt: "Щоб інсталювати Unsloth, натисніть «Почати».",
     getStarted: "Почати",
-    chatOnly: "Лише чат (GGUF): менша інсталяція, без навчання",
+    chatOnly: "Лише чат: менша інсталяція, без навчання",
     installLocation: "Розташування інсталяції:",
     changeLocation: "Змінити",
     useDefaultLocation: "Використати стандартне",

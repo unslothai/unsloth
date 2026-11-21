@@ -5730,7 +5730,7 @@ export const zhCN = {
     checking: "正在检查...",
     installPrompt: "要安装 Unsloth，请点击“开始使用”。",
     getStarted: "开始使用",
-    chatOnly: "仅聊天 (GGUF)：安装体积更小，不支持训练",
+    chatOnly: "仅聊天：安装体积更小，不支持训练",
     installLocation: "安装位置：",
     changeLocation: "更改",
     useDefaultLocation: "使用默认位置",

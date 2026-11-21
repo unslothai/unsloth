@@ -626,17 +626,23 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
     monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.CPU, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY", True, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "mlx_unavailable", raising = False)
-    # Pin the detail too: _hardware_snapshot reads three fields.
+    # Pin the detail too: _hardware_snapshot reads four fields.
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", None, raising = False)
     hw_mod.DETECTION_COMPLETE.set()
-    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable", None)
+    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable", None, False)
 
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", "mlx-vlm 0.4.3 (needs >=0.4.4)", raising = False)
     assert main_mod._hardware_snapshot() == (
         True,
         "mlx_unavailable",
         "mlx-vlm 0.4.3 (needs >=0.4.4)",
+        False,
     )
+
+    monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.MLX, raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "no_torch", raising = False)
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", None, raising = False)
+    assert main_mod._hardware_snapshot() == (True, "no_torch", None, True)
 
 
 def test_health_rereads_the_verdict_after_authentication():

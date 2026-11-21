@@ -5779,7 +5779,7 @@ export const ja = {
     checking: "確認しています...",
     installPrompt: "Unsloth をインストールするには、「はじめる」をクリックしてください。",
     getStarted: "はじめる",
-    chatOnly: "チャットのみ (GGUF): インストールサイズが小さく、トレーニングなし",
+    chatOnly: "チャットのみ: インストールサイズが小さく、トレーニングなし",
     installLocation: "インストール先:",
     changeLocation: "変更",
     useDefaultLocation: "デフォルトを使用",

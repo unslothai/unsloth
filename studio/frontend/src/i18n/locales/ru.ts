@@ -5858,7 +5858,7 @@ export const ru = {
     checking: "Проверка...",
     installPrompt: "Чтобы установить Unsloth, нажмите «Начать».",
     getStarted: "Начать",
-    chatOnly: "Только чат (GGUF): меньший объём установки, без обучения",
+    chatOnly: "Только чат: меньший объём установки, без обучения",
     installLocation: "Папка установки:",
     changeLocation: "Изменить",
     useDefaultLocation: "По умолчанию",

@@ -6210,7 +6210,7 @@ export const fa = {
     checking: "در حال بررسی...",
     installPrompt: "برای نصب Unsloth، روی «شروع کنید» کلیک کنید.",
     getStarted: "شروع کنید",
-    chatOnly: "فقط گفتگو (GGUF): نصب کوچک‌تر، بدون آموزش",
+    chatOnly: "فقط گفتگو: نصب کوچک‌تر، بدون آموزش",
     installLocation: "محل نصب:",
     changeLocation: "تغییر",
     useDefaultLocation: "استفاده از پیش‌فرض",
