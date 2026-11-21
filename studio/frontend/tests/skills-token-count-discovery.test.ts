@@ -88,6 +88,6 @@ test("the count passes the counted history so a Tools-off @mention is priced lik
   );
   assert.match(
     refresh,
-    /buildLocalTokenCountExtras\(\s*payloadThreadId,\s*countHistory\.messages,\s*\)/,
+    /buildLocalTokenCountExtras\(\s*payloadThreadId,\s*countHistory\.messages,\s*rolling,\s*\)/,
   );
 });

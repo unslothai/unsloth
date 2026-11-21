@@ -663,6 +663,8 @@ export interface OpenAIChatCompletionsRequest {
   repetition_penalty?: number;
   presence_penalty?: number;
   seed?: number;
+  /** Stop sequences; character chats stop a reply at another speaker's line. */
+  stop?: string[];
   image_base64?: string;
   audio_base64?: string;
   extra_audio_base64?: string[];
@@ -684,6 +686,7 @@ export interface OpenAIChatCompletionsRequest {
   thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
+  tool_choice?: "auto" | "none";
   mcp_enabled?: boolean;
   mcp_image?: string;
   studio_tool_history?: boolean;

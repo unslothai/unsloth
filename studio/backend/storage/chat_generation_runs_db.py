@@ -15,7 +15,7 @@ import time
 import weakref
 from functools import partial
 from pathlib import Path
-from typing import Any, Iterable, Union
+from typing import Any, Iterable, Optional, Union
 
 from storage.studio_db import get_connection, insert_server_chat_message, on_wal_keeper_closed
 from utils.account_context import current_account_id
@@ -320,6 +320,7 @@ def canonical_request(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    roleplay: Optional[dict[str, Any]] = None,
 ) -> tuple[str, str]:
     request_json = json.dumps(
         request_payload,
@@ -327,17 +328,21 @@ def canonical_request(
         separators = (",", ":"),
         ensure_ascii = False,
     )
-    identity = json.dumps(
-        {
-            "threadId": thread_id,
-            "userMessageId": user_message_id,
-            "assistantMessageId": assistant_message_id,
-            "requestPayload": {
-                key: value
-                for key, value in request_payload.items()
-                if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
-            },
+    identity = {
+        "threadId": thread_id,
+        "userMessageId": user_message_id,
+        "assistantMessageId": assistant_message_id,
+        "requestPayload": {
+            key: value
+            for key, value in request_payload.items()
+            if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
         },
+    }
+    # Omitted when unset, so requests without it hash as before.
+    if roleplay:
+        identity["replyMetadata"] = {"roleplay": roleplay}
+    identity = json.dumps(
+        identity,
         sort_keys = True,
         separators = (",", ":"),
         ensure_ascii = False,
@@ -509,12 +514,15 @@ def create_run(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    roleplay: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], bool]:
+    """``roleplay`` is the character turn stored on the reply's ``metadata.roleplay``."""
     request_json, request_hash = canonical_request(
         thread_id = thread_id,
         user_message_id = user_message_id,
         assistant_message_id = assistant_message_id,
         request_payload = request_payload,
+        roleplay = roleplay,
     )
     created = now_ms()
     worker_token = secrets.token_hex(16)
@@ -562,6 +570,7 @@ def create_run(
             raise ChatGenerationConflictError("This thread already has an active generation")
 
         metadata = {
+            **({"roleplay": roleplay} if roleplay else {}),
             "generationRunId": run_id,
             "generationSeq": 0,
             "generationStatus": "queued",
@@ -610,6 +619,9 @@ def create_run(
             merged_metadata = (
                 dict(assistant_metadata) if isinstance(assistant_metadata, dict) else {}
             )
+            if not roleplay:
+                # A speaker left on the row by an earlier attempt is not this run's.
+                merged_metadata.pop("roleplay", None)
             merged_metadata.update(metadata)
             conn.execute(
                 "UPDATE chat_messages SET metadata_json=? WHERE id=?",

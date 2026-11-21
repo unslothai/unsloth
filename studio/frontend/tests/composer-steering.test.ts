@@ -49,6 +49,7 @@ const names = [
   "findPromptQueueRunByThreadIds",
   "isPromptQueueTargetRunning",
   "isActivePromptQueueItem",
+  "parkUntilTargetIdle",
   "dispatchQueuedPrompt",
   "isPromptQueueRunReadyToDispatch",
   "handlePromptQueueRunState",
@@ -149,6 +150,7 @@ function world() {
     toast: { info: noop },
     discardQueuedChatRunSettingsForThread: noop,
     targetHasIndexingDocuments: () => indexing(),
+    groupRoundPending: () => false,
     appendQueuedPrompt: (_run: Run, item: Item) => {
       appended.push(item.prompt);
       item.dispatched = true;

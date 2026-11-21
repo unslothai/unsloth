@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The characters barrel reaches back into @/features/chat (an import cycle).
+import { characterOutbound, prepareCharacterCountRun, prepareCharacterRun } from "@/features/characters/chat-runtime";
+import { estimateTokenCount } from "@/lib/estimate-tokens";
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
@@ -149,6 +152,7 @@ import {
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
+import { localCompactionFields, localSamplingFields } from "../utils/local-request-fields";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import { prepareComparePaneRun } from "../compare-run-ownership";
 import {
@@ -879,14 +883,6 @@ async function updateStoredChatThreadEventually(
     if (updated) return;
     await wait(50);
   }
-}
-
-function estimateTokenCount(text: string): number | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  return Math.max(1, Math.round(trimmed.length / 4));
 }
 
 function buildTiming(
@@ -2240,6 +2236,8 @@ export async function buildLocalTokenCountHistory(
 ): Promise<{
   messages: OpenAIChatMessage[];
   studio_tool_history?: true;
+  /** A character chat: its extras must ask for rolling compaction, as the reply does. */
+  rolling: boolean;
 }> {
   const runtimeState = useChatRuntimeStore.getState();
   const { params } = runtimeState;
@@ -2253,11 +2251,33 @@ export async function buildLocalTokenCountHistory(
     uncapped: compactingLlamaCppChat(runtimeState),
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
-  const outboundMessages = survivingMessages
+  // Counted as it would be sent, so a character chat's meter includes the cards.
+  const characterRun = await prepareCharacterCountRun(rawMessages, threadId, survivingMessages);
+  const outboundMessages = characterOutbound(characterRun, survivingMessages)
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
     );
+  const combinedSystemPrompt = characterRun
+    ? characterRun.system
+    : await localCountChatInstructions(threadId, params);
+  if (combinedSystemPrompt) {
+    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
+  }
+
+  return {
+    messages: outboundMessages as OpenAIChatMessage[],
+    ...studioToolHistoryRequestFieldsAfterReplay(
+      survivingMessages as unknown as ToolHistoryMessage[],
+    ),
+    rolling: characterRun != null,
+  };
+}
+
+async function localCountChatInstructions(
+  threadId: string | undefined,
+  params: { systemPrompt?: unknown; systemVariables?: unknown },
+): Promise<string> {
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -2272,21 +2292,11 @@ export async function buildLocalTokenCountHistory(
     resolveProjectInstructions(projectId),
     resolveAgentsMd(projectId),
   ]);
-  const combinedSystemPrompt = composeChatInstructions({
+  return composeChatInstructions({
     agentsMd,
     projectInstructions,
     systemPrompt: safeSystemPrompt,
   });
-  if (combinedSystemPrompt) {
-    prependSystemPrompt(outboundMessages, combinedSystemPrompt);
-  }
-
-  return {
-    messages: outboundMessages as OpenAIChatMessage[],
-    ...studioToolHistoryRequestFieldsAfterReplay(
-      survivingMessages as unknown as ToolHistoryMessage[],
-    ),
-  };
 }
 
 /** The reasoning fields a completion would send: llama-server falls back to load-time
@@ -2330,6 +2340,7 @@ export function buildLocalTokenCountReasoning(
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
   messages: readonly { role?: string; content?: unknown }[] = [],
+  rolling = false,
 ): Promise<Record<string, unknown>> {
   const state = useChatRuntimeStore.getState();
   const {
@@ -2356,18 +2367,7 @@ export async function buildLocalTokenCountExtras(
   const threadField = {
     ...(threadId ? { thread_id: threadId } : {}),
     max_tokens: state.params.maxTokens,
-    ...ggufCompactionRequestFields({
-      isGguf: isServedByLlamaCpp({
-        loadedIsGguf: state.loadedIsGguf,
-        activeGgufVariant: state.activeGgufVariant,
-        activeNativePathToken: state.activeNativePathToken,
-        checkpoint: state.params.checkpoint,
-      }),
-      isMlx: state.loadedIsMlx === true,
-      isManagedEngine: state.loadedEngine !== "auto",
-      isNpu: isNpuModelId(state.params.checkpoint),
-      autoCompactEnabled: state.autoCompactEnabled,
-    }),
+    ...localCompactionFields(state, rolling),
   };
   if (!supportsTools) {
     return {
@@ -5416,13 +5416,22 @@ export function createOpenAIStreamAdapter(
         externalSelection?.modelId,
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
+      // A character chat sends its own prompt: the cast's cards, the persona and the scene.
+      const characterRun = await prepareCharacterRun({
+        threadId: resolvedThreadId,
+        messages: survivingMessages,
+        runConfig,
+        revalidate: true,
+      });
+      const roleplayCustom = characterRun ? { roleplay: characterRun.replyMeta } : {};
       const { messages: renderedMessages, sandboxAttachments } =
         supportsStudioToolsForThisTurn &&
         studioLocalCodeTools.includes("python")
           ? withSandboxAttachmentPaths(survivingMessages)
           : { messages: survivingMessages, sandboxAttachments: [] };
       // The backend Gemini translator rebuilds functionCall/functionResponse parts from these.
-      let outboundMessages = renderedMessages
+      // A character chat's turns carry the speaker names, notes and turn instructions.
+      let outboundMessages = characterOutbound(characterRun, renderedMessages)
         .flatMap((message) => {
           const serialized = toOpenAIMessages(
             message,
@@ -5513,6 +5522,9 @@ export function createOpenAIStreamAdapter(
         : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
+        const resumedPartial = characterRun
+          ? characterRun.prefill(continuation.partial)
+          : continuation.partial;
         const geminiReplayTurns =
           isGeminiApiProviderType(externalProvider?.providerType)
             ? continuation.geminiReplayTurns
@@ -5527,11 +5539,11 @@ export function createOpenAIStreamAdapter(
             content: continuationCompaction
               ? [
                   continuationCompaction,
-                  ...(continuation.partial
-                    ? [{ type: "text" as const, text: continuation.partial }]
+                  ...(resumedPartial
+                    ? [{ type: "text" as const, text: resumedPartial }]
                     : []),
                 ]
-              : continuation.partial,
+              : resumedPartial,
             ...(resumedThought ? { reasoning_content: resumedThought } : {}),
             ...(continuation.thoughtParts && continuation.thoughtParts.length > 0
               ? {
@@ -5557,13 +5569,15 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = await resolveChatInstructions(
-        resolvedThreadId,
-        params.systemPrompt,
-        params.systemVariables,
-        readThreadRecord,
-        { agentsMd: true },
-      );
+      const combinedSystemPrompt = characterRun
+        ? characterRun.system
+        : await resolveChatInstructions(
+            resolvedThreadId,
+            params.systemPrompt,
+            params.systemVariables,
+            readThreadRecord,
+            { agentsMd: true },
+          );
       if (combinedSystemPrompt) {
         prependSystemPrompt(outboundMessages, combinedSystemPrompt);
       }
@@ -5869,8 +5883,11 @@ export function createOpenAIStreamAdapter(
         void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
+          // Group rounds read the speaker and plan off the reply, audio ones included.
+          const audioMetadata = characterRun ? { metadata: { custom: roleplayCustom } } : {};
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
+            ...audioMetadata,
           };
 
           const result = await generateAudio(
@@ -5890,6 +5907,8 @@ export function createOpenAIStreamAdapter(
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
             runSignal,
+            // A speech model would read the user's line or a turn instruction aloud as the reply.
+            { requireText: Boolean(characterRun) },
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
@@ -5900,6 +5919,7 @@ export function createOpenAIStreamAdapter(
                 text: `<audio-player src="${audioUrl}" />`,
               },
             ],
+            ...audioMetadata,
           };
         } catch (err) {
           if (!runSignal.aborted) {
@@ -6101,6 +6121,7 @@ export function createOpenAIStreamAdapter(
           ),
         },
         ...generationCustom(),
+        ...roleplayCustom,
       });
       let incompleteReason: IncompleteReason | null = null;
       // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its only truncation signal.
@@ -7137,15 +7158,11 @@ export function createOpenAIStreamAdapter(
               isManagedEngine: isManagedEngineForCompaction,
               isNpu: isNpuForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              rolling: characterRun != null,
               compactNow,
             }),
-            temperature: params.temperature,
-            top_p: params.topP,
+            ...localSamplingFields(params),
             max_tokens: params.maxTokens,
-            top_k: params.topK,
-            min_p: params.minP,
-            repetition_penalty: params.repetitionPenalty,
-            presence_penalty: params.presencePenalty,
             // Omit when unset (server draws a seed) or unread, so a stale GGUF pin is never sent.
             ...(params.seed == null ||
             !modelReadsSamplingSeed(activeModel, runtime.loadedEngine)
@@ -7265,6 +7282,8 @@ export function createOpenAIStreamAdapter(
                 retriedWithRefreshedKey,
               );
               if (mcpImage) requestPayload = { ...requestPayload, mcp_image: mcpImage };
+              // Stops a reply that runs on into another speaker's line.
+              if (characterRun) requestPayload = { ...requestPayload, stop: characterRun.stop };
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -7308,6 +7327,7 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        ...(characterRun ? { assistantRoleplay: characterRun.replyMeta } : {}),
                         ...tabCloseRunFields(
                           runtime.keepRunningWhenTabClosed,
                         ),
@@ -9148,6 +9168,7 @@ export function createOpenAIStreamAdapter(
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
               ...generationCustom(),
+              ...roleplayCustom,
             },
           },
         };
@@ -9321,6 +9342,7 @@ export function createOpenAIStreamAdapter(
                 timing: partialTiming,
                 resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
                 ...generationCustom(),
+                ...roleplayCustom,
               },
             },
           };

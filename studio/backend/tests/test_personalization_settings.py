@@ -205,6 +205,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("api", False),
     ("tasks", False),
     ("translate", False),
+    ("characters", False),
 ]
 
 
@@ -245,6 +246,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("api", False),
         ("tasks", False),
         ("translate", False),
+        ("characters", False),
     ]
 
 
@@ -540,6 +542,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "api", "pinned": False},
                     {"id": "tasks", "pinned": False},
                     {"id": "translate", "pinned": False},
+                    {"id": "characters", "pinned": False},
                 ],
                 "sidebarNavAuto": [],
             },

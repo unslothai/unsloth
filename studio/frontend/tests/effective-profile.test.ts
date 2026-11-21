@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { addressName } from "../src/features/profile/utils/address-name.ts";
 import { decodeJwtSubject } from "../src/features/profile/utils/jwt-subject.ts";
 import { initialsFromName } from "../src/features/profile/utils/avatar-initials.ts";
 
@@ -23,6 +24,7 @@ test("account identity supplies the sidebar name and avatar unless a display nam
     ),
     {
       "@/features/auth": { getAuthToken: () => token, OWNER_USERNAME: "unsloth" },
+      "../utils/address-name": { addressName },
       "../utils/jwt-subject": { decodeJwtSubject },
       "../stores/user-profile-store": {
         useUserProfileStore: (select: (state: typeof profile) => unknown) =>

@@ -6,7 +6,6 @@ export { createLibraryComposerAttachment } from "./composer-attachment";
 export { LibraryAttachmentTargetContext } from "./composer-attachment-target";
 export { LIBRARY_CHATS_PREFS_STORAGE_KEY } from "./chats/prefs-store";
 export { useLibraryFavorite, useLibraryFavorites, useLibraryFavoritesStore } from "./favorites-store";
-export { ConfirmDeleteDialog } from "./components/library-dialogs";
 export { chatAboutMedia, resetToNewChat, startLibraryChat } from "./start-chat";
 export { revealInFolder, useRevealLabel } from "./reveal";
 export { LIBRARY_TABS, validateLibrarySearch, type LibrarySearch, type LibraryTab } from "./search";

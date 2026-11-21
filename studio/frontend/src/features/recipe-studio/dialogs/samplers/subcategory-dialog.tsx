@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/select";
 import { type ReactElement, useCallback, useEffect, useMemo } from "react";
 import type { SamplerConfig } from "../../types";
-import { ChipInput } from "../../components/chip-input";
+import { ChipInput } from "@/components/chip-input";
 import { NameField } from "../shared/name-field";
 import { FieldLabel } from "../shared/field-label";
 

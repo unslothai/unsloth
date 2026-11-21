@@ -93,6 +93,8 @@ import {
 } from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
+// eslint-disable-next-line no-restricted-imports -- The characters barrel reaches back into @/features/chat (an import cycle).
+import { characterChatTranscript } from "@/features/characters/export-transcript";
 import {
   buildNamedConversationsMarkdown,
   conversationExportBasename,
@@ -260,6 +262,8 @@ async function loadConversationMessages(
     includeSiblings?: boolean;
     includeInstructions?: boolean;
     liveBranch?: string[] | null;
+    /** Training formats: a chat template must see user and assistant turns alternate. */
+    alternating?: boolean;
   } = {},
 ) {
   const {
@@ -267,6 +271,7 @@ async function loadConversationMessages(
     includeSiblings = true,
     includeInstructions = true,
     liveBranch = liveThreadBranch(threadId),
+    alternating = false,
   } = options;
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
@@ -278,12 +283,14 @@ async function loadConversationMessages(
   }
   // preserve DB order for legacy flat threads because parent-chain traversal would reverse it
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return [...instructions, ...raw];
-  const headId = branchHeadId(threadId, liveBranch, raw);
-  return [
-    ...instructions,
-    ...orderByParentChain(raw, { includeSiblings, headId }),
-  ] as typeof raw;
+  const ordered = hasParentIds
+    ? (orderByParentChain(raw, {
+        includeSiblings,
+        headId: branchHeadId(threadId, liveBranch, raw),
+      }) as typeof raw)
+    : raw;
+  // A character chat never sent the chat's instructions: its prompt was built from the cards.
+  return characterChatTranscript(ordered, alternating) ?? [...instructions, ...ordered];
 }
 
 async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
@@ -500,6 +507,7 @@ export async function exportConversationShareGPT(
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings("sharegpt"),
     liveBranch,
+    alternating: true,
   });
   if (!messages) return;
 
@@ -544,6 +552,7 @@ async function exportConversationJsonl(
       layout === "training" ? "jsonl-raw" : "jsonl-messages",
     ),
     liveBranch,
+    alternating: true,
   });
   if (!messages) return;
 
@@ -1272,6 +1281,11 @@ export async function buildFineTuneJsonl(
       listStoredChatMessages(id),
       chatInstructionsTurn(id),
     ]);
+    // A character chat's turns only make sense with its cards and hidden turns, which this format lacks.
+    if (characterChatTranscript(raw)) {
+      skipped += 1;
+      continue;
+    }
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );

@@ -228,7 +228,7 @@ function loadStore(
         }),
       },
     },
-    "./object-url-cache": { clearCachedObjectUrls: () => {} },
+    "@/lib/object-url-cache": { clearCachedObjectUrls: () => {} },
   }).useLibraryStore;
 }
 

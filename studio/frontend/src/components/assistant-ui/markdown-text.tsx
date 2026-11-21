@@ -3,6 +3,7 @@
 
 "use client";
 
+import { useCharacterReplyText } from "@/features/characters";
 import { openImageViewer } from "@/components/image-viewer";
 import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
 import { useT } from "@/i18n";
@@ -1747,11 +1748,12 @@ function MarkdownTextRenderer({
 const MarkdownTextImpl = () => {
   const allowSearchImages = useContext(SearchImagesEnabledContext);
   const aui = useAui();
-  const { text, status } = useMessagePartTextSafe();
+  const { text: partText, status } = useMessagePartTextSafe();
   const partIndex =
     aui.part.source === "message" && aui.part.query.type === "index"
       ? aui.part.query.index
       : 0;
+  const text = useCharacterReplyText(partText);
   // Streamdown only extends parsed blocks, so key per message; the cache generation covers edits
   // that drop retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);

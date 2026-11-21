@@ -21,6 +21,9 @@ type ChipInputProps = {
   onRemove: (index: number) => void;
   placeholder?: string;
   suggestions?: string[];
+  maxLength?: number;
+  ariaLabel?: string;
+  removeLabel?: (value: string) => string;
 };
 
 export function ChipInput({
@@ -29,6 +32,9 @@ export function ChipInput({
   onRemove,
   placeholder = "Type and press Enter",
   suggestions,
+  maxLength,
+  ariaLabel,
+  removeLabel,
 }: ChipInputProps): ReactElement {
   const [draft, setDraft] = useState("");
   const [isWrapped, setIsWrapped] = useState(false);
@@ -100,6 +106,7 @@ export function ChipInput({
             variant="ghost"
             size="icon-xs"
             className="-ml-1 opacity-50 hover:opacity-100"
+            aria-label={removeLabel?.(value)}
             onClick={() => onRemove(index)}
           >
             <HugeiconsIcon
@@ -114,6 +121,8 @@ export function ChipInput({
         className="nodrag min-w-16 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         placeholder={values.length === 0 ? placeholder : ""}
         value={draft}
+        maxLength={maxLength}
+        aria-label={ariaLabel}
         list={suggestions && suggestions.length > 0 ? listId : undefined}
         onChange={(event) => handleChange(event.target.value)}
         onBlur={() => addValue(draft, false)}
