@@ -3921,7 +3921,8 @@ def _train_dit(
         _warn_fp16_compile_declined(cfg, on_event)
     compiled = (
         False
-        if fp16_amp
+        # The torchao weight-only int8 fallback cannot trace in training, whatever the W8A8 setting asked for.
+        if fp16_amp or (base_precision == "int8" and not w8a8_on)
         else _maybe_compile_transformer(
             transformer,
             cfg,

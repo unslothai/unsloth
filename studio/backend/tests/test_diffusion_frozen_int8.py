@@ -125,6 +125,21 @@ def test_fp16_preflight_allows_int8_only_with_the_w8a8_gate(monkeypatch):
     assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "bf16") or "")
 
 
+@pytest.mark.parametrize("cap, refused", [((7, 0), True), ((7, 5), False), ((8, 9), False)])
+def test_fp16_preflight_refuses_w8a8_without_int8_tensor_cores(monkeypatch, cap, refused):
+    """sm70 has no int8 GEMM: the trainer's probe would raise after residents were evicted, so the preflight refuses."""
+    import core.training.diffusion_train_common as tc
+
+    monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: True)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
+    reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
+    assert ("7.5+" in (reason or "")) is refused
+
+
 def test_conversion_keeps_the_fp32_island_on_an_untargeted_layer():
     """fp16 path: islands are installed before the W8A8 conversion and live on the module's forward. A converted
     Z-Image feed_forward.w2 (not a LoRA target) must still run fp32 with autocast off, not fp16 / bf16."""
