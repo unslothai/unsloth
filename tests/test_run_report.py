@@ -278,3 +278,34 @@ def test_memory_report_skips_current_device_without_context(monkeypatch):
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda i = 0: 10 * gb if i == 1 else 0)
     monkeypatch.setattr(torch._C, "_cuda_hasPrimaryContext", lambda i: i == 1, raising = False)
     assert rr._devices() == [1]
+
+
+def test_cpu_memory_report_lines(monkeypatch, capsys):
+    """The CPU backend reports host RAM (RSS, peak, available); the GPU path's output is unchanged."""
+    monkeypatch.setenv("UNSLOTH_MEMORY_REPORT", "1")
+    rss, peak, available, total = rr.cpu_memory_snapshot()
+    assert peak is not None and peak > 0
+    if rss is not None:
+        assert rss <= peak and total is not None and available is not None and available <= total
+
+    class Owner:
+        pass
+
+    owner = Owner()
+    lines = rr.report_memory("load", owner, cpu = True)
+    assert len(lines) == 1 and "memory at load on cpu: process RSS" in lines[0]
+    assert "on cpu" in capsys.readouterr().out
+    assert rr.report_memory("load", owner, cpu = True) is None  # once per (stage, owner)
+    # Without cpu = True nothing about the host is printed (no CUDA device in use here).
+    if not torch.cuda.is_available():
+        assert rr.report_memory("first forward", Owner()) == []
+
+
+def test_cpu_memory_report_wired_on_cpu_route():
+    """_cpu_init loads run_report by file (unsloth.utils imports the GPU stack) at load and trainer init."""
+    source = (ROOT / "unsloth" / "_cpu_init.py").read_text()
+    tree = ast.parse(source)
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    names = {getattr(node.func, "attr", getattr(node.func, "id", None)) for node in calls}
+    assert {"_report_cpu_memory", "install_memory_report", "report_memory"} <= names
+    assert "from .utils.run_report" not in source and "from .utils import" not in source
