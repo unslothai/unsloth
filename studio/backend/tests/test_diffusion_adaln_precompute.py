@@ -824,3 +824,108 @@ def test_cross_device_rows_do_not_recompile_a_fullgraph_block():
     for _ in range(12):
         out = compiled(x)
     assert out.device.type == "meta" and tuple(out.shape) == (1, 6)
+
+
+def _gguf_q8(model, match):
+    """Swaps matching Linears for the GGUFLinear diffusers' GGUF loader builds from a Q8_0 tensor."""
+    gguf = pytest.importorskip("gguf")
+    utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
+    dtype = next(model.parameters()).dtype
+    for name, mod in list(model.named_modules()):
+        for cname, child in list(mod.named_children()):
+            full = f"{name}.{cname}" if name else cname
+            if not (isinstance(child, torch.nn.Linear) and match(full)):
+                continue
+            q = gguf.quantize(child.weight.detach().float().numpy(), gguf.GGMLQuantizationType.Q8_0)
+            lin = utils.GGUFLinear(
+                child.in_features, child.out_features, bias = child.bias is not None, compute_dtype = dtype
+            )
+            lin.weight = utils.GGUFParameter(
+                torch.from_numpy(q), quant_type = gguf.GGMLQuantizationType.Q8_0
+            )
+            if child.bias is not None:
+                lin.bias = torch.nn.Parameter(child.bias.detach(), requires_grad = False)
+            setattr(mod, cname, lin)
+    return model
+
+
+def _gguf_qwen_edit(dtype = torch.float32):
+    """Qwen-Image-Edit-2511's layout: zero_cond_t, GGUF time embedder and per-block modulation."""
+    model = _qwen(zero_cond_t = True).to(dtype)
+    return _gguf_q8(model, lambda n: "time_text_embed" in n or "_mod." in n).requires_grad_(False)
+
+
+def test_gguf_time_embedder_gets_a_host_copy():
+    """A deep-copied GGUFParameter loses its quant_type, so the copy is built tensor by tensor."""
+    model = _gguf_qwen_edit()
+    calls = _qwen_calls(torch.float32, zero_cond_t = True)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    host = model.__dict__[ap.STATE_ATTR].tte_host
+    assert host is not None
+    live = model.time_text_embed.timestep_embedder.linear_1.weight
+    copied = host.timestep_embedder.linear_1.weight
+    assert copied.quant_type == live.quant_type and copied.data_ptr() != live.data_ptr()
+    t = torch.rand(2) / 2
+    hs = torch.empty(1)
+    with torch.no_grad():
+        assert torch.equal(host(t, hs, None), model.time_text_embed(t, hs, None))
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+    assert ap.installed(model)
+
+
+def test_fallback_restore_joins_the_top_level_host_map():
+    """Studio's pinned / no-copy-back top-level group onloads only its host map: a restored norm_out must join it."""
+    from diffusers.hooks import group_offloading as go
+
+    from core.inference.diffusion_memory import TOP_GROUP_HOST_ATTR
+
+    model = _qwen(zero_cond_t = True)
+    calls = _qwen_calls(torch.float32, zero_cond_t = True)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    _group_offloaded(model, fake_stream = False)
+    top = model._diffusers_hook.get_hook(go._GROUP_OFFLOADING).group
+    host = {t: t.data for m in top.modules for t in list(m.parameters()) + list(m.buffers())}
+    setattr(top, TOP_GROUP_HOST_ATTR, host)
+    # the stand-in held norm_out.linear when the map was built
+    assert not any(t is model.norm_out.linear._unsloth_orig.weight for t in host)
+    assert ap.uninstall(model, reason = "unsupported call: test")
+    lin = model.norm_out.linear
+    assert lin.weight in host and lin.bias in host
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("fallback", [False, True])
+def test_gguf_qwen_edit_streamed_render_matches_stock(fallback):
+    """Issue 18759: GGUF Qwen-Image-Edit, streamed through Studio's group offload with the top-level copy-back
+    skipped, rendered every step (precompute on, and after a fallback) bit-identical to the stock model."""
+    from core.inference import diffusion_memory as dm
+
+    def build(precompute):
+        model = _gguf_qwen_edit(torch.bfloat16)
+        calls = _qwen_calls(torch.bfloat16, zero_cond_t = True)
+        pipe = _keep(_Pipe(torch.linspace(1000.0, 30.0, len(calls))))
+        pipe.transformer = model
+        pipe.components = {"transformer": model}
+        if precompute:
+            assert ap.install(model, pipe, offloaded = True)
+            if fallback:
+                model.__dict__[ap.STATE_ATTR].tte_host = None
+        assert dm._apply_group_offload(pipe, "cuda", None)
+        dm._skip_top_level_copy_back(model, None)
+        cuda = []
+        for kw in calls:
+            kw = dict(kw)
+            for k in ("hidden_states", "encoder_hidden_states", "encoder_hidden_states_mask", "timestep"):
+                kw[k] = kw[k].to("cuda")
+            cuda.append(kw)
+        return model, cuda
+
+    stock, calls = build(False)
+    ref = [o.cpu() for o in _run(stock, calls)]
+    model, calls = build(True)
+    out = [o.cpu() for o in _run(model, calls)]
+    assert all(torch.equal(a, b) for a, b in zip(ref, out))
+    assert ap.installed(model) is not fallback
