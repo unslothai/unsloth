@@ -407,6 +407,17 @@ export function chooseQuant<T extends QuantChoice>(
   return candidates[0];
 }
 
+/** The quant a row's own menu acts on: its favorite, or its only one on disk. */
+export function soleOnDiskVariant<T extends QuantChoice>(
+  onDisk: readonly T[],
+  favoriteQuant: string | null | undefined,
+): T | undefined {
+  if (favoriteQuant) {
+    return onDisk.find((v) => norm(v.quant) === norm(favoriteQuant));
+  }
+  return onDisk.length === 1 ? onDisk[0] : undefined;
+}
+
 export interface SliderLevel {
   value: string;
   label: string;

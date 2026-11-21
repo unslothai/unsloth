@@ -251,6 +251,7 @@ import {
   readBounded,
   repoSection,
   sectionsHaveRows,
+  soleOnDiskVariant,
   sortConnectedRows,
   sortDeviceRows,
 } from "./picker-model";
@@ -445,6 +446,10 @@ function residentMeta(row: Row): ModelSelectorChangeMeta {
 function quantBytes(variant: GgufVariantDetail): number {
   const bytes = variant.download_size_bytes;
   return typeof bytes === "number" && bytes > 0 ? bytes : variant.size_bytes;
+}
+
+function isExportedGguf(row: Row): boolean {
+  return row.lora?.source === "exported" && row.lora.exportType === "gguf";
 }
 
 function rowSource(row: Row): ModelSelectorChangeMeta["source"] {
@@ -3993,13 +3998,14 @@ export function ComposerModelPicker({
       : undefined;
 
   const deleteQuantFor = (row: Row, variant: GgufVariantDetail) => {
+    const loadedQuant =
+      row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null);
+    // A loaded row with an unknown quant may hold this one, so keep it.
     const inMemory =
       Boolean(row.loaded) &&
-      variant.quant.toLowerCase() ===
-        (
-          row.loadedQuant ?? (row.id === chosen?.id ? activeVariant : null)
-        )?.toLowerCase();
-    if (row.lora?.source === "exported" && row.lora.exportType === "gguf") {
+      (!loadedQuant ||
+        variant.quant.toLowerCase() === loadedQuant.toLowerCase());
+    if (isExportedGguf(row)) {
       return {
         title: "Delete exported GGUF variant?",
         description: (
@@ -4106,11 +4112,7 @@ export function ComposerModelPicker({
   const deleteFor = (row: Row) => {
     const lora = row.lora;
     const trained = fineTunedSource(row);
-    if (
-      lora &&
-      trained &&
-      !(trained === "exported" && lora.exportType === "gguf")
-    ) {
+    if (lora && trained && !isExportedGguf(row)) {
       return {
         title: "Delete fine-tuned model?",
         description: (
@@ -4239,16 +4241,8 @@ export function ComposerModelPicker({
     const manyQuants = onDisk.length + partials.length > 1;
     const wholeQuant = onDisk.length === 1 ? onDisk[0].quant : null;
     const soleQuant = row.favoriteQuant ?? (manyQuants ? null : wholeQuant);
-    const savedVariant =
-      row.kind !== "gguf"
-        ? undefined
-        : row.favoriteQuant
-          ? onDisk.find(
-              (v) => v.quant.toLowerCase() === row.favoriteQuant?.toLowerCase(),
-            )
-          : onDisk.length === 1
-            ? onDisk[0]
-            : undefined;
+    const sole = soleOnDiskVariant(onDisk, row.favoriteQuant);
+    const savedVariant = row.kind === "gguf" ? sole : undefined;
     // Known without a quant listing, for Reset run settings and the gear's saved state.
     const savedMeta = savedVariant
       ? ggufMeta(row, savedVariant, true, true, row.gguf?.has_vision)
@@ -4541,7 +4535,12 @@ export function ComposerModelPicker({
                           ]
                         : []),
                     ]}
-                    del={deleteFor(row)}
+                    del={
+                      deleteFor(row) ??
+                      (isExportedGguf(row) && sole
+                        ? deleteQuantFor(row, sole)
+                        : undefined)
+                    }
                     runSettings={savedTarget}
                     buttonClassName={cn(ACTION_DOTS, actionClass, TOUCH_DOTS)}
                     iconClassName="composer-row-dots"
@@ -4732,8 +4731,7 @@ export function ComposerModelPicker({
     isGguf = true,
     hasVision: boolean | undefined = row.gguf?.has_vision,
   ) => {
-    const exportedGguf =
-      row.lora?.source === "exported" && row.lora.exportType === "gguf";
+    const exportedGguf = isExportedGguf(row);
     const key = `${row.id}::${variant.quant}`;
     const starred = pinned.includes(key);
     const button = ACTION_ROUND;
