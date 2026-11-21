@@ -41,6 +41,7 @@ from .llama import (
     resolve_logit_transforms,
     fake_quantize_lm_head_inputs,
     lm_head_needs_forward,
+    output_head_not_fusable,
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
     _run_backbone,
@@ -387,6 +388,8 @@ def MistralForCausalLM_fast_forward(
     else:
         RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1" or (
             lm_head_needs_forward(self.lm_head)
+            # Unmerged LoRA on the head or a head bias: the fused CE reads lm_head.weight alone.
+            or output_head_not_fusable(self.lm_head)
         )
         # Below 1024 normal Unsloth uses less VRAM.
         if bsz * q_len <= 1024 and not RETURN_LOGITS:
