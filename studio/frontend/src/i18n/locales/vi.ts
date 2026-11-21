@@ -1056,6 +1056,7 @@ export const vi = {
     error: "Lỗi",
     export: "Xuất",
     help: "Trợ giúp",
+    hide: "Ẩn",
     todayAt: "Hôm nay, {time}",
     yesterdayAt: "Hôm qua, {time}",
     loading: "Đang tải...",

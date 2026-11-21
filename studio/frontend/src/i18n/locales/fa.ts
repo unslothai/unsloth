@@ -1049,6 +1049,7 @@ export const fa = {
     error: "خطا",
     export: "خروجی گرفتن",
     help: "راهنما",
+    hide: "پنهان کردن",
     todayAt: "امروز، {time}",
     yesterdayAt: "دیروز، {time}",
     loading: "در حال بارگذاری...",

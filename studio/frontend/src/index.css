@@ -5049,6 +5049,24 @@ html[data-chat-font] .aui-root {
 	flex: none;
 	margin-left: auto !important;
 }
+/* Cancel stops the load, so it reads as a button; the X beside it only hides the toast. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-cancel] {
+	border: 1px solid var(--border) !important;
+	background: transparent !important;
+	color: var(--foreground) !important;
+	font-weight: 500 !important;
+	padding: calc(3px * var(--ui-space-scale, 1)) calc(10px * var(--ui-space-scale, 1)) !important;
+}
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-cancel]:is(:hover, :focus-visible) {
+	border-color: color-mix(in srgb, var(--destructive) 45%, transparent) !important;
+	background: color-mix(in srgb, var(--destructive) 8%, transparent) !important;
+	color: var(--destructive) !important;
+}
+/* sonner.tsx tags the X of a toast with a Cancel; :has([data-cancel]) here would restyle the whole thread. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-close-button][data-hide-label] {
+	top: 50% !important;
+	transform: translateY(-50%) !important;
+}
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
 	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
@@ -7867,6 +7885,10 @@ html[data-glass][data-glass-menus] :is([data-sonner-toast][data-styled="true"], 
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent) !important;
+}
+/* The glass rim above already outlines the toast; the plain hairline border would double it. */
+html[data-glass][data-glass-menus] [data-sonner-toast][data-styled="true"] {
+  border-color: transparent !important;
 }
 html[data-glass^="liquid"][data-glass-menus] :is([data-sonner-toast][data-styled="true"], .toast-surface) {
   background-image: var(--glass-sheen);

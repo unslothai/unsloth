@@ -955,6 +955,7 @@ export const ja = {
     error: "エラー",
     export: "エクスポート",
     help: "ヘルプ",
+    hide: "非表示",
     todayAt: "今日 {time}",
     yesterdayAt: "昨日 {time}",
     loading: "読み込み中...",

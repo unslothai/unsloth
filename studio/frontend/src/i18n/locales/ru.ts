@@ -956,6 +956,7 @@ export const ru = {
     error: "Ошибка",
     export: "Экспорт",
     help: "Справка",
+    hide: "Скрыть",
     todayAt: "Сегодня, {time}",
     yesterdayAt: "Вчера, {time}",
     loading: "Загрузка…",

@@ -953,6 +953,7 @@ export const ar = {
     error: "خطأ",
     export: "تصدير",
     help: "مساعدة",
+    hide: "إخفاء",
     todayAt: "اليوم، {time}",
     yesterdayAt: "أمس، {time}",
     loading: "جارٍ التحميل...",

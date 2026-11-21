@@ -836,6 +836,7 @@ export const it = {
     error: "Errore",
     export: "Esporta",
     help: "Aiuto",
+    hide: "Nascondi",
     todayAt: "Oggi, {time}",
     yesterdayAt: "Ieri, {time}",
     loading: "Caricamento...",

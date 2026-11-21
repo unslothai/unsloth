@@ -1055,6 +1055,7 @@ export const id = {
     error: "Kesalahan",
     export: "Ekspor",
     help: "Bantuan",
+    hide: "Sembunyikan",
     todayAt: "Hari ini, {time}",
     yesterdayAt: "Kemarin, {time}",
     loading: "Memuat...",

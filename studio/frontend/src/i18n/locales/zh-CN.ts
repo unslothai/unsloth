@@ -951,6 +951,7 @@ export const zhCN = {
     error: "错误",
     export: "导出",
     help: "帮助",
+    hide: "隐藏",
     todayAt: "今天 {time}",
     yesterdayAt: "昨天 {time}",
     loading: "加载中...",

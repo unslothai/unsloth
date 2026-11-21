@@ -957,6 +957,7 @@ export const en = {
     error: "Error",
     export: "Export",
     help: "Help",
+    hide: "Hide",
     todayAt: "Today, {time}",
     yesterdayAt: "Yesterday, {time}",
     loading: "Loading...",
