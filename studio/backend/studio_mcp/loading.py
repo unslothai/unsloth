@@ -88,7 +88,7 @@ class LoadJob(job_store.Job):
     post: Optional[asyncio.Future] = field(default = None, repr = False)
     # The media load's load_token: an unload naming it ends this load only, even if its POST is still out.
     load_token: Optional[str] = None
-    # A call-scoped key's fingerprint (a chat tool call): only that call follows the job, which stops with it.
+    # A chat tool call's key fingerprint: only that call follows the job, which stops with it.
     scoped: Optional[str] = None
 
     def note(self, fraction: Optional[float], phase: str) -> None:
@@ -128,15 +128,17 @@ def _same_id(left: str, right: str) -> bool:
     return model_identity.same_repo(left, right, probe = True)
 
 
+def _fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
 def _scope_of(caller: Caller) -> Optional[str]:
-    return hashlib.sha256(caller.token.encode()).hexdigest()[:16] if caller.call_scoped else None
+    return _fingerprint(caller.token) if caller.call_scoped else None
 
 
 async def stop_scoped_loads(token: str) -> int:
-    """Stop following the loads a call-scoped key started, before the key is revoked. A media load whose
-    request is out still finishes in Unsloth Studio (its POST is shielded); this only ends the job."""
-    scoped = hashlib.sha256(token.encode()).hexdigest()[:16]
-    jobs = [job for job in LOADS.running() if job.scoped == scoped]
+    """Ends the jobs of the loads a call-scoped key started; a media load already posted still finishes."""
+    jobs = [job for job in LOADS.running() if job.scoped == _fingerprint(token)]
     for job in jobs:
         job_store.mark_cancelled(job)
     return len(jobs)
@@ -145,7 +147,7 @@ async def stop_scoped_loads(token: str) -> int:
 def _in_flight(caller: Caller, asked: LoadJob) -> Optional[LoadJob]:
     for job in LOADS.running(caller.account_id):
         if (
-            # A job driven by another call's short-lived key would fail once that key is revoked.
+            # Another call's key is revoked when that call ends.
             job.scoped == asked.scoped
             and job.slot == asked.slot
             and _same(job.model, asked.model)
@@ -374,13 +376,12 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     return poll
 
 
-# A load the llm route refuses with these words is a model it cannot read: another kind, or an unknown architecture.
+# The llm route's words for a model it cannot read.
 _NOT_LLM_MARKERS = ("autoconfig", "model_type", "unrecognized model")
 
 
 def _wrong_kind_hint(message: str) -> Optional[str]:
-    """A note on kind for a model the llm route could not read (load_model already refused a catalog row of
-    another kind); None for any other failure."""
+    """A note on kind for a model the llm route could not read; None for any other failure."""
     if not any(marker in message.lower() for marker in _NOT_LLM_MARKERS):
         return None
     tools = problems.caller_tools()

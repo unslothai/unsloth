@@ -204,8 +204,8 @@ def media_load_keeps_chat(owner: str) -> bool:
 def media_load_spares_chat(
     owner: str, kind: str, model: Optional[str], mode: Optional[str]
 ) -> bool:
-    """For a direct image or video load: True when it must leave every chat model loaded (a chat's own
-    tools key), so the arbiter refuses instead of evicting. Refuses at once when Off would surely evict."""
+    """True when a direct image or video load must keep the chat model (a chat's own tools key), so the
+    arbiter refuses instead of evicting; refuses at once when Off would surely evict."""
     policy = current_load_policy()
     if policy is LoadPolicy.ANY:
         return False
@@ -221,7 +221,7 @@ def chat_kept_refusal(
     *,
     priced: bool = True,
 ) -> Any:
-    """The HTTP refusal for a load that would unload the chat model; names only a change that would let it load."""
+    """The refusal for a load that would unload the chat model, naming only a change that lets it load."""
     if mode == "off":
         reason = (
             f"{MULTI_MODEL_SETTING} is Off, so loading it would unload the model serving this chat",

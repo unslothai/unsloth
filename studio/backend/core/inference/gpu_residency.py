@@ -224,9 +224,9 @@ def _cached_pick(repo: str, filename: Optional[str]) -> Optional[str]:
 
 
 def _prequant_transformer_sizes(fam: Any, request: Any, dirs: list) -> Optional[dict[str, int]]:
-    """An int8 or fp8 load seeds its transformer from the family's prequantized repo, so the base pipeline holds
-    every component but the transformer: its weights are then that repo's cached transformer files. None when the
-    load reads the base transformer (bf16, a LoRA) or either side is not on disk."""
+    """The cached transformer files of the prequantized repo an int8 or fp8 load seeds from, for a base pipeline
+    without its own transformer. None when the load reads the base transformer (bf16, a LoRA) or either side
+    is not on disk."""
     from core.inference.diffusion import DiffusionBackend as DB
     from core.inference.diffusion_families import local_pipeline_components_are_complete
 
@@ -254,7 +254,7 @@ def _prequant_transformer_sizes(fam: Any, request: Any, dirs: list) -> Optional[
         getattr(source, "location", None) if getattr(source, "kind", None) == "repo" else None
     )
     location = location or repos.get(scheme)
-    # The loader reads one of these files (int8 ConvRot or fp8 at the repo root), or a transformer/ folder.
+    # A root file the loader reads (int8 ConvRot or fp8), or anything under transformer/.
     names = set(candidate_filenames_of(source)) if source is not None else set()
     sizes: dict[str, int] = {}
 

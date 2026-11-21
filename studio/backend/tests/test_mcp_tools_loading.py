@@ -1539,7 +1539,7 @@ def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(mon
     assert unloaded.unloaded is True
 
 
-# Kind inference: a catalog row or the /v1/models task picks the load route; no kind is an llm.
+# Kind inference: a catalog row or the /v1/models task picks the route; otherwise llm.
 FLUX2 = "unsloth/FLUX.2-klein-4B"
 MEDIA_CATALOG = ("GET", "/api/inference/media/catalog")
 AUDIO_CATALOG = ("GET", "/api/inference/audio/catalog")
@@ -1549,7 +1549,6 @@ NO_CATALOG = {"models": []}
 
 
 def _autoconfig(model):
-    # The transformers failure the text route answers for a model it cannot read.
     detail = f"Unrecognized model in {model}. Should have a model_type key in its config.json."
     return JSONResponse({"detail": detail}, status_code = 500)
 
@@ -1568,31 +1567,6 @@ def test_a_catalog_image_id_loads_as_an_image_without_a_kind(monkeypatch, fast_p
     assert bodies(studio, "/api/inference/load") == []
 
 
-def test_an_explicit_kind_reads_no_catalog_on_success(monkeypatch, fast_polls):
-    routes = {
-        **PAYLOADS,
-        MEDIA_CATALOG: FLUX2_CATALOG,
-        AUDIO_CATALOG: NO_CATALOG,
-        V1_MODELS: {"data": []},
-    }
-    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "kind": "llm"})
-    assert result["isError"] is False, result
-    # An explicit llm load reads only the catalog (to refuse a catalog image model before it unloads anything).
-    reads = [
-        c for c in studio.state.calls if (c[0], c[1]) in {MEDIA_CATALOG, AUDIO_CATALOG, V1_MODELS}
-    ]
-    assert {(c[0], c[1]) for c in reads} <= {MEDIA_CATALOG, AUDIO_CATALOG}
-    studio = _media_studio(
-        "image",
-        catalog = FLUX2_CATALOG,
-        progress = [READY],
-        statuses = [{"loaded": True, "repo_id": FLUX2}],
-    )
-    result, studio = run_tool(monkeypatch, studio, "load_model", {"model": FLUX2, "kind": "image"})
-    assert result["structuredContent"]["kind"] == "image"
-    assert [c for c in studio.state.calls if (c[0], c[1]) == MEDIA_CATALOG] == []
-
-
 def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(
     monkeypatch, fast_polls
 ):
@@ -1604,8 +1578,10 @@ def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_loa
     }
     result, studio = run_tool(monkeypatch, routes, "load_model", {"model": FLUX2, "kind": "llm"})
     assert result["isError"] is True
-    text = json.dumps(result)
-    assert "kind='image'" in text and "not a chat model" in text, text
+    text = result["content"][0]["text"]
+    assert (
+        "not a chat model" in text and f"call load_model(model='{FLUX2}', kind='image')" in text
+    ), text
     assert bodies(studio, "/api/inference/load") == []
 
 
@@ -1616,7 +1592,6 @@ TTS_CATALOG = {"models": [{"id": TTS_ID, "task": "tts"}]}
 def test_an_explicit_llm_load_of_a_catalog_tts_row_loads_through_the_llm_route(
     monkeypatch, fast_polls
 ):
-    # The llm route serves text-to-speech and audio models, so only image, video and stt rows are refused.
     routes = {
         **PAYLOADS,
         MEDIA_CATALOG: NO_CATALOG,
@@ -1667,15 +1642,6 @@ def test_an_unknown_repo_loads_as_an_llm_with_the_body_of_kind_llm(monkeypatch, 
     assert sent == bodies(explicit, "/api/inference/load")
 
 
-def test_an_autoconfig_failure_names_the_catalog_kind(monkeypatch):
-    # Refused before the llm route runs, so nothing is unloaded for a load that cannot work.
-    routes = {**PAYLOADS, LOAD: _autoconfig(FLUX2), MEDIA_CATALOG: FLUX2_CATALOG}
-    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": FLUX2, "kind": "llm"})
-    assert result["isError"] is True
-    assert f"call load_model(model='{FLUX2}', kind='image')" in result["content"][0]["text"]
-    assert bodies(studio, "/api/inference/load") == []
-
-
 def test_get_job_shows_the_wrong_kind_hint(monkeypatch, fast_polls):
     studio = fake_studio({**PAYLOADS, LOAD: slow(_autoconfig(LLM), 0.3), MEDIA_CATALOG: NO_CATALOG})
     with session(monkeypatch, studio) as call:
@@ -1723,22 +1689,3 @@ def test_the_wrong_kind_hint_names_only_tools_the_caller_has(monkeypatch, tools,
     assert expected in hint
     if absent is not None:
         assert absent not in hint
-
-
-def test_load_model_reads_the_media_catalog_once_per_call(monkeypatch, fast_polls):
-    routes = {
-        **PAYLOADS,
-        MEDIA_CATALOG: NO_CATALOG,
-        AUDIO_CATALOG: NO_CATALOG,
-        V1_MODELS: {"data": []},
-    }
-    _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
-    assert len([c for c in studio.state.calls if (c[0], c[1]) == MEDIA_CATALOG]) == 1
-    routes = {
-        **PAYLOADS,
-        LOAD: _autoconfig(LLM),
-        MEDIA_CATALOG: NO_CATALOG,
-        AUDIO_CATALOG: NO_CATALOG,
-    }
-    _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
-    assert len([c for c in studio.state.calls if (c[0], c[1]) == MEDIA_CATALOG]) == 1

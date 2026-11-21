@@ -26,7 +26,6 @@ def _texts(profile):
 
 def test_chat_withholds_each_tool_by_its_facts_and_never_names_one():
     absent = set(withheld(CHAT))
-    # load_model, unload_model and plan_load are offered for the kinds a chat may load (load_kinds).
     assert absent == {"plan_load", "chat", "run_recipe"} | {
         "start_training",
         "export_model",

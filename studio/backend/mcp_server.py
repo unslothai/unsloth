@@ -106,7 +106,7 @@ def create_studio_mcp(profile: CallerProfile = AGENT, exclude: frozenset = froze
             built = Tool.from_function(
                 tool, annotations = annotations, **({"output_schema": schema[0]} if schema else {})
             )
-            # A module may narrow a tool's parameters for a profile, such as the kinds a chat may load.
+            # A module may narrow a tool's schema and text for a profile (a chat's load kinds).
             narrow = getattr(module, "narrow", None)
             parameters = (
                 narrow(tool.__name__, built.parameters, profile) if narrow else built.parameters

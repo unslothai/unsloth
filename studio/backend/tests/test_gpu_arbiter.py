@@ -156,7 +156,7 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
     assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
 
 
-# A chat's own tools key (spare_chat) loads an image model beside the chat model, or is refused untouched.
+# spare_chat loads beside the chat model or is refused with nothing unloaded.
 @pytest.mark.parametrize(
     "policy, need, short, refused",
     [
@@ -1294,7 +1294,6 @@ def test_a_prequant_transformer_prices_a_base_without_one(
 
     from core.inference import diffusion_prequant
 
-    # The FP8 repo ships its int8 ConvRot transformer as one file at the root.
     sizes = {"x-INT8-ConvRot.safetensors": 4 << 30, "text_encoder/model.safetensors": 8 << 30}
     source = types.SimpleNamespace(
         kind = "repo", location = "org/x-FP8", candidate_filenames = ("x-INT8-ConvRot.safetensors",)
@@ -1308,5 +1307,5 @@ def test_a_prequant_transformer_prices_a_base_without_one(
         DiffusionBackend, "_local_dir_weight_sizes", staticmethod(lambda d, **_: dict(sizes))
     )
     found = res._prequant_transformer_sizes(fam, request, ["base-dir"])
-    # Only the transformer comes from the prequant repo; its text encoder is priced from the base as before.
+    # Only the transformer comes from the prequant repo.
     assert found == ({"transformer/x-INT8-ConvRot.safetensors": 4 << 30} if priced else None)

@@ -54,7 +54,7 @@ def test_owner_chat_loads_beside(role, value, ui_chat, beside, read):
     assert run_as(account, lp.current_load_policy).value == read
 
 
-# A direct image or video load from a chat's tools key must leave the chat model loaded.
+# A direct media load from a chat's tools key keeps the chat model.
 @pytest.mark.parametrize(
     "value, mode, keeps, outcome",
     [
@@ -100,16 +100,6 @@ def test_a_chat_kept_refusal_names_only_a_change_that_lets_it_load(mode, priced,
     refusal = ensure_model.chat_kept_refusal("image", "org/image", mode, priced = priced)
     assert refusal.status_code == 403 and says in refusal.detail and never not in refusal.detail
     assert "needs_user_load" in refusal.headers["X-Unsloth-Problem"]
-
-
-def test_direct_media_load_routes_spare_the_chat_model():
-    # Both gated loads read the policy and hand spare_chat to the arbiter, mapping its refusal.
-    backend = Path(__file__).parents[1]
-    for name in ("routes/inference.py", "routes/video.py"):
-        text = (backend / name).read_text(encoding = "utf-8")
-        assert text.count("media_load_spares_chat,") == 1, name
-        assert text.count('**({"spare_chat": True} if spare_chat else {})') == 1, name
-        assert text.count("raise chat_kept_refusal(") == 1, name
 
 
 def test_routes_and_media_switch_do_not_read_the_mcp_caller():

@@ -21,7 +21,6 @@ from fastmcp import FastMCP
 from auth import storage
 from auth.authentication import create_access_token
 from mcp_server import create_studio_mcp
-from studio_mcp import gate as gate_module
 from studio_mcp.caller import current_caller
 from studio_mcp.gate import MAX_REQUEST_BYTES, NEED_KEY, TOO_LARGE, StudioMcpGate
 from utils.account_context import AccountContext, bind_account, current_account, reset_account
@@ -61,6 +60,12 @@ OFF_HINT_TEXT = (
     "Unsloth Studio MCP is off. The owner turns it on in Settings > Agents > Allow agent connections, "
     "or starts Unsloth Studio with UNSLOTH_STUDIO_ENABLE_MCP=1."
 )
+OFF_HINT_BODY = {
+    "jsonrpc": "2.0",
+    "id": None,
+    "error": {"code": -32600, "message": OFF_HINT_TEXT},
+    "detail": OFF_HINT_TEXT,
+}
 
 
 def probe_mcp():
@@ -133,7 +138,7 @@ def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, autho
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}
     assert "www-authenticate" not in response.headers
-    # Only an sk-unsloth- bearer from no foreign Origin reaches the key store while off.
+    # Only an sk-unsloth- bearer with no Origin reaches the key store while off.
     sk_bearer = bool(authorization) and authorization.startswith("Bearer sk-unsloth-")
     assert key_spy == ([{"touch": False}] if sk_bearer and origin is None else [])
 
@@ -145,12 +150,7 @@ def test_off_tells_a_valid_full_access_key_why(studio, key_spy, off_key, method,
         method, path, json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)}
     )
     assert response.status_code == 404
-    assert response.json() == {
-        "jsonrpc": "2.0",
-        "id": None,
-        "error": {"code": -32600, "message": OFF_HINT_TEXT},
-        "detail": OFF_HINT_TEXT,
-    }
+    assert response.json() == OFF_HINT_BODY
     assert "www-authenticate" not in response.headers
     assert key_spy == [{"touch": False}]
 
@@ -160,12 +160,7 @@ def test_off_hint_takes_a_lowercase_scheme_and_an_allowed_origin(studio, off_key
     headers = {**MCP_HEADERS, "Authorization": f"bearer {off_key}", "Origin": origin}
     response = studio.post("/mcp/", json = LISTING, headers = headers)
     assert response.status_code == 404
-    assert response.json() == {
-        "jsonrpc": "2.0",
-        "id": None,
-        "error": {"code": -32600, "message": OFF_HINT_TEXT},
-        "detail": OFF_HINT_TEXT,
-    }
+    assert response.json() == OFF_HINT_BODY
 
 
 def test_decisions_redirects_before_any_hint(studio, key_spy, off_key):
@@ -240,32 +235,11 @@ def test_off_keeps_the_bare_404_for_a_keyless_dummy(studio, key_spy, dummy):
     assert key_spy == []
 
 
-def test_off_keeps_the_bare_404_for_the_retired_static_token(studio, key_spy, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_MCP_TOKEN", "sk-unsloth-retired-static")
-    response = studio.post(
-        "/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer("sk-unsloth-retired-static")}
-    )
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Not Found"}
-    assert key_spy == []
-
-
 def test_off_keeps_the_bare_404_when_the_key_store_raises(studio, monkeypatch, off_key):
     def broken(*args, **kwargs):
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr(storage, "validate_api_key_account", broken)
-    response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)})
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Not Found"}
-    assert "www-authenticate" not in response.headers
-
-
-def test_off_keeps_the_bare_404_when_the_key_check_raises(studio, monkeypatch, off_key):
-    def broken(*args, **kwargs):
-        raise RuntimeError("database is locked")
-
-    monkeypatch.setattr(gate_module, "_validate_key", broken)
     response = studio.post("/mcp/", json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)})
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}

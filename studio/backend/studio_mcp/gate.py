@@ -145,7 +145,7 @@ def _origin_refused(scope: dict, headers: list) -> bool:
 
 
 async def _may_see_off_hint(scope: dict) -> bool:
-    """Whether a request to the switched-off gate may read OFF_HINT: one valid full-access key, from no Origin or an allowed one. Anything else, and any error, is the bare 404."""
+    """Only one valid full-access key, from no Origin or an allowed one, reads OFF_HINT; anything else, or any error, gets the bare 404."""
     try:
         headers = scope.get("headers") or []
         if _origin_refused(scope, headers):
@@ -187,7 +187,7 @@ class StudioMcpGate:
 
         if not await run_in_threadpool(is_mcp_enabled):
             if await _may_see_off_hint(scope):
-                # A JSON-RPC error too, so MCP clients that only read that envelope show the hint.
+                # Also a JSON-RPC error, for clients that only read that envelope.
                 body = {
                     "jsonrpc": "2.0",
                     "id": None,

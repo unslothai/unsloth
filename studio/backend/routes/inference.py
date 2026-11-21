@@ -51741,7 +51741,7 @@ async def load_diffusion_model_gated(
             from core.inference.ensure_model import chat_kept_refusal, media_load_spares_chat
             from core.inference.gpu_arbiter import GpuOwnerBusyError
 
-            # A chat's own tools key may load beside the chat model only, never in its place.
+            # A chat's own tools key loads beside the chat model, never in its place.
             spare_chat = await asyncio.to_thread(
                 media_load_spares_chat, DIFFUSION, "image", request.model_path, multi_model_mode
             )

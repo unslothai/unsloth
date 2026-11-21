@@ -145,20 +145,18 @@ async def _call(
         reset_caller(token)
 
 
-# The tools a chat follows to the end inside the call, by the get_job kind of what they hand back.
+# Tools a chat follows to the end inside the call, with the get_job kind of their job.
 _FOLLOWED = {"generate_video": "video", "load_model": "load"}
 
 
 async def _follow(caller: Any, kind: str, created: Any, follow_until: float) -> Any:
-    """Follows a chat's video or model load to the end inside its call, as the built-in tool does, so Stop
-    reaches it and no job outlives the call's key; read directly (Settings can turn get_job off)."""
+    """Follows a chat's video or model load to the end inside its call, so Stop reaches it and no job
+    outlives the call's key; read directly (Settings can turn get_job off)."""
     from studio_mcp import jobs
     from studio_mcp.loading import WAIT_S_LIMIT
 
     job = getattr(created, "structured_content", None)
-    job_id = (
-        (job.get("job_id") if kind == "load" else job.get("id")) if isinstance(job, dict) else None
-    )
+    job_id = job.get("job_id" if kind == "load" else "id") if isinstance(job, dict) else None
     if getattr(created, "is_error", False) or not job_id:
         return created
     if kind == "load" and job.get("status") != "loading":
@@ -273,8 +271,7 @@ def _stop(future: Any, ticket: Any) -> None:
 
 
 def _stop_scoped_loads(loop: Any, key: str) -> None:
-    """Stops following the loads this call's key started, before the key goes: a media load the route
-    admitted still finishes in Unsloth Studio, and no later call follows a job its revoked key drives."""
+    """Ends the load jobs this call's key started, before the key is revoked."""
     from studio_mcp.loading import stop_scoped_loads
     try:
         asyncio.run_coroutine_threadsafe(stop_scoped_loads(key), loop).result(timeout = _STOP_WAIT_S)

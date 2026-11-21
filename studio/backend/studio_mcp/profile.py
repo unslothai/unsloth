@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Collection, Mapping, Optional
 
 SWAPS_MODELS = "swaps_models"
-# Loads or unloads the kind of model it is given; a profile's load_kinds bound which.
+# Never withheld (no REASONS entry): a profile bounds it with load_kinds.
 LOADS_BY_KIND = "loads_by_kind"
 PREVIEWS_SWAPS = "previews_swaps"
 REENTERS_CHAT = "reenters_chat"
@@ -20,7 +20,6 @@ SENDS_HOST_SECRETS = "sends_host_secrets"
 
 REASONS = {
     SWAPS_MODELS: "it could unload the model serving the chat",
-    LOADS_BY_KIND: "it loads and unloads models",
     PREVIEWS_SWAPS: "a chat's load_model refuses any load that would unload its model, so it needs no preview",
     REENTERS_CHAT: "it would re-enter the chat that calls it",
     STOPS_WORK: "it could stop the chat that calls it",
@@ -59,7 +58,7 @@ class CallerProfile:
 AGENT = CallerProfile("agent")
 CHAT = CallerProfile(
     "chat",
-    refused = frozenset(REASONS) - {LOADS_BY_KIND},
+    refused = frozenset(REASONS),
     call_scoped = True,
     # A prompt-injected model must not reach host files, even the owner's.
     host_files = False,

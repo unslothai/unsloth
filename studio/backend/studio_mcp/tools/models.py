@@ -266,8 +266,8 @@ async def _catalog(
     return entries
 
 
-# Kind inference: a catalog row's kind, else the kind /v1/models reports for the id, else chat. Each read is
-# bounded and best effort: one that fails or stalls only means "not found there", never a failed call.
+# Kind inference: the catalog row's kind, else the /v1/models task, else llm. A read that fails or stalls
+# counts as "not found".
 _KINDS = get_args(ModelKind)
 
 
@@ -278,20 +278,23 @@ async def _bounded_json(caller: Caller, path: str) -> Any:
         return None
 
 
+async def _listed(caller: Caller, path: str) -> list[dict[str, Any]]:
+    listed = as_dict(await _bounded_json(caller, path)).get("models")
+    rows = listed if isinstance(listed, list) else []
+    return [row for row in rows if isinstance(row, dict) and opt_text(row.get("id"))]
+
+
 async def _catalog_row(caller: Caller, model: str) -> Optional[tuple[str, str]]:
     """(id, kind) of the catalog row for ``model``: its exact id, else, for a bare name such as
     "Z-Image-Turbo", the one row whose repo name it is."""
-    rows: list[tuple[str, str]] = []
-    media = await _bounded_json(caller, "/api/inference/media/catalog")
-    listed = as_dict(media).get("models")
-    for row in listed if isinstance(listed, list) else []:
-        if isinstance(row, dict) and opt_text(row.get("id")) and row.get("kind") in MEDIA_KINDS:
-            rows.append((row["id"], row["kind"]))
-    audio = await _bounded_json(caller, "/api/inference/audio/catalog")
-    listed = as_dict(audio).get("models")
-    for row in listed if isinstance(listed, list) else []:
-        # A row the catalog refuses (unsupported family, no Audio page) can't be loaded.
-        if isinstance(row, dict) and opt_text(row.get("id")) and not row.get("unsupported_reason"):
+    rows = [
+        (row["id"], row["kind"])
+        for row in await _listed(caller, "/api/inference/media/catalog")
+        if row.get("kind") in MEDIA_KINDS
+    ]
+    for row in await _listed(caller, "/api/inference/audio/catalog"):
+        # An unsupported row can't be loaded.
+        if not row.get("unsupported_reason"):
             task = row.get("task")
             rows.append((row["id"], AUDIO_KIND.get(task if isinstance(task, str) else "", "audio")))
     for row in rows:
@@ -305,8 +308,7 @@ async def _catalog_row(caller: Caller, model: str) -> Optional[tuple[str, str]]:
 
 
 def _catalog_lookup(caller: Caller, model: str) -> Any:
-    """One catalog read per call, shared by kind inference, the chat checks and the wrong-kind hint: awaiting
-    it gives the row's kind, and ``.catalog_id()`` the row's full id."""
+    """One catalog read per call: awaiting it gives the row's kind, and ``.catalog_id()`` its full id."""
     reads: list[asyncio.Future] = []
 
     async def row() -> Optional[tuple[str, str]]:
@@ -324,12 +326,17 @@ def _catalog_lookup(caller: Caller, model: str) -> Any:
         found = await row()
         if not found:
             return None
-        # A bare name's ":variant" (a GGUF quantization) stays on the full id.
+        # Keep a bare name's ":variant".
         _, colon, variant = model.partition(":")
         return f"{found[0]}:{variant}" if colon and variant else found[0]
 
     lookup.catalog_id = catalog_id
     return lookup
+
+
+async def _full_id(model: str, catalog: Any) -> str:
+    """A bare catalog name ("FLUX.2-klein-4B") as its row's full id; any other id as given."""
+    return model if "/" in model else (await catalog.catalog_id() or model)
 
 
 async def _inferred_kind(
@@ -346,7 +353,6 @@ async def _inferred_kind(
     return "llm"
 
 
-# A chat (a profile with load_kinds) loads only kinds that sit beside its own model, and only catalog models.
 _CHAT_ONLY_CATALOG = "This chat loads and downloads only models in the Unsloth Studio catalog (list_models(source='catalog'))"
 
 
@@ -383,8 +389,8 @@ async def _chat_may_load(
     refused: dict[str, Any],
     kinds: bool = True,
 ) -> None:
-    """Refuses what a chat caller may not load; a no-op for an agent. ``refused`` maps an argument to its value,
-    and any value set is refused; ``kinds`` False lets any catalog kind through (a download never loads)."""
+    """Refuses what a chat may not load; a no-op for an agent. Any set value in ``refused`` is refused;
+    ``kinds`` False lets any catalog kind through (a download never loads)."""
     if caller.profile.load_kinds is None:
         return
     _no_loads(caller, model)
@@ -396,7 +402,7 @@ async def _chat_may_load(
     if kinds:
         _refuse_kind(caller, kind, model)
     if caller.profile.catalog_only:
-        # Fails closed: an unread catalog refuses, and a local path or other Hub repo never matches a row.
+        # Fails closed: an unread catalog, a local path or another Hub repo matches no row.
         found = await catalog() if model else None
         if found is None or found != kind:
             raise ToolError(
@@ -411,11 +417,15 @@ async def _refuse_certain_chat_unload(
     *,
     download: bool = False,
 ) -> None:
-    """A chat's image or video load that Keep multiple models loaded set to Off would refuse is refused before
-    anything downloads, by the check the load route makes (the route still decides every other case)."""
+    """Refuses, before anything downloads, a chat's image or video load that the route would refuse under
+    Keep multiple models loaded set to Off; the route decides every other case."""
     if kind not in loading.MEDIA_ROUTES:
         return
-    from core.inference.ensure_model import chat_kept_refusal, media_load_keeps_chat
+    from core.inference.ensure_model import (
+        MULTI_MODEL_SETTING,
+        chat_kept_refusal,
+        media_load_keeps_chat,
+    )
     from core.inference.gpu_arbiter import DIFFUSION, VIDEO
     from utils.multi_model_settings import get_multi_model_mode
 
@@ -428,7 +438,6 @@ async def _refuse_certain_chat_unload(
     if keeps:
         return
     if download:
-        from core.inference.ensure_model import MULTI_MODEL_SETTING
         raise ToolError(
             f"This chat does not download '{model}': {MULTI_MODEL_SETTING} is Off, so it could not load it "
             "without unloading the model serving this chat. Ask the user to set it to When they fit, then try again."
@@ -436,7 +445,7 @@ async def _refuse_certain_chat_unload(
     raise ToolError(chat_kept_refusal(kind, model, "off").detail)
 
 
-# Arguments a chat never passes, left out of the schema it reads; checkpoint, export and hf_token are refused too.
+# Arguments left out of a chat's schema; checkpoint, export and hf_token are also refused.
 _CHAT_HIDDEN = {
     "load_model": (
         "checkpoint",
@@ -466,7 +475,7 @@ _CHAT_HIDDEN = {
 }
 
 
-# What a chat reads instead of the agent's text: short, since it pays for it on every message.
+# A chat's shorter tool descriptions: it pays for them on every message.
 _CHAT_TEXT = {
     "load_model": (
         "Load an image, video or speech-to-text model from the Unsloth Studio catalog "
@@ -515,7 +524,7 @@ def narrow(
         if isinstance(kind.get("anyOf"), list):
             kind = {**kind, "anyOf": [only(as_dict(option)) for option in kind["anyOf"]]}
         if name == "unload_model":
-            # Its default ("llm") is refused here, so a chat must name the kind.
+            # The default "llm" is refused, so a chat must name the kind.
             kind = {key: value for key, value in kind.items() if key != "default"}
         properties["kind"] = kind
     required = [key for key in parameters.get("required") or [] if key in properties]
@@ -642,9 +651,8 @@ async def load_model(
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
     catalog = _catalog_lookup(caller, model or "")
-    if model and "/" not in model and not (checkpoint or export):
-        # A bare catalog name ("FLUX.2-klein-4B") loads that catalog row.
-        model = await catalog.catalog_id() or model
+    if model and not (checkpoint or export):
+        model = await _full_id(model, catalog)
     if kind is None:
         kind = (
             "llm"
@@ -659,8 +667,7 @@ async def load_model(
         refused = {"checkpoint": checkpoint, "export": export, "hf_token": hf_token},
     )
     if kind == "llm" and model and not (checkpoint or export):
-        # An llm load of a catalog image, video or speech-to-text model fails only after it has unloaded
-        # models; text-to-speech and audio rows load through the llm route.
+        # Would fail only after unloading models; tts and audio rows do load through the llm route.
         found = await catalog()
         if found in ("image", "video", "stt"):
             noun = problems.WHAT.get(found, "model")
@@ -722,8 +729,7 @@ async def load_model(
     if kind in loading.MEDIA_ROUTES:
         if caller.profile.catalog_only:
             await _refuse_certain_chat_unload(kind, model)
-            # Download before the load, so Unsloth Studio can size it and keep the chat model beside it; an
-            # unsized load would have to unload the chat model, which this caller may never do.
+            # Download first so the load can be sized; an unsized load would unload the chat model.
             await model_downloads.start(
                 caller, ctx, model = model, kind = kind, variant = variant, hf_token = None, knobs = knobs
             )
@@ -766,9 +772,10 @@ async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) ->
     kind "all" unloads every chat, speech, image, video and speech-to-text model in one call, stopping image, video and speech-to-text loads as those kinds do, and lists them under ``unloaded``.
     The embedding model is managed by Unsloth Studio and is not unloaded here.
     ``unloaded`` is false when nothing matching was loaded."""
-    if current_caller().profile.load_kinds is not None:
-        _no_loads(current_caller(), model)
-        _refuse_kind(current_caller(), kind, model)
+    caller = current_caller()
+    if caller.profile.load_kinds is not None:
+        _no_loads(caller, model)
+        _refuse_kind(caller, kind, model)
     if kind == "all":
         if model is not None:
             raise ToolError("unload_model(kind='all') takes no model.")
@@ -777,7 +784,6 @@ async def unload_model(kind: UnloadKind = "llm", model: Optional[str] = None) ->
         return media_result([], await loading.unload_stt(current_caller(), model))
     if kind in loading.MEDIA_ROUTES:
         return media_result([], await loading.unload_media(current_caller(), kind))
-    caller = current_caller()
     # A checkpoint or export is resident under its ref: handle, not the name load_model reported.
     target = trained_models.loaded_ref(caller, model)
     result = await loading.unload_llm(caller, target, kind)
@@ -819,14 +825,13 @@ async def plan_load(
     ``residents`` are the models loaded now, and ``would_evict`` the ones this load would unload; pass the same ``device``, ``gpu_layers``, ``kv_cache_type``, ``alongside``, image or video options and ``hf_token`` you would pass to load_model.
     Under Keep multiple models loaded set to Off the prediction is exact when it does not depend on where Unsloth Studio places the load; unloading another kind of model (which happens only when the load reaches the GPU), and every prediction under When they fit, is an upper bound (``would_evict_exact`` false).
     Under Always nothing is unloaded and ``would_refuse`` says the load may be refused instead; unload_model(kind="all"), alongside=true or device="cpu" avoid that."""
-    # A preview never hangs: each read inside is bounded, and so is the whole plan, kind inference included.
+    # A preview never hangs: each read is bounded, and so is the whole plan.
     caller = current_caller()
     catalog = _catalog_lookup(caller, model)
 
     async def plan() -> PlanLoadResult:
         nonlocal model
-        if "/" not in model:
-            model = await catalog.catalog_id() or model
+        model = await _full_id(model, catalog)
         resolved = kind if kind is not None else await _inferred_kind(caller, model, catalog)
         await _chat_may_load(caller, resolved, model, catalog, refused = {"hf_token": hf_token})
         return await placement.plan_load(
@@ -876,14 +881,12 @@ async def download_model(
     ``hf_token`` is for gated repos. For image and video, pass the options the later load will take: they pick the files it reads, such as a pre-cast text encoder."""
     caller = current_caller()
     catalog = _catalog_lookup(caller, model)
-    if "/" not in model:
-        model = await catalog.catalog_id() or model
+    model = await _full_id(model, catalog)
     resolved = kind if kind is not None else await _inferred_kind(caller, model, catalog)
     await _chat_may_load(
         caller, resolved, model, catalog, refused = {"hf_token": hf_token}, kinds = False
     )
     if caller.profile.catalog_only:
-        # Downloading an image or video model this chat could not then load only fills the disk.
         await _refuse_certain_chat_unload(resolved, model, download = True)
     knobs = placement.media_knobs(
         resolved,
