@@ -5658,6 +5658,10 @@ _TARGET_ROLLBACK_SPEC_TYPES = frozenset(
 
 # Mirrors llama.cpp is_recr_impl for SSM headers with no full_attention_interval.
 _SSM_EVERY_LAYER_ARCHS = frozenset({"mamba", "mamba2", "falcon-h1"})
+# The looped Inkling 2 layout in llama.cpp: physical layers in block_count, cache slots expanded at load.
+_LOOP_SLOT_ARCHS = frozenset({"inkling2_loop"})
+# Both GGUF layouts of Inkling 2 run the same relative-bias attention graph.
+_INKLING2_ARCHS = frozenset({"inkling2", "inkling2_loop"})
 # Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
 _SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 
@@ -8867,6 +8871,10 @@ class LlamaCppBackend:
         # head_count array; _n_heads stays unset so other estimates keep their fallbacks.
         self._n_heads_by_layer: Optional[list[int]] = None
         self._attn_res_block_size: Optional[int] = None
+        # inkling2_loop: physical loop core [start, end) run `count` times, one cache slot per visit.
+        self._loop_start: Optional[int] = None
+        self._loop_end: Optional[int] = None
+        self._loop_count: Optional[int] = None
         self._embedding_length: Optional[int] = None
         # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
         self._pooling_type: Optional[int] = None
@@ -18838,6 +18846,37 @@ class LlamaCppBackend:
         context = getattr(self, "_context_length", None) or 0
         return window if not context or window < context else 0
 
+    def _expand_loop_slots(self) -> None:
+        """Expand a looped GGUF's physical layers to the cache slots llama.cpp allocates.
+
+        The file stores each physical layer once; the core [start, end) runs `count` times and every run after
+        the first gets its own slots after the physical ones (slot n_phys + k maps to start + k % (end - start)).
+        Weights stay counted once (the file size); KV and state follow the slots, as for the visit-indexed layout.
+        """
+        start, end, count = self._loop_start, self._loop_end, self._loop_count
+        n_phys = self._n_layers
+        if not (
+            n_phys
+            and count
+            and count > 1
+            and start is not None
+            and end
+            and 0 <= start < end <= n_phys
+        ):
+            return
+        span = end - start
+        phys = list(range(n_phys)) + [start + k % span for k in range((count - 1) * span)]
+        for attr in (
+            "_n_kv_heads_by_layer",
+            "_n_heads_by_layer",
+            "_feed_forward_length_by_layer",
+            "_sliding_window_pattern",
+        ):
+            values = getattr(self, attr, None)
+            if values is not None and len(values) == n_phys:
+                setattr(self, attr, [values[p] for p in phys])
+        self._n_layers = len(phys)
+
     def _inkling2_bias_heads(self) -> int:
         """Query heads of the widest full-attention layer, the layers whose bias spans the context."""
         by_layer = getattr(self, "_n_heads_by_layer", None) or []
@@ -18930,7 +18969,7 @@ class LlamaCppBackend:
                 rate = self._INKLING_CTX_COMPUTE_BYTES_PER_TOK
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
-        if getattr(self, "_architecture", None) == "inkling2":
+        if getattr(self, "_architecture", None) in _INKLING2_ARCHS:
             # Sliding layers' smaller bias reuses this allocation; no dequant copy on either path.
             n_head = self._inkling2_bias_heads()
             head_dim = getattr(self, "_kv_key_length", None) or 128
@@ -19849,6 +19888,9 @@ class LlamaCppBackend:
         self._n_heads = None
         self._n_heads_by_layer = None
         self._attn_res_block_size = None
+        self._loop_start = None
+        self._loop_end = None
+        self._loop_count = None
         self._embedding_length = None
         self._pooling_type = None
         self._gguf_path = gguf_path
@@ -20007,6 +20049,9 @@ class LlamaCppBackend:
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
                                         f"{arch}.attn_res.block_size": "attn_res_block_size",
+                                        f"{arch}.loop.start": "loop_start",
+                                        f"{arch}.loop.end": "loop_end",
+                                        f"{arch}.loop.count": "loop_count",
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -20103,6 +20148,9 @@ class LlamaCppBackend:
                 self._sliding_window_pattern = [
                     (i + 1) % sliding_window_pattern_period != 0 for i in range(self._n_layers)
                 ]
+
+            if arch in _LOOP_SLOT_ARCHS:
+                self._expand_loop_slots()
 
             # Diffusion models skip the resolver: no SWA pattern, and it can raise for them.
             if (
@@ -35487,6 +35535,9 @@ class LlamaCppBackend:
             self._n_heads = None
             self._n_heads_by_layer = None
             self._attn_res_block_size = None
+            self._loop_start = None
+            self._loop_end = None
+            self._loop_count = None
             self._embedding_length = None
             self._pooling_type = None
             self._kv_key_length = None
