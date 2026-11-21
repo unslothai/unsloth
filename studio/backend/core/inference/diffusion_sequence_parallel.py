@@ -177,13 +177,12 @@ def refusal(module: Any, tokens: Optional[int] = None) -> Optional[str]:
             if cls.__name__ not in SP_PLANS
             else f"{cls.__name__}'s diffusers context-parallel plan differs from the checked one"
         )
-    compiled = [
-        name
-        for name, sub in module.named_modules()
-        if getattr(sub, "_compiled_call_impl", None) is not None
-    ]
-    if compiled:
-        return f"compiled submodules ({compiled[0] or '<root>'})"
+    # Also a compile moved below an offload hook (diffusion_block_graph), which clears _compiled_call_impl.
+    from .diffusion_cfg_batch import compiled_denoiser
+
+    compiled = compiled_denoiser(module)
+    if compiled is not None:
+        return f"compiled submodules ({compiled})"
     for name, sub in module.named_modules():
         proc = getattr(sub, "processor", None)
         if proc is None or not hasattr(sub, "heads"):

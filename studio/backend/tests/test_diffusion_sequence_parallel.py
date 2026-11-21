@@ -285,3 +285,20 @@ def test_a_denoiser_with_per_call_activation_scaling_is_not_split_by_tokens():
     assert torch.equal(out, ref)
     assert router.stats["sequence_splits"] == 0 and not built
     assert "per-call activation scaling" in router.stats["sequence_split_skip"]
+
+
+def test_a_compile_moved_below_an_offload_hook_is_not_split():
+    # diffusion_block_graph moves a regional compile below group-offload hooks and clears the block's
+    # _compiled_call_impl; the compiled forward then sits in the hook registry and must still refuse the split.
+    import types
+
+    model = _model()
+    blk = model.blocks[0]
+    ref = types.SimpleNamespace(forward = torch.compile(blk.forward, backend = "eager"))
+    blk._diffusers_hook = types.SimpleNamespace(
+        hooks = {"group_offloading": object()}, _fn_refs = [ref]
+    )
+    assert getattr(blk, "_compiled_call_impl", None) is None
+    with torch.no_grad():
+        why = sp.refusal(model, 10**6)
+    assert why is not None and "below its hooks" in why
