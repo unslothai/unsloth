@@ -195,17 +195,42 @@ function isTextFile(file: File): boolean {
   );
 }
 
-// null: not UTF-8 (Latin-1, UTF-16, ...), so the server detects the charset.
-async function readUtf8Prefix(file: File): Promise<string | null> {
-  const bytes = await file.slice(0, TEXT_READ_BYTES).arrayBuffer();
+const HTML_NAME = /\.html?$/i;
+const META_CHARSET = /<meta[^>]*charset\s*=\s*["']?\s*([\w.:-]+)/i;
+
+// The server ignores <meta charset> once the upload is renamed to .txt.
+function declaredHtmlCharset(file: File, bytes: ArrayBuffer): string | null {
+  if (!HTML_NAME.test(file.name) && file.type !== "text/html") {
+    return null;
+  }
+  const head = new TextDecoder("latin1").decode(bytes.slice(0, 1024));
+  const label = META_CHARSET.exec(head)?.[1];
+  if (!label) {
+    return null;
+  }
   try {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
-      stream: file.size > TEXT_READ_BYTES,
-    });
-    return text.includes("\u0000") ? null : text;
+    const { encoding } = new TextDecoder(label);
+    return encoding === "utf-8" || encoding.startsWith("utf-16") ? null : label;
   } catch {
     return null;
   }
+}
+
+// null: charset unknown (Latin-1, UTF-16, ...), so the server detects it.
+async function readTextPrefix(file: File): Promise<string | null> {
+  const bytes = await file.slice(0, TEXT_READ_BYTES).arrayBuffer();
+  const stream = file.size > TEXT_READ_BYTES;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream });
+  } catch {
+    const charset = declaredHtmlCharset(file, bytes);
+    if (!charset) {
+      return null;
+    }
+    text = new TextDecoder(charset).decode(bytes, { stream });
+  }
+  return text.includes("\u0000") ? null : text;
 }
 
 function serverUpload(file: File): File {
@@ -1351,7 +1376,7 @@ export function TranslatePage() {
     if (isTextFile(file)) {
       let text: string | null;
       try {
-        text = await readUtf8Prefix(file);
+        text = await readTextPrefix(file);
       } catch {
         toast.error(t("translate.fileNotText"));
         return;

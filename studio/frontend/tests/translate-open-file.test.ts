@@ -17,16 +17,16 @@ const fileHelpers = page.slice(
   page.indexOf("const TEXT_FILE_EXTENSIONS"),
   page.indexOf("const IS_MAC"),
 );
-const { readUtf8Prefix, serverUpload } = new Function(
+const { readTextPrefix, serverUpload } = new Function(
   "SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS",
   "TRANSLATE_SOURCE_MAX_CHARS",
   `${
     ts.transpileModule(fileHelpers, {
       compilerOptions: { target: ts.ScriptTarget.ES2020 },
     }).outputText
-  }; return { readUtf8Prefix, serverUpload };`,
+  }; return { readTextPrefix, serverUpload };`,
 )(SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS, MAX_CHARS) as {
-  readUtf8Prefix: (file: File) => Promise<string | null>;
+  readTextPrefix: (file: File) => Promise<string | null>;
   serverUpload: (file: File) => File;
 };
 
@@ -44,7 +44,7 @@ test("text files not saved as UTF-8 go to the server to detect their encoding", 
     new File([Buffer.from("Name\tCity", "utf16le")], "plain16.txt"),
   ];
   for (const file of files) {
-    assert.equal(await readUtf8Prefix(file), null, file.name);
+    assert.equal(await readTextPrefix(file), null, file.name);
   }
 });
 
@@ -57,18 +57,18 @@ test("UTF-8 text files load exactly as saved", async () => {
   ];
   for (const [name, text] of cases) {
     const file = new File([text], name, { type: "text/plain" });
-    assert.equal(await readUtf8Prefix(file), text, name);
+    assert.equal(await readTextPrefix(file), text, name);
   }
 });
 
 test("a Latin-1 file ending in an accented letter goes to the server", async () => {
   const file = new File([Buffer.from("café", "latin1")], "menu.txt");
-  assert.equal(await readUtf8Prefix(file), null);
+  assert.equal(await readTextPrefix(file), null);
 });
 
 test("a UTF-8 character split by the read limit stays on the UTF-8 path", async () => {
   const text = `${"a".repeat(READ_BYTES - 1)}é`;
-  const read = await readUtf8Prefix(new File([text], "long.txt"));
+  const read = await readTextPrefix(new File([text], "long.txt"));
   assert.equal(read, "a".repeat(READ_BYTES - 1));
 });
 
@@ -97,4 +97,23 @@ test("a text file named without a known extension is still accepted by the serve
     type: "text/plain",
   });
   assert.equal(serverUpload(readme).name, "README.txt");
+});
+
+test("HTML that declares a legacy charset is decoded with it, markup and all", async () => {
+  const pages: [string, string][] = [
+    [
+      '<meta charset="windows-1251"><p class="intro">Привет, мир!</p>',
+      "3c6d65746120636861727365743d2277696e646f77732d31323531223e3c7020636c6173733d22696e74726f223ecff0e8e2e5f22c20ece8f0213c2f703e",
+    ],
+    [
+      '<meta http-equiv="Content-Type" content="text/html; charset=Shift_JIS"><p>今日は良い天気です。</p>',
+      "3c6d65746120687474702d65717569763d22436f6e74656e742d547970652220636f6e74656e743d22746578742f68746d6c3b20636861727365743d53686966745f4a4953223e3c703e8da193fa82cd97c782a293568b4382c582b781423c2f703e",
+    ],
+  ];
+  for (const [html, hex] of pages) {
+    const file = new File([Buffer.from(hex, "hex")], "page.html", {
+      type: "text/html",
+    });
+    assert.equal(await readTextPrefix(file), html);
+  }
 });
