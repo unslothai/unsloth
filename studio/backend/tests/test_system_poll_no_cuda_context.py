@@ -619,6 +619,53 @@ def test_context_free_free_excludes_the_reserved_framebuffer(monkeypatch):
     assert hw._context_free_cuda_memory_info(0, round(99.5 * gib)) == round(97.5 * gib)
 
 
+def test_context_free_accepts_reserved_framebuffer_on_16gb_card(monkeypatch):
+    # RTX 5070 Ti 16 GB (#18732): nvidia-smi reports 16303 MiB (15.92 GiB) while torch
+    # get_device_properties(0).total_memory reports ~15878.56 MiB (424.44 MiB driver carve-out, ~2.7%).
+    mib = 1 << 20
+    torch_total_bytes = int(15878.56 * mib)
+    _nvidia_smi_reading(monkeypatch, used_gb = round(1400 / 1024, 2), driver_total_gb = round(16303 / 1024, 2))
+    free_bytes = hw._context_free_cuda_memory_info(0, torch_total_bytes)
+    assert free_bytes is not None
+    assert free_bytes == hw._free_in_torch_scope(torch_total_bytes, round(1400 / 1024, 2))
+
+
+def test_gpu_summary_16gb_card_with_reserved_framebuffer_creates_no_context(monkeypatch):
+    mib = 1 << 20
+    torch_total_bytes = int(15878.56 * mib)
+    torch_stub, _props = _summary_torch(
+        properties_total = torch_total_bytes,
+        driver_free = None,
+        driver_total = torch_total_bytes,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    _shared_setup_4(monkeypatch)
+    monkeypatch.setattr(
+        hw,
+        "_smi_query",
+        lambda *a, **k: {
+            "available": True,
+            "devices": [
+                {
+                    "visible_ordinal": 0,
+                    "vram_used_gb": round(1400 / 1024, 2),
+                    "vram_total_gb": round(16303 / 1024, 2),
+                }
+            ],
+        },
+    )
+
+    summary = hw.get_gpu_summary()
+
+    assert summary["gpu_name"] == "Test GPU"
+    assert summary["vram_total_gb"] == round(torch_total_bytes / (1 << 30), 2)
+    assert summary["vram_free_gb"] == round(
+        hw._free_in_torch_scope(torch_total_bytes, round(1400 / 1024, 2)) / (1 << 30), 2
+    )
+
+
 def test_context_free_free_is_zero_on_a_full_card(monkeypatch):
     gib = 1 << 30
     _nvidia_smi_reading(monkeypatch, used_gb = 99.5, driver_total_gb = 100.0)
