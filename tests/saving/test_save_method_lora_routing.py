@@ -278,6 +278,7 @@ def _routing_environment(monkeypatch, model):
             save = lambda *args, **kwargs: None,
             cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
         ),
+        is_bfloat16_supported = lambda: False,
     )
     return namespace["unsloth_generic_save"], calls
 

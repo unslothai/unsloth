@@ -97,7 +97,7 @@ def test_intermediate_is_written_inside_the_gguf_directory(monkeypatch, tmp_path
     quantized = []
     _wire(monkeypatch, converter, quantized)
     copies = _copies(monkeypatch)
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     files, _, _ = _save(model_directory, methods)
 
@@ -114,7 +114,7 @@ def test_intermediate_is_written_inside_the_gguf_directory(monkeypatch, tmp_path
 def test_a_failed_conversion_leaves_no_partial_file_anywhere(monkeypatch, tmp_path):
     cwd, model_directory, gguf_directory = _layout(tmp_path, monkeypatch)
     _wire(monkeypatch, _Converter(fail_after_write = True), [])
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     with pytest.raises(RuntimeError, match = "converter died"):
         _save(model_directory, ["q4_k_m"])
@@ -130,7 +130,7 @@ def test_a_failed_conversion_keeps_an_existing_gguf_directory(monkeypatch, tmp_p
     with open(keep, "wb") as handle:
         handle.write(b"GGUF")
     _wire(monkeypatch, _Converter(fail_after_write = True), [])
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     with pytest.raises(RuntimeError):
         _save(model_directory, ["q4_k_m"])
@@ -146,7 +146,7 @@ def test_an_existing_output_of_the_same_name_is_replaced(monkeypatch, tmp_path):
     with open(stale, "wb") as handle:
         handle.write(b"stale")
     _wire(monkeypatch, _Converter(), [])
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     _save(model_directory, ["bf16"])
 
@@ -161,7 +161,7 @@ def test_without_a_staging_folder_the_cwd_placement_is_kept(monkeypatch, tmp_pat
     converter = _Converter()
     _wire(monkeypatch, converter, [])
     monkeypatch.setattr(save_mod, "_gguf_conversion_staging", lambda directory: (None, False))
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     _save(model_directory, ["bf16"])
 
@@ -215,7 +215,7 @@ def test_windows_path_limit_keeps_the_cwd_placement_near_max_path(monkeypatch, t
     converter = _Converter()
     _wire(monkeypatch, converter, [])
     monkeypatch.setattr(save_mod, "IS_WINDOWS", True)
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     _save(model_directory, ["bf16"])
 
@@ -247,7 +247,7 @@ def test_projector_and_shards_are_all_placed_and_staging_removed(monkeypatch, tm
         return names, True
 
     _wire(monkeypatch, _convert, [])
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     files, _, _ = save_mod.save_to_gguf(
         model_name = "MyModel",
@@ -274,7 +274,7 @@ def test_interrupted_conversion_removes_the_staging_folder(monkeypatch, tmp_path
         raise KeyboardInterrupt
 
     _wire(monkeypatch, _interrupted, [])
-    monkeypatch.setattr(save_mod.torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(save_mod, "is_bfloat16_supported", lambda *a, **k: True)
 
     with pytest.raises(KeyboardInterrupt):
         _save(model_directory, ["q4_k_m"])
