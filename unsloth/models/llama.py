@@ -22,6 +22,7 @@ from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
 from ._frozen_prefix import install_frozen_prefix_skip
+from .fused_label_smoothing import output_head_not_fusable
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
@@ -2214,6 +2215,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1" or (
                 lm_head_needs_forward(self.lm_head)
+                # Unmerged LoRA on the head or a head bias: the fused CE reads lm_head.weight alone.
+                or output_head_not_fusable(self.lm_head)
             )
             # Below 1024 normal Unsloth uses less VRAM.
             if bsz * q_len <= 1024 and not RETURN_LOGITS:

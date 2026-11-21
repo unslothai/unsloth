@@ -74,13 +74,10 @@ def _output_head(model):
     return None
 
 
-def _head_not_fusable(model):
+def output_head_not_fusable(head):
     # The fused CE projects with lm_head.weight (llama.py, the compiled forwards) and llama.py passes no bias, so an
     # active unmerged adapter on the head (PEFT LoRA layer: .weight is the base weight) would get no gradient and a
-    # head bias would leave the loss. The stock path calls lm_head(hidden) and keeps both.
-    head = _output_head(model)
-    if head is None:
-        return False
+    # head bias would leave the loss. Calling lm_head(hidden) keeps both.
     if getattr(head, "bias", None) is not None:
         return True
     try:
@@ -99,6 +96,11 @@ def _head_not_fusable(model):
         ):
             return True
     return False
+
+
+def _head_not_fusable(model):
+    head = _output_head(model)
+    return head is not None and output_head_not_fusable(head)
 
 
 def _skip_reason(trainer, model, inputs, return_outputs):
