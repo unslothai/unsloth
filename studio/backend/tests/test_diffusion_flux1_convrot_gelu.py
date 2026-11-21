@@ -363,3 +363,123 @@ def test_flux1_loads_put_the_gelu_probe_in_the_prewarm_pool(monkeypatch):
     assert gemm._prewarm_probes(0, flux1, True, None) == 3  # noqa: SLF001
     assert calls[-1]["gelu"] is True and calls[-1]["producer"] is False
     assert fused.gelu_probe_expected(flux1) and not fused.producer_probe_expected(flux1)
+
+
+def _tiny_chroma(torch):
+    torch.manual_seed(0)
+    return diffusers_chroma()(
+        patch_size = 1,
+        in_channels = 8,
+        num_layers = 1,
+        num_single_layers = 1,
+        attention_head_dim = 16,
+        num_attention_heads = 2,
+        joint_attention_dim = 24,
+        axes_dims_rope = (4, 6, 6),
+        approximator_num_channels = 8,
+        approximator_hidden_dim = 16,
+        approximator_layers = 1,
+    ).eval()
+
+
+def diffusers_chroma():
+    import diffusers
+    return getattr(diffusers, "ChromaTransformer2DModel", None)
+
+
+def test_chroma_after_flux1_keeps_its_stock_projections(env, monkeypatch):
+    """transformer_flux._get_projections is module-wide and Chroma's attention calls it: only FLUX.1 attentions
+    install marked take the shared quant (load order no longer matters)."""
+    torch, f1, fused, gemm = env
+    if diffusers_chroma() is None:
+        pytest.skip("diffusers without Chroma")
+    calls = {"shared": 0, "gelu": 0}
+    _force_on(monkeypatch, torch, fused, gemm, calls)
+    flux = _tiny(torch, f1)
+    _install(fused, flux)
+    chroma = _tiny_chroma(torch)
+    g = torch.Generator().manual_seed(3)
+    x = {
+        "hidden_states": torch.randn(1, 12, 8, generator = g),
+        "encoder_hidden_states": torch.randn(1, 5, 24, generator = g),
+        "timestep": torch.tensor([0.4]),
+        "img_ids": torch.randn(12, 3, generator = g),
+        "txt_ids": torch.zeros(5, 3),
+        "return_dict": False,
+    }
+    with torch.no_grad():
+        out = chroma(**x)[0]
+    assert calls == {"shared": 0, "gelu": 0}
+    fused.uninstall()
+    with torch.no_grad():
+        assert torch.equal(out, chroma(**x)[0])
+
+
+def test_unmarked_modules_pay_one_dict_lookup(env):
+    """The FLUX.1 class patches see every FeedForward / single block in the process: an unmarked one is rejected on
+    its instance __dict__, before any nn.Module attribute lookup (no __getattr__ miss per call)."""
+    torch, f1, fused, _gemm = env
+    from diffusers.models.attention import FeedForward
+
+    misses = []
+
+    class Counting(FeedForward):
+        def __getattr__(self, name):
+            misses.append(name)
+            return super().__getattr__(name)
+
+    ff = Counting(16, 16, activation_fn = "gelu-approximate").eval()
+    misses.clear()
+    assert not fused._gelu_ff_ready(ff)  # noqa: SLF001
+    assert misses == []
+    block = f1.FluxSingleTransformerBlock(32, 2, 16)
+    assert not fused._f1_single_ready(block)  # noqa: SLF001
+
+
+def test_kill_switches_and_what_they_restore(env, monkeypatch):
+    """``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0`` restores main exactly (no FLUX.1 patch installed, stock functions
+    back); ``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED=0`` / ``..._INT8_ROTQUANT_PRODUCER=0`` only turn the GELU producer off
+    (the shared Q / K / V quant stays: bit-identical to main, documented)."""
+    torch, f1, fused, _gemm = env
+    from core.inference import diffusion_convrot_quant as cq
+
+    stock_proj = f1._get_projections  # noqa: SLF001
+    stock_single = f1.FluxSingleTransformerBlock.forward
+    model = _tiny(torch, f1)
+    monkeypatch.setattr(fused, "_rotated_linears", lambda t: 7)
+    assert fused.install(model)["patches"]["f1_projections"]
+    assert f1._get_projections is not stock_proj  # noqa: SLF001
+    monkeypatch.setenv(fused.FLUX_CONVROT_FUSED_ENV, "0")
+    assert fused.install(model)["patches"] == {}
+    assert (
+        f1._get_projections is stock_proj and f1.FluxSingleTransformerBlock.forward is stock_single
+    )  # noqa: SLF001
+    assert not fused.is_installed()
+    monkeypatch.delenv(fused.FLUX_CONVROT_FUSED_ENV)
+    for env_name in (cq.GELU_FUSED_ENV, cq.INT8_ROTQUANT_PRODUCER_ENV):
+        monkeypatch.setenv(env_name, "0")
+        monkeypatch.setitem(cq._H16_DEVICE, 3, "ieee")  # noqa: SLF001
+        monkeypatch.setattr(cq, "_device_cap", lambda index: (12, 0))
+        assert cq._arm_gelu(3) is False  # noqa: SLF001 - the GELU producer is off
+        assert fused.install(model)["patches"][
+            "f1_projections"
+        ]  # the shared quant stays, as documented
+        monkeypatch.delenv(env_name)
+
+
+def test_a_failed_gelu_probe_is_logged(monkeypatch):
+    pytest.importorskip("torch")
+    from core.inference import diffusion_convrot_quant as cq
+
+    msgs = []
+    log = type("L", (), {"info": lambda self, fmt, *a: msgs.append(fmt % a)})()
+    monkeypatch.setattr(cq, "_verdict_load", lambda index: None)
+    monkeypatch.setattr(cq, "_verdict_store", lambda index, upd: None)
+    monkeypatch.setattr(cq, "_gelu_probe", lambda index: False)
+    monkeypatch.setattr(cq, "_device_cap", lambda index: (8, 9))
+    monkeypatch.setattr(cq, "_GELU_DEVICE", {})
+    monkeypatch.setattr(cq, "_GELU_OFF", set())
+    monkeypatch.setitem(cq._H16_DEVICE, 7, "ieee")  # noqa: SLF001
+    monkeypatch.delenv(cq.GELU_FUSED_ENV, raising = False)
+    assert cq._arm_gelu(7, log) is False  # noqa: SLF001
+    assert len(msgs) == 1 and "failed its probe on cuda:7" in msgs[0]

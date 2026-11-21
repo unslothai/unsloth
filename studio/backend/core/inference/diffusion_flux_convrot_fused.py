@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.2 / FLUX.3 int8 ConvRot without the separate rotate + quantize pass over each bf16 activation.
+"""FLUX.1 / FLUX.2 / FLUX.3 int8 ConvRot without the separate rotate + quantize pass over each bf16 activation.
 
 On the int8 GEMM swap (``diffusion_int8_gemm``) every rotated Linear quantizes its own input with ``rotq_h16``: the
 producer writes bf16, the kernel reads it back. Here:
@@ -10,8 +10,12 @@ producer writes bf16, the kernel reads it back. Here:
   * the MLP down projection and FLUX.2's single-block output projection read the SwiGLU halves (and the attention
     output) straight from the producers' buffers (``rotq_h16x``), so neither the product nor the concat is written.
 Every patch checks its Linears per call and runs the stock code when they are not swapped rotated int8 Linears.
-Kill switch ``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0``; ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER=0`` keeps only the
-shared quants. On a resident FLUX.3 denoiser Q / K / V also run as one int8 GEMM over their rows concatenated in one
+Kill switch ``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0`` (main's path exactly, every family);
+``UNSLOTH_DIFFUSION_INT8_ROTQUANT_PRODUCER=0`` keeps only the shared quants, and on FLUX.1
+``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED=0`` does the same (the shared Q / K / V quant is the same op on the same tensor,
+so images stay bit-identical to main either way; only ``..._FLUX_CONVROT_FUSED=0`` removes it). FLUX.1's patches sit
+on module-wide diffusers functions / classes other families reuse (Chroma's attention, every ``FeedForward``): they act
+only on the modules ``install`` marked on a FLUX.1 denoiser. On a resident FLUX.3 denoiser Q / K / V also run as one int8 GEMM over their rows concatenated in one
 buffer (the weights become row slices of it, so memory is unchanged; bit-identical) where torch attention reads them
 (the INT8 attention route keeps three GEMMs);
 ``UNSLOTH_DIFFUSION_FLUX3_FUSED_QKV=0`` keeps three GEMMs."""
@@ -568,8 +572,8 @@ def _plain_gelu_tanh(act: Any, cls: Any) -> bool:
 
 def _gelu_ff_ready(ff: Any) -> bool:
     """A FLUX.1 ``FeedForward`` (GELU(tanh) -> Dropout -> rotated int8 Linear) ``install`` marked. Traced: plain
-    attribute reads only."""
-    if not getattr(ff, _F1_MARK, False) or _gemm._hooked(ff):
+    attribute reads only; the mark (an instance ``__dict__`` read) first, so unmarked modules pay one dict lookup."""
+    if not ff.__dict__.get(_F1_MARK, False) or _gemm._hooked(ff):
         return False
     net = ff.net
     return (
@@ -602,10 +606,11 @@ def _make_gelu_ff_forward(stock: Any) -> Any:
 
 def _f1_single_ready(block: Any) -> bool:
     """A FLUX.1 single block ``install`` marked whose ``proj_out`` can read [attention | GELU] from the producers."""
+    if not block.__dict__.get(_F1_MARK, False):
+        return False
     attn = getattr(block, "attn", None)
     return (
-        bool(getattr(block, _F1_MARK, False))
-        and attn is not None
+        attn is not None
         and isinstance(getattr(attn, "heads", None), int)
         and _plain_gelu_tanh(getattr(block, "act_mlp", None), _CLS.get("nn.GELU"))
         and _rotated(block.proj_out)
@@ -712,7 +717,7 @@ def _install_f1_patches() -> dict:
         return done
     with _LOCK:
         done["f1_projections"] = _patch(
-            f1, "_get_projections", "f2_projections", _make_f2_projections
+            f1, "_get_projections", "f2_projections", _make_f1_projections
         )
         gelu = getattr(activations, "GELU", None)
         ff = getattr(attention, "FeedForward", None)
@@ -726,7 +731,9 @@ def _install_f1_patches() -> dict:
 
 
 def _mark_f1(transformer: Any) -> int:
-    """Mark the denoiser's FLUX.1 FeedForward / single blocks for the GELU patches (class-wide, so the mark scopes them)."""
+    """Mark the denoiser's FLUX.1 FeedForward / single blocks / attentions for the class- and module-wide patches
+    (Chroma reuses ``transformer_flux``'s attention; the mark keeps it on the stock projections). Returns the
+    FeedForward + single block count."""
     n = 0
     for m in transformer.modules():
         name = type(m).__name__
@@ -735,7 +742,27 @@ def _mark_f1(transformer: Any) -> int:
         ):
             m.__dict__[_F1_MARK] = True
             n += 1
+        elif name == "FluxAttention":
+            m.__dict__[_F1_MARK] = True
     return n
+
+
+def _make_f1_projections(stock: Any) -> Any:
+    """FLUX.1's ``_get_projections``: the FLUX.2 shared-quant body, on marked FLUX.1 attentions only."""
+    shared = _make_f2_projections(stock)
+
+    def _get_projections(
+        attn,
+        hidden_states,
+        encoder_hidden_states = None,
+    ):
+        if not attn.__dict__.get(_F1_MARK, False):
+            return stock(attn, hidden_states, encoder_hidden_states)
+        return shared(attn, hidden_states, encoder_hidden_states)
+
+    functools.update_wrapper(_get_projections, stock, assigned = ("__name__", "__doc__"), updated = ())
+    setattr(_get_projections, _MARK, True)
+    return _get_projections
 
 
 def _patch(owner: Any, attr: str, key: str, make: Any) -> bool:
@@ -890,8 +917,12 @@ def _arm_cards(transformer: Any, logger: Any = None) -> list:
     from .diffusion_convrot_quant import _arm_gelu, _arm_producer
     from .diffusion_int8_fused import resident_cuda_cards
 
-    arm = _arm_gelu if type(transformer).__name__ == "FluxTransformer2DModel" else _arm_producer
-    cards = [index for index in resident_cuda_cards(transformer) or () if arm(index)]
+    if type(transformer).__name__ == "FluxTransformer2DModel":
+        cards = [
+            index for index in resident_cuda_cards(transformer) or () if _arm_gelu(index, logger)
+        ]
+    else:
+        cards = [index for index in resident_cuda_cards(transformer) or () if _arm_producer(index)]
     try:
         merge_qkv(transformer, logger)
     except Exception as exc:  # noqa: BLE001 - optimisation only: three GEMMs stay

@@ -2454,7 +2454,7 @@ def _gelu_probe(index: int) -> bool:
         return False
 
 
-def _arm_gelu(index: int) -> bool:
+def _arm_gelu(index: int, logger: Any = None) -> bool:
     """Per load, outside any trace, after ``rotq_h16`` was armed on the device: the GELU producer's probe (once per
     device, behind the producer switch and ``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED``, on ``_GELU_ARCHS`` unless forced);
     publishes its op handle."""
@@ -2477,12 +2477,22 @@ def _arm_gelu(index: int) -> bool:
             # a verdict this card, this source and these switches already reached (no probe compile on later loads)
             _GELU_DEVICE[index] = stored["gelu"]
         else:
-            ok = False
+            ok, why = False, "codes or GELU bits differ, or a probe launch failed"
             try:
-                ok = _gelu_op() is not None and _gelu_probe(index)
-            except Exception:  # noqa: BLE001 - the stock GELU, concat and act quant stay
-                ok = False
+                if _gelu_op() is None:
+                    why = "custom op unavailable"
+                else:
+                    ok = _gelu_probe(index)
+            except Exception as exc:  # noqa: BLE001 - the stock GELU, concat and act quant stay
+                ok, why = False, f"{type(exc).__name__}: {exc}"
             _GELU_DEVICE[index] = ok
+            if not ok and logger is not None:
+                logger.info(
+                    "diffusion.convrot_quant: the FLUX.1 GELU producer failed its probe on cuda:%d (%s); FLUX.1 keeps "
+                    "the compiled GELU + concat + rotq_h16",
+                    index,
+                    why,
+                )
             if _ROTQ_DEVICE.get(index) is not None:
                 _verdict_store(index, {"gelu": ok})
     if _GELU_DEVICE[index]:
