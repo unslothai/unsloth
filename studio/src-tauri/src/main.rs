@@ -2452,7 +2452,11 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
-            webkit_rendering.hardware_gl,
+            match webkit_rendering.hardware_gl {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "unchecked",
+            },
             webkit_rendering.cpu_painting,
         );
     }
