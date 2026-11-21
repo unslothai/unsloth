@@ -127,7 +127,6 @@ import {
   ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
-import { formatGiB } from "@/lib/memory/format";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -230,7 +229,12 @@ import {
   mediaGgufPickerStatus,
   type PickerFitStatus,
 } from "./media-picker-fit";
-import { AMBER, isOverBudget, VRAM_VERDICT } from "./fit-verdict";
+import {
+  AMBER,
+  fitMemoryText,
+  isOverBudget,
+  VRAM_VERDICT,
+} from "./fit-verdict";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -1287,16 +1291,9 @@ export function ModelRow({
     vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
   const vramTooltipText =
     showVramTooltip && vramStatus
-      ? exceeds
-        // "memory", not "VRAM": a `partial` GGUF splits across VRAM and RAM.
-        ? vramBudget
-          ? curatedBudgetText(vramEst, gpuGb, vramBudget)
-          : `Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`
-        : vramStatus === "offload"
-          ? `~${formatGiB(vramEst)} memory. Might be slower with RAM offloading.`
-          : vramStatus === "tight" || vramStatus === "marginal"
-            ? `~${formatGiB(vramEst)} VRAM (tight fit on ${formatGiB(gpuGb)})`
-            : `~${formatGiB(vramEst)} VRAM`
+      ? exceeds && vramBudget
+        ? curatedBudgetText(vramEst, gpuGb, vramBudget)
+        : fitMemoryText(vramStatus, vramEst, gpuGb)
       : null;
 
   const { owner, name } = splitRepoLabel(label);

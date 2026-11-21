@@ -10,6 +10,7 @@ import {
   rowOwnBytes,
   rowSizeMeta,
 } from "../src/components/assistant-ui/composer-model-picker/picker-model.ts";
+import { fitMemoryText } from "../src/features/model-picker/components/model-selector/fit-verdict.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const GB = 1e9;
@@ -241,3 +242,38 @@ test("Details and the row agree for a favorited quant and a folder model", () =>
     { params: "8B", size: "5.0 GB" },
   );
 });
+
+test("a fit mark's tooltip gives the memory it was judged with", () => {
+  assert.equal(fitMemoryText("oom", 40, 24), "Needs ~40 GiB memory (GPU: 24 GiB)");
+  assert.equal(fitMemoryText("partial", 30.4, 24), "Needs ~30 GiB memory (GPU: 24 GiB)");
+  assert.equal(
+    fitMemoryText("offload", 9.2, 8),
+    "~9.2 GiB memory. Might be slower with RAM offloading.",
+  );
+  assert.equal(fitMemoryText("marginal", 22, 24), "~22 GiB VRAM (tight fit on 24 GiB)");
+  // No GPU or no estimate: the generic hint stays.
+  assert.equal(fitMemoryText("oom", 40, 0), null);
+  assert.equal(fitMemoryText("oom", undefined, 24), null);
+  assert.equal(fitMemoryText(null, 40, 24), null);
+});
+
+test("composer fit marks carry the estimate on Discover rows and quant rows", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /\{fitMemoryText\(status, needGb, gpuGb\) \?\? verdict\.hint\}/);
+  // The same smallest-quant bytes the verdict was reached with.
+  assert.match(picker, /map\.set\(id, fitOf\(smallestQuantBytes\(r\)\)\);/);
+  assert.match(picker, /map\.set\(r\.id\.toLowerCase\(\), requiredGgufMemoryGb\(bytes\)\);/);
+  assert.match(picker, /<FitBadge\s+status=\{fit\}\s+needGb=\{needGb\}\s+gpuGb=\{inferenceGpu\.memoryTotalGb\}/);
+  assert.match(
+    picker,
+    /<FitBadge\s+status=\{fit\}\s+needGb=\{requiredGgufMemoryGb\(quantBytes\(variant\)\)\}\s+gpuGb=\{inferenceGpu\.memoryTotalGb\}/,
+  );
+  // The header picker's rows read the same text.
+  assert.match(
+    readSrc("features/model-picker/components/model-selector/pickers.tsx"),
+    /: fitMemoryText\(vramStatus, vramEst, gpuGb\)/,
+  );
+});
+

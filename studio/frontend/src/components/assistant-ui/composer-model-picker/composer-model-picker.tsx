@@ -99,6 +99,7 @@ import {
   chatGgufFit,
   curatedAudioInventoryTask,
   describeVariantListingError,
+  fitMemoryText,
   ggufVariantPickerLabel,
   isMediaCatalogRepo,
   isOverBudget,
@@ -162,7 +163,7 @@ import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { Folder02Icon } from "@/lib/folder-icons";
-import { classifyVariantFitOnCard } from "@/lib/gguf-fit";
+import { classifyVariantFitOnCard, requiredGgufMemoryGb } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
@@ -655,6 +656,21 @@ const OPTICAL_SCALE: Readonly<Record<string, number>> = {
 // ~IQ1_M, the smallest quant Unsloth uploads.
 const SMALLEST_QUANT_BYTES_PER_PARAM = 0.3;
 
+/** A GGUF repo is judged by its smallest quant; the search's size is ~2 bytes a parameter. */
+function smallestQuantBytes(r: {
+  id: string;
+  totalParams?: number | null;
+  estimatedSizeBytes?: number | null;
+}): number | undefined {
+  const params = r.totalParams ?? paramsFromId(r.id);
+  if (params) {
+    return params * SMALLEST_QUANT_BYTES_PER_PARAM;
+  }
+  return r.estimatedSizeBytes
+    ? (r.estimatedSizeBytes / 2) * SMALLEST_QUANT_BYTES_PER_PARAM
+    : undefined;
+}
+
 function opticalStyle(id: string | undefined): CSSProperties | undefined {
   const k = id ? OPTICAL_SCALE[id] : undefined;
   return k ? { scale: String(k) } : undefined;
@@ -908,10 +924,14 @@ function TabButton({
 
 function FitBadge({
   status,
+  needGb,
+  gpuGb,
   revealOnHover = false,
   compact = false,
 }: {
   status: PickerFitStatus | null | undefined;
+  needGb?: number | null;
+  gpuGb?: number;
   revealOnHover?: boolean;
   compact?: boolean;
 }) {
@@ -943,7 +963,7 @@ function FitBadge({
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        {verdict.hint}
+        {fitMemoryText(status, needGb, gpuGb) ?? verdict.hint}
       </TooltipContent>
     </Tooltip>
   );
@@ -1840,21 +1860,21 @@ export function ComposerModelPicker({
         map.set(id, listedFits.get(id) ?? null);
         continue;
       }
-      // Judged by its smallest quant: a repo is flagged only when nothing in it could run. The
-      // search's size is the unquantized weights (~2 bytes a parameter), so it is scaled down too.
-      const params = r.totalParams ?? paramsFromId(r.id);
-      map.set(
-        id,
-        fitOf(
-          params
-            ? params * SMALLEST_QUANT_BYTES_PER_PARAM
-            : r.estimatedSizeBytes &&
-                (r.estimatedSizeBytes / 2) * SMALLEST_QUANT_BYTES_PER_PARAM,
-        ),
-      );
+      map.set(id, fitOf(smallestQuantBytes(r)));
     }
     return map;
   }, [hubResults, fitOf, listedFits]);
+  // The memory the fit mark was judged with, for its tooltip.
+  const hubNeedGb = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of hubResults) {
+      const bytes = r.isGguf ? smallestQuantBytes(r) : undefined;
+      if (bytes) {
+        map.set(r.id.toLowerCase(), requiredGgufMemoryGb(bytes));
+      }
+    }
+    return map;
+  }, [hubResults]);
   const noteListedFit = useCallback(
     (repoId: string, list: GgufVariantDetail[]) => {
       const id = repoId.toLowerCase();
@@ -4177,6 +4197,7 @@ export function ComposerModelPicker({
     const quiet = (row.kind === "hub" && !row.onDevice) || npuOffer;
     const offering = row.kind === "hub" && quiet && Boolean(row.hub?.isGguf);
     const fit = offering ? hubFit.get(row.id.toLowerCase()) : null;
+    const needGb = offering ? hubNeedGb.get(row.id.toLowerCase()) : undefined;
     // No GPU: every load runs from RAM, so `ram` is no overage.
     const dimmed = isOverBudget(fit) && !(fit === "ram" && noGpu) && !isChosen;
     const offerOpen = offer?.key === row.key;
@@ -4258,7 +4279,9 @@ export function ComposerModelPicker({
           resolving === row.key,
           npuProgress,
           fit,
+          needGb,
           noGpu,
+          inferenceGpu.memoryTotalGb,
           quantsOpen,
           viewed,
           source,
@@ -4383,6 +4406,8 @@ export function ComposerModelPicker({
                 {offering ? (
                   <FitBadge
                     status={fit}
+                    needGb={needGb}
+                    gpuGb={inferenceGpu.memoryTotalGb}
                     revealOnHover={!isChosen}
                     compact={true}
                   />
@@ -4837,7 +4862,11 @@ export function ComposerModelPicker({
             />
           </span>
           <span className="flex shrink-0 items-center gap-1.5">
-            <FitBadge status={fit} />
+            <FitBadge
+              status={fit}
+              needGb={requiredGgufMemoryGb(quantBytes(variant))}
+              gpuGb={inferenceGpu.memoryTotalGb}
+            />
             <span className="font-mono text-ui-10 tabular-nums text-muted-foreground">
               {formatBytes(quantBytes(variant))}
             </span>

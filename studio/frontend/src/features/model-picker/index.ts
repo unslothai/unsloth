@@ -126,6 +126,7 @@ export {
   paramsFromId,
 } from "./components/model-selector/recommended-fit";
 export {
+  fitMemoryText,
   isOverBudget,
   VRAM_VERDICT,
 } from "./components/model-selector/fit-verdict";
