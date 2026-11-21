@@ -449,6 +449,25 @@ def test_below_trace_verbosity_the_raw_counters_stay(tmp_path, monkeypatch):
     assert (out["phase"], out["bytes_loaded"]) == ("mmap", 450)
 
 
+def test_an_older_build_ends_the_search_with_llama_params_fit(tmp_path, monkeypatch):
+    """b8864 and earlier run the fitter in libllama: its lines and its end carry llama_params_fit."""
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 450, "rss": 200}
+    log = [
+        "0.00.240.000 I common_init_result: fitting params to device memory, for bugs during this step try to reproduce them with -fit off",
+        "0.00.240.100 D llama_params_fit_impl: getting device memory data for initial parameters:",
+        "0.00.500.000 I llama_params_fit_impl: projected to use 436311 MiB of device memory vs. 69621 MiB of free device memory",
+        _PROBE_TENSORS,
+        "0.12.606.382 I llama_params_fit: successfully fit params to free device memory",
+        "0.12.606.384 I llama_params_fit: fitting params to free memory took 12.36 seconds",
+        _REAL_TENSORS,
+    ]
+    _drain(inst, ["llama-server", "--verbose"], log, monkeypatch, counters)
+    counters["rss"] = 200 + 600
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 600)
+
+
 def test_a_second_search_for_the_drafter_ignores_its_probes_too(tmp_path, monkeypatch):
     inst = _fake_load(tmp_path, 1000)
     monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 0))
@@ -470,6 +489,11 @@ def test_a_second_search_for_the_drafter_ignores_its_probes_too(tmp_path, monkey
         (["llama-server", "--verbosity", "4"], {}, True),
         (["llama-server", "-lv=5"], {}, True),
         (["llama-server", "-v"], {}, True),
+        # llama-server accepts the underscore spellings too.
+        (["llama-server", "--log_verbosity", "5"], {}, True),
+        (["llama-server", "--log_verbosity=5"], {}, True),
+        (["llama-server", "--log_verbose"], {}, True),
+        (["llama-server", "--verbosity", "4", "--log_disable"], {}, False),
         (["llama-server", "-lv", "3"], {}, False),
         (["llama-server"], {}, False),
         (["llama-server"], {"LLAMA_ARG_LOG_VERBOSITY": "4"}, True),

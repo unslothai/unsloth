@@ -1016,7 +1016,8 @@ def _log_shows_load_stages(argv, environ) -> bool:
     verbosity = None
     args = [str(a) for a in argv] if isinstance(argv, (list, tuple)) else []
     for i, arg in enumerate(args):
-        flag, eq, value = arg.partition("=")
+        # _flag_name folds the --log_verbosity spellings llama-server also accepts.
+        flag, (_name, eq, value) = _flag_name(arg), arg.partition("=")
         if flag == "--log-disable":
             return False
         if flag in ("-v", "--verbose", "--log-verbose"):
@@ -1084,9 +1085,14 @@ _FIT_DEVICE_RE = re.compile(
 # probe loads the model too (no_alloc, nothing read), and from verbosity 5 its line prints as well, still as "I".
 _LOAD_TENSORS_MARK = "load_tensors: loading model tensors"
 # --fit on prints these before its placement probes. Each probe parses the GGUF header again and reads no weights.
-_FIT_START_MARKS = ("fitting params to device memory", "common_params_fit_impl:")
+# Builds before the fitter moved to common (b8864 and earlier) prefix its lines llama_params_fit_impl.
+_FIT_START_MARKS = (
+    "fitting params to device memory",
+    "common_params_fit_impl:",
+    "llama_params_fit_impl:",
+)
 # Every way the search ends prints one: success at trace (4), failure and error as warning and error.
-_FIT_END_MARK = "common_fit_params:"
+_FIT_END_MARKS = ("common_fit_params:", "llama_params_fit:")
 # Both ends of the search and the weight-load line print from trace verbosity up; llama.cpp defaults to info (3).
 _LOAD_STAGE_MIN_VERBOSITY = 4
 # The MoE-only fill: printed for a model with experts, whose GPU layers then hold only their dense weights.
@@ -19369,7 +19375,7 @@ class LlamaCppBackend:
                 self._load_stage = (pid, "fit", 0, 0)
             return False
         if name == "fit":
-            if _FIT_END_MARK in line:
+            if any(mark in line for mark in _FIT_END_MARKS):
                 self._load_stage = (pid, "placed", 0, 0)
             return False
         if _LOAD_TENSORS_MARK in line:
