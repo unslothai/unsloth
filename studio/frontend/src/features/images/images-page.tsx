@@ -1678,6 +1678,7 @@ function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
 interface StripTileActions {
   tileProps: ReturnType<typeof useStripReorder>["tileProps"];
   select: (id: string) => void;
+  navigate: (id: string, direction: -1 | 1) => void;
   setMenuId: (id: string | null) => void;
   togglePin: (id: string, pinned: boolean) => void;
   archive: (id: string) => void;
@@ -1749,7 +1750,18 @@ const GalleryStripTile = memo(function GalleryStripTile({
       {cueEdge && <StripDropLine edge={cueEdge} />}
       <button
         type="button"
+        aria-pressed={selected}
         onClick={() => actions.get().select(id)}
+        onKeyDown={(event) => {
+          if (
+            event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+            (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+          ) return;
+
+          // Leave modified arrows to the existing reorder shortcut.
+          event.preventDefault();
+          actions.get().navigate(id, event.key === "ArrowLeft" ? -1 : 1);
+        }}
         className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
       >
         {src ? (
@@ -4251,6 +4263,18 @@ export function ImagesPage({
     stripTileActions.set({
       tileProps: stripReorder.tileProps,
       select: pickImage,
+      navigate: (id, direction) => {
+        const index = images.findIndex((image) => image.id === id);
+        if (index < 0) return;
+        const nextIndex = index + direction;
+        const next = images[nextIndex];
+        if (!next) return;
+        pickImage(next.id);
+        stripRef.current
+          ?.querySelectorAll<HTMLElement>("[data-image-id]")[nextIndex]
+          ?.querySelector<HTMLButtonElement>(":scope > button")
+          ?.focus();
+      },
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
       archive: (id) => void handleArchive(id),
