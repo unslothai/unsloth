@@ -2307,7 +2307,8 @@ export async function completeChat(
   const response = await authFetch("/api/inference/chat/completions", {
     method: "POST",
     signal: options.signal,
-    headers: { "Content-Type": "application/json" },
+    // A speech model would echo the prompt back as content; refuse instead.
+    headers: { "Content-Type": "application/json", "X-Unsloth-Require-Text": "1" },
     body: JSON.stringify({ ...payload, stream: false }),
   });
   if (!response.ok) throw new Error(await readFastApiError(response, options.failure));

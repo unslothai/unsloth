@@ -41,6 +41,12 @@ test("the library is fetched for the sidebar only once a character chat exists",
   assert.match(mark, /Object\.keys\(store\.chatIndex\)\.length > 0\)/);
 });
 
+test("a reply draft refuses a speech model's echoed prompt", () => {
+  const api = read("features/chat/api/chat-api.ts");
+  const complete = api.slice(api.indexOf("export async function completeChat"), api.indexOf("export async function generateAudio"));
+  assert.match(complete, /"X-Unsloth-Require-Text": "1"/);
+});
+
 test("a send re-reads the cast and personas, not only the scene", () => {
   const runtime = read("features/characters/chat-runtime.ts");
   assert.match(runtime, /if \(args\.revalidate\) await revalidateParticipants\(scene\);/);
