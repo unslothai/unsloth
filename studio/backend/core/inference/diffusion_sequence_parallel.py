@@ -286,10 +286,18 @@ class _Rank:
 
 @contextlib.contextmanager
 def _as_rank(ctx: _Rank):
+    """This thread runs ``ctx``'s half. No CUDA graph records or replays meanwhile: the other card's thread issues
+    CUDA work the whole time, so a block or step graph would wait out its hold on every call, and a replay would skip
+    the swaps its kernels need."""
     previous = getattr(_TLS, "ctx", None)
     _TLS.ctx = ctx
     try:
-        yield
+        from .diffusion_bg_compile import no_capture
+    except Exception:  # noqa: BLE001 - no graph machinery: nothing records
+        no_capture = contextlib.nullcontext
+    try:
+        with no_capture():
+            yield
     finally:
         _TLS.ctx = previous
 

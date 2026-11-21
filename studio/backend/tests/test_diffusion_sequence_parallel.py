@@ -230,3 +230,42 @@ def test_mode_reads_the_switch(monkeypatch):
     ):
         monkeypatch.setenv(sp.SP_ENV, raw)
         assert sp.mode() == want
+
+
+def test_neither_card_records_or_replays_a_graph_during_a_split(monkeypatch):
+    """A block graph on either card would wait out the other thread's hold on every call: both halves run with
+    captures suppressed, and the step after the split does not inherit it."""
+    import functools
+    import threading
+
+    from diffusers.models.transformers import transformer_wan
+
+    from core.inference.diffusion_bg_compile import capture_suppressed
+
+    seen = []
+    stock = transformer_wan.WanTransformerBlock.forward
+
+    @functools.wraps(stock)
+    def spy(self, *a, **k):
+        seen.append(
+            (
+                threading.current_thread().name.startswith("unsloth-cfg-replica"),
+                capture_suppressed(),
+            )
+        )
+        return stock(self, *a, **k)
+
+    monkeypatch.setattr(transformer_wan.WanTransformerBlock, "forward", spy)
+    model = _model()
+    router, _ = _router(model)
+    _loop(model)
+    assert router.stats["sequence_splits"] == STEPS - 1, (
+        router.stats,
+        router.sequence_split_off,
+        router.disabled_reason,
+    )
+    whole, split = seen[:2], seen[2:]  # step 1 runs both blocks whole on the source
+    assert whole == [(False, False), (False, False)]
+    assert split and all(flag for _, flag in split)
+    assert {True, False} == {replica for replica, _ in split}
+    assert not capture_suppressed()
