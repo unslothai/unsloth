@@ -300,8 +300,8 @@ def test_the_trainer_init_prefers_the_finetuning_stamp_over_the_shared_flag():
 def _fast_generate_autocast_source() -> str:
     """The autocast unsloth_base_fast_generate builds around _old_generate."""
     src = (REPO_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8")
-    start = src.index("    # Mixed precision autocast")
-    end = src.index("    # Prepare LoRA\n", start)
+    start = src.index("        # Mixed precision autocast")
+    end = src.index("        # Prepare LoRA\n", start)
     return textwrap.dedent(src[start:end])
 
 
