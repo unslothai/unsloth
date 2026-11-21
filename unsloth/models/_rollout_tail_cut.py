@@ -22,7 +22,7 @@ length-truncated rows: they keep their reward in the group statistics and `mask_
 removes them from the loss. The cut only engages when that masking is on, so the objective never changes silently.
 
 Off unless UNSLOTH_ROLLOUT_TAIL_CUT=<k_min> is set:
-  UNSLOTH_ROLLOUT_TAIL_CUT_MAX_FRAC   most rows cut per generate call, as a fraction of its rows (default 0.05)
+  UNSLOTH_ROLLOUT_TAIL_CUT_MAX_FRAC   most rows cut per generate call, as a fraction of its rows (default 0.125)
   UNSLOTH_ROLLOUT_TAIL_CUT_MIN_TOKENS a row is cut only after this many generated tokens (default 128)
 """
 
@@ -54,7 +54,7 @@ def tail_cut_settings():
         return None
     try:
         k_min = int(raw)
-        max_frac = float(os.environ.get("UNSLOTH_ROLLOUT_TAIL_CUT_MAX_FRAC", "0.05"))
+        max_frac = float(os.environ.get("UNSLOTH_ROLLOUT_TAIL_CUT_MAX_FRAC", "0.125"))
         min_tokens = int(os.environ.get("UNSLOTH_ROLLOUT_TAIL_CUT_MIN_TOKENS", "128"))
     except ValueError:
         _warn_once("parse", "UNSLOTH_ROLLOUT_TAIL_CUT* must be numbers.")
@@ -320,6 +320,8 @@ def rollout_tail_cut_scope(trainer):
         return
     engine = _engine_of(trainer)
     state = TailCutEngine(engine, group_size, k_min, max_frac, min_tokens)
+    # The same list grows as rows are cut, so the truncation check inside `_generate` (clipped_ratio) sees them too.
+    trainer._unsloth_tail_cut_rows = state.cut_rows
     original_add = engine.add_request
     original_step = engine.step
     had_add = "add_request" in engine.__dict__
@@ -337,7 +339,6 @@ def rollout_tail_cut_scope(trainer):
             engine.step = original_step
         else:
             del engine.step
-        trainer._unsloth_tail_cut_rows = state.cut_rows
         metrics = getattr(trainer, "_metrics", None)
         if state.num_rows and isinstance(metrics, dict) and "train" in metrics:
             try:

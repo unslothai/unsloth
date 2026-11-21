@@ -222,7 +222,7 @@ def test_settings_and_scope_off(monkeypatch):
         assert "add_request" not in engine.__dict__ and "step" not in engine.__dict__
     assert trainer._unsloth_tail_cut_rows is None
     monkeypatch.setenv("UNSLOTH_ROLLOUT_TAIL_CUT", "6")
-    assert tc.tail_cut_settings() == (6, 0.05, 128)
+    assert tc.tail_cut_settings() == (6, 0.125, 128)
     monkeypatch.setenv("UNSLOTH_ROLLOUT_TAIL_CUT_MAX_FRAC", "2")
     assert tc.tail_cut_settings() is None
 
@@ -259,6 +259,8 @@ def test_scope_installs_and_restores(monkeypatch):
     )  # fmt: skip
     with tc.rollout_tail_cut_scope(trainer):
         out = run_engine(engine, len(lengths), SamplingParams(max_tokens = 500))
+        # Visible inside the scope: TRL's _generate runs its truncation check (clipped_ratio) before returning.
+        assert trainer._unsloth_tail_cut_rows == [tuple(out[7].outputs[0].token_ids)]
     assert "step" not in engine.__dict__ and "add_request" not in engine.__dict__
     assert engine.aborted == ["7"] and len(out) == 16
     assert trainer._unsloth_tail_cut_rows == [tuple(out[7].outputs[0].token_ids)]
