@@ -3,6 +3,7 @@
 
 import type { BaseModelSource, LocalArtifactKind } from "./api";
 import type { InventoryHintKind, LocalSource } from "./constants";
+import type { ModelAnnotation } from "../lib/model-annotations";
 
 export type ModelInventoryFormat =
   | "gguf"
@@ -29,6 +30,8 @@ export interface InventoryHint {
 }
 
 export interface CachedInventoryRow {
+  /** Personal presentation only; repoId/loadId and Hub capability tags remain authoritative. */
+  annotation?: ModelAnnotation;
   kind: "cache";
   id: string;
   loadId: string;
@@ -68,6 +71,8 @@ export interface CachedInventoryRow {
 }
 
 export interface LocalInventoryRow {
+  /** Personal presentation only; path/loadId remain authoritative for model actions. */
+  annotation?: ModelAnnotation;
   kind: "local";
   id: string;
   loadId: string;
