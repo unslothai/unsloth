@@ -324,7 +324,9 @@ def _shipped_coverage_check() -> str:
     raise_start = body.index("    $incomplete = @()")
     raise_end = body.index("This run cannot say whether a compiler ran.", raise_start)
     raise_end = body.index("\n    }\n", raise_end) + len("\n    }\n")
-    return body[loop_start:loop_end] + body[raise_start:raise_end]
+    # The verdict also reads what 4688 saw and which attempt this is: a single, compiler-free one.
+    single_attempt = "$compilers = @()\n$Name = 'probe'\n$Attempt = 1\n$Attempts = 1\n"
+    return single_attempt + body[loop_start:loop_end] + body[raise_start:raise_end]
 
 
 def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None:
