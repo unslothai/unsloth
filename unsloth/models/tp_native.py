@@ -4893,6 +4893,24 @@ def _cp_width():
     return int(getattr(layout, "cp", 1) or 1)
 
 
+def _expert_lora_b_layout(model):
+    """How this process reads the trainable fused expert lora_B columns, None without any: both layouts have the
+    same shape, so a per-rank checkpoint copied into the other one pairs every column with the wrong expert."""
+    found = None
+    for module in model.modules():
+        lora_B = getattr(module, "lora_B", None)
+        if int(getattr(module, "num_experts", 1) or 1) <= 1 or not hasattr(lora_B, "items"):
+            continue
+        for adapter, B in lora_B.items():
+            weight = getattr(B, "weight", None)
+            if weight is None or not weight.requires_grad:
+                continue
+            if _lora_b_layout(module, adapter) != "rank_major":
+                return "grouped_by_expert"
+            found = "rank_major"
+    return found
+
+
 def _tp_layout(trainer):
     import torch.distributed as dist
 
@@ -4904,6 +4922,7 @@ def _tp_layout(trainer):
     ]
     pp = _pp_size(trainer.model)
     cp = _cp_width()
+    lora_b = _expert_lora_b_layout(trainer.model)
     return {
         "world": dist.get_world_size() if dist.is_initialized() else 1,
         **(
@@ -4912,6 +4931,7 @@ def _tp_layout(trainer):
         # dp_mesh is the flattened (dp, cp) mesh: without cp, tp=2,cp=2 and tp=2 x 2 replicas look alike, and the
         # resumed step count would skip the wrong number of rows.
         **({"cp": cp} if cp > 1 else {}),
+        **({"lora_b": lora_b} if lora_b else {}),
         "tp": tp_mesh.size() if tp_mesh is not None else 1,
         "dp": dp_mesh.size() if dp_mesh is not None else 1,
         "dp_kind": None
@@ -5019,16 +5039,18 @@ def _tp_resume_payload(self, checkpoint):
         )
     payload = torch.load(path, map_location = "cpu", weights_only = True)
     want, got = _tp_layout(self), payload["layout"]
+    if "lora_b" not in got:  # written before the expert lora_B layout was recorded
+        want.pop("lora_b", None)
     if want != got:
         diff = {
             k: (got.get(k), want.get(k))
-            for k in ("world", "pp", "cp", "tp", "dp", "dp_kind")
+            for k in ("world", "pp", "cp", "tp", "dp", "dp_kind", "lora_b")
             if got.get(k) != want.get(k)
         }
         raise RuntimeError(
             f"Unsloth: tensor parallel resume from {checkpoint}: the checkpoint was written on another layout "
             f"({diff or 'trainable parameter names / shard shapes differ'}); resume with the same world size, "
-            "UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE and data parallel mode."
+            "UNSLOTH_TP_SIZE / UNSLOTH_CP_SIZE, data parallel mode and UNSLOTH_MOE_LORA_B_LAYOUT."
         )
     self.__dict__["_unsloth_tp_resume"] = (checkpoint, payload)
     return payload
