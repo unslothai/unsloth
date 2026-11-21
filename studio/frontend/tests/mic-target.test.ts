@@ -38,6 +38,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
   new URL("../src/features/settings/stores/voice-settings-store.ts", import.meta.url),
   {
     "@/lib/api-base": { isTauri: false },
+    "./default-dictation-dictionary": { DEFAULT_DICTATION_DICTIONARY_WORDS: [] },
     "../../audio/audio-cpp-catalog": audioCppCatalog,
     zustand,
     "zustand/middleware": zustandMiddleware,

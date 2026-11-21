@@ -79,6 +79,7 @@ const { StudioWebSpeechDictationAdapter } = loadWithStubs<{
     import.meta.url,
   ),
   {
+    "@/features/microphone": { ensureMicrophonePermission: async () => true },
     "@/features/settings/stores/settings-dialog-store": {
       useSettingsDialogStore: { getState: () => ({ openDialog() {} }) },
     },

@@ -1,0 +1,203 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0 -->
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Unsloth voice typing</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The overlay window is transparent and has no theme; this entry deliberately
+         skips the main shell's theme and reload scripts. The crypto polyfill is
+         still needed by the shared modules the overlay imports. -->
+    <script src="/crypto-boot.js"></script>
+    <style>
+      @property --vt-accent {
+        syntax: "<color>";
+        inherits: true;
+        initial-value: #f87171;
+      }
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body,
+      #root {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+      }
+      .vt-stage {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+      }
+      /* 196x50 pill centred in a 248x96 window: the 23px vertical and 26px side
+         margins clear the shadow, so it is never clipped by the window bounds. */
+      .vt-pill {
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 196px;
+        height: 50px;
+        padding: 0 18px 0 10px;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 999px;
+        background: rgba(17, 19, 24, 0.94);
+        box-shadow:
+          0 6px 16px rgba(0, 0, 0, 0.42),
+          0 1px 3px rgba(0, 0, 0, 0.3),
+          0 0 16px -7px var(--vt-accent),
+          inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        color: #e8eaee;
+        animation: vt-in 140ms ease-out;
+        transition:
+          --vt-accent 220ms ease,
+          box-shadow 220ms ease,
+          border-color 220ms ease;
+      }
+      .vt-logo {
+        position: relative;
+        flex: 0 0 auto;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        cursor: pointer;
+        pointer-events: auto;
+        outline: none;
+      }
+      .vt-logo img,
+      .vt-stop {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border-radius: 999px;
+        transition:
+          opacity 140ms ease,
+          transform 140ms ease;
+      }
+      .vt-logo img {
+        object-fit: cover;
+        -webkit-user-drag: none;
+      }
+      .vt-stop {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(
+          circle at 50% 32%,
+          #f87171 0%,
+          #ef4444 52%,
+          #dc2626 100%
+        );
+        color: #fff;
+        opacity: 0;
+        transform: scale(0.62);
+        box-shadow:
+          0 0 0 3px rgba(239, 68, 68, 0.24),
+          inset 0 1px 0 rgba(255, 255, 255, 0.32);
+        transition:
+          opacity 120ms ease,
+          transform 160ms cubic-bezier(0.2, 0.9, 0.3, 1.25);
+      }
+      .vt-stop svg {
+        width: 11px;
+        height: 11px;
+        display: block;
+      }
+      .vt-logo:hover img,
+      .vt-logo:focus-visible img {
+        opacity: 0;
+        transform: scale(0.7);
+      }
+      .vt-logo:hover .vt-stop,
+      .vt-logo:focus-visible .vt-stop {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .vt-logo:active .vt-stop {
+        background: #dc2626;
+      }
+      .vt-wave {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+        height: 32px;
+      }
+      .vt-bar {
+        width: 3px;
+        height: 4px;
+        border-radius: 999px;
+        background-color: var(--vt-accent);
+        transition: background-color 220ms ease;
+        will-change: height, opacity;
+      }
+      .vt-time {
+        flex: 0 0 auto;
+        min-width: 42px;
+        text-align: right;
+        color: #cbd0d8;
+        font-family:
+          "JetBrains Mono", "Cascadia Mono", "SF Mono", ui-monospace, Menlo,
+          Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+      }
+      .vt-blocked-message {
+        flex: 1 1 auto;
+        min-width: 0;
+        padding: 0 0 0 10px;
+        text-align: center;
+        font-family:
+          "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
+          "Helvetica Neue", Arial, sans-serif;
+        font-size: 12px;
+        line-height: 1.3;
+        font-weight: 600;
+        letter-spacing: 0;
+        color: #fee2e2;
+        text-wrap: balance;
+      }
+      /* Blocked state: wider and taller so the notice reads as two balanced
+         lines instead of being squeezed into the waveform slot. */
+      .vt-pill.vt-blocked {
+        width: 232px;
+        height: 58px;
+        padding: 0 14px 0 8px;
+        border-color: rgba(248, 113, 113, 0.35);
+      }
+      @keyframes vt-in {
+        from {
+          opacity: 0;
+          transform: translateY(4px) scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .vt-pill {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/voice-hud-main.tsx"></script>
+  </body>
+</html>

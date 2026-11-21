@@ -115,6 +115,33 @@ def test_save_failure_returns_complete_text(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_dictation_stream_skips_the_gallery(monkeypatch):
+    """Dictation segments are short and frequent; they must not fill the Audio
+    transcript gallery with clips the user never opened there."""
+
+    async def transcribe(progress):
+        return {"text": "spoken", "model": "tiny"}
+
+    calls = []
+
+    def save(result, title):
+        calls.append(title)
+        return {"id": "saved"}
+
+    monkeypatch.setattr(transcript_stream.transcript_gallery, "save", save)
+
+    async def scenario():
+        events = [
+            json.loads(line)
+            async for line in transcript_stream.stream_transcript(transcribe, "clip", save = False)
+        ]
+        assert events[-1]["text"] == "spoken"
+        assert events[-1]["record"] is None
+        assert calls == []
+
+    asyncio.run(scenario())
+
+
 def test_closing_stream_cancels_inference_without_saving(monkeypatch):
     async def scenario():
         started, cancelled = asyncio.Event(), asyncio.Event()
