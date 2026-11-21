@@ -567,6 +567,101 @@ def test_a_checkpoint_resumes_only_at_its_gpu_count():
     assert CheckpointIdentity.from_dict(two.as_dict()).world_size == 2
 
 
+def test_the_resume_preflight_refuses_a_checkpoint_from_another_gpu_count(tmp_path):
+    """Codex 4654543902: through the real save + preflight_resume path, a 2-GPU batch-1 bundle (global batch 2) is
+    refused on 1 GPU before the model loads, and accepted on 2."""
+    from core.training import diffusion_checkpoint as dc
+
+    def ident(world):
+        base = dc.CheckpointIdentity(
+            family = FAMILY,
+            base_model = "m",
+            lora_target_modules = ("to_q",),
+            lora_rank = 4,
+            lora_alpha = 4,
+            precision = "bf16",
+            base_precision = "bf16",
+            resolution = 64,
+            train_batch_size = 1,
+        )
+        return base if world is None else dc.with_world_size(base, world)
+
+    def bundle(run_dir, identity):
+        param = torch.nn.Parameter(torch.zeros(2, 2))
+        opt = torch.optim.AdamW([param], lr = 1e-3)
+        dc.save_checkpoint(
+            output_dir = str(run_dir),
+            step = 3,
+            adapter_state = {"w": torch.zeros(2, 2)},
+            identity = identity,
+            target_steps = 6,
+            optimizer = opt,
+            lr_scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lambda _: 1.0),
+            rng = dc.capture_rng_state(
+                {"loop": __import__("random").Random(0), "variant": __import__("random").Random(1)}
+            ),
+            sampler_state = {"n": 1, "order": [0], "pos": 0},
+        )
+
+    from utils.paths import outputs_root
+
+    two = outputs_root() / f"ddp_resume_two_{tmp_path.name}"
+    bundle(two, ident(2))
+    with pytest.raises(dc.ResumeError, match = r"different GPU count \(2 vs 1\)"):
+        dc.preflight_resume(str(two), identity = ident(1), target_steps = 6)
+    _path, step = dc.preflight_resume(str(two), identity = ident(2), target_steps = 6)
+    assert step == 3
+    # The start route has no world yet: cannot tell, so it defers to the trainer's own check.
+    dc.preflight_resume(str(two), identity = ident(None), target_steps = 6)
+    # A bundle from before the field trained on one GPU.
+    legacy = outputs_root() / f"ddp_resume_legacy_{tmp_path.name}"
+    bundle(legacy, ident(None))
+    dc.preflight_resume(str(legacy), identity = ident(1), target_steps = 6)
+    with pytest.raises(dc.ResumeError, match = r"different GPU count"):
+        dc.preflight_resume(str(legacy), identity = ident(2), target_steps = 6)
+
+
+@pytest.mark.parametrize("world", [1, 2])
+def test_the_trainer_checks_the_resume_at_the_planned_gpu_count(monkeypatch, tmp_path, world):
+    """The identity the trainer hands preflight_resume carries the world after plan_world's fallbacks."""
+    from PIL import Image
+
+    import core.training.diffusion_dit_trainer as dit
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    data = tmp_path / "data"
+    data.mkdir()
+    for i in range(4):
+        Image.new("RGB", (64, 64), (10 * i, 20, 30)).save(data / f"img{i}.png")
+        (data / f"img{i}.txt").write_text(f"tile {i}")
+    seen = {}
+
+    def preflight(path, *, identity, target_steps):
+        seen["world"] = identity.world_size
+        raise _LaunchSeen
+
+    monkeypatch.setattr(dit, "_assert_trusted_base_model", lambda *a, **k: None)
+    monkeypatch.setattr(dit, "_assert_gated_access", lambda *a, **k: None)
+    monkeypatch.setattr(dit, "resolve_train_device", lambda: "cuda")
+    monkeypatch.setattr(dit, "dit_fp16_fallback", lambda fam: False)
+    monkeypatch.setattr(dit, "flow_bf16_trainable", lambda: True)
+    monkeypatch.setattr(diffusion_ddp, "plan_world", lambda cfg, device: (world, None))
+    monkeypatch.setattr(dit, "preflight_resume", preflight)
+    cfg = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.2-klein-base-4B",
+        model_family = "flux.2-klein",
+        data_dir = str(data),
+        output_dir = str(tmp_path / "out"),
+        train_steps = 6,
+        train_batch_size = 1,
+        num_gpus = 2,
+        resume_from_checkpoint = str(tmp_path / "out"),
+    )
+    with pytest.raises(_LaunchSeen):
+        dit.run_dit_lora_training(cfg)
+    assert seen["world"] == world
+
+
 if __name__ == "__main__":
     mode, rank, world, port, *rest = sys.argv[1:]
     fn = {"grads": _child_grads, "train": _child_train}[mode]
