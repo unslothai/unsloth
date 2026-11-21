@@ -1050,6 +1050,15 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
+        if cfg.num_gpus > 1 and getattr(trainer, "__name__", "") != "run_dit_lora_training":
+            on_event(
+                {
+                    "type": "warning",
+                    "message": f"num_gpus={cfg.num_gpus} applies to DiT families only; "
+                    f"{cfg.resolved_family} trains on one GPU.",
+                    "ts": time.time(),
+                }
+            )
         from .diffusion_download_progress import TrainingDownloadProgress
 
         with TrainingDownloadProgress(on_event) as report:
