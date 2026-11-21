@@ -5843,6 +5843,8 @@ export const en = {
       upload: "Upload",
       error: "That image couldn’t be used. Try a JPEG, PNG or WebP.",
       glass: "Glass",
+      solid: "Solid",
+      glassOn: "Glass",
     },
     device: {
       checking: "Looking at this computer…",

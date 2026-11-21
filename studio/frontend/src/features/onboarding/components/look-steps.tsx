@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
 import {
   resetChatBackground,
   useBackgroundStore,
@@ -24,13 +24,16 @@ import {
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
+  BlendIcon,
   LaptopIcon,
   Moon02Icon,
+  SquareIcon,
   Sun03Icon,
   UnavailableIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { motion, useReducedMotion } from "motion/react";
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import {
   WALLPAPER_PRESETS,
@@ -357,6 +360,59 @@ function Wallpapers() {
   );
 }
 
+// The same control as Settings' Light / Dark / System (ThemeSegmented), so the pair reads as one family.
+function GlassSegmented({
+  glass,
+  onChange,
+}: { glass: boolean; onChange: (glass: boolean) => void }) {
+  const t = useT();
+  const reduced = useReducedMotion();
+  const options = [
+    {
+      value: false,
+      label: t("onboarding.scene.solid"),
+      icon: SquareIcon,
+    },
+    { value: true, label: t("onboarding.scene.glassOn"), icon: BlendIcon },
+  ];
+  return (
+    // The dialog is page-coloured, so hub.css's sunk dialog track would vanish into it: use the page's track.
+    <div className="hub-tab-toggle inline-flex h-8 shrink-0 items-center rounded-full [--hub-tab-track:color-mix(in_srgb,var(--foreground)_calc(6.5%*var(--contrast-wash-gain,1)),transparent)]">
+      {options.map((opt) => {
+        const active = glass === opt.value;
+        return (
+          <button
+            key={opt.label}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            aria-pressed={active}
+            className={cn(
+              "relative flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors",
+              active
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {active ? (
+              <motion.span
+                layoutId="onboarding-glass-pill"
+                className="hub-tab-toggle-pill absolute inset-0 rounded-full"
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : { type: "spring", stiffness: 500, damping: 35, mass: 0.5 }
+                }
+              />
+            ) : null}
+            <HugeiconsIcon icon={opt.icon} className="relative z-10 size-3.5" />
+            <span className="relative z-10">{opt.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function LookStep() {
   const t = useT();
   const { theme, setTheme } = useTheme();
@@ -395,12 +451,16 @@ export function LookStep() {
           below={<Wallpapers />}
         />
         <Row
-          label={t("onboarding.scene.glass")}
+          label={
+            <span className="flex items-center gap-2">
+              {t("chatBackground.glassTheme")}
+              <Badge variant="accent">{t("shell.beta")}</Badge>
+            </span>
+          }
           trailing={
-            <Switch
-              aria-label={t("onboarding.scene.glass")}
-              checked={material !== "solid"}
-              onCheckedChange={setEnabled}
+            <GlassSegmented
+              glass={material !== "solid"}
+              onChange={setEnabled}
             />
           }
         />
