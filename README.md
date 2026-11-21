@@ -165,7 +165,7 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
   </tr>
 </table>
 
-To change Desktop's local HTTP port, set `UNSLOTH_DESKTOP_PORT=9000` in the app's launch environment, then fully quit and reopen it. Unset or empty uses port 8888. If the port is busy, Desktop tries the next 20 ports. Choose a port from 1024 to 65515. Desktop rejects ranges containing a browser-restricted port. This applies to backend restarts after updates. `unsloth studio -p` and LAN access use separate ports.
+For Desktop's local HTTP port, set `UNSLOTH_DESKTOP_PORT=9000` in its launch environment and fully restart the app. Unset or empty uses `8888`. Choose `1024–65515`. If the port is busy, Desktop tries the next 20. It rejects ranges with browser-restricted ports. This covers backend restarts after updates. `unsloth studio -p` and LAN use separate ports.
 
 ### Unsloth Studio (web UI)
 
