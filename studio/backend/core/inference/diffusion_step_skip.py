@@ -90,19 +90,21 @@ def static_schedule(
     masks: Optional[dict] = None,
 ) -> tuple:
     """Per step, compute (True) or skip (False); empty (compute all) below ``min_steps`` (never below
-    ``STATIC_MIN_STEPS``). ``masks`` maps a step count to a measured per-step mask (``parse_mask``); a step count
-    without one keeps the interval schedule."""
+    ``STATIC_MIN_STEPS``). ``masks`` maps a step count to a measured per-step mask (``parse_mask``), used at exactly
+    that step count even below ``min_steps``; a step count without one keeps the interval schedule."""
     try:
         n = int(steps)  # type: ignore[arg-type]
         every = int(every)
         floor = max(STATIC_MIN_STEPS, int(min_steps))
     except (TypeError, ValueError):
         return ()
-    if n < floor:
-        return ()
+    # A measured mask is the measurement at its own step count, so it also stands below the interval's floor
+    # (``parse_mask`` still keeps it at STATIC_MIN_STEPS or more).
     mask = _mask_for(masks, n)
     if mask:
         return mask
+    if n < floor:
+        return ()
     if every < 2:
         return ()
     first = max(MIN_HEAD_STEPS, round(n * float(head)))

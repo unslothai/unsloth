@@ -36,9 +36,11 @@ def test_a_mask_replaces_the_interval_at_its_own_step_count():
     plan = ss.static_schedule(30, masks = {30: MASK_30})
     assert plan == tuple(c == "1" for c in MASK_30)
     assert plan != ss.static_schedule(30)
-    # Another step count keeps the interval; the min_steps floor still applies.
+    # Another step count keeps the interval; a mask is its own measurement, so it also stands below the
+    # interval's min_steps floor, while another step count under that floor still computes every step.
     assert ss.static_schedule(31, masks = {30: MASK_30}) == ss.static_schedule(31)
-    assert ss.static_schedule(30, min_steps = 40, masks = {30: MASK_30}) == ()
+    assert ss.static_schedule(30, min_steps = 40, masks = {30: MASK_30}) == plan
+    assert ss.static_schedule(31, min_steps = 40, masks = {30: MASK_30}) == ()
     # A bool tuple works too.
     assert ss.static_schedule(30, masks = {30: plan}) == plan
 
@@ -178,26 +180,37 @@ def test_shipped_masks_are_well_formed_and_match_their_interval_rows():
         for tier, masks in tiers.items():
             assert tier in ("default", "max"), (repo, tier)
             for steps, mask in masks.items():
-                assert steps == entry["steps"], (repo, tier, steps)
+                assert len(mask) == steps and steps <= entry["steps"], (repo, tier, steps)
                 assert ss.parse_mask(mask), (repo, tier, mask)
                 interval = ss.static_schedule(steps, every = entry.get(tier) or entry["max"])
                 # A shipped mask never computes more steps than the interval it replaces.
                 assert mask.count("1") <= sum(interval), (repo, tier)
 
 
-def test_wan22_5b_max_tier_runs_the_measured_mask_at_50_steps():
+def test_wan22_5b_max_tier_runs_the_measured_masks_at_50_and_40_steps():
     repo = "wan-ai/wan2.2-ti2v-5b-diffusers"
     masks = dcache.AUTO_STATIC_SKIP_MASKS[repo]["max"]
-    mask = masks[50]
-    # Same compute budget as the every-3 interval it replaces, so the speedup is unchanged.
-    assert mask.count("1") == sum(ss.static_schedule(50, every = 3)) == 27
+    assert sorted(masks) == [40, 50]
+    # Same compute budget as the every-3 interval at each step count, so the speedup matches every-3.
+    assert masks[50].count("1") == sum(ss.static_schedule(50, every = 3)) == 27
+    assert masks[40].count("1") == sum(ss.static_schedule(40, every = 3)) == 22
     plan = dcache.auto_static_skip_plan((repo,), "max", 50, env = {})
-    assert plan["masks"] == {50: mask}
+    assert plan["masks"] == masks and plan["min_steps"] == 50
     settings = ss.auto_static_settings(plan, env = {})
-    assert ss.static_schedule(
-        50, every = settings["every"], masks = settings.get("masks")
-    ) == ss.parse_mask(mask)
-    # Other step counts keep the interval.
-    assert ss.static_schedule(40, every = 3, masks = settings.get("masks")) == ss.static_schedule(
-        40, every = 3
+    sched = lambda n: ss.static_schedule(  # noqa: E731
+        n, every = settings["every"], min_steps = settings["min_steps"], masks = settings.get("masks")
+    )
+    assert sched(50) == ss.parse_mask(masks[50])
+    # 40 steps used to compute every step (below the measured 50-step floor); the 40-step mask now skips there.
+    assert sched(40) == ss.parse_mask(masks[40])
+    # Studio's default 20 steps, and 30, still compute every step; above 50 the interval is unchanged.
+    assert sched(20) == () and sched(30) == ()
+    assert sched(60) == ss.static_schedule(60, every = 3)
+    # The kill switch drops both masks: 40 computes every step again, 50 runs every-3.
+    off = ss.auto_static_settings(plan, env = {ss.ENV_MASK: "0"})
+    assert (
+        ss.static_schedule(
+            40, every = off["every"], min_steps = off["min_steps"], masks = off.get("masks")
+        )
+        == ()
     )
