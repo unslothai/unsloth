@@ -40,9 +40,9 @@ def test_no_process_has_no_size():
     assert _backend().resident_memory_mib() is None
 
 
-def test_gpu_model_buffers_win_over_rss():
+def test_gpu_buffers_win_over_rss():
     backend = _backend(_Alive())
-    with patch.object(backend, "reclaimable_gpu_memory_gb", return_value = {0: 4.0, 1: 1.5}):
+    with patch.object(backend, "gpu_footprint_gb", return_value = {0: 4.0, 1: 1.5}):
         assert backend.resident_memory_mib() == 5632
 
 
@@ -51,7 +51,7 @@ def test_cpu_load_reports_child_rss():
     backend = _backend(_Alive())
     fake = SimpleNamespace(memory_info = lambda: SimpleNamespace(rss = 3 * 1024 * 1024 * 1024))
     with (
-        patch.object(backend, "reclaimable_gpu_memory_gb", return_value = None),
+        patch.object(backend, "gpu_footprint_gb", return_value = None),
         patch("psutil.Process", return_value = fake) as process,
     ):
         assert backend.resident_memory_mib() == 3072
@@ -97,11 +97,78 @@ def test_buffer_scan_is_not_memoised_while_loading():
     assert backend.reclaimable_gpu_memory_gb() == {0: 2.0}
 
 
+# A two-GPU split with a long context, as llama-server logs it: the weights are the small part.
+_SPLIT_LOAD = [
+    "load_tensors:        CUDA0 model buffer size =  3900.00 MiB",
+    "load_tensors:        CUDA1 model buffer size =  3790.00 MiB",
+    "load_tensors:   CPU_Mapped model buffer size =   400.00 MiB",
+    "llama_context:  CUDA_Host  output buffer size =     0.58 MiB",
+    "llama_kv_cache:      CUDA0 KV buffer size =  6400.00 MiB",
+    "llama_kv_cache:      CUDA1 KV buffer size =  5600.00 MiB",
+    "sched_reserve: reserving ...",
+    "sched_reserve:      CUDA0 compute buffer size =   900.00 MiB",
+    "sched_reserve:      CUDA1 compute buffer size =   850.00 MiB",
+    "sched_reserve:  CUDA_Host compute buffer size =    72.00 MiB",
+    # Warmup on and off reserve again and reprint the same buffers.
+    "sched_reserve: reserving ...",
+    "sched_reserve:      CUDA0 compute buffer size =   900.00 MiB",
+    "sched_reserve:      CUDA1 compute buffer size =   850.00 MiB",
+    "sched_reserve: reserving ...",
+    "sched_reserve:      CUDA0 compute buffer size =   900.00 MiB",
+    "sched_reserve:      CUDA1 compute buffer size =   850.00 MiB",
+]
+
+
+def _split_backend():
+    backend = _backend(_Alive())
+    backend._child_gpu_physical_ids = (0, 1)
+    backend._healthy = True
+    backend._stdout_lines = list(_SPLIT_LOAD)
+    return backend
+
+
+def test_footprint_counts_kv_cache_and_compute_on_every_gpu():
+    backend = _split_backend()
+    assert backend.gpu_footprint_gb() == {
+        0: (3900 + 6400 + 900) / 1024,
+        1: (3790 + 5600 + 850) / 1024,
+    }
+    assert backend.resident_memory_mib() == 3900 + 3790 + 6400 + 5600 + 900 + 850
+
+
+def test_reclaimable_stays_weights_only():
+    backend = _split_backend()
+    assert backend.reclaimable_gpu_memory_gb() == {0: 3900 / 1024, 1: 3790 / 1024}
+    # Same answer from the shared cache, in either call order.
+    assert backend.gpu_footprint_gb()[0] == (3900 + 6400 + 900) / 1024
+    assert backend.reclaimable_gpu_memory_gb() == {0: 3900 / 1024, 1: 3790 / 1024}
+
+
+def test_footprint_counts_recurrent_lora_and_device_output_buffers():
+    backend = _backend(_Alive())
+    backend._child_gpu_physical_ids = (2,)
+    backend._stdout_lines = [
+        "load_tensors:        CUDA0 model buffer size =  1000.00 MiB",
+        "llama_memory_recurrent:      CUDA0 RS buffer size =    20.00 MiB",
+        "llama_adapter_lora_init_impl:      CUDA0 LoRA buffer size =    12.00 MiB",
+        "llama_context:      CUDA0  output buffer size =     4.00 MiB",
+    ]
+    assert backend.gpu_footprint_gb() == {2: 1036 / 1024}
+
+
+def test_footprint_without_gpu_model_buffers_is_none():
+    backend = _backend(_Alive())
+    backend._child_gpu_physical_ids = (0,)
+    backend._stdout_lines = ["load_tensors:   CPU_Mapped model buffer size =  1000.00 MiB"]
+    assert backend.gpu_footprint_gb() is None
+    assert backend.reclaimable_gpu_memory_gb() is None
+
+
 def test_unreadable_child_is_none_not_an_error():
     psutil = pytest.importorskip("psutil")
     backend = _backend(_Alive())
     with (
-        patch.object(backend, "reclaimable_gpu_memory_gb", return_value = None),
+        patch.object(backend, "gpu_footprint_gb", return_value = None),
         patch("psutil.Process", side_effect = psutil.NoSuchProcess(4242)),
     ):
         assert backend.resident_memory_mib() is None
