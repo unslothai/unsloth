@@ -48,9 +48,7 @@ def _function_of(node, parents):
 def test_partial_is_written_only_inside_the_helper():
     """A direct `os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"` anywhere else is the bug."""
     tree = _loader_tree()
-    parents = {
-        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
-    }
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     writes = []
     for node in ast.walk(tree):
         if not (
@@ -63,10 +61,7 @@ def test_partial_is_written_only_inside_the_helper():
             if (
                 isinstance(target, ast.Subscript)
                 and (
-                    (
-                        isinstance(target.value, ast.Attribute)
-                        and target.value.attr == "environ"
-                    )
+                    (isinstance(target.value, ast.Attribute) and target.value.attr == "environ")
                     or (isinstance(target.value, ast.Name) and target.value.id == "environ")
                 )
                 and isinstance(target.slice, ast.Constant)
