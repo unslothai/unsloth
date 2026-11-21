@@ -167,3 +167,39 @@ def test_whole_module_compile_keeps_one_graph():
     assert not counters["recompiles"]
     for a, b in zip(expected, got):
         torch.testing.assert_close(a, b)
+
+
+def test_skip_in_front_of_the_compiled_call_decides_outside_it():
+    # With CUDA graphs on, the graph sits at ``_compiled_call_impl`` and the skip goes in front of it: a computed
+    # step runs the compiled call (whose own read of ``forward`` passes through), a skipped step never enters it.
+    dynamo = pytest.importorskip("torch._dynamo")
+    from torch._dynamo.utils import counters
+
+    eager_pipe = _sdxl_pipe(_LinearUNet())
+    ss.install_static_step_skip(eager_pipe, settings = {"mode": "taylor1", "every": 2})
+    expected = _linear_render(eager_pipe, 25)
+
+    dynamo.reset()
+    counters.clear()
+    pipe = _sdxl_pipe(_LinearUNet())
+    ss.install_static_step_skip(pipe, settings = {"mode": "taylor1", "every": 2})
+    unet = pipe.unet
+    unet.compile(backend = "eager")
+    compiled = unet._compiled_call_impl
+    entered = []
+
+    def graphed(*args, **kwargs):
+        entered.append(1)
+        return compiled(*args, **kwargs)
+
+    unet._compiled_call_impl = graphed
+    assert ss.front_compiled_call(unet)
+    skip = ss._find(pipe)
+    assert unet._compiled_call_impl is skip and skip.compiled_call is graphed
+    got = _linear_render(pipe, 25)
+    assert len(entered) == 16 and ss.static_skip_stats(pipe)["stats"]["computed"] == 16
+    assert counters["stats"]["unique_graphs"] == 1 and not counters["recompiles"]
+    for a, b in zip(expected, got):
+        torch.testing.assert_close(a, b)
+    ss.uninstall_static_step_skip(pipe)
+    assert unet._compiled_call_impl is graphed and "forward" not in unet.__dict__

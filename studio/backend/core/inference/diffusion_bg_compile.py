@@ -1169,6 +1169,8 @@ def _capture_armed(module: Any) -> bool:
         outer = _outer_layer(module)
         if outer is not None:
             candidates.append(getattr(outer, "inner", None))
+            # A static skip fronting a whole-compiled U-Net holds its graphed compiled call.
+            candidates.append(getattr(outer, "compiled_call", None))
     except Exception:  # noqa: BLE001
         pass
     return any(

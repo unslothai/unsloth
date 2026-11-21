@@ -2128,11 +2128,18 @@ class GraphedCompiledCall(GraphedForward):
 
     def install(self) -> "GraphedCompiledCall":
         self.module._compiled_call_impl = self
+        # A static step skip in the forward slot would run inside the captured call: it goes in front instead.
+        from .diffusion_step_skip import front_compiled_call
+
+        front_compiled_call(self.module)
         return self
 
     def uninstall(self) -> "GraphedCompiledCall":
         if getattr(self.module, "_compiled_call_impl", None) is self:
             self.module._compiled_call_impl = self.compiled
+        else:
+            from .diffusion_step_skip import unfront_compiled_call
+            unfront_compiled_call(self.module, self, self.compiled)
         return self
 
 

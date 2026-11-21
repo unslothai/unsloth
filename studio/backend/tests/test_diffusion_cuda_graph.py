@@ -795,6 +795,37 @@ def test_compiled_unet_is_graphed_at_the_compiled_call(stub_torch):
     assert unet._compiled_call_impl is compiled
 
 
+@side_stream
+def test_static_skip_fronts_the_graphed_compiled_call(stub_torch):
+    """A static skip in a compiled U-Net's forward slot would run inside the captured call (a replay bypasses it):
+    the graph install puts it in front, computing through the graphed call; both uninstall orders restore."""
+    from core.inference import diffusion_step_skip as ss
+    for skip_first in (True, False):
+        unet = _CompiledUNet()
+        unet.forward = types.MethodType(lambda self, *a, **k: None, unet)
+        unet.__dict__.pop("forward")
+        compiled = unet._compiled_call_impl
+        pipe = types.SimpleNamespace(unet = unet)
+        assert ss.install_static_step_skip(pipe, settings = {"mode": "taylor1", "every": 2})
+        skip = ss._find(pipe)
+        handles = cg.install_cuda_graphs(pipe)
+        assert unet._compiled_call_impl is skip and skip.compiled_call is handles[0]
+        for _ in range(2):
+            unet._compiled_call_impl(_t(), timestep = _t((1,)), return_dict = False)
+        assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 2
+        assert unet.calls == cg.WARMUP_ITERS + 1
+        if skip_first:
+            ss.uninstall_static_step_skip(pipe)
+            assert unet._compiled_call_impl is handles[0]
+            cg.uninstall_all(handles)
+        else:
+            cg.uninstall_all(handles)
+            assert unet._compiled_call_impl is skip and skip.compiled_call is compiled
+            ss.uninstall_static_step_skip(pipe)
+        assert unet._compiled_call_impl is compiled
+        assert "forward" not in unet.__dict__
+
+
 def test_uncompiled_unet_is_graphed_at_the_forward_slot(stub_torch):
     class UNet2DConditionModel(_FakeDiT):  # noqa: N801
         pass
