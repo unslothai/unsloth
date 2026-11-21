@@ -43,6 +43,8 @@ export interface NpuStatus {
   loading_model: string | null;
   /** Installed runtime versions; absent from servers that predate them. */
   versions?: { lemonade: string | null; fastflowlm: string | null };
+  /** This PC's GPU outruns its NPU (Strix Halo); null until the GPU scan answers, absent from servers that predate it. */
+  gpu_recommended?: boolean | null;
   /** About how much memory this PC can give the NPU, in GB; null when unknown. */
   memory_window_gb?: number | null;
 }
@@ -134,6 +136,33 @@ export function npuContextLabel(tokens: number | null): string | null {
   return tokens >= 1024 && tokens % 1024 === 0
     ? `${tokens / 1024}K context`
     : `${tokens.toLocaleString("en-US")} context`;
+}
+
+/** The note for a PC whose GPU is the faster place for these models; the NPU stays usable. */
+export function npuGpuHint(status: NpuStatus | null): string | null {
+  return status?.gpu_recommended
+    ? "The GPU in this PC runs the same models several times faster. The NPU is still available."
+    : null;
+}
+
+/** A status read before the backend's GPU scan finished: worth one more read for the hint. */
+export function npuStatusIsProvisional(status: NpuStatus | null): boolean {
+  return status?.gpu_recommended === null;
+}
+
+// One inventory pass can sit through nvidia-smi's 10 s timeout and then a 10 s AMD probe, so the
+// re-read window has to outlast both; bounded so a host that never answers is not polled forever.
+const NPU_PROVISIONAL_RETRY_MS = 2000;
+const NPU_PROVISIONAL_RETRIES = 20;
+
+/** How long to wait before re-reading a provisional status, or null to stop (settled, or out of tries). */
+export function npuProvisionalRetryMs(
+  status: NpuStatus | null,
+  attempt: number,
+): number | null {
+  return npuStatusIsProvisional(status) && attempt < NPU_PROVISIONAL_RETRIES
+    ? NPU_PROVISIONAL_RETRY_MS
+    : null;
 }
 
 export function npuSizeLabel(sizeGb: number | null): string | null {

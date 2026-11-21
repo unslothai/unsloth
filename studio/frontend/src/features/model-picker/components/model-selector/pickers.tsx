@@ -92,6 +92,7 @@ import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { pickNativeModelFolder } from "@/features/native-intents";
 import {
   type NpuCatalog,
+  NpuGpuHint,
   type NpuModel,
   type NpuPickerSource,
   NpuSetupNotice,
@@ -8569,7 +8570,12 @@ export function HubModelPicker({
                 {showNpuBrowse && npuCatalog ? (
                   <>
                     <ListLabel>NPU</ListLabel>
-                    {showHfSection && npuCatalog.ready ? null : (
+                    {showHfSection && npuCatalog.ready ? (
+                      <NpuGpuHint
+                        catalog={npuCatalog}
+                        className="px-2.5 pb-2"
+                      />
+                    ) : (
                       <NpuSetupNotice catalog={npuCatalog} />
                     )}
                     {npuBrowseRows.map((model) => renderNpuRow(model, false))}

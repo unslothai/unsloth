@@ -406,6 +406,16 @@ def _explain(server: Optional[LemonadeServer], window: Optional[OutputWindow], m
     return f"{explained} {advice}".rstrip()
 
 
+def _strix_halo_gpu() -> Optional[bool]:
+    """Imported lazily: the GPU hardware module stays out of an NPU-only path until asked."""
+    try:
+        from utils.hardware.hardware import strix_halo_gpu_present
+        return strix_halo_gpu_present()
+    except Exception as exc:  # noqa: BLE001 -- a hint never breaks the status
+        logger.debug("Strix Halo GPU check failed: %s", exc)
+        return None
+
+
 def _blocked_message(binary: Path, error: object) -> Optional[str]:
     """The user message when Windows code integrity refused ``binary`` or its DLLs, else None."""
     blocked = code_integrity_block_reason(error)
@@ -450,6 +460,7 @@ class LemonadeNpuBackend:
         self._closing = threading.Event()
         self._validate_process: Optional[subprocess.Popen] = None
         self._hardware: Optional[dict[str, Any]] = None
+        self._strix_halo: Optional[bool] = None
         self._validation: Optional[dict[str, Any]] = None
         self._state = "idle"
         self._error: Optional[str] = None
@@ -487,6 +498,16 @@ class LemonadeNpuBackend:
         if self._hardware is None:
             self._hardware = detect_amd_npu()
         return self._hardware
+
+    def _on_strix_halo(self) -> Optional[bool]:
+        """A supported NPU beside a Strix Halo iGPU, where llama.cpp on the GPU is the faster path.
+        None while the GPU inventory has not answered, so a caller can ask again."""
+        if not self.hardware().get("supported"):
+            return False
+        if self._strix_halo is None:
+            # An unanswered probe stays None and is asked again; the inventory caches its own passes.
+            self._strix_halo = _strix_halo_gpu()
+        return self._strix_halo
 
     @property
     def is_loaded(self) -> bool:
@@ -622,6 +643,7 @@ class LemonadeNpuBackend:
         return {
             "supported": bool(hardware.get("supported")),
             "hardware": hardware,
+            "gpu_recommended": self._on_strix_halo(),
             "runtime_installed": installed,
             "runtime_running": running,
             "state": self._state,

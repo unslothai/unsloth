@@ -6,6 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   NPU_CATALOG_TAG,
   NPU_TAG_TEXT,
+  NpuGpuHint,
   type NpuCatalog,
   type NpuModel,
   NpuSetupNotice,
@@ -58,16 +59,21 @@ export function NpuCatalogList({
         </p>
       );
     }
-    return rows.map((model) => (
-      <NpuCatalogRow
-        key={model.id}
-        model={model}
-        catalog={catalog}
-        selected={model.id === selectedId}
-        onSelect={() => onSelect(model)}
-        onRun={() => onRun(model)}
-      />
-    ));
+    return (
+      <>
+        <NpuGpuHint catalog={catalog} className="px-3 pb-1.5" />
+        {rows.map((model) => (
+          <NpuCatalogRow
+            key={model.id}
+            model={model}
+            catalog={catalog}
+            selected={model.id === selectedId}
+            onSelect={() => onSelect(model)}
+            onRun={() => onRun(model)}
+          />
+        ))}
+      </>
+    );
   };
 
   return (

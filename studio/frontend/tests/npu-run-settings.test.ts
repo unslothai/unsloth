@@ -46,7 +46,10 @@ test("NPU run settings pin customContextLength and offer nothing FastFlowLM igno
 test("the NPU footer's setup path keeps the setup notice while a search is active", () => {
   const browse = pickers.slice(pickers.indexOf("const showNpuBrowse ="));
   assert.match(browse, /\(!showHfSection \|\| !npuCatalog\.ready \|\| npuBrowseRows\.length > 0\)/);
-  assert.match(browse, /\{showHfSection && npuCatalog\.ready \? null : \(\s*<NpuSetupNotice/);
+  assert.match(
+    browse,
+    /\{showHfSection && npuCatalog\.ready \? \(\s*<NpuGpuHint[^]*?\) : \(\s*<NpuSetupNotice/,
+  );
 });
 
 test("NPU run settings show Auto until a load sizes the window, then the resident one", () => {
