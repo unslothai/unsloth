@@ -376,6 +376,11 @@ def _supervised_count(
 ):
     # Positions the shifted loss reads (1..n) that survive every mask the collator applies; in a packed row the first
     # token of each later document is masked too (packing._mask_padding_free_boundary_labels).
+    # A dataset under set_format("torch") / ("numpy") hands back arrays: compare plain lists instead.
+    labels, completion_mask, assistant_mask, seq_lengths = (
+        value.tolist() if hasattr(value, "tolist") else value
+        for value in (labels, completion_mask, assistant_mask, seq_lengths)
+    )
     n = (
         len(labels)
         if labels is not None
@@ -383,7 +388,7 @@ def _supervised_count(
     )
     starts = set()
     offset = 0
-    for length in seq_lengths or ():
+    for length in seq_lengths if seq_lengths is not None else ():
         starts.add(offset)
         offset += int(length)
     count = 0
@@ -430,7 +435,10 @@ def _dataset_label_counts(dataset, completion_only_loss = True):
     read = columns + (["seq_lengths"] if "seq_lengths" in column_names else [])
     if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
         counts = []
-        for rows in dataset.select_columns(read).iter(batch_size = 4096):
+        selected = dataset.select_columns(read)
+        if hasattr(selected, "with_format"):
+            selected = selected.with_format(None)  # plain lists: no tensor conversion per row
+        for rows in selected.iter(batch_size = 4096):
             counts.extend(counts_of(rows))
         return counts
     return counts_of({column: dataset[column] for column in read})

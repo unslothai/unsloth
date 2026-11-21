@@ -878,6 +878,14 @@ def test_dataset_label_counts_apply_every_collator_mask():
         {"input_ids": [list(range(8))], "labels": [list(range(8))], "seq_lengths": [[4, 4]]}
     )
     assert tb._dataset_label_counts(packed) == [6]
+    # Formatted datasets hand back tensors / arrays per row (a multi-document seq_lengths tensor cannot be truth-tested).
+    three_docs = datasets.Dataset.from_dict(
+        {"input_ids": [list(range(9))], "labels": [list(range(9))], "seq_lengths": [[3, 3, 3]]}
+    )
+    assert tb._dataset_label_counts(three_docs.with_format("numpy")) == [6]
+    assert tb._dataset_label_counts(three.with_format("numpy")) == [2]
+    tensor_row = {"labels": torch.arange(9), "seq_lengths": torch.tensor([3, 3, 3])}
+    assert tb._supervised_count(tensor_row["labels"], None, None, tensor_row["seq_lengths"]) == 6
 
 
 def test_dataset_label_counts_reads_shifted_labels_and_masks():
