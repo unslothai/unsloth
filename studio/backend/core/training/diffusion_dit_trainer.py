@@ -2961,6 +2961,20 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
     return _to_unit_tensor(img)
 
 
+def _precision_agreement_warning(own, agreed, picks) -> Optional[str]:
+    """Data parallel: every rank trains the base the tightest card resolved. Say so when that is not this card's pick
+    (another card was busier, so Auto settled lower), naming every rank's pick."""
+    if not picks or len(set(picks)) == 1:
+        return None
+    per_rank = ", ".join(f"GPU {i}: {p}" for i, p in enumerate(picks))
+    if own == agreed:
+        return f"multi-GPU: the cards resolved different base precisions ({per_rank}); every GPU trains {agreed}."
+    return (
+        f"multi-GPU: this GPU resolved base_precision {own}, but another card has less free memory, so every GPU "
+        f"trains {agreed} ({per_rank}). Free the other card for {own}."
+    )
+
+
 def _skip_pixel_draws(path, resolution, center_crop, random_flip, rng):
     """Advance ``rng`` exactly as ``_load_pixel_tensor`` would, from the image header alone: a data-parallel rank
     skips decoding the images outside its slice and every rank's stream stays in step."""
@@ -3810,7 +3824,13 @@ def _train_dit(
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
     base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
     if ddp is not None:
+        own = base_precision
         base_precision = ddp.agree_precision(base_precision)
+        message = _precision_agreement_warning(
+            own, base_precision, getattr(ddp, "precision_picks", None)
+        )
+        if message and ddp.is_main:
+            _emit(on_event, "warning", message = message)
         ddp.wait_for("transformer")
     swap_request = block_swap_request(cfg)
     # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.

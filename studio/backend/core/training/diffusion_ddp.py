@@ -187,6 +187,8 @@ class DistContext:
         """Every rank trains the same base: the most memory-frugal mode any rank resolved (auto reads its own card)."""
         order = ("nf4", "int8", "fp8", "mxfp8", "bf16")
         picks = self.gather(mode)
+        # Kept for the caller's warning: which rank resolved what.
+        self.precision_picks = list(picks)
         known = [p for p in picks if p in order]
         if len(set(picks)) == 1 or not known:
             return picks[0]

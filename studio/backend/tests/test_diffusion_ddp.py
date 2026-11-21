@@ -127,6 +127,7 @@ def _child_train(
     batch: str,
     steps: str,
     cache: str = "1",
+    precisions: str = "",
 ) -> None:
     import core.inference.diffusion_lora as dl
     from core.training import diffusion_dit_trainer as dit
@@ -135,7 +136,12 @@ def _child_train(
     root = Path(out)
     dl.loras_dir = lambda: root / "catalog"
     (root / "catalog").mkdir(parents = True, exist_ok = True)
-    _cpu_patches(dit)
+    picks = precisions.split(",") if precisions else []
+    _cpu_patches(dit, picks[rank] if picks else "bf16")
+    if "fp8" in picks:
+        # The fp8 conversion itself is CUDA-only: the agreed base is what is under test, so it reports success.
+        dit._load_fp8_prequant_transformer = lambda *a, **k: None
+        dit._apply_fp8_training = lambda *a, **k: True
     if world > 1:
         _init(rank, world, port)
     spec = dit._SPECS[FAMILY]
@@ -143,6 +149,7 @@ def _child_train(
     seen = {"transformer": None, "conditioners": 0}
 
     def load_transformer(*a, **k):
+        seen["loaded_as"] = a[3] if len(a) > 3 else k.get("base_precision")
         seen["transformer"] = load(*a, **k).float()
         return seen["transformer"]
 
@@ -165,7 +172,11 @@ def _child_train(
 
     spec.encode_latents = encode_latents
     dit._load_pixel_tensor = load_pixel_tensor
-    tag = f"w{world}_b{batch}_r{rank}" + ("" if cache == "1" else "_nocache")
+    tag = (
+        f"w{world}_b{batch}_r{rank}"
+        + ("" if cache == "1" else "_nocache")
+        + (f"_p{precisions.replace(',', '-')}" if precisions else "")
+    )
     events = []
     cfg = DiffusionLoraConfig(
         base_model = pipe,
@@ -194,6 +205,7 @@ def _child_train(
             "events": json.loads(json.dumps(events, default = str)),
             "conditioners": seen["conditioners"],
             "encoded": seen["encoded"],
+            "loaded_as": seen.get("loaded_as"),
             "decoded": seen["decoded"],
         },
         root / f"train_{tag}.pt",
@@ -434,6 +446,43 @@ def test_two_ranks_without_a_latent_cache_encode_only_their_slice(tmp_path, tiny
         assert torch.equal(r0["lora"][k], r1["lora"][k]), k
     losses = [e["loss"] for e in r0["events"] if e["type"] == "progress"]
     assert len(losses) == steps and all(math.isfinite(x) for x in losses)
+
+
+@pytest.mark.allow_network
+def test_ranks_that_resolve_different_bases_train_the_tighter_one_and_say_so(
+    tmp_path, tiny_pipe_dir
+):
+    """Auto reads each card's own free memory: when GPU 1 is busier, every rank trains its pick, and rank 0 warns
+    with both picks instead of silently training a different base than its own card resolved."""
+    from PIL import Image
+
+    data = tmp_path / "data"
+    data.mkdir()
+    for i in range(4):
+        Image.new("RGB", (64, 64), (200, 30 * i, 40)).save(data / f"img{i}.png")
+        (data / f"img{i}.txt").write_text(f"a red tile {i}")
+    _spawn("train", 2, str(tmp_path), tiny_pipe_dir, str(data), "1", "2", "1", "bf16,fp8")
+    r0 = torch.load(tmp_path / "train_w2_b1_r0_pbf16-fp8.pt")
+    r1 = torch.load(tmp_path / "train_w2_b1_r1_pbf16-fp8.pt")
+    assert r0["loaded_as"] == r1["loaded_as"] == "fp8"
+    warnings = [e["message"] for e in r0["events"] if e["type"] == "warning"]
+    hit = [w for w in warnings if "resolved base_precision bf16" in w]
+    assert len(hit) == 1 and "every GPU trains fp8" in hit[0] and "GPU 1: fp8" in hit[0], warnings
+    for k in r0["lora"]:
+        assert torch.equal(r0["lora"][k], r1["lora"][k]), k
+
+
+def test_the_precision_agreement_warning_names_every_pick():
+    import core.training.diffusion_dit_trainer as dit
+
+    assert dit._precision_agreement_warning("bf16", "bf16", ["bf16", "bf16"]) is None
+    assert dit._precision_agreement_warning("nf4", "nf4", None) is None
+    msg = dit._precision_agreement_warning("bf16", "nf4", ["bf16", "nf4"])
+    assert "resolved base_precision bf16" in msg and "every GPU trains nf4" in msg
+    assert "GPU 0: bf16, GPU 1: nf4" in msg
+    # Rank 0 was the tight card: no "free the other card", but still named.
+    msg = dit._precision_agreement_warning("nf4", "nf4", ["nf4", "bf16"])
+    assert "GPU 1: bf16" in msg and "every GPU trains nf4" in msg and "Free" not in msg
 
 
 def test_skipping_an_image_advances_the_crop_stream_like_loading_it(tmp_path):
