@@ -1620,7 +1620,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "sdxl",
         textual_inversion = "sdxl",
         label = "SDXL",
-        profile = FamilyProfile(preview_factors = "sdxl"),
+        profile = FamilyProfile(
+            preview_factors = "sdxl",
+            # The static skip on the whole U-Net output (taylor1), measured on a T4, fp16, 1024^2, CFG 7, 8 prompts:
+            # every-2 at 25 steps mean LPIPS 0.059 vs the full render at 1.49x (every-3: 0.115 at 1.77x, over the
+            # max bar; 13 plain steps: 0.303 at 1.77x). Base checkpoint only: sdxl-turbo runs 1 step.
+            auto_static_skip = (
+                ("stabilityai/stable-diffusion-xl-base-1.0", (("max", 2), ("steps", 25))),
+            ),
+        ),
         # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
         cudnn_benchmark = False,
         pipeline_class = "StableDiffusionXLPipeline",

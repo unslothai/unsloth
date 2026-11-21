@@ -531,8 +531,14 @@ def _context_wrapper(skip: StaticStepSkip, module: Any, prior: Any) -> Any:
     return cache_context
 
 
-def _find(pipe: Any) -> Optional[StaticStepSkip]:
+def _denoiser(pipe: Any) -> Any:
+    """The step denoiser: ``pipe.transformer``, else a U-Net pipeline's ``pipe.unet`` (SDXL)."""
     transformer = getattr(pipe, "transformer", None)
+    return transformer if transformer is not None else getattr(pipe, "unet", None)
+
+
+def _find(pipe: Any) -> Optional[StaticStepSkip]:
+    transformer = _denoiser(pipe)
     try:
         skip = transformer.__dict__.get(_SLOT) if transformer is not None else None
     except Exception:  # noqa: BLE001 - no instance dict
@@ -547,9 +553,9 @@ def install_static_step_skip(
     logger: Any = None,
 ) -> Optional[str]:
     """``TC_STATIC`` or None (uncached). Never sets ``_unsloth_step_cache``, which runs the CUDA graph eager."""
-    transformer = getattr(pipe, "transformer", None)
+    transformer = _denoiser(pipe)
     if transformer is None:
-        _warn(logger, "pipeline has no transformer")
+        _warn(logger, "pipeline has no transformer or unet")
         return None
     # A second denoiser takes part of the CFG trajectory this layer would not see.
     for attr in ("transformer_2", "unconditional_transformer"):
