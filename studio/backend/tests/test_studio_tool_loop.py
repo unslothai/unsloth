@@ -2164,7 +2164,9 @@ def test_deferred_mcp_schema_reaches_external_transports(monkeypatch, executed):
     search = _tool("mcp_tool_search")
     ping = _tool("mcp__srv1__ping")
     monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda args: [ping])
-    monkeypatch.setattr(controller_mod, "_mcp_tool_spec", lambda name: ping)
+    monkeypatch.setattr(
+        controller_mod, "_mcp_tool_specs", lambda names: {name: ping for name in names}
+    )
     transport = FakeTransport(
         [
             [

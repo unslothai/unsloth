@@ -442,6 +442,8 @@ import {
 import {
   generateAudio,
   GenerationLengthError,
+  createReasoningOnlyLengthCheck,
+  offersKvCacheHint,
   fetchGgufStagedMetadata,
   getChatAgentsMd,
   getInferenceStatus,
@@ -7347,7 +7349,15 @@ export function createOpenAIStreamAdapter(
               }
             }
 
+            const kvCacheHint =
+              !isExternalRequest &&
+              offersKvCacheHint(runtime.loadedIsGguf, runtime.loadedKvCacheDtype);
             const durableStream = async function* () {
+              const lengthCheck = createReasoningOnlyLengthCheck({
+                cap: requestPayload.max_tokens ?? null,
+                contextLength: servedContextLength,
+                kvCacheHint,
+              });
               try {
                 for await (const update of followChatGenerationRun(
                   generationRunId!,
@@ -7369,6 +7379,7 @@ export function createOpenAIStreamAdapter(
                           generationFirstChunkAt ??= update.event.createdAt;
                         }
                       }
+                      lengthCheck.observe(chunk);
                       yield chunk;
                     }
                   }
@@ -7393,6 +7404,9 @@ export function createOpenAIStreamAdapter(
                   "Generation was cancelled.",
                 );
               }
+              if (generationStatus === "completed") {
+                lengthCheck.throwIfReasoningOnlyLength();
+              }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
             const sourceStream =
@@ -7402,6 +7416,7 @@ export function createOpenAIStreamAdapter(
                     requestPayload,
                     runSignal,
                     servedContextLength,
+                    kvCacheHint,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();

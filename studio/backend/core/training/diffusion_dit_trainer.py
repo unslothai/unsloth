@@ -37,6 +37,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.training.diffusion_block_swap import (
+    block_swap_error,
+    block_swap_explicit_off,
+    block_swap_request,
+    compile_swapped_blocks,
+    install_dit_block_swap,
+    reset_block_swaps,
+)
 from core.training.diffusion_gc_budget import (
     StepReplay,
     enable_budgeted_checkpointing,
@@ -760,6 +768,80 @@ def _pick_auto_precision(
     if free_gb > dense_gb * 1.15:
         return "int8" if has_torchao else "nf4"
     return "nf4"
+
+
+AUTO_BLOCK_SWAP_ENV = "UNSLOTH_DIT_AUTO_BLOCK_SWAP"
+
+
+# The swapped base loads dense on the host: its bf16 size, load-time overhead (measured ~1.25x peak), and headroom.
+_AUTO_SWAP_HOST_FACTOR = 1.3
+_AUTO_SWAP_HOST_RESERVE = 4 << 30
+
+
+def _auto_swap_host_ram_ok(spec, cfg) -> bool:
+    """Whether host RAM (cgroup-aware) holds the dense bf16 base for a swapped load; unreadable counts as no, since
+    the int8 path it replaces streams the load and needs far less host RAM."""
+    try:
+        from core.inference.diffusion_prequant_cache import _host_memory_bytes
+        _total, avail = _host_memory_bytes()
+        dense = _dense_bf16_gb(spec, getattr(cfg, "base_model", "") or "")
+    except Exception:  # noqa: BLE001
+        return False
+    if avail is None:
+        return False
+    return avail >= dense * (1 << 30) * _AUTO_SWAP_HOST_FACTOR + _AUTO_SWAP_HOST_RESERVE
+
+
+def _auto_block_swap_wanted(
+    cfg,
+    base_precision: str,
+    device: str,
+    spec = None,
+) -> bool:
+    """auto picked int8 (the dense base fits with little headroom): bf16 + block swap instead on a discrete NVIDIA
+    card. L4, 512 px: FLUX.2-klein 9B bf16 1.62 s/step vs int8 2.35; FLUX.1-dev with 21 of 57 blocks swapped 1.83
+    vs int8 2.83, both at bf16 loss. UNSLOTH_DIT_AUTO_BLOCK_SWAP=0 keeps int8."""
+    if (
+        getattr(cfg, "base_precision", "") or ""
+    ).strip().lower() != "auto" or base_precision != "int8":
+        return False
+    if os.environ.get(AUTO_BLOCK_SWAP_ENV, "1").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    if (
+        device != "cuda"
+        or not cfg.gradient_checkpointing
+        or torch_is_rocm()
+        or _device_is_integrated(device)
+    ):
+        return False
+    if spec is not None and not _auto_swap_host_ram_ok(spec, cfg):
+        return False
+    try:
+        import importlib.util
+        return importlib.util.find_spec("unsloth_zoo.block_swap") is not None
+    except Exception:  # noqa: BLE001 -- zoo missing or refusing to import: keep int8
+        return False
+
+
+def _device_is_integrated(device) -> bool:
+    try:
+        from core.inference.host_pinning import device_is_integrated
+        return device_is_integrated(device)
+    except Exception:  # noqa: BLE001 -- unclassifiable: discrete
+        return False
+
+
+def _checkpoint_mode(swapping: bool):
+    """Block swap needs every block checkpointed (an unchecked swapped block holds its streamed weights until
+    backward), so it overrides UNSLOTH_DIFFUSION_GC_MODE=partial; otherwise the configured mode."""
+    return "plain" if swapping else None
+
+
+def _block_swap_tokens(spec, cfg) -> int:
+    """Sequence length the block-swap reserve is sized for: 16 px per image token plus a 512-token prompt."""
+    _ = spec
+    side = max(1, int(cfg.resolution) // 16)
+    return side * side + 512
 
 
 def _dense_bf16_gb(spec, base_model: str) -> float:
@@ -3247,6 +3329,7 @@ def _maybe_compile_transformer(
     on_event,
     base_precision = "nf4",
     steps_left = None,
+    block_swap = False,
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
     is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
@@ -3292,6 +3375,9 @@ def _maybe_compile_transformer(
             _install_backports()
         except Exception:  # noqa: BLE001 -- the backport is best-effort
             pass
+        if block_swap:
+            # The swap hooks sit in each block's _call_impl: compile forward so they stay outside the graph.
+            return compile_swapped_blocks(transformer, fullgraph = not base_is_bnb, dynamic = True) > 0
         fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
@@ -3653,6 +3739,15 @@ def _train_dit(
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
     base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
+    swap_request = block_swap_request(cfg)
+    # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
+    auto_swap = (
+        swap_request is None
+        and not block_swap_explicit_off(cfg)
+        and _auto_block_swap_wanted(cfg, base_precision, device, spec)
+    )
+    if auto_swap:
+        base_precision, swap_request = "bf16", "auto"
     _emit(
         on_event,
         "model_load_started",
@@ -3661,8 +3756,20 @@ def _train_dit(
         else "transformer",
         fetch_repo = training_fetch_repo(cfg),
     )
+    swap_error = block_swap_error(
+        swap_request,
+        base_precision,
+        device,
+        cfg.gradient_checkpointing,
+        integrated = bool(swap_request) and _device_is_integrated(device),
+    )
+    if swap_error:
+        raise ValueError(swap_error)
     with report_model_load_progress(on_event):
-        transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
+        # A swapped bf16 base loads on the host: install_dit_block_swap places everything but the swapped blocks.
+        transformer = spec.load_transformer(
+            fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
+        )
     base_is_bnb = base_precision == "nf4"
     fp16_report = None
     if fp16_amp:
@@ -3682,12 +3789,49 @@ def _train_dit(
     if fp16_amp:
         # After the adapter, so the island wraps the PEFT layer.
         fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
+    swapping = False
+    if swap_request:
+        try:
+            swap_info = install_dit_block_swap(
+                transformer,
+                device,
+                swap_request,
+                tokens = _block_swap_tokens(spec, cfg),
+                batch = cfg.train_batch_size,
+            )
+        except ValueError as exc:
+            if not auto_swap:
+                raise
+            # The host copy is intact, so auto falls back to the int8 it would have picked.
+            base_precision = "int8"
+            _emit(
+                on_event, "warning", message = f"block_swap unavailable, training int8 instead: {exc}"
+            )
+        else:
+            swapping = swap_info["swapped_blocks"] > 0
+            _emit(
+                on_event,
+                "block_swap",
+                **{
+                    k: swap_info[k]
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                },
+            )
+            _emit(
+                on_event,
+                "warning",
+                message = (
+                    f"block_swap: {swap_info['swapped_blocks']} of {swap_info['total_blocks']} blocks stream from "
+                    f"{swap_info['host_gib']} GiB of host RAM ({swap_info['pinned_gib']} GiB pinned)."
+                ),
+            )
     gc_budget = None
     if cfg.gradient_checkpointing:
         # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        # With block swap the swapped blocks stay checkpointed and only resident blocks are planned.
         gc_budget = enable_budgeted_checkpointing(transformer, device)
         if gc_budget is None:
-            enable_diffusion_gradient_checkpointing(transformer)
+            enable_diffusion_gradient_checkpointing(transformer, mode = _checkpoint_mode(swapping))
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -3723,6 +3867,7 @@ def _train_dit(
             on_event,
             base_precision,
             resume_steps_left(cfg, identity),
+            block_swap = swapping,
         )
     )
     # Compiled Qwen graphs need one fixed text length across steps.
@@ -4040,6 +4185,8 @@ def _train_dit(
                     from_plan = True,
                 )
             optimizer.zero_grad(set_to_none = True)
+            if swapping:
+                reset_block_swaps(transformer)
             gc.collect()
             _empty_device_cache(device)
             # Restart the peak: step 1's cache plan reads it, and the failed peak would plan the cache to nothing.
@@ -4140,7 +4287,7 @@ def _train_dit(
             if gc_budget is not None and not gc_budget.planned and canvases is not None:
                 # Bucketed runs: the plan is measured on this step's canvas and scaled to the largest bucket.
                 gc_budget.note_canvas(max(canvases[i][0] * canvases[i][1] for i in idxs))
-            if replay is not None and gc_budget.can_retry:
+            if replay is not None and gc_budget.records_inputs:
                 replay.record(inputs)
             oom = False
             try:

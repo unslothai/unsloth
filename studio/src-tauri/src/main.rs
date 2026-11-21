@@ -2392,9 +2392,11 @@ fn main() {
             webkit_rendering.wayland_session,
         ),
         webkit_rendering.cpu_painting,
+        linux_webkit::legacy_compositor(webkit_rendering.webkit_version),
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
+    let gpu_launch =
+        gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.

@@ -3934,7 +3934,7 @@ html[data-chat-font] .aui-root {
 	.composer-model-picker {
 		--composer-picker-w: clamp(calc(360px * var(--ui-space-scale, 1)), 30vw, calc(520px * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)));
 		/* A --picker-floor default here (after Tailwind, same layer) would beat the upward utility. */
-		--composer-picker-min-h: min(calc(var(--picker-min-base, 420px) * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-floor, calc(100dvh - 16px)));
+		--composer-picker-min-h: min(calc(var(--picker-min-base, 440px) * var(--ui-space-scale, 1) * var(--picker-zoom-out, 1)), var(--picker-floor, calc(100dvh - 16px)));
 	}
 
 	.unsloth-plus-menu.composer-model-picker[data-slot] {
@@ -7343,6 +7343,20 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready] [
   backdrop-filter: none;
   box-shadow: none;
 }
+/* TextureMapper (WebKitGTK < 2.54) blurs layers painted over a backdrop-filter into it, so the strip haloed the
+   sidebar logo. A surface's own backdrop leaves its children out: the sidebar takes its column's glass and the
+   strip keeps only the caption, so the column is still one layer of fill. */
+html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-container"][data-windows-glass-frame]::before {
+  mask:
+    linear-gradient(black 0 0) var(--sidebar-width) top / 100% var(--studio-custom-titlebar-height) no-repeat,
+    radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
+      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat;
+}
+html.tauri.render-linux.webkit-legacy-compositor[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
+  background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
 html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass^="liquid"] .wallpaper-preview-composer {
   position: relative;
@@ -7995,11 +8009,6 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-
 html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-content"], [data-slot="dialog-content"], [data-slot="sheet-content"], [data-slot$="menu-content"]) .sticky {
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
   backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
-}
-/* The connection model list's edge fade is a mask, which leaves its pinned header's frost see-through. */
-html[data-glass] ul:has(> [data-fold-header][data-stuck]) {
-  -webkit-mask-image: none !important;
-  mask-image: none !important;
 }
 /* A glass menu's fill is see-through, so a pinned Run settings row painting it again reads as a darker block: one blurred layer per row frosts what scrolls under it instead. */
 html[data-glass][data-glass-menus] .composer-run-settings :is([data-config-header-row], [data-pinned-footer]) {
