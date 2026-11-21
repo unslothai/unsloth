@@ -99,6 +99,39 @@ def test_discovers_both_roots_with_agents_precedence(isolated_skills):
     assert records[2]["shadowed_by"] == "agents"
 
 
+def test_project_skills_precede_account_skills(isolated_skills, monkeypatch, tmp_path):
+    home, _ = isolated_skills
+    project = tmp_path / "project"
+    project_skill = project / ".agents" / "skills" / "shared"
+    project_only = project / ".agents" / "skills" / "project-only"
+    project_skill.mkdir(parents = True)
+    project_only.mkdir(parents = True)
+    (project_skill / "SKILL.md").write_text(
+        "---\nname: shared\ndescription: Project copy\n---\nPROJECT_BODY\n",
+        encoding = "utf-8",
+    )
+    (project_only / "SKILL.md").write_text(
+        "---\nname: project-only\ndescription: Project-only copy\n---\nPROJECT_ONLY_BODY\n",
+        encoding = "utf-8",
+    )
+    _write_skill(home, "agents", "shared", description = "Account copy", body = "ACCOUNT_BODY")
+    monkeypatch.setattr(skills, "is_owner_context", lambda: True)
+
+    records = skills.list_skills(home = home, project_root = project)
+
+    assert [(record["name"], record["source"], record["shadowed"]) for record in records] == [
+        ("project-only", "project", False),
+        ("shared", "project", False),
+        ("shared", "agents", True),
+    ]
+    assert skills.read_skill_instructions("shared", home = home, project_root = project).endswith(
+        "PROJECT_BODY"
+    )
+    assert skills.read_skill_instructions("project-only", home = home, project_root = project).endswith(
+        "PROJECT_ONLY_BODY"
+    )
+
+
 def test_bundled_skill_creator_is_enabled_and_user_override_wins(isolated_skills, monkeypatch):
     home, _ = isolated_skills
     roots = (

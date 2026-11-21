@@ -632,6 +632,10 @@ def run_safetensors_tool_loop(
     sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
     from core.inference.skill_mentions import load_mentioned_skills
+    from core.inference.skills import (
+        project_skill_root_for_session,
+        project_skill_root_for_thread,
+    )
 
     yield from load_mentioned_skills(
         conversation,
@@ -640,6 +644,9 @@ def run_safetensors_tool_loop(
         bypass_permissions = bypass_permissions,
         confirm_tool_calls = confirm_tool_calls,
         session_id = session_id,
+        project_root = (
+            project_skill_root_for_thread(thread_id) or project_skill_root_for_session(session_id)
+        ),
         cancel_event = cancel_event,
         permission_upgrade = live_permissions,
         context_length = context_length,

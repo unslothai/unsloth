@@ -1579,6 +1579,10 @@ async def _stream_with_studio_tools(
     sandbox_level = normalize_sandbox_level(policy.sandbox_level)
 
     from core.inference.skill_mentions import load_mentioned_skills
+    from core.inference.skills import (
+        project_skill_root_for_session,
+        project_skill_root_for_thread,
+    )
 
     skill_loads = load_mentioned_skills(
         conversation,
@@ -1588,6 +1592,9 @@ async def _stream_with_studio_tools(
         bypass_permissions = bypass_permissions,
         confirm_tool_calls = confirm_tool_calls,
         session_id = session_id,
+        project_root = (
+            project_skill_root_for_thread(thread_id) or project_skill_root_for_session(session_id)
+        ),
         cancel_event = cancel_event,
         permission_upgrade = live_permissions,
         continue_final_message = run.continue_final_message,

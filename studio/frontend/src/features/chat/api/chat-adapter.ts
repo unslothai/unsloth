@@ -2387,7 +2387,7 @@ export async function buildLocalTokenCountExtras(
   const sessionId = sandboxSessionIdFor(threadId, ragProjectId);
 
   // re-fetch for every counted user turn so skills created since page load match request pricing.
-  await settleSkillsForText(userTexts(messages).join("\n"));
+  await settleSkillsForText(userTexts(messages).join("\n"), ragProjectId);
   const skillTools = skillToolNames(
     skillsForTools(),
     codeToolsEnabled,
@@ -6796,7 +6796,10 @@ export function createOpenAIStreamAdapter(
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (supportsStudioToolsForThisTurn) {
             // include every user turn because follow-ups still need skills mentioned earlier.
-            await settleSkillsForText(userTexts(outboundMessages).join("\n"));
+            await settleSkillsForText(
+              userTexts(outboundMessages).join("\n"),
+              ragProjectId,
+            );
           }
           const skillTools = skillToolNames(
             skillsForTools(),

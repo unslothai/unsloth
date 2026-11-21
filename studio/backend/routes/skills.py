@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 
 from auth.authentication import get_current_subject
@@ -18,6 +19,7 @@ from core.inference.skills import (
     import_skill_archive,
     list_skills,
     read_skill_manifest,
+    project_skill_root,
     set_all_skills_enabled,
     set_skill_enabled,
     update_skill,
@@ -32,12 +34,12 @@ class SkillRecord(BaseModel):
 
     name: str
     description: str
-    source: Literal["agents", "claude", "bundled"]
+    source: Literal["project", "agents", "claude", "bundled"]
     enabled: bool
     valid: bool
     shadowed: bool
     linked: bool = False
-    shadowed_by: Optional[Literal["agents", "claude", "bundled"]] = None
+    shadowed_by: Optional[Literal["project", "agents", "claude", "bundled"]] = None
     error: Optional[str] = None
     license: Optional[str] = None
     compatibility: Optional[str] = None
@@ -102,9 +104,19 @@ def _http_error(exc: SkillError) -> HTTPException:
 
 
 @router.get("", response_model = list[SkillRecord])
-def get_skills(current_subject: str = Depends(get_current_subject)) -> list[dict[str, Any]]:
+def get_skills(
+    project_id: Optional[str] = Query(None), current_subject: str = Depends(get_current_subject)
+) -> list[dict[str, Any]]:
     try:
-        records = list_skills()
+        project_root = None
+        if project_id:
+            from storage.studio_db import available_project_working_folder, get_chat_project
+            project = get_chat_project(project_id)
+            if project is not None and not project.get("archived"):
+                working = available_project_working_folder(project)
+                candidate = working or project.get("rootPath")
+                project_root = project_skill_root(Path(candidate)) if candidate else None
+        records = list_skills(project_root = project_root)
     except SkillError as exc:
         raise HTTPException(status_code = 500, detail = "Could not read Agent Skills.") from exc
     # The client just saw the folders; the next inference scan must not serve an older snapshot.
@@ -153,9 +165,21 @@ def import_skill_route(
 
 
 @router.get("/{name}", response_model = SkillManifest)
-def get_skill(name: str, current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
+def get_skill(
+    name: str,
+    project_id: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, Any]:
     try:
-        return read_skill_manifest(name)
+        project_root = None
+        if project_id:
+            from storage.studio_db import available_project_working_folder, get_chat_project
+            project = get_chat_project(project_id)
+            if project is not None and not project.get("archived"):
+                working = available_project_working_folder(project)
+                candidate = working or project.get("rootPath")
+                project_root = project_skill_root(Path(candidate)) if candidate else None
+        return read_skill_manifest(name, project_root = project_root)
     except SkillError as exc:
         raise _http_error(exc) from exc
 

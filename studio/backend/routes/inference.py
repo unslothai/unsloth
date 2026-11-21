@@ -5875,7 +5875,7 @@ _TOOL_ARTIFACT_TIP = (
 _AGENT_SKILLS_CACHE_TTL_S = 1.0
 _AGENT_SKILLS_CACHE_LOCK = threading.Lock()
 # One entry per acting account (None is the owner); catalogs never cross accounts.
-_AGENT_SKILLS_CACHE: dict[Optional[str], tuple[float, list[dict]]] = {}
+_AGENT_SKILLS_CACHE: dict[object, tuple[float, list[dict]]] = {}
 
 
 def _agent_skills_cache_key() -> Optional[str]:
@@ -5887,17 +5887,35 @@ def _invalidate_agent_skills_cache() -> None:
         _AGENT_SKILLS_CACHE.clear()
 
 
-def _enabled_agent_skills() -> list[dict]:
+def _project_skill_root_for_payload(payload) -> Optional[Path]:
+    from core.inference.skills import (
+        project_skill_root_for_session,
+        project_skill_root_for_thread,
+    )
+    return project_skill_root_for_thread(getattr(payload, "thread_id", None)) or (
+        project_skill_root_for_session(getattr(payload, "session_id", None))
+    )
+
+
+def _enabled_agent_skills(*, project_root: Optional[Path] = None) -> list[dict]:
     """Scans at most once a second; it opens every SKILL.md, so async callers use asyncio.to_thread."""
     from core.inference.skills import SkillError, enabled_skills
 
-    key = _agent_skills_cache_key()
+    key = (
+        _agent_skills_cache_key()
+        if project_root is None
+        else (_agent_skills_cache_key(), str(project_root))
+    )
     with _AGENT_SKILLS_CACHE_LOCK:
         cached_at, cached = _AGENT_SKILLS_CACHE.get(key, (0.0, []))
         if time.monotonic() - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
             return cached
         try:
-            current = enabled_skills()
+            current = (
+                enabled_skills()
+                if project_root is None
+                else enabled_skills(project_root = project_root)
+            )
         except SkillError as exc:
             logger.warning("Agent Skills unavailable: %s", exc)
             current = []
@@ -5910,6 +5928,7 @@ def _skill_tool_tip(
     can_create: bool,
     can_run_scripts: bool = True,
     compact: bool = False,
+    project_root: Optional[Path] = None,
 ) -> str:
     from core.inference.skills import (
         LARGE_SKILL_CATALOG_BYTES,
@@ -5918,7 +5937,12 @@ def _skill_tool_tip(
     )
 
     budget = MAX_SKILL_CATALOG_BYTES if compact else LARGE_SKILL_CATALOG_BYTES
-    catalog = format_skill_catalog(_enabled_agent_skills(), budget = budget)
+    enabled = (
+        _enabled_agent_skills()
+        if project_root is None
+        else _enabled_agent_skills(project_root = project_root)
+    )
+    catalog = format_skill_catalog(enabled, budget = budget)
     if not catalog:
         return ""
     create_tip = (
@@ -5952,6 +5976,7 @@ def _build_tool_action_nudge(
     full_access: bool = False,
     full_access_only: bool = False,
     user_folder: bool = False,
+    project_root: Optional[Path] = None,
 ) -> str:
     """full_access_only omits general guidance, keeping environment, skills and memory rules."""
     tool_names = {
@@ -5981,6 +6006,7 @@ def _build_tool_action_nudge(
         can_create = "create_skill" in tool_names,
         can_run_scripts = bool({"python", "terminal"} & tool_names),
         compact = compact,
+        project_root = project_root,
     )
     folder_tip = _project_folder_tip(tool_names) if user_folder else ""
     if full_access_only:
@@ -6383,7 +6409,15 @@ async def _select_request_tools(
         and (supports_vision or tool["function"]["name"] != "view_image")
     ]
     # Inline on purpose: an await here escapes the api_monitor cancel handling; the cache bounds it.
-    enabled_skills = _enabled_agent_skills() if tools_on else []
+    if tools_on:
+        project_root = _project_skill_root_for_payload(payload)
+        enabled_skills = (
+            _enabled_agent_skills()
+            if project_root is None
+            else _enabled_agent_skills(project_root = project_root)
+        )
+    else:
+        enabled_skills = []
     if enabled_skills:
         from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
 
@@ -30457,7 +30491,15 @@ async def _proxy_to_external_provider(
         and payload.stream is True
         and _explicit_studio_tool_loop_requested(payload)
         # Hosted-only selections proxy through unchanged. Last, to avoid scanning skill roots.
-        and not _selects_only_provider_hosted_tools(payload, provider_type, _enabled_agent_skills())
+        and not _selects_only_provider_hosted_tools(
+            payload,
+            provider_type,
+            (
+                _enabled_agent_skills()
+                if (project_root := _project_skill_root_for_payload(payload)) is None
+                else _enabled_agent_skills(project_root = project_root)
+            ),
+        )
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
@@ -34419,11 +34461,20 @@ async def produce_openai_chat_completions(
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
+            from core.inference.skills import (
+                project_skill_root_for_session,
+                project_skill_root_for_thread,
+            )
+
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
                 model_name = model_name,
                 full_access = bool(payload.bypass_permissions),
                 user_folder = await _tools_run_in_user_folder(payload, tools_to_use),
+                project_root = (
+                    project_skill_root_for_thread(payload.thread_id)
+                    or project_skill_root_for_session(payload.session_id)
+                ),
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -34507,6 +34558,10 @@ async def produce_openai_chat_completions(
 
             def gguf_generate_with_tools():
                 from core.inference.skill_mentions import load_mentioned_skills
+                from core.inference.skills import (
+                    project_skill_root_for_session,
+                    project_skill_root_for_thread,
+                )
                 from state.tool_approvals import LiveToolPermissions
 
                 gguf_live_permissions = LiveToolPermissions(payload.session_id, cancel_event)
@@ -34522,6 +34577,10 @@ async def produce_openai_chat_completions(
                     bypass_permissions = bool(payload.bypass_permissions),
                     confirm_tool_calls = _effective_confirm,
                     session_id = payload.session_id,
+                    project_root = (
+                        project_skill_root_for_thread(payload.thread_id)
+                        or project_skill_root_for_session(payload.session_id)
+                    ),
                     cancel_event = cancel_event,
                     context_length = llama_backend.context_length,
                     continue_final_message = _continue_final_message(payload, thought = True),

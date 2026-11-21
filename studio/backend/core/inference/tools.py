@@ -15067,10 +15067,15 @@ def execute_tool(
             MIN_SKILL_PAGE_CHARS,
             SKILL_FILES_HINT,
             SkillError,
+            project_skill_root_for_session,
+            project_skill_root_for_thread,
             read_skill_resource,
         )
         try:
             page_chars = MAX_SKILL_PAGE_CHARS
+            project_root = project_skill_root_for_thread(
+                thread_id
+            ) or project_skill_root_for_session(session_id)
             # A model that spells out every optional argument sends null, not nothing.
             resource = arguments.get("resource")
             offset = arguments.get("offset")
@@ -15080,6 +15085,7 @@ def execute_tool(
                     "SKILL.md" if resource is None else resource,
                     0 if offset is None else offset,
                     page_chars = page_chars,
+                    project_root = project_root,
                 )
                 fitted = _fit_result_to_room(result, name)
                 if fitted == result:

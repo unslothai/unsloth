@@ -96,6 +96,28 @@ def test_duplicates_and_multiple_skills_are_complete(mention_client):
     assert other.read_text() in messages[0]["content"]
 
 
+def test_project_skill_mentions_load_project_manifest(tmp_path, monkeypatch):
+    global_root = tmp_path / "global"
+    project_root = tmp_path / "project"
+    global_root.mkdir()
+    project_skill = project_root / ".agents" / "skills" / "project-only"
+    project_skill.mkdir(parents = True)
+    (project_skill / "SKILL.md").write_text(
+        "---\nname: project-only\ndescription: Project instructions.\n---\nPROJECT_ONLY\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: (("agents", global_root),))
+    monkeypatch.setattr(skills, "is_owner_context", lambda: True)
+
+    messages, events = _load("@project-only", project_root = project_root)
+
+    assert [event["status"] for event in events if event["name"] == "project-only"] == [
+        "loading",
+        "loaded",
+    ]
+    assert "PROJECT_ONLY" in messages[0]["content"]
+
+
 @pytest.mark.parametrize("failure", ["disabled", "symlink", "invalid"])
 def test_secure_discovery_failures_are_not_success(mention_client, failure):
     _, _, path = mention_client

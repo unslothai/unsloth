@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from pathlib import Path
+from typing import Optional
 
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline.backticks import backtick
@@ -145,6 +147,7 @@ def load_mentioned_skills(
     protected_message_ids = None,
     dedup_tool_context = True,
     permission_upgrade = None,
+    project_root: Optional[Path] = None,
 ):
     """Inject complete manifests before generation; never a partial one. Caller gates on read_skill."""
     if continue_final_message or not any(
@@ -167,7 +170,7 @@ def load_mentioned_skills(
         )
     # @john is a person, not a skill: no card or approval. Known-but-unusable skills report unavailable.
     try:
-        known = list_skills()
+        known = list_skills(project_root = project_root)
     except (SkillError, OSError):
         known = []
     loadable = {s["name"] for s in known if s["valid"] and not s["shadowed"] and s["enabled"]}
@@ -207,7 +210,7 @@ def load_mentioned_skills(
         yield {**event, "status": "loading"}
         try:
             # Re-validates enabled/account-scoped discovery; never a cached or paged read.
-            content = read_skill_instructions(name)
+            content = read_skill_instructions(name, project_root = project_root)
             size = len(content.encode("utf-8"))
             existing = next(
                 (
