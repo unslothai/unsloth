@@ -7,6 +7,8 @@ import test from "node:test";
 // The section pulls in router, motion and hugeicons, so only its pure helpers are tested.
 import {
   type ApiRemoteAccessStatus,
+  cloudflareLoginUrl,
+  namedTunnelErrorMessage,
   normalizeRemoteAccessStatus,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
@@ -18,6 +20,30 @@ import {
 } from "../src/features/settings/api/remote-access-state.ts";
 
 const TUNNEL = "https://calm-otter-review.trycloudflare.com";
+
+test("named tunnel failures offer localized recovery without exposing raw errors", () => {
+  const t = (key: string) => key;
+  assert.equal(
+    namedTunnelErrorMessage("cloudflare_login_required", t),
+    "settings.namedTunnel.errors.login",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("dns_hostname_mismatch", t),
+    "settings.namedTunnel.errors.zone",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("credentials_unreadable", t),
+    "settings.namedTunnel.errors.credentials",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("named_setup_required", t),
+    "settings.namedTunnel.prepareHint",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("unexpected response containing private credentials", t),
+    "settings.namedTunnel.errors.generic",
+  );
+});
 
 function apiStatus(
   over: Partial<ApiRemoteAccessStatus> = {},
@@ -77,9 +103,94 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     blockReason: null,
     passwordPending: true,
     streamingSupported: true,
+    mode: "quick",
+    named: { configuration: null, setup: null },
+    canConfigure: false,
+    configurationError: null,
+    localOrigin: null,
   });
   for (const [k, v] of Object.entries(s)) {
     assert.notEqual(v, undefined, `${k} normalized to undefined`);
+  }
+});
+
+test("named setup normalizes safe metadata and polls active operations quickly", () => {
+  const status = normalizeRemoteAccessStatus(
+    apiStatus({
+      mode: "named",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      can_configure: false,
+      named: {
+        configuration: {
+          // biome-ignore lint/style/useNamingConvention: API schema
+          configuration_id: "configuration",
+          method: "automatic",
+          hostname: "studio.example.com",
+          ready: false,
+        },
+        setup: {
+          // biome-ignore lint/style/useNamingConvention: API schema
+          operation_id: "operation",
+          state: "dns_conflict",
+          hostname: "studio.example.com",
+          active: true,
+          // biome-ignore lint/style/useNamingConvention: API schema
+          tunnel_id: "tunnel",
+        },
+      },
+    }),
+  );
+  assert.equal(status.mode, "named");
+  assert.deepEqual(status.named.configuration, {
+    configurationId: "configuration",
+    method: "automatic",
+    hostname: "studio.example.com",
+    ready: false,
+    tunnelId: null,
+    dnsCleanupHostname: null,
+  });
+  assert.equal(status.named.setup?.operationId, "operation");
+  assert.equal(status.named.setup?.tunnelId, "tunnel");
+  assert.equal(remoteAccessPollDelay(status), 1000);
+});
+
+test("saved token configuration normalizes its method and safe metadata", () => {
+  const status = normalizeRemoteAccessStatus(
+    apiStatus({
+      mode: "named",
+      named: {
+        configuration: {
+          // biome-ignore lint/style/useNamingConvention: API schema
+          configuration_id: "configuration",
+          method: "token",
+          hostname: "studio.example.com",
+          ready: true,
+        },
+      },
+    }),
+  );
+  assert.deepEqual(status.named.configuration, {
+    configurationId: "configuration",
+    method: "token",
+    hostname: "studio.example.com",
+    ready: true,
+    tunnelId: null,
+    dnsCleanupHostname: null,
+  });
+});
+
+test("manual login links are restricted to Cloudflare tunnel authorization", () => {
+  const url = "https://dash.cloudflare.com/argotunnel?callback=test";
+  assert.equal(cloudflareLoginUrl(url), url);
+  for (const bad of [
+    null,
+    "https://dash.cloudflare.com.evil/argotunnel",
+    "http://dash.cloudflare.com/argotunnel",
+    "https://evil@dash.cloudflare.com/argotunnel",
+    "https://dash.cloudflare.com/argotunnel#evil",
+    "https://dash.cloudflare.com/other",
+  ]) {
+    assert.equal(cloudflareLoginUrl(bad), null);
   }
 });
 

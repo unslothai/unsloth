@@ -70,6 +70,14 @@ def _windows_hidden_kwargs() -> dict:
     return {"creationflags": flags} if flags else {}
 
 
+def _cloudflared_environment() -> dict:
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith(("TUNNEL_", "CLOUDFLARED_", "CF_"))
+    }
+
+
 def _lifetime_kwargs() -> dict:
     """Bind cloudflared to the parent's lifetime (Linux PDEATHSIG). Lazy +
     best-effort so this module still loads standalone (storage_roots-style)."""
@@ -406,7 +414,13 @@ def _verify_through_edge(host: str, deadline: float) -> bool:
         time.sleep(min(_EDGE_PROBE_RETRY_DELAY, remaining))
 
 
-def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
+def verify_public_url(
+    url: str,
+    timeout: float = _PUBLIC_PROBE_TIMEOUT,
+    *,
+    named: bool = False,
+    expected_root_id: Optional[str] = None,
+) -> bool:
     import json
     import urllib.request
     from urllib.parse import urlsplit
@@ -414,7 +428,7 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
     deadline = time.monotonic() + timeout
     host = urlsplit(url).hostname
     if host:
-        if _verify_through_edge(host, deadline):
+        if not named and _verify_through_edge(host, deadline):
             return True
         # Edge never served the tunnel, so use the hostname and wait for DoH so the OS cannot cache a miss
         _wait_for_dns(host, deadline)
@@ -426,7 +440,10 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
             req = urllib.request.Request(probe_url, headers = {"User-Agent": "unsloth-studio"})
             with urllib.request.urlopen(req, timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT) as response:
                 body = response.read(4096)
-            if json.loads(body).get("service") == _PUBLIC_PROBE_MARKER:
+            health = json.loads(body)
+            if health.get("service") == _PUBLIC_PROBE_MARKER and (
+                expected_root_id is None or health.get("studio_root_id") == expected_root_id
+            ):
                 return True
         except Exception:
             pass
@@ -449,7 +466,7 @@ def _origin_url(host: str, port: int) -> str:
 
 
 class CloudflareTunnel:
-    """A cloudflared quick tunnel to a local Studio endpoint. Best-effort throughout. Use a loopback address for
+    """A cloudflared tunnel to a local Studio endpoint. Best-effort throughout. Use a loopback address for
     wildcard binds so cloudflared's upstream stays local-only while matching Studio's active address family.
     """
 
@@ -459,10 +476,13 @@ class CloudflareTunnel:
         binary: str,
         protocol: Optional[str] = None,
         origin_host: str = "localhost",
+        named_tunnel: Optional[dict] = None,
     ):
         self.port = port
         self.binary = binary
         self.origin_host = origin_host
+        self.named_tunnel = named_tunnel
+        self._named_cleanup: Optional[Callable[[], None]] = None
         # None lets cloudflared pick quic; set "http2" to force it when quic is blocked.
         self.protocol = protocol
         self._proc: Optional[subprocess.Popen] = None
@@ -470,7 +490,7 @@ class CloudflareTunnel:
         self._stopped = False
         self._url_event = threading.Event()
         self._ready_event = threading.Event()
-        self.url: Optional[str] = None
+        self.url: Optional[str] = f"https://{named_tunnel['hostname']}" if named_tunnel else None
         self.ready = False
         self.error: Optional[str] = None
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
@@ -495,6 +515,16 @@ class CloudflareTunnel:
             # Refuse to spawn once a stop() has marked the tunnel stopped: it would orphan a process nobody owns.
             if self._stopped:
                 return
+            spawn_kwargs = {"env": _cloudflared_environment()}
+            if self.named_tunnel:
+                from utils.cloudflare_named_tunnel import prepare_connector
+                cmd, environment, self._named_cleanup = prepare_connector(
+                    self.binary,
+                    self.named_tunnel,
+                    _origin_url(self.origin_host, self.port),
+                    self.protocol,
+                )
+                spawn_kwargs["env"] = environment
             _set_studio_tunnel_runtime_active(self, True)
             try:
                 # PDEATHSIG binds to the forking thread; spawning from the settings worker would kill cloudflared.
@@ -508,12 +538,16 @@ class CloudflareTunnel:
                         encoding = "utf-8",
                         errors = "replace",
                         bufsize = 1,
+                        **spawn_kwargs,
                         **_windows_hidden_kwargs(),
                         **_lifetime_kwargs(),
                     )
                 )
             except Exception:
                 _set_studio_tunnel_runtime_active(self, False)
+                if self._named_cleanup:
+                    self._named_cleanup()
+                    self._named_cleanup = None
                 raise
             # Adopt before dropping the lock: a racing stop() forgets the pid, so this would record a reused pid.
             _adopt_pid(proc.pid)
@@ -526,7 +560,8 @@ class CloudflareTunnel:
         try:
             if proc.stdout is not None:
                 for line in proc.stdout:
-                    self._tail.append(line.rstrip())
+                    if not self.named_tunnel:
+                        self._tail.append(line.rstrip())
                     # Once stdout closes cloudflared has exited: record why and wake waiters at once.
                     if self.url is None:
                         match = _URL_RE.search(line)
@@ -551,7 +586,9 @@ class CloudflareTunnel:
                 self._reader_exited = True
                 callback = self.on_exit
             if _process_exited(proc):
+                _forget_pid(proc.pid)
                 _set_studio_tunnel_runtime_active(self, False)
+                self._release_named()
             if callback is not None:
                 callback(self)
 
@@ -588,6 +625,7 @@ class CloudflareTunnel:
         if _process_exited(proc):
             _forget_pid(proc.pid)
             _set_studio_tunnel_runtime_active(self, False)
+            self._release_named()
             return True
         else:
             # Keep the stop handle and fail-closed state when termination is unconfirmed; a later stop retries.
@@ -596,6 +634,13 @@ class CloudflareTunnel:
                     self._proc = proc
             _retain_studio_tunnel_for_stop(self)
             return False
+
+    def _release_named(self) -> None:
+        with self._lock:
+            cleanup, self._named_cleanup = self._named_cleanup, None
+            if cleanup:
+                # A concurrent stop must wait until the installation lease is released.
+                cleanup()
 
     def is_running(self) -> bool:
         with self._lock:
@@ -809,6 +854,7 @@ def start_studio_tunnel(
     managed_by: str = "launch",
     admission: Optional[Tuple[int, int]] = None,
     origin_host: str = "localhost",
+    named_tunnel: Optional[dict] = None,
 ) -> Optional[str]:
     """Returns the URL only after /api/health answers over it, so no dead link (1033) is advertised."""
     global _active_tunnel, _shutdown_requested, _tunnel_generation
@@ -829,6 +875,7 @@ def start_studio_tunnel(
                 and _tunnel_port == port
                 and _active_tunnel is not None
                 and getattr(_active_tunnel, "origin_host", "localhost") == origin_host
+                and getattr(_active_tunnel, "named_tunnel", None) == named_tunnel
             ):
                 return _tunnel_url
             if (
@@ -876,6 +923,7 @@ def start_studio_tunnel(
                     binary,
                     protocol = protocol,
                     origin_host = origin_host,
+                    **({"named_tunnel": named_tunnel} if named_tunnel else {}),
                 )
                 prior, _active_tunnel = _active_tunnel, tunnel
             if prior is not None and prior.stop() is False:
@@ -890,10 +938,16 @@ def start_studio_tunnel(
                 tunnel.start()
                 url = tunnel.wait_for_ready(timeout)
                 registered = url is not None
-                if url and not verify_public_url(url):
+                probe_kwargs = {}
+                if named_tunnel:
+                    from utils.cloudflare_named_tunnel import expected_root_id
+                    probe_kwargs = {"named": True, "expected_root_id": expected_root_id()}
+                if url and not verify_public_url(url, **probe_kwargs):
                     url = None
-            except Exception:
+            except Exception as exc:
                 url = None
+                if named_tunnel and isinstance(exc, RuntimeError):
+                    tunnel.error = str(exc)
             if url:
                 if hasattr(tunnel, "set_on_exit"):
                     tunnel.set_on_exit(_active_tunnel_exited)
@@ -1035,4 +1089,7 @@ def close_studio_tunnel_lifecycle() -> None:
     with _active_lock:
         _accepting_starts = False
         _tunnel_lifecycle += 1
+    named = sys.modules.get("utils.cloudflare_named_tunnel")
+    if named is not None:
+        named.cancel_setup()
     stop_studio_tunnel()
