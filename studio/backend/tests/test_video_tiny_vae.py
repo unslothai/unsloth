@@ -320,3 +320,23 @@ def test_tiny_checkpoint_lookup_and_download_use_studios_live_hf_cache(tmp_path,
         ("lookup", TV.TINY_VAE_REPO, "taew2_1.safetensors", str(root)),
         ("download", TV.TINY_VAE_REPO, "taew2_1.safetensors", str(root)),
     ]
+
+
+def test_a_failed_draft_decode_falls_back_to_the_full_decode(tmp_path):
+    """A tiny-decoder failure (an OOM on a full card) never fails the render: the decoder that ran before the swap
+    decodes instead, and the render is not recorded as a draft."""
+    path = _random_checkpoint(tmp_path, 16, 1, "d.safetensors")
+    model = TV.load_from_file(path, 16, 1, device = "cpu", dtype = torch.float32)
+
+    def boom(*_a, **_k):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory (simulated)")
+
+    model.decode = boom
+    vae = _fake_vae(16)
+    z = torch.randn(1, 16, 2, 3, 3)
+    with TV.TinyVaeDraftDecode(vae, model) as ctx:
+        assert ctx.engaged
+        out = vae.decode(z, return_dict = False)
+    assert out[0] == "full" and torch.equal(out[1], z)
+    assert ctx.calls == 0
+    assert "decode" not in vae.__dict__

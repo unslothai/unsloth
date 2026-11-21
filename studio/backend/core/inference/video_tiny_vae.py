@@ -278,6 +278,7 @@ class TinyVaeDraftDecode:
         self.vae, self.decoder, self.engaged, self.calls = vae, decoder, False, 0
         self._had_own = False
         self._original = None
+        self._inner = None
 
     def _draft(
         self,
@@ -295,8 +296,16 @@ class TinyVaeDraftDecode:
             1, -1, 1, 1, 1
         )
         p = next(self.decoder.parameters())
-        x = ((z.float() - mean) / std).to(p.device, p.dtype)
-        video = self.decoder.decode(x).to(z.device, torch.float32).mul_(2.0).sub_(1.0)
+        failed = None
+        try:
+            x = ((z.float() - mean) / std).to(p.device, p.dtype)
+            video = self.decoder.decode(x).to(z.device, torch.float32).mul_(2.0).sub_(1.0)
+        except Exception as exc:  # noqa: BLE001 - a draft never fails a render: the full decode instead
+            failed = f"{type(exc).__name__}: {exc}"
+        if failed is not None:
+            # outside the handler, so the failed attempt's activations are freed before the full decode runs
+            logger.warning("video.draft_decode: tiny decode failed (%s); full VAE decode", failed)
+            return self._inner(z, return_dict = return_dict, **_kw)
         self.calls += 1
         if return_dict:
             from diffusers.models.autoencoders.vae import DecoderOutput
@@ -313,6 +322,8 @@ class TinyVaeDraftDecode:
             return self
         self._had_own = "decode" in self.vae.__dict__
         self._original = self.vae.__dict__.get("decode")
+        # what decoded before the swap (the load-time OOM / untiled layers included): the fallback
+        self._inner = self.vae.decode
         self.vae.decode = self._draft
         self.engaged = True
         return self
