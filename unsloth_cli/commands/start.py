@@ -2245,8 +2245,30 @@ def _fields_extras_override(extras, carried: dict) -> set:
     return overridden
 
 
+def _selects_device(extras) -> bool:
+    if not extras:
+        return False
+    try:
+        ensure_studio_backend_path(seed_cache_env = False)
+        from core.inference.llama_server_args import strip_shadowing_flags
+    except ImportError:
+        return True
+    return strip_shadowing_flags(
+        extras,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_device = True,
+    ) != list(extras)
+
+
 def _resident_reload_payload(status: dict, payload: dict) -> dict:
     carried = _resident_runtime_payload(status, payload)
+    # A sent gpu_ids makes the server drop the caller's own --device / --main-gpu (_strip_device_extra_args).
+    if "gpu_ids" in carried and _selects_device(payload.get("llama_extra_args")):
+        carried.pop("gpu_ids")
     # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
     for name in _fields_extras_override(status.get("requested_llama_extra_args"), carried):
         carried.pop(name, None)

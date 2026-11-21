@@ -1809,6 +1809,7 @@ def _untyped_load_payload(
     monkeypatch,
     status,
     model = "unsloth/Qwen3-0.6B-GGUF",
+    llama_extra_args = None,
 ):
     backend = HttpChatBackend("http://localhost:8888", "token")
     loads = []
@@ -1833,6 +1834,7 @@ def _untyped_load_payload(
         max_seq_length = None,
         load_in_4bit = None,
         tensor_parallel = None,
+        llama_extra_args = llama_extra_args,
     )
     return loads[0]
 
@@ -1884,6 +1886,20 @@ def test_http_backend_load_keeps_a_resident_gguf_file_loaded(monkeypatch):
     assert payload["cache_type_kv"] == "q8_0"
     assert "use_saved_settings" not in payload
     assert "gguf_variant" not in payload
+
+
+@pytest.mark.parametrize(
+    ("extras", "gpu_ids"),
+    [(None, [0]), (["--device", "CUDA1"], None), (["--main-gpu=1"], None)],
+)
+def test_http_backend_load_lets_typed_device_extras_beat_the_resident_gpu_pin(
+    monkeypatch, extras, gpu_ids
+):
+    status = {**_RESIDENT_Q8, "requested_gpu_ids": [0]}
+
+    payload = _untyped_load_payload(monkeypatch, status, llama_extra_args = extras)
+
+    assert payload.get("gpu_ids") == gpu_ids
 
 
 def test_chat_leaves_untyped_tensor_parallel_to_the_server():
