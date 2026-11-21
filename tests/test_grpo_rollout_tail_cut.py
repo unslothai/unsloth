@@ -42,11 +42,21 @@ EOS, PAD = 2, 0
 
 
 class FakeEngine:
-    """Decodes one token per step per running request; request i stops (EOS) after lengths[i] tokens."""
+    """Decodes one token per step per running request; request i stops (EOS) after lengths[i] tokens.
+    Rows in length_stop end at their length without EOS (a length / context limit); same_tokens makes every
+    non-EOS token 7, so different rows can hold the same completion."""
 
-    def __init__(self, lengths, prompts):
+    def __init__(
+        self,
+        lengths,
+        prompts,
+        length_stop = (),
+        same_tokens = False,
+    ):
         self.lengths = lengths
         self.prompts = prompts
+        self.length_stop = set(length_stop)
+        self.same_tokens = same_tokens
         self.reqs = {}
         self.order = []
         self.aborted = []
@@ -84,7 +94,8 @@ class FakeEngine:
                 continue
             n = len(r["toks"]) + 1
             finished = n >= self.lengths[r["i"]]
-            r["toks"].append(EOS if finished else 100 + r["i"])
+            token = 7 if self.same_tokens else 100 + r["i"]
+            r["toks"].append(EOS if finished and r["i"] not in self.length_stop else token)
             r["done"] = finished
             if finished or r["kind"] == RequestOutputKind.CUMULATIVE:
                 completion = types.SimpleNamespace(
@@ -151,7 +162,8 @@ def test_cut_only_when_every_running_row_is_expendable():
     for a, b in zip(base, out):
         if a.request_id != "7":
             assert list(a.outputs[0].token_ids) == list(b.outputs[0].token_ids)
-    assert state.cut_rows == [tuple(out[7].outputs[0].token_ids)] and state.num_cut == 1
+    assert state.cut_rows == [(7, tuple(out[7].outputs[0].token_ids))] and state.num_cut == 1
+    assert state.cut_rows.num_rows == 16
 
 
 @pytest.mark.parametrize(
@@ -196,6 +208,13 @@ def _trainer(cut_rows = None, limit = 500):
     return t
 
 
+def _record(pairs, num_rows):
+    rows = tc.CutRows()
+    rows.extend(pairs)
+    rows.num_rows = num_rows
+    return rows
+
+
 def test_cut_rows_count_as_truncated_and_off_is_unchanged():
     is_trunc = rl_replacements._unsloth_grpo_is_truncated
     rows = [[5, 6, EOS], [7, 8, 9], [7, 8, 9], [3] * 500]
@@ -204,11 +223,37 @@ def test_cut_rows_count_as_truncated_and_off_is_unchanged():
     assert off == [False, False, False, True]  # [7, 8, 9] ends on a stop string, not truncated
     assert is_trunc(_trainer([]), rows, None, eos_and_pad) == off
     assert is_trunc(_trainer(None), rows, None, eos_and_pad) == off
-    # One cut row with the same tokens as an uncut stop-string row: only one of the two is flagged.
-    assert is_trunc(_trainer([(7, 8, 9)]), rows, None, eos_and_pad) == [False, True, False, True]
+    # The cut row is named by position: its uncut stop-string twin before it stays unflagged.
+    cut = _record([(2, (7, 8, 9))], 4)
+    assert is_trunc(_trainer(cut), rows, None, eos_and_pad) == [False, False, True, True]
     # Called twice per rollout in TRL (metrics, then the mask): the record is not consumed.
-    t = _trainer([(7, 8, 9)])
+    t = _trainer(cut)
     assert is_trunc(t, rows, None, eos_and_pad) == is_trunc(t, rows, None, eos_and_pad)
+    # A rollout that does not line up with the requests flags every row holding a cut row's tokens:
+    # an extra masked row is safe, an unmasked cut row is not.
+    for record in (_record([(2, (7, 8, 9))], 5), _record([(0, (7, 8, 9))], 4)):
+        assert is_trunc(_trainer(record), rows, None, eos_and_pad) == [False, True, True, True]
+
+
+def test_cut_row_masked_when_an_earlier_finished_row_has_the_same_tokens():
+    # Row 3 (group 0) stops at the context limit without EOS after 180 tokens; row 7 (group 1) is cut at
+    # step 180 with the same 180 tokens. Both must be truncated: the cut row has to leave the loss.
+    lengths, prompts = _batch()
+    engine = FakeEngine(lengths, prompts, length_stop = {3}, same_tokens = True)
+    state = _wrap(engine, G = 4, k_min = 3, frac = 0.1, min_tokens = 128)
+    out = run_engine(engine, len(lengths), SamplingParams(max_tokens = 500))
+    assert engine.aborted == ["7"]
+    completions = [list(o.outputs[0].token_ids) for o in out]
+    assert completions[3] == completions[7] == [7] * 180
+    max_model_len = 512
+    prompt_ids = [[1] * (332 if i < 4 else 100) for i in range(16)]  # 332 + 180 = 512 for group 0
+    trainer = types.SimpleNamespace(
+        max_completion_length = 500, use_vllm = True, _unsloth_tail_cut_rows = state.cut_rows,
+        llm = types.SimpleNamespace(llm_engine = types.SimpleNamespace(
+            model_config = types.SimpleNamespace(max_model_len = max_model_len))),
+    )  # fmt: skip
+    flags = rl_replacements._unsloth_grpo_is_truncated(trainer, completions, prompt_ids, [EOS, PAD])
+    assert flags == [i in (3, 7) for i in range(16)]
 
 
 def test_settings_and_scope_off(monkeypatch):
@@ -260,10 +305,10 @@ def test_scope_installs_and_restores(monkeypatch):
     with tc.rollout_tail_cut_scope(trainer):
         out = run_engine(engine, len(lengths), SamplingParams(max_tokens = 500))
         # Visible inside the scope: TRL's _generate runs its truncation check (clipped_ratio) before returning.
-        assert trainer._unsloth_tail_cut_rows == [tuple(out[7].outputs[0].token_ids)]
+        assert trainer._unsloth_tail_cut_rows == [(7, tuple(out[7].outputs[0].token_ids))]
     assert "step" not in engine.__dict__ and "add_request" not in engine.__dict__
     assert engine.aborted == ["7"] and len(out) == 16
-    assert trainer._unsloth_tail_cut_rows == [tuple(out[7].outputs[0].token_ids)]
+    assert trainer._unsloth_tail_cut_rows == [(7, tuple(out[7].outputs[0].token_ids))]
     assert metrics["train"]["completions/tail_cut_ratio"] == [1 / 16]
     # Eval rollouts are never cut.
     engine = FakeEngine(lengths, prompts)

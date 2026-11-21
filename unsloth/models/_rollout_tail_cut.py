@@ -35,6 +35,7 @@ __all__ = [
     "tail_cut_settings",
     "rollout_tail_cut_scope",
     "cut_row_flags",
+    "CutRows",
     "TailCutEngine",
 ]
 
@@ -66,21 +67,40 @@ def tail_cut_settings():
     return k_min, max_frac, min_tokens
 
 
+class CutRows(list):
+    """(row index in the rollout, completion tokens) of every cut row; num_rows = rows requested so far.
+    Rows are named by position, not by tokens: a naturally finished sibling can hold the same tokens."""
+
+    __slots__ = ("num_rows",)
+
+    def __init__(self):
+        super().__init__()
+        self.num_rows = 0
+
+
+def _key(ids):
+    return tuple(int(t) for t in ids)
+
+
 def cut_row_flags(trainer, completion_ids):
     """Per row: True when the row is a tail-cut partial completion of the latest rollout."""
     rows = getattr(trainer, "_unsloth_tail_cut_rows", None)
     if not rows:
         return None
-    remaining = Counter(rows)
-    flags = []
-    for ids in completion_ids:
-        key = tuple(int(t) for t in ids)
-        if remaining.get(key, 0) > 0:
-            remaining[key] -= 1
-            flags.append(True)
+    n = len(completion_ids)
+    if getattr(rows, "num_rows", None) == n:
+        # TRL lists completions in request order, one per request (n = 1), so the row index lines up.
+        flags = [False] * n
+        for index, tokens in rows:
+            if not (0 <= index < n) or _key(completion_ids[index]) != tokens:
+                break
+            flags[index] = True
         else:
-            flags.append(False)
-    return flags
+            return flags
+    # The rollout cannot be lined up with the requests: flag every row holding a cut row's tokens.
+    # Masking an extra row is safe; leaving a cut row in the loss is not.
+    cut = {tokens for _, tokens in rows}
+    return [_key(ids) in cut for ids in completion_ids]
 
 
 def _innermost(fn, name = "_generate_and_score_completions"):
@@ -153,7 +173,8 @@ class TailCutEngine:
         self._cumulative = RequestOutputKind.CUMULATIVE
         self._sampling_params_type = SamplingParams
         self._params_cache = {}
-        self.cut_rows = []  # completion token tuples of every cut row
+        self.cut_rows = CutRows()
+        self.index = {}  # request id -> row index in the whole rollout
         self.num_rows = 0
         self.num_cut = 0
         self._reset_batch()
@@ -193,9 +214,13 @@ class TailCutEngine:
         out = original(*args, **kwargs)
         rid = str(request_id)
         self.order[rid] = self.batch_rows
+        self.index[rid] = (
+            self.num_rows
+        )  # position in the whole rollout (every generate call of the scope)
         self.running.add(rid)
         self.batch_rows += 1
         self.num_rows += 1
+        self.cut_rows.num_rows = self.num_rows
         return out
 
     def step(self, original):
@@ -261,7 +286,7 @@ class TailCutEngine:
             completion.finish_reason = "abort"
             completion.stop_reason = None
             output.finished = True
-            self.cut_rows.append(tuple(int(t) for t in completion.token_ids))
+            self.cut_rows.append((self.index[rid], _key(completion.token_ids)))
             cut_outputs.append(output)
         self.running.clear()
         self.batch_cut += len(cut_ids)
