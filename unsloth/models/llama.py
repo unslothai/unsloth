@@ -3195,7 +3195,11 @@ def unsloth_fast_generate(self, *args, **kwargs):
         dtype = _get_dtype(dtype_from_config(self.config))
 
         if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
-            if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
+            if (
+                "input_ids" in kwargs
+                and kwargs["input_ids"] is not None
+                and "max_new_tokens" in kwargs
+            ):
                 _ids = kwargs["input_ids"]
                 if hasattr(_ids, "shape") and (
                     _ids.shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings

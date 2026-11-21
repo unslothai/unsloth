@@ -23,9 +23,7 @@ def _load_functions(names, namespace):
     tree = ast.parse(LLAMA_PATH.read_text(encoding = "utf-8"))
     wanted = set(names)
     functions = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in wanted
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     assert {f.name for f in functions} == wanted
     exec(
@@ -36,7 +34,11 @@ def _load_functions(names, namespace):
 
 
 class TinyLlama(torch.nn.Module):
-    def __init__(self, gc, max_position_embeddings = 128):
+    def __init__(
+        self,
+        gc,
+        max_position_embeddings = 128,
+    ):
         super().__init__()
         self.lin = torch.nn.Linear(4, 4)
         self.config = SimpleNamespace(
@@ -127,18 +129,21 @@ def _namespace(events, graphs_enabled, fail):
     }
 
 
-def _run(graphs, start_training, gc, fail = None, fail_at = "generate", output_past = False):
+def _run(
+    graphs,
+    start_training,
+    gc,
+    fail = None,
+    fail_at = "generate",
+    output_past = False,
+):
     events, seen = [], {}
-    model = TinyLlama(
-        gc, max_position_embeddings = 4 if fail_at == "maxlen" else 128
-    )
+    model = TinyLlama(gc, max_position_embeddings = 4 if fail_at == "maxlen" else 128)
     model.train() if start_training else model.eval()
 
     def _old_generate(*args, **kwargs):
         seen["training"] = model.training
-        seen["gc"] = [
-            getattr(m, "gradient_checkpointing", "absent") for m in model.modules()
-        ]
+        seen["gc"] = [getattr(m, "gradient_checkpointing", "absent") for m in model.modules()]
         seen["padding_side"] = model._saved_temp_tokenizer.padding_side
         if output_past:
             return SimpleNamespace(past_key_values = object())
@@ -220,8 +225,7 @@ def test_generate_restores_training_state(graphs, start_training, gc, fail):
         _assert_restored(model, gc)
     else:
         assert not any(
-            e == ("for_training", expected_gc) or e == "release_for_training"
-            for e in events
+            e == ("for_training", expected_gc) or e == "release_for_training" for e in events
         )
         _assert_still_inference(model)
 
@@ -229,9 +233,7 @@ def test_generate_restores_training_state(graphs, start_training, gc, fail):
 @pytest.mark.parametrize("start_training", [True, False])
 @pytest.mark.parametrize("gc", [True, "unsloth", False, "absent"])
 def test_max_position_embeddings_error_restores(start_training, gc):
-    model, events, seen, result = _run(
-        True, start_training, gc, fail = ValueError, fail_at = "maxlen"
-    )
+    model, events, seen, result = _run(True, start_training, gc, fail = ValueError, fail_at = "maxlen")
 
     expected_gc = False if gc == "absent" else gc
     if start_training:
