@@ -109,3 +109,17 @@ def test_apply_lands_the_base_and_reports(monkeypatch):
     assert all(p.device.type == "meta" for p in model.parameters())
     assert isinstance(model.blocks[0].to_q, fi8.FrozenInt8Linear)
     assert "W8A8" in events[-1]["message"]
+
+
+def test_fp16_preflight_allows_int8_only_with_the_w8a8_gate(monkeypatch):
+    import core.training.diffusion_train_common as tc
+
+    monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "int8") or "")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
+    reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
+    assert reason is None or "fp16" not in reason
+    assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "bf16") or "")
