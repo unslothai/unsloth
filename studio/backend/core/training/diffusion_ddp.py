@@ -207,12 +207,18 @@ class DistContext:
                 except Exception:  # noqa: BLE001
                     pass
         if not failed:
-            try:
-                import torch.distributed as dist
-                if dist.is_initialized():
-                    dist.destroy_process_group()
-            except Exception:  # noqa: BLE001 -- teardown never fails a finished run
-                pass
+            # Off-thread and bounded: a communicator whose peers already exited must not hold up the trainer child.
+            def _destroy():
+                try:
+                    import torch.distributed as dist
+                    if dist.is_initialized():
+                        dist.destroy_process_group()
+                except Exception:  # noqa: BLE001 -- teardown never fails a finished run
+                    pass
+
+            t = threading.Thread(target = _destroy, name = "diffusion-ddp-destroy", daemon = True)
+            t.start()
+            t.join(timeout = 30)
         if _CURRENT is self:
             _CURRENT = None
 
@@ -374,16 +380,17 @@ def worker_main() -> None:
     from core.training.diffusion_train_common import _config_from_dict
 
     cfg = _config_from_dict(json.loads(payload))
+    code = 0
     try:
         run_dit_lora_training(cfg)
     except BaseException:
         log.exception("multi-GPU training rank %d failed", rank)
-        sys.stderr.flush()
-        os._exit(1)
-    try:
-        dist.destroy_process_group()
-    except Exception:  # noqa: BLE001
-        pass
+        code = 1
+    # No communicator teardown: NCCL's finalize waits on peers that may already be gone (rank 0 is still exporting
+    # the adapter), and process exit frees the same resources.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 def activate_for_tests(
