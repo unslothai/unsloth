@@ -30,7 +30,9 @@
 
   const isViewport = (el) => {
     try {
-      return Boolean(el && el.classList && el.classList.contains("aui-thread-viewport"));
+      return Boolean(
+        el && el.classList && el.classList.contains("aui-thread-viewport"),
+      );
     } catch (e) {
       return false;
     }
@@ -86,10 +88,15 @@
 
   const nativeSetProperty = CSSStyleDeclaration.prototype.setProperty;
   if (nativeSetProperty) {
-    CSSStyleDeclaration.prototype.setProperty = function (name, value, priority) {
+    CSSStyleDeclaration.prototype.setProperty = function (
+      name,
+      value,
+      priority,
+    ) {
       if (typeof name === "string" && name.charCodeAt(0) === 45 /* '-' */) {
         I.custom_property_writes += 1;
-        if (name.indexOf("aui-scroll-stabilizer") >= 0) I.stabilizer_writes += 1;
+        if (name.indexOf("aui-scroll-stabilizer") >= 0)
+          I.stabilizer_writes += 1;
       }
       return nativeSetProperty.call(this, name, value, priority);
     };
@@ -102,7 +109,8 @@
       const observer = new NativeMO((records, obs) => {
         I.mutation_callbacks += 1;
         I.mutation_records += records.length;
-        for (const r of records) if (r.type === "characterData") I.character_data_records += 1;
+        for (const r of records)
+          if (r.type === "characterData") I.character_data_records += 1;
         inObserver += 1;
         try {
           return callback(records, obs);

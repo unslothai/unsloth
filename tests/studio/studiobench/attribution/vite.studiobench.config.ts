@@ -11,7 +11,9 @@ import { previewRuntime } from "../../../../studio/frontend/vite-preview-runtime
 const FRONTEND_ROOT = path.resolve(__dirname, "../../../../studio/frontend");
 
 // Plugins resolve from the frontend package; Vite's config dir has no node_modules above it.
-const requireFromFrontend = createRequire(path.join(FRONTEND_ROOT, "package.json"));
+const requireFromFrontend = createRequire(
+  path.join(FRONTEND_ROOT, "package.json"),
+);
 const tailwindcss = requireFromFrontend("@tailwindcss/vite").default;
 const react = requireFromFrontend("@vitejs/plugin-react").default;
 const { defineConfig } = requireFromFrontend("vite");

@@ -23,7 +23,8 @@ const STAMP = join(MODULES, STAMP_NAME);
 // Setup deletes these from node_modules after every install.
 const PRUNED = new Set(["AGENTS.md", "CLAUDE.md"]);
 // npm settings that only pick where packages come from or how npm talks; they never change the tree.
-const NEUTRAL_CONFIG = /(registry|^prefix|^cache|^loglevel|^fund|^audit|^progress|^update_notifier|^userconfig|^globalconfig)$/;
+const NEUTRAL_CONFIG =
+  /(registry|^prefix|^cache|^loglevel|^fund|^audit|^progress|^update_notifier|^userconfig|^globalconfig)$/;
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 const fileHash = (path) => sha256(readFileSync(path));
@@ -39,7 +40,9 @@ const LIBC = (() => {
   if (process.platform !== "linux") return "";
   try {
     process.report.excludeNetwork = true;
-    return process.report.getReport().header.glibcVersionRuntime ? "glibc" : "musl";
+    return process.report.getReport().header.glibcVersionRuntime
+      ? "glibc"
+      : "musl";
   } catch {
     return "unknown";
   }
@@ -62,10 +65,14 @@ function inputs() {
     .map(([k, v]) => [k.slice("npm_config_".length).replace(/-/g, "_"), v])
     .filter(([k]) => !NEUTRAL_CONFIG.test(k))
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const env = (name) => process.env[`npm_config_${name}`] || process.env[`NPM_CONFIG_${name.toUpperCase()}`];
+  const env = (name) =>
+    process.env[`npm_config_${name}`] ||
+    process.env[`NPM_CONFIG_${name.toUpperCase()}`];
   const userrc = env("userconfig") || join(homedir(), ".npmrc");
   const nodeBin = dirname(process.execPath);
-  const prefix = env("prefix") || (process.platform === "win32" ? nodeBin : dirname(nodeBin));
+  const prefix =
+    env("prefix") ||
+    (process.platform === "win32" ? nodeBin : dirname(nodeBin));
   const globalrc = env("globalconfig") || join(prefix, "etc", "npmrc");
   return {
     version: 1,
@@ -96,7 +103,9 @@ function treeHash() {
         digest.update(`D\0${relPath}\n`);
         walk(path, relPath);
       } else if (!PRUNED.has(name)) {
-        digest.update(`F\0${relPath}\0${st.size}\0${st.mode & 0o111}\0${fileHash(path)}\n`);
+        digest.update(
+          `F\0${relPath}\0${st.size}\0${st.mode & 0o111}\0${fileHash(path)}\n`,
+        );
       }
     }
   };
@@ -105,18 +114,42 @@ function treeHash() {
 }
 
 function packagesPresent() {
-  const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8")).packages || {};
-  const hidden = JSON.parse(readFileSync(join(MODULES, ".package-lock.json"), "utf8")).packages || {};
-  const declared = Object.keys(JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).dependencies || {});
-  if (!declared.length || !declared.includes("oxlint") || !declared.includes("oxc-parser")) return false;
+  const lock =
+    JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8"))
+      .packages || {};
+  const hidden =
+    JSON.parse(readFileSync(join(MODULES, ".package-lock.json"), "utf8"))
+      .packages || {};
+  const declared = Object.keys(
+    JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).dependencies ||
+      {},
+  );
+  if (
+    !declared.length ||
+    !declared.includes("oxlint") ||
+    !declared.includes("oxc-parser")
+  )
+    return false;
   // npm ci exits 0 when an optional native binding fails to download; never trust that tree.
   for (const [key, entry] of Object.entries(lock)) {
     if (!key.startsWith("node_modules/") || hidden[key]) continue;
-    if (allows(process.platform, entry.os) && allows(process.arch, entry.cpu) && (!entry.libc || allows(LIBC, entry.libc))) return false;
+    if (
+      allows(process.platform, entry.os) &&
+      allows(process.arch, entry.cpu) &&
+      (!entry.libc || allows(LIBC, entry.libc))
+    )
+      return false;
   }
   for (const [key, entry] of Object.entries(hidden)) {
-    if (!key.startsWith("node_modules/") || !lock[key] || lock[key].version !== entry.version) return false;
-    const manifest = JSON.parse(readFileSync(join(ROOT, key, "package.json"), "utf8"));
+    if (
+      !key.startsWith("node_modules/") ||
+      !lock[key] ||
+      lock[key].version !== entry.version
+    )
+      return false;
+    const manifest = JSON.parse(
+      readFileSync(join(ROOT, key, "package.json"), "utf8"),
+    );
     if (manifest.version !== entry.version) return false;
   }
   return true;
@@ -132,7 +165,9 @@ function current() {
 
 function check() {
   const recorded = JSON.parse(readFileSync(STAMP, "utf8"));
-  return JSON.stringify(recorded) === JSON.stringify(current()) && packagesPresent();
+  return (
+    JSON.stringify(recorded) === JSON.stringify(current()) && packagesPresent()
+  );
 }
 
 function write() {

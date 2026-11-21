@@ -1,6 +1,0 @@
-node_modules/
-lib/
-*.tsbuildinfo
-unsloth-jupyterlab/
-.yarn/
-.pnp.*

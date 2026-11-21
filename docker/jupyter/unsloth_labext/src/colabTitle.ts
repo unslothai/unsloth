@@ -2,11 +2,11 @@
 // Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
 import {
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
-import { INotebookTracker, NotebookPanel } from '@jupyterlab/notebook';
-import { Cell } from '@jupyterlab/cells';
+  type JupyterFrontEnd,
+  type JupyterFrontEndPlugin,
+} from "@jupyterlab/application";
+import { INotebookTracker, type NotebookPanel } from "@jupyterlab/notebook";
+import { type Cell } from "@jupyterlab/cells";
 
 /**
  * Colab "#@title" form cells: a clickable title bar that hides the input via a CSS
@@ -14,13 +14,13 @@ import { Cell } from '@jupyterlab/cells';
  */
 
 const TITLE_RE = /^\s*#\s*@title\b[ \t]*(.*)$/;
-const STYLE_ID = 'unsloth-colab-title-style';
+const STYLE_ID = "unsloth-colab-title-style";
 
 function injectStyle(): void {
   if (document.getElementById(STYLE_ID)) {
     return;
   }
-  const style = document.createElement('style');
+  const style = document.createElement("style");
   style.id = STYLE_ID;
   style.textContent = `
 .unsloth-title-bar {
@@ -67,10 +67,10 @@ function injectStyle(): void {
 function firstLineOf(cell: Cell): string {
   try {
     const raw = cell.model.toJSON().source as string | string[];
-    const text = Array.isArray(raw) ? raw.join('') : String(raw || '');
-    return text.split('\n', 1)[0] || '';
+    const text = Array.isArray(raw) ? raw.join("") : String(raw || "");
+    return text.split("\n", 1)[0] || "";
   } catch {
-    return '';
+    return "";
   }
 }
 
@@ -81,48 +81,50 @@ function applyTitle(cell: Cell): void {
   } catch {
     return;
   }
-  if (cell.model?.type !== 'code') {
+  if (cell.model?.type !== "code") {
     return;
   }
   const match = TITLE_RE.exec(firstLineOf(cell));
-  let bar = node.querySelector(':scope > .unsloth-title-bar') as HTMLElement | null;
+  let bar = node.querySelector(
+    ":scope > .unsloth-title-bar",
+  ) as HTMLElement | null;
   if (!match) {
     if (bar) {
       bar.remove();
     }
-    node.classList.remove('unsloth-titled', 'unsloth-code-collapsed');
+    node.classList.remove("unsloth-titled", "unsloth-code-collapsed");
     return;
   }
   const title =
-    (match[1] || '').replace(/\s*\{[^}]*\}\s*$/, '').trim() || 'Title';
+    (match[1] || "").replace(/\s*\{[^}]*\}\s*$/, "").trim() || "Title";
   if (!bar) {
-    const barEl = document.createElement('div');
-    barEl.className = 'unsloth-title-bar unsloth-collapsed';
-    const caret = document.createElement('span');
-    caret.className = 'unsloth-title-caret';
-    caret.textContent = '▾';
-    const text = document.createElement('span');
-    text.className = 'unsloth-title-text';
+    const barEl = document.createElement("div");
+    barEl.className = "unsloth-title-bar unsloth-collapsed";
+    const caret = document.createElement("span");
+    caret.className = "unsloth-title-caret";
+    caret.textContent = "▾";
+    const text = document.createElement("span");
+    text.className = "unsloth-title-text";
     barEl.appendChild(caret);
     barEl.appendChild(text);
-    barEl.addEventListener('click', () => {
-      const collapsed = node.classList.toggle('unsloth-code-collapsed');
-      barEl.classList.toggle('unsloth-collapsed', collapsed);
+    barEl.addEventListener("click", () => {
+      const collapsed = node.classList.toggle("unsloth-code-collapsed");
+      barEl.classList.toggle("unsloth-collapsed", collapsed);
     });
     node.insertBefore(barEl, node.firstChild);
-    node.classList.add('unsloth-code-collapsed');
+    node.classList.add("unsloth-code-collapsed");
     bar = barEl;
   }
-  const label = bar.querySelector('.unsloth-title-text') as HTMLElement | null;
+  const label = bar.querySelector(".unsloth-title-text") as HTMLElement | null;
   if (label) {
     label.textContent = title;
   }
-  node.classList.add('unsloth-titled');
+  node.classList.add("unsloth-titled");
 }
 
 const colabTitlePlugin: JupyterFrontEndPlugin<void> = {
-  id: 'unsloth-jupyterlab:colab-title',
-  description: 'Render Colab #@title code cells as collapsed, titled forms.',
+  id: "unsloth-jupyterlab:colab-title",
+  description: "Render Colab #@title code cells as collapsed, titled forms.",
   autoStart: true,
   requires: [INotebookTracker],
   activate: (app: JupyterFrontEnd, tracker: INotebookTracker): void => {
@@ -141,7 +143,7 @@ const colabTitlePlugin: JupyterFrontEndPlugin<void> = {
     };
     tracker.widgetAdded.connect((_, panel) => decorate(panel));
     tracker.forEach(decorate);
-  }
+  },
 };
 
 export default colabTitlePlugin;

@@ -10,7 +10,8 @@ const MAX_DIAGNOSTICS = 20;
 const MAX_IMPORT_NAME_CHARS = 64;
 // Under the backend's 4 MB stdout cap, so an oversized component reads as a compile error.
 const MAX_CODE_CHARS = 3 * 1024 * 1024;
-const TOO_LARGE_MESSAGE = "This component compiles to too much code to preview.";
+const TOO_LARGE_MESSAGE =
+  "This component compiles to too much code to preview.";
 const LINE_BREAK_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 function readStdin() {
@@ -34,7 +35,9 @@ function lineColumn(bytes, offset) {
   if (!bytes || !Number.isInteger(offset) || offset < 0) {
     return { line: 0, column: 0 };
   }
-  const before = bytes.subarray(0, Math.min(offset, bytes.length)).toString("utf8");
+  const before = bytes
+    .subarray(0, Math.min(offset, bytes.length))
+    .toString("utf8");
   const lines = before.split(LINE_BREAK_RE);
   return { line: lines.length, column: lines[lines.length - 1].length + 1 };
 }
@@ -44,7 +47,8 @@ function isFatal(error) {
 }
 
 function toDiagnostic(error, bytes) {
-  const message = String(error?.message || "").trim() || "Unknown compile error";
+  const message =
+    String(error?.message || "").trim() || "Unknown compile error";
   const label = Array.isArray(error?.labels)
     ? error.labels.find((item) => Number.isInteger(item?.start))
     : undefined;
@@ -83,7 +87,10 @@ function transform(oxc, source, lang) {
     sourceType: "module",
     jsx: { runtime: "automatic", development: false },
   });
-  return { code: transformed.code, errors: (transformed.errors || []).filter(isFatal) };
+  return {
+    code: transformed.code,
+    errors: (transformed.errors || []).filter(isFatal),
+  };
 }
 
 function compile(oxc, parser, source, lang) {

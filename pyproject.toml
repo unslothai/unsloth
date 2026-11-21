@@ -124,6 +124,7 @@ exclude = [
     "frontend/public/**",
     "frontend/src/**",
     "frontend/package-lock.json",
+    "frontend/bun.lock",
     "src-tauri/src/**",
     "src-tauri/linux/**",
     "src-tauri/windows/**",
