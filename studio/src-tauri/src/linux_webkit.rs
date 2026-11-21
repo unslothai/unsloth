@@ -34,6 +34,9 @@ const SKIA_MIN_VERSION: (u32, u32) = (2, 46);
 const GPU_PAINTING_ASSUMED_FROM: (u32, u32) = (2, 54);
 const DRM_CLASS_DIR: &str = "/sys/class/drm";
 const DRI_DIR: &str = "/dev/dri";
+// glvnd's default vendor search path (${sysconfdir}, then ${datadir}); the variables that replace it
+// are GL_SELECTION_OVERRIDES, which void the evidence anyway.
+const EGL_VENDOR_DIRS: [&str; 2] = ["/etc/glvnd/egl_vendor.d", "/usr/share/glvnd/egl_vendor.d"];
 // Kernel drivers of real GPUs. Virtual ones (virtio_gpu, vmwgfx, vboxvideo) are left out: without
 // host 3D their Mesa driver falls back to llvmpipe behind the same render node.
 const HARDWARE_GPU_DRIVERS: &[&str] = &[
@@ -256,13 +259,16 @@ fn paints_on_cpu(
 }
 
 /// Evidence that WebKit renders on a GPU: a render node this user may open whose kernel driver is a
-/// GPU's (NVIDIA's comes from nvidia-drm), and no operator choice of GL driver or EGL vendor. Its
-/// absence proves nothing (NVIDIA's EGL renders with /dev/dri hidden), so it only lifts the CPU
-/// assumption below 2.54: without a GPU, WebKit there composites on llvmpipe, slower than Skia's CPU.
+/// GPU's (NVIDIA's comes from nvidia-drm), the glvnd EGL vendor for that driver installed (without
+/// it glvnd falls back to Mesa's llvmpipe over the same node), and no operator choice of GL driver
+/// or EGL vendor. Its absence proves nothing (NVIDIA's EGL renders with /dev/dri hidden), so it
+/// only lifts the CPU assumption below 2.54: without a GPU, WebKit there composites on llvmpipe,
+/// slower than Skia's CPU path.
 fn hardware_gl_available(
     env: impl Fn(&str) -> Option<OsString>,
     drm_class_dir: &Path,
     dri_dir: &Path,
+    egl_vendor_dirs: &[&Path],
 ) -> bool {
     if GL_SELECTION_OVERRIDES
         .iter()
@@ -273,19 +279,45 @@ fn hardware_gl_available(
     let Ok(entries) = std::fs::read_dir(drm_class_dir) else {
         return false;
     };
+    let vendors = egl_vendor_libraries(egl_vendor_dirs);
+    let vendor_installed = |prefix: &str| vendors.iter().any(|library| library.starts_with(prefix));
     entries.flatten().any(|entry| {
         let name = entry.file_name();
         if !name.as_bytes().starts_with(b"renderD") {
             return false;
         }
         let driver = std::fs::read_link(entry.path().join("device/driver")).ok();
-        driver
+        let Some(driver) = driver
             .as_deref()
             .and_then(Path::file_name)
             .and_then(OsStr::to_str)
-            .is_some_and(|driver| HARDWARE_GPU_DRIVERS.contains(&driver))
-            && node_accessible(&dri_dir.join(&name))
+            .filter(|driver| HARDWARE_GPU_DRIVERS.contains(driver))
+        else {
+            return false;
+        };
+        let vendor = if driver == "nvidia" {
+            "libEGL_nvidia"
+        } else {
+            "libEGL_mesa"
+        };
+        vendor_installed(vendor) && node_accessible(&dri_dir.join(&name))
     })
+}
+
+/// File names of the libraries glvnd's vendor files load (`ICD.library_path`).
+fn egl_vendor_libraries(dirs: &[&Path]) -> Vec<String> {
+    dirs.iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension() == Some(OsStr::new("json")))
+        .filter_map(|entry| std::fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter_map(|vendor| {
+            let path = Path::new(vendor["ICD"]["library_path"].as_str()?);
+            Some(path.file_name()?.to_str()?.to_owned())
+        })
+        .collect()
 }
 
 /// access(2), not open(2): opening a render node can wake a sleeping discrete GPU.
@@ -703,7 +735,13 @@ pub fn configure_renderer(
     let nvidia = nvidia_driver_branch();
     let wayland_socket = wayland_socket_present();
     let x11_open = x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR);
-    let hardware_gl = hardware_gl_available(&env, Path::new(DRM_CLASS_DIR), Path::new(DRI_DIR));
+    let egl_vendor_dirs = EGL_VENDOR_DIRS.map(Path::new);
+    let hardware_gl = hardware_gl_available(
+        &env,
+        Path::new(DRM_CLASS_DIR),
+        Path::new(DRI_DIR),
+        &egl_vendor_dirs,
+    );
     let mut decision = RendererDecision {
         applied: None,
         gpu_path: None,
@@ -2668,14 +2706,23 @@ mod tests {
     fn hardware_gl_needs_a_gpu_render_node_this_user_can_open() {
         let root = tempfile::tempdir().unwrap();
         let (class, dri) = (root.path().join("class"), root.path().join("dri"));
+        let vendors = root.path().join("egl_vendor.d");
         std::fs::create_dir_all(&dri).unwrap();
+        std::fs::create_dir_all(&vendors).unwrap();
         let node = |name: &str, driver: &str| {
             let device = class.join(name).join("device");
             std::fs::create_dir_all(&device).unwrap();
             let target = format!("../../../bus/pci/drivers/{driver}");
             std::os::unix::fs::symlink(target, device.join("driver")).unwrap();
         };
-        let available = || hardware_gl_available(|_| None, &class, &dri);
+        let vendor = |file: &str, library: &str| {
+            let json = format!(
+                r#"{{"file_format_version": "1.0.0", "ICD": {{"library_path": "{library}"}}}}"#
+            );
+            std::fs::write(vendors.join(file), json).unwrap();
+        };
+        let available = || hardware_gl_available(|_| None, &class, &dri, &[&vendors]);
+        vendor("10_nvidia.json", "libEGL_nvidia.so.0");
         // No DRM device at all: a VM without a virtual GPU.
         assert!(!available());
         // A primary node is not a render node.
@@ -2695,8 +2742,29 @@ mod tests {
         // on llvmpipe over NVIDIA's render nodes.
         for name in GL_SELECTION_OVERRIDES {
             let env = |key: &str| (key == *name).then(|| OsString::from("1"));
-            assert!(!hardware_gl_available(env, &class, &dri), "{name}");
+            assert!(
+                !hardware_gl_available(env, &class, &dri, &[&vendors]),
+                "{name}"
+            );
         }
+        // Mesa the only installed vendor, no variable: llvmpipe over NVIDIA's render node too.
+        std::fs::remove_file(vendors.join("10_nvidia.json")).unwrap();
+        vendor("50_mesa.json", "libEGL_mesa.so.0");
+        assert!(!available());
+        // Mesa's vendor does drive a Mesa GPU's render node.
+        node("renderD130", "amdgpu");
+        std::fs::write(dri.join("renderD130"), "").unwrap();
+        assert!(available());
+        // No vendor for either node.
+        std::fs::remove_file(vendors.join("50_mesa.json")).unwrap();
+        assert!(!available());
+        // A broken vendor file is skipped; an absolute library path still names NVIDIA's.
+        std::fs::write(vendors.join("broken.json"), "{").unwrap();
+        vendor(
+            "10_nvidia.json",
+            "/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0",
+        );
+        assert!(available());
     }
 
     #[test]
