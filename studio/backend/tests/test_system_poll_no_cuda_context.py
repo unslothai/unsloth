@@ -624,7 +624,9 @@ def test_context_free_accepts_reserved_framebuffer_on_16gb_card(monkeypatch):
     # get_device_properties(0).total_memory reports ~15878.56 MiB (424.44 MiB driver carve-out, ~2.7%).
     mib = 1 << 20
     torch_total_bytes = int(15878.56 * mib)
-    _nvidia_smi_reading(monkeypatch, used_gb = round(1400 / 1024, 2), driver_total_gb = round(16303 / 1024, 2))
+    _nvidia_smi_reading(
+        monkeypatch, used_gb = round(1400 / 1024, 2), driver_total_gb = round(16303 / 1024, 2)
+    )
     free_bytes = hw._context_free_cuda_memory_info(0, torch_total_bytes)
     assert free_bytes is not None
     assert free_bytes == hw._free_in_torch_scope(torch_total_bytes, round(1400 / 1024, 2))
