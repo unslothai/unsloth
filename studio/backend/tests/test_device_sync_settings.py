@@ -124,6 +124,7 @@ def test_client_preferences_reject_out_of_range_values(client):
 
 def test_chat_menu_time_and_spellcheck_preferences_follow_the_account(client):
     chat = {
+        "rightToLeftLayout": True,
         "sendShortcut": "mod-enter",
         "showReplyTimes": True,
         "pastedTextMinChars": 8000,
