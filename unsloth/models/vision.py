@@ -5462,6 +5462,11 @@ class FastBaseModel:
                 raise _patch_err
         model = post_patch_loss_function(model)
 
+        # Inkling 2 wraps its attention Linears: map the usual LoRA names onto them.
+        from .inkling2 import patch_inkling2_model
+
+        patch_inkling2_model(model)
+
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})
         patch_saving_functions(model, vision = True)
@@ -5699,11 +5704,17 @@ class FastBaseModel:
         _remapped_moe_targets = None
         if callable(_remap_targets) and finetune_language_layers:
             _requested_targets = target_modules
-            _remapped = _remap_targets(
-                target_modules,
+            _remap_kwargs = dict(
                 attention = finetune_attention_modules,
                 mlp = finetune_mlp_modules,
             )
+            # Multimodal models with their own projection names (Inkling 2) also map the vision tower's leaves.
+            try:
+                if "vision" in inspect.signature(_remap_targets).parameters:
+                    _remap_kwargs["vision"] = finetune_vision_layers
+            except (TypeError, ValueError):
+                pass
+            _remapped = _remap_targets(target_modules, **_remap_kwargs)
             if _remapped is not target_modules:
                 # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
                 if _requested_targets is None or _requested_targets == "all-linear":
