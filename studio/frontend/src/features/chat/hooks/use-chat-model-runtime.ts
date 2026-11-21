@@ -3364,7 +3364,8 @@ export function useChatModelRuntime() {
               mmapSamples.length = 0;
               const label = "Finding a GPU layer split that fits in memory.";
               if (loadToastDismissedRef.current) {
-                setLoadProgress({ percent: 0, label, phase: "starting" });
+                // No percent: the inline status then shows the label without a bar.
+                setLoadProgress({ percent: null, label, phase: "starting" });
               } else {
                 toast(null, { id: toastId, ...modelLoadToastOptions(renderLoadDescription("Starting model…", label)) });
               }
