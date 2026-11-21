@@ -27,6 +27,7 @@ import {
   setProviderModelCatalog,
 } from "./model-catalog";
 import { learnModelDisplayNames } from "./model-display-names";
+import { normalizeCompactionMode } from "./utils/auto-compaction";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -349,6 +350,7 @@ export async function syncExternalProvidersFromBackend(
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
         autoCompactTokens: config.auto_compact_tokens ?? undefined,
+        compactionMode: normalizeCompactionMode(config.compaction_mode),
         extraHeaders: extraHeadersFromSaved(config.extra_headers),
         reasoningConfig:
           config.provider_type === "custom" &&

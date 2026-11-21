@@ -7,9 +7,10 @@ import itertools
 import json
 import re
 
-# Markerless forms are indistinguishable from quoted prose, so execution-class tools need a
-# wrapper. Same rule for mcp__*. Must match the route's _LOCAL_CODE_TOOLS (drift test).
-EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
+# Bare calls read as quoted prose, so these and mcp__* need a wrapper. Must cover _LOCAL_CODE_TOOLS.
+EXECUTION_CLASS_TOOL_NAMES = frozenset(
+    {"python", "terminal", "edit_file", "create_skill", "update_memory"}
+)
 _MCP_TOOL_PREFIX = "mcp__"
 
 
@@ -230,9 +231,8 @@ _CODE_SPAN_RE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 
-# A single tool tag (and at most a name) alone in an inline code span (`<tool_call>`, `[TOOL_CALLS]name`) names the
-# format: no call body fits inside. No lookahead past the closing run, so append-only growth never revokes a match.
-# Runs of three or more are fences; reasoning tags decide the think segmentation, not a call.
+# A lone tool tag in a code span names the format, not a call; no lookahead past the closing run
+# keeps matches stable.
 _TAG_MENTION_RE = re.compile(
     r"(?<!`)(``?)[ \t]*("
     r"<(?!/?think(?:ing)?>)[^<>`\n]+>[\w.\-]*"
@@ -993,9 +993,8 @@ def _relaxed_object_end(content: str, start: int):
 
 
 def _loads_wrapped_call(text: str, *, relaxed: bool = True) -> dict:
-    """A wrapped call's JSON object; near-JSON a model sampled (single quotes, a trailing comma, True/None,
-    unquoted keys) is read only after strict JSON fails and only when healing is on. Raises ValueError
-    when neither reads an object."""
+    """Strict JSON first; near-JSON (single quotes, trailing commas, True/None, unquoted keys) only
+    when healing is on; ValueError when neither reads an object."""
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):

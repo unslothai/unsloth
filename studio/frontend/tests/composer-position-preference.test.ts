@@ -14,13 +14,13 @@ const { normaliseComposerPosition, useChatPreferencesStore } = await import(
 test("new installs put the composer a little above the middle", () => {
   assert.equal(
     useChatPreferencesStore.getInitialState().newChatComposerPosition,
-    40,
+    45,
   );
 });
 
 test("the old on/off setting maps to bottom or the default", () => {
   assert.equal(normaliseComposerPosition(undefined, true), 100);
-  assert.equal(normaliseComposerPosition(undefined, false), 40);
+  assert.equal(normaliseComposerPosition(undefined, false), 45);
   assert.equal(normaliseComposerPosition(30, true), 30);
 });
 
@@ -28,8 +28,8 @@ test("stored positions are clamped whole numbers", () => {
   assert.equal(normaliseComposerPosition(-5), 0);
   assert.equal(normaliseComposerPosition(140), 100);
   assert.equal(normaliseComposerPosition(42.6), 43);
-  assert.equal(normaliseComposerPosition(Number.NaN), 40);
-  assert.equal(normaliseComposerPosition("80"), 40);
+  assert.equal(normaliseComposerPosition(Number.NaN), 45);
+  assert.equal(normaliseComposerPosition("80"), 45);
 });
 
 test("only the top of the range docks the composer", () => {
@@ -43,7 +43,7 @@ test("only the top of the range docks the composer", () => {
   assert.equal(thread.match(/= useNewChatComposerDocked\(\);/g)?.length, 2);
 });
 
-test("the composer box alone is centred, the greeting 16px above it", () => {
+test("the composer box alone is centred, the greeting 22px above it", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   // Spacers split the free height by the setting, so 50 centres the composer itself.
   assert.ok(
@@ -61,6 +61,6 @@ test("the composer box alone is centred, the greeting 16px above it", () => {
   );
   assert.match(
     thread,
-    /<div className="flex flex-col pb-\[calc\(16px\*var\(--ui-space-scale,1\)\)\]">\{greetingRow\}<\/div>/,
+    /<div className="flex flex-col pb-\[calc\(22px\*var\(--ui-space-scale,1\)\)\]">\{greetingRow\}<\/div>/,
   );
 });

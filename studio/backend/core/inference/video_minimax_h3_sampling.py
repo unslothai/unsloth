@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 on Diffusers, following the reference implementation's sampling and conditioning.
-
-``install_h3_reference_recipe(pipe, ...)`` swaps classes per render on the pipeline's own blocks and schedulers;
-nothing global is patched.
-
-- Sigma grid: the ``simple`` schedule off the 1000-entry shifted table; the audio timestep comes from the video sigma.
-- Sampler: ``res_multistep`` (eta 0). Audio is stepped in the carried variable ``(sigma_v / sigma_a) * x_a`` on the
-  video sigmas, which matches the reference where a second-order step in audio space would not. Euler for PDD
-  banks; ``UNSLOTH_H3_SAMPLER=euler`` forces it everywhere.
-- Noise: video then audio from one CPU generator seeded with the request seed; conditioning noise re-seeds per
-  condition, in packed-row shape.
-- Ref2VA vision: each two-frame block gets its own pixel budget, from the frames after the ``17 n + 5`` snap.
-  ``UNSLOTH_H3_VISION_BUDGET=clip`` restores the whole-clip budget (fewer tokens on long references).
-"""
+"""MiniMax-H3 recipe (res_multistep, simple sigmas, seeded noise, VAE mean, fp32 vision, 8-bit
+truncation), per-render class swaps, nothing global patched; UNSLOTH_H3_SAMPLER=euler forces
+Euler; UNSLOTH_H3_VISION_BUDGET=clip restores whole-clip budget; UNSLOTH_H3_VISION_FP32=0
+restores bf16."""
 
 from __future__ import annotations
 
@@ -69,9 +59,7 @@ def time_shift_sigma(sigma: Any, from_shift: float, to_shift: float) -> Any:
 
 
 def h3_simple_sigmas(shift: float, steps: int) -> Any:
-    """``steps`` sigmas plus a terminal 0, float32: entry ``int(i * 1000 / steps)`` from the top of the 1000-entry
-    shifted table. Equal to the shifted ``linspace(1, 0, steps + 1)`` when ``steps`` divides 1000, floored to the
-    table otherwise."""
+    """Sigmas from the 1000-entry shifted table plus 0; exact linspace only when steps divides 1000."""
     import torch
 
     multiplier = H3_SIGMA_TABLE_SIZE
@@ -236,8 +224,7 @@ def _scheduler_class(base: type) -> type:
 
 
 def install_h3_schedulers(pipe: Any, sampler: str) -> bool:
-    """Put the pipeline's video and audio schedulers on the reference grid with ``sampler``; False when the pipeline
-    has no MiniMax-H3 scheduler pair."""
+    """Puts both schedulers on the reference grid with sampler; False without an H3 pair."""
     try:
         from diffusers.schedulers.scheduling_minimax_h3 import MiniMaxH3Scheduler
     except Exception:  # noqa: BLE001 - diffusers wraps a failed lazy import in RuntimeError
@@ -445,7 +432,19 @@ def h3_vision_frame_indices(num_frames: int, fps: float) -> tuple[list, list]:
 @functools.lru_cache(maxsize = None)
 def _ref2va_text_encoder_class(base: type) -> type:
     class StudioMiniMaxH3Ref2VATextEncoderStep(base):
+        def __call__(self, components: Any, state: Any) -> Any:
+            from .h3_vision_fp32 import float32_pixel_sources, h3_vision_float32
+            with float32_pixel_sources(), h3_vision_float32(components.text_encoder):
+                return super().__call__(components, state)
+
         def _gather_vision_features(self, processor: Any, references: list, fps: float) -> tuple:
+            from .h3_vision_fp32 import offer_float32_pixels
+
+            out = self._gather_vision_blocks(processor, references, fps)
+            offer_float32_pixels(*(v for k, v in out[0].items() if k.startswith("pixel_")))
+            return out
+
+        def _gather_vision_blocks(self, processor: Any, references: list, fps: float) -> tuple:
             import numpy as np
             import torch
 
@@ -490,8 +489,7 @@ def _ref2va_text_encoder_class(base: type) -> type:
                     )
                     grid = block_grid
                     video_pixels.append(flat)
-                # One video grid of len(blocks) frames: Qwen3-VL attends and positions each frame on its own,
-                # exactly as for that many single-frame grids.
+                # Qwen3-VL attends and positions each frame alone, as for single-frame grids.
                 video_grids.append([len(blocks), grid[0], grid[1]])
                 video_tokens.append(grid[0] * grid[1] // per_token)
                 video_timestamps.append(blocks)
@@ -534,25 +532,32 @@ class _ReferenceImageProcessor:
             )
             pixels.append(flat)
             grids.append([1, gh, gw])
-        return {
+        from .h3_vision_fp32 import offer_float32_pixels
+
+        out = {
             "pixel_values": torch.cat(pixels),
             "image_grid_thw": torch.tensor(grids, dtype = torch.long),
         }
+        offer_float32_pixels(out["pixel_values"])
+        return out
 
 
 @functools.lru_cache(maxsize = None)
 def _fl2va_text_encoder_class(base: type) -> type:
     class StudioMiniMaxH3FL2VATextEncoderStep(base):
         def __call__(self, components: Any, state: Any) -> Any:
+            from .h3_vision_fp32 import float32_pixel_sources, h3_vision_float32
+
             processor = components.processor
             stock = processor.image_processor
-            if isinstance(stock, _ReferenceImageProcessor):
-                return super().__call__(components, state)
-            processor.image_processor = _ReferenceImageProcessor(stock)
-            try:
-                return super().__call__(components, state)
-            finally:
-                processor.image_processor = stock
+            with float32_pixel_sources(), h3_vision_float32(components.text_encoder):
+                if isinstance(stock, _ReferenceImageProcessor):
+                    return super().__call__(components, state)
+                processor.image_processor = _ReferenceImageProcessor(stock)
+                try:
+                    return super().__call__(components, state)
+                finally:
+                    processor.image_processor = stock
 
     StudioMiniMaxH3FL2VATextEncoderStep.__qualname__ = StudioMiniMaxH3FL2VATextEncoderStep.__name__
     return StudioMiniMaxH3FL2VATextEncoderStep
@@ -583,6 +588,56 @@ def _fixed_conv_encode_class(base: type) -> type:
 
     StudioMiniMaxH3ConditionEncodeStep.__qualname__ = StudioMiniMaxH3ConditionEncodeStep.__name__
     return StudioMiniMaxH3ConditionEncodeStep
+
+
+# ── output frames ──
+
+_TRUNCATED_MARK = "_unsloth_h3_truncated_postprocess"
+
+
+def h3_truncate_frames(frames: Any) -> Any:
+    """Truncates [0, 1] floats to the 8-bit grid as float32 k / 255 (reference (x * 255).clamp(0,
+    255).byte()) so later round(x * 255) returns k; in place on float32; idempotent, safe to
+    re-run."""
+    import torch
+
+    if frames.dtype is not torch.float32:
+        frames = frames.to(torch.float32)
+    return frames.mul_(255).clamp_(0, 255).floor_().div_(255)
+
+
+def install_h3_output_truncation(pipe: Any) -> bool:
+    """Wrap ``pipe.video_processor.postprocess`` (instance only) so decoded frames leave on the truncated grid.
+    Idempotent; False when the pipeline has no such processor."""
+    proc = getattr(pipe, "video_processor", None)
+    original = getattr(proc, "postprocess", None)
+    if not callable(original):
+        return False
+    if getattr(original, _TRUNCATED_MARK, False):
+        return True
+
+    def postprocess(
+        image: Any,
+        output_type: str = "pil",
+        do_denormalize: Any = None,
+    ) -> Any:
+        import torch
+
+        if output_type not in ("pt", "np", "pil") or not isinstance(image, torch.Tensor):
+            return original(image, output_type, do_denormalize)
+        frames = h3_truncate_frames(original(image, "pt", do_denormalize))
+        if output_type == "pt":
+            return frames
+        frames = proc.pt_to_numpy(frames)
+        return frames if output_type == "np" else proc.numpy_to_pil(frames)
+
+    setattr(postprocess, _TRUNCATED_MARK, True)
+    postprocess.__wrapped__ = original
+    try:
+        proc.postprocess = postprocess
+    except Exception:  # noqa: BLE001 - a processor refusing instance attributes keeps rounding
+        return False
+    return True
 
 
 # ── install ──
@@ -635,4 +690,22 @@ def install_h3_reference_recipe(pipe: Any, *, pdd: bool = False) -> dict:
     report: dict = dict(_swap_blocks(pipe, swaps))
     sampler = h3_sampler(pdd)
     report["sampler"] = sampler if install_h3_schedulers(pipe, sampler) else None
+    report["output_truncated"] = install_h3_output_truncation(pipe)
+    from .video_minimax_h3_adaln import install_h3_reference_temb
+
+    report["dense_temb_rounded"] = any(
+        [
+            install_h3_reference_temb(getattr(pipe, name, None))
+            for name in ("transformer", "transformer_ref")
+        ]
+    )
+    from .video_minimax_h3_ref_encode import (
+        install_h3_chunked_reference_encode,
+        reference_latent_mode,
+    )
+
+    # Also done at load; repeated so a render never runs Diffusers' sampled posterior by accident.
+    report["condition_latent"] = (
+        reference_latent_mode() if install_h3_chunked_reference_encode() else "sample"
+    )
     return report

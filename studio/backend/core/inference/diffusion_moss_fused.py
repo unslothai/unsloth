@@ -7,11 +7,18 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 import threading
 from typing import Any
 
+from .triton_closure_globals import publishes_closure_globals
+
 MOSS_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED"
 MOSS_FUSED_QKV_ENV = "UNSLOTH_DIFFUSION_MOSS_FUSED_QKV"
+# q / k / v of a ConvRot int8 checkpoint on one rotation + act quant (the int8 GEMM swap's shared quant)
+MOSS_SHARED_QKV_ENV = "UNSLOTH_DIFFUSION_MOSS_SHARED_QKV"
+# the SiTU-GLU product of a ConvRot int8 down projection built inside its rotation + act quant kernel
+MOSS_SITU_FUSED_ENV = "UNSLOTH_DIFFUSION_MOSS_SITU_FUSED"
 _LOCK = threading.Lock()
 
 
@@ -30,6 +37,42 @@ def moss_fused_disabled() -> bool:
 def _blocks(root: Any) -> list:
     from .diffusion_moss_image import _Block
     return [m for m in root.modules() if type(m) is _Block]
+
+
+def _loaded_moss_image() -> Any:
+    """diffusion_moss_image if it is already imported, else None. Never imports it: that module needs diffusers at
+    import time, and a CFG replica of any other model calls the two hooks below. A MOSS-Image model can only exist
+    once its module was imported, so None means there is nothing to drop or re-fuse."""
+    return sys.modules.get(__name__.rpartition(".")[0] + ".diffusion_moss_image")
+
+
+def is_replica_record(key: str, value: Any) -> bool:
+    """The fused Q/K/V Linear lives outside the module tree: a CFG replica's deep copy would keep it on the source
+    card while the record's q / k / v are the replica's, so the replica would run its GEMM across cards."""
+    moss = _loaded_moss_image()
+    return moss is not None and key == moss.FUSED_QKV_ATTR
+
+
+def rebuild_replica(source: Any, replica: Any) -> int:
+    """Re-fuse on the replica's own card each block the source fused (the copy dropped the records)."""
+    if _loaded_moss_image() is None:
+        return 0
+    from .diffusion_moss_image import FUSED_QKV_ATTR
+    from .diffusion_zimage_fused import _fuse_linears, _share_storage
+
+    n = 0
+    with _LOCK:
+        for src, rep in zip(_blocks(source), _blocks(replica)):
+            rec = src.__dict__.get(FUSED_QKV_ATTR)
+            if rec is None:
+                continue
+            parts = [rep.proj[name] for name in ("q", "k", "v")]
+            fused = _fuse_linears(parts)
+            if fused is None or not _share_storage(fused, parts):
+                continue
+            rep.__dict__[FUSED_QKV_ATTR] = (fused, *parts, rec[4])
+            n += 1
+    return n
 
 
 def _int8_runnable(linear: Any) -> bool:
@@ -54,7 +97,7 @@ def install(
 ) -> dict:
     """Before the first compile; deferred to the first forward when the weights are not on the GPU yet. A streamed
     (offloaded) denoiser keeps the stock projections: its hooks own each Linear's weights."""
-    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0}
+    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0, "shared_qkv": 0, "situ_down": 0}
     if (
         moss_fused_disabled()
         or offload_active
@@ -67,17 +110,24 @@ def install(
     if resident_cuda_device(transformer) is not None:
         return install_modules(transformer, logger)
     run_on_first_call(transformer, "moss_fused", lambda t: install_modules(t, logger))
-    return {"fused_qkv": None, "int8_runner": None}
+    return {"fused_qkv": None, "int8_runner": None, "shared_qkv": None, "situ_down": None}
 
 
 def install_modules(root: Any, logger: Any = None) -> dict:
     from .diffusion_int8_fused import arm_linear, int8_linear, resident_cuda_device
     import torch
 
-    from .diffusion_moss_image import FUSED_QKV_ATTR, LINEAR_RUNNER_ATTR, QK_ROPE_ATTR
+    from .diffusion_convrot import is_rotated_linear
+    from .diffusion_moss_image import (
+        FUSED_QKV_ATTR,
+        LINEAR_RUNNER_ATTR,
+        QK_ROPE_ATTR,
+        SHARED_QKV_ATTR,
+        SITU_DOWN_ATTR,
+    )
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
-    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0}
+    result = {"fused_qkv": 0, "int8_runner": 0, "qk_rope": 0, "shared_qkv": 0, "situ_down": 0}
     dev = resident_cuda_device(root)
     if dev is None or moss_fused_disabled():
         return result
@@ -87,8 +137,35 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     fuse = not _off(MOSS_FUSED_QKV_ENV)
     index = dev.index if dev.index is not None else torch.cuda.current_device()
     rope_op = qk_rope_op() if _on(MOSS_QK_ROPE_ENV) and qk_rope_device_ok(index) else None
+    shared = None
+    if not _off(MOSS_SHARED_QKV_ENV):
+        from .diffusion_int8_gemm import shared_rotq_linears as shared
+    situ = None
+    if not _off(MOSS_SITU_FUSED_ENV):
+        from .diffusion_int8_gemm import situ_linear as situ
     with _LOCK:
         for block in blocks:
+            # Rotated down projection: its act quant builds the SiTU-GLU product from the up / gate halves itself
+            down = block.proj["ffn_down"]
+            if (
+                situ is not None
+                and is_rotated_linear(down)
+                and int(getattr(down, "convrot_groupsize", 0) or 0) == 256
+            ):
+                block.__dict__[SITU_DOWN_ATTR] = situ
+                result["situ_down"] += 1
+            else:
+                block.__dict__.pop(SITU_DOWN_ATTR, None)
+            # Rotated q / k / v: the int8 GEMM swap (on the first forward) runs each one's own rotation + act quant
+            # over the same input; one shared quant serves all three (the same op on the same tensor; the compiled
+            # graph around it changes, so images match within compile noise, not bit for bit).
+            if shared is not None and all(
+                is_rotated_linear(block.proj[n]) for n in ("q", "k", "v")
+            ):
+                block.__dict__[SHARED_QKV_ATTR] = shared
+                result["shared_qkv"] += 1
+            else:
+                block.__dict__.pop(SHARED_QKV_ATTR, None)
             norms_ok = all(
                 n.weight.dtype == torch.bfloat16 and n.weight.numel() == 128
                 for n in (block.q_norm, block.k_norm)
@@ -117,14 +194,45 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     if logger is not None:
         logger.info(
             "diffusion.moss_fused: one q/k/v GEMM on %d of %d block(s); int8 runner on %d (act quant kernel %s); "
-            "fused q/k norm + RoPE on %d",
+            "fused q/k norm + RoPE on %d; shared ConvRot q/k/v act quant on %d; SiTU-GLU inside the down "
+            "projection's act quant on %d",
             result["fused_qkv"],
             len(blocks),
             result["int8_runner"],
             "probed" if armed else "torchao's",
             result["qk_rope"],
+            result["shared_qkv"],
+            result["situ_down"],
         )
+    if result["situ_down"]:
+        _arm_situ_cards(root, logger)
     return result
+
+
+def _arm_situ_cards(root: Any, logger: Any = None) -> list:
+    """The SiTU-GLU ``rotq_h16x`` probe on the denoiser's cards, outside any trace. It needs ``rotq_h16`` armed by the
+    int8 GEMM swap; when the swap has not run yet, retried right before the first forward."""
+    from .diffusion_convrot_quant import _arm_situ
+    from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
+
+    cards = [index for index in resident_cuda_cards(root) or () if _arm_situ(index)]
+    if not cards:
+        run_on_first_call(root, "moss_situ", lambda t: _arm_situ_late(t, logger))
+    elif logger is not None:
+        logger.info("diffusion.moss_fused: SiTU-GLU act quant kernel armed on cards %s", cards)
+    return cards
+
+
+def _arm_situ_late(root: Any, logger: Any = None) -> None:
+    from .diffusion_convrot_quant import _arm_situ
+    from .diffusion_int8_fused import resident_cuda_cards
+
+    cards = [index for index in resident_cuda_cards(root) or () if _arm_situ(index)]
+    if logger is not None:
+        logger.info(
+            "diffusion.moss_fused: SiTU-GLU act quant kernel armed on cards %s (first forward)",
+            cards,
+        )
 
 
 def uninstall(transformer: Any = None) -> None:
@@ -132,9 +240,16 @@ def uninstall(transformer: Any = None) -> None:
     if transformer is None:
         return
     from .diffusion_int8_fused import cancel_first_call
-    from .diffusion_moss_image import FUSED_QKV_ATTR, LINEAR_RUNNER_ATTR, QK_ROPE_ATTR
+    from .diffusion_moss_image import (
+        FUSED_QKV_ATTR,
+        LINEAR_RUNNER_ATTR,
+        QK_ROPE_ATTR,
+        SHARED_QKV_ATTR,
+        SITU_DOWN_ATTR,
+    )
 
     cancel_first_call(transformer, "moss_fused")
+    cancel_first_call(transformer, "moss_situ")
     try:
         blocks = _blocks(transformer)
     except Exception:  # noqa: BLE001
@@ -144,6 +259,8 @@ def uninstall(transformer: Any = None) -> None:
             block.__dict__.pop(FUSED_QKV_ATTR, None)
             block.__dict__.pop(LINEAR_RUNNER_ATTR, None)
             block.__dict__.pop(QK_ROPE_ATTR, None)
+            block.__dict__.pop(SHARED_QKV_ATTR, None)
+            block.__dict__.pop(SITU_DOWN_ATTR, None)
 
 
 # Fuses q/k RMSNorm + RoPE + layout copy into one pass; keeps every eager bf16 rounding of the port.
@@ -153,6 +270,7 @@ _HEADS_PER_PROGRAM = 8
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _qk_rope_kernel() -> Any:
     try:
         import triton
@@ -215,7 +333,8 @@ def _qk_rope_kernel() -> Any:
         D: tl.constexpr,  # hd
         HB: tl.constexpr,  # heads per program
     ):
-        row = tl.program_id(0)
+        # int64: s * sqs passes 2**31 past 233k tokens of a 9216-wide fused-QKV row
+        row = tl.program_id(0).to(tl.int64)
         b = row // S
         s = row % S
         h = tl.program_id(1) * HB + tl.arange(0, HB)[:, None]

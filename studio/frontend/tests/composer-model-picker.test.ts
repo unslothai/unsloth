@@ -19,11 +19,15 @@ import {
   findChosenRow,
   isChatTask,
   isTestFixtureRepo,
+  SECTION_LABEL,
   localSection,
   orderBySection,
   pickerAlignOffset,
   pickerDropOffset,
+  pickerMinHeight,
   pickerSide,
+  pickerWidth,
+  pickerZoomOut,
   pinCoversId,
   repoSection,
   sectionsHaveRows,
@@ -223,11 +227,29 @@ test("a loaded row ejects from its menu and the collapsed view, never its dot", 
   // The dot is only a mark: hovering it never turns it into Eject.
   assert.match(picker, /<LoadedDot \/>/);
   assert.doesNotMatch(picker, /Loaded\. Click to eject/);
-  assert.match(picker, /\.\.\.\(row\.loaded && canEject/);
+  assert.match(
+    picker,
+    /\.\.\.\(\(row\.loaded \|\|\s+\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
   assert.match(picker, /key: "eject"/);
   assert.match(picker, /aria-label=\{`Eject \$\{chosenName\}`\}/);
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /eject: handleEject,/);
+});
+
+test("a model with no thinking skips the collapsed view and closes once loaded", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const isExpanded =\s+expanded \|\| !chosenName \|\| noThinking \|\| smallScreen;/,
+  );
+  assert.match(picker, /if \(fresh\) \{\s+closeIfNoThinking\.current\(\);/);
+  assert.match(
+    picker,
+    /\{chosenName && !noThinking && !smallScreen \? \(\s+<Hint label="Collapse">/,
+  );
 });
 
 test("Run settings open inside the composer picker, not the header picker", () => {
@@ -260,12 +282,45 @@ test("Run settings open inside the composer picker, not the header picker", () =
   );
 });
 
+test("NPU rows carry a Q4NX chip, and say Runs on NPU only where no NPU header does", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /const NPU_QUANT = "Q4NX";/);
+  assert.match(picker, /row\.kind === "npu" \? \(\s+<QuantPill quant=\{NPU_QUANT\} \/>/);
+  assert.match(
+    picker,
+    /!\(row\.section === "npu" && listSections\.includes\("npu"\)\) \? \([\s\S]{0,200}NPU_TAG_TEXT\[NPU_CATALOG_TAG\]/,
+  );
+  assert.doesNotMatch(picker, /"Converted"/);
+});
+
+test("exported GGUFs and Q4NX models converted on the Export page share an Exported section", () => {
+  assert.match(
+    readSrc("components/assistant-ui/composer-model-picker/npu-rows.ts"),
+    /section: model\.local \? "exported" : "npu"/,
+  );
+  assert.equal(SECTION_LABEL.exported, "Exported");
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /exported: "Go to exported models"/);
+  assert.match(picker, /exported: \(\s+<HugeiconsIcon\s+icon=\{FolderExportIcon\}/);
+});
+
 test("On Device groups rows like the header picker, NPU and custom folders included", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /useNpuCatalog\(/);
-  assert.match(picker, /kind: "npu",\s+section: "npu"/);
+  assert.match(
+    picker,
+    /device\.push\(\.\.\.npuPickerRows\(npuModels, true\)\)/,
+  );
+  assert.match(
+    readSrc("components/assistant-ui/composer-model-picker/npu-rows.ts"),
+    /kind: "npu",[\s\S]*?section: model\.local \? "exported" : "npu"/,
+  );
   assert.match(picker, /useCustomFolders\(/);
   assert.match(
     picker,
@@ -315,14 +370,41 @@ test("the picker opens with its list unless the user collapsed it", () => {
   assert.doesNotMatch(picker, /<Popover[^>]*\bmodal\b/);
   assert.match(picker, /localStorage\.getItem\(EXPANDED_KEY\) !== "false"/);
   assert.match(picker, /useState\(readExpanded\)/);
-  assert.match(picker, /onClick=\{\(\) => setExpanded\(false\)\}/);
+  assert.match(picker, /onClick=\{\(\) => toggleExpanded\(false\)\}/);
+});
+
+test("a load opens as the user last left a loaded picker, and an eject expands", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /chosenLoaded && checkpoint \? `\$\{checkpoint\}/);
+  assert.match(
+    picker,
+    /if \(modelLoading\) \{\s+if \(loadingFresh\) \{\s+sawLoad\.current = true;/,
+  );
+  assert.match(
+    picker,
+    /setExpanded\(useChatRuntimeStore\.getState\(\)\.pickerExpandLoaded\);/,
+  );
+  assert.match(
+    picker,
+    /if \(residentKeyRef\.current\) \{\s+useChatRuntimeStore\.getState\(\)\.setPickerExpandLoaded\(next\);/,
+  );
+  assert.match(picker, /const expand = \(\) => \{\s+toggleExpanded\(true\);/);
+  assert.match(picker, /onClick=\{\(\) => toggleExpanded\(false\)\}/);
+  assert.doesNotMatch(picker, /MODEL_EXPANDED_KEY/);
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(
+    store,
+    /pickerExpandLoaded: loadBool\(PICKER_EXPAND_LOADED_KEY, false\)/,
+  );
 });
 
 test("On Device sections follow the header picker's buckets and order", () => {
   assert.equal(repoSection("unsloth/gemma-4-E2B-it-GGUF"), "unsloth");
   assert.equal(repoSection("Qwen/Qwen3-8B"), "other");
   assert.equal(localSection("training", undefined), "fineTuned");
-  assert.equal(localSection("exported", undefined), "fineTuned");
+  assert.equal(localSection("exported", undefined), "exported");
   assert.equal(localSection("local", "LM Studio"), "lmstudio");
   assert.equal(localSection("local", "Local models"), "modelsDir");
   assert.equal(localSection("local", "Ollama"), "custom");
@@ -333,10 +415,12 @@ test("On Device sections follow the header picker's buckets and order", () => {
     { id: "c", section: "npu" as const },
     { id: "d", section: "unsloth" as const },
     { id: "e", section: "recommended" as const },
+    { id: "f", section: "fineTuned" as const },
+    { id: "g", section: "exported" as const },
   ]);
   assert.deepEqual(
     ordered.map((row) => row.id),
-    ["b", "d", "c", "a", "e"],
+    ["b", "d", "c", "g", "f", "a", "e"],
   );
 });
 
@@ -361,7 +445,7 @@ test("composer search keeps Mac-native repos, as the header picker did", () => {
   );
   assert.match(
     picker,
-    /isMac &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
+    /discoverListsCheckpoints\(\s+isMac,[\s\S]{0,120}?\) &&\s+isRecommendableFormat\(r\.id, r\.isGguf, true, r\.quantMethod\)/,
   );
 });
 
@@ -623,14 +707,26 @@ test("Discover keeps rows the Hub search matched by maker alias", () => {
   );
 });
 
-test("the open picker is one height on every tab, loaded model or not", () => {
+test("the open picker has one fixed height on every tab, whatever each tab lists", () => {
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(
     picker,
-    /\(isExpanded \|\| configTarget\) &&\s+"h-\[calc\(460px\*var\(--ui-space-scale,1\)\)\]"/,
+    /configTarget \|\| isExpanded\s+\? "h-\(--composer-picker-min-h\) max-h-\[var\(--picker-floor,calc\(100dvh-16px\)\)\]"/,
   );
+  const pickerCss = readSrc("index.css");
+  assert.doesNotMatch(pickerCss, /^\s*--picker-floor:/m);
+  assert.match(
+    picker,
+    /openSide !== "bottom" &&\s+"\[--picker-floor:var\(--radix-popover-content-available-height\)\]"/,
+  );
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /--composer-picker-min-h: min\(calc\(var\(--picker-min-base, 440px\) \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\), var\(--picker-floor, calc\(100dvh - 16px\)\)\);/,
+  );
+  assert.doesNotMatch(css, /--composer-picker-max-h/);
   assert.match(picker, /composer-model-list flex min-h-0 flex-1 flex-col/);
   // The model in use keeps a hover look, a hair darker than a hovered row.
   assert.match(
@@ -639,17 +735,40 @@ test("the open picker is one height on every tab, loaded model or not", () => {
   );
 });
 
-test("a panel opening down rides up over the composer when the room below is short", () => {
-  // Room below: the usual 8px gap.
+test("the picker height follows the screen: 420px short landscape, 440px most windows, up to 540px on very large monitors", () => {
+  assert.equal(pickerMinHeight(1366, 768, 1), 420);
+  assert.equal(pickerMinHeight(1280, 640, 1), 420);
+  assert.equal(pickerMinHeight(1440, 900, 1), 420);
+  assert.equal(pickerMinHeight(1920, 1080, 1), 440);
+  assert.equal(pickerMinHeight(1728, 1000, 1), 440);
+  assert.equal(pickerMinHeight(390, 844, 1), 440);
+  assert.equal(pickerMinHeight(2560, 1230, 1), 490);
+  assert.equal(pickerMinHeight(2560, 1380, 1), 540);
+  assert.equal(pickerMinHeight(2560, 1600, 1), 540);
+  // 1366x768 at 67% zoom.
+  assert.equal(pickerMinHeight(2039, 1146, 1.49), 420);
+  // A 1080p window zoomed out to 50% is still a 1080p screen.
+  assert.equal(pickerMinHeight(3840, 2160, 2), 440);
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /"--picker-min-base": `\$\{pickerMinBase\}px`/);
+});
+
+test("opening down, a panel short of room rides up over the composer", () => {
+  assert.equal(pickerDropOffset(480, 420, 900), -8);
   assert.equal(pickerDropOffset(400, 300, 900), 8);
-  // 100px short: up by that much, over the composer.
-  assert.equal(pickerDropOffset(500, 492, 900), -100);
   // Taller than the window: pinned 8px from its top.
   assert.equal(pickerDropOffset(500, 2000, 900), -492);
   const picker = readSrc(
     "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
   );
   assert.match(picker, /sideOffset=\{dropsDown \? dropOffset : PICKER_GAP\}/);
+  assert.doesNotMatch(picker, /--picker-room/);
+  assert.match(
+    picker,
+    /pickerDropOffset\(rect\.bottom, panel\.offsetHeight, window\.innerHeight\)/,
+  );
 });
 
 test("the picker's side is fixed per opening by the trigger, not the panel", () => {
@@ -887,6 +1006,41 @@ test("the picker slides back inside a narrow window instead of hanging off its e
     0,
   );
   assert.equal(pickerAlignOffset("end", null, 404, 375), 0);
+  assert.equal(pickerAlignOffset("end", { left: 0, right: 0 }, 520, 2000), 0);
+  assert.match(
+    readSrc(
+      "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+    ),
+    /pickerAlignOffset\(align, rect, panel\.offsetWidth, window\.innerWidth\)/,
+  );
+});
+
+test("the picker caps at 520px on a big screen but keeps its on-screen size zoomed out", () => {
+  assert.equal(pickerWidth(390, 1), 360);
+  assert.equal(pickerWidth(1440, 1), 432);
+  assert.equal(pickerWidth(2560, 1), 520);
+  assert.equal(pickerWidth(960, 1), 360);
+  assert.equal(pickerWidth(960, 1.25), 450);
+  // 1512px window at 50% zoom.
+  const zoomOut = pickerZoomOut(3024, 1512, null);
+  assert.equal(zoomOut, 2);
+  assert.equal(Math.round(pickerWidth(3024, 1, zoomOut) / zoomOut), 454);
+  assert.equal(pickerZoomOut(1512, 1512, null), 1);
+  assert.equal(pickerZoomOut(1008, 1512, null), 1);
+  assert.equal(pickerZoomOut(1500, 1512, null), 1);
+  assert.equal(pickerZoomOut(2257, 1512, 0.5), 2);
+  assert.equal(pickerZoomOut(1512, 1512, 1.25), 1);
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /\.composer-model-picker \{\s+--composer-picker-w: clamp\(calc\(360px \* var\(--ui-space-scale, 1\)\), 30vw, calc\(520px \* var\(--ui-space-scale, 1\) \* var\(--picker-zoom-out, 1\)\)\);/,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /w-\(--composer-picker-w\)/);
+  assert.match(picker, /"--picker-zoom-out": pickerZoomOutState/);
+  assert.match(picker, /pickerWidth\(window\.innerWidth, scale, zoomOut\)/);
 });
 
 test("the Connected tab lists every connection's models, favorites then newest first", () => {
@@ -1000,7 +1154,7 @@ test("an interrupted quant counts as a variant, so the row names no quant", () =
   // A click folds both open, as for two whole quants.
   assert.match(
     picker,
-    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setFoldedQuants/,
+    /if \(!row\.favoriteQuant && variantCount\(row\) > 1\) \{\s+setQuantsOpenByRow/,
   );
 });
 
@@ -1108,7 +1262,7 @@ test("Only models that fit judges MLX and safetensors results by the checkpoint 
   assert.match(picker, /searchRowFitsDevice\(\s*\{\s*id: r\.id,/);
   assert.match(
     picker,
-    /const checkpointFits = hubCheckpointFits\.get\(row\.id\.toLowerCase\(\)\);\s*if \(checkpointFits !== undefined\) \{\s*return checkpointFits;/,
+    /if \(hubCheckpointFits\.has\(row\.id\.toLowerCase\(\)\)\) \{[^}]*return !hubCheckpointFit\.has\(row\.id\.toLowerCase\(\)\);/,
   );
 });
 
@@ -1442,7 +1596,7 @@ test("an open on-device quant list asks the Hub for updates, as the header picke
   );
   assert.match(
     picker,
-    /expandQuantizations !== foldedQuants\.has\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
+    /quantsOpenFor\(row\.key\) &&\s*updatesReadAt\.current\.get\(row\.key\) !== quantsEpoch/,
   );
   assert.match(
     picker,
@@ -1494,6 +1648,307 @@ test("a pinned-quant row reads its repo's disk state, opens its own Run settings
   );
   assert.match(
     picker,
-    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*foldedQuants,\s*expandQuantizations,\s*quantsEpoch,\s*\]\);/,
+    /\}, \[\s*open,\s*shownRows,\s*deviceQuants,\s*expandQuantizations,\s*quantsOpenByRow,\s*quantsEpoch,\s*\]\);/,
+  );
+});
+
+test("a model with no logo of its own shows a letter tile from its name", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const mark = picker.slice(
+    picker.indexOf("function RowMark("),
+    picker.indexOf("interface SourceTab"),
+  );
+  assert.doesNotMatch(mark, /OwnerAvatar|LaptopIcon|Download01Icon|CloudIcon/);
+  assert.match(mark, /providerType=\{null\}\s+name=\{name\}/);
+  assert.match(
+    mark,
+    /-m-\[calc\(1px\*var\(--ui-space-scale,1\)\)\] size-\[calc\(16px\*var\(--ui-space-scale,1\)\)\]/,
+  );
+  assert.match(
+    picker,
+    /: rowMaker\(row\) !== null \|\| rowMarkName\(row\) !== undefined;/,
+  );
+  const logo = readSrc("features/chat/api-provider-logo.tsx");
+  assert.match(logo, /if \(!src && letter\) \{\s+return \(\s+<LetterTile/);
+  assert.match(picker, /\) : hasRowMark\(row\) \? \(/);
+  assert.equal(picker.match(/chosenName && chosenEjectable \? \(/g)?.length, 2);
+  assert.equal(
+    picker.match(
+      /: "-my-0\.5 -mr-1\.5 w-0 overflow-hidden group-hover\/chip:-mx-0\.5 group-hover\/chip:w-\[calc\(18px\*var\(--ui-space-scale,1\)\)\]"/g,
+    )?.length,
+    2,
+  );
+});
+
+test("a loaded cache path keeps its maker logo before the inventory lands", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /hubParts\(row\.id \? \(hfCacheRepoId\(row\.id\) \?\? undefined\) : undefined\)/,
+  );
+});
+
+test("run settings keep Back and the title pinned, as the Library header", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /el\.querySelector<HTMLElement>\("\[data-config-header-row\]"\)/,
+  );
+  assert.match(picker, /el\.dataset\.headerStuck = "";/);
+  const page = readSrc(
+    "features/model-picker/components/model-config-page.tsx",
+  );
+  assert.match(
+    page,
+    /<>\s*<div\s+data-config-eyebrow=""[\s\S]*?Run settings\s*<\/div>\s*<div\s+data-config-header=""\s+data-config-header-row=""\s+className="mt-1\.5 flex items-center gap-2\.5 pb-5"\s*>/,
+  );
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /\.composer-run-settings \[data-config-header-row\] \{\s*position: sticky;\s*top: calc\(var\(--run-settings-stick-at\) - var\(--run-settings-pad-y\)\);/,
+  );
+  assert.match(
+    css,
+    /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::before,\s*\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\]::after \{\s*opacity: 1;/,
+  );
+  assert.match(
+    css,
+    /\[data-config-header-row\] > button:first-child \{\s*transform: translateY\(calc\(-0\.5 \* \(var\(--config-eyebrow-h\) \+ var\(--config-header-gap\)\)\)\);/,
+  );
+  assert.match(
+    css,
+    /\.composer-run-settings\[data-header-stuck\] \[data-config-header-row\] > button:first-child \{\s*transform: none;/,
+  );
+  assert.doesNotMatch(css, /\[data-scrolled\] \[data-config-eyebrow\]/);
+});
+
+test("a cancelled or failed eject keeps the expand choice; only a real load starts collapsed", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const loadPicked = useChatRuntimeStore\(\(s\) => s\.loadingModelPick !== null\);/,
+  );
+  assert.match(
+    picker,
+    /const loadingFresh = pane \? modelLoading : modelLoading && loadPicked;/,
+  );
+  assert.match(
+    picker,
+    /if \(modelLoading\) \{\s*if \(loadingFresh\) \{\s*sawLoad\.current = true;/,
+  );
+});
+
+test("a connected model in use offers eject, which clears the pick", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const chosenExternal =\s+!pane && Boolean\(checkpoint && isExternalModelId\(checkpoint\)\);\s+const chosenEjectable = chosenLoaded \|\| chosenExternal;/,
+  );
+  assert.equal(picker.match(/chosenName && chosenEjectable \?/g)?.length, 2);
+  assert.match(picker, /\(chosenEjectable \|\| loadedModels\.length > 0\)/);
+  assert.match(picker, /!pending && chosenEjectable && !modelLoading/);
+  assert.match(
+    picker,
+    /\(chosenExternal && row\.id === checkpoint\)\) &&\s+canEject/,
+  );
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(
+    runtime,
+    /if \(isExternalModelId\(checkpoint\)\) \{\s+clearCheckpoint\(\);/,
+  );
+});
+
+test("on a small screen the picker keeps the keyboard down and every action within reach", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+
+  assert.match(
+    picker,
+    /touchPress\.current = !open && event\.pointerType === "touch";/,
+  );
+  assert.match(picker, /if \(isExpanded && !\(byTouch && smallScreen\)\) \{/);
+  assert.match(
+    picker,
+    /buttonClassName=\{cn\(ACTION_DOTS, actionClass, TOUCH_DOTS\)\}/,
+  );
+  assert.match(
+    picker,
+    /className=\{cn\(ACTION_ROUND, actionClass, TOUCH_IN_MENU\)\}/,
+  );
+  assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
+  const header = picker.slice(picker.indexOf("function SectionHeader("));
+  assert.match(
+    header.slice(0, header.indexOf("\n}\n")),
+    /max-md:flex-1 max-md:self-stretch/,
+  );
+});
+
+test("on a small screen a pick closes the picker at once", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /closeOnPick\.current = smallScreen;/);
+  assert.match(
+    picker,
+    /rawSource\.onPick\(id, meta\);\s+\}\s+if \(closeOnPick\.current\) \{\s+rawSource\.onOpenChange\(false\);/,
+  );
+});
+
+test("only small screens change: every phone class and branch is gated on the mobile width", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.doesNotMatch(picker, /pointer-coarse:/);
+  assert.match(picker, /const smallScreen = useIsMobile\(\);/);
+  assert.match(picker, /data-pill-detail=\{chipDetail\}/);
+  assert.match(picker, /setChipTipOpen\(next && !chipIconOnly\(\)\)/);
+  assert.match(picker, /isMobileViewport\(\) &&\s+label instanceof HTMLElement/);
+  const css = readSrc("index.css");
+  const small = css.slice(css.indexOf("@media (width < 48rem) {"));
+  assert.match(small, /\.composer-model-chip \[data-eject-hit\] \{\s+pointer-events: none;/);
+});
+
+test("hiding the star on small screens never strands Favorite", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const menus =
+    picker.match(
+      /<ModelRowMenu\s+ariaLabel=\{`More options for \$\{row\.label\}`\}[\s\S]*?items=\{\[/g,
+    ) ?? [];
+  assert.equal(menus.length, 2);
+  for (const menu of menus) {
+    assert.match(menu, /pin=\{\s+canStar\s+\?/);
+  }
+  assert.match(picker, /\[actionClass, npuOffer \? TOUCH_DOTS : TOUCH_IN_MENU\]/);
+});
+
+test("a measured MLX download size decides its fit warning, not the per-parameter estimate", async () => {
+  const { hfModelFitsDevice } = await import(
+    "../src/features/model-picker/components/model-selector/recommended-fit.ts"
+  );
+  // 27B at 0.4 B/param estimates ~11 GB; the UD-4bit repo's files are 26 GB.
+  const repo = { id: "unsloth/Qwen3.6-27B-UD-MLX-4bit", totalParams: 27e9 };
+  const gpu = {
+    memoryTotalGb: 16,
+    systemRamAvailableGb: 16,
+    budgetKnown: true,
+  };
+  assert.equal(hfModelFitsDevice(repo, gpu), true);
+  assert.equal(
+    hfModelFitsDevice({ ...repo, curatedSizeBytes: 26e9 }, gpu),
+    false,
+  );
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /curatedSizeBytes: mlx \? bytes : undefined,/);
+});
+
+test("the Show full model list switch applies to an already loaded picker", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /const expandLoaded = useChatRuntimeStore\(\(s\) => s\.pickerExpandLoaded\);\s+useEffect\(\(\) => \{\s+if \(residentKeyRef\.current\) \{\s+setExpanded\(expandLoaded\);/,
+  );
+});
+
+test("a failed repo size listing is not cached as a size, so it can retry", () => {
+  const sizes = readSrc(
+    "components/assistant-ui/composer-model-picker/hub-repo-size.ts",
+  );
+  assert.match(
+    sizes,
+    /\.catch\(\(\) => \{\s+failedAt\.set\(key, Date\.now\(\)\);\s+return null;\s+\}\)\s+\.finally\(\(\) => inflight\.delete\(key\)\);/,
+  );
+});
+
+test("the fit-only filter and the row warning share the measured verdict", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(
+    picker,
+    /if \(hubCheckpointFits\.has\(row\.id\.toLowerCase\(\)\)\) \{[^}]*return !hubCheckpointFit\.has\(row\.id\.toLowerCase\(\)\);/,
+  );
+  assert.match(
+    picker,
+    /useHubRepoSizes\(\s+useMemo\(\s+\(\) =>\s+hubSizeIds\(hubResults, recommended,/,
+  );
+  assert.ok(
+    picker.indexOf("const hubCheckpointFit = useMemo") <
+      picker.indexOf("const foundRows = useMemo"),
+  );
+});
+
+test("each model remembers its own quant list; others follow the setting, on by default", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  assert.match(picker, /quantsOpenByRow\.get\(key\) \?\? expandQuantizations/);
+  assert.match(
+    picker,
+    /const open = next\.get\(row\.key\) \?\? expandQuantizations;[\s\S]*?next\.set\(row\.key, !open\);\s+writeQuantsOpen\(next\);/,
+  );
+  assert.doesNotMatch(picker, /setExpandQuantizations\(/);
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  assert.match(
+    store,
+    /expandQuantizations: loadBool\(CHAT_EXPAND_QUANTIZATIONS_KEY, true\)/,
+  );
+});
+
+test("Run settings for an MLX repo open as one checkpoint, never the Hub, and skip the Hub listing without precision folders on disk", () => {
+  const picker = readSrc(
+    "components/assistant-ui/composer-model-picker/composer-model-picker.tsx",
+  );
+  const settings = picker.slice(
+    picker.indexOf("const settingsMeta = async ("),
+    picker.indexOf("const openModelCard = (row: Row) =>"),
+  );
+  assert.match(
+    settings,
+    /const mlxRepo =\s*\(row\.kind === "hub" && !row\.hub\?\.isGguf\) \|\|\s*\(row\.kind === "cached" && row\.format === "mlx"\);/,
+  );
+  assert.match(
+    settings,
+    /row\.kind === "cached" && !row\.partial && !row\.favoriteQuant\s*\?\s*await listed\(\{ \.\.\.target, remote: false, everyQuant: false \}\)\s*:\s*undefined;\s*if \(listing === undefined \|\| listing\?\.mlx\) \{/,
+  );
+  assert.match(
+    settings,
+    /if \(listing === undefined \|\| listing\?\.mlx\) \{\s*listing =\s*\(await listed\(\s*\/\/[^\n]*\n\s*\(row\.favoriteQuant && row\.kind === "gguf"\) \|\|\s*\(row\.kind === "hub" && mlxRepo\)\s*\?\s*\{ \.\.\.target, remote: true, everyQuant: true \}\s*:\s*target,\s*\)\) \?\? listing;\s*\}/,
+  );
+  assert.match(
+    settings,
+    /rowQuants\(t\)\.catch\(\(err: unknown\) => \{\s*if \(mlxRepo\) \{\s*return null;\s*\}\s*throw err;/,
+  );
+  assert.match(
+    settings,
+    /if \(!mlxRepo\) \{\s*return null;\s*\}\s*if \(row\.kind === "hub"\) \{\s*return wholeHubMeta\(row\);\s*\}/,
+  );
+  assert.match(
+    settings,
+    /if \(listing\) \{[\s\S]*?if \(quant && \(mlx \|\| row\.kind !== "cached"\)\) \{\s*return ggufMeta\(\s*row,\s*quant,\s*target\.local \|\| quant\.downloaded === true,\s*!mlx,/,
+  );
+  assert.match(
+    settings,
+    /chooseQuant\(list, \[\s*row\.loadedQuant,\s*row\.id === chosen\?\.id \? activeVariant : null,\s*defaultVariant,\s*\]\)/,
+  );
+  assert.match(
+    settings,
+    /if \(row\.kind === "cached"\) \{\s*return cachedMeta\(row\);/,
   );
 });

@@ -83,12 +83,9 @@ def click_open(
     name: str,
     timeout_ms: int = 5_000,
 ) -> None:
-    """Click a trigger and wait, bounded, until it reports open.
-
-    A fixed sleep after two back-to-back clicks lost the second one on a loaded runner: the first
-    card's 200ms expansion was still moving the second trigger. A card that never opens still fails,
-    because the caller reads aria-expanded afterwards.
-    """
+    """Waits, bounded, until the trigger reports open: a fixed sleep lost the second of two quick
+    clicks on a loaded runner, since the first card's 200ms expansion was still moving it; a card
+    that never opens still fails, as the caller reads aria-expanded."""
     selector = f'[data-probe="{name}-trigger"]'
     page.click(selector)
     try:

@@ -31,6 +31,7 @@ import {
 } from "../lib/provider-search";
 import { fetchWithTimeout } from "../lib/network";
 import { LruMap } from "../lib/lru-map";
+import { parseOwnerSearchQuery } from "../lib/search-text";
 import {
   type UnslothSupport,
   type UnslothSupportStatus,
@@ -43,7 +44,11 @@ import {
   parameterRange,
   type ModelSearchFilters,
 } from "../lib/model-search-filters";
-import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
+import {
+  MAX_RAW_ITEMS_PER_BATCH,
+  pullBatch,
+  useHubPaginatedSearch,
+} from "./use-hub-paginated-search";
 
 // "gguf" is not in the SDK's expandable-key type, but listModels passes it through at runtime;
 // it fills m.gguf.total for repos whose id has no "<n>B" token.
@@ -292,11 +297,8 @@ function makeMapModel(
 
 const UNSLOTH_PREFETCH = 20;
 const UNSLOTH_QUERY_PREFETCH = 3;
-const UNSLOTH_PINNED_PREFETCH = 4;
 /** Rejected unsloth rows a filtered search scans before moving on to general results. */
 const UNSLOTH_FILTER_REJECT_LIMIT = 40;
-/** Matches a valid "owner/repo" identifier (exactly two non-empty segments). */
-const PUBLISHER_RE = /^([^/\s]+)\/([^/\s]+)$/;
 
 /** Public models also prime the anonymous slot; gated/private only under the caller's token. */
 function primeFromListing(
@@ -315,12 +317,46 @@ type ModelListingTransform = (
   iterator: AsyncGenerator<unknown>,
 ) => AsyncGenerator<unknown>;
 
+/** Prefetches a listing's first item so its Hub round trip overlaps earlier reads; errors surface in `read()`. */
+function prefetchListing(
+  create: (signal: AbortSignal) => AsyncGenerator<unknown>,
+  signal?: AbortSignal,
+) {
+  const controller = new AbortController();
+  const follow = () => controller.abort(signal?.reason);
+  if (signal?.aborted) follow();
+  else signal?.addEventListener("abort", follow, { once: true });
+  const unfollow = () => signal?.removeEventListener("abort", follow);
+  const iter = create(controller.signal);
+  // A tick later, so the listing read first still sends its request first.
+  const first = Promise.resolve().then(() => iter.next());
+  // Handled here so a cancelled or failed head start is never an unhandled rejection.
+  first.catch(() => {});
+  return {
+    async *read(): AsyncGenerator<unknown> {
+      try {
+        const head = await first;
+        if (head.done) return;
+        yield head.value;
+        yield* iter;
+      } finally {
+        unfollow();
+        await iter.return(undefined);
+      }
+    },
+    cancel() {
+      unfollow();
+      controller.abort();
+      iter.return(undefined).catch(() => {});
+    },
+  };
+}
+
 /** Merged generator yielding unsloth-owned models first, then deduped general results. */
 async function* mergedModelIterator(
   query: string,
   task?: HfTaskFilter,
   accessToken?: string,
-  pinnedId?: string,
   sortBy: HfSortKey = "downloads",
   direction: HfSortDirection = "desc",
   signal?: AbortSignal,
@@ -333,6 +369,9 @@ async function* mergedModelIterator(
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
 
+  const limit = query.trim() ? UNSLOTH_QUERY_PREFETCH : UNSLOTH_PREFETCH;
+  // Unfiltered phase 1 reads at most `limit` rows; avoids the Hub's default 500 (megabytes).
+  const unslothRows = filterPriority || parameterFilter ? {} : { limit };
   const unslothIter = mergeTaskIterators(
     tasks,
     (task, taskSignal) =>
@@ -340,83 +379,131 @@ async function* mergedModelIterator(
         hubUrl: getHfEndpoint(),
         search: { query, owner: "unsloth", ...(task ? { task } : {}) },
         fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+        ...unslothRows,
         ...common,
       }) as AsyncGenerator<unknown>,
     signal,
   );
-  const generalIter = mergeTaskIterators(
-    tasks,
-    (task, taskSignal) =>
-      listModels({
-        hubUrl: getHfEndpoint(),
-        search: { query, ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
-        ...common,
-      }) as AsyncGenerator<unknown>,
+  const general = prefetchListing(
+    (generalSignal) =>
+      mergeTaskIterators(
+        tasks,
+        (task, taskSignal) =>
+          listModels({
+            hubUrl: getHfEndpoint(),
+            search: { query, ...(task ? { task } : {}) },
+            fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+            ...common,
+          }) as AsyncGenerator<unknown>,
+        generalSignal,
+      ),
     signal,
   );
-
-  // Start the pinned lookup now so it runs in parallel with Phase 1.
-  const pinnedPromise = pinnedId
-    ? cachedModelInfo({
-        hubUrl: getHfEndpoint(),
-        name: pinnedId,
-        additionalFields: ALL_FIELDS,
-        fetch: makeHfFetch(signal),
-        ...(accessToken ? { credentials: { accessToken } } : {}),
-      }).catch(() => null)
-    : null;
-
-  const limit = pinnedId
-    ? UNSLOTH_PINNED_PREFETCH
-    : query.trim()
-      ? UNSLOTH_QUERY_PREFETCH
-      : UNSLOTH_PREFETCH;
 
   // Phase 1: unsloth models first
   const seen = new Set<string>();
   let count = 0;
   let rejected = 0;
-  for await (const model of filterPriority
-    ? filterPriority(unslothIter)
-    : unslothIter) {
-    if (model === null) {
-      yield null;
-      if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
-      continue;
-    }
-    const m = model as { name?: string };
-    if (m.name) {
-      seen.add(m.name);
-      primeFromListing(m.name, accessToken, model);
-    }
-    yield model;
-    count++;
-    if (count >= limit) break;
-  }
-
-  // Phase 1b: pinned publisher model before general results
-  if (pinnedId && !seen.has(pinnedId) && pinnedPromise) {
-    const pinned = await pinnedPromise;
-    if (pinned) {
-      // Record raw input and HF's canonical name so dedup survives casing differences.
-      seen.add(pinnedId);
-      const canonicalName = (pinned as { name?: string }).name;
-      if (canonicalName && canonicalName !== pinnedId) {
-        seen.add(canonicalName);
+  let phase1Done = false;
+  try {
+    for await (const model of filterPriority
+      ? filterPriority(unslothIter)
+      : unslothIter) {
+      if (model === null) {
+        yield null;
+        if (++rejected >= UNSLOTH_FILTER_REJECT_LIMIT) break;
+        continue;
       }
-      yield pinned;
+      const m = model as { name?: string };
+      if (m.name) {
+        seen.add(m.name);
+        primeFromListing(m.name, accessToken, model);
+      }
+      yield model;
+      count++;
+      if (count >= limit) break;
     }
+    phase1Done = true;
+  } finally {
+    // A failed Unsloth listing or a consumer that stops here never reads the general one.
+    if (!phase1Done) general.cancel();
   }
 
   // Phase 2: general results, skipping already-seen models
-  for await (const model of generalIter) {
+  for await (const model of general.read()) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
       primeFromListing(m.name, accessToken, model);
     }
     yield model;
+  }
+}
+
+/** One owner's repos, the exact `pinnedId` repo first. The Hub's owner filter is case-sensitive. */
+async function* ownerModelIterator(
+  owner: string,
+  query: string,
+  accessToken?: string,
+  pinnedId?: string,
+  sortBy: HfSortKey = "downloads",
+  direction: HfSortDirection = "desc",
+  signal?: AbortSignal,
+  parameterFilter = "",
+  tags?: string[],
+): AsyncGenerator<unknown> {
+  const credentials = accessToken ? { credentials: { accessToken } } : {};
+  const listing = (author: string) =>
+    listModels({
+      hubUrl: getHfEndpoint(),
+      search: { owner: author, ...(query ? { query } : {}), ...(tags ? { tags } : {}) },
+      fetch: makeSortFetch(sortBy, direction, signal, parameterFilter),
+      additionalFields: ALL_FIELDS,
+      ...credentials,
+    }) as AsyncGenerator<unknown>;
+
+  const seen = new Set<string>();
+  if (pinnedId) {
+    const pinned = (await cachedModelInfo({
+      hubUrl: getHfEndpoint(),
+      name: pinnedId,
+      additionalFields: ALL_FIELDS,
+      fetch: makeHfFetch(signal),
+      ...credentials,
+    }).catch(() => null)) as { name?: string } | null;
+    if (pinned?.name) {
+      seen.add(pinned.name);
+      owner = pinned.name.split("/")[0];
+      yield pinned;
+    }
+  }
+
+  for (let author: string | null = owner; author; ) {
+    for await (const model of listing(author)) {
+      const name = (model as { name?: string }).name;
+      if (name && seen.has(name)) continue;
+      if (name) {
+        seen.add(name);
+        primeFromListing(name, accessToken, model);
+      }
+      yield model;
+    }
+    if (seen.size > 0 || author !== owner) return;
+    // Nothing under the typed spelling: retry once under the owner's canonical casing.
+    author = null;
+    for await (const model of listModels({
+      hubUrl: getHfEndpoint(),
+      search: { query: `${owner}/` },
+      limit: 20,
+      fetch: makeHfFetch(signal),
+      ...credentials,
+    })) {
+      const canonical: string = model.name.split("/")[0];
+      if (canonical !== owner && canonical.toLowerCase() === owner.toLowerCase()) {
+        author = canonical;
+        break;
+      }
+    }
   }
 }
 
@@ -437,7 +524,7 @@ async function* priorityThenListingIterator(
 
   // Phase 1: priority models in parallel via modelInfo
   const seen = new Set<string>();
-  const settled = await Promise.allSettled(
+  const priority = Promise.allSettled(
     priorityIds.map((id) =>
       cachedModelInfo({
         hubUrl: getHfEndpoint(),
@@ -448,27 +535,37 @@ async function* priorityThenListingIterator(
       }),
     ),
   );
-  for (const result of settled) {
-    if (result.status === "fulfilled") {
-      const m = result.value as { name?: string; pipeline_tag?: string };
-      if (!taskMatches(m.pipeline_tag, tasks)) continue;
-      if (m.name) seen.add(m.name);
-      yield result.value;
-    }
-  }
-
-  const generalIter = mergeTaskIterators(
-    tasks,
-    (task, taskSignal) =>
-      listModels({
-        hubUrl: getHfEndpoint(),
-        search: { owner: "unsloth", ...(task ? { task } : {}) },
-        fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
-        ...common,
-      }) as AsyncGenerator<unknown>,
+  const listing = prefetchListing(
+    (listingSignal) =>
+      mergeTaskIterators(
+        tasks,
+        (task, taskSignal) =>
+          listModels({
+            hubUrl: getHfEndpoint(),
+            search: { owner: "unsloth", ...(task ? { task } : {}) },
+            fetch: makeSortFetch(sortBy, direction, taskSignal, parameterFilter),
+            ...common,
+          }) as AsyncGenerator<unknown>,
+        listingSignal,
+      ),
     signal,
   );
-  for await (const model of generalIter) {
+  let phase1Done = false;
+  try {
+    for (const result of await priority) {
+      if (result.status === "fulfilled") {
+        const m = result.value as { name?: string; pipeline_tag?: string };
+        if (!taskMatches(m.pipeline_tag, tasks)) continue;
+        if (m.name) seen.add(m.name);
+        yield result.value;
+      }
+    }
+    phase1Done = true;
+  } finally {
+    if (!phase1Done) listing.cancel();
+  }
+
+  for await (const model of listing.read()) {
     const m = model as { name?: string };
     if (m.name && seen.has(m.name)) continue;
     if (m.name) {
@@ -629,7 +726,7 @@ async function* freshChannelIterator(
   },
 ): AsyncGenerator<unknown> {
   const { tasks = [], ...listingOpts } = opts;
-  const listing = (sortBy: HfSortKey) =>
+  const listing = (sortBy: HfSortKey, limit?: number) =>
     mergeTaskIterators(
       tasks,
       (task, signal) =>
@@ -639,6 +736,8 @@ async function* freshChannelIterator(
           sortDirection: "desc",
           signal,
           task,
+          // Replaces any caller limit: the newest listing is read past its pool.
+          limit,
         }),
       opts.signal,
     );
@@ -655,7 +754,8 @@ async function* freshChannelIterator(
     }
     return items;
   };
-  const trending = listing("trendingScore");
+  // Only its pool is read, and no task listing can give more than the whole pool: fetch no more.
+  const trending = listing("trendingScore", poolSize);
   const [byDate, byTrend] = await Promise.all([take(newest), take(trending)]);
   void trending.return(undefined);
   const pool = new Map<string, FreshRankable>();
@@ -680,6 +780,7 @@ function createChannelIterator(
     signal: AbortSignal;
     parameterFilter?: string;
     task?: PipelineType;
+    limit?: number;
   },
 ): AsyncGenerator<unknown> {
   if (opts.sortBy === "fresh") {
@@ -704,6 +805,7 @@ function createChannelIterator(
       opts.parameterFilter,
     ),
     sort: hubListingSort(opts.sortBy),
+    ...(opts.limit ? { limit: opts.limit } : {}),
     ...(opts.accessToken
       ? { credentials: { accessToken: opts.accessToken } }
       : {}),
@@ -831,6 +933,7 @@ export async function fetchChannelFirstPage(
       sortDirection,
       accessToken,
       signal,
+      limit: MAX_RAW_ITEMS_PER_BATCH,
     });
     for await (const model of iter) {
       const name = (model as { name?: string }).name;
@@ -896,17 +999,19 @@ export function useHubModelSearch(
     [priorityIdsKey],
   );
 
-  const { isPublisherQuery, searchQuery, pinnedId, trimmed } = useMemo(() => {
+  const { publisher, searchQuery, pinnedId, trimmed } = useMemo(() => {
     const t = query.trim();
-    const m = PUBLISHER_RE.exec(t);
-    const is = !!m && m[1].toLowerCase() !== "unsloth";
+    const parsed = parseOwnerSearchQuery(t);
+    const unslothOwned = parsed?.owner.toLowerCase() === "unsloth";
     return {
-      isPublisherQuery: is,
-      searchQuery: is ? m![2] : t,
-      pinnedId: is ? t : undefined,
+      publisher: parsed,
+      // The Unsloth-only org search matches a whole unsloth/ id, and another owner's repo by name.
+      searchQuery: parsed && !unslothOwned ? parsed.query : t,
+      pinnedId: parsed?.query ? t : undefined,
       trimmed: t,
     };
   }, [query]);
+  const isPublisherQuery = publisher !== null;
 
   // An owner/repo query names one repo; only a bare maker name widens to its Unsloth uploads.
   const queryProvider = useMemo(
@@ -928,6 +1033,21 @@ export function useHubModelSearch(
   const filterRange = filters ? parameterRange(filters) : "";
   const createListing = useCallback(
     (signal: AbortSignal, filterPriority?: ModelListingTransform) => {
+      // An explicit owner lists that owner, within a tag-only channel too. Unsloth-only scope keeps
+      // searching the org for the typed repo name.
+      if (publisher && !unslothOnly && !channelOwner && !channelQuery) {
+        return ownerModelIterator(
+          publisher.owner,
+          publisher.query,
+          accessToken,
+          hasFilters || channelTagsKey ? undefined : pinnedId,
+          sortBy,
+          sortDirection,
+          signal,
+          filterRange,
+          channelTagsKey ? channelTagsKey.split("|") : undefined,
+        );
+      }
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
       if (channelOwner || channelTagsKey || channelQuery) {
         const channelTags = channelTagsKey
@@ -1010,7 +1130,6 @@ export function useHubModelSearch(
             "",
             task,
             accessToken,
-            undefined,
             sortBy,
             sortDirection,
             signal,
@@ -1067,13 +1186,11 @@ export function useHubModelSearch(
           : orgSearch;
       }
       // Typed query: drop the task filter so searched models appear despite wrong/missing HF task
-      // metadata. For an "owner/repo" query, strip the org prefix so unsloth variants surface, then
-      // pin the original publisher model. Unsloth-owned queries are left as-is.
+      // metadata.
       const merged = mergedModelIterator(
         searchQuery,
         undefined,
         accessToken,
-        hasFilters ? undefined : pinnedId,
         sortBy,
         sortDirection,
         signal,
@@ -1090,6 +1207,7 @@ export function useHubModelSearch(
     },
     [
       trimmed,
+      publisher,
       searchQuery,
       pinnedId,
       queryProvider,

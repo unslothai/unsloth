@@ -76,6 +76,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
+import { loadKeepAwake, updateKeepAwake } from "../api/keep-awake";
 import { loadTrayIconVisible, updateTrayIconVisible } from "../api/tray-icon";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
@@ -186,6 +187,8 @@ const PREFS_KEYS: string[] = [
   // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
+  "unsloth_composer_picker_expand_loaded",
+  "unsloth_composer_picker_monochrome_icons",
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
   "unsloth_chat_system_prompts",
@@ -293,6 +296,13 @@ export function GeneralTab() {
     save: updateCloseToTray,
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
+  const keepAwakeSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadKeepAwake,
+    save: updateKeepAwake,
+    loadError: t("settings.general.power.loadError"),
+    saveError: t("settings.general.power.saveError"),
   });
   const trayIconSetting = useDesktopBooleanSetting({
     enabled: isTauri,
@@ -923,6 +933,28 @@ export function GeneralTab() {
               </div>
             </SettingsRow>
           ) : null}
+        </SettingsSection>
+      ) : null}
+
+      {keepAwakeSetting.supported || keepAwakeSetting.error ? (
+        <SettingsSection title={t("settings.general.power.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.power.keepAwake")}
+            description={t("settings.general.power.keepAwakeDescription")}
+            below={
+              keepAwakeSetting.error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {keepAwakeSetting.error}
+                </span>
+              ) : null
+            }
+          >
+            <Switch
+              checked={keepAwakeSetting.value ?? false}
+              disabled={keepAwakeSetting.value === null || keepAwakeSetting.saving}
+              onCheckedChange={(enabled) => void keepAwakeSetting.update(enabled)}
+            />
+          </SettingsRow>
         </SettingsSection>
       ) : null}
 

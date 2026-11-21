@@ -1177,10 +1177,9 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # Newest created first, same-second ties by the persisted ns stamp, then public id: a job
-    # keeps its place from queue to history and across restarts. History is newest start first
-    # and no job starts before it is created, so a buffered row created after the current row's
-    # start is final.
+    # Newest created first, ties by persisted ns stamp then public id, so places hold across
+    # restarts; history is newest start first and no job starts before it is created, so a buffered
+    # row created after the current start is final.
     def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
         return (-created_at, -_ALIAS_CREATED_NS.get(public_id, 0), public_id, seq), row, is_run
 

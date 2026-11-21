@@ -159,6 +159,7 @@ import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
 import contextvars
+import collections.abc
 from unsloth_zoo.utils import Version, get_quant_type
 from importlib.metadata import version as importlib_version
 from ..device_type import (
@@ -1841,11 +1842,25 @@ def _flex_preferred_fits(config, dtype = None):
         return True
 
 
+def _flex_float32_compile_too_slow(config, dtype = None):
+    """True when attention runs in float32 above head_dim 128: Inductor then takes minutes per flex
+    kernel (B200, torch 2.15, head_dim 256: 174 s forward, 211 s with backward, against 7 s / 16 s
+    in bf16), and a model compiles several, so the load looks hung. SDPA / eager are used instead;
+    UNSLOTH_FLEX_ATTENTION_FOR_LARGE_HEAD_DIM=1 or an explicit flex_attention request keeps flex."""
+    if not _flex_attention_runs_float32(dtype):
+        return False
+    if _flex_large_head_dim_override() is True:
+        return False
+    head_dim = _text_attention_head_dim(config)
+    return head_dim is not None and head_dim > _SDPA_FLASH_MAX_HEAD_DIM
+
+
 def _supports_flex_attention(
     model_class,
     config,
     model_type,
     dtype = None,
+    automatic = True,
 ):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
@@ -1856,6 +1871,9 @@ def _supports_flex_attention(
     if not _flex_attention_gpu_is_supported():
         return False
     if _config_prefers_flex_attention(config) and not _flex_preferred_fits(config, dtype):
+        return False
+    # A compile-time preference for automatic selection only: an explicit flex request keeps flex.
+    if automatic and _flex_float32_compile_too_slow(config, dtype):
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -3335,13 +3353,16 @@ def resolve_attention_implementation(
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
-    supports_flex_attention = _supports_flex_attention(model_class, config, model_type, dtype)
+    automatic_flex = not requests_flex_attention(requested_attn_implementation)
+    supports_flex_attention = _supports_flex_attention(
+        model_class, config, model_type, dtype, automatic = automatic_flex
+    )
     # Before the ladder, since every branch below reads supports_flex_attention.
     prefers_flex_for_head_dim = _prefers_flex_for_head_dim(config)
     if prefers_flex_for_head_dim and not supports_flex_attention:
         if _enable_flex_attention_support(model_class, model_type):
             supports_flex_attention = _supports_flex_attention(
-                model_class, config, model_type, dtype
+                model_class, config, model_type, dtype, automatic = automatic_flex
             )
     # An explicit 1 forces flex over flash_attention_2 too, but only when flex can be scoped to the decoder
     flex_forced_for_head_dim = (
@@ -5604,8 +5625,12 @@ def refresh_moved_layer_devices(layers, block_swap = None):
     such as {"": 1} to cuda:0) keeps the per-layer device published at load, so decode moved activations
     back to the old card ("cuda:1 and cuda:0"). Checks the first and last layer once per decode step and
     republishes every layer only when a weight sits on another index of the published device type; block
-    swap and offload park weights on CPU or meta by design, so those are left alone."""
-    if block_swap is not None or len(layers) == 0:
+    swap and offload park weights on CPU or meta by design, so those are left alone. A swapper that
+    keeps every weight on the device (native FSDP2's per-block gather during generate,
+    `keeps_weights_on_device`) still gets the repair."""
+    if len(layers) == 0:
+        return
+    if block_swap is not None and not getattr(block_swap, "keeps_weights_on_device", False):
         return
     for layer in (layers[0], layers[-1]):
         published = getattr(layer, "__dict__", {}).get("_per_layer_device")
@@ -5725,6 +5750,13 @@ def _mark_requested_float32(model, requested):
         model._unsloth_user_float32 = bool(requested)
     except Exception:
         pass
+    # Every from_pretrained return passes here, so this is the opt-in UNSLOTH_MEMORY_REPORT "load" point.
+    if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+        try:
+            from unsloth.utils.run_report import report_memory
+            report_memory("load", model)
+        except Exception:
+            pass
     return model
 
 
@@ -6081,6 +6113,122 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+def _unsloth_forced_float32_init_scale(trainer):
+    """2**8: 2**12 and 2**10 overflowed Gemma-4 12B on T4, 2**8 matches gradients; divided by ranks since DP losses are multiplied by the process count."""
+    override = os.environ.get("UNSLOTH_FORCED_FLOAT32_INIT_SCALE", "")
+    if override:
+        try:
+            value = float(override)
+            if value > 0 and math.isfinite(value):
+                return value
+        except ValueError:
+            pass
+    ranks = 1
+    try:
+        if int(getattr(getattr(trainer, "accelerator", None), "num_processes", 1) or 1) > 1:
+            from .fsdp2_native import _loss_scale_ranks
+            ranks = max(1, int(_loss_scale_ranks(trainer)))
+    except Exception:
+        ranks = 1
+    return 2.0**8 / ranks
+
+
+def _unsloth_forced_float32_grad_scaler(trainer, model):
+    """Dynamic GradScaler for forced float32 on float16 weights: without it gradients underflow and
+    training diverges (E2B 2.5 -> 9.5 over 60 steps). UNSLOTH_FORCED_FLOAT32_GRAD_SCALER=0 disables."""
+    if os.environ.get("UNSLOTH_FORCED_FLOAT32_GRAD_SCALER", "1") == "0":
+        return None
+    accelerator = getattr(trainer, "accelerator", None)
+    if accelerator is None or getattr(accelerator, "scaler", None) is not None:
+        return None
+    if getattr(accelerator, "mixed_precision", None) != "no":
+        return None
+    forced = getattr(model, "_unsloth_forced_float32", None)
+    if forced is None:
+        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    if not forced:
+        return None
+    try:
+        from accelerate.utils import DistributedType
+
+        # DeepSpeed / FSDP / XLA own their loss scaling and gradient unscaling.
+        if accelerator.distributed_type not in (DistributedType.NO, DistributedType.MULTI_GPU):
+            return None
+    except Exception:
+        return None
+    device_type = getattr(getattr(accelerator, "device", None), "type", "cuda")
+    if device_type not in ("cuda", "xpu"):
+        return None
+    has_half, trainable_fp32 = False, True
+    for parameter in model.parameters():
+        if parameter.requires_grad:
+            # GradScaler.unscale_ refuses float16 gradients.
+            if parameter.dtype != torch.float32:
+                trainable_fp32 = False
+                break
+        elif parameter.dtype == torch.float16:
+            has_half = True
+    if not has_half or not trainable_fp32:
+        return None
+    init_scale = _unsloth_forced_float32_init_scale(trainer)
+    try:
+        scaler = torch.amp.GradScaler(device_type, init_scale = init_scale)
+    except (AttributeError, TypeError):
+        scaler = torch.cuda.amp.GradScaler(init_scale = init_scale)
+    accelerator.scaler = scaler
+    scaler = _parallel_forced_scaler(trainer, init_scale)
+
+    # accelerate only unscales under native fp16 AMP; else clipping would see scaled gradients.
+    def unscale_gradients(optimizer = None):
+        from accelerate.optimizer import AcceleratedOptimizer
+
+        scaler = accelerator.scaler
+        if optimizer is None:
+            optimizer = accelerator._optimizers
+        elif not isinstance(optimizer, (tuple, list)):
+            optimizer = [optimizer]
+        for opt in optimizer:
+            while isinstance(opt, AcceleratedOptimizer):
+                opt = opt.optimizer
+            state = scaler._per_optimizer_states.get(id(opt), None)
+            if (
+                state is not None
+                and state.get("stage", None) is not None
+                and state["stage"].name != "READY"
+            ):
+                continue
+            scaler.unscale_(opt)
+
+    accelerator.unscale_gradients = unscale_gradients
+    return scaler
+
+
+def _parallel_forced_scaler(trainer, init_scale):
+    """Convert the forced scaler to the tp / pp / FSDP2 native one (their setup ran before it existed): a plain
+    GradScaler fails on mixed DTensor / local grads and decides found_inf per rank."""
+    accelerator = trainer.accelerator
+    scaler = accelerator.scaler
+    try:
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+            return scaler
+        from .fsdp2_native import _scaler_for_native, is_native_fsdp2
+        from .tp_native import _SCALE_DIVISOR
+    except Exception:
+        return scaler
+    divisor = accelerator.__dict__.get(_SCALE_DIVISOR)
+    fsdp2 = divisor is None and is_native_fsdp2(getattr(trainer, "model", None))
+    if divisor is None and not fsdp2:
+        # DDP averages grads before unscale_: every rank sees the same inf.
+        return scaler
+    if not _scaler_for_native(trainer):
+        return accelerator.scaler
+    # Keep the forced float32 start, not fp16's 2**16.
+    accelerator.scaler._init_scale = init_scale
+    return accelerator.scaler
+
+
 def _unsloth_attach_accelerator_scaler(trainer, model):
     # Fused CE saves d(loss * scale)/d(hidden) in the forward; without the fp16 scale it underflows (#3529).
     scaler = getattr(getattr(trainer, "accelerator", None), "scaler", None)
@@ -6280,14 +6428,129 @@ def _head_counts_unshifted_labels(model):
     return counts_unshifted_labels(head)
 
 
+_MICRO_MEAN_LOSS_CHECKED = {}
+
+
+def _warn_micro_mean_loss(trainer, batch_samples):
+    # A head returning its own mean ignores num_items_in_batch, so GA averages micro-batch means: warn once per class.
+    model = getattr(trainer, "model", None)
+    if (
+        model is None
+        or len(batch_samples) < 2
+        or getattr(trainer, "model_accepts_loss_kwargs", True)
+        or getattr(trainer, "compute_loss_func", None) is not None
+        or not isinstance(batch_samples[0], collections.abc.Mapping)
+        or getattr(batch_samples[0].get("labels"), "ndim", None) is None
+    ):
+        return
+    head = _loss_head(model)
+    key = type(model if head is None else head)
+    if key in _MICRO_MEAN_LOSS_CHECKED:
+        return
+    if head is not None and _forward_consumes_num_items_in_batch(head) is False:
+        own_mean = head
+    else:
+        own_mean = _forward_ignores_num_items_in_batch(model)
+    _MICRO_MEAN_LOSS_CHECKED[key] = own_mean is not None
+    if own_mean is None:
+        return
+    logger.warning(
+        f"Unsloth: {type(own_mean).__name__}.forward returns its own mean loss and cannot take "
+        "num_items_in_batch, so with gradient accumulation each micro-batch is weighted equally, not by "
+        "its token count (as in transformers' Trainer). For exact token weighting raise "
+        "per_device_train_batch_size and lower gradient_accumulation_steps."
+    )
+
+
+def _mask_pad_predicted_targets(batch):
+    """Ignore every causal target whose predicting position is a pad.
+
+    An unpadded row never trains its first token, but a left or interior padded row would, from
+    the last pad before it. That pad's hidden state has no real keys to attend to, so each backend
+    makes up a different one: eager spreads it over the masked keys, SDPA and FlashAttention-2
+    (whose varlen path drops pad queries) return zero. The loss term, and through it every
+    gradient up to embed_tokens, then depends on the attention backend, the pad token and the batch
+    composition. Masking it makes eager, SDPA and FA2 agree and a padded row train exactly like the
+    same row unpadded. Right padding is unchanged (a pad never precedes a real target there).
+    Device-side masked_fill only: no host sync."""
+    if not isinstance(batch, collections.abc.Mapping):
+        return batch
+    labels = batch.get("labels")
+    attention_mask = batch.get("attention_mask")
+    if (
+        not isinstance(labels, torch.Tensor)
+        or not isinstance(attention_mask, torch.Tensor)
+        or labels.dim() != 2
+        or attention_mask.shape != labels.shape
+        or attention_mask.is_floating_point()
+        or labels.shape[1] < 2
+        or labels.is_floating_point()
+    ):
+        return batch
+    pad_before = attention_mask[:, :-1].to(labels.device) == 0
+    # Out of place: a collator may hand back labels sharing storage with input_ids.
+    batch["labels"] = torch.cat(
+        (labels[:, :1], labels[:, 1:].masked_fill(pad_before, -100)),
+        dim = 1,
+    )
+    return batch
+
+
+class _PadTargetMaskingIterator:
+    __slots__ = ("_iterator",)
+
+    def __init__(self, iterator):
+        self._iterator = iterator
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return _mask_pad_predicted_targets(next(self._iterator))
+
+
+def _trains_shifted_causal_labels(trainer):
+    # Positive signal only (a ForCausalLM loss): token classification labels are unshifted.
+    try:
+        from unsloth_zoo.loss_utils import _loss_shifts_labels
+
+        head = _loss_head(getattr(trainer, "model", None))
+        if head is None:
+            return False
+        config = getattr(head, "config", None)
+        if bool(getattr(config, "is_encoder_decoder", False)) or _is_seq2seq_lm_config(config):
+            return False
+        return bool(_loss_shifts_labels(trainer, head, False))
+    except Exception:
+        return False
+
+
+def _with_pad_target_masking(trainer, args, kwargs):
+    if not _trains_shifted_causal_labels(trainer):
+        return args, kwargs
+    if "epoch_iterator" in kwargs:
+        kwargs = dict(kwargs, epoch_iterator = _PadTargetMaskingIterator(kwargs["epoch_iterator"]))
+    elif len(args) > 0:
+        args = (_PadTargetMaskingIterator(args[0]),) + tuple(args[1:])
+    return args, kwargs
+
+
 def _make_seq2seq_aware_get_batch_samples(original):
     def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
         # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
         if _head_counts_unshifted_labels(getattr(self, "model", None)):
-            return _unsloth_get_batch_samples(self, *args, **kwargs)
-        if _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
+            result = _unsloth_get_batch_samples(self, *args, **kwargs)
+        elif _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
             return original(self, *args, **kwargs)
-        return _unsloth_get_batch_samples(self, *args, **kwargs)
+        else:
+            # Before counting, so num_items_in_batch matches the targets the loss actually sees.
+            args, kwargs = _with_pad_target_masking(self, args, kwargs)
+            result = _unsloth_get_batch_samples(self, *args, **kwargs)
+        try:
+            _warn_micro_mean_loss(self, result[0] if isinstance(result, tuple) else result)
+        except Exception:
+            pass
+        return result
 
     _unsloth_get_batch_samples_dispatch.__name__ = "_unsloth_get_batch_samples"
     return _unsloth_get_batch_samples_dispatch
@@ -6299,6 +6562,11 @@ def patch_gradient_accumulation_fix(Trainer):
 
     # Before the early returns: a non-fla model loaded first would leave the fla patch permanently uninstalled
     patch_fla_autotuner_fast_path()
+    try:
+        from ..optimizers.bf16_stochastic_rounding import patch_trainer_bf16_stochastic_rounding
+        patch_trainer_bf16_stochastic_rounding(Trainer)
+    except Exception:
+        pass
 
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples":
@@ -6447,6 +6715,13 @@ def patch_gradient_accumulation_fix(Trainer):
                 install_fsdp2_policy_provenance()
             except Exception:
                 pass
+            if os.environ.get("UNSLOTH_PARALLEL", "").strip().lower() == "auto":
+                # No Unsloth from_pretrained chose DDP / FSDP2 yet: size the model handed in (once).
+                from ..parallel_auto import resolve_for_trainer
+                resolve_for_trainer(
+                    model,
+                    kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None),
+                )
             # Unsloth tensor parallel model (apply_tensor_parallel): no DDP over the tp ranks, dataloader
             # sharded over dp only, tp-aware clipping (tp_native.tp_trainer_setup). Dict lookups otherwise.
             _refuse_pipeline_parallel_for_trainer(model)
@@ -6806,6 +7081,7 @@ def _pipeline_parallel_env_refusals(
     compute_loss_func = kwargs.get("compute_loss_func")
     train_dataset = kwargs.get("train_dataset")
     eval_dataset = kwargs.get("eval_dataset")
+    data_collator = kwargs.get("data_collator")
     if training_args is None or args:
         try:
             import inspect
@@ -6815,6 +7091,7 @@ def _pipeline_parallel_env_refusals(
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
             train_dataset = bound.arguments.get("train_dataset", train_dataset)
             eval_dataset = bound.arguments.get("eval_dataset", eval_dataset)
+            data_collator = bound.arguments.get("data_collator", data_collator)
         except (TypeError, ValueError):
             pass
     if layout.tp > 1 and (
@@ -6839,6 +7116,7 @@ def _pipeline_parallel_env_refusals(
         model = model,
         train_dataset = train_dataset,
         eval_dataset = eval_dataset,
+        data_collator = data_collator,
     )
 
 
@@ -6904,6 +7182,69 @@ def _tensor_parallel_trainer_pre(model):
         return False
     from .tp_native import tp_trainer_setup
     return tp_trainer_setup(model, phase = "pre")
+
+
+def _unsloth_tp_skip_dpo_ref_adapter(model):
+    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" copy, False off tp; raises if trained."""
+    tp = _is_unsloth_tensor_parallel(model)
+    if not tp:
+        try:
+            tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1") or 1) > 1
+        except ValueError:
+            tp = False
+    if not tp:
+        return False
+    nonzero, device = 0, torch.device("cpu")
+    params = dict(model.named_parameters(remove_duplicate = False))
+    with torch.no_grad():
+        for name, param in params.items():
+            local = param.to_local() if hasattr(param, "to_local") else param
+            is_lora = any(
+                k in name for k in ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B")
+            )
+            if (
+                (name.endswith(".default") or ".default." in name)
+                and param.requires_grad
+                and not is_lora
+                and (".modules_to_save." not in name)
+            ):
+                # DoRA magnitudes, trainable token rows, ...: equivalence unchecked.
+                nonzero += 1
+                continue
+            if ".modules_to_save.default." in name:
+                # A trained saved module differs from the original the disabled-adapter reference runs.
+                original = params.get(
+                    name.replace(".modules_to_save.default.", ".original_module.")
+                )
+                if original is None:
+                    nonzero += 1
+                    continue
+                original = original.to_local() if hasattr(original, "to_local") else original
+                device = local.device
+                nonzero += int(not torch.equal(local, original.to(local.device)))
+                continue
+            # PEFT zero-inits linear lora_B but embedding lora_embedding_A.
+            if not (name.endswith(".default") or ".default." in name) or not (
+                "lora_B" in name or "lora_embedding_A" in name
+            ):
+                continue
+            device = local.device
+            nonzero += int(torch.count_nonzero(local).item())
+    import torch.distributed as dist
+
+    if dist.is_available() and dist.is_initialized():
+        # Every rank holds a different shard: agree, so no rank raises while another moves on.
+        flag = torch.tensor([float(nonzero)], device = device)
+        dist.all_reduce(flag)
+        nonzero = int(flag.item())
+    if nonzero:
+        raise ValueError(
+            "Unsloth: DPOTrainer with ref_model = None on a tensor parallel PEFT model whose adapter is already "
+            'trained (non-zero lora_B or a changed saved module) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
+            "from tensor parallel shards. Start DPO from a fresh adapter (the base model is then the reference), "
+            "pass an explicit ref_model, or unset UNSLOTH_TP_SIZE."
+        )
+    return True
 
 
 def _refuse_model_parallel_export(model, method):
@@ -8670,7 +9011,9 @@ def _native_from_converted(model, adapter_name, folder):
             delta = scaling0 * (B0_live.float() @ A0_live.float() - B0.float() @ A0.float())
             if getattr(module, "fan_in_fan_out", False):
                 delta = delta.T
-            base.data.add_(delta.to(base))
+            # In place on the parameter (no_grad), not through .data: the version bump invalidates
+            # anything keyed on it, such as the QAT fake quantized weight cache.
+            base.add_(delta.to(base))
             module._unsloth_initial_lora[k] = (A0.clone(), B0.clone(), scaling0)
     return weights
 
@@ -10380,7 +10723,13 @@ def _prepare_model_for_qat(
     _reinstall_input_require_grads(require_grads_owners)
     _reregister_unowned_require_grads_hooks(model, all_embeddings, unowned_require_grads)
     _patch_microscaling_qat_forwards(model)
+    from ._qat_weight_memo import install_qat_weight_memo
+
+    install_qat_weight_memo(model)
     _record_qat_engagement(model, torchao_config)
+    from ._qat_round import round_frozen_qat_weights
+
+    round_frozen_qat_weights(model)
 
     return model
 
@@ -10463,6 +10812,11 @@ def patch_hf_quantizer():
 
 
 patch_hf_quantizer()
+
+# DoRA: PEFT rebuilds the dense B @ A update per forward for the row norm; use the rank-r factored identity instead.
+from ..kernels.dora import patch_peft_dora_factored_norm
+
+patch_peft_dora_factored_norm()
 
 
 def _fp8_checkpoint_dequantizes_below_sm89():
@@ -13017,8 +13371,12 @@ def switch_training_mode(
     its subtree, and a differing root or eval() gets model.train() / model.eval(). defer=True returns
     (modules, apply) so for_training can still set the mode last.
     """
+    # Decode graphs kept through training (_decode_graphs.keep_for_training) read the LoRA decode casts.
+    drop_casts = training and not getattr(model, "__dict__", {}).get(
+        "_unsloth_decode_keep_casts", False
+    )
     if not isinstance(model, torch.nn.Module):
-        if training:
+        if drop_casts:
             for param in model.parameters():
                 if hasattr(param, "_fast_lora"):
                     del param._fast_lora
@@ -13062,7 +13420,7 @@ def switch_training_mode(
             seen.add(id(module))
             if _has_gradient_checkpointing(module, gc):
                 checkpointing.append(module)
-            if training:
+            if drop_casts:
                 for param in module._parameters.values():
                     if param is not None and "_fast_lora" in param.__dict__:
                         del param._fast_lora
@@ -13076,7 +13434,7 @@ def switch_training_mode(
     if not plain_walk:
         # Some class enumerates modules / parameters its own way: scan as the old code did.
         checkpointing = [m for m in model.modules() if hasattr(m, "gradient_checkpointing")]
-        if training:
+        if drop_casts:
             for param in model.parameters():
                 if hasattr(param, "_fast_lora"):
                     del param._fast_lora

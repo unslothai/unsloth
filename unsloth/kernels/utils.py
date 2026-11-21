@@ -473,6 +473,35 @@ def _packed_base(base_layer):
     return base_layer.weight_packed, base_layer.mxfp4_quant_state()
 
 
+_QAT_MODULE_PREFIXES = ("torchao.quantization.qat.", "torchao.prototype.qat.")
+_IS_QAT_LINEAR = {}
+
+
+def _is_qat_linear(module):
+    # torchao QAT linears fake-quantize the weight and / or input inside forward(); memoized per class.
+    cls = type(module)
+    is_qat = _IS_QAT_LINEAR.get(cls)
+    if is_qat is None:
+        is_qat = _IS_QAT_LINEAR[cls] = any(
+            c.__module__.startswith(_QAT_MODULE_PREFIXES) for c in cls.__mro__
+        )
+    return is_qat
+
+
+def _has_qat_linear(proj):
+    # Decode reads raw weights, so QAT (base or adapter) must run the module forward.
+    modules = proj._modules
+    if _is_qat_linear(modules.get("base_layer", proj)):
+        return True
+    for name in ("lora_A", "lora_B"):
+        adapters = modules.get(name)
+        if adapters is not None:
+            for module in adapters._modules.values():
+                if _is_qat_linear(module):
+                    return True
+    return False
+
+
 def _has_packed_qweight(proj):
     # GPTQ / AWQ keep a packed qweight and no dense .weight tensor: only their own forward can run them.
     base_layer = proj._modules.get("base_layer", proj)
@@ -1765,9 +1794,42 @@ def _fast_lora_weights(lora_A, lora_B, dtype):
         )
     cache = getattr(lora_A, "_fast_lora", None)
     if cache is None or cache[0] != key:
-        cache = (key, lora_A.to(dtype), lora_B.to(dtype))
+        if cache is not None and _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+            # Same tensors, new values: a captured decode graph reading them stays valid.
+            cache = (key, cache[1], cache[2])
+        else:
+            cache = (key, *_new_lora_cast(lora_A, lora_B, dtype))
         lora_A._fast_lora = cache
     return cache[1], cache[2]
+
+
+def _new_lora_cast(lora_A, lora_B, dtype):
+    if torch.is_inference_mode_enabled() and not _is_compiling():
+        # Normal tensors, so a later refresh can write them in place outside inference mode too.
+        with torch.inference_mode(False), torch.no_grad():
+            return lora_A.to(dtype), lora_B.to(dtype)
+    return lora_A.to(dtype), lora_B.to(dtype)
+
+
+def _refresh_lora_cast(cache, lora_A, lora_B, dtype):
+    """Copies the adapters into the cached casts in place (addresses kept) when they still fit."""
+    A, B = cache[1], cache[2]
+    if _is_compiling() or torch.is_grad_enabled():
+        return False
+    pairs = [(cast, source) for cast, source in ((A, lora_A), (B, lora_B)) if cast is not source]
+    for cast, source in pairs:
+        if (
+            cast.dtype != dtype
+            or cast.shape != source.shape
+            or cast.device != source.device
+            or cast.requires_grad
+            or cast._base is not None
+            or (cast.is_inference() and not torch.is_inference_mode_enabled())
+        ):
+            return False
+    for cast, source in pairs:
+        cast.copy_(source)
+    return True
 
 
 def fast_linear_forward(
@@ -1776,15 +1838,13 @@ def fast_linear_forward(
     temp_lora = None,
     out = None,
 ):
-    from .fast_lora import _has_activation_fake_quantizer
-
     if (
         _has_non_lora_adapter(proj)
         or _has_multiple_active_adapters(proj)
         or _has_active_dora_adapter(proj)
         or _has_active_lora_bias(proj)
         or _has_packed_qweight(proj)
-        or _has_activation_fake_quantizer(proj, include_weight = True)
+        or _has_qat_linear(proj)
     ):
         result = proj(X)
         return result if out is None else out.copy_(result)
@@ -2062,6 +2122,9 @@ def _shares_storage(out, *tensors):
         return True
 
 
+from . import dequant_cache as _dequant_cache
+
+
 def matmul_lora(
     X,
     W,
@@ -2144,12 +2207,34 @@ def matmul_lora(
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:
-                W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+                W = _dequant_cache.dequantize(
+                    W,
+                    W_quant,
+                    use_global_buffer = use_global_buffer,
+                    dtype = dtype,
+                    rows = X.shape[0],
+                )
             out = _accumulated(addmm_(out, XA, B, alpha = s, beta = 0), out.addmm_(X, W.t()))
+        elif (
+            W_quant is not None
+            and _HAS_LORA_FIRST_OP
+            and type(s) in (int, float)
+            and _is_dynamo_compiling()
+            and not _exporting()
+            and _dequant_cache.traced_route(W, W_quant)
+        ):
+            # The traced op below, with the base weight from the dequant cache (or decoded) inside the op.
+            out = _dequant_cache.nf4_lora_first(X, W, W_quant, XA, B, s)
         else:
             # Unquantized, fast_dequantize returns W as is (FP8 never takes this branch).
             if W_quant is not None:
-                W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+                W = _dequant_cache.dequantize(
+                    W,
+                    W_quant,
+                    use_global_buffer = use_global_buffer,
+                    dtype = dtype,
+                    rows = X.shape[0],
+                )
             if not _is_compiling():
                 out = _lora_first_addmm(X, W.t(), XA, B, s)
             elif (
@@ -2165,8 +2250,12 @@ def matmul_lora(
                 out = torch.addmm(XA.new_zeros(1), XA, B, beta = 0, alpha = s)
                 out = torch.addmm(out, X, W.t())
         A = None
+    elif out is None and _dequant_cache.traced_route(W, W_quant):
+        out = _dequant_cache.nf4_matmul(X, W, W_quant)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
+        W = _dequant_cache.dequantize(
+            W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype, rows = X.shape[0]
+        )
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """S3 dataset download to a local temp dir; boto3 is optional and installed on first S3 load if
-missing; audio paths in JSON/JSONL/CSV manifests rewritten to local; parquet paths must already
-resolve; credentials never logged or persisted"""
+missing; audio paths in JSON/JSONL/CSV/Parquet manifests rewritten to local; credentials never
+logged or persisted"""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ _IGNORED_METADATA_FILENAMES = {
     "schema.json",
     "state.json",
 }
-_REWRITABLE_MANIFEST_EXTENSIONS = (".json", ".jsonl", ".csv")
+_REWRITABLE_MANIFEST_EXTENSIONS = (".json", ".jsonl", ".csv", ".parquet")
 
 
 class S3DownloadCancelled(RuntimeError):
@@ -229,9 +229,8 @@ def _rewrite_audio_references(
     bucket: str,
     prefix: Optional[str],
 ) -> None:
-    """Rewrite audio values naming an audio key (prefix-relative, ``s3://`` URI, or
-    manifest-relative) to its local path; anything else is left as written. A value whose
-    prefix- and manifest-relative readings name different keys is refused."""
+    """Rewrite audio values naming a key (prefix-relative, s3:// URI, manifest-relative) to local
+    paths; others left as written; a value whose prefix and manifest readings differ is refused."""
     lookup: dict[str, str] = {}
     for key, local_path in audio_local_by_key.items():
         lookup[_key_relative_to_prefix(key, prefix)] = local_path
@@ -258,6 +257,8 @@ def _rewrite_audio_references(
 
         if manifest_path.lower().endswith(".csv"):
             _rewrite_csv_manifest(manifest_path, resolve)
+        elif manifest_path.lower().endswith(".parquet"):
+            _rewrite_parquet_manifest(manifest_path, resolve)
         else:
             _rewrite_json_manifest(manifest_path, resolve)
 
@@ -325,6 +326,94 @@ def _rewrite_csv_manifest(manifest_path: str, resolve) -> None:
         csv.writer(f).writerows(rows)
 
 
+def _rewrite_parquet_manifest(manifest_path: str, resolve) -> None:
+    """Keep the Arrow/HF schema and bound memory to one batch; replace only a completed rewrite."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    changed = False
+
+    def replacement(value):
+        nonlocal changed
+        result = resolve(value)
+        if result is not None and result != value:
+            changed = True
+        return result
+
+    def rewrite_strings(column):
+        dtype = column.type.value_type if pa.types.is_dictionary(column.type) else column.type
+        if not (
+            pa.types.is_string(dtype)
+            or pa.types.is_large_string(dtype)
+            or pa.types.is_string_view(dtype)
+        ):
+            return column
+        values = column.to_pylist()
+        updated = []
+        for value in values:
+            path = replacement(value)
+            updated.append(value if path is None else path)
+        return column if updated == values else pa.array(updated, type = column.type)
+
+    def rewrite(column):
+        # Non-path arrays stay in Arrow: Python cannot represent every timestamp or nanosecond time.
+        dtype = column.type
+        if pa.types.is_struct(dtype):
+            index = dtype.get_field_index("path")
+            if index < 0:
+                return column
+            path = column.flatten()[index]
+            updated = rewrite_strings(path)
+            if updated is path:
+                return column
+            return pa.StructArray.from_arrays(
+                [updated if i == index else column.field(i) for i in range(dtype.num_fields)],
+                type = dtype,
+                mask = column.is_null(),
+            )
+        if pa.types.is_list(dtype) or pa.types.is_large_list(dtype):
+            offsets = column.offsets
+            start = offsets[0].as_py()
+            values = column.values.slice(start, offsets[-1].as_py() - start)
+            updated = rewrite(values)
+            if updated is values:
+                return column
+            offsets = pc.subtract(offsets, pa.scalar(start, type = offsets.type))
+            return type(column).from_arrays(offsets, updated, type = dtype, mask = column.is_null())
+        if pa.types.is_fixed_size_list(dtype):
+            values = column.values.slice(
+                column.offset * dtype.list_size, len(column) * dtype.list_size
+            )
+            updated = rewrite(values)
+            if updated is values:
+                return column
+            return pa.FixedSizeListArray.from_arrays(updated, type = dtype, mask = column.is_null())
+        return rewrite_strings(column)
+
+    fd, staged = tempfile.mkstemp(
+        prefix = ".unsloth_s3_", suffix = ".parquet", dir = os.path.dirname(manifest_path)
+    )
+    os.close(fd)
+    try:
+        with pq.ParquetFile(manifest_path) as source:
+            schema = source.schema_arrow
+            with pq.ParquetWriter(staged, schema) as writer:
+                for batch in source.iter_batches(batch_size = 1024):
+                    writer.write_table(
+                        pa.Table.from_arrays(
+                            [rewrite(column) for column in batch.columns], schema = schema
+                        )
+                    )
+        if changed:
+            os.replace(staged, manifest_path)
+    finally:
+        try:
+            os.unlink(staged)
+        except FileNotFoundError:
+            pass
+
+
 def prepare_s3_dataset_download(
     s3_config: dict,
     dest_dir: Optional[str] = None,
@@ -357,7 +446,7 @@ def prepare_s3_dataset_download(
         if audio_keys:
             raise ValueError(
                 f"Found {len(audio_keys)} audio file(s) under {where} but no manifest. "
-                "An audio dataset needs a JSON/JSONL/CSV manifest beside the audio, "
+                "An audio dataset needs a JSON/JSONL/CSV/Parquet manifest beside the audio, "
                 "with a column of audio paths and a column of transcriptions."
             )
         raise ValueError(

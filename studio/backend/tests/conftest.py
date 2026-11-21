@@ -269,6 +269,12 @@ def _sd_cpp_windows_rocm_ignores_the_host_dlls(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _cpu_test_host_is_not_a_cpu_only_studio(monkeypatch):
+    # The CPU-only GGUF rule would refuse mocked GPU-path loads here; tests of the rule delete this env.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_CPU_GGUF_DIFFUSERS_FALLBACK", "1")
+
+
+@pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
     # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
@@ -281,6 +287,19 @@ def _forget_hub_unreachable_verdict():
         reach = sys.modules.get("core.inference.hub_reachability")
         if reach is not None:
             reach._UNREACHABLE.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _forget_hub_gguf_listings():
+    def _forget():
+        gguf = sys.modules.get("hub.utils.gguf")
+        if gguf is not None:
+            gguf._hub_listings.clear()
+            gguf._hub_rate_limited.clear()
 
     _forget()
     yield
@@ -308,6 +327,68 @@ def _forget_mcp_discovery_state():
     _forget()
     yield
     _forget()
+
+
+@pytest.fixture(autouse = True)
+def _restore_diffusers_active_attention_backend():
+    # diffusers' ModelMixin.set_attention_backend also sets the process-wide active backend, which every
+    # processor without its own backend dispatches to: a test that set "_native_cudnn" left later CPU
+    # forwards with no SDPA kernel ("No viable backend for scaled_dot_product_attention").
+    dispatch = sys.modules.get("diffusers.models.attention_dispatch")
+    registry = getattr(dispatch, "_AttentionBackendRegistry", None)
+    before = getattr(registry, "_active_backend", None)
+    yield
+    if registry is None:
+        dispatch = sys.modules.get("diffusers.models.attention_dispatch")
+        registry = getattr(dispatch, "_AttentionBackendRegistry", None)
+        if registry is None:
+            return
+        try:  # first imported during this test: its default is the environment's, read at import
+            before = dispatch.AttentionBackendName(dispatch.DIFFUSERS_ATTN_BACKEND)
+        except Exception:
+            return
+    if getattr(registry, "_active_backend", None) != before:
+        registry._active_backend = before
+
+
+_DYNAMO_PROCESS_KNOBS = ("suppress_errors", "recompile_limit", "cache_size_limit")
+
+
+def _dynamo_own_knobs(cfg):
+    # Only the config's own entries. Reading an alias (cache_size_limit -> recompile_limit on torch 2.6+) runs
+    # importlib.import_module, which at teardown re-imported torch into tests that had taken it out of
+    # sys.modules and blocked imports ("_has_torch_function already has a docstring").
+    entries = getattr(cfg, "_config", None) or {}
+    return [
+        k
+        for k in _DYNAMO_PROCESS_KNOBS
+        if k in entries and getattr(entries[k], "alias", None) is None
+    ]
+
+
+@pytest.fixture(autouse = True)
+def _restore_dynamo_process_knobs():
+    # The DiT trainer's compile step sets dynamo's suppress_errors (and a 64 recompile limit) process-wide, so a
+    # later test on the same xdist worker that turns on fail_on_recompile_limit_hit died with "Dynamo configs
+    # suppress_error and fail_on_recompile_limit_hit can not both be active at the same time".
+    dynamo = sys.modules.get("torch._dynamo")
+    cfg = getattr(dynamo, "config", None)
+    before = {k: getattr(cfg, k) for k in _dynamo_own_knobs(cfg)} if cfg is not None else None
+    yield
+    if cfg is None:
+        dynamo = sys.modules.get("torch._dynamo")
+        cfg = getattr(dynamo, "config", None)
+        if cfg is None:
+            return
+        # first imported during this test: its defaults are the module's own
+        before = {}
+        for k in _dynamo_own_knobs(cfg):
+            default = cfg._config[k].default
+            if isinstance(default, (bool, int)):
+                before[k] = default
+    for k, v in before.items():
+        if getattr(cfg, k, v) != v:
+            setattr(cfg, k, v)
 
 
 @pytest.fixture(autouse = True)
@@ -677,6 +758,9 @@ def _forget_the_cached_owner_identity():
         lifetime._owner_identity = None
 
 
+_REAL_OS_NAME = os.name
+
+
 @pytest.fixture(autouse = True)
 def _isolate_wal_keepers():
     """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
@@ -689,15 +773,21 @@ def _isolate_wal_keepers():
     rag_enabled = rag_db._wal_keepers_enabled
     rag_db.start_wal_keepers()
     yield
-    for path in set(studio_db._wal_keepers) - before:
-        studio_db.close_wal_keeper_for(path)
-    studio_db._wal_unsupported.intersection_update(unsupported)
-    for path in set(rag_db._wal_keepers) - rag_before:
-        rag_db.close_wal_keeper_for(path)
-    if rag_enabled:
-        rag_db.start_wal_keepers()
-    else:
-        rag_db.close_wal_keeper()
+    # Runs before the test's monkeypatch is undone: a test faking Windows (os.name = "nt") would make
+    # close_wal_keeper_for's Path() a WindowsPath, which cannot be built here.
+    patched_os_name, os.name = os.name, _REAL_OS_NAME
+    try:
+        for path in set(studio_db._wal_keepers) - before:
+            studio_db.close_wal_keeper_for(path)
+        studio_db._wal_unsupported.intersection_update(unsupported)
+        for path in set(rag_db._wal_keepers) - rag_before:
+            rag_db.close_wal_keeper_for(path)
+        if rag_enabled:
+            rag_db.start_wal_keepers()
+        else:
+            rag_db.close_wal_keeper()
+    finally:
+        os.name = patched_os_name
 
 
 @pytest.fixture(autouse = True)
@@ -902,6 +992,11 @@ def _assume_bare_metal(monkeypatch):
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    monkeypatch.setattr(llama_cpp, "_metal_device_looks_paravirtual_quick", lambda: False)
+    # A test that hides MLX and torch must not reach the host's real Metal device instead.
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "_metal_framework_working_set_bytes", lambda: 0)
     # The route rebinds the detector as a module global, so patching llama_cpp alone is not enough.
     try:
         from routes import inference as routes_inference

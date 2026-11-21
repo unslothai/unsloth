@@ -11,6 +11,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -64,9 +65,21 @@ def snap_frame_count(count: int) -> int:
 
 
 def model_files(env: Optional[dict[str, str]] = None) -> SdCppModelFiles:
+    """The env overrides when either is set, else the files Restyle setup wrote to Studio's cache."""
     env = os.environ if env is None else env
     model = (env.get(MODEL_ENV) or "").strip()
     vae = (env.get(VAE_ENV) or "").strip()
+    if not model and not vae:
+        from core.inference.video_restyle_setup import installed_files
+
+        installed = installed_files()
+        if installed is not None:
+            return SdCppModelFiles(diffusion_model = installed[0], vae = installed[1])
+        raise RestyleError(
+            "The Cosmos3-Nano-Sim-Transfer weights are not set up on this machine. Use Set up Restyle, "
+            f"or set {MODEL_ENV} and {VAE_ENV} to the merged transformer and the Wan2.2 VAE "
+            "(.safetensors or .gguf)."
+        )
     missing = [
         name
         for name, path in ((MODEL_ENV, model), (VAE_ENV, vae))
@@ -125,8 +138,7 @@ def frames_from_video(
             fitted = None
 
             def keep() -> Any:
-                # Fit only frames that are kept (a 120 fps source drops 3 in 4), and as they are kept:
-                # 121 full-size 4K frames would hold about 3 GB.
+                # Fit only kept frames (120 fps keeps 1 in 4): all 121 would hold about 3 GB.
                 nonlocal fitted
                 if fitted is None:
                     theta = display_rotation_degrees(prev, stream)
@@ -299,50 +311,95 @@ def preview(frames: list[Any], source_seconds: Optional[float] = None) -> dict[s
 
 # The progress line ``parse_progress`` reads; only an sd.cpp build with the Cosmos3 port prints it.
 _COSMOS3_MARKER = b"cosmos3: latent frame"
-_MARKER_CACHE: dict[tuple[str, int, int], bool] = {}
+# The embedded Metal kernel of builds whose ggml-metal runs IM2COL_3D, the Wan2.2 VAE's conv3d path.
+_METAL_IM2COL_3D_MARKER = b"kernel_im2col_3d"
+_MARKER_CACHE: dict[tuple[str, int, int, bytes], bool] = {}
 
 
-def _file_has_marker(path: Path) -> bool:
+def _file_has_marker(path: Path, marker: bytes) -> bool:
     import mmap
     try:
         stat = path.stat()
-        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        key = (str(path), stat.st_mtime_ns, stat.st_size, marker)
         if key not in _MARKER_CACHE:
             with path.open("rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as m:
-                _MARKER_CACHE[key] = m.find(_COSMOS3_MARKER) >= 0
+                _MARKER_CACHE[key] = m.find(marker) >= 0
         return _MARKER_CACHE[key]
     except (OSError, ValueError):
         return False
 
 
-def binary_supports_cosmos3(binary: str) -> bool:
-    """The sd-server binary, or a stable-diffusion library next to it, carries the Cosmos3 port."""
+def _binary_has_marker(binary: str, marker: bytes) -> bool:
+    """The sd-server binary, or a stable-diffusion library next to it, carries ``marker``."""
     path = Path(binary)
     candidates = [
         path,
         *sorted(path.parent.glob("*stable-diffusion*")),
         *sorted(path.parent.glob("libsd*")),
     ]
-    return any(c.is_file() and _file_has_marker(c) for c in candidates)
+    return any(c.is_file() and _file_has_marker(c, marker) for c in candidates)
+
+
+def binary_supports_cosmos3(binary: str) -> bool:
+    return _binary_has_marker(binary, _COSMOS3_MARKER)
+
+
+def server_args(binary: Optional[str], platform: Optional[str] = None) -> list[str]:
+    """sd-server flags for this host. On Metal, a build without IM2COL_3D runs the Wan2.2 VAE's conv3d through
+    ggml-metal's naive direct kernel, about 4.5x slower than Accelerate, so the VAE goes to the CPU there
+    (a paravirtual GPU is already all-CPU)."""
+    platform = sys.platform if platform is None else platform
+    if platform != "darwin":
+        return []
+    from core.inference.sd_cpp_args import metal_is_paravirtual
+
+    if metal_is_paravirtual() or (binary and _binary_has_marker(binary, _METAL_IM2COL_3D_MARKER)):
+        return []
+    return ["--backend", "vae=cpu"]
+
+
+def env_overrides_weights(env: Optional[dict[str, str]] = None) -> bool:
+    env = os.environ if env is None else env
+    return bool((env.get(MODEL_ENV) or "").strip() or (env.get(VAE_ENV) or "").strip())
 
 
 def availability(env: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """Whether Restyle can run, what is missing (``engine``, ``weights``), and whether Set up Restyle can fetch it
+    on this machine (``can_setup``) or why not (``refusal``)."""
+    from core.inference import video_restyle_setup as setup
+
+    missing: list[str] = []
+    reason: Optional[str] = None
     try:
         model_files(env)
-    except RestyleError:
-        return {
-            "available": False,
-            "reason": "The Cosmos3-Nano-Sim-Transfer weights are not set up on this machine.",
-        }
+    except RestyleError as exc:
+        missing.append("weights")
+        reason = (
+            str(exc)
+            if env_overrides_weights(env)
+            else "The Cosmos3-Nano-Sim-Transfer weights are not set up on this machine."
+        )
     from core.inference.sd_cpp_engine import find_sd_server_binary
 
     binary = find_sd_server_binary()
     if not binary or not binary_supports_cosmos3(binary):
-        return {
-            "available": False,
-            "reason": "No stable-diffusion.cpp server with Cosmos3 support is installed.",
-        }
-    return {"available": True, "reason": None}
+        missing.append("engine")
+        reason = reason or "No stable-diffusion.cpp server with Cosmos3 support is installed."
+    out: dict[str, Any] = {
+        "available": not missing,
+        "reason": reason,
+        "missing": missing,
+        "setup": setup.setup_runner.progress(),
+    }
+    if missing:
+        # Overridden weights that are missing are the user's to fix; setup only fetches into Studio's cache.
+        fixable = [m for m in missing if m == "engine" or not env_overrides_weights(env)]
+        plan = setup.hardware_plan()
+        out["refusal"] = plan["refusal"]
+        out["weights"] = plan["weights"]
+        out["vram_gib"] = plan["vram_gib"]
+        out["can_setup"] = plan["refusal"] is None and len(fixable) == len(missing)
+    return out
 
 
 def build_restyle_request(
@@ -545,9 +602,8 @@ class RestyleRunner:
         return held
 
     def _finish(self, **fields: Any) -> None:
-        # The server is detached in the same step that ends the job: a restyle that claims the runner
-        # next can never reuse a server this worker is about to stop. Not kept resident either: an idle
-        # ~30 GB server would sit outside every other loader's VRAM accounting (stop() counts in holds_gpu).
+        # Detach in the same step that ends the job, so none reuses it; idle it would sit outside
+        # holds_gpu.
         with self._lock:
             server = self._detach_locked()
             self._update(active = False, **fields)
@@ -604,9 +660,8 @@ class RestyleRunner:
             )
 
     def unload_if_idle(self, owner: Optional[str] = None) -> bool:
-        """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between.
-        A reservation counts as busy: that request is about to reuse the server. With ``owner``, only
-        a server whose last job was ``owner``'s is detached (RestyleBusy otherwise)."""
+        """Detach under the lock start claims; a reservation is busy, and a foreign owner gets
+        RestyleBusy."""
         with self._lock:
             if self._state.get("active") or self._reservation is not None:
                 return False
@@ -665,7 +720,7 @@ class RestyleRunner:
         try:
             if self._cancel.is_set():
                 server.stop()
-            server.start(files)
+            server.start(files, extra_args = server_args(getattr(server, "binary", None)))
         finally:
             self._loading = None
         self._server, self._server_files = server, files

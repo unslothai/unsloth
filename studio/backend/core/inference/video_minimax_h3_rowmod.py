@@ -19,6 +19,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 ROW_MOD_ENV = "UNSLOTH_H3_ROW_MOD"
 _FORWARD_MARK = "_unsloth_h3_row_mod"
@@ -41,6 +42,7 @@ def reference_gated_residual(residual: Any, gate: Any, out: Any, idx: Any) -> An
 
 
 @lru_cache(maxsize = None)
+@publishes_closure_globals
 def _kernels() -> Any:
     import triton
     import triton.language as tl
@@ -276,11 +278,12 @@ def verdict(x: Any) -> Optional[dict]:
     found = _VERDICTS.get(key)
     if found is not None:
         return found
-    if torch.cuda.is_current_stream_capturing():
-        return None
-    with _LOCK:
-        if key not in _VERDICTS:
-            with torch.cuda.device(x.device):
+    # capture query reads the current device: ask on the operand's card
+    with torch.cuda.device(x.device):
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        with _LOCK:
+            if key not in _VERDICTS:
                 _VERDICTS[key] = _check(x.device, x.dtype, int(x.shape[-1]))
     return _VERDICTS[key]
 

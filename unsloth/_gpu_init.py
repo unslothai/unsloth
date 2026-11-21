@@ -232,7 +232,27 @@ try:
         from .distributed_debug import keep_debug_nccl_env
         _restore_nccl_debug = keep_debug_nccl_env()
         del keep_debug_nccl_env
+    from .parallel_env import (
+        ALLOCATOR_ENV as _ALLOCATOR_ENV,
+        apply_late_allocator_env,
+        cuda_started,
+    )
+
+    _allocator_env_before = {k: os.environ.get(k) for k in _ALLOCATOR_ENV}
+    # Zoo exports its allocator settings before its own import starts CUDA, so only a process whose CUDA was
+    # already running (a torchrun rank > 0 binds its device at import) missed them.
+    _cuda_started_before = cuda_started()
     import unsloth_zoo
+
+    if _cuda_started_before:
+        apply_late_allocator_env(_allocator_env_before)
+    del (
+        _ALLOCATOR_ENV,
+        _allocator_env_before,
+        _cuda_started_before,
+        apply_late_allocator_env,
+        cuda_started,
+    )
 
     if _restore_nccl_debug is not None:
         _restore_nccl_debug()
@@ -338,6 +358,7 @@ del _reraise_device_type_error_with_gpu_hint, _nvidia_smi_gpu_name
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers5_legacy_config_types,
+    fix_transformers_config_commit_hash,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_bnb_prequantized_save,
@@ -347,6 +368,7 @@ from .import_fixes import (
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_tokenizer_config_vocab_file_override,
+    fix_transformers_mistral_regex_hub_error,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
@@ -374,9 +396,12 @@ from .import_fixes import (
     fix_cudnn_sdpa_backward_grad_layout,
     fix_cudnn_sdpa_known_bad_shapes,
     fix_rocm_windows_fused_sdpa,
+    fix_rocm_windows_wide_head_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
+    fix_inductor_triton_wrapper_eager_vals,
+    fix_flex_attention_eager_saved_tensor_hooks,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -406,6 +431,8 @@ from .import_fixes import (
 )
 
 fix_transformers5_legacy_config_types()
+# transformers >= 5.18 no longer stamps config._commit_hash; Unsloth pins loads and probes to it.
+fix_transformers_config_commit_hash()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-op unless SDPA gets a query row that attends to nothing; runs before model imports so plain generate is covered.
@@ -419,6 +446,7 @@ fix_transformers_flex_mask_graph_breaks()
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
 fix_transformers_tokenizer_config_vocab_file_override()
+fix_transformers_mistral_regex_hub_error()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -469,11 +497,17 @@ fix_cudnn_sdpa_backward_grad_layout()
 fix_cudnn_sdpa_known_bad_shapes()
 # Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
 fix_rocm_windows_fused_sdpa()
+# Windows ROCm only: fused SDPA miscomputes heads wider than 256 (Gemma 4 global layers) there.
+fix_rocm_windows_wide_head_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 fix_inductor_reduction_readback_race()
+# torch < 2.13: dynamic-shape Triton kernel decomposition assertion (Gemma2 GEGLU under block compile).
+fix_inductor_triton_wrapper_eager_vals()
+# Eager flex_attention inside a non-reentrant checkpoint (DDP) restarted the layer's recompute mid forward.
+fix_flex_attention_eager_saved_tensor_hooks()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -510,9 +544,11 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
+del fix_transformers_config_commit_hash
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_tokenizer_config_vocab_file_override
+del fix_transformers_mistral_regex_hub_error
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
@@ -538,9 +574,11 @@ del fix_cudnn_sdpa_d256_masked_backward
 del fix_cudnn_sdpa_backward_grad_layout
 del fix_cudnn_sdpa_known_bad_shapes
 del fix_rocm_windows_fused_sdpa
+del fix_rocm_windows_wide_head_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race
+del fix_inductor_triton_wrapper_eager_vals
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet

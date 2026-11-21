@@ -77,7 +77,7 @@ function openPage(url: string, tabId = "tab-1") {
     const parsed = parseFrameMessage({ source: "unsloth-browser", ...message });
     if (parsed?.type === "storage" && origin) {
       deliver(() =>
-        writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self, parsed.url, parsed.seq),
+        writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self, parsed.url, parsed.seq, parsed.sameSite),
       );
     }
   };
@@ -188,6 +188,10 @@ test("malformed storage messages are dropped", () => {
     url: null,
     seq: null,
   });
+  assert.equal(from({ area: "cookie", key: "a=/", value: "|1", sameSite: "Strict" })?.type, "storage");
+  assert.equal((from({ area: "cookie", key: "a=/", value: "|1", sameSite: "Strict" }) as { sameSite?: string }).sameSite, undefined);
+  assert.equal((from({ area: "cookie", key: "a=/", value: "|1", sameSite: "strict" }) as { sameSite?: string }).sameSite, "strict");
+  assert.equal((from({ area: "local", key: "a", value: "1", sameSite: "strict" }) as { sameSite?: string }).sameSite, undefined);
   assert.deepEqual(from({ area: "local", key: "a", value: null, url: "https://example.com/" }), {
     type: "storage",
     area: "local",
@@ -439,4 +443,23 @@ test("a value refused for the site's total quota stays in its page and doesn't b
   assert.equal(second.window.localStorage.getItem("k")?.length, 20_000);
   first.window.localStorage.setItem("k", "later");
   assert.equal(second.window.localStorage.getItem("k"), "later");
+});
+
+test("a script cookie's SameSite goes with its write, and one a browser would refuse is never stored", () => {
+  reset();
+  const writes: Array<[string | null, unknown]> = [];
+  const stop = onPageStorageWrite(({ area, key, sameSite }) => {
+    if (area === "cookie") writes.push([key, sameSite]);
+  });
+  const page = openPage("https://example.com/");
+  page.document.cookie = "token=secret; SameSite=Strict; Path=/";
+  page.document.cookie = "a=1; samesite=LAX";
+  page.document.cookie = "b=1; SameSite=bogus";
+  page.document.cookie = "c=1; SameSite=None; Secure";
+  page.document.cookie = "d=1; SameSite=None";
+  openPage("http://plain.example/").document.cookie = "e=1; SameSite=None; Secure";
+  stop();
+  assert.deepEqual(writes, [["token=/", "strict"], ["a=/", "lax"], ["b=/", undefined], ["c=/", "none"]]);
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1").cookie, [["token=/", "|secret"], ["a=/", "|1"], ["b=/", "|1"], ["c=/", "|1"]]);
+  assert.equal(page.document.cookie, "token=secret; a=1; b=1; c=1");
 });

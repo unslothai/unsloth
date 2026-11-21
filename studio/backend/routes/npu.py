@@ -91,9 +91,8 @@ _deleting: list[Optional[frozenset[str]]] = []
 
 @contextmanager
 def downloads_held(model_ids: Optional[Iterable[str]] = None):
-    """Keeps new pulls of model_ids (every model when None) out while a delete runs. The lock
-    is held only to check and mark, so a pull asked for meanwhile is refused, not blocked.
-    Raises NpuBusy if one of them is already pulling."""
+    """Refuse new pulls of model_ids (all when None) during a delete; the lock is held only to check
+    and mark, so a pull is refused, not blocked; NpuBusy if one is already pulling."""
     ids = None if model_ids is None else frozenset(model_ids)
     with _downloads_lock:
         for model_id, job in _downloads.items():
@@ -167,6 +166,14 @@ async def npu_status(current_subject: str = Depends(get_current_subject)):
     if account_access.managed_account():
         return dict(_MANAGED_ACCOUNT_STATUS)
     return await asyncio.to_thread(get_npu_backend().status)
+
+
+@router.get("/compat", dependencies = [Depends(_require_installation_owner)])
+async def npu_compat():
+    """What the installed FastFlowLM runs and the Q4NX converter converts, per architecture and
+    shape. Never starts the runtime; on a supported NPU, installs the pinned converter source if missing."""
+    from core.inference.npu_compat import current
+    return await asyncio.to_thread(current)
 
 
 @router.post("/enable", dependencies = [Depends(_require_installation_owner)])

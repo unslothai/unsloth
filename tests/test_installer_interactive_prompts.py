@@ -29,6 +29,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
     "studio/install_audio_cpp_prebuilt.py",
+    "studio/install_hnsw_prebuilt.py",
     "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
@@ -42,6 +43,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/precompile_bytecode.py",
     "studio/backend/requirements/single-env/patch_metadata.py",
     "studio/systemd/install_user_service.sh",
+    "studio/launchd/install_user_agent.sh",
 )
 
 # Keyed by (script, normalised question) since line numbers move. Do NOT add an entry just to

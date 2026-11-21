@@ -31,7 +31,7 @@ import {
   useBrowserAgentStore,
 } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks, siteOfUrl } from "./gate";
-import { type SiteRule, ruleFor, scriptRunsWithoutAsking } from "./permissions";
+import { type SiteRule, ruleFor, scriptRunsWithoutAsking, scriptSiteRule } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 import { type FileTabKind, MAX_EDIT_BYTES, applyFileEdit, numberedLines } from "./file-tab";
 import { waitForPage } from "./page-wait";
@@ -62,6 +62,11 @@ export type BrowserAction = {
   newText?: string;
   replaceAll?: boolean;
   content?: string;
+  /** open_file (browser_agent._workspace_file_request). */
+  name?: string;
+  path?: string;
+  contentType?: string;
+  data?: string;
   /** How long the server waits for this answer. */
   timeoutS?: number;
   policy: SitePolicy;
@@ -105,6 +110,8 @@ const whole = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 // browser_agent._MAX_FILE_EDIT_CHARS
 const MAX_EDIT_CHARS = 500_000;
+// browser_agent._MAX_WORKSPACE_FILE_BYTES, as base64
+const MAX_WORKSPACE_DATA_CHARS = Math.ceil((2 * 1024 * 1024) / 3) * 4;
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 100) : [];
 
@@ -141,6 +148,10 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     newText: str(raw.new_text, MAX_EDIT_CHARS),
     replaceAll: raw.replace_all === true,
     content: str(raw.content, MAX_EDIT_CHARS),
+    name: str(raw.name, 512),
+    path: str(raw.path, 4096),
+    contentType: str(raw.content_type, 256),
+    data: str(raw.data, MAX_WORKSPACE_DATA_CHARS),
     timeoutS: typeof raw.timeout_s === "number" && raw.timeout_s > 0 ? Math.min(raw.timeout_s, 3600) : undefined,
     policy: { allowedDomains: strings(raw.allowed_domains), blockedDomains: strings(raw.blocked_domains) },
   };
@@ -545,11 +556,12 @@ async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal)
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
-async function pass(gate: Gate, context: Run, remember = true): Promise<string | null> {
+async function pass(gate: Gate, context: Run, remember = true, onAlways?: () => void): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
-  const allowed = await askInPanel({ ask, host, name, detail }, context, remember);
+  const allowed = await askInPanel({ ask, host, name, detail }, context, remember, Boolean(onAlways));
+  if (allowed === "always") onAlways?.();
   // Not gate.prompt: it quotes the page's label, and errors reach the model outside the fence.
   return allowed ? null : `The user declined ${DECLINED[ask]} on ${host || "this page"}. Do something else, or ask them.`;
 }
@@ -577,8 +589,8 @@ function notifyOffScreenQuestion(chat: string): void {
 }
 
 /** Questions show in the chat's agent bar: the panel opens for one in the chat on screen, and one
- *  from a chat off screen waits there, with a toast to go answer it. A script is asked every time. */
-async function askInPanel(question: Question, context: Run, remember = true): Promise<Answer> {
+ *  from a chat off screen waits there, with a toast to go answer it. A script is never kept for the chat. */
+async function askInPanel(question: Question, context: Run, remember = true, offerAlways = false): Promise<Answer> {
   // As askUser does: a stopped action isn't answered, even by Always allow.
   if (context.signal?.aborted) return false;
   // A click is asked about by its label, so Always allow covers that button, not every risky one.
@@ -593,12 +605,18 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
   // Even when already open: a project's overlay or Research can be hiding it, and only a new open shows it.
   if (chatOnScreen(context)) store.openPanel();
   else notifyOffScreenQuestion(context.session.chat);
-  const answer = await askUser(context.session.chat, question, context.signal, keep);
+  const answer = await askUser(context.session.chat, question, context.signal, keep || offerAlways);
   if (answer === "always" && keep) granted.add(key);
   return answer;
 }
 
-async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
+async function observe(
+  tab: BrowserTab,
+  context: Run,
+  note?: string,
+  op: Record<string, unknown> = { op: "snapshot" },
+  rereads = 2,
+): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "file") return observeFile(tab, entry, context, note, op);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
@@ -614,6 +632,9 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   const fresh = findTab(tab.id) ?? tab;
   // A page that moved during the read is one nobody checked: its words and links stay out.
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
+    // A router rewriting the address on the same entry and site (Google's results pages) is read again there.
+    const rewrote = !fresh.loading && currentEntry(fresh) === entry && siteOfUrl(tabUrl(fresh)) === siteOfUrl(tabUrl(tab));
+    if (rereads > 0 && rewrote) return observe(fresh, context, note, op, rereads - 1);
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
   if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set(context.fullAccess === true ? [] : linkedPages(answer.links ?? []));
@@ -671,6 +692,8 @@ function stepOf(action: BrowserAction): AgentStep {
   switch (action.op) {
     case "navigate":
       return { kind: "open", detail: hostOfUrl(action.url ?? "") };
+    case "open_file":
+      return { kind: "open", detail: action.name ?? "" };
     case "back":
     case "forward":
     case "reload":
@@ -714,6 +737,7 @@ function permissions(context: Pick<Run, "fullAccess" | "inFile">) {
     : stored;
   if (!context.fullAccess) return saved;
   const allow = (rule: SiteRule): SiteRule => ({
+    ...rule,
     browsing: rule.browsing === "block" ? "block" : "allow",
     actions: "allow",
     downloads: rule.downloads === "block" ? "block" : "allow",
@@ -790,6 +814,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   patchAgentChat(chat, { working: true, runKey: context.runKey, step: stepOf(action) });
 
   if (action.op === "navigate") return navigateTo(action.url ?? "", action, context);
+  if (action.op === "open_file") return openWorkspaceFile(action, context);
 
   if (action.op === "history") return readHistory(action, context);
   if (action.op === "evaluate" && useBrowserAgentStore.getState().scriptAccess === "never") {
@@ -1269,6 +1294,43 @@ async function observeFile(tab: BrowserTab, entry: FileEntry, context: Run, note
   return { ok: true, file: entry.name, text: answer.text, note: [note, answer.note, source].filter(Boolean).join(" ") || undefined };
 }
 
+async function sameBytes(blob: Blob | undefined, bytes: Uint8Array): Promise<boolean> {
+  if (!blob || blob.size !== bytes.length) return false;
+  const shown = new Uint8Array(await blob.arrayBuffer());
+  return shown.every((byte, index) => byte === bytes[index]);
+}
+
+/** A workspace file the server sent, shown as a file tab in the same sandboxed preview as a chat page. */
+async function openWorkspaceFile(action: BrowserAction, context: Run): Promise<Result> {
+  const { name, data } = action;
+  if (!name || data === undefined) return { ok: false, error: "the file did not arrive; open it again." };
+  // openFile adds the tab to the chat on screen, which must be the run's.
+  if (!chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+  } catch {
+    return { ok: false, error: "the file did not arrive whole; open it again." };
+  }
+  const contentType = action.contentType || "text/plain";
+  const key = `workspace:${action.sessionId}:${action.path ?? name}`;
+  useBrowserStore.getState().openFile({ blob: new Blob([bytes], { type: contentType }), name, contentType, key });
+  const opened = () => useBrowserStore.getState().tabs.find((tab) => tab.chat === context.session.chat && tab.openKey === `file:${key}`);
+  // Reopening a changed file swaps its bytes in a beat later, so wait for these bytes, not the old ones.
+  const started = Date.now();
+  let tab = opened();
+  while (tab && Date.now() - started < 2_000) {
+    const entry = currentEntry(tab);
+    if (entry.kind === "file" && (await sameBytes(browserFile(entry.fileId), bytes))) break;
+    await sleep(100);
+    tab = opened();
+  }
+  if (!tab) return { ok: false, error: "the browser panel could not open the file." };
+  moveRun(context, tab.id);
+  showTab(tab, context);
+  return observe(findTab(tab.id) ?? tab, context, `Opened ${action.path ?? name} from the workspace.`);
+}
+
 function openFromFile(url: string, action: BrowserAction, context: Run): Promise<Result> {
   if (isStudioUrl(url)) {
     return Promise.resolve({
@@ -1478,7 +1540,15 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Run, b
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
   if (!scriptAllowed(before, context)) {
-    const refused = await pass({ kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" }, context);
+    // Always allow saves the site's Scripts rule, as Settings would: no chat keeps a script answer.
+    const agent = useBrowserAgentStore.getState;
+    const save = () => {
+      const saved = scriptSiteRule(before, agent().permissions);
+      if (saved) agent().setSiteRule(saved.site, saved.rule);
+    };
+    const offer = scriptSiteRule(before, agent().permissions) !== null;
+    const gate: Gate = { kind: "ask", ask: "script", host: siteOfUrl(before), name: "", detail: script, prompt: "" };
+    const refused = await pass(gate, context, true, offer ? save : undefined);
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };

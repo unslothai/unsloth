@@ -28,6 +28,7 @@ export const DEVICE_SECTIONS = [
   "unsloth",
   "other",
   "npu",
+  "exported",
   "fineTuned",
   "custom",
   "lmstudio",
@@ -40,6 +41,7 @@ export const SECTION_LABEL: Record<ListSection, string> = {
   unsloth: "Unsloth",
   other: "Other models",
   npu: "NPU",
+  exported: "Exported",
   fineTuned: "Trained",
   custom: "Custom folders",
   lmstudio: "LM Studio",
@@ -55,7 +57,10 @@ export function localSection(
   source: string | undefined,
   baseModel: string | undefined,
 ): DeviceSection {
-  if (source === "training" || source === "exported") {
+  if (source === "exported") {
+    return "exported";
+  }
+  if (source === "training") {
     return "fineTuned";
   }
   if (baseModel === "LM Studio") {
@@ -107,6 +112,8 @@ export interface PickerRow {
   groups?: string[];
   section?: ListSection;
   sizeBytes?: number;
+  /** Curated position (the Hub's NPU order); breaks date ties before the name does. */
+  rank?: number;
   /** In the listing's own units. */
   updatedAt?: number;
 }
@@ -164,8 +171,12 @@ export function sortDeviceRows<T extends PickerRow>(
   lastLoaded: (row: T) => number,
   desc: boolean = DEVICE_SORT_DESC[key],
 ): T[] {
+  // One key order (date, rank, name) keeps the comparator transitive; unranked rows rank last.
+  const rankOf = (row: T) => row.rank ?? Number.MAX_SAFE_INTEGER;
   const byDate = (a: T, b: T) =>
-    (b.updatedAt ?? -1) - (a.updatedAt ?? -1) || a.label.localeCompare(b.label);
+    (b.updatedAt ?? -1) - (a.updatedAt ?? -1) ||
+    rankOf(a) - rankOf(b) ||
+    a.label.localeCompare(b.label);
   const sorted = [...rows].sort((a, b) => {
     if (key === "name") {
       return a.label.localeCompare(b.label);
@@ -464,6 +475,18 @@ export function pickerSide(
 }
 
 export const PICKER_GAP = 8;
+/** From the window, never a tab's row count, in on-screen px. */
+export function pickerMinHeight(
+  innerWidth: number,
+  innerHeight: number,
+  zoomOut: number,
+): number {
+  const screenHeight = innerHeight / zoomOut;
+  if (innerWidth > innerHeight && screenHeight <= 900) return 420;
+  const t = Math.min(1, Math.max(0, (screenHeight - 1080) / 300));
+  return Math.round(440 + 100 * t);
+}
+
 /** Short of room below, a downward panel rides up over the composer, never past the window top. */
 export function pickerDropOffset(
   triggerBottom: number,
@@ -474,15 +497,39 @@ export function pickerDropOffset(
   return Math.max(PICKER_EDGE - triggerBottom, Math.min(PICKER_GAP, fits));
 }
 
+/** Mirrors --composer-picker-w in index.css. */
+export function pickerWidth(
+  viewportWidth: number,
+  scale: number,
+  zoomOut = 1,
+): number {
+  return Math.min(
+    520 * scale * zoomOut,
+    Math.max(360 * scale, viewportWidth * 0.3),
+  );
+}
+
+/** Browser zoom moves innerWidth but not outerWidth; the desktop app reports its webview zoom. */
+export function pickerZoomOut(
+  innerWidth: number,
+  outerWidth: number,
+  webviewZoom: number | null,
+): number {
+  const zoom =
+    webviewZoom ??
+    (innerWidth > 0 && outerWidth > 0 ? outerWidth / innerWidth : 1);
+  // Window borders and side-docked devtools read as a slight zoom; only a real step counts.
+  return zoom < 0.95 ? Math.min(4, 1 / zoom) : 1;
+}
+
 /** Slides a fixed-side panel back inside a narrow window, since Radix's own shift is off. */
-export const PICKER_WIDTH = 420;
 export function pickerAlignOffset(
   align: "start" | "end",
   trigger: { left: number; right: number } | null,
   panelWidth: number,
   viewportWidth: number,
 ): number {
-  if (!trigger) {
+  if (!trigger || trigger.right <= trigger.left) {
     return 0;
   }
   // PopoverContent caps its width at the window less 32px.
@@ -508,6 +555,36 @@ export function discoverUsesFallback(
   hubResultCount: number,
 ): boolean {
   return hubQuery === "" || hubResultCount === 0;
+}
+
+/** Discover rows that need a file listing for their size: the listing's dtype counts already size a
+ * plain checkpoint, not packed MLX weights. */
+export function hubSizeIds<
+  T extends { id: string; isGguf: boolean; estimatedSizeBytes?: number },
+>(
+  results: readonly T[],
+  recommended: readonly { id: string }[],
+  isMlx: (result: T) => boolean = () => true,
+): string[] {
+  const rows = new Set(recommended.map((m) => m.id.toLowerCase()));
+  return results.flatMap((r) =>
+    !r.isGguf &&
+    rows.has(r.id.toLowerCase()) &&
+    (!r.estimatedSizeBytes || isMlx(r))
+      ? [r.id]
+      : [],
+  );
+}
+
+/** Discover lists plain safetensors on a Mac, and under the Safetensors filter on any host that runs
+ * them; a chat-only host runs GGUF only. */
+export function discoverListsCheckpoints(
+  isMac: boolean,
+  formatFilter: string,
+  chatOnly: boolean,
+  isMlx: boolean,
+): boolean {
+  return isMac || (formatFilter === "safetensors" && !chatOnly && !isMlx);
 }
 
 /** Reads `items` with at most `workers` in flight; stops taking new ones once `live()` is false. */

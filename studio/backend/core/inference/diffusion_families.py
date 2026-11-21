@@ -59,6 +59,17 @@ def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
 
 
+def load_lora_signature(specs) -> tuple:
+    """Comparable form of a load's ``load_lora_specs``: a same-model reload with other adapters differs."""
+    out = []
+    for spec in specs or ():
+        try:
+            out.append((str(spec["id"]), float(spec["weight"])))
+        except Exception:  # noqa: BLE001 - a malformed row names no adapter
+            continue
+    return tuple(out)
+
+
 # The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
 _pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
     "pinned_checkpoint", default = None
@@ -122,6 +133,7 @@ class DiffusionFamily:
     gguf_loadable: bool = True
     # Transformer-only GGUFs load only via sd.cpp (MOSS-Image); its .safetensors single files load on diffusers.
     native_transformer_files_only: bool = False
+    single_file_loadable: bool = True
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
     img2img_pipeline_class: Optional[str] = None
@@ -156,6 +168,8 @@ class DiffusionFamily:
     max_output_pixels: int = 2048 * 2048
     # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
+    # Default edit output side (by area); None = the build's tier.
+    edit_output_resolution: Optional[int] = None
     # ComfyUI's static sigma shift; None = keep the shipped scheduler.
     comfy_flow_shift: Optional[float] = None
     # (lowercased id substring, shift or None = shipped) for checkpoints whose template differs; first match wins.
@@ -244,6 +258,8 @@ class DiffusionFamily:
     sd_cpp_flow_shift: Optional[float] = None
     # sd-cli --scheduler; "simple" matches the diffusers grid (sd.cpp's default ends at sigma ~0.003). None = sd.cpp's.
     sd_cpp_scheduler: Optional[str] = None
+    # sd.cpp --rng; None keeps its default.
+    sd_cpp_rng: Optional[str] = None
     # (id substring, shift) overriding sd_cpp_flow_shift under sd_cpp_scheduler; first match wins, None = sd.cpp's.
     sd_cpp_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
@@ -333,6 +349,14 @@ _QWENIMAGE21_RDNA_AUTO_W8A8 = "compiled int8 W8A8 measured 83.3 vs 95.1 s/image 
 _QWENIMAGE_RDNA_AUTO_W8A8 = (
     "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
     "LPIPS 0.014"
+)
+# rdna_explicit_w8a8: an explicit int8 request on gfx1151 (ROCm 7.13, 1024^2, 16 steps, compiled) runs W8A8 with Q / K / V
+# and the MLP input on one shared rotation + act quant per block (diffusion_flux_convrot_fused); AUTO keeps bf16. Device
+# time per step, two repeats each: W8A8 shared 1.364 / 1.367 s, weight-only int8 1.422 / 1.413, W8A8 with a quant per
+# Linear 1.419 (the quant was the whole deficit), bf16 1.364 / 1.371. LPIPS vs bf16 0.012 (weight-only 0.024).
+_FLUX3_KLEIN_RDNA_EXPLICIT_W8A8 = (
+    "compiled int8 W8A8 with one shared act quant per block measured 1.365 vs 1.418 s/step against compiled "
+    "weight-only int8 on gfx1151 (1024^2, 16 steps), LPIPS 0.012 vs bf16"
 )
 # FLUX.3 renders black in plain float16; UNSLOTH_STUDIO_FLUX3_FP16=1 keeps fp16.
 _FLUX3_FP16_INCOMPATIBLE = (
@@ -456,6 +480,7 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
 MINIMAX_H3_IMAGE_FAMILY_NAME = "minimax-h3-image"
 ANIMA_FAMILY_NAME = "anima"
+ANIMA_TURBO_KEY = "anima-turbo"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
 _MOSS_IMAGE_CONVROT_SUFFIXES = (
@@ -507,6 +532,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.1-dev",
         profile = FamilyProfile(
             auto_prefer = _GATED_AUTO_PREFER,
+            # Hosted rotated int8 build for schnell only (every quantized Linear, group 256, read back from the file's
+            # metadata). Group 0: quantizing at load stays plain int8, and until the file is on the repo the plain
+            # hosted int8 file behind it still loads; dev / Krea-dev keep their plain variant files.
+            int8_convrot = ConvRotSpec(
+                group = 0,
+                suffixes = (),
+                filename = "FLUX.1-schnell-INT8-ConvRot.safetensors",
+                repo = "unsloth/FLUX.1-schnell-FP8",
+                default_on = True,
+            ),
             preview_factors = "flux1",
             # Auto static step skip, measured vs the no-skip render (PR #12652); dev: every 2 is 0.29 LPIPS on a
             # dense-texture prompt, so max only.
@@ -697,6 +732,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
+        filter_reduction_configs = True,
+        cudnn_benchmark = False,
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
         # (black-forest-labs/flux-3-image-klein-comfy, byte-identical), which scored better than an INT8 built with
         # the keep-list, so the prequant loader reads it through the ComfyUI quant path. The FP8 file is Studio's own.
@@ -734,6 +772,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_sampling_method = "euler",
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
+        # Trains the undistilled base; the distilled Klein is the same DiT, so Deploy loads the adapter there.
+        trainable = True,
+        train_base_repos = ("black-forest-labs/flux-3-image-klein-base",),
+        deploy_base_repos = (
+            ("black-forest-labs/flux-3-image-klein-base", "black-forest-labs/flux-3-image-klein"),
+        ),
     ),
     DiffusionFamily(
         name = "flux.3-klein",
@@ -743,6 +787,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
             turing_auto_int8 = _FLUX3_KLEIN_TURING_AUTO_INT8,
+            rdna_explicit_w8a8 = _FLUX3_KLEIN_RDNA_EXPLICIT_W8A8,
             int8_convrot = ConvRotSpec(
                 group = 256,
                 suffixes = _FLUX3_CONVROT_SUFFIXES,
@@ -764,6 +809,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
+        # As FLUX.2 Klein: per-process reduction-config / cuDNN picks moved one seed 0.003-0.007 LPIPS on L4.
+        filter_reduction_configs = True,
+        cudnn_benchmark = False,
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
         # the loader checks the stored exclude set against it. The base has its own repo.
         prequant_repos = (
@@ -1067,6 +1115,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Different architecture from qwen-image, so its own family.
         name = "qwen-image-2.1",
         comfy_shift_node = "flux",
+        label = "Qwen-Image-2.1",
         profile = FamilyProfile(
             # 2.1 is a 32-block single-stream DiT with no add-prefixed projections or txt_mlp, so
             # the 20B MMDiT exclusion list does not apply; excluding txt_in scores LPIPS 0.064 vs
@@ -1136,6 +1185,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_output_side = 2752,
         max_output_pixels = 2400 * 1792,
         reference_resolutions = (512, 1024, 2048),
+        # 1024-area edits are over-sharpened and miss the instruction even on upstream bf16; 1536 / 2048 are clean.
+        edit_output_resolution = 2048,
         # Condition tokens are prefilled once into a KV cache, not denoised per step. Measured on an RTX 3090: about
         # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
         condition_pixel_weight = 0.32,
@@ -1187,6 +1238,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_arch_marker = "qwen_image_2_1",
         # The edit path's no-projector refusal: in the pinned build, absent from the one before it.
         sd_cpp_edit_marker = "Qwen Image 2.1 editing requires Qwen3-VL vision weights",
+        # Trains on the undistilled 2.1; Turbo shares its DiT, so the adapter also runs on the 8-step Turbo.
+        trainable = True,
+        train_base_repos = ("Qwen/Qwen-Image-2.1",),
+        deploy_base_repos = (("Qwen/Qwen-Image-2.1", "Qwen/Qwen-Image-2.1-Turbo"),),
     ),
     DiffusionFamily(
         name = "z-image",
@@ -1458,10 +1513,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             quant_names = ("moss-image-base",),
             # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
+            # fp8 trails int8 at inference, so it is no training base.
+            train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
             scheme_deny = frozenset({"nvfp4"}),
             # AUTO: INT8-ConvRot on every card (1.42x faster than bf16 on an RTX PRO 6000, LPIPS 0.056; SMALL_DIT note).
             preview_factors = "flux2",
+            compile_from_render_one = (
+                "the eager port is host-bound: 1024 px bf16 eager 14.5 s vs compiled 8.0 s per image on an RTX PRO "
+                "6000, 27.5 s vs 12.9 s on an A100, so bf16 compiles from render 1 like the INT8 default"
+            ),
         ),
         pipeline_class = "MOSSImagePipeline",
         transformer_class = "MOSSImageTransformer",
@@ -1483,7 +1544,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_excluded_bases = ("openmoss-team/moss-image-base",),
         # Qwen3.5-9B int8 ConvRot: LPIPS 0.059 vs bf16; without the hosted file auto keeps bf16.
         te_quant_auto = "int8",
-        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
+        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image", "kromoss"),
         prompt_hint = (
             "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
         ),
@@ -1500,6 +1561,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
         sd_cpp_scheduler = "simple",
+        trainable = True,
+        train_base_repos = ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"),
     ),
     # MiniMax-H3-Image: 33B H3 DiT without audio plus per-step PDD heads, conditioned by Qwen3-VL-32B. diffusers has
     # no class yet, so diffusion_minimax_h3_image loads, converts, quantizes and places it itself.
@@ -1523,9 +1586,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "MiniMax-H3-Image follows long, complete descriptions of the whole image. For edits, refer to the inputs"
             " as <Picture 1>, <Picture 2> and say what to keep and what to change."
         ),
-        # The in-tree loader reads the native shards; no single-file / GGUF denoiser load.
-        pipeline_only = True,
-        gguf_loadable = False,
+        native_transformer_files_only = True,
+        single_file_loadable = False,
         supports_torch_compile = False,
         # No te_quant_auto: the in-tree loader picks the hosted int8 Qwen3-VL itself when the encoder is unset.
         # Hosted pre-quantized DiTs: the loader checks the file exists and quantizes on the fly otherwise.
@@ -1537,6 +1599,20 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "MiniMax-H3-Image-INT8-ConvRot.safetensors"),
             ("fp8", "MiniMax-H3-Image-FP8.safetensors"),
         ),
+        sd_cpp_vae = ("MiniMaxAI/MiniMax-H3-Image", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = (
+            ("unsloth/MiniMax-H3-GGUF", "qwen3vl_32b_minimax_h3-Q4_K_M.gguf", "llm"),
+        ),
+        # Upstream #2324's model name; builds before it cannot load the checkpoint.
+        sd_cpp_arch_marker = "MiniMax-H3-Image",
+        sd_cpp_reference = True,
+        # No scheduler or sigmas: sd.cpp's own H3-Image schedule is the PDD grid the heads were distilled on.
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_rng = "cpu",
+        # LoRA training (diffusion_h3_image_trainer): the release itself is the base, trained as bf16 or int8.
+        trainable = True,
+        train_base_repos = ("MiniMaxAI/MiniMax-H3-Image",),
+        profile = FamilyProfile(train_scheme_deny = frozenset({"nf4", "fp8", "mxfp8"})),
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
@@ -2303,6 +2379,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image", 25, 3.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
     ("lumina", 50, 4.0),
+    # HunyuanImage 2.1 distilled: 8 steps, guidance 3.25 (tencent/HunyuanImage-2.1 README).
+    ("hunyuanimage-2.1-distilled", 8, 3.25),
+    ("hunyuanimage2.1-distilled", 8, 3.25),
     # Listed though older than the 0.35 baseline: an unconstrained diffusers install can satisfy the pin, and a later floor is the wrong remedy
     ("hunyuanimage", 50, 3.25),
     # HiDream-I1 upstream: Full 50 steps / guidance 5; the distilled Dev (28) and Fast (16) run guidance-free.
@@ -2319,12 +2398,19 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("moss-image", 25, 2.5),
     ("moss_image", 25, 2.5),
     ("mossimage", 25, 2.5),
+    ("kromoss", 25, 2.5),
     # SDXL-Turbo: 1 step, CFG 1. "sdxl-turbo" must precede "sdxl".
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
+    # Anima-Turbo card: CFG 1, 8-12 steps. Must precede the base repo key.
+    (ANIMA_TURBO_KEY, 10, 1.0),
     # Keyed by base repo: a bare "anima" would match Animagine XL (SDXL) files first.
     ("circlestone-labs/anima", 30, 4.0),
+    # Chroma1-Flash: publisher's heun 8 steps CFG 1; 16 Euler steps match heun's 15 evaluations.
+    ("chroma1-hd-flash", 16, 1.0),
+    ("chroma1-flash", 16, 1.0),
+    ("chroma-flash", 16, 1.0),
     ("chroma", 26, 3.5),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
@@ -2422,6 +2508,16 @@ def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, 
     """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     row = _generation_defaults_row(*identifiers)
     return (row[1], row[2]) if row is not None else None
+
+
+def anima_turbo_named(filename: Optional[str], repo_id: Optional[str] = None) -> bool:
+    """Only asked of Anima loads, whose base repo key would otherwise give Turbo the base recipe. A selected file
+    naming Anima or Turbo decides alone (a Turbo repo or folder can also hold the base / aesthetic files); a file
+    naming neither (a diffusers component, a renamed merge) leaves it to the repo / folder name."""
+    name = PurePosixPath((filename or "").replace("\\", "/")).name.lower()
+    if "turbo" in name or "anima" in name:
+        return "turbo" in name
+    return "turbo" in model_identity(repo_id).lower()
 
 
 _KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})
@@ -3361,6 +3457,13 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # a video repo lending its encoder stays a model
+    from .video_families import _FAMILIES as _VIDEO_FAMILIES
+
+    for vfam in _VIDEO_FAMILIES:
+        loadable.add(vfam.base_repo)
+        if vfam.gguf_repo:
+            loadable.add(vfam.gguf_repo)
     # A full mirror of a loadable base stays loadable even when used as a VAE source (unsloth/Krea-2-Turbo).
     loadable_lower = {r.strip().lower() for r in loadable if r}
     loadable.update(m for u, m in _ALL_MIRROR_PAIRS if u.strip().lower() in loadable_lower)

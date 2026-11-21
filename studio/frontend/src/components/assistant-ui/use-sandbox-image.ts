@@ -21,12 +21,14 @@ const IDLE: SandboxImageState = { status: "idle" };
  * Pass the URL from `sandboxFilePath()`/`markdownSandboxImageSrc()` and render what comes back.
  *
  * Any element can hold the ref (a `<video>` for a generated clip); it only marks where the file shows.
+ * `type` retypes the blob: the route serves video as octet-stream, and not every engine sniffs it.
  *
  * Keyed by url: an element that moves to another file reads idle rather than showing the previous
  * file's blob, and a stale response can never write state for a url it was not fetched for.
  */
 export function useSandboxImage<T extends Element = HTMLImageElement>(
   url: string | null,
+  type?: string,
 ): {
   ref: RefObject<T | null>;
   state: SandboxImageState;
@@ -78,8 +80,9 @@ export function useSandboxImage<T extends Element = HTMLImageElement>(
             });
           return;
         }
-        const blob = await response.blob();
+        const fetched = await response.blob();
         if (controller.signal.aborted) return;
+        const blob = type ? new Blob([fetched], { type }) : fetched;
         objectUrl = URL.createObjectURL(blob);
         setState({
           url,
@@ -101,7 +104,7 @@ export function useSandboxImage<T extends Element = HTMLImageElement>(
       // Revoke even if aborted, or the bytes stay pinned for the session.
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [url, nearViewport]);
+  }, [url, nearViewport, type]);
 
   // Returning to the same URL must not reuse a result whose fetch was cleaned up.
   return {

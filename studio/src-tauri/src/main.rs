@@ -26,6 +26,7 @@ mod diagnostics;
 mod gpu_rendering;
 mod install;
 mod install_watchdog;
+mod keep_awake;
 #[cfg(target_os = "linux")]
 mod linux_gpu_supervisor;
 #[cfg(target_os = "linux")]
@@ -1085,6 +1086,13 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
+            let policy_never = matches!(
+                settings.hardware_acceleration_policy(),
+                webkit2gtk::HardwareAccelerationPolicy::Never
+            );
+            if !linux_webkit::smooth_scrolling_enabled(policy_never) {
+                settings.set_enable_smooth_scrolling(false);
+            }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
         // installed; deferred because loading it blocks ~40 ms. Not on a bundled AppImage: its
@@ -2384,9 +2392,11 @@ fn main() {
             webkit_rendering.wayland_session,
         ),
         webkit_rendering.cpu_painting,
+        linux_webkit::legacy_compositor(webkit_rendering.webkit_version),
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
+    let gpu_launch =
+        gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -2618,6 +2628,8 @@ fn main() {
             reveal_main_window,
             get_close_to_tray,
             set_close_to_tray,
+            keep_awake::get_keep_awake,
+            keep_awake::set_keep_awake,
             get_launch_at_login,
             set_launch_at_login,
             get_tray_icon_visible,
@@ -2638,6 +2650,7 @@ fn main() {
             }
 
             initialize_close_to_tray(app.handle());
+            keep_awake::initialize(app.handle());
             #[cfg(target_os = "linux")]
             {
                 let handle = app.handle().clone();
