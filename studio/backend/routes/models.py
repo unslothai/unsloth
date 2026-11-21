@@ -3243,6 +3243,11 @@ async def scan_diffusion_loras(
                 "size_bytes": e.size_bytes,
                 "weight_default": e.weight_default,
                 "fine_tuned": e.fine_tuned,
+                # Step-distilled adapters: the publisher's steps / guidance, set as the defaults when picked.
+                "recommended_steps": e.recommended_steps,
+                "recommended_guidance": e.recommended_guidance,
+                # A two-expert pair (high- and low-noise files), baked one per expert.
+                "expert_pair": e.weight_name_2 is not None,
             }
             for e in entries
         ],

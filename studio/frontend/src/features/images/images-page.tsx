@@ -7351,6 +7351,12 @@ export function ImagesPage({
                         onAdd={(spec, focusRow) => {
                           setFocusLoraRow(focusRow ? loras.length : null);
                           setLoras((prev) => [...prev, spec]);
+                          // A step-distilled adapter runs its own recipe (e.g. 8 steps at CFG 1).
+                          const preset = sortedLoras.find((l) => l.id === spec.id);
+                          if (preset?.recommended_steps) {
+                            setSteps(preset.recommended_steps);
+                            setGuidance(preset.recommended_guidance ?? 1);
+                          }
                         }}
                       />
                     )}
