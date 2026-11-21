@@ -281,3 +281,42 @@ def test_draft_decode_runs_inside_the_decode_phase_wrappers(tmp_path):
     assert orders, "the render no longer enters draft_ctx"
     for names in orders:
         assert names.index("draft_ctx") < names.index("progress_ctx()"), names
+
+
+def test_tiny_checkpoint_lookup_and_download_use_studios_live_hf_cache(tmp_path, monkeypatch):
+    """Both the cache lookup and the background download pass Studio's active hub cache root (Settings can move it),
+    as every other video loader does through hub_cache_dir()."""
+    import huggingface_hub
+
+    from utils import hf_cache_settings
+
+    root = tmp_path / "studio_hub"
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: root)
+    seen = []
+
+    def fake_lookup(
+        repo_id,
+        filename,
+        cache_dir = None,
+        **_k,
+    ):
+        seen.append(("lookup", repo_id, filename, cache_dir))
+        return None
+
+    def fake_download(
+        repo_id,
+        filename,
+        cache_dir = None,
+        **_k,
+    ):
+        seen.append(("download", repo_id, filename, cache_dir))
+        return str(root / filename)
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake_lookup)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    assert TV._cached_path("taew2_1.safetensors") is None
+    TV._fetch("taew2_1.safetensors")
+    assert seen == [
+        ("lookup", TV.TINY_VAE_REPO, "taew2_1.safetensors", str(root)),
+        ("download", TV.TINY_VAE_REPO, "taew2_1.safetensors", str(root)),
+    ]

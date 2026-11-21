@@ -169,10 +169,20 @@ _FETCHING: dict = {}
 _FAILED: set = set()
 
 
+def _hub_cache() -> Optional[str]:
+    """Studio's live Hugging Face cache root (Settings can move it); huggingface_hub's import-time default otherwise
+    lands the checkpoint where no other Studio loader looks."""
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        return str(active_hf_hub_cache())
+    except Exception:  # noqa: BLE001 - outside Studio: the library default
+        return None
+
+
 def _cached_path(filename: str) -> Optional[str]:
     try:
         from huggingface_hub import try_to_load_from_cache
-        hit = try_to_load_from_cache(TINY_VAE_REPO, filename)
+        hit = try_to_load_from_cache(TINY_VAE_REPO, filename, cache_dir = _hub_cache())
         return hit if isinstance(hit, str) and os.path.isfile(hit) else None
     except Exception:  # noqa: BLE001
         return None
@@ -181,7 +191,7 @@ def _cached_path(filename: str) -> Optional[str]:
 def _fetch(filename: str) -> None:
     try:
         from huggingface_hub import hf_hub_download
-        hf_hub_download(TINY_VAE_REPO, filename)
+        hf_hub_download(TINY_VAE_REPO, filename, cache_dir = _hub_cache())
     except Exception as exc:  # noqa: BLE001 - offline / blocked: previews stay linear
         with _LOCK:
             _FAILED.add(filename)
