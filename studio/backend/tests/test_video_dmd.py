@@ -311,3 +311,19 @@ def test_no_copy_of_a_student_takes_the_base_hosted_denoiser(monkeypatch, repo):
     assert calls == []
     # The base keeps its hosted build (the resolver is consulted).
     assert vdp.denoiser_prequant_sources(fam, "fp8", "Wan-AI/Wan2.2-TI2V-5B-Diffusers") is not None
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "FastVideo/FastWan2.1-T2V-1.3B-Diffusers",
+        "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers",
+    ],
+)
+def test_the_dense_students_pass_the_non_gguf_trust_gate(repo):
+    # The refusal text sends users to these two Hub repos, so a pipeline load from them must not be refused as untrusted.
+    from core.inference import video
+
+    assert video._is_trusted_video_repo(repo)
+    assert not video._is_trusted_video_repo("FastVideo/FastWan2.2-TI2V-5B-Diffusers")
+    assert not video._is_trusted_video_repo("someone/FastWan2.1-T2V-1.3B-Diffusers")

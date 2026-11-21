@@ -773,6 +773,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             auto_static_skip = (
                 ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
             ),
+            # FastVideo's dense-attention DMD student (video_dmd) loads from its own Diffusers repo.
+            trusted_repos = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         ),
         comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
@@ -898,7 +900,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
         name = "wan2.1-t2v-1.3b",
-        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
+        # FastVideo's DMD student of this model (video_dmd) loads from its own Diffusers repo.
+        profile = FamilyProfile(
+            untiled_vae = _WAN21_VAE_UNTILED,
+            trusted_repos = ("fastvideo/fastwan2.1-t2v-1.3b-diffusers",),
+        ),
         comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
