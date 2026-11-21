@@ -5,7 +5,7 @@
 
 A later stage's layer list starts with pass-through stand-ins (no parameters), so its first trainable layer is
 its first own layer. The skip must not cut there: the stand-ins return the previous stage's activations, and
-detaching them leaves every earlier stage without a gradient (Gemma-4 PP=2 on 2x T4 trained only its last
+detaching them leaves every earlier stage's decoder adapters without a gradient (Gemma-4 PP=2 on 2x T4 trained only its last
 stage: step-1 grad norm 2.78 against 5.12 on one GPU)."""
 
 import multiprocessing
@@ -24,7 +24,7 @@ import torch  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _tiny_mm as tiny  # noqa: E402
 import test_pp_vlm_text_only_gloo as vlm  # noqa: E402
-from test_pp_native_gloo import _load  # noqa: E402
+from test_pp_native_gloo import _load, _torch_pipelining_error  # noqa: E402
 
 pytest.importorskip("transformers.models.gemma4")
 pytest.importorskip("transformers.modeling_layers")
@@ -97,7 +97,11 @@ def spawn(
 
 
 @pytest.mark.parametrize("schedule", ["gpipe", "1f1b"])
-def test_pp2_with_frozen_prefix_skip_trains_every_stage(schedule):
+def test_pp2_with_frozen_prefix_skip_trains_every_stage(schedule, monkeypatch):
+    if _torch_pipelining_error():
+        pytest.skip(_torch_pipelining_error())
+    # The ranks inherit the environment: an exported kill switch would let the merge base pass.
+    monkeypatch.setenv("UNSLOTH_FROZEN_PREFIX_SKIP", "1")
     results = spawn("frozen_prefix_parity", schedule = schedule)
     bounds = results[0]["bounds"]
     assert bounds[1][0] > 0, bounds
@@ -131,3 +135,11 @@ def test_stand_in_marks_the_stack_for_the_skip():
     for i in range(3):
         stack[i] = ppn._PPPassThrough(i, ctx, originals[i])
     assert fp._plan(model, stacks, heads) is None
+    # Stage 0's view: its own frozen bottom, stand-ins only above the cut. The cut stays.
+    for i in range(3):
+        stack[i] = originals[i]
+    tail = ppn._StageContext(0, 4, True, False, False)
+    for i in range(4, LAYERS):
+        stack[i] = ppn._PPPassThrough(i, tail, stack[i])
+    plan = fp._plan(model, stacks, heads)
+    assert plan is not None and plan[1] == 3, plan
