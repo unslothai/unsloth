@@ -7,10 +7,14 @@ import json
 from routes.inference import _enforce_stop_sequences
 
 
-def _chunk(content=None, finish=None):
+def _chunk(content = None, finish = None):
     delta = {} if content is None else {"content": content}
     return "data: " + json.dumps(
-        {"id": "c1", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        {
+            "id": "c1",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
     )
 
 
@@ -44,7 +48,12 @@ def test_a_stop_split_across_chunks_cuts_the_reply_and_ends_the_provider_stream(
         [_chunk("Hello there.\nRi"), _chunk("n: hi"), _chunk(" more"), "data: [DONE]"], ["\nRin:"]
     )
     assert _text(out) == "Hello there."
-    finishes = [c["finish_reason"] for line in out if line.startswith("data: {") for c in json.loads(line[6:])["choices"]]
+    finishes = [
+        c["finish_reason"]
+        for line in out
+        if line.startswith("data: {")
+        for c in json.loads(line[6:])["choices"]
+    ]
     assert finishes[-1] == "stop"
     assert out[-1] == "data: [DONE]"
     assert closed == [True]
@@ -54,4 +63,3 @@ def test_a_held_back_tail_that_never_completes_a_stop_is_sent_before_done():
     out, _ = _run([_chunk("ends with \nR"), "data: [DONE]"], ["\nRin:"])
     assert _text(out) == "ends with \nR"
     assert out[-1] == "data: [DONE]"
-

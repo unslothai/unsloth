@@ -1190,5 +1190,9 @@ def test_a_studio_provider_request_stops_at_its_stop_sequence(v1, monkeypatch):
 
     assert resp.status_code == 200, resp.text
     assert _chat_text(resp, True) == "Mara waves."
-    finishes = [c["choices"][0].get("finish_reason") for c in _sse(resp.text.replace("data: [DONE]", "")) if c.get("choices")]
+    finishes = [
+        c["choices"][0].get("finish_reason")
+        for c in _sse(resp.text.replace("data: [DONE]", ""))
+        if c.get("choices")
+    ]
     assert finishes[-1] == "stop"

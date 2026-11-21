@@ -45488,7 +45488,9 @@ async def _enforce_stop_sequences(gen, stops: list[str], model: str):
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": model,
-                            "choices": [{"index": 0, "delta": {"content": held}, "finish_reason": None}],
+                            "choices": [
+                                {"index": 0, "delta": {"content": held}, "finish_reason": None}
+                            ],
                         }
                     )
                 yield line
@@ -45510,7 +45512,10 @@ async def _enforce_stop_sequences(gen, stops: list[str], model: str):
                 delta["content"] = stop.feed(delta["content"])
             if choice.get("finish_reason") is not None and stop.held:
                 # The reply ended partway into a stop sequence, so what was held back is text.
-                choice["delta"] = {**(delta or {}), "content": ((delta or {}).get("content") or "") + stop.flush()}
+                choice["delta"] = {
+                    **(delta or {}),
+                    "content": ((delta or {}).get("content") or "") + stop.flush(),
+                }
             if stop.hit is not None:
                 choice["finish_reason"] = None
                 yield "data: " + json.dumps(chunk)
