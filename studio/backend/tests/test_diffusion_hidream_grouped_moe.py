@@ -55,7 +55,7 @@ def _reference(m, x, idx, w):
 
 @pytest.fixture()
 def opened(monkeypatch):
-    monkeypatch.setattr(rc, "_grouped_supported", lambda: True)
+    monkeypatch.setattr(rc, "_grouped_supported", lambda *a: True)
     monkeypatch.delenv(rc.GROUPED_MOE_ENV, raising = False)
     # CPU tensors: open the device / dtype part of the gate, keep the expert checks
     monkeypatch.setattr(
@@ -86,7 +86,7 @@ def test_grouped_matches_per_token_math(opened, dtype, tol):
 
 
 def test_install_marks_the_layers_and_the_switch_turns_it_off(monkeypatch):
-    monkeypatch.setattr(rc, "_grouped_supported", lambda: True)
+    monkeypatch.setattr(rc, "_grouped_supported", lambda *a: True)
     m = torch.nn.Module()
     moe = _moe()
     m.add_module("ff", moe)
@@ -94,7 +94,7 @@ def test_install_marks_the_layers_and_the_switch_turns_it_off(monkeypatch):
     monkeypatch.setenv(rc.GROUPED_MOE_ENV, "0")
     assert rc.install_traceable_moe(m) == 1 and moe.__dict__[rc._GROUPED_ATTR] is False  # noqa: SLF001
     monkeypatch.delenv(rc.GROUPED_MOE_ENV)
-    monkeypatch.setattr(rc, "_grouped_supported", lambda: False)
+    monkeypatch.setattr(rc, "_grouped_supported", lambda *a: False)
     rc.install_traceable_moe(m)
     assert moe.__dict__[rc._GROUPED_ATTR] is False  # noqa: SLF001
 
@@ -164,3 +164,37 @@ def test_whole_tiny_hidream_matches_dense(opened):
         grouped = model(**inputs)[0]
     assert rc._GROUPED_CALLS[0] - before == len(moes)  # noqa: SLF001
     torch.testing.assert_close(grouped, dense, rtol = 5e-2, atol = 5e-2)
+
+
+def test_a_grouped_mm_that_raises_keeps_the_dense_experts(monkeypatch):
+    """torch 2.8 ships torch._grouped_mm but raises off sm90: the probe must turn the grouped path off."""
+    import core.inference.diffusion_regional_compile as rc
+
+    def boom(*a, **k):
+        raise RuntimeError(
+            "torch._grouped_mm is only supported on CUDA devices with compute capability = 9.0"
+        )
+
+    monkeypatch.setattr(torch, "_grouped_mm", boom, raising = False)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda *a: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = 0: (8, 9))
+    monkeypatch.setattr(rc, "_GROUPED_RUNS", {})
+    assert rc._grouped_supported() is False  # noqa: SLF001
+    assert rc._GROUPED_RUNS == {0: False}  # noqa: SLF001
+
+
+def test_the_probe_touches_only_the_denoisers_card(monkeypatch):
+    import core.inference.diffusion_regional_compile as rc
+
+    monkeypatch.setattr(torch, "_grouped_mm", lambda *a, **k: None, raising = False)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda *a: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 3)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda i = 0: (8, 9))
+    probed = []
+    monkeypatch.setattr(rc, "_grouped_runs", lambda i: probed.append(i) or True)
+    assert rc._grouped_supported(torch.nn.Linear(2, 2)) is True  # noqa: SLF001
+    assert probed == [3]  # a CPU-resident model: the current card only, never all eight
