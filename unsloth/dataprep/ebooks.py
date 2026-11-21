@@ -93,7 +93,8 @@ class _BookTextParser(HTMLParser):
             closes = {"rb", "rp", "rt", "rtc"} if tag in {"rb", "rtc"} else {"rb", "rp", "rt"}
             while self.stack and self.stack[-1][0] in closes:
                 self.stack.pop()
-        attrs = dict(attrs)
+        # A valueless attribute (<p aria-hidden>, <meta content>) parses as None.
+        attrs = {name: value or "" for name, value in attrs}
         if tag == "meta" and self.encoding is None:
             self.encoding = attrs.get("charset")
             if not self.encoding and attrs.get("http-equiv", "").lower() == "content-type":
