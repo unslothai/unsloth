@@ -105,6 +105,9 @@ class _BookTextParser(HTMLParser):
             or tag in _IGNORE
             or "hidden" in attrs
             or attrs.get("aria-hidden", "").lower() == "true"
+            # A print page number inside a paragraph is not prose.
+            or "pagebreak" in (attrs.get("epub:type") or "").split()
+            or "doc-pagebreak" in (attrs.get("role") or "").split()
         )
         if not hidden:
             if tag in _BLOCKS or tag == "hr":
