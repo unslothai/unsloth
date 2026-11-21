@@ -245,10 +245,14 @@ def _prequant_transformer_sizes(fam: Any, request: Any, dirs: list) -> Optional[
 
     scheme = "int8" if quant == "auto" else quant
     try:
-        source = resolve_prequant_source(fam, scheme, base_repo = getattr(request, "model_path", None))
+        source = resolve_prequant_source(
+            fam, scheme, base_repo = getattr(request, "model_path", None)
+        )
     except Exception:  # noqa: BLE001 - unresolved: unpriced, as before
         source = None
-    location = getattr(source, "location", None) if getattr(source, "kind", None) == "repo" else None
+    location = (
+        getattr(source, "location", None) if getattr(source, "kind", None) == "repo" else None
+    )
     location = location or repos.get(scheme)
     # The loader reads one of these files (int8 ConvRot or fp8 at the repo root), or a transformer/ folder.
     names = set(candidate_filenames_of(source)) if source is not None else set()

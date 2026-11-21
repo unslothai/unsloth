@@ -201,7 +201,9 @@ def media_load_keeps_chat(owner: str) -> bool:
     return not gpu_arbiter.would_evict(owner, policy = get_multi_model_mode())
 
 
-def media_load_spares_chat(owner: str, kind: str, model: Optional[str], mode: Optional[str]) -> bool:
+def media_load_spares_chat(
+    owner: str, kind: str, model: Optional[str], mode: Optional[str]
+) -> bool:
     """For a direct image or video load: True when it must leave every chat model loaded (a chat's own
     tools key), so the arbiter refuses instead of evicting. Refuses at once when Off would surely evict."""
     policy = current_load_policy()
@@ -213,7 +215,11 @@ def media_load_spares_chat(owner: str, kind: str, model: Optional[str], mode: Op
 
 
 def chat_kept_refusal(
-    kind: str, model: Optional[str], mode: Optional[str], *, priced: bool = True
+    kind: str,
+    model: Optional[str],
+    mode: Optional[str],
+    *,
+    priced: bool = True,
 ) -> Any:
     """The HTTP refusal for a load that would unload the chat model; names only a change that would let it load."""
     if mode == "off":

@@ -108,9 +108,13 @@ def create_studio_mcp(profile: CallerProfile = AGENT, exclude: frozenset = froze
             )
             # A module may narrow a tool's parameters for a profile, such as the kinds a chat may load.
             narrow = getattr(module, "narrow", None)
-            parameters = narrow(tool.__name__, built.parameters, profile) if narrow else built.parameters
+            parameters = (
+                narrow(tool.__name__, built.parameters, profile) if narrow else built.parameters
+            )
             describe = getattr(module, "describe", None)
-            description = (describe(tool.__name__, profile) if describe else None) or built.description
+            description = (
+                describe(tool.__name__, profile) if describe else None
+            ) or built.description
             mcp.add_tool(
                 built.model_copy(
                     update = {

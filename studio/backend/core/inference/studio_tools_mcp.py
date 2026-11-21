@@ -156,7 +156,9 @@ async def _follow(caller: Any, kind: str, created: Any, follow_until: float) -> 
     from studio_mcp.loading import WAIT_S_LIMIT
 
     job = getattr(created, "structured_content", None)
-    job_id = (job.get("job_id") if kind == "load" else job.get("id")) if isinstance(job, dict) else None
+    job_id = (
+        (job.get("job_id") if kind == "load" else job.get("id")) if isinstance(job, dict) else None
+    )
     if getattr(created, "is_error", False) or not job_id:
         return created
     if kind == "load" and job.get("status") != "loading":
@@ -274,11 +276,12 @@ def _stop_scoped_loads(loop: Any, key: str) -> None:
     """Stops following the loads this call's key started, before the key goes: a media load the route
     admitted still finishes in Unsloth Studio, and no later call follows a job its revoked key drives."""
     from studio_mcp.loading import stop_scoped_loads
-
     try:
         asyncio.run_coroutine_threadsafe(stop_scoped_loads(key), loop).result(timeout = _STOP_WAIT_S)
     except Exception:  # noqa: BLE001 - the job then fails on its revoked key
-        logger.warning("Could not stop the loads of an Unsloth Studio chat tools call", exc_info = True)
+        logger.warning(
+            "Could not stop the loads of an Unsloth Studio chat tools call", exc_info = True
+        )
 
 
 def call(

@@ -1578,7 +1578,9 @@ def test_an_explicit_kind_reads_no_catalog_on_success(monkeypatch, fast_polls):
     result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "kind": "llm"})
     assert result["isError"] is False, result
     # An explicit llm load reads only the catalog (to refuse a catalog image model before it unloads anything).
-    reads = [c for c in studio.state.calls if (c[0], c[1]) in {MEDIA_CATALOG, AUDIO_CATALOG, V1_MODELS}]
+    reads = [
+        c for c in studio.state.calls if (c[0], c[1]) in {MEDIA_CATALOG, AUDIO_CATALOG, V1_MODELS}
+    ]
     assert {(c[0], c[1]) for c in reads} <= {MEDIA_CATALOG, AUDIO_CATALOG}
     studio = _media_studio(
         "image",
@@ -1591,8 +1593,15 @@ def test_an_explicit_kind_reads_no_catalog_on_success(monkeypatch, fast_polls):
     assert [c for c in studio.state.calls if (c[0], c[1]) == MEDIA_CATALOG] == []
 
 
-def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(monkeypatch, fast_polls):
-    routes = {**PAYLOADS, MEDIA_CATALOG: FLUX2_CATALOG, AUDIO_CATALOG: NO_CATALOG, V1_MODELS: {"data": []}}
+def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(
+    monkeypatch, fast_polls
+):
+    routes = {
+        **PAYLOADS,
+        MEDIA_CATALOG: FLUX2_CATALOG,
+        AUDIO_CATALOG: NO_CATALOG,
+        V1_MODELS: {"data": []},
+    }
     result, studio = run_tool(monkeypatch, routes, "load_model", {"model": FLUX2, "kind": "llm"})
     assert result["isError"] is True
     text = json.dumps(result)
@@ -1636,7 +1645,9 @@ def test_get_job_shows_the_wrong_kind_hint(monkeypatch, fast_polls):
     studio = fake_studio({**PAYLOADS, LOAD: slow(_autoconfig(LLM), 0.3), MEDIA_CATALOG: NO_CATALOG})
     with session(monkeypatch, studio) as call:
         early = call("load_model", {"model": LLM, "kind": "llm", "wait_s": 0})
-        job = call("get_job", {"kind": "load", "id": early["structuredContent"]["job_id"], "wait_s": 30})
+        job = call(
+            "get_job", {"kind": "load", "id": early["structuredContent"]["job_id"], "wait_s": 30}
+        )
     assert "pass kind" in json.dumps(job)
 
 
@@ -1680,9 +1691,19 @@ def test_the_wrong_kind_hint_names_only_tools_the_caller_has(monkeypatch, tools,
 
 
 def test_load_model_reads_the_media_catalog_once_per_call(monkeypatch, fast_polls):
-    routes = {**PAYLOADS, MEDIA_CATALOG: NO_CATALOG, AUDIO_CATALOG: NO_CATALOG, V1_MODELS: {"data": []}}
+    routes = {
+        **PAYLOADS,
+        MEDIA_CATALOG: NO_CATALOG,
+        AUDIO_CATALOG: NO_CATALOG,
+        V1_MODELS: {"data": []},
+    }
     _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
     assert len([c for c in studio.state.calls if (c[0], c[1]) == MEDIA_CATALOG]) == 1
-    routes = {**PAYLOADS, LOAD: _autoconfig(LLM), MEDIA_CATALOG: NO_CATALOG, AUDIO_CATALOG: NO_CATALOG}
+    routes = {
+        **PAYLOADS,
+        LOAD: _autoconfig(LLM),
+        MEDIA_CATALOG: NO_CATALOG,
+        AUDIO_CATALOG: NO_CATALOG,
+    }
     _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
     assert len([c for c in studio.state.calls if (c[0], c[1]) == MEDIA_CATALOG]) == 1

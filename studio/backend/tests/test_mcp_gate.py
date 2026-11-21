@@ -141,7 +141,9 @@ def test_off_is_a_plain_404_before_any_auth(studio, key_spy, method, path, autho
 @pytest.mark.parametrize("method", ["GET", "POST"])
 @pytest.mark.parametrize("path", ["/mcp/", "/mcp/x"])
 def test_off_tells_a_valid_full_access_key_why(studio, key_spy, off_key, method, path):
-    response = studio.request(method, path, json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)})
+    response = studio.request(
+        method, path, json = LISTING, headers = {**MCP_HEADERS, **bearer(off_key)}
+    )
     assert response.status_code == 404
     assert response.json() == {
         "jsonrpc": "2.0",
@@ -211,7 +213,10 @@ def test_off_keeps_the_bare_404_for_every_other_request(studio, key_spy, case, l
         "expired-key": [("authorization", f"Bearer {expired}")],
         "inference-key": [("authorization", f"Bearer {inference}")],
         "workflow-key": [("authorization", f"Bearer {workflow}")],
-        "foreign-origin": [("authorization", f"Bearer {valid}"), ("origin", "https://evil.example")],
+        "foreign-origin": [
+            ("authorization", f"Bearer {valid}"),
+            ("origin", "https://evil.example"),
+        ],
         "two-origins": [
             ("authorization", f"Bearer {valid}"),
             ("origin", "http://testserver"),

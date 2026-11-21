@@ -166,7 +166,9 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
         ("fit", None, False, True),  # unpriced: would evict first, so it refuses
     ],
 )
-def test_spare_chat_loads_beside_chat_or_refuses_without_evicting(cores, policy, need, short, refused):
+def test_spare_chat_loads_beside_chat_or_refuses_without_evicting(
+    cores, policy, need, short, refused
+):
     cores.fits(*([arb.CHAT] if short else []))
     arb.acquire_for(arb.CHAT, gpu_ids = [0])
     evicted: list = []
@@ -1259,7 +1261,9 @@ def test_a_failed_first_load_and_an_unpriced_one_restore_nothing_stale(cores, mo
         ("auto", True, False, False),  # the prequant transformer is not downloaded
     ],
 )
-def test_a_prequant_transformer_prices_a_base_without_one(monkeypatch, quant, base_ok, cached, priced):
+def test_a_prequant_transformer_prices_a_base_without_one(
+    monkeypatch, quant, base_ok, cached, priced
+):
     import types
 
     import core.inference.gpu_residency as res
@@ -1270,11 +1274,21 @@ def test_a_prequant_transformer_prices_a_base_without_one(monkeypatch, quant, ba
     request = types.SimpleNamespace(transformer_quant = quant, loras = None)
     asked = []
 
-    def complete(root, filename, *, excluded_components = (), **_):
+    def complete(
+        root,
+        filename,
+        *,
+        excluded_components = (),
+        **_,
+    ):
         asked.append(tuple(excluded_components))
         return base_ok and excluded_components == ("transformer",)
 
-    def union(repo, fn, staged_dir = None):
+    def union(
+        repo,
+        fn,
+        staged_dir = None,
+    ):
         assert repo == "org/x-FP8"
         return sum(fn("fp8-dir").values()) if cached else 0
 
@@ -1282,8 +1296,12 @@ def test_a_prequant_transformer_prices_a_base_without_one(monkeypatch, quant, ba
 
     # The FP8 repo ships its int8 ConvRot transformer as one file at the root.
     sizes = {"x-INT8-ConvRot.safetensors": 4 << 30, "text_encoder/model.safetensors": 8 << 30}
-    source = types.SimpleNamespace(kind = "repo", location = "org/x-FP8", candidate_filenames = ("x-INT8-ConvRot.safetensors",))
-    monkeypatch.setattr(diffusion_prequant, "resolve_prequant_source", lambda fam, scheme, **kw: source)
+    source = types.SimpleNamespace(
+        kind = "repo", location = "org/x-FP8", candidate_filenames = ("x-INT8-ConvRot.safetensors",)
+    )
+    monkeypatch.setattr(
+        diffusion_prequant, "resolve_prequant_source", lambda fam, scheme, **kw: source
+    )
     monkeypatch.setattr(diffusion_families, "local_pipeline_components_are_complete", complete)
     monkeypatch.setattr(DiffusionBackend, "_union_over_cached_revs", staticmethod(union))
     monkeypatch.setattr(

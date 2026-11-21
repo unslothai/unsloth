@@ -343,9 +343,7 @@ async def _inferred_kind(
 
 
 # A chat (a profile with load_kinds) loads only kinds that sit beside its own model, and only catalog models.
-_CHAT_ONLY_CATALOG = (
-    "This chat loads and downloads only models in the Unsloth Studio catalog (list_models(source='catalog'))"
-)
+_CHAT_ONLY_CATALOG = "This chat loads and downloads only models in the Unsloth Studio catalog (list_models(source='catalog'))"
 
 
 def _no_loads(caller: Caller, model: Optional[str]) -> None:
@@ -361,7 +359,11 @@ def _refuse_kind(caller: Caller, kind: str, model: Optional[str]) -> None:
     allowed = caller.profile.load_kinds
     if allowed is None or kind in allowed:
         return
-    named = f"'{model}' is a {problems.WHAT.get(kind, 'model')}" if model else f"kind '{kind}' is not one of them"
+    named = (
+        f"'{model}' is a {problems.WHAT.get(kind, 'model')}"
+        if model
+        else f"kind '{kind}' is not one of them"
+    )
     raise ToolError(
         "This chat can load and unload only image, video and speech-to-text models, so it never "
         f"replaces the model serving it; {named}. " + problems._ask_user_load(kind, model)
@@ -384,7 +386,9 @@ async def _chat_may_load(
     _no_loads(caller, model)
     for name, value in refused.items():
         if value is not None:
-            raise ToolError(f"This chat cannot pass {name}. " + problems._ask_user_load(kind, model))
+            raise ToolError(
+                f"This chat cannot pass {name}. " + problems._ask_user_load(kind, model)
+            )
     if kinds:
         _refuse_kind(caller, kind, model)
     if caller.profile.catalog_only:
@@ -397,7 +401,12 @@ async def _chat_may_load(
             )
 
 
-async def _refuse_certain_chat_unload(kind: str, model: str, *, download: bool = False) -> None:
+async def _refuse_certain_chat_unload(
+    kind: str,
+    model: str,
+    *,
+    download: bool = False,
+) -> None:
     """A chat's image or video load that Keep multiple models loaded set to Off would refuse is refused before
     anything downloads, by the check the load route makes (the route still decides every other case)."""
     if kind not in loading.MEDIA_ROUTES:
@@ -416,7 +425,6 @@ async def _refuse_certain_chat_unload(kind: str, model: str, *, download: bool =
         return
     if download:
         from core.inference.ensure_model import MULTI_MODEL_SETTING
-
         raise ToolError(
             f"This chat does not download '{model}': {MULTI_MODEL_SETTING} is Off, so it could not load it "
             "without unloading the model serving this chat. Ask the user to set it to When they fit, then try again."
@@ -479,7 +487,9 @@ def describe(name: str, caller_profile: profile.CallerProfile) -> Optional[str]:
     return _CHAT_TEXT.get(name) if caller_profile.load_kinds is not None else None
 
 
-def narrow(name: str, parameters: dict[str, Any], caller_profile: profile.CallerProfile) -> dict[str, Any]:
+def narrow(
+    name: str, parameters: dict[str, Any], caller_profile: profile.CallerProfile
+) -> dict[str, Any]:
     """The parameters ``name`` shows a profile with load_kinds: only those kinds, and no argument it would refuse."""
     allowed = caller_profile.load_kinds
     if allowed is None or name not in _CHAT_HIDDEN:
@@ -632,7 +642,11 @@ async def load_model(
         # A bare catalog name ("FLUX.2-klein-4B") loads that catalog row.
         model = await catalog.catalog_id() or model
     if kind is None:
-        kind = "llm" if checkpoint or export or not model else await _inferred_kind(caller, model, catalog)
+        kind = (
+            "llm"
+            if checkpoint or export or not model
+            else await _inferred_kind(caller, model, catalog)
+        )
     await _chat_may_load(
         caller,
         kind,
@@ -829,6 +843,7 @@ async def plan_load(
             gpu_layers = gpu_layers,
             kv_cache_type = kv_cache_type,
         )
+
     try:
         return await asyncio.wait_for(plan(), PLAN_S)
     except asyncio.TimeoutError:

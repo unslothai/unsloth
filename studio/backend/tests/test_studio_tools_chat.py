@@ -740,7 +740,10 @@ def test_only_a_chats_still_running_video_is_watched(
 # The chat loads, unloads and previews image, video and speech-to-text catalog models only.
 CATALOG = {
     ("GET", "/api/inference/media/catalog"): {
-        "models": [{"id": "unsloth/FLUX.2-klein-4B", "kind": "image"}, {"id": "org/vid", "kind": "video"}]
+        "models": [
+            {"id": "unsloth/FLUX.2-klein-4B", "kind": "image"},
+            {"id": "org/vid", "kind": "video"},
+        ]
     },
     ("GET", "/api/inference/audio/catalog"): {
         "models": [{"id": "org/tts", "task": "tts"}, {"id": "org/asr", "task": "asr"}]
@@ -749,7 +752,9 @@ CATALOG = {
 
 
 def _chat_schema(name):
-    tools = {tool.name: tool for tool in asyncio.run(studio_tools_mcp.chat_tools_mcp().list_tools())}
+    tools = {
+        tool.name: tool for tool in asyncio.run(studio_tools_mcp.chat_tools_mcp().list_tools())
+    }
     return tools[name].parameters
 
 
@@ -771,16 +776,40 @@ def test_the_chat_schemas_offer_only_the_kinds_it_may_load():
 @pytest.mark.parametrize(
     "name, args, expected",
     [
-        ("load_model", {"model": "unsloth/Qwen3-0.6B-GGUF", "kind": "llm"}, "only image, video and speech-to-text"),
+        (
+            "load_model",
+            {"model": "unsloth/Qwen3-0.6B-GGUF", "kind": "llm"},
+            "only image, video and speech-to-text",
+        ),
         ("load_model", {"model": "org/tts"}, "only image, video and speech-to-text"),
-        ("load_model", {"model": "someone/any-image-repo", "kind": "image"}, "only models in the Unsloth Studio catalog"),
-        ("load_model", {"model": "/home/me/models/flux", "kind": "image"}, "only models in the Unsloth Studio catalog"),
-        ("load_model", {"model": "org/vid", "kind": "image"}, "only models in the Unsloth Studio catalog"),
-        ("load_model", {"model": "unsloth/FLUX.2-klein-4B", "hf_token": "hf_x"}, "cannot pass hf_token"),
+        (
+            "load_model",
+            {"model": "someone/any-image-repo", "kind": "image"},
+            "only models in the Unsloth Studio catalog",
+        ),
+        (
+            "load_model",
+            {"model": "/home/me/models/flux", "kind": "image"},
+            "only models in the Unsloth Studio catalog",
+        ),
+        (
+            "load_model",
+            {"model": "org/vid", "kind": "image"},
+            "only models in the Unsloth Studio catalog",
+        ),
+        (
+            "load_model",
+            {"model": "unsloth/FLUX.2-klein-4B", "hf_token": "hf_x"},
+            "cannot pass hf_token",
+        ),
         ("load_model", {"checkpoint": "run-1"}, "cannot pass checkpoint"),
         ("unload_model", {}, "only image, video and speech-to-text"),
         ("unload_model", {"kind": "all"}, "only image, video and speech-to-text"),
-        ("download_model", {"model": "someone/any-repo"}, "only models in the Unsloth Studio catalog"),
+        (
+            "download_model",
+            {"model": "someone/any-repo"},
+            "only models in the Unsloth Studio catalog",
+        ),
         ("download_model", {"model": "org/tts", "hf_token": "hf_x"}, "cannot pass hf_token"),
     ],
 )
@@ -791,20 +820,29 @@ def test_a_chat_load_outside_its_kinds_or_the_catalog_is_refused_before_any_load
     result = bridge(OWNER, name, args)
     assert result.startswith("Error: ") and expected in result, result
     reached = {seen["path"] for seen in app.state.seen}
-    assert reached <= {"/api/inference/media/catalog", "/api/inference/audio/catalog", "/v1/models"}, reached
+    assert reached <= {
+        "/api/inference/media/catalog",
+        "/api/inference/audio/catalog",
+        "/v1/models",
+    }, reached
     assert chat_keys() == []
 
 
 def test_a_chat_on_an_inference_only_key_is_told_it_cannot_load(server_loop, monkeypatch):
     app = studio(monkeypatch, CATALOG)
     never = AccountContext(OWNER.account_id, OWNER.username, OWNER.role, load_policy = "never")
-    for name, args in (("load_model", {"model": "unsloth/FLUX.2-klein-4B"}), ("unload_model", {"kind": "image"})):
+    for name, args in (
+        ("load_model", {"model": "unsloth/FLUX.2-klein-4B"}),
+        ("unload_model", {"kind": "image"}),
+    ):
         result = bridge(never, name, args)
         assert "inference only API key" in result and "cannot load" in result, result
     assert [seen["path"] for seen in app.state.seen if "catalog" not in seen["path"]] == []
 
 
-def test_a_chat_loads_a_catalog_image_model_beside_its_own_through_the_bridge(server_loop, monkeypatch):
+def test_a_chat_loads_a_catalog_image_model_beside_its_own_through_the_bridge(
+    server_loop, monkeypatch
+):
     from core.inference.load_policy import current_load_policy
     from studio_mcp import loading
     from studio_mcp.outputs import LoadResult
