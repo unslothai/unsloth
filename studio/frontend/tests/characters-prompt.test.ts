@@ -13,7 +13,7 @@ import {
 } from "../src/features/characters/prompt/build.ts";
 import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
 import { applyMacros, applyNameMacros } from "../src/features/characters/prompt/macros.ts";
-import { hiddenRoleplayTurnKind, ordinaryFallbackTurns } from "../src/features/characters/meta.ts";
+import { alternatingTurns, hiddenRoleplayTurnKind } from "../src/features/characters/meta.ts";
 import { tidyCharacterDisplay } from "../src/features/characters/prompt/display.ts";
 import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
 import { mentionedIds, planReplies, seededRandom, shortName } from "../src/features/characters/prompt/speakers.ts";
@@ -617,7 +617,7 @@ test("a chat whose characters were all deleted still alternates roles", () => {
     { id: "stale", role: "user", metadata: rp("turn") },
     { id: "u2", role: "user" },
   ];
-  assert.deepEqual(ordinaryFallbackTurns(chat).map((m) => m.id), ["o", "g1", "t", "g2", "u", "r", "u2"]);
+  assert.deepEqual(alternatingTurns(chat).map((m) => m.id), ["o", "g1", "t", "g2", "u", "r", "u2"]);
 });
 
 test("one lore budget covers the whole cast", () => {

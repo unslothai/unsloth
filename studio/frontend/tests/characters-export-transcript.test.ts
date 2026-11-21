@@ -36,3 +36,15 @@ test("a reply the model wrote without its name still exports under that name", (
   const out = characterChatTranscript([reply]);
   assert.equal((out?.[0].content as { text: string }[])[0].text, "Rin: I will take the roof.");
 });
+
+test("training exports keep roles alternating", () => {
+  const rp = (kind: string) => ({ roleplay: { kind, speakerId: "a", speakerName: "Ann" } });
+  const records = [
+    { role: "user", content: text("[Start a new chat]"), metadata: rp("opening") },
+    { role: "assistant", content: text("Hi."), metadata: rp("reply") },
+    { role: "user", content: text("[Bo's turn]"), metadata: rp("turn") },
+    { role: "assistant", content: text("Hey."), metadata: rp("reply") },
+  ];
+  assert.deepEqual(characterChatTranscript(records, true)?.map((r) => r.role), ["user", "assistant", "user", "assistant"]);
+  assert.deepEqual(characterChatTranscript(records)?.map((r) => r.role), ["assistant", "assistant"]);
+});

@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { hiddenRoleplayTurnKind, roleplayMetaOf } from "./meta.ts";
+import { alternatingTurns, hiddenRoleplayTurnKind, roleplayMetaOf } from "./meta.ts";
 import { stripSpeakerPrefix } from "./prompt/build.ts";
 
 type ExportRecord = { role?: string; metadata?: unknown; content?: unknown };
 
 /** A character chat without its turn markers, each reply opening with one "Name: " (exports label
- *  every reply Assistant, so the name is what says who spoke); null for an ordinary chat. */
-export function characterChatTranscript<R extends ExportRecord>(records: R[]): R[] | null {
+ *  every reply Assistant, so the name is what says who spoke); null for an ordinary chat. Training
+ *  formats keep a marker where it is the only user turn before a reply, so roles still alternate. */
+export function characterChatTranscript<R extends ExportRecord>(records: R[], alternating = false): R[] | null {
   if (!records.some((record) => roleplayMetaOf(record) !== null)) return null;
-  return records
-    .filter((record) => hiddenRoleplayTurnKind(record) === null)
+  const kept = alternating ? alternatingTurns(records) : records.filter((record) => hiddenRoleplayTurnKind(record) === null);
+  return kept
     .map((record) => {
       const meta = roleplayMetaOf(record);
       if (meta?.kind !== "reply" || !meta.speakerName || !Array.isArray(record.content)) return record;

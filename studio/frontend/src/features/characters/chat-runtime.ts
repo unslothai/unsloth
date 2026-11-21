@@ -5,7 +5,7 @@ import type { ThreadMessage } from "@assistant-ui/react";
 import { getLocale, translate } from "@/i18n";
 import { getCharacter } from "./api";
 import { isCharacterChat } from "./chat-gate";
-import { ordinaryFallbackTurns, roleplayMetaOf, type MessageLike } from "./meta";
+import { alternatingTurns, roleplayMetaOf, type MessageLike } from "./meta";
 import { resolvePersona } from "./persona";
 import {
   buildCharacterPrompt,
@@ -205,7 +205,7 @@ export async function prepareCharacterRun(args: {
 
 /** What a run sends: a character chat's shaped turns, else the history minus hidden turn markers (a chat whose cast was all deleted). */
 export function characterOutbound<M extends MessageLike & { id: string }>(run: CharacterRun | null, messages: readonly M[]): M[] {
-  return run ? messages.filter((m) => run.sends(m.id)).map(run.shape) : ordinaryFallbackTurns(messages);
+  return run ? messages.filter((m) => run.sends(m.id)).map(run.shape) : alternatingTurns(messages);
 }
 
 // The context meter recounts the same branch often; reuse its run (and lorebook scan) until the branch changes.

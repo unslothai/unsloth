@@ -55,9 +55,9 @@ export function isHiddenRoleplayTurn(message: MessageLike | null | undefined): b
   return hiddenRoleplayTurnKind(message) !== null;
 }
 
-/** A chat whose characters were all deleted, sent as an ordinary chat: hidden turns are dropped except
- *  where one is the only user turn before a reply, so strict templates still see roles alternate. */
-export function ordinaryFallbackTurns<M extends MessageLike>(messages: readonly M[]): M[] {
+/** Drops hidden turns except where one is the only user turn before a reply, so strict templates still
+ *  see roles alternate (a chat whose characters were all deleted, training exports). */
+export function alternatingTurns<M extends MessageLike>(messages: readonly M[]): M[] {
   return messages.filter((message, index) => !isHiddenRoleplayTurn(message) || messages[index + 1]?.role === "assistant");
 }
 

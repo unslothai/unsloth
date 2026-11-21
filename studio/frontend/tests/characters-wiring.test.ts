@@ -92,6 +92,6 @@ test("a chat with no cast left goes through the ordinary fallback, and audio rep
   assert.match(adapter, /characterOutbound\(characterRun, renderedMessages\)/);
   assert.match(adapter, /characterOutbound\(characterRun, survivingMessages\)/);
   const runtime = read("features/characters/chat-runtime.ts");
-  assert.match(runtime, /: ordinaryFallbackTurns\(messages\)/);
+  assert.match(runtime, /: alternatingTurns\(messages\)/);
   assert.equal((adapter.match(/\.\.\.audioMetadata,/g) ?? []).length, 2);
 });
