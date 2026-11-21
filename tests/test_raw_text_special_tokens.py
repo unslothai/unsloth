@@ -81,3 +81,32 @@ def test_raw_file_text_dataset_keeps_chat_role_tokens(raw_text, tokenizer, tmp_p
     for token in ("[BOS]", "[USER]", "[ASSISTANT]"):
         assert token in output
     assert output.count("[EOS]") == 2
+
+
+@pytest.mark.parametrize("stride", [0, 2])
+def test_text_chunks_cut_between_characters_not_inside_one(raw_text, stride):
+    # Byte-level tokens, as GPT-2 / Llama 3 / Qwen use for characters outside their merges.
+    alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
+    vocabulary = {symbol: index for index, symbol in enumerate(alphabet)}
+    vocabulary["[EOS]"] = len(vocabulary)
+    backend = tokenizers.Tokenizer(tokenizers.models.BPE(vocabulary, []))
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(add_prefix_space = False)
+    backend.decoder = tokenizers.decoders.ByteLevel()
+    tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "[EOS]")
+
+    text = "日本語のテキスト 😀 naïve café " * 4
+    loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = 8, stride = stride)
+    chunks = loader.chunk_text(text, return_tokenized = False)
+
+    assert len(chunks) > 4
+    assert not any("�" in chunk for chunk in chunks)
+    assert chunks[-1].endswith("[EOS]")
+    lengths = [len(tokenizer(chunk, add_special_tokens = False)["input_ids"]) for chunk in chunks]
+    assert max(lengths) <= 8
+    if stride == 0:
+        assert "".join(chunks) == text + "[EOS]"
+
+    # The window that gives a lone EOS its context starts on a character too and still fits.
+    loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = 6, stride = 4)
+    chunks = loader.chunk_text("aébb é語\né", return_tokenized = False)
+    assert chunks[-1] == "\né[EOS]" and not any("�" in chunk for chunk in chunks)
