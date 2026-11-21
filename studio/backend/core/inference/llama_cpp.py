@@ -22636,25 +22636,41 @@ class LlamaCppBackend:
 
         # A type this build lacks (prism-ml PQ2_0 / PTQ1_0 = 142 / 143) or packs differently (group-128 Q2_0, #11259).
         # A truncated download fails later instead, as "data is not within the file bounds".
-        # Bundled IQ1_XS..IQ1_XXXS = 64-66, so ids 43-63 fail later as an empty block-size-0 slot (#13908).
+        # Bundled IQ1_XS..IQ1_XXXS = 64-66, so ids 36-38 (removed IQ4_NL_4_4..8_8 slots, #18722) and 43-63 fail later as an empty block-size-0 slot (#13908).
         bad_type = re.search(
             r"tensor '([^']*)' (?:has invalid ggml type (\d+)|of type (\d+) .*?not a multiple of block size \(0\))",
             scan_tail,
         )
         bad_layout = re.search(r"tensor '[^']*' has offset \d+, expected \d+", scan_tail)
         if bad_type or bad_layout:
-            detail = (
-                f"tensor '{_short(bad_type.group(1))}' uses quantization type "
-                f"{bad_type.group(2) or bad_type.group(3)}, which this build does not have"
-                if bad_type
-                else "its tensor layout does not match this build's quantization types"
-            )
+            _known_ggml_types = {
+                "34": "TQ1_0",
+                "35": "TQ2_0",
+                "36": "IQ4_NL_4_4",
+                "37": "IQ4_NL_4_8",
+                "38": "IQ4_NL_8_8",
+                "39": "MXFP4",
+                "142": "PQ2_0",
+                "143": "PTQ1_0",
+            }
+            if bad_type:
+                _type_id = bad_type.group(2) or bad_type.group(3)
+                _type_name = _known_ggml_types.get(_type_id)
+                _type_label = f"{_type_id} ({_type_name})" if _type_name else _type_id
+                detail = (
+                    f"tensor '{_short(bad_type.group(1))}' uses quantization type "
+                    f"{_type_label}, which this build does not have"
+                )
+            else:
+                detail = "its tensor layout does not match this build's quantization types"
             return LlamaCppBackend._with_startup_diagnostics(
                 "The installed llama.cpp cannot read this GGUF's weights "
                 f"({detail}); this is not a memory problem. The file was likely made for "
                 "a different llama.cpp build: a newer one, or a publisher's own fork. Pick "
                 "another quant of this model, or use the llama.cpp build the "
-                "model card names. If the model card says it runs on stock llama.cpp, "
+                "model card names. For a local or fine-tuned GGUF, you can also requantize "
+                "it with the bundled llama-quantize (--allow-requantize <in.gguf> <out.gguf> "
+                "Q4_K_M). If the model card says it runs on stock llama.cpp, "
                 "the file may be damaged: download it again.",
                 output,
                 log_path,
