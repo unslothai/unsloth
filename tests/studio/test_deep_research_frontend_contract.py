@@ -209,7 +209,7 @@ def test_research_presentation_is_integrated() -> None:
     assert "Boolean(getResearchRunId(metadata))" in thread
     assert "isResearchReply(message.metadata)" in owners
     assert "owners.add(parentId)" in owners
-    user_actions = thread.split("const UserActionBar: FC = () =>", 1)[1].split(
+    user_actions = thread.split("const UserActionBar: FC", 1)[1].split(
         "const EditComposer:", 1
     )[0]
     assert "!ownsResearchMessage &&" in user_actions

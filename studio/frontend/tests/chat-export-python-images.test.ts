@@ -7,6 +7,7 @@ import vm from "node:vm";
 import ts from "@typescript/typescript6";
 
 import * as sandboxFiles from "../src/components/assistant-ui/sandbox-files.ts";
+import { characterChatTranscript } from "../src/features/characters/export-transcript.ts";
 import { stripSearchImageTokens } from "../src/features/chat/search-images/search-images.ts";
 import * as conversationHtml from "../src/features/chat/utils/conversation-html.ts";
 import {
@@ -112,6 +113,7 @@ async function exportedBodies(turns: unknown[] = TURNS) {
     savedBranchHead: () => undefined,
     conversationExportBasename: () => "plot",
     orderByParentChain,
+    characterChatTranscript,
     unwrapPastedTextContent,
     toolResultModelText: (result: { text?: unknown }) => result?.text ?? result,
     contentBlocksToMarkdownBlocks,
