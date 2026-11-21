@@ -436,6 +436,42 @@ def test_unmarked_modules_pay_one_dict_lookup(env):
     assert not fused._f1_single_ready(block)  # noqa: SLF001
 
 
+@pytest.mark.parametrize("how", ["hook", "pre_hook", "forward"])
+def test_a_hooked_dropout_keeps_the_stock_ff(env, monkeypatch, how):
+    """The fused FF path never calls ``net[1]``: a forward / pre-forward hook or an instance ``forward`` on the Dropout
+    must keep the stock path so the callback still runs."""
+    torch, f1, fused, gemm = env
+    calls = {"shared": 0, "gelu": 0}
+    _force_on(monkeypatch, torch, fused, gemm, calls)
+    model = _tiny(torch, f1)
+    _install(fused, model)
+    with torch.no_grad():
+        model(**_inputs(torch))
+    assert calls["gelu"] > 0
+    first = calls["gelu"]
+    fired = []
+    from diffusers.models.attention import FeedForward
+
+    ffs = [m for m in model.modules() if type(m) is FeedForward and fused._gelu_ff_ready(m)]  # noqa: SLF001
+    assert ffs
+    for ff in ffs:
+        drop = ff.net[1]
+        if how == "hook":
+            drop.register_forward_hook(lambda m, i, o: fired.append(1))
+        elif how == "pre_hook":
+            drop.register_forward_pre_hook(lambda m, i: fired.append(1))
+        else:
+            stock = drop.forward
+            drop.forward = lambda x, _s = stock: (fired.append(1), _s(x))[1]
+        assert not fused._gelu_ff_ready(ff)  # noqa: SLF001
+    calls.update(gelu = 0)
+    with torch.no_grad():
+        model(**_inputs(torch))
+    # Only the FF calls leave the fused path (the single-block GELU producer has no Dropout), and every hook runs.
+    assert calls["gelu"] == first - len(ffs)
+    assert len(fired) == len(ffs)
+
+
 def test_kill_switches_and_what_they_restore(env, monkeypatch):
     """``UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED=0`` restores main exactly (no FLUX.1 patch installed, stock functions
     back); ``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED=0`` / ``..._INT8_ROTQUANT_PRODUCER=0`` only turn the GELU producer off

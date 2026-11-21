@@ -571,8 +571,8 @@ def _plain_gelu_tanh(act: Any, cls: Any) -> bool:
 
 
 def _gelu_ff_ready(ff: Any) -> bool:
-    """A FLUX.1 ``FeedForward`` (GELU(tanh) -> Dropout -> rotated int8 Linear) ``install`` marked. Traced: plain
-    attribute reads only; the mark (an instance ``__dict__`` read) first, so unmarked modules pay one dict lookup."""
+    """A FLUX.1 ``FeedForward`` (GELU(tanh) -> Dropout -> rotated int8 Linear) ``install`` marked, with no hook or
+    ``forward`` override on the GELU or the Dropout (the fused path calls neither). Traced: plain attribute reads only; the mark (an instance ``__dict__`` read) first, so unmarked modules pay one dict lookup."""
     if not ff.__dict__.get(_F1_MARK, False) or _gemm._hooked(ff):
         return False
     net = ff.net
@@ -580,6 +580,7 @@ def _gelu_ff_ready(ff: Any) -> bool:
         len(net) == 3
         and _plain_gelu_tanh(net[0], _CLS.get("GELU"))
         and type(net[1]) is _CLS.get("Dropout")
+        and not _gemm._hooked(net[1])
         and (not ff.training or net[1].p == 0)
         and _rotated(net[2])
     )
