@@ -2435,7 +2435,7 @@ fn main() {
         }
         let (major, minor, micro) = webkit_rendering.webkit_version;
         info!(
-            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} cpu_painting={}",
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} hardware_gl={} cpu_painting={}",
             gpu_setting.as_str(),
             if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
             webkit_rendering
@@ -2445,6 +2445,7 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
+            webkit_rendering.hardware_gl,
             webkit_rendering.cpu_painting,
         );
     }
@@ -2692,6 +2693,13 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
+            #[cfg(target_os = "linux")]
+            if linux_webkit::webkit_compositing_off() {
+                let launch = app.state::<gpu_rendering::LaunchState>();
+                if launch.note_cpu_painting() {
+                    info!("GPU rendering: WebKitGTK turned compositing off; cpu_painting=true");
+                }
+            }
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
             #[cfg(target_os = "linux")]
