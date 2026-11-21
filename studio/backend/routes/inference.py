@@ -6851,6 +6851,7 @@ _TOOL_XML_RE = _re.compile(
     + r"(?=\s*(?:<｜tool▁call▁begin｜>|function)|\s*$).*?(?:<｜tool▁calls▁end｜>|\Z)"
     r"|<\|tool_calls_section_begin\|>(?=\s*<\|tool_call_begin\|>|\s*$).*?(?:<\|tool_calls_section_end\|>|\Z)"
     r"|<\|tool_call_begin\|>(?=\s*[A-Za-z_][\w.\-]*:\d|\s*$).*?(?:<\|tool_call_end\|>|\Z)"
+    r"|<\|tool_call_start\|>(?=\s*\[|\s*$).*?(?:<\|tool_call_end\|>|\Z)"
     # </param> is the attribute-form alias of </parameter>; strip a tail-only orphan close of either.
     r"|</(?:parameter|param)>\s*\Z",
     _re.DOTALL,

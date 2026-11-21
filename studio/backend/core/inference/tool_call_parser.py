@@ -71,6 +71,10 @@ _TOOL_CLOSED_PATS = [
     re.compile(r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>", re.DOTALL),
     # Kimi K2 section-less closed call; else the catch-all below eats trailing prose to EOS
     re.compile(r"<\|tool_call_begin\|>.*?<\|tool_call_end\|>", re.DOTALL),
+    # LFM2 / LFM2.5 ``<|tool_call_start|>[name(arg=...)]<|tool_call_end|>``.
+    re.compile(r"<\|tool_call_start\|>(?=\s*\[).*?<\|tool_call_end\|>", re.DOTALL),
+    # Held while open: the final answer pass has no signal buffer, so a partial call would be shown.
+    re.compile(r"<\|tool_call_start\|>(?=\s*\[|\s*$).*$", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
     re.compile(r"<tool_call>.*$", re.DOTALL),
@@ -1345,6 +1349,7 @@ def strip_segment(
         ("<｜tool▁calls▁end｜>", "<｜"),
         ("<|tool_calls_section_end|>", "<|tool_calls_section_begin|>"),
         ("<|tool_call_end|>", "<|tool_call_begin|>"),
+        ("<|tool_call_end|>", "<|tool_call_start|>"),
     )
     for pat_idx, pat in enumerate(pats):
         if pat_idx < len(required_pairs):
