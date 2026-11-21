@@ -197,3 +197,46 @@ def test_a_failing_check_leaves_the_call_unchanged(monkeypatch):
 
     monkeypatch.setattr(L, "_ltx2_mask_all_ones", boom)
     assert L._ltx2_full_mask_pre_hook(dit, (), {"encoder_attention_mask": mask}) is None
+
+
+@pytest.mark.parametrize("per_modality", [True, False], ids = ["ltx23_25", "ltx20"])
+@pytest.mark.parametrize("registers", [4, None], ids = ["registers", "no_registers"])
+def test_real_connector_mask_is_all_ones_and_dropped(monkeypatch, per_modality, registers):
+    """The connectors' own output (padded prompts of different lengths, CFG-style batch) is the mask the hook sees."""
+    from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
+
+    monkeypatch.delenv(L.LTX2_FULL_MASK_ENV, raising = False)
+    torch.manual_seed(3)
+    con = LTX2TextConnectors(
+        caption_channels = 16,
+        text_proj_in_factor = 3,
+        video_connector_num_attention_heads = 2,
+        video_connector_attention_head_dim = 8,
+        video_connector_num_layers = 1,
+        video_connector_num_learnable_registers = registers,
+        audio_connector_num_attention_heads = 2,
+        audio_connector_attention_head_dim = 8,
+        audio_connector_num_layers = 1,
+        audio_connector_num_learnable_registers = registers,
+        per_modality_projections = per_modality,
+        video_hidden_dim = 16,
+        audio_hidden_dim = 16,
+        rope_type = "split",
+    ).eval()
+    text_mask = torch.zeros(3, 8, dtype = torch.int64)
+    for row, n in enumerate((1, 5, 8)):
+        text_mask[row, 8 - n :] = 1  # left padding, as Gemma-3 pads
+    with torch.no_grad():
+        video_emb, audio_emb, mask = con(torch.randn(3, 8, 16, 3), text_mask)
+    assert bool(torch.all(mask == 1)), mask
+    dit = _dit()
+    kwargs = _inputs(mask)
+    kwargs.update(encoder_hidden_states = video_emb, audio_encoder_hidden_states = audio_emb)
+    with torch.no_grad():
+        ref = dit(**kwargs)
+    L.install_ltx2_full_mask_drop(types.SimpleNamespace(transformer = dit))
+    with torch.no_grad():
+        out = dit(**kwargs)
+    assert getattr(dit, L._LTX2_MASK_DROPS) == 2
+    for got, want in zip(out, ref):
+        torch.testing.assert_close(got, want, rtol = 1e-5, atol = 1e-6)
