@@ -4270,10 +4270,15 @@ def check_and_disable_bitsandbytes_loading(
     ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
     # Inkling 2's "modelopt" config describes its own expert layout, decoded by transformers' conversion mapping:
     # drop it so the generic ModelOpt rewrite stays off and bitsandbytes can quantize the dequantized weights.
-    from .inkling2 import inkling2_owns_modelopt_quantization, drop_inkling2_quantization_config
+    from .inkling2 import (
+        inkling2_owns_modelopt_quantization,
+        drop_inkling2_quantization_config,
+        register_inkling2_expert_dequantization,
+    )
 
     if inkling2_owns_modelopt_quantization(model_config):
         drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
+        register_inkling2_expert_dequantization()
         return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:

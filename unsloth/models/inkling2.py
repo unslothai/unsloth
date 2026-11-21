@@ -10,6 +10,8 @@ transformers >= 5.24 ships both natively. Two things need Unsloth's help:
 - The released checkpoints declare ``quantization_config = {"quant_method": "modelopt", "quant_algo": "NVFP4"}``,
   but their layout is Inkling's own (``w13_weight`` + ``_scale`` / ``_amax`` / ``_outer_scale_denominator``), which
   transformers' Inkling conversion mapping decodes itself. The generic ModelOpt NVFP4 rewrite must not touch it.
+  transformers 5.24 dequantizes those experts for ``inkling2_loop`` only; ``inkling2`` (Small) maps them as if they
+  were plain / FP8 tensors, so ``register_inkling2_expert_dequantization`` gives it the loop's transforms.
 """
 
 import re
@@ -19,6 +21,7 @@ __all__ = [
     "is_inkling2_config",
     "inkling2_owns_modelopt_quantization",
     "drop_inkling2_quantization_config",
+    "register_inkling2_expert_dequantization",
     "patch_inkling2_model",
     "inkling2_lora_target_modules",
 ]
@@ -112,6 +115,50 @@ def drop_inkling2_quantization_config(
             "Unsloth: Inkling 2 stores its MoE experts in NVFP4 / MXFP8; transformers dequantizes them while "
             "loading" + (", then bitsandbytes quantizes them to 4bit." if load_in_4bit else ".")
         )
+
+
+def _is_expert_transform(transform) -> bool:
+    patterns = getattr(transform, "_original_source_patterns", None) or ()
+    return any(str(p).startswith(r"mlp\.experts\.w") for p in patterns)
+
+
+def _has_dequant_op(transform) -> bool:
+    return any(
+        type(op).__name__ == "Inkling2LoopDequantizeExperts"
+        for op in getattr(transform, "operations", ())
+    )
+
+
+def register_inkling2_expert_dequantization() -> bool:
+    """Load the released NVFP4 / MXFP8 experts of ``inkling2`` checkpoints the way transformers loads ``inkling2_loop``.
+
+    Upstream builds ``inkling2_loop_text`` as its two dequantizing expert converters plus ``inkling2_text`` without
+    its expert transforms; this registers ``inkling2_text`` the same way. Returns False (and changes nothing) when
+    either mapping no longer has that shape."""
+    try:
+        from transformers import conversion_mapping as cm
+    except Exception:
+        return False
+    get = getattr(cm, "get_checkpoint_conversion_mapping", None)
+    register = getattr(cm, "register_checkpoint_conversion_mapping", None)
+    if get is None or register is None:
+        return False
+    try:
+        loop_text, text = get("inkling2_loop_text"), get("inkling2_text")
+    except Exception:
+        return False
+    if not loop_text or not text:
+        return False
+    dequant = [t for t in loop_text if _is_expert_transform(t)]
+    if len(dequant) != 2 or not all(_has_dequant_op(t) for t in dequant):
+        return False
+    if any(_has_dequant_op(t) for t in text):
+        return True  # already registered
+    rest = [t for t in text if not _is_expert_transform(t)]
+    if len(rest) == len(text):
+        return False  # upstream no longer maps the experts here: nothing to replace
+    register("inkling2_text", dequant + rest, overwrite = True)
+    return True
 
 
 def inkling2_lora_target_modules(

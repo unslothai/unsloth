@@ -47,7 +47,7 @@ def _tiny(loop = True):
         sliding_window_size = 4,
         n_routed_experts = 4,
         num_experts_per_tok = 2,
-        moe_intermediate_size = 16,
+        moe_intermediate_size = 32,
     )
     vision = dict(
         model_type = "inkling2_vision",
@@ -176,3 +176,82 @@ def test_check_and_disable_keeps_4bit_for_inkling2():
     )
     assert out == (True, False, None)
     assert getattr(config, "quantization_config", None) is None
+
+
+_E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+
+
+def _nvfp4(w):
+    """The released ModelOpt layout: E2M1 pairs (low nibble = even element), e4m3 scale per 16, amax / denominator."""
+    E, R, C = w.shape
+    w = w.float()
+    amax = w.abs().amax(dim = (1, 2))
+    denom = 6.0 * 448.0
+    factor = (amax / denom).clamp(min = 1e-12)
+    blocks = w.view(E, R, C // 16, 16)
+    scale = (
+        (blocks.abs().amax(-1) / 6.0 / factor[:, None, None])
+        .clamp(max = 448.0)
+        .to(torch.float8_e4m3fn)
+    )
+    x = blocks / (scale.float() * factor[:, None, None]).clamp(min = 1e-30)[..., None]
+    idx = (x.abs().clamp(max = 6.0)[..., None] - torch.tensor(_E2M1)).abs().argmin(-1)
+    code = (idx + 8 * ((x < 0) & (idx > 0)).long()).view(E, R, C)
+    packed = (code[..., 0::2] | (code[..., 1::2] << 4)).to(torch.uint8)
+    return packed, scale, amax, torch.tensor([denom])
+
+
+def _mxfp8(w):
+    E, R, C = w.shape
+    blocks = w.float().view(E, R, C // 32, 32)
+    exp = torch.ceil(torch.log2(blocks.abs().amax(-1).clamp(min = 1e-30) / 448.0)).clamp(-127, 127)
+    return (blocks / torch.exp2(exp)[..., None]).to(torch.float8_e4m3fn).view(E, R, C), (
+        exp + 127
+    ).to(torch.uint8)
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_released_nvfp4_mxfp8_experts_decode(tmp_path, loop):
+    """Mini (loop) decodes upstream; Small (inkling2) only once its text mapping gets the loop's expert transforms."""
+    import json
+    from safetensors.torch import load_file, save_file
+    from transformers import AutoModelForImageTextToText
+
+    ink = _inkling2()
+    assert ink.register_inkling2_expert_dequantization()
+    model = _tiny(loop)
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if "experts" in n:
+                p.normal_(0, 0.05)
+    model.save_pretrained(tmp_path / "bf16")
+    sd = load_file(tmp_path / "bf16" / "model.safetensors")
+    out = {}
+    for k, v in sd.items():
+        m = re.search(r"layers\.(\d+)\.mlp\.experts\.(w13|w2)_weight$", k)
+        if m is None:
+            out[k] = v
+        elif int(m.group(1)) == 11:
+            out[k], out[k + "_scale"] = _mxfp8(v)
+        else:
+            out[k], out[k + "_scale"], out[k + "_amax"], out[k + "_outer_scale_denominator"] = (
+                _nvfp4(v)
+            )
+    (tmp_path / "q").mkdir()
+    save_file(out, tmp_path / "q" / "model.safetensors", metadata = {"format": "pt"})
+    config = json.loads((tmp_path / "bf16" / "config.json").read_text())
+    config["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
+    (tmp_path / "q" / "config.json").write_text(json.dumps(config))
+    ref = AutoModelForImageTextToText.from_pretrained(
+        tmp_path / "bf16", dtype = torch.float32
+    ).state_dict()
+    got = AutoModelForImageTextToText.from_pretrained(
+        tmp_path / "q", dtype = torch.float32
+    ).state_dict()
+    assert set(ref) == set(got)
+    for k, v in ref.items():
+        if "experts" in k:
+            # NVFP4 is ~10% relative error, MXFP8 ~3%; a layout mistake is O(1) or worse.
+            assert float((got[k] - v).norm() / v.norm()) < (0.05 if ".11." in k else 0.15), k
+        else:
+            assert torch.equal(got[k], v), k
