@@ -130,6 +130,8 @@ def test_flux1_arch_patched_single_block_keeps_addcmul(env, monkeypatch):
 
     calls = {"shared": 0, "gelu": 0}
     _force_on(monkeypatch, torch, fused, gemm, calls)
+    # another test module may have imported the arch patches against a stand-in torch
+    monkeypatch.setattr(ap, "torch", torch)
     cls = f1.FluxSingleTransformerBlock
     monkeypatch.setattr(cls, "forward", ap._flux_single_forward)  # noqa: SLF001
     model = _tiny(torch, f1).to(torch.bfloat16)
