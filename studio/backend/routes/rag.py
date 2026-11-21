@@ -1085,7 +1085,7 @@ def _page_text(
     *,
     raw: bool = False,
 ) -> str:
-    # raw: a text file's leading tab or indent is content (an empty TSV cell, a code block).
+    # raw: leading whitespace is content (an empty TSV cell, a code block).
     original = page.text if raw else page.text.strip()
     scanned = scanned_text.get(page.page_number, "")
     return scanned if original in scanned else "\n\n".join(filter(None, [original, scanned]))

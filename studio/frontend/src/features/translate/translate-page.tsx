@@ -216,7 +216,6 @@ function declaredHtmlCharset(file: File, bytes: ArrayBuffer): string | null {
   }
 }
 
-// null: charset unknown (Latin-1, UTF-16, ...), so the server detects it.
 async function readTextPrefix(file: File): Promise<string | null> {
   const bytes = await file.slice(0, TEXT_READ_BYTES).arrayBuffer();
   const stream = file.size > TEXT_READ_BYTES;
