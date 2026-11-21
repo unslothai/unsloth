@@ -57,6 +57,12 @@ if sys.platform == "win32":
             except Exception:
                 pass
     del _win_stream
+    try:
+        from utils.proactor_self_pipe import install_proactor_self_pipe_guard as _install_self_pipe_guard
+
+        _install_self_pipe_guard()
+    except Exception:
+        pass
 
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()

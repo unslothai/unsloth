@@ -35,6 +35,8 @@ def reads(monkeypatch):
     base = proactor_events.BaseProactorEventLoop
     # Count against CPython's own method even if an earlier test in this process installed the guard.
     original = psp._cpython_loop_self_reading or base._loop_self_reading
+    original_make = psp._cpython_make_self_pipe or base._make_self_pipe
+    original_close = psp._cpython_close_self_pipe or base._close_self_pipe
     counter = {"n": 0}
 
     def counting(self, f = None):
@@ -42,8 +44,12 @@ def reads(monkeypatch):
         return original(self, f)
 
     monkeypatch.setattr(base, "_loop_self_reading", counting)
+    monkeypatch.setattr(base, "_make_self_pipe", original_make)
+    monkeypatch.setattr(base, "_close_self_pipe", original_close)
     monkeypatch.setattr(psp, "_installed", False)
     monkeypatch.setattr(psp, "_cpython_loop_self_reading", None)
+    monkeypatch.setattr(psp, "_cpython_make_self_pipe", None)
+    monkeypatch.setattr(psp, "_cpython_close_self_pipe", None)
     monkeypatch.setattr(psp, "_socketpair", socket.socketpair)
     yield counter
 
@@ -306,3 +312,58 @@ def test_install_is_idempotent_and_skips_other_platforms(monkeypatch):
     assert psp.install_proactor_self_pipe_guard() is False
     monkeypatch.setattr(psp, "_installed", True)
     assert psp.install_proactor_self_pipe_guard() is True
+
+
+@windows_only
+def test_new_event_loop_retries_winerror_10013_on_self_pipe_creation(reads, monkeypatch):
+    assert psp.install_proactor_self_pipe_guard() is True
+    attempts = {"n": 0}
+
+    def flaky_win10013_socketpair():
+        attempts["n"] += 1
+        if attempts["n"] < 4:
+            raise PermissionError(
+                13,
+                "An attempt was made to access a socket in a way forbidden by its access permissions",
+                None,
+                10013,
+            )
+        return socket.socketpair()
+
+    monkeypatch.setattr(psp, "_socketpair", flaky_win10013_socketpair)
+    loop = asyncio.ProactorEventLoop()
+    try:
+        assert attempts["n"] == 4
+        assert loop._ssock is not None and loop._csock is not None
+        assert loop.run_until_complete(asyncio.sleep(0.01, result = "ok")) == "ok"
+    finally:
+        loop.close()
+
+
+@windows_only
+def test_exhausted_self_pipe_creation_closes_cleanly_without_ssock_attribute_error(
+    reads, monkeypatch
+):
+    import gc
+
+    assert psp.install_proactor_self_pipe_guard() is True
+    monkeypatch.setattr(psp, "_SOCKETPAIR_PORT_RETRIES", 3)
+    calls = {"n": 0}
+    unraisable = []
+    monkeypatch.setattr(sys, "unraisablehook", lambda args: unraisable.append(args))
+
+    def always_denied_socketpair():
+        calls["n"] += 1
+        raise PermissionError(
+            13,
+            "An attempt was made to access a socket in a way forbidden by its access permissions",
+            None,
+            10013,
+        )
+
+    monkeypatch.setattr(psp, "_socketpair", always_denied_socketpair)
+    with pytest.raises(PermissionError):
+        asyncio.ProactorEventLoop()
+    gc.collect()
+    assert calls["n"] == 3
+    assert unraisable == []
