@@ -2423,6 +2423,14 @@
       "evidence_hash": "9c591563f1309a849f3e654aced3574a719c4c5c4cee6138bbc55ff6ae111a7e"
     },
     {
+      "package": "transformers",
+      "file": "transformers/testing_utils.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L1970:     while True: sha256:cd3f02d5b3fea6d636c6bf768695aff015a73e5624ec8651d48c303e5a1531f0",
+      "evidence_hash": "30119612ea37d85318b9d9080569bc96b9e748fdca29b9745cd0537417687660"
+    },
+    {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/llama_cpp.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
