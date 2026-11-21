@@ -380,7 +380,8 @@ def launch(
             ],
             stdin = subprocess.PIPE,
             env = env_r,
-            cwd = _backend_dir(),
+            # The caller's directory: rank 0 resolved relative data / model / cache / resume paths against it.
+            cwd = os.getcwd(),
         )
         proc.stdin.write(payload.encode())
         proc.stdin.close()

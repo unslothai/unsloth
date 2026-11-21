@@ -571,3 +571,48 @@ if __name__ == "__main__":
     mode, rank, world, port, *rest = sys.argv[1:]
     fn = {"grads": _child_grads, "train": _child_train}[mode]
     fn(int(rank), int(world), int(port), *rest)
+
+
+def test_worker_ranks_start_in_the_callers_directory(monkeypatch, tmp_path):
+    """Rank 0 resolves relative data / model / cache / resume paths against the caller's cwd, so the workers must
+    start there too (the backend reaches them through PYTHONPATH)."""
+    import io
+
+    import torch.distributed as dist
+
+    from core.training import diffusion_ddp as ddp
+
+    seen = []
+
+    class _Proc:
+        def __init__(self, *a, **k):
+            seen.append(k)
+            self.stdin = io.BytesIO()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout = None):
+            return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
+    monkeypatch.setattr(ddp, "_loopback_store", lambda world: (object(), 1234))
+    monkeypatch.setattr(ddp, "_config_payload", lambda cfg: "{}")
+    monkeypatch.setattr(ddp.subprocess, "Popen", _Proc)
+
+    def _no_group(*a, **k):
+        raise RuntimeError("no group in this test")
+
+    monkeypatch.setattr(dist, "init_process_group", _no_group)
+    with pytest.raises(RuntimeError, match = "no group"):
+        ddp.launch(object(), 2)
+    assert len(seen) == 1
+    assert seen[0]["cwd"] == str(tmp_path)
+    assert ddp._backend_dir() in seen[0]["env"]["PYTHONPATH"].split(os.pathsep)
