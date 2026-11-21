@@ -44,7 +44,14 @@ def _load(monkeypatch, limiter, snapshot_download):
     keep = [
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and re.search(r"statistic|has_internet", node.name)
+        if (isinstance(node, ast.FunctionDef) and re.search(r"statistic|has_internet", node.name))
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id in ("_STATISTICS_LIMIT_S", "_HF_DOWN_MESSAGE")
+                for t in node.targets
+            )
+        )
     ]
     ns = {
         "os": os,
@@ -58,6 +65,7 @@ def _load(monkeypatch, limiter, snapshot_download):
         "DEVICE_TYPE": "cuda",
         "DEVICE_COUNT": 1,
         "USE_MODELSCOPE": False,
+        "threading": threading,
     }
     exec(compile(ast.Module(body = keep, type_ignores = []), str(_UTILS), "exec"), ns)
     ns["has_internet"] = lambda: True
@@ -86,6 +94,8 @@ def _load(monkeypatch, limiter, snapshot_download):
         "HF_HUB_OFFLINE",
     ):
         monkeypatch.delenv(k, raising = False)
+    # These cases pin the blocking path; the default background path is covered at the end of this file.
+    monkeypatch.setenv("UNSLOTH_STATISTICS_BLOCKING", "1")
     return ns
 
 
@@ -173,3 +183,55 @@ def test_opt_outs_make_no_request(monkeypatch, rec, env, local_files_only):
         monkeypatch.setenv(k, v)
     ns["get_statistics"](local_files_only)
     assert rec.calls == [] and rec.limits == []
+
+
+def test_default_path_does_not_block_the_load(monkeypatch, rec):
+    """The default path forks the child and returns at once; the child still makes all four requests."""
+    if sys.platform != "linux":
+        pytest.skip("background statistics need the fork start method")
+    ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
+    monkeypatch.delenv("UNSLOTH_STATISTICS_BLOCKING")
+    marker = pathlib.Path(os.environ.get("PYTEST_TMPDIR", "/tmp")) / f"unsloth_stats_{os.getpid()}"
+    marker.unlink(missing_ok = True)
+
+    def slow_download(
+        repo_id,
+        force_download = False,
+        **kwargs,
+    ):
+        time.sleep(1.5)
+        with open(marker, "a") as f:
+            f.write(repo_id + "\n")
+
+    sys.modules["huggingface_hub"].snapshot_download = slow_download
+    started = []
+    real = ns["_download_statistics_background"]
+    ns["_download_statistics_background"] = lambda names: started.append(real(names)) or started[-1]
+    t0 = time.perf_counter()
+    ns["get_statistics"](False)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 0.5, elapsed
+    assert rec.limits == []  # the blocking time-limited wrapper was not used
+    # The reaper thread owns the join; poll the child's side effect instead of racing it on waitpid.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and (
+        not marker.exists() or len(marker.read_text().split()) < 4
+    ):
+        time.sleep(0.05)
+    names = sorted(line.split("/", 1)[1] for line in marker.read_text().split())
+    marker.unlink(missing_ok = True)
+    assert len(names) == 4 and "repeat" in names and "vram-40" in names
+
+
+def test_background_hang_is_killed_and_warned(monkeypatch, caplog):
+    if sys.platform != "linux":
+        pytest.skip("background statistics need the fork start method")
+    import multiprocessing as mp
+
+    ns = _load(monkeypatch, lambda *a, **k: (lambda f: f), lambda *a, **k: None)
+    proc = mp.get_context("fork").Process(target = time.sleep, args = (60,), daemon = True)
+    proc.start()
+    with caplog.at_level(logging.WARNING, logger = "unsloth"):
+        ns["_reap_statistics"](proc, 0.3)
+    assert not proc.is_alive()
+    assert "HuggingFace seems to be down" in caplog.text
