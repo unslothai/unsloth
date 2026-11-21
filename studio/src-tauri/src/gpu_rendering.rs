@@ -262,8 +262,7 @@ impl LaunchState {
         }
     }
 
-    /// WebKit turned compositing off itself, which only shows once GTK is up (setup, before any
-    /// command is served). Returns whether this changed the report.
+    /// WebKit turned compositing off itself, seen only once GTK is up. Returns whether it changed.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn note_cpu_painting(&self) -> bool {
         !self.cpu_painting.swap(true, Ordering::SeqCst)
@@ -531,7 +530,6 @@ mod tests {
             serde_json::to_value(&changed).unwrap()["oldDriverWarning"],
             serde_json::Value::from("580")
         );
-        // WebKit turning compositing off itself flips the report once.
         assert!(quiet.note_cpu_painting());
         assert!(!quiet.note_cpu_painting());
         assert!(status(&quiet, GpuRendering::Auto).cpu_painting);

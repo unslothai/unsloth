@@ -29,13 +29,11 @@ const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 const SKIA_CPU_RENDERING: &str = "WEBKIT_SKIA_ENABLE_CPU_RENDERING";
 // 2.46 replaced cairo, which rasterized on the CPU, with Skia on the GPU whenever compositing is on.
 const SKIA_MIN_VERSION: (u32, u32) = (2, 46);
-// Below this the GPU look needs evidence of a hardware renderer (hardware_gl_available); from it the
-// environment alone decides, as it always has.
+// Below this the GPU look also needs hardware_gl_available.
 const GPU_PAINTING_ASSUMED_FROM: (u32, u32) = (2, 54);
 const DEV_DIR: &str = "/dev";
 const DRM_CLASS_DIR: &str = "/sys/class/drm";
-// glvnd's default vendor search path (${sysconfdir}, then ${datadir}); the variables that replace it
-// are GL_SELECTION_OVERRIDES, which void the evidence anyway.
+// glvnd's default vendor search path; the variables that replace it are in GL_SELECTION_OVERRIDES.
 const EGL_VENDOR_DIRS: [&str; 2] = ["/etc/glvnd/egl_vendor.d", "/usr/share/glvnd/egl_vendor.d"];
 // Kernel drivers of GPUs Mesa renders on. Virtual ones (virtio_gpu, vmwgfx, vboxvideo) are left
 // out: without host 3D their Mesa driver falls back to llvmpipe behind the same render node.
@@ -43,8 +41,7 @@ const MESA_GPU_DRIVERS: &[&str] = &[
     "amdgpu", "asahi", "etnaviv", "i915", "lima", "msm", "nouveau", "panfrost", "panthor",
     "radeon", "v3d", "xe",
 ];
-// Operator choices of GL driver or EGL vendor. Any of them can put WebKit on llvmpipe on a host
-// with a GPU (a Mesa-only vendor list on an NVIDIA host does), so they void the evidence.
+// Each can put WebKit on llvmpipe on a host with a GPU, so they void the evidence.
 const GL_SELECTION_OVERRIDES: &[&str] = &[
     "LIBGL_ALWAYS_SOFTWARE",
     "GALLIUM_DRIVER",
@@ -231,7 +228,7 @@ fn compositing_disabled_by(value: &OsStr) -> bool {
 /// Whether this launch's web process paints on the CPU, read from the environment it inherits.
 /// Skia's CPU path re-blurs every CSS shadow on each repaint, so the frontend flattens large
 /// blurred shadows to a 1px edge. True when unsure: a flat edge costs a GPU path only its softness.
-/// Compositing that WebKit turns off itself shows in the view's policy, read at setup.
+/// Compositing that WebKit turns off itself is read at setup (`note_cpu_painting`).
 /// `hardware_gl` runs only when its answer decides, so most launches never look at the devices.
 fn paints_on_cpu(
     env: impl Fn(&str) -> Option<OsString>,
@@ -256,12 +253,9 @@ fn paints_on_cpu(
         || (version < GPU_PAINTING_ASSUMED_FROM && !hardware_gl())
 }
 
-/// Evidence that WebKit renders on a GPU: an EGL vendor glvnd loads, with the devices it renders
-/// on, and no operator choice of GL driver or EGL vendor. Without one WebKit composites on Mesa's
-/// llvmpipe, slower than Skia's CPU path. NVIDIA's EGL needs /dev/nvidiactl and a /dev/nvidiaN,
-/// not a render node; Mesa's needs a render node of a GPU it drives. Reads only files and
-/// permissions: opening a device, or NVIDIA's per-GPU procfs, can wake a suspended GPU. Absence
-/// proves nothing (a sandbox can hide either), so it only lifts the CPU assumption below 2.54.
+/// An EGL vendor glvnd loads plus the devices it renders on; without one WebKit runs on llvmpipe,
+/// slower than Skia's CPU path. Reads only files and permissions: opening a device, or NVIDIA's
+/// per-GPU procfs, can wake a suspended GPU.
 fn hardware_gl_available(
     env: impl Fn(&str) -> Option<OsString>,
     dev_dir: &Path,
@@ -312,7 +306,6 @@ fn mesa_render_node_accessible(dev_dir: &Path, drm_class_dir: &Path) -> bool {
     })
 }
 
-/// File names of the libraries glvnd's vendor files load (`ICD.library_path`).
 fn egl_vendor_libraries(dirs: &[&Path]) -> Vec<String> {
     dirs.iter()
         .filter_map(|dir| std::fs::read_dir(dir).ok())
@@ -2695,7 +2688,6 @@ mod tests {
 
     #[test]
     fn below_2_54_the_gpu_look_needs_hardware_gl_evidence() {
-        // Without evidence 2.46 to 2.53 keep the CPU assumption; from 2.54 the environment decides.
         let env = |_: &str| None;
         for (version, without_evidence) in [
             (WEBKIT_BUNDLED, true),
@@ -2786,7 +2778,6 @@ mod tests {
         assert!(!available(), "nvidia-modeset is not a GPU");
         touch("nvidia0");
         assert!(available());
-        // An operator's GL driver or EGL vendor choice voids it.
         for name in GL_SELECTION_OVERRIDES {
             let env = |key: &str| (key == *name).then(|| OsString::from("1"));
             assert!(
@@ -2816,7 +2807,6 @@ mod tests {
         std::fs::remove_file(vendors.join("50_mesa.json")).unwrap();
         std::fs::write(vendors.join("broken.json"), "{").unwrap();
         assert!(!available(), "Mesa's GPU without Mesa's vendor");
-        // An absolute library path still names the vendor.
         vendor("50_mesa.json", "/usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0");
         assert!(available());
     }
