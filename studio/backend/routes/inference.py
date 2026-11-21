@@ -137,6 +137,7 @@ from core.inference.audio_errors import (
 )
 from core.inference.audio_cpp_outputs import NO_STEMS
 from core.inference import context_refusal
+from core.inference import linked_instances
 from core.inference.gen_stepper import ThreadStepper
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
@@ -32693,6 +32694,12 @@ class _DroppedFrameKeepalive:
         return True
 
 
+async def _forward_linked(request: Request, path: str, linked: tuple, subject: str):
+    return await linked_instances.forward(
+        request, path, linked, subject = subject, via_api_key = _request_used_api_key(request)
+    )
+
+
 def _chat_image_preflight(payload: ChatCompletionRequest, parsed_image_b64) -> dict:
     """The switch's ``image_preflight`` for a chat request carrying an image."""
     images_on_turn = _images_in_last_user_message(payload.messages)
@@ -33010,6 +33017,9 @@ async def openai_chat_completions(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    # Before the local tool policy, as on /responses and /messages: the linked server applies its own.
+    if linked := await linked_instances.resolve(request, payload.model):
+        return await _forward_linked(request, "chat/completions", linked, current_subject)
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
     if connection is not None and (payload.provider_id or payload.provider_type):
@@ -39266,22 +39276,29 @@ async def _openai_catalog_with_aliases(quant_pins: bool = False) -> list[dict]:
 @router.get("/models")
 @in_scan_memo
 async def openai_list_models(
-    output_modalities: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+    output_modalities: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+    request: Request = None,
 ):
     """
     OpenAI-compatible model listing endpoint (``GET /v1/models``).
 
     Lists every model available on this server -- the loaded model(s) plus
     locally available (downloaded/cached) models -- not only what is resident in
-    memory. Each entry carries a clean public id and a ``loaded`` flag.
+    memory. Each entry carries a clean public id and a ``loaded`` flag. Models on
+    linked Unsloth Studio instances follow as ``@<instance>/<id>``.
     """
     wanted = {m.strip() for m in (output_modalities or "").split(",")}
-    if not wanted & {"all", "decisions"}:
-        return {"object": "list", "data": await _openai_catalog_with_aliases(quant_pins = True)}
-    from routes.systemone import decision_model_objects
-
-    data = [] if wanted == {"decisions"} else await _openai_catalog_with_aliases(quant_pins = True)
-    data += await asyncio.to_thread(decision_model_objects)
+    data: list = []
+    if wanted != {"decisions"}:
+        local, linked = await asyncio.gather(
+            _openai_catalog_with_aliases(quant_pins = True),
+            linked_instances.catalog_objects(request),
+        )
+        data = local + linked
+    if wanted & {"all", "decisions"}:
+        from routes.systemone import decision_model_objects
+        data += await asyncio.to_thread(decision_model_objects)
     return {"object": "list", "data": data}
 
 
@@ -39344,7 +39361,11 @@ def _quant_pin_object(listed: dict, variant: str, resident_quants) -> dict:
 
 
 @router.get("/models/{model_id:path}")
-async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
+async def openai_retrieve_model(
+    model_id: str,
+    current_subject: str = Depends(get_current_subject),
+    request: Request = None,
+):
     """
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
@@ -39354,6 +39375,20 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     with slashes intact.
     """
     from core.inference.model_ids import model_id_matches
+
+    if linked_instances.split_model(model_id):
+        for model in await linked_instances.catalog_objects(request):
+            if model["id"].lower() == model_id.lower():
+                return model
+        raise HTTPException(
+            status_code = 404,
+            detail = openai_error_body(
+                f"The model '{model_id}' does not exist",
+                status = 404,
+                code = "model_not_found",
+                param = "model",
+            ),
+        )
 
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
@@ -40095,6 +40130,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     Proxies to the running llama-server's ``/v1/completions`` when a GGUF model is
     loaded or to a managed vLLM/SGLang engine's, and serves an MLX model in process.
     """
+    try:
+        _linked_model = _raw_body_model(await request.json())
+    except (json.JSONDecodeError, ValueError):
+        _linked_model = None
+    if linked := await linked_instances.resolve(request, _linked_model):
+        return await _forward_linked(request, "completions", linked, current_subject)
     from utils.hardware import DeviceType, get_device
 
     try:
@@ -40937,6 +40978,12 @@ def _embeddings_input_present(body: dict) -> bool:
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Unsloth's configured embedding model."""
+    try:
+        _linked_model = _raw_body_model(await request.json())
+    except (json.JSONDecodeError, ValueError):
+        _linked_model = None
+    if linked := await linked_instances.resolve(request, _linked_model):
+        return await _forward_linked(request, "embeddings", linked, current_subject)
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))
@@ -43652,6 +43699,8 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    if linked := await linked_instances.resolve(request, payload.model):
+        return await _forward_linked(request, "responses", linked, current_subject)
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
     for history_param in ("previous_response_id", "conversation"):
@@ -45811,6 +45860,8 @@ async def anthropic_count_tokens(
     tokenizer, or a resident MLX model's through the chat count route, and returns
     ``{"input_tokens": int}`` only. Unlike /messages, max_tokens is NOT required here.
     """
+    if linked := await linked_instances.resolve(request, payload.model):
+        return await _forward_linked(request, "messages/count_tokens", linked, current_subject)
     _mark_claude_code_thinking(payload, request)
     if _connection_model_ref(payload.model) is not None:
         raise HTTPException(
@@ -46474,6 +46525,8 @@ async def anthropic_messages(
     responses in Anthropic Messages API format (streaming SSE or non-streaming
     JSON).
     """
+    if linked := await linked_instances.resolve(request, payload.model):
+        return await _forward_linked(request, "messages", linked, current_subject)
     _mark_claude_code_thinking(payload, request)
     _admit_tool_access(payload)
     await asyncio.to_thread(warm_anthropic_pdf_documents, payload.messages)
@@ -54800,6 +54853,45 @@ def _absolute_image_url(request: Request, image_id: str) -> str:
     return str(request.base_url).rstrip("/") + relative
 
 
+def _linked_images_as_local_urls(
+    request: Request, content: bytes, prompt: str, linked: tuple
+) -> Response:
+    from PIL import Image
+
+    from core.inference import image_gallery
+
+    instance, remote_model = linked
+    try:
+        payload = json.loads(content)
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code = 502,
+            detail = f"Linked instance '{instance['name']}' returned no image data.",
+        )
+    created = payload.get("created") or int(time.time())
+    for index, item in enumerate(payload.get("data") or []):
+        encoded = item.pop("b64_json", None) if isinstance(item, dict) else None
+        if not encoded:
+            continue
+        image = Image.open(io.BytesIO(base64.b64decode(encoded)))
+        image.load()
+        record = image_gallery.save(
+            image,
+            {
+                "prompt": prompt,
+                "width": image.width,
+                "height": image.height,
+                "model": f"{linked_instances.MODEL_PREFIX}{instance['name']}/{remote_model}",
+                "batch_index": index,
+                "created_at": float(created),
+            },
+        )
+        item["url"] = _absolute_image_url(request, record["id"])
+    return JSONResponse(payload)
+
+
 @studio_router.get("/images/gallery/{image_id}/file-signed")
 async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
     """Serve one gallery PNG gated by the HMAC token instead of the bearer, for the
@@ -54865,6 +54957,25 @@ async def openai_image_generations(
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
+    if linked := await linked_instances.resolve(request, body.model):
+        # A streamed reply has no single body to rewrite; the remote answers it as it would here.
+        if body.response_format == "b64_json" or body.stream:
+            return await _forward_linked(request, "images/generations", linked, current_subject)
+        # The remote's URLs name its own host, which a caller of this machine may not reach:
+        # take the pixels and serve them from this gallery instead.
+        response = await linked_instances.forward(
+            request,
+            "images/generations",
+            linked,
+            subject = current_subject,
+            via_api_key = _request_used_api_key(request),
+            body_overrides = {"response_format": "b64_json"},
+        )
+        if response.status_code >= 400:
+            return response
+        return await asyncio.to_thread(
+            _linked_images_as_local_urls, request, response.body, body.prompt, linked
+        )
     if body.stream:
         raise HTTPException(
             status_code = 400,

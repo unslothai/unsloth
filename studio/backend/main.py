@@ -469,6 +469,7 @@ from routes.whisper import router as whisper_router
 from routes.video_restyle import router as video_restyle_router
 from routes.npu import router as npu_router
 from routes.preview import router as preview_router
+from routes.linked_instances import router as linked_instances_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
@@ -2215,6 +2216,10 @@ from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
 
 app.add_middleware(KeylessToolPolicyMiddleware)
 
+from core.inference.linked_instances import LinkedToolsOffMiddleware  # noqa: E402
+
+app.add_middleware(LinkedToolsOffMiddleware)
+
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
@@ -2257,6 +2262,9 @@ app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 app.include_router(llama_compat_router, tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(
+    linked_instances_router, prefix = "/api/linked-instances", tags = ["linked-instances"]
+)
 
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 
