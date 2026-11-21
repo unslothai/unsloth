@@ -771,8 +771,7 @@ def _network_gate(firewalled, tool, session_id, thread_id, output_callback, canc
 
 
 def _watched_network(gate, env):
-    """Where the OS cannot confine a call: the same checkpoint on loopback, which the proxy variables and the
-    Python connect hook send traffic to. Returns the child's environment and what stops the checkpoint."""
+    """Loopback egress checkpoint for calls the OS cannot confine; returns (child env, stopper)."""
     from . import sandbox_egress
 
     rc_dir = tempfile.mkdtemp(prefix = "us-egress-rc-")
