@@ -1377,6 +1377,9 @@ class _PPPassThrough(_CheckpointLayer):
     pinned off), so the hidden states it hands out stay in this stage's autograd graph."""
 
     gradient_checkpointing = property(lambda self: False, lambda self, value: None)
+    # Read by _frozen_prefix: the hidden states this layer hands out come from the previous stage and carry its
+    # gradient, so they must never become the cut's detached leaf.
+    _unsloth_pipeline_stand_in = True
 
     def __init__(self, index, ctx, source):
         nn.Module.__init__(self)
