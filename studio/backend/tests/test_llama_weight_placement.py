@@ -322,8 +322,7 @@ def test_no_load_signal_reports_no_figure(tmp_path, monkeypatch):
 
 
 def test_fit_probe_reads_are_not_weight_progress(tmp_path, monkeypatch):
-    """--fit parses the GGUF header once per placement probe. Those reads, and the shared
-    libraries already in RssFile, must not show as weights loaded."""
+    """Header re-reads by --fit probes and shared libraries in RssFile are not weights loaded."""
     inst = _fake_load(tmp_path, 1000)
     counters = {"read": 30, "rss": 200}
     monkeypatch.setattr(
@@ -340,7 +339,7 @@ def test_fit_probe_reads_are_not_weight_progress(tmp_path, monkeypatch):
     ]
     for line in log:
         assert inst._note_load_stage(pid, line) is False
-    counters["read"] = 450  # every probe re-read the header
+    counters["read"] = 450
     assert inst.load_progress() == {
         "phase": "fit",
         "bytes_loaded": 0,
@@ -352,7 +351,7 @@ def test_fit_probe_reads_are_not_weight_progress(tmp_path, monkeypatch):
     assert inst._note_load_stage(pid, line) is True
     out = inst.load_progress()
     assert (out["phase"], out["bytes_loaded"]) == ("mmap", 0)
-    counters["rss"] = 200 + 600  # weights paging in through mmap
+    counters["rss"] = 200 + 600
     assert inst.load_progress()["bytes_loaded"] == 600
 
 
@@ -365,7 +364,6 @@ def test_load_without_fit_counts_from_the_first_weight_read(tmp_path, monkeypatc
     monkeypatch.setattr(
         LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: counters["read"])
     )
-    # Before the marker nothing is subtracted, as before.
     assert inst.load_progress()["bytes_loaded"] == 200
     inst._note_load_stage(
         inst._process.pid,
@@ -394,7 +392,6 @@ _REAL_TENSORS = "0.12.758.987 I load_tensors: loading model tensors, this can ta
 
 
 def _drain(inst, argv, lines, monkeypatch, counters):
-    """Runs the real stdout drain over ``lines`` as if llama-server had printed them, launched with ``argv``."""
     monkeypatch.setattr(
         LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: counters["rss"])
     )
@@ -412,8 +409,7 @@ def _drain(inst, argv, lines, monkeypatch, counters):
 
 
 def test_a_probe_weight_line_inside_the_search_is_not_the_load(tmp_path, monkeypatch):
-    """At verbosity 5 each placement probe prints its own (demoted) weight-load line. Only the line
-    after the search ends starts the weights, and its baseline is taken there."""
+    """At verbosity 5 each probe prints its own weight-load line; only the one after the search counts."""
     inst = _fake_load(tmp_path, 1000)
     counters = {"read": 30, "rss": 200}
     log = [
@@ -436,8 +432,7 @@ def test_a_probe_weight_line_inside_the_search_is_not_the_load(tmp_path, monkeyp
 
 
 def test_below_trace_verbosity_the_raw_counters_stay(tmp_path, monkeypatch):
-    """At verbosity 2 a --fit warning prints but the search's end and the weight-load line do not, so
-    the log cannot mark the stages: progress is counted as before rather than stuck on "fit"."""
+    """At verbosity 2 the search's end never prints, so progress stays raw rather than stuck on "fit"."""
     inst = _fake_load(tmp_path, 1000)
     counters = {"read": 450, "rss": 200}
     log = [
@@ -489,7 +484,6 @@ def test_a_second_search_for_the_drafter_ignores_its_probes_too(tmp_path, monkey
         (["llama-server", "--verbosity", "4"], {}, True),
         (["llama-server", "-lv=5"], {}, True),
         (["llama-server", "-v"], {}, True),
-        # llama-server accepts the underscore spellings too.
         (["llama-server", "--log_verbosity", "5"], {}, True),
         (["llama-server", "--log_verbosity=5"], {}, True),
         (["llama-server", "--log_verbose"], {}, True),

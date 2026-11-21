@@ -1011,12 +1011,10 @@ def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
 
 
 def _log_shows_load_stages(argv, environ) -> bool:
-    """True when llama-server logs at trace verbosity or above, the only levels at which its log marks
-    both ends of a --fit search and the weight load. Below that, load_progress keeps the raw counters."""
+    """True when llama-server logs at trace verbosity or above, the only levels that mark the load stages."""
     verbosity = None
     args = [str(a) for a in argv] if isinstance(argv, (list, tuple)) else []
     for i, arg in enumerate(args):
-        # _flag_name folds the --log_verbosity spellings llama-server also accepts.
         flag, (_name, eq, value) = _flag_name(arg), arg.partition("=")
         if flag == "--log-disable":
             return False
@@ -1081,11 +1079,9 @@ _FIT_DEVICE_RE = re.compile(
     r"common_params_fit_impl:\s+-\s+(?P<device>[A-Za-z]+\d+)\s+\(.*?\):\s+(?P<layers>\d+)\s+layers?"
     r"\s*(?:\(\s*(?P<overflow>\d+)\s+overflowing\s*\))?\s*,\s*\d+\s+MiB used"
 )
-# llama-server reads no weight bytes before this line, only GGUF headers and shared libraries. Each --fit
-# probe loads the model too (no_alloc, nothing read), and from verbosity 5 its line prints as well, still as "I".
+# The first weight read; from verbosity 5 each --fit probe (no_alloc, nothing read) prints it too.
 _LOAD_TENSORS_MARK = "load_tensors: loading model tensors"
-# --fit on prints these before its placement probes. Each probe parses the GGUF header again and reads no weights.
-# Builds before the fitter moved to common (b8864 and earlier) prefix its lines llama_params_fit_impl.
+# Start of the --fit search; b8864 and older prefix its lines llama_params_fit_impl.
 _FIT_START_MARKS = (
     "fitting params to device memory",
     "common_params_fit_impl:",
@@ -1093,7 +1089,7 @@ _FIT_START_MARKS = (
 )
 # Every way the search ends prints one: success at trace (4), failure and error as warning and error.
 _FIT_END_MARKS = ("common_fit_params:", "llama_params_fit:")
-# Both ends of the search and the weight-load line print from trace verbosity up; llama.cpp defaults to info (3).
+# llama.cpp defaults to info (3), which hides both ends of the search and the weight-load line.
 _LOAD_STAGE_MIN_VERBOSITY = 4
 # The MoE-only fill: printed for a model with experts, whose GPU layers then hold only their dense weights.
 _FIT_DENSE_ONLY_MARK = "filling dense-only layers back-to-front"
@@ -8769,7 +8765,7 @@ class LlamaCppBackend:
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
         self._load_rss_hwm = (None, 0)  # ((pid, stage), peak bytes) for load_progress
-        # (pid, "fit" | "weights", bytes read, RSS) for load_progress, set by _drain_stdout.
+        # (pid, "fit" | "placed" | "weights", read baseline, RSS baseline), set by _drain_stdout.
         self._load_stage = None
         self._stats_logger = None  # vLLM-style engine-stats poller, set on load
         # Set by _classify_gpu_offload after _wait_for_health.
@@ -9534,10 +9530,8 @@ class LlamaCppBackend:
 
         ``bytes_loaded`` is the larger of the bytes read and Linux file-backed RSS; never a working set,
         which counts buffers allocated before any read. The total includes projector, drafter and adapters.
-        When llama-server logs at trace verbosity (Studio's default, see _log_shows_load_stages), both
-        counters start from their values at its first weight read: what came before is GGUF headers and
-        shared libraries. Until then a --fit placement search reports phase "fit" with no bytes, since its
-        probes re-read the header and load no weights. At lower verbosity the counters are reported raw.
+        At trace verbosity (Studio's default) both counters start at the first weight read, and a --fit
+        search before it reports phase "fit" with no bytes: its probes only re-read the GGUF header.
 
         Shape::
 
@@ -19364,9 +19358,8 @@ class LlamaCppBackend:
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
     def _note_load_stage(self, pid: int, line: str) -> bool:
-        """Tracks the startup stage for load_progress: the --fit search ("fit", then "placed" once it
-        ends), then the first weight read, where it records both byte counters as the baseline. A
-        weight-load line inside the search is a probe's. True once weights are being read."""
+        """Tracks "fit", "placed", then "weights" with both byte counters as the baseline; a weight-load
+        line inside the search is a probe's. True once weights are being read."""
         stage = getattr(self, "_load_stage", None)
         name = stage[1] if stage is not None and stage[0] == pid else None
         if any(mark in line for mark in _FIT_START_MARKS):

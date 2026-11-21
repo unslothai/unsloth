@@ -51,8 +51,7 @@ def test_names(monkeypatch, name, local, split):
 
 @pytest.mark.parametrize("name", ["unsloth/Qwen3-GGUF:Q4_K_M", "/models/a.gguf"])
 def test_the_placement_search_reports_itself_not_the_finished_download(monkeypatch, name):
-    """The search reports fraction 0, which read as no progress: a Hub model then showed its finished
-    download (Downloading at 100%) and a local one showed nothing."""
+    """Fraction 0 read as no progress: a Hub model showed its finished download, a local one nothing."""
 
     async def route_json(method, path, **kwargs):
         if path == "/api/inference/load-progress":
