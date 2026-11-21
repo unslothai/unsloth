@@ -4322,6 +4322,22 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 _IGPU_PAGED_FIT_HEADROOM_MIB = 15360
 
 
+def _auto_fit_target_trim_mib(total_mib: Optional[float], frac: float) -> float:
+    """How far below today's Auto --fit margin a card's own budget reserve sits (<= 0).
+
+    Auto hands an offloaded load to llama.cpp's fitter, which keeps 1024 MiB free (plus the
+    budget slider's delta) while Studio's own budget keeps max((1 - frac) * total, 512) MiB.
+    On a card under ~34 GB that left up to 512 MiB more idle than the budget asks, which on
+    an 8 GB card is two to three MoE layers kept in host RAM. Never raises the margin, so
+    large cards keep today's value.
+    """
+    if not total_mib or total_mib <= 0:
+        return 0.0
+    today = _LLAMA_FIT_TARGET_DEFAULT_MIB + (_CTX_FIT_VRAM_FRACTION - frac) * total_mib
+    reserve = max((1.0 - frac) * total_mib, _VRAM_FLOOR_RESERVE_MIB)
+    return min(0.0, reserve - today)
+
+
 def _paged_load_needs_fit_headroom() -> bool:
     """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``."""
     return sys.platform == "win32"
@@ -5071,6 +5087,17 @@ def _visual_server_splits_gpus(visual_bin: Optional[str]) -> bool:
 
 
 @functools.lru_cache(maxsize = 16)
+def _binary_has_any_marker(path: str, _mtime_ns: int, _size: int, markers: tuple) -> bool:
+    """One read of ``path`` for several markers."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+    return any(marker in data for marker in markers)
+
+
+@functools.lru_cache(maxsize = 16)
 def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> bool:
     try:
         with open(path, "rb") as f:
@@ -5079,14 +5106,21 @@ def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> 
         return False
 
 
-# No --help flag or build number announces it: read the trace string the new fit path compiles in.
-_FIT_MEASURES_BORROWED_DRAFT_MARKER = (
-    b"measuring the extra model next to an allocation-free target context"
+# No --help flag or build number announces it: read what the new fit path compiles in. The
+# first fork version logged this trace string; the one shipped since (b12588 and later)
+# measures every borrowed draft up front in common_fit_draft_target, which logs nothing of
+# its own, so its symbol name in the common library is the only trace.
+_FIT_MEASURES_BORROWED_DRAFT_MARKERS = (
+    b"measuring the extra model next to an allocation-free target context",
+    b"common_fit_draft_target",
 )
 _LLAMA_COMMON_LIB_NAMES = (
     "libllama-common.so.0",
+    # The soname moved to 1 with the shared-library version bump the prebuilds ship.
+    "libllama-common.so.1",
     "libllama-common.so",
     "libllama-common.0.dylib",
+    "libllama-common.1.dylib",
     "libllama-common.dylib",
     "llama-common.dll",
 )
@@ -5245,8 +5279,8 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
             st = candidate.stat()
         except OSError:
             continue
-        if _binary_has_marker(
-            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKER
+        if _binary_has_any_marker(
+            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKERS
         ):
             return True
     return False
@@ -26116,6 +26150,55 @@ class LlamaCppBackend:
                                 for _idx, _free, _total in _gpu_mem
                             }
 
+                    # Auto keeps llama.cpp's 1024 MiB fitter margin, more than the budget
+                    # reserve on a small card: trim it to that reserve. Discrete cards only,
+                    # and not where WDDM spills an overrun to host RAM instead of failing.
+                    if (
+                        gpus
+                        and not (gpu_memory_mode == "manual" and gpu_layers < 0)
+                        and not self._sysmem_fallback_risk(binary)
+                        and not self._fit_trim_host_has_shared_memory_gpu(
+                            binary,
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = [int(_idx) for _idx, _free in gpus],
+                            planner_integrated = _integrated_gpus,
+                        )
+                    ):
+                        _base_delta_by_idx = {
+                            int(_idx): (_fit_target_delta_by_idx or {}).get(
+                                int(_idx), _fit_target_delta_mib
+                            )
+                            for _idx, _free in gpus
+                        }
+                        _trimmed_by_idx = {
+                            int(_idx): _base_delta_by_idx[int(_idx)]
+                            + (
+                                0.0
+                                if _idx in _integrated_gpus or _idx in _shared_pool_gpus
+                                # Free stands in for an unreported total, as for the slider.
+                                else _auto_fit_target_trim_mib(
+                                    total_by_idx.get(_idx) or _free, _vram_frac
+                                )
+                            )
+                            for _idx, _free in gpus
+                        }
+                        if any(
+                            _trimmed_by_idx[i] != _base_delta_by_idx[i] for i in _trimmed_by_idx
+                        ):
+                            # A single broadcast value must hold every card's margin.
+                            _fit_target_delta_mib = max(_trimmed_by_idx.values())
+                            if _fit_target_delta_by_idx:
+                                _fit_target_delta_by_idx = {
+                                    **_fit_target_delta_by_idx,
+                                    **_trimmed_by_idx,
+                                }
+                            elif len(_trimmed_by_idx) > 1 and self._fit_target_per_device_ok(
+                                is_vulkan_backend = is_vulkan_backend,
+                                extra_args = extra_args,
+                                env = os.environ,
+                            ):
+                                _fit_target_delta_by_idx = dict(_trimmed_by_idx)
+
                     # Each card keeps its own margin plus the headroom a mid-session OOM earned.
                     _oom_headroom_mib = self._gpu_oom_headroom_mib(intent)
                     if _oom_headroom_mib:
@@ -30300,6 +30383,7 @@ class LlamaCppBackend:
                 _integrity_flags = self._ctx_integrity_flags(
                     *_integrity_args,
                     fit_target_delta_mib = _fit_target_delta_mib,
+                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                 )
                 # From the flags, not the inputs: --fit off, an older server without
                 # the capability and a budget at the default all leave the child
@@ -30322,6 +30406,7 @@ class LlamaCppBackend:
                     _integrity_flags = self._ctx_integrity_flags(
                         *_integrity_args,
                         fit_target_delta_mib = _fit_target_delta_mib,
+                        fit_target_delta_by_idx = _fit_target_delta_by_idx,
                         fit_target_floor_mib = _metal_fit_target_floor_mib,
                         # The reserve rides on the spawn's trailing pair, which retry cleanup must
                         # tell apart from a user's value.
@@ -32205,6 +32290,7 @@ class LlamaCppBackend:
                                 self._ctx_integrity_flags(
                                     *_integrity_args,
                                     fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
@@ -33794,6 +33880,7 @@ class LlamaCppBackend:
                                 self._ctx_integrity_flags(
                                     *_integrity_args,
                                     fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
@@ -34004,6 +34091,7 @@ class LlamaCppBackend:
                         _fb_integrity = self._ctx_integrity_flags(
                             *_integrity_args,
                             fit_target_delta_mib = _fit_target_delta_mib,
+                            fit_target_delta_by_idx = _fit_target_delta_by_idx,
                             fit_target_floor_mib = _metal_fit_target_floor_mib,
                         )
                         fallback_cmd = _drop_sidecar_margins(
@@ -37616,6 +37704,41 @@ class LlamaCppBackend:
         }
 
     @staticmethod
+    def _fit_trim_host_has_shared_memory_gpu(
+        binary: Optional[str],
+        *,
+        is_vulkan_backend: bool,
+        gpu_indices: Iterable[int],
+        planner_integrated: Iterable[int] = (),
+    ) -> bool:
+        """Whether the Auto fit-margin trim must stay off because a card may be host RAM.
+
+        The discrete-first planner only classifies integrated devices on unpinned
+        multi-GPU loads, so a lone Jetson, an AMD APU or an explicitly picked iGPU
+        is checked here directly. Any integrated device on the host counts, since
+        its ids may not line up with the probed rows: a missed trim only keeps
+        today's margin.
+        """
+        if any(True for _ in planner_integrated):
+            return True
+        try:
+            if LlamaCppBackend._rocm_unified_memory_gpu_ids():
+                return True
+            # The CUDA memory probe already filled this for the mask; a Vulkan load never
+            # ran it, so it reads only a settled answer instead of initialising CUDA here.
+            if (
+                not is_vulkan_backend or LlamaCppBackend._integrated_cuda_probe_is_free()
+            ) and LlamaCppBackend._integrated_cuda_gpu_ids():
+                return True
+            if is_vulkan_backend and LlamaCppBackend._vulkan_targets_are_igpus(
+                binary, list(gpu_indices) or None
+            ):
+                return True
+        except Exception:
+            return True
+        return False
+
+    @staticmethod
     def _fit_target_per_device_ok(
         *,
         is_vulkan_backend: bool,
@@ -37787,10 +37910,12 @@ class LlamaCppBackend:
         fit_target_delta_mib: float = 0.0,
         fit_target_floor_mib: float = 0.0,
         fit_target_reserve_mib: int = 0,
+        fit_target_delta_by_idx: Optional[Mapping[int, float]] = None,
     ) -> list[str]:
         """Explicit --parallel drops the --kv-unified default and splits -c per slot; restore the
         shared pool. ``fit_target_reserve_mib`` is added on top for a sidecar the fitter cannot
-        measure."""
+        measure. Per-card deltas that differ always emit the flag, even when the broadcast
+        value restates the default, so the spawn can spell it per device."""
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
             flags.append("--kv-unified")
@@ -37812,7 +37937,10 @@ class LlamaCppBackend:
             _target += max(0, fit_target_reserve_mib)
             # The legacy path stays silent when it would only restate llama.cpp's
             # own default, so an untouched slider leaves the command unchanged.
-            if auto_fit or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
+            _per_device = bool(fit_target_delta_by_idx) and (
+                len({float(v) for v in fit_target_delta_by_idx.values()}) > 1
+            )
+            if auto_fit or _per_device or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
                 flags.extend(["--fit-target", str(int(_target))])
         return flags
 
