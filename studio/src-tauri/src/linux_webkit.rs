@@ -33,7 +33,9 @@ const SKIA_MIN_VERSION: (u32, u32) = (2, 46);
 // environment alone decides, as it always has.
 const GPU_PAINTING_ASSUMED_FROM: (u32, u32) = (2, 54);
 const DRM_CLASS_DIR: &str = "/sys/class/drm";
-const DRI_DIR: &str = "/dev/dri";
+const DEV_DIR: &str = "/dev";
+// Per GPU: `information` names the minor N of its /dev/nvidiaN.
+const NVIDIA_GPUS_DIR: &str = "/proc/driver/nvidia/gpus";
 // glvnd's default vendor search path (${sysconfdir}, then ${datadir}); the variables that replace it
 // are GL_SELECTION_OVERRIDES, which void the evidence anyway.
 const EGL_VENDOR_DIRS: [&str; 2] = ["/etc/glvnd/egl_vendor.d", "/usr/share/glvnd/egl_vendor.d"];
@@ -259,15 +261,17 @@ fn paints_on_cpu(
 }
 
 /// Evidence that WebKit renders on a GPU: a render node this user may open whose kernel driver is a
-/// GPU's (NVIDIA's comes from nvidia-drm), the glvnd EGL vendor for that driver installed (without
-/// it glvnd falls back to Mesa's llvmpipe over the same node), and no operator choice of GL driver
-/// or EGL vendor. Its absence proves nothing (NVIDIA's EGL renders with /dev/dri hidden), so it
-/// only lifts the CPU assumption below 2.54: without a GPU, WebKit there composites on llvmpipe,
-/// slower than Skia's CPU path.
+/// GPU's, the glvnd EGL vendor for that driver installed (without it glvnd falls back to Mesa's
+/// llvmpipe over the same node), and no operator choice of GL driver or EGL vendor. NVIDIA's
+/// proprietary EGL also needs /dev/nvidiactl and the GPU's own /dev/nvidiaN; with the render node
+/// alone it is llvmpipe again. Its absence proves nothing (NVIDIA's EGL renders with /dev/dri
+/// hidden), so it only lifts the CPU assumption below 2.54: without a GPU, WebKit there composites
+/// on llvmpipe, slower than Skia's CPU path.
 fn hardware_gl_available(
     env: impl Fn(&str) -> Option<OsString>,
     drm_class_dir: &Path,
-    dri_dir: &Path,
+    dev_dir: &Path,
+    nvidia_gpus_dir: &Path,
     egl_vendor_dirs: &[&Path],
 ) -> bool {
     if GL_SELECTION_OVERRIDES
@@ -286,7 +290,8 @@ fn hardware_gl_available(
         if !name.as_bytes().starts_with(b"renderD") {
             return false;
         }
-        let driver = std::fs::read_link(entry.path().join("device/driver")).ok();
+        let device = entry.path().join("device");
+        let driver = std::fs::read_link(device.join("driver")).ok();
         let Some(driver) = driver
             .as_deref()
             .and_then(Path::file_name)
@@ -295,13 +300,32 @@ fn hardware_gl_available(
         else {
             return false;
         };
-        let vendor = if driver == "nvidia" {
-            "libEGL_nvidia"
-        } else {
-            "libEGL_mesa"
-        };
-        vendor_installed(vendor) && node_accessible(&dri_dir.join(&name))
+        let node_open = node_accessible(&dev_dir.join("dri").join(&name));
+        if driver != "nvidia" {
+            return node_open && vendor_installed("libEGL_mesa");
+        }
+        let nvidia_devices_open =
+            nvidia_device_minor(nvidia_gpus_dir, &device).is_some_and(|minor| {
+                node_accessible(&dev_dir.join("nvidiactl"))
+                    && node_accessible(&dev_dir.join(format!("nvidia{minor}")))
+            });
+        node_open && nvidia_devices_open && vendor_installed("libEGL_nvidia")
     })
+}
+
+/// The N of /dev/nvidiaN for a render node's PCI device, from the driver's `Device Minor:` line.
+fn nvidia_device_minor(nvidia_gpus_dir: &Path, device: &Path) -> Option<u32> {
+    let address = std::fs::read_link(device).ok()?;
+    let information = nvidia_gpus_dir
+        .join(address.file_name()?)
+        .join("information");
+    std::fs::read_to_string(information)
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("Device Minor:"))?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// File names of the libraries glvnd's vendor files load (`ICD.library_path`).
@@ -739,7 +763,8 @@ pub fn configure_renderer(
     let hardware_gl = hardware_gl_available(
         &env,
         Path::new(DRM_CLASS_DIR),
-        Path::new(DRI_DIR),
+        Path::new(DEV_DIR),
+        Path::new(NVIDIA_GPUS_DIR),
         &egl_vendor_dirs,
     );
     let mut decision = RendererDecision {
@@ -2705,15 +2730,21 @@ mod tests {
     #[test]
     fn hardware_gl_needs_a_gpu_render_node_this_user_can_open() {
         let root = tempfile::tempdir().unwrap();
-        let (class, dri) = (root.path().join("class"), root.path().join("dri"));
-        let vendors = root.path().join("egl_vendor.d");
-        std::fs::create_dir_all(&dri).unwrap();
-        std::fs::create_dir_all(&vendors).unwrap();
-        let node = |name: &str, driver: &str| {
-            let device = class.join(name).join("device");
+        let path = |rel: &str| root.path().join(rel);
+        let (class, dev, gpus, vendors) =
+            (path("class"), path("dev"), path("gpus"), path("vendors"));
+        for dir in [&dev.join("dri"), &gpus, &vendors] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let touch = |file: std::path::PathBuf| std::fs::write(file, "").unwrap();
+        // /sys/class/drm/<node>/device links to the PCI device, whose driver link names the driver.
+        let node = |name: &str, driver: &str, pci: &str| {
+            let device = path("devices").join(pci);
             std::fs::create_dir_all(&device).unwrap();
-            let target = format!("../../../bus/pci/drivers/{driver}");
+            let target = format!("../../bus/pci/drivers/{driver}");
             std::os::unix::fs::symlink(target, device.join("driver")).unwrap();
+            std::fs::create_dir_all(class.join(name)).unwrap();
+            std::os::unix::fs::symlink(&device, class.join(name).join("device")).unwrap();
         };
         let vendor = |file: &str, library: &str| {
             let json = format!(
@@ -2721,41 +2752,56 @@ mod tests {
             );
             std::fs::write(vendors.join(file), json).unwrap();
         };
-        let available = || hardware_gl_available(|_| None, &class, &dri, &[&vendors]);
+        let available = || hardware_gl_available(|_| None, &class, &dev, &gpus, &[&vendors]);
         vendor("10_nvidia.json", "libEGL_nvidia.so.0");
+        vendor("50_mesa.json", "libEGL_mesa.so.0");
         // No DRM device at all: a VM without a virtual GPU.
         assert!(!available());
         // A primary node is not a render node.
-        node("card0", "i915");
-        std::fs::write(dri.join("card0"), "").unwrap();
+        node("card0", "i915", "0000:00:02.0");
+        touch(dev.join("dri/card0"));
         assert!(!available());
         // A virtual GPU may be llvmpipe behind its render node.
-        node("renderD128", "virtio_gpu");
-        std::fs::write(dri.join("renderD128"), "").unwrap();
+        node("renderD128", "virtio_gpu", "0000:00:01.0");
+        touch(dev.join("dri/renderD128"));
         assert!(!available());
-        // A real GPU's render node that /dev/dri lacks (a container without --device).
-        node("renderD129", "nvidia");
-        assert!(!available());
-        std::fs::write(dri.join("renderD129"), "").unwrap();
+
+        // NVIDIA: the render node, nvidiactl and the GPU's own nvidiaN, from its Device Minor.
+        node("renderD129", "nvidia", "0000:06:00.0");
+        std::fs::create_dir_all(gpus.join("0000:06:00.0")).unwrap();
+        let information = "Model: \t\t NVIDIA GeForce RTX 3090\nDevice Minor: \t 1\n";
+        std::fs::write(gpus.join("0000:06:00.0/information"), information).unwrap();
+        assert!(
+            !available(),
+            "/dev/dri lacks the node: a container without --device"
+        );
+        touch(dev.join("dri/renderD129"));
+        assert!(!available(), "only /dev/dri: llvmpipe");
+        touch(dev.join("nvidiactl"));
+        touch(dev.join("nvidia0"));
+        assert!(!available(), "another GPU's nvidiaN: llvmpipe");
+        std::fs::remove_file(dev.join("nvidiactl")).unwrap();
+        touch(dev.join("nvidia1"));
+        assert!(!available(), "nvidiaN without nvidiactl: llvmpipe");
+        touch(dev.join("nvidiactl"));
         assert!(available());
         // An operator's GL driver or EGL vendor choice voids it: a Mesa-only vendor list renders
         // on llvmpipe over NVIDIA's render nodes.
         for name in GL_SELECTION_OVERRIDES {
             let env = |key: &str| (key == *name).then(|| OsString::from("1"));
             assert!(
-                !hardware_gl_available(env, &class, &dri, &[&vendors]),
+                !hardware_gl_available(env, &class, &dev, &gpus, &[&vendors]),
                 "{name}"
             );
         }
         // Mesa the only installed vendor, no variable: llvmpipe over NVIDIA's render node too.
         std::fs::remove_file(vendors.join("10_nvidia.json")).unwrap();
-        vendor("50_mesa.json", "libEGL_mesa.so.0");
         assert!(!available());
-        // Mesa's vendor does drive a Mesa GPU's render node.
-        node("renderD130", "amdgpu");
-        std::fs::write(dri.join("renderD130"), "").unwrap();
+
+        // Mesa's vendor drives a Mesa GPU's render node, which needs no other device.
+        node("renderD130", "amdgpu", "0000:03:00.0");
+        touch(dev.join("dri/renderD130"));
         assert!(available());
-        // No vendor for either node.
         std::fs::remove_file(vendors.join("50_mesa.json")).unwrap();
         assert!(!available());
         // A broken vendor file is skipped; an absolute library path still names NVIDIA's.
