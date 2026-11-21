@@ -88,7 +88,8 @@
     "default": 2,
     "max": 3,
     "steps": 20
-   }
+   },
+   "nvidia/Qwen-Image-Flash": null
   },
   "qwen-image-2.1": {
    "Qwen/Qwen-Image-2.1": {
@@ -5044,6 +5045,7 @@
    "krea/krea-2-turbo",
    "lodestones/chroma1-hd",
    "minimaxai/minimax-h3-image",
+   "nvidia/qwen-image-flash",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",
