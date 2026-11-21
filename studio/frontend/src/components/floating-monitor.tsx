@@ -27,7 +27,7 @@ import type { LoadedModelEntry } from "@/features/loaded-models";
 import { useNpuStatus } from "@/features/npu";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
-import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { gpuMemoryTotalsGb, resolveGpuVramUsage } from "@/hooks/gpu-vram";
 import { useChatSettingsWidth } from "@/hooks/use-chat-settings-width";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -225,14 +225,16 @@ function FloatingMonitorPanel({
   const inferenceVramTotal = separateInferenceGpu
     ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
-  const devices = memoryDisplay.usageDevices;
+  // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+  // readout. The host figure can still be known when no device's is (#7452).
+  // The label and totals cover only the devices that figure counts.
+  const vramUsage = resolveGpuVramUsage(memoryDisplay.usageGpu);
+  const devices = vramUsage.devices;
   const memoryTotals = gpuMemoryTotalsGb(devices);
   const hasSharedPool = memoryTotals.shared > 0;
   // No dedicated pool (Apple unified memory): the shared total alone is the capacity.
   const unifiedPool = hasSharedPool && memoryTotals.dedicated === 0;
-  // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
-  // readout. The host figure can still be known when no device's is (#7452).
-  const resolvedVramUsed = resolveGpuVramUsedGb(memoryDisplay.usageGpu);
+  const resolvedVramUsed = vramUsage.usedGb;
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;
   const unknownLabel = t("settings.resources.environment.unknown");
