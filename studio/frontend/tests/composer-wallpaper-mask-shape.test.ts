@@ -32,3 +32,11 @@ test("the composer dock publishes every box variable the mask reads", () => {
   }
   assert.match(thread, /"calc\(2px \* var\(--ui-space-scale, 1\)\)"/);
 });
+
+test("the mask measures the composer after its insets are applied", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  assert.match(
+    thread,
+    /"--composer-dock-inset-right", `\$\{inset\.right\}px`\);\n(?:\s*\/\/.*\n)?\s*syncComposerClip\(\);\n\s*\};/,
+  );
+});

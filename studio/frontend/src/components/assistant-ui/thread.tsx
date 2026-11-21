@@ -2737,7 +2737,6 @@ const ThreadComposerDock: FC<{
       THREAD_COMPOSER_VARS.forEach((name, i) => root.style.setProperty(name, values[i]));
     };
     const apply = () => {
-      syncComposerClip();
       // May fire before the gutter's observer, which would leave the composer a scrollbar off-centre.
       syncThreadGutter(viewport);
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
@@ -2761,6 +2760,8 @@ const ThreadComposerDock: FC<{
         : composerColumnInset(readViewportBox(viewport), dockRect);
       inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
       inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
+      // Last, so the mask measures the composer at its new insets.
+      syncComposerClip();
     };
     apply();
     resizeObserver.observe(viewport);
