@@ -75,16 +75,31 @@ import {
   type TrainModelVramView,
 } from "./train-model-picker-lists";
 import {
+  TRAIN_MODEL_SORT_DEFAULT_DESC,
   type TrainModelDeviceItem,
+  type TrainModelSortKey,
   compareTrainModelDeviceItems,
   hasExactTrainingModelMatch,
   hubTrainingModelCandidate,
   hubTrainingModelTypeFlags,
   resolveExactTrainModelDeviceItem,
+  sortTrainModelDeviceItems,
+  sortTrainModelHubIds,
   toCachedTrainModelDeviceItem,
   toLocalTrainModelDeviceItem,
 } from "./train-model-picker-view-model";
 import { ChipIcon } from "@/lib/hugeicons-derived";
+import {
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from "@/components/ui/dropdown-menu";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import {
+  ArrowDown01Icon,
+  ArrowUp01Icon,
+  FilterMailIcon,
+} from "@hugeicons/core-free-icons";
 
 function explicitLocalPath(path: string): string {
   const trimmed = path.trim();
@@ -311,6 +326,10 @@ export function TrainModelSelector({
   const [selectedDeviceKey, setSelectedDeviceKey] = useState<string | null>(
     null,
   );
+  const [sortKey, setSortKey] = useState<TrainModelSortKey>("default");
+  const [sortDesc, setSortDesc] = useState(
+    TRAIN_MODEL_SORT_DEFAULT_DESC.default,
+  );
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const picker = usePickerState({
@@ -461,8 +480,13 @@ export function TrainModelSelector({
   const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
 
   const filteredLocalModels = useMemo(
-    () => filterTrainableLocalModels(eligibleLocalModels, picker.deviceQuery),
-    [eligibleLocalModels, picker.deviceQuery],
+    () =>
+      sortTrainModelDeviceItems(
+        filterTrainableLocalModels(eligibleLocalModels, picker.deviceQuery),
+        sortKey,
+        sortDesc,
+      ),
+    [eligibleLocalModels, picker.deviceQuery, sortDesc, sortKey],
   );
 
   const selectedDeviceItemKey = useMemo(() => {
@@ -545,6 +569,11 @@ export function TrainModelSelector({
     () =>
       buildTrainModelVramViews(hubResultIds, hfResultById, trainingMethod, gpu),
     [gpu, hfResultById, hubResultIds, trainingMethod],
+  );
+
+  const sortedHubResultIds = useMemo(
+    () => sortTrainModelHubIds(hubResultIds, sortKey, sortDesc, vramMap),
+    [hubResultIds, sortDesc, sortKey, vramMap],
   );
 
   const hubPagination = usePickerHubPagination({
@@ -745,6 +774,81 @@ export function TrainModelSelector({
     tab === PICKER_TAB.hub
       ? t("studio.modelPicker.useAsHubModel")
       : t("studio.modelPicker.useAsLocalPath");
+  const sortOptions: readonly { value: TrainModelSortKey; label: string }[] = [
+    { value: "default", label: "Default" },
+    { value: "memory", label: "Memory" },
+    { value: "name", label: "Name" },
+  ];
+  const sortMenu = (
+    <NonModalDropdownMenu
+      align="end"
+      className="w-auto min-w-[140px]"
+      trigger={(ref) => (
+        <button
+          ref={ref}
+          type="button"
+          data-testid="train-model-sort-trigger"
+          aria-label={`Sort by: ${
+            sortOptions.find((o) => o.value === sortKey)?.label ?? sortKey
+          }${
+            sortKey === "default"
+              ? ""
+              : sortDesc
+                ? " (descending)"
+                : " (ascending)"
+          }`}
+          className="relative grid size-6 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[state=open]:bg-sidebar-accent"
+        >
+          <HugeiconsIcon
+            icon={FilterMailIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+          {sortKey !== "default" ? (
+            <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />
+          ) : null}
+        </button>
+      )}
+    >
+      <DropdownMenuLabel className="px-2 py-1 text-ui-11 font-medium text-muted-foreground">
+        Sort
+      </DropdownMenuLabel>
+      <DropdownMenuRadioGroup value={sortKey}>
+        {sortOptions.map(({ value, label }) => {
+          const active = value === sortKey;
+          const reversible = value !== "default";
+          const ArrowIcon = sortDesc ? ArrowDown01Icon : ArrowUp01Icon;
+          return (
+            <DropdownMenuRadioItem
+              key={value}
+              value={value}
+              className="relative cursor-pointer pr-7 text-ui-12p5 [&_[data-slot=dropdown-menu-radio-item-indicator]]:hidden"
+              onSelect={(event) => {
+                if (active && reversible) {
+                  event.preventDefault();
+                  setSortDesc((desc) => !desc);
+                  return;
+                }
+                setSortKey(value);
+                setSortDesc(TRAIN_MODEL_SORT_DEFAULT_DESC[value]);
+              }}
+            >
+              {label}
+              {active && reversible ? (
+                <span className="absolute right-1.5 grid size-5 place-items-center rounded-full">
+                  <HugeiconsIcon
+                    icon={ArrowIcon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                  />
+                </span>
+              ) : null}
+            </DropdownMenuRadioItem>
+          );
+        })}
+      </DropdownMenuRadioGroup>
+    </NonModalDropdownMenu>
+  );
 
   return (
     <PickerShell
@@ -760,6 +864,7 @@ export function TrainModelSelector({
       noun={t("studio.modelPicker.noun")}
       tabListAriaLabel={t("picker.modelSourceAriaLabel")}
       isHubLoading={isLoadingHf}
+      searchTrailing={sortMenu}
       showUseThis={showUseThis}
       useThisLabel={useThisLabel}
       onUseThis={() => pickFreeformModel(activeQuery)}
@@ -818,7 +923,7 @@ export function TrainModelSelector({
       }
       hubContent={
         <TrainModelHubList
-          ids={hubResultIds}
+          ids={sortedHubResultIds}
           value={selectedModel}
           vramMap={vramMap}
           isLoading={isLoadingHf}

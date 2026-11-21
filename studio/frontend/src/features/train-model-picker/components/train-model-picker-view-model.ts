@@ -9,16 +9,23 @@ import type {
   LocalInventoryRow,
   LocalSource,
 } from "@/features/hub";
-import {
-  type ModelTypeCapabilityFlags,
-  cacheLocalPathMatchesSelection,
-  trainingModelTypeFlagsFromMetadata,
-  type validateTrainingModelCandidate,
-} from "@/features/training";
+import { cacheLocalPathMatchesSelection } from "@/features/training/lib/cache-reference";
+import type { validateTrainingModelCandidate } from "@/features/training/lib/freeform-model-validation";
+import type { ModelTypeCapabilityFlags } from "@/features/training/lib/model-type-capabilities";
+import { trainingModelTypeFlagsFromMetadata } from "@/features/training/lib/model-type-inference";
 import {
   type TrainModelDisplayCandidate,
   toTrainModelDisplayCandidate,
 } from "../lib/train-model-selection-display";
+import { parseParamCountB } from "@/lib/model-size";
+
+export type TrainModelSortKey = "default" | "memory" | "name";
+
+export const TRAIN_MODEL_SORT_DEFAULT_DESC: Record<TrainModelSortKey, boolean> = {
+  default: false,
+  memory: false,
+  name: false,
+};
 
 export interface TrainModelDeviceItem extends TrainModelDisplayCandidate {
   readonly key: string;
@@ -26,6 +33,7 @@ export interface TrainModelDeviceItem extends TrainModelDisplayCandidate {
   readonly sourceLabel: string;
   readonly knownCached: boolean;
   readonly modelTypeFlags: ModelTypeCapabilityFlags;
+  readonly sizeBytes?: number;
 }
 
 function trainModelSourceWeight(source: LocalSource): number {
@@ -85,6 +93,7 @@ export function toCachedTrainModelDeviceItem(
     knownCached: true,
     localPath: row.cachePath ?? null,
     modelFormat: row.modelFormat,
+    sizeBytes: row.bytes > 0 ? row.bytes : undefined,
     modelTypeFlags: trainingModelTypeFlagsFromMetadata({
       tags: row.tags,
       pipelineTag: row.pipelineTag,
@@ -103,12 +112,103 @@ export function toLocalTrainModelDeviceItem(
     path: row.path,
     sourceLabel,
     knownCached: row.source === "hf_cache",
+    sizeBytes:
+      typeof row.bytes === "number" && row.bytes > 0 ? row.bytes : undefined,
     modelTypeFlags: trainingModelTypeFlagsFromMetadata({
       tags: row.tags,
       pipelineTag: row.pipelineTag,
       identifiers: [row.repoId, row.loadId, row.title, row.path],
     }),
   };
+}
+
+function hubModelMemoryScore(
+  id: string,
+  vramMap: ReadonlyMap<string, { est: number }>,
+): number | null {
+  const est = vramMap.get(id)?.est;
+  if (typeof est === "number" && Number.isFinite(est) && est > 0) {
+    return est;
+  }
+  const paramsB = parseParamCountB(id);
+  if (typeof paramsB === "number" && Number.isFinite(paramsB) && paramsB > 0) {
+    return paramsB;
+  }
+  return null;
+}
+
+export function sortTrainModelHubIds(
+  ids: readonly string[],
+  sortKey: TrainModelSortKey,
+  sortDesc: boolean,
+  vramMap: ReadonlyMap<string, { est: number }>,
+): string[] {
+  if (sortKey === "default") {
+    return [...ids];
+  }
+  if (sortKey === "name") {
+    return [...ids].sort((a, b) => {
+      const cmp = a.localeCompare(b, undefined, { sensitivity: "base" });
+      return sortDesc ? -cmp : cmp;
+    });
+  }
+  return [...ids].sort((a, b) => {
+    const memA = hubModelMemoryScore(a, vramMap);
+    const memB = hubModelMemoryScore(b, vramMap);
+    if (memA === null && memB === null) {
+      return a.localeCompare(b, undefined, { sensitivity: "base" });
+    }
+    if (memA === null) return 1;
+    if (memB === null) return -1;
+    if (memA !== memB) {
+      return sortDesc ? memB - memA : memA - memB;
+    }
+    return a.localeCompare(b, undefined, { sensitivity: "base" });
+  });
+}
+
+function deviceModelMemoryScore(item: TrainModelDeviceItem): number | null {
+  if (
+    typeof item.sizeBytes === "number" &&
+    Number.isFinite(item.sizeBytes) &&
+    item.sizeBytes > 0
+  ) {
+    return item.sizeBytes;
+  }
+  const paramsB = parseParamCountB(item.title || item.id);
+  if (typeof paramsB === "number" && Number.isFinite(paramsB) && paramsB > 0) {
+    return paramsB * 2e9;
+  }
+  return null;
+}
+
+export function sortTrainModelDeviceItems(
+  items: readonly TrainModelDeviceItem[],
+  sortKey: TrainModelSortKey,
+  sortDesc: boolean,
+): TrainModelDeviceItem[] {
+  if (sortKey === "default") {
+    return [...items];
+  }
+  if (sortKey === "name") {
+    return [...items].sort((a, b) => {
+      const cmp = compareTrainModelDeviceItems(a, b);
+      return sortDesc ? -cmp : cmp;
+    });
+  }
+  return [...items].sort((a, b) => {
+    const memA = deviceModelMemoryScore(a);
+    const memB = deviceModelMemoryScore(b);
+    if (memA === null && memB === null) {
+      return compareTrainModelDeviceItems(a, b);
+    }
+    if (memA === null) return 1;
+    if (memB === null) return -1;
+    if (memA !== memB) {
+      return sortDesc ? memB - memA : memA - memB;
+    }
+    return compareTrainModelDeviceItems(a, b);
+  });
 }
 
 export function hubTrainingModelCandidate(

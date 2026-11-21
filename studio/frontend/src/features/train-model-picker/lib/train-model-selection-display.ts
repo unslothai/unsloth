@@ -3,17 +3,15 @@
 
 import { hubResourceIdsEqual } from "@/components/resource-picker/hub-resource-id";
 import { pathDisplayName } from "@/components/resource-picker/path-display-name";
-import {
-  type CachedInventoryRow,
-  type LocalInventoryRow,
-  type LocalSource,
-  type ModelInventoryFormat,
-  repoOf,
-} from "@/features/hub";
-import {
-  cacheLocalPathMatchesSelection,
-  isLocalTrainingModelSelection,
-} from "@/features/training";
+import type { LocalSource } from "@/features/hub/inventory/constants";
+import type {
+  CachedInventoryRow,
+  LocalInventoryRow,
+  ModelInventoryFormat,
+} from "@/features/hub/inventory/types";
+import { repoOf } from "@/features/hub/lib/format";
+import { cacheLocalPathMatchesSelection } from "@/features/training/lib/cache-reference";
+import { isLocalTrainingModelSelection } from "@/features/training/lib/model-selection";
 
 export interface TrainModelDisplayCandidate {
   readonly id: string;
