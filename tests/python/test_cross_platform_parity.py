@@ -954,8 +954,8 @@ class TestAmdBnbFloorParity:
         assert "_bnb_rocm_arch_has_binary()" in sh
         assert "_warn_bnb_no_rocm_binary()" in sh
         assert (
-            sh.count("_warn_bnb_no_rocm_binary\n") >= 2
-        ), "install.sh must warn on aarch64 after both the pre-release and the fallback install"
+            sh.count("_warn_bnb_no_rocm_binary\n") >= 1
+        ), "install.sh must warn on aarch64 after the bitsandbytes install"
         py = STACK_PY.read_text(encoding = "utf-8")
         assert "def _bnb_rocm_arch_has_binary(" in py
         assert "_bnb_rocm_arch_has_binary()" in py

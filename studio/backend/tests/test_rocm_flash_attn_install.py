@@ -130,7 +130,15 @@ def test_spec_is_a_pinned_commit_archive():
     assert rfa.FLASH_ATTN_TRITON_AMD_SPEC == (
         "flash-attn @ https://github.com/Dao-AILab/flash-attention/archive/"
         "bbe25bacff9f337568b66e69950e549df9839068.tar.gz"
+        "#sha256=49dfc672baf27cde5ec37f86320a73378e5ab012bf639ab03e73f51efeb6aebd"
     )
+
+
+def test_archive_digest_is_pinned_in_the_url():
+    # pip and uv check a #sha256= fragment before any setup.py runs; without it the archive bytes are
+    # whatever the download host returns.
+    import re
+    assert re.search(r"#sha256=[0-9a-f]{64}$", rfa.FLASH_ATTN_TRITON_AMD_URL)
 
 
 def test_stale_copy_is_reinstalled(ips, monkeypatch):
