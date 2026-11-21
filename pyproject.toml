@@ -87,6 +87,7 @@ studio = [
     "backend/assets/**/*.html",
     # Served locally instead of from a CDN; without them /docs and /redoc render blank.
     "backend/assets/docs_ui/*",
+    "backend/assets/pdf/*",
     # Gate verdicts the auto ladder reads: if missing from the wheel, nvfp4 silently drops out.
     "backend/core/inference/nvfp4_gate_record.json",
     # ROCm GEMM tables: if missing from the wheel, gfx1151 silently falls back to the slower pick.

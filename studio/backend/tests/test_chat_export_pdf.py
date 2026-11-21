@@ -117,7 +117,7 @@ def test_narrow_chats_keep_their_font_size():
         sizes = {
             span["size"]
             for block in document[0].get_text("dict")["blocks"]
-            for line in block["lines"]
+            for line in block.get("lines", [])
             for span in line["spans"]
             if "plain words" in span["text"]
         }
@@ -187,7 +187,7 @@ def test_only_data_images_embed(tmp_path):
         )
         assert response.status_code == 200
         with pymupdf.open("pdf", response.content) as document:
-            return len(document[0].get_images())
+            return sum(1 for image in document[0].get_images() if image[2:4] == (4, 4))
 
     assert image_count(f"data:image/png;base64,{encoded}") == 1
     assert image_count(str(local)) == 0
@@ -257,3 +257,32 @@ def test_requires_authentication():
 def test_registered_under_api_chat_export():
     import routes
     assert routes.chat_export_router is chat_export.router
+
+
+def test_finished_code_block_does_not_paint_background_on_later_pages():
+    from core.chat_pdf import render_chat_pdf
+
+    body = '<pre><code>const x = 1;</code></pre>' + "".join(
+        '<section class="message"><h3 class="role">Assistant</h3>'
+        '<p>Answer text.</p></section>' for _ in range(25)
+    )
+    with pymupdf.open("pdf", render_chat_pdf("Chat", body)) as document:
+        assert len(document) > 1
+        assert any(drawing["fill"] for drawing in document[0].get_drawings())
+        for page in list(document)[1:]:
+            assert not page.get_drawings()
+
+
+def test_code_background_continues_with_code_across_pages():
+    from core.chat_pdf import render_chat_pdf
+
+    body = "<pre><code>" + "".join(f"line {index}\n" for index in range(150)) + "</code></pre>"
+    with pymupdf.open("pdf", render_chat_pdf("Long code", body)) as document:
+        assert len(document) >= 3
+        assert "line 149" in document[-1].get_text()
+        for page in document:
+            assert any(
+                drawing["fill"] and drawing["rect"].width > 400
+                and drawing["rect"].height > 20
+                for drawing in page.get_drawings()
+            )

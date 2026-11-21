@@ -349,7 +349,10 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
-function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
+function messageToMarkdown(
+  msg: { content: unknown; attachments?: unknown },
+  format: "markdown" | "pdf" = "markdown",
+): string {
   const normalizeToolResult = toolResultModelText;
   const blocks = contentBlocksToMarkdownBlocks(msg.content, normalizeToolResult);
   if (Array.isArray(msg.attachments)) {
@@ -367,7 +370,7 @@ function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): st
       );
     }
   }
-  return renderConversationBlocks(blocks);
+  return renderConversationBlocks(blocks, format);
 }
 
 // OpenAI messages format: tool_calls + role tool, images as image_url, audio dropped.
@@ -606,17 +609,19 @@ export const exportConversationMarkdown = (
 
 async function loadConversationForHtml(
   threadId: string,
+  format: "html" | "pdf",
   title?: string,
   liveBranch?: string[] | null,
 ): Promise<NamedConversationHtml | null> {
   const messages = await loadDisplayedBranchMessages(threadId, { liveBranch });
   if (!messages) return null;
   const thread =
-    title === undefined
+    title === undefined || format === "pdf"
       ? await getStoredChatThread(threadId).catch(() => undefined)
       : undefined;
   return {
     title: title ?? (thread?.title?.trim() || "Conversation"),
+    model: format === "pdf" ? thread?.modelId : undefined,
     messages: await Promise.all(messages.map(async (msg) => {
       const images: string[] = [];
       const rest = {
@@ -630,7 +635,7 @@ async function loadConversationForHtml(
         content: stripSearchImageTokens(
           msg.role === "user" || msg.role === "system"
             ? messageToText(rest)
-            : messageToMarkdown(rest),
+            : messageToMarkdown(rest, format === "pdf" ? "pdf" : "markdown"),
         ),
         images,
       };
@@ -696,10 +701,14 @@ function takeDataImages(content: unknown, images: string[]): unknown {
   });
 }
 
-async function pdfBytes(title: string, body: string): Promise<Uint8Array> {
+async function pdfBytes(title: string, body: string, model?: string): Promise<Uint8Array> {
   const pending = toast.loading("Rendering PDF...");
   try {
-    return await renderConversationPdf(title, body);
+    if (body.includes('<code class="language-')) {
+      const { highlightPdfCode } = await import("../utils/pdf-code");
+      body = await highlightPdfCode(body);
+    }
+    return await renderConversationPdf(title, body, model);
   } finally {
     toast.dismiss(pending);
   }
@@ -710,7 +719,7 @@ async function exportConversationDocument(
   format: "html" | "pdf",
   liveBranch?: string[] | null,
 ): Promise<void> {
-  const conversation = await loadConversationForHtml(threadId, undefined, liveBranch);
+  const conversation = await loadConversationForHtml(threadId, format, undefined, liveBranch);
   if (!conversation) return;
   const body = buildConversationHtmlBody([conversation]);
   if (!body) { toast.info("No exportable content."); return; }
@@ -724,7 +733,7 @@ async function exportConversationDocument(
     return;
   }
   await downloadBlob(
-    await pdfBytes(conversation.title, body),
+    await pdfBytes(conversation.title, body, conversation.model),
     `${basename}.pdf`,
     CONVERSATION_PDF_MIME_TYPE,
   );
@@ -937,7 +946,7 @@ export async function exportBulkConversationsMerged(
   if (format === "html" || format === "pdf") {
     const conversations: NamedConversationHtml[] = [];
     for (const { id, title } of await titledConversations(threadIds)) {
-      const conversation = await loadConversationForHtml(id, title);
+      const conversation = await loadConversationForHtml(id, format, title);
       if (conversation) conversations.push(conversation);
     }
     const body = buildConversationHtmlBody(conversations);
@@ -946,7 +955,7 @@ export async function exportBulkConversationsMerged(
     await downloadBlob(
       format === "html"
         ? buildConversationHtmlDocument(title, body)
-        : await pdfBytes(title, body),
+        : await pdfBytes(title, body, conversations.length === 1 ? conversations[0].model : undefined),
       `${basename}.${format}`,
       exportMime(format),
     );
@@ -1042,13 +1051,13 @@ export async function exportBulkConversationsSeparate(
 
   for (const id of threadIds) {
     if (format === "html" || format === "pdf") {
-      const conversation = await loadConversationForHtml(id);
+      const conversation = await loadConversationForHtml(id, format);
       const body = conversation ? buildConversationHtmlBody([conversation]) : "";
       if (!conversation || !body) continue;
       files[`${id}.${ext}`] =
         format === "html"
           ? strToU8(buildConversationHtmlDocument(conversation.title, body))
-          : await pdfBytes(conversation.title, body);
+          : await pdfBytes(conversation.title, body, conversation.model);
       continue;
     }
     const content = await buildThreadContent(id, format);
