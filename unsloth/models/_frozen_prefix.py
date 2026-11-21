@@ -86,6 +86,10 @@ def _plan(model, stacks, heads):
         k = _first_trainable(stack)
         if not k:
             continue
+        if any(getattr(layer, "_unsloth_pipeline_stand_in", False) for layer in stack):
+            # Pipeline parallel stage: the layers below its own are pass-throughs returning the previous
+            # stage's activations, whose gradient that stage needs. Cutting there trains no earlier stage.
+            return None
         trainable = {id(p) for p in model.parameters() if p.requires_grad}
         upper = {id(p) for layer in stack[k:] for p in layer.parameters() if p.requires_grad}
         if not trainable.issubset(upper | heads):
