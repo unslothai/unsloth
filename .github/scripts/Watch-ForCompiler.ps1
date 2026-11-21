@@ -546,7 +546,8 @@ function Invoke-WithCompilerWatch {
     How many times to measure when a run is void only because a file watcher raised an
     error (a burst of creations can overflow its buffer). Each attempt is a complete
     measurement with its own evidence; a void run is never scored as clean, and a
-    compiler that 4688 recorded is reported as a hit even when the watcher failed.
+    compiler or compiler artefact either detector recorded is reported as a hit even
+    when the watcher failed.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -651,8 +652,8 @@ function Invoke-WithCompilerWatch {
                         "file watcher is attached to the root containing it, so the listing is " +
                         "the only evidence here and it is incomplete")
     }
-    # A compiler 4688 recorded is a hit whatever the watcher dropped, so report it, not a void.
-    if ($incomplete.Count -gt 0 -and $compilers.Count -eq 0) {
+    # Either detector firing is a hit whatever the watcher dropped: report it, never retry it away.
+    if ($incomplete.Count -gt 0 -and $compilers.Count -eq 0 -and $newLibraries.Count -eq 0) {
         $verdict = ($incomplete -join '; ') + ". This run cannot say whether a compiler ran."
         if ($uncovered.Count -eq 0 -and $Attempt -lt $Attempts) {
             Write-Host ("::warning::{0} (attempt {1} of {2}): {3} Measuring again." -f `

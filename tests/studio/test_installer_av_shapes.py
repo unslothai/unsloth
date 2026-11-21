@@ -1254,6 +1254,7 @@ def _run_watch_with_failing_watcher(
     fail_first: int,
     attempts: int,
     compiled: bool = False,
+    leftover: bool = False,
 ) -> str:
     """Runs the real Invoke-WithCompilerWatch, with its watcher reporting an error on the first
     ``fail_first`` measurements, as a buffer overflow does on a hosted runner."""
@@ -1283,11 +1284,20 @@ def _run_watch_with_failing_watcher(
                 fake_compiler,
                 "$action = { "
                 + ("$script:Compiled = $true; " if compiled else "")
+                + (
+                    '$d = Join-Path $env:TEMP "vpmyd5eq"; '
+                    "New-Item -ItemType Directory -Force -Path $d | Out-Null; "
+                    'Set-Content -LiteralPath (Join-Path $d "vpmyd5eq.cmdline") -Value "/noconfig"; '
+                    'Set-Content -LiteralPath (Join-Path $d "vpmyd5eq.dll") -Value "MZ"; '
+                    if leftover
+                    else ""
+                )
                 + "Start-Sleep -Milliseconds 50 }",
                 "try {",
                 "    $seen = Invoke-WithCompilerWatch -Name 'probe' -Action $action "
                 f'-EvidenceRoot "{evidence.as_posix()}" -Attempts {attempts}',
-                '    Write-Output "RESULT:measured compilers=$($seen.Compilers.Count)"',
+                '    Write-Output ("RESULT:measured compilers=$($seen.Compilers.Count) "'
+                '+ "libraries=$($seen.TempLibraries.Count)")',
                 '} catch { Write-Output "RESULT:void $($_.Exception.Message)" }',
                 'Write-Output "MEASUREMENTS:$script:StopCalls"',
             ]
@@ -1311,7 +1321,7 @@ def test_a_watcher_error_is_measured_again_and_only_a_healthy_run_counts(tmp_pat
     """A burst of temp writes during the desktop-mode install overflowed the watcher on about a
     quarter of runs. The void run is not scored; a second complete measurement is."""
     stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2)
-    assert "RESULT:measured compilers=0" in stdout, stdout
+    assert "RESULT:measured compilers=0 libraries=0" in stdout, stdout
     assert "MEASUREMENTS:2" in stdout, stdout
     assert (tmp_path / "evidence" / "probe-attempt2-watch-failures.txt").exists()
 
@@ -1328,5 +1338,15 @@ def test_a_compiler_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path)
     """4688 is authoritative about what ran, so a compile it saw is reported rather than
     measured away."""
     stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, compiled = True)
-    assert "RESULT:measured compilers=1" in stdout, stdout
+    assert "RESULT:measured compilers=1 " in stdout, stdout
+    assert "MEASUREMENTS:1" in stdout, stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_an_artefact_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
+    """The artefact half is the detector that survives auditing being overridden, so its hit is
+    reported too; a retry would bury it, since the leftovers join the next attempt's baseline."""
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, leftover = True)
+    assert "RESULT:measured compilers=0 libraries=" in stdout, stdout
+    assert "libraries=0" not in stdout, stdout
     assert "MEASUREMENTS:1" in stdout, stdout
