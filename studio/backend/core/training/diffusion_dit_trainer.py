@@ -474,6 +474,50 @@ def _int8_quantize_base(
         _empty_device_cache(device)
 
 
+INT8_TRAIN_ENV = "UNSLOTH_DIFFUSION_INT8_TRAIN"
+
+
+def _int8_w8a8() -> bool:
+    """PROTOTYPE gate: int8 trains on the frozen W8A8 base (``diffusion_frozen_int8``) instead of torchao weight-only."""
+    return os.environ.get(INT8_TRAIN_ENV, "").strip().lower() == "w8a8"
+
+
+def _apply_int8_w8a8(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+    device = None,
+) -> bool:
+    """Frozen W8A8 int8 base after add_adapter, streamed onto ``device``; False (caller keeps torchao) on failure."""
+    import torch
+
+    from core.training.diffusion_frozen_int8 import convert_frozen_int8
+
+    try:
+        dev = torch.device(device) if device is not None else next(transformer.parameters()).device
+        if dev.type == "cuda":
+            # _int_mm probe: an arch / build without int8 GEMMs must fall back before any layer is touched.
+            a = torch.ones((32, 32), dtype = torch.int8, device = dev)
+            torch._int_mm(a, a.t())
+        names = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+        done, failed = convert_frozen_int8(transformer, names, device = device)
+        if not done:
+            raise RuntimeError("no eligible linear layers")
+        if device is not None:
+            transformer.to(device)
+        gc.collect()
+        _empty_device_cache(dev.type)
+        _emit(
+            on_event,
+            "warning",
+            message = f"int8 W8A8 prototype: {done} frozen linears ({failed} kept)",
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 -- prototype: fall back to the torchao weight-only base
+        _emit(on_event, "warning", message = f"int8 W8A8 unavailable, using weight-only int8: {exc}")
+        return False
+
+
 # Small-M linears stay bf16 (casts outweigh GEMM); final_layer is Krea 2's output projection.
 _LOWP_EXTRA_EXCLUDE_TOKENS = ("final_layer",)
 
@@ -3252,9 +3296,9 @@ def _should_compile(
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
         return False
-    # torch.compile cannot trace the torchao int8 subclass in training, so int8 runs eager.
+    # torch.compile cannot trace the torchao int8 subclass in training, so int8 runs eager; the W8A8 base traces.
     if base_precision == "int8":
-        return False
+        return _int8_w8a8() and mode != "off"
     if mode == "on":
         return True
     if base_precision == "nf4":
@@ -3475,7 +3519,7 @@ def run_dit_lora_training(
         # Residual stream stays fp32; only autocast matmuls run fp16.
         weight_dtype = torch.float32
         mode = (cfg.base_precision or "nf4").strip().lower()
-        if mode not in ("nf4", "auto"):
+        if mode not in ("nf4", "auto") and not (mode == "int8" and _int8_w8a8()):
             raise ValueError(dit_fp16_dense_reason(mode))
 
     # A local FLUX.3 pipeline is modular (modular_model_index.json, no model_index.json).
@@ -3738,7 +3782,12 @@ def _train_dit(
     caption_embeds = _pin_caption_embeds(caption_embeds, device)
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
-    base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
+    if fp16_amp:
+        # The W8A8 int8 base computes in the autocast dtype, so the fp16 path can take it too (prototype gate).
+        w8a8_fp16 = (cfg.base_precision or "").strip().lower() == "int8" and _int8_w8a8()
+        base_precision = "int8" if w8a8_fp16 else "nf4"
+    else:
+        base_precision = _resolve_base_precision(cfg, spec, device)
     swap_request = block_swap_request(cfg)
     # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
     auto_swap = (
@@ -3774,7 +3823,9 @@ def _train_dit(
     fp16_report = None
     if fp16_amp:
         from core.training.diffusion_dit_fp16 import install_fp32_islands, prepare_fp16_base
-        fp16_report = prepare_fp16_base(transformer)
+
+        # The W8A8 int8 base is still bf16 on the host here: cast what remains after it lands on the device.
+        fp16_report = {} if base_precision == "int8" else prepare_fp16_base(transformer)
 
     transformer.requires_grad_(False)
     transformer.add_adapter(
@@ -3836,8 +3887,20 @@ def _train_dit(
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
-    if base_precision == "int8":
+    w8a8_on = (
+        base_precision == "int8"
+        and _int8_w8a8()
+        and _apply_int8_w8a8(transformer, on_event, cfg.resolved_family, device = device)
+    )
+    if base_precision == "int8" and not w8a8_on:
+        if fp16_amp:
+            raise ValueError(
+                "int8 W8A8 could not be built on this GPU; use base_precision='nf4' or 'auto'."
+            )
         _int8_quantize_base(transformer, cfg.resolved_family, device = device)
+    if fp16_amp and w8a8_on:
+        fp16_report.update(prepare_fp16_base(transformer))
+    if base_precision == "int8":
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "fp8" and not _apply_fp8_training(
@@ -3928,7 +3991,7 @@ def _train_dit(
     fast_lora_layers = 0
     fast_lora_hooks = ()
     if not compiled and device in ("cuda", "xpu") and fast_lora_enabled():
-        int8_cache = base_precision == "int8"
+        int8_cache = base_precision == "int8" and not w8a8_on
         if _dequant_cache_wanted(base_is_bnb, device, fp16_amp, int8_base = int8_cache):
             dequant_cache = Nf4DequantCache()
         fast_lora_layers = install_fast_lora(transformer, dequant_cache, int8 = int8_cache)
