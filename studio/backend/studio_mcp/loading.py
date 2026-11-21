@@ -336,6 +336,9 @@ async def finish_load(
 def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     async def poll() -> Progress:
         loading = await route_json("GET", "/api/inference/load-progress", caller = caller)
+        # Checked before the fraction: the placement search reports 0, which reads as no progress.
+        if isinstance(loading, dict) and loading.get("phase") == "fit":
+            return 0.0, "Finding a GPU layer split that fits in memory"
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
