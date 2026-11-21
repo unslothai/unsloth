@@ -242,7 +242,13 @@ def test_vocab_parallel_head_matches_one_process(world, head):
         torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
         assert set(grads) == set(ref_grads), sorted(set(grads) ^ set(ref_grads))[:6]
         for name in ref_grads:
-            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+            torch.testing.assert_close(
+                grads[name],
+                ref_grads[name],
+                rtol = 1e-4,
+                atol = 1e-6,
+                msg = lambda m, name = name: f"{name}: {m}",
+            )
         assert losses == pytest.approx(ref_losses, rel = 1e-5, abs = 1e-6), (rank, losses, ref_losses)
         ref_loss, ref_ce_grads = res["ce"]["ref"]
         loss, ce_grads = res["ce"]["tp"]
@@ -250,7 +256,11 @@ def test_vocab_parallel_head_matches_one_process(world, head):
         assert set(ce_grads) == set(ref_ce_grads), sorted(set(ce_grads) ^ set(ref_ce_grads))
         for name in ref_ce_grads:
             torch.testing.assert_close(
-                ce_grads[name], ref_ce_grads[name], rtol = 1e-4, atol = 1e-6, msg = name
+                ce_grads[name],
+                ref_ce_grads[name],
+                rtol = 1e-4,
+                atol = 1e-6,
+                msg = lambda m, name = name: f"{name}: {m}",
             )
         # The new paths ran: 2 forwards through the gathering head, 1 vocab-parallel cross entropy.
         assert res["gathers"] == 2 and res["ce_calls"] == 1, (res["gathers"], res["ce_calls"])
