@@ -3487,10 +3487,22 @@ def run_dit_lora_training(
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
+    # num_gpus > 1: plan the world (after its fallbacks) before resolving epochs, since every micro-step draws
+    # train_batch_size images per rank. A started rank already received the resolved step count (num_epochs = 0).
+    from core.training import diffusion_ddp
+
+    ddp = diffusion_ddp.current()
+    world, world_why = 1, None
+    if ddp is None and int(getattr(cfg, "num_gpus", 1) or 1) > 1:
+        world, world_why = diffusion_ddp.plan_world(cfg, device)
     # Resolve num_epochs to train_steps now the size is known; rebind cfg so all reads agree.
     cfg = replace(
         cfg,
-        train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
+        train_steps = resolve_train_steps(
+            replace(cfg, train_batch_size = max(1, cfg.train_batch_size) * max(1, world)),
+            len(pairs),
+            [p for p, _ in pairs],
+        ),
         num_epochs = 0,
     )
     # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
@@ -3526,14 +3538,10 @@ def run_dit_lora_training(
         return str(out_dir)
 
     # num_gpus > 1: this process is rank 0 of a data-parallel run (diffusion_ddp); a started rank finds its context.
-    from core.training import diffusion_ddp
-
-    ddp = diffusion_ddp.current()
     launched = None
     if ddp is None and int(getattr(cfg, "num_gpus", 1) or 1) > 1:
-        world, why = diffusion_ddp.plan_world(cfg, device)
-        if why:
-            _emit(on_event, "warning", message = why)
+        if world_why:
+            _emit(on_event, "warning", message = world_why)
         if world > 1:
             launched = ddp = diffusion_ddp.launch(
                 cfg,
@@ -4446,7 +4454,9 @@ def _train_dit(
             stop_now = stop_latched
         if ddp is not None:
             stop_now = ddp.any_flag(stop_now)
-        # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
+        # Skipped on the final step and when stopping, since the stop path writes one at the exact step. Data
+        # parallel: rank 0 alone saves. Its RNG state is every rank's (all ranks draw the global batch from the same
+        # streams), so a resume restores it on every rank and ddp.sync_rng() hands rank 0's card generator to the rest.
         if (
             not stop_now
             and (ddp is None or ddp.is_main)

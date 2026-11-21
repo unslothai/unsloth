@@ -286,6 +286,62 @@ def tiny_pipe_dir():
         pytest.skip(f"{TINY_PIPE} unavailable: {exc}")
 
 
+class _LaunchSeen(Exception):
+    pass
+
+
+@pytest.mark.parametrize("world, batch, expected", [(2, 1, 8), (1, 1, 16), (2, 2, 4), (3, 1, 6)])
+def test_epoch_steps_count_the_whole_world(monkeypatch, tmp_path, world, batch, expected):
+    """num_epochs counts passes over the dataset: with N GPUs a micro-step consumes N x train_batch_size images, so
+    16 images for 1 epoch on 2 GPUs at batch 1 is 8 steps (it was 16, consuming 32 images). The resolved count is
+    what the started ranks receive."""
+    from PIL import Image
+
+    import core.training.diffusion_dit_trainer as dit
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    data = tmp_path / "data"
+    data.mkdir()
+    for i in range(16):
+        Image.new("RGB", (64, 64), (10 * i, 20, 30)).save(data / f"img{i:02d}.png")
+        (data / f"img{i:02d}.txt").write_text(f"tile {i}")
+    seen = {}
+
+    def fake_launch(
+        cfg,
+        world_size,
+        on_failure = None,
+    ):
+        seen["cfg"], seen["world"] = cfg, world_size
+        raise _LaunchSeen
+
+    monkeypatch.setattr(dit, "_assert_trusted_base_model", lambda *a, **k: None)
+    monkeypatch.setattr(dit, "_assert_gated_access", lambda *a, **k: None)
+    monkeypatch.setattr(dit, "resolve_train_device", lambda: "cuda")
+    monkeypatch.setattr(dit, "dit_fp16_fallback", lambda fam: False)
+    monkeypatch.setattr(dit, "flow_bf16_trainable", lambda: True)
+    monkeypatch.setattr(diffusion_ddp, "plan_world", lambda cfg, device: (world, None))
+    monkeypatch.setattr(diffusion_ddp, "launch", fake_launch)
+    monkeypatch.setattr(dit, "_train_dit", lambda cfg, *a, **k: seen.setdefault("single", cfg))
+    cfg = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.2-klein-base-4B",
+        model_family = "flux.2-klein",
+        data_dir = str(data),
+        output_dir = str(tmp_path / "out"),
+        num_epochs = 1,
+        train_batch_size = batch,
+        num_gpus = max(world, 2),
+    )
+    try:
+        dit.run_dit_lora_training(cfg)
+    except _LaunchSeen:
+        pass
+    got = seen.get("cfg") or seen.get("single")
+    assert got.train_steps == expected and got.num_epochs == 0
+    if world > 1:
+        assert seen["world"] == world
+
+
 @pytest.mark.allow_network
 def test_two_ranks_at_batch_one_train_the_one_process_batch_two_run(tmp_path, tiny_pipe_dir):
     from PIL import Image
