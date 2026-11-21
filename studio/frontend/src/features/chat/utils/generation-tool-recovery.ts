@@ -25,6 +25,7 @@ import {
   parseSourcesFromResult,
 } from "./document-citation-source";
 import { mergeGoogleNativeParts } from "./google-native-parts";
+import { type NetworkRequest, parseNetworkRequest } from "./network-request";
 import { extractMcpUiEnvelope } from "../mcp-apps/mcp-ui";
 import {
   providerCompactionPart,
@@ -130,6 +131,8 @@ export type RecoveredToolConfirmations = {
   /** `partId` is the card's toolCallId; `sessionId` scopes the decision and "Always allow". */
   register: (partId: string, approvalId: string, sessionId: string) => void;
   resolve: (partId: string) => void;
+  /** A running call's question about a website; null once it is answered or the call ends. */
+  network?: (partId: string, request: NetworkRequest | null, requestId?: string) => void;
 };
 
 export function createGenerationToolRecovery(
@@ -326,6 +329,17 @@ export function createGenerationToolRecovery(
   ) => {
     const chunk = record(payload);
     const event = record(chunk?._toolEvent) ?? chunk;
+    if (event?.type === "tool_output" && event.network_request !== undefined) {
+      const callId = typeof event.tool_call_id === "string" ? event.tool_call_id : "";
+      const partId = record(
+        ((callId ? pending.get(callId) : undefined) ?? findSavedEntry(callId, undefined))?.part,
+      )?.toolCallId;
+      const request = parseNetworkRequest(event.network_request);
+      if (typeof partId === "string" && partId && request !== undefined) {
+        toolConfirmations?.network?.(partId, request, record(event.network_request)?.id as string);
+      }
+      return;
+    }
     if (
       event?.type !== "tool_start" &&
       event?.type !== "tool_end" &&
@@ -537,6 +551,8 @@ export function createGenerationToolRecovery(
       }
     }
     disarmApproval(entry);
+    const endedPartId = record(entry.part)?.toolCallId;
+    if (typeof endedPartId === "string") toolConfirmations?.network?.(endedPartId, null);
     if (backendId) completed.set(backendId, entry);
     else lastIdless = entry;
   };

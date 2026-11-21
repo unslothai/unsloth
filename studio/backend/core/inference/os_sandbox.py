@@ -208,6 +208,7 @@ class ToolLaunchPlan:
     cancel_event: Any = None
     # Network only through a per-call proxy that refuses metadata and local addresses; unhonoured if unsupported.
     egress_proxy: bool = False
+    egress_gate: Any = None
 
 
 @dataclass
@@ -1344,6 +1345,24 @@ def cached_tool_isolation(tool: str) -> bool | None:
     """Never blocks: whether ``tool`` last qualified for OS isolation (None before the first answer)."""
     cached = cached_tool_capability(tool)
     return None if cached is None else cached[0]
+
+
+def network_confinement_available() -> bool:
+    """Blocking: whether Python and Terminal can be held to the per-call egress proxy on this computer."""
+    if not refresh_tool_isolation("python"):
+        return False
+    cached = cached_tool_capability("python")
+    if cached is None or cached[1] not in ("bubblewrap", "macos-seatbelt"):
+        return False
+    if sys.platform != "linux":
+        return True
+    from . import sandbox_linux
+
+    try:
+        bwrap = sandbox_linux._trusted_bwrap_path()
+        return sandbox_linux._private_network_works(bwrap, sandbox_linux.empty_proc_layout(bwrap))
+    except SandboxUnavailableError:
+        return False
 
 
 def _host_key() -> str:

@@ -124,7 +124,7 @@ from utils.account_context import (
 from utils.current_date_prompt_settings import strip_current_date_update_note
 from utils.host_policy import _literal_ip_address
 from core.inference.providers import _metadata_host as _provider_metadata_host
-from utils import sandbox_memory_limit, tool_result_limit
+from utils import network_firewall, sandbox_memory_limit, tool_result_limit
 from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from integrations.unreal import CALL_GUIDE as UNREAL_CALL_GUIDE
@@ -305,6 +305,11 @@ _OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
 # The sandbox shares the host network, so these get only the per-call proxy that refuses metadata addresses.
 _OS_SANDBOX_PROXIED_COMMANDS = frozenset({"curl", "wget"})
 _OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
+_HOST_SCREEN_REASONS = frozenset({"untrusted_host_blocked", "unreadable_host_blocked"})
+_BLOCKED_WEBSITE_CALL = {
+    "type": "blocked_website",
+    "description": "Blocked: this website is blocked in Settings > Security",
+}
 _CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
 _CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
 _SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*\+?=")
@@ -756,6 +761,36 @@ _PLAIN_DOWNLOAD_HINT = (
 _PLAIN_CHMOD_HINT = (
     "In the OS sandbox chmod runs only as a plain `chmod MODE FILE...`: no -R, globs, $ or xargs."
 )
+
+
+def _network_gate(firewalled, tool, session_id, thread_id, output_callback, cancel_event):
+    if not firewalled:
+        return None
+    from .network_gate import NetworkGate
+    return NetworkGate(tool, session_id, thread_id, output_callback, cancel_event)
+
+
+def _watched_network(gate, env):
+    """Loopback egress checkpoint for calls the OS cannot confine; returns (child env, stopper)."""
+    from . import sandbox_egress
+
+    rc_dir = tempfile.mkdtemp(prefix = "us-egress-rc-")
+    try:
+        sandbox_egress.write_empty_rc_files(rc_dir)
+        proxy = sandbox_egress.EgressProxy(gate = gate)
+    except OSError:
+        logger.warning("Could not start the network checkpoint", exc_info = True)
+        shutil.rmtree(rc_dir, ignore_errors = True)
+        return None
+    env = dict(env)
+    env.update(sandbox_egress.proxy_environment(f"http://127.0.0.1:{proxy.port}", rc_dir))
+    env["_UNSLOTH_EGRESS_ONLY"] = f"127.0.0.1:{proxy.port}"
+
+    def close() -> None:
+        proxy.close()
+        shutil.rmtree(rc_dir, ignore_errors = True)
+
+    return env, close
 
 
 def _runs_in_os_sandbox(prepared) -> bool:
@@ -6935,7 +6970,18 @@ def has_text_only_provisional_card(name: str) -> bool:
 
 def _web_search_fetches_url(name: str, arguments: dict) -> bool:
     """web_search with a url is egress to the named host, so it asks; name-only safety is unchanged."""
-    return name == "web_search" and bool(str(arguments.get("url", "") or "").strip())
+    url = str(arguments.get("url", "") or "").strip()
+    if name != "web_search" or not url:
+        return False
+    # With the owner's rules on, the read itself asks about a website they do not cover.
+    if network_firewall.confines_code():
+        return False
+    if not network_firewall.blocked_domains():
+        return True
+    from .web_access_policy import check_url_access
+
+    # A blocked website is refused before any request leaves, so there is nothing to approve.
+    return check_url_access(_normalize_url_scheme(url), None)[0]
 
 
 def _browser_opens_workspace_file(name: str, arguments: dict) -> bool:
@@ -9060,7 +9106,13 @@ def _python_is_high_risk(code: str) -> bool:
         return False
     # A confirmation beats a silent refusal at execution time.
     analysis = _check_signal_escape_patterns(code)
-    if _check_code_safety(code, analysis = analysis) is not None:
+    # Under the owner's network rules the call itself asks about a website, so the host screen does not ask first.
+    if (
+        _check_code_safety(
+            code, network_confined = network_firewall.confines_code(), analysis = analysis
+        )
+        is not None
+    ):
         return True
     if any(_terminal_is_high_risk(command) for command in analysis[1].get("shell_commands", ())):
         return True
@@ -15264,8 +15316,18 @@ def execute_tool(
             return "No query provided."
         if started_read is not None:
             return _fit_result_to_room(started_read.result(), name)
-        return _fit_result_to_room(
-            _web_search(
+        page_gate = _PAGE_GATE.set(
+            _network_gate(
+                bool(url) and network_firewall.confines_code(),
+                "web",
+                session_id,
+                thread_id,
+                output_callback,
+                cancel_event,
+            )
+        )
+        try:
+            found = _web_search(
                 query,
                 url = url or None,
                 timeout = effective_timeout,
@@ -15273,9 +15335,10 @@ def execute_tool(
                 website_policy = website_policy,
                 include_images = search_images,
                 image_queries = image_queries,
-            ),
-            name,
-        )
+            )
+        finally:
+            _PAGE_GATE.reset(page_gate)
+        return _fit_result_to_room(found, name)
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call must not unlink it from under them.
     if name == "python":
         with _session_in_flight(session_id):
@@ -17220,13 +17283,28 @@ def _pinned_netloc(ip: str, port: int | None) -> str:
     return f"{host}:{port}" if port else host
 
 
-def _redirect_hop(url: str, website_policy) -> tuple[str | None, str]:
+# The owner's network rules for the page read in progress; unset for a search, whose results are only filtered.
+_PAGE_GATE: "contextvars.ContextVar" = contextvars.ContextVar("unsloth_page_gate", default = None)
+
+
+def _page_refusal(host: str) -> str | None:
+    gate = _PAGE_GATE.get()
+    refusal = gate.check(host, 443) if gate is not None else None
+    return f"Blocked: {refusal}." if refusal else None
+
+
+def _redirect_hop(url: str, website_policy, deadline):
     from .web_access_policy import check_url_access
 
     allowed, reason, host = check_url_access(url, website_policy)
     if not allowed:
-        return reason, ""
-    return None, host
+        return reason, "", deadline
+    asked_at = time.monotonic()
+    refused = _page_refusal(host)
+    # Time spent waiting on the owner's approval is not spent on the read.
+    if deadline is not None:
+        deadline += time.monotonic() - asked_at
+    return refused, host, deadline
 
 
 def _is_bot_check(status: int, headers) -> bool:
@@ -17276,6 +17354,12 @@ def _fetch_url_raw(
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
         return reason, "", ""
+    asked_at = time.monotonic()
+    refused = _page_refusal(canonical_host)
+    if refused:
+        return refused, "", ""
+    if deadline is not None:
+        deadline += time.monotonic() - asked_at
 
     if proxy_hostname is None:
         proxy_hostname = os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1"
@@ -17401,7 +17485,9 @@ def _fetch_url_raw(
                         )
                         if refused:
                             return refused, "", ""
-                    hop_error, current_host = _redirect_hop(current_url, website_policy)
+                    hop_error, current_host, deadline = _redirect_hop(
+                        current_url, website_policy, deadline
+                    )
                     if hop_error is not None:
                         return hop_error, "", ""
                     continue
@@ -17479,7 +17565,7 @@ def _fetch_url_raw(
             current_url = refresh_url
             # a refresh starts a new GET like a browser.
             pending_post = None
-            hop_error, current_host = _redirect_hop(current_url, website_policy)
+            hop_error, current_host, deadline = _redirect_hop(current_url, website_policy, deadline)
             if hop_error is not None:
                 return hop_error, "", ""
         else:
@@ -18088,8 +18174,6 @@ def _download_page(
     cancel_event = None,
     website_policy: dict | None = None,
 ):
-    # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
-    deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
 
     # Before the policy gate (needs a scheme) and the README routing (reads host/path).
@@ -18097,6 +18181,11 @@ def _download_page(
     allowed, reason, _hostname = check_url_access(url, website_policy)
     if not allowed:
         return reason
+    refused = _page_refusal(_hostname)
+    if refused:
+        return refused
+    # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
+    deadline = None if timeout is None else time.monotonic() + timeout
     policy_kwargs = {"website_policy": website_policy} if website_policy is not None else {}
     readme_api_url = _github_repo_readme_api_url(url)
     if readme_api_url:
@@ -18740,7 +18829,7 @@ def _web_search(
         # overfetch for allowed hits below blocked ones; normalized policy remains truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
-        )
+        ) or bool(network_firewall.blocked_domains())
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
         # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
@@ -20232,6 +20321,9 @@ def _check_signal_escape_patterns(code: str):
         if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
             return True
         return False
+
+    def _is_blocked_website(host: str) -> bool:
+        return network_firewall.blocks(_normalize_host(host))
 
     def _is_trusted_host(host: str) -> bool:
         h = _normalize_host(host)
@@ -21878,6 +21970,8 @@ def _check_signal_escape_patterns(code: str):
                                 "description": "Blocked: cloud-metadata host",
                             }
                         )
+                    elif _is_blocked_website(host_lit):
+                        network_calls.append(_BLOCKED_WEBSITE_CALL | {"line": node.lineno})
                     elif not _is_trusted_host(host_lit):
                         network_calls.append(
                             {
@@ -22057,6 +22151,8 @@ def _check_signal_escape_patterns(code: str):
                             "description": "Blocked: cloud-metadata host",
                         }
                     )
+                elif any(_is_blocked_website(h) for h in hosts):
+                    network_calls.append(_BLOCKED_WEBSITE_CALL | {"line": node.lineno})
                 elif any(not _is_trusted_host(h) for h in hosts):
                     network_calls.append(
                         {
@@ -22152,6 +22248,7 @@ def _check_code_safety(
     code: str,
     *,
     host_approved: bool = False,
+    network_confined: bool = False,
     analysis: "tuple | None" = None,
     _depth: int = 0,
 ) -> str | None:
@@ -22163,7 +22260,12 @@ def _check_code_safety(
         for command in info.get("shell_commands", ()):
             payload = _nested_python_payload(command)
             if payload:
-                nested = _check_code_safety(payload, host_approved = host_approved, _depth = _depth + 1)
+                nested = _check_code_safety(
+                    payload,
+                    host_approved = host_approved,
+                    network_confined = network_confined,
+                    _depth = _depth + 1,
+                )
                 if nested is not None:
                     return nested
     if not safe:
@@ -22180,6 +22282,8 @@ def _check_code_safety(
             item.get("description", "")
             for item in info.get("network_calls", [])
             if not (host_approved and item.get("type") == "untrusted_host_blocked")
+            # The proxy decides every destination at run time, written out or computed.
+            and not (network_confined and item.get("type") in _HOST_SCREEN_REASONS)
         ]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
@@ -24124,11 +24228,15 @@ def _python_exec(
             "was written. Remove the coding line and run it again."
         )
 
+    # Full access runs outside the sandbox, where the owner's network rules cannot hold.
+    firewalled = not disable_sandbox and network_firewall.confines_code()
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
         # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
         error = _check_code_safety(
-            code, host_approved = host_access_approved and not _api_host_access_refused()
+            code,
+            host_approved = host_access_approved and not _api_host_access_refused(),
+            network_confined = firewalled,
         )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
@@ -24195,7 +24303,16 @@ def _python_exec(
         if base_preexec is _sandbox_preexec:
             _refresh_sandbox_memory_limit()
         # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
+        gate = _network_gate(
+            firewalled, "python", session_id, thread_id, output_callback, cancel_event
+        )
         if confinement is None or not confinement.confines:
+            # MXC builds its workload environment from the plan, so the checkpoint must be in it first.
+            if firewalled and sys.platform == "win32":
+                watched = _watched_network(gate, safe_env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                safe_env, watch_close = watched
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = (sys.executable, "-u", tmp_path),
@@ -24206,16 +24323,29 @@ def _python_exec(
                     timeout_seconds = timeout,
                     execution_kind = "python",
                     cancel_event = cancel_event,
+                    egress_proxy = firewalled,
+                    egress_gate = gate,
                 ),
                 host_access_approved = host_access_approved and _reaches_host_paths("python", code),
                 user_folder = _is_user_project_folder(session_id, workdir),
                 host_script = code,
             )
+            if firewalled and sys.platform != "win32" and not prepared.egress_proxy:
+                watched = _watched_network(gate, prepared.env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                prepared.env = watched[0]
+                prepared.cleanup_callbacks.append(watched[1])
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
             )
             _note_tool_execution(prepared.execution_record)
         else:
+            if firewalled:
+                watched = _watched_network(gate, safe_env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                safe_env, watch_close = watched
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
                 popen_kwargs["preexec_fn"] = base_preexec
@@ -24238,6 +24368,8 @@ def _python_exec(
         output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if gate is not None:
+            output += gate.note()
         if prepared is not None:
             proc._unsloth_completion_reason = (
                 "timed_out"
@@ -24301,6 +24433,8 @@ def _python_exec(
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
+        if locals().get("watch_close"):
+            locals()["watch_close"]()
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
@@ -24451,6 +24585,7 @@ def _bash_exec(
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        firewalled = not disable_sandbox and network_firewall.confines_code()
         host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
         # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
         # advertised) but runs it with software safeguards (_prepare_tool_launch).
@@ -24471,7 +24606,15 @@ def _bash_exec(
         )
         if base_preexec is _sandbox_preexec:
             _refresh_sandbox_memory_limit()
+        gate = _network_gate(
+            firewalled, "terminal", session_id, thread_id, output_callback, cancel_event
+        )
         if confinement is None or not confinement.confines:
+            if firewalled and sys.platform == "win32":
+                watched = _watched_network(gate, safe_env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                safe_env, watch_close = watched
             prepared = _prepare_tool_launch(
                 os_sandbox.ToolLaunchPlan(
                     argv = tuple(shell_argv),
@@ -24482,11 +24625,18 @@ def _bash_exec(
                     timeout_seconds = timeout,
                     execution_kind = "terminal",
                     cancel_event = cancel_event,
-                    egress_proxy = bool(contained & _OS_SANDBOX_PROXIED_COMMANDS),
+                    egress_proxy = firewalled or bool(contained & _OS_SANDBOX_PROXIED_COMMANDS),
+                    egress_gate = gate,
                 ),
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
+            if firewalled and sys.platform != "win32" and not prepared.egress_proxy:
+                watched = _watched_network(gate, prepared.env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                prepared.env = watched[0]
+                prepared.cleanup_callbacks.append(watched[1])
             if contained and (chosen_folder or not _runs_in_os_sandbox(prepared)):
                 return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
             proxied = contained & _OS_SANDBOX_PROXIED_COMMANDS
@@ -24499,6 +24649,11 @@ def _bash_exec(
         else:
             if contained:
                 return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
+            if firewalled:
+                watched = _watched_network(gate, safe_env)
+                if watched is None:
+                    return network_firewall.CHECKPOINT_FAILED
+                safe_env, watch_close = watched
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
                 popen_kwargs["preexec_fn"] = base_preexec
@@ -24521,6 +24676,8 @@ def _bash_exec(
         output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if gate is not None:
+            output += gate.note()
         if prepared is not None:
             proc._unsloth_completion_reason = (
                 "timed_out"
@@ -24581,6 +24738,8 @@ def _bash_exec(
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
+        if locals().get("watch_close"):
+            locals()["watch_close"]()
         # Private mounts and descriptors, released on every exit path.
         if prepared is not None:
             prepared.cleanup()

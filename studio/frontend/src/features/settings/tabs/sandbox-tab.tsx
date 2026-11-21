@@ -49,6 +49,7 @@ import {
   parseTrustedFolders,
   updateTrustedToolFolders,
 } from "../api/trusted-tool-folders";
+import { NetworkFirewallSection } from "../components/network-firewall-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -391,6 +392,7 @@ export function SandboxTab() {
       <PermissionsSection />
       <SandboxLevelSection />
       {isOwner ? <TrustedFoldersSection /> : null}
+      {isOwner ? <NetworkFirewallSection /> : null}
       {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
       {isOwner ? (
         <OsSandboxSections />

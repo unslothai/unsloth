@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from loggers import get_logger
+from utils import network_firewall
 
 logger = get_logger(__name__)
 
@@ -745,6 +746,10 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     problem = _host_problem(urlsplit(url).hostname or "")
     if problem:
         raise ValueError(f"{problem}, and the browser only opens public sites.")
+    if network_firewall.decide(hostname) == "deny":
+        raise ValueError(
+            f"{hostname} is not an allowed website (Settings > Security), so the browser can't open it."
+        )
     parsed = urlsplit(url)
     port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
     ok, reason, _ips = _validate_and_resolve_host(hostname, port)
@@ -954,9 +959,11 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
                 f"Error: the page went to {problem}, so its content is withheld. "
                 "Navigate to a public site."
             )
-    if url.lower().startswith(("http://", "https://")) and website_policy:
+    if url.lower().startswith(("http://", "https://")) and (
+        website_policy or network_firewall.blocked_domains() or network_firewall.confines_code()
+    ):
         allowed, _reason, host = check_url_access(url, website_policy)
-        if not allowed:
+        if not allowed or network_firewall.decide(host) == "deny":
             return (
                 f"Error: the page went to {host or 'a site'}, which the website access policy "
                 "disallows, so its content is withheld. Navigate somewhere else."
@@ -1072,8 +1079,13 @@ def execute_browser_tool(
                     "id": action_id,
                     "session_id": session_id or "",
                     **request,
-                    "allowed_domains": list(policy["allowedDomains"]),
-                    "blocked_domains": list(policy["blockedDomains"]),
+                    "allowed_domains": network_firewall.panel_allowed_domains(
+                        policy["allowedDomains"]
+                    ),
+                    "blocked_domains": [
+                        *policy["blockedDomains"],
+                        *network_firewall.blocked_domains(),
+                    ],
                     # The tab drops an unanswered question once this side stops waiting, so a late Allow can't run.
                     "timeout_s": wait,
                 }

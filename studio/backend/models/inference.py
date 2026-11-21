@@ -3879,6 +3879,12 @@ class BrowserActionResultRequest(BaseModel):
     result: dict[str, Any]
 
 
+class NetworkDecisionRequest(BaseModel):
+    session_id: Optional[str] = None
+    request_id: str = Field(min_length = 1, max_length = 64)
+    decision: Literal["allow", "always", "deny"]
+
+
 class ToolApprovalStatusRequest(BaseModel):
     """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
     caller can only ask about an approval it already holds and cannot enumerate anyone else's."""

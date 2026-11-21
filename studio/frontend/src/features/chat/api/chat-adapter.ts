@@ -105,6 +105,7 @@ import {
   mcpUiReplayImages,
 } from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
+import { parseNetworkRequest, userNamedHost } from "../utils/network-request";
 import { userMessageIdRequestField } from "../utils/rewind";
 import {
   type McpImage,
@@ -454,6 +455,7 @@ import {
   streamChatCompletions,
   StreamInterruptedError,
   validateModel,
+  resolveNetworkRequest,
 } from "./chat-api";
 import {
   type AgentsMdRecord,
@@ -7754,6 +7756,26 @@ export function createOpenAIStreamAdapter(
                   );
                   continue;
                 }
+                if (toolEvent.type === "tool_output" && toolEvent.network_request) {
+                  const id = resolveToolPartId((toolEvent.tool_call_id as string) || "");
+                  const request = parseNetworkRequest(toolEvent.network_request);
+                  if (
+                    request?.kind === "website" &&
+                    userNamedHost(request.host, userTexts(survivingMessages).join("\n"))
+                  ) {
+                    // The user wrote this address: only a website the model chose itself asks.
+                    void resolveNetworkRequest(request.sessionId, request.id, "allow").catch(
+                      () => undefined,
+                    );
+                  } else if (id && request !== undefined) {
+                    useChatRuntimeStore.getState().setToolNetworkRequest(
+                      id,
+                      request,
+                      (toolEvent.network_request as { id: string }).id,
+                    );
+                  }
+                  continue;
+                }
                 if (toolEvent.type === "tool_model_note") {
                   const at = toolModelNoteTarget(
                     toolCallParts as Parameters<typeof toolModelNoteTarget>[0],
@@ -7946,6 +7968,7 @@ export function createOpenAIStreamAdapter(
                     toolPartIdByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
+                  useChatRuntimeStore.getState().setToolNetworkRequest(id, null);
                   // Use the shared predicate, not length: a footer or __IMAGES__ tail can lengthen the result.
                   const liveKey = scopedToolOutputKey(id);
                   const liveOutput =
@@ -9348,6 +9371,7 @@ export function createOpenAIStreamAdapter(
         const confirmStore = useChatRuntimeStore.getState();
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);
+          confirmStore.setToolNetworkRequest(part.toolCallId, null);
         }
         runtime.setGeneratingStatus(null);
         // Scoped by thread AND by run: a global clear wiped every other running chat's badge.

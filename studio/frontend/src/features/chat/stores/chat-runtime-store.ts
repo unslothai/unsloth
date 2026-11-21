@@ -13,6 +13,7 @@ import {
 } from "../utils/chat-full-access.ts";
 import { forgetThreadReads } from "../api/thread-read-cache.ts";
 import type { ImageDisclosure } from "../api/mcp-image";
+import type { NetworkRequest } from "../utils/network-request";
 import type { ComputerUseAsk } from "../../computer-use/summary";
 import {
   mirrorHfTokenInto,
@@ -2669,6 +2670,7 @@ type ChatRuntimeStore = {
       computerUse?: ComputerUseAsk;
     }
   >;
+  toolNetworkRequests: Record<string, NetworkRequest>;
   webFetchToolsEnabled: boolean;
   /** A list: unresolved threads share "__default", so one clear must not remove a sibling. */
   toolStatusByThreadId: Record<string, ToolStatusEntry[]>;
@@ -2920,6 +2922,12 @@ type ChatRuntimeStore = {
     computerUse?: ComputerUseAsk,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
+  /** null clears it, but only while `requestId` (when given) is still the one shown. */
+  setToolNetworkRequest: (
+    toolCallId: string,
+    request: NetworkRequest | null,
+    requestId?: string,
+  ) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
   setRagPanelHidden: (hidden: boolean) => void;
@@ -4549,6 +4557,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
+  toolNetworkRequests: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   ragEnabled: false,
   ragPanelHidden: false,
@@ -6102,6 +6111,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next = { ...state.toolConfirmations };
       delete next[toolCallId];
       return { toolConfirmations: next };
+    }),
+  setToolNetworkRequest: (toolCallId, request, requestId) =>
+    set((state) => {
+      const shown = state.toolNetworkRequests[toolCallId];
+      if (request === null) {
+        if (!shown || (requestId !== undefined && shown.id !== requestId)) return state;
+        const next = { ...state.toolNetworkRequests };
+        delete next[toolCallId];
+        return { toolNetworkRequests: next };
+      }
+      return { toolNetworkRequests: { ...state.toolNetworkRequests, [toolCallId]: request } };
     }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set((state) => {

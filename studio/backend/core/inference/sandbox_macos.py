@@ -730,7 +730,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     prefix = "us-egress-rc-", dir = "/tmp" if sys.platform == "darwin" else None
                 )
                 sandbox_egress.write_empty_rc_files(rc_dir)
-                proxy = sandbox_egress.EgressProxy()
+                proxy = sandbox_egress.EgressProxy(gate = plan.egress_gate)
             except OSError:
                 logger.warning("Could not start the sandbox egress proxy", exc_info = True)
         egress_url = f"http://127.0.0.1:{proxy.port}" if proxy else None
