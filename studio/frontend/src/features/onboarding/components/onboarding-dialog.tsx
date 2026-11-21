@@ -12,12 +12,12 @@ import {
 import { triggerShortcut } from "@/features/settings/hooks/use-shortcut";
 import { TOUR_OPEN_EVENT, isTourListening } from "@/features/tour";
 import { useT } from "@/i18n";
-import { cn } from "@/lib/utils";
 import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
-  Cancel01Icon,
-} from "@hugeicons/core-free-icons";
+  ChevronLeftStandardIcon,
+  ChevronRightStandardIcon,
+} from "@/lib/chevron-icons";
+import { cn } from "@/lib/utils";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
@@ -251,7 +251,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
               onClick={back}
             >
               <HugeiconsIcon
-                icon={ArrowLeft01Icon}
+                icon={ChevronLeftStandardIcon}
                 className="size-4.5"
                 strokeWidth={2}
               />
@@ -270,7 +270,7 @@ export function OnboardingDialog({ pages }: { pages: OnboardingPageId[] }) {
           >
             {primaryLabel}
             <HugeiconsIcon
-              icon={ArrowRight01Icon}
+              icon={ChevronRightStandardIcon}
               className="size-4"
               strokeWidth={2}
             />

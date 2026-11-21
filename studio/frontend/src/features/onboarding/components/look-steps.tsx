@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Switch } from "@/components/ui/switch";
 import {
   resetChatBackground,
   useBackgroundStore,
@@ -36,7 +37,7 @@ import {
   type WallpaperPreset,
   paintWallpaper,
 } from "../lib/wallpapers";
-import { ChosenRing, Group, Row, Segmented, StepHeader } from "./onboarding-ui";
+import { ChosenRing, Group, Row, StepHeader } from "./onboarding-ui";
 
 export const MODES: {
   value: Theme;
@@ -396,15 +397,10 @@ export function LookStep() {
         <Row
           label={t("onboarding.scene.glass")}
           trailing={
-            <Segmented
-              id="onboarding-glass"
-              label={t("onboarding.scene.glass")}
-              value={material === "solid" ? "solid" : "glass"}
-              onChange={(next) => setEnabled(next === "glass")}
-              options={[
-                { value: "solid", label: t("onboarding.scene.solid") },
-                { value: "glass", label: t("onboarding.scene.glassOn") },
-              ]}
+            <Switch
+              aria-label={t("onboarding.scene.glass")}
+              checked={material !== "solid"}
+              onCheckedChange={setEnabled}
             />
           }
         />

@@ -5827,7 +5827,9 @@ export const en = {
       placeholder: "What should we call you?",
       initials: "Initials",
       sloth: "Sloth",
-      upload: "Upload a picture",
+      upload: "Upload your own photo",
+      uploading: "Uploading…",
+      yours: "Your photo",
       uploadError: "That image couldn’t be used. Try a JPEG, PNG, WebP or GIF.",
     },
     look: {
@@ -5841,8 +5843,6 @@ export const en = {
       upload: "Upload",
       error: "That image couldn’t be used. Try a JPEG, PNG or WebP.",
       glass: "Glass",
-      solid: "Solid",
-      glassOn: "Glass",
     },
     device: {
       checking: "Looking at this computer…",

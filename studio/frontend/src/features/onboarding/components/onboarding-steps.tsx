@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { publicAssetUrl } from "@/components/mascot-img";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { UserAvatar } from "@/features/profile/components/user-avatar";
@@ -52,7 +53,7 @@ function AvatarChoice({
       aria-label={label}
       title={label}
       onClick={onPick}
-      className="bg-muted relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-ring"
+      className="bg-muted relative flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {children}
       <ChosenRing on={active} className="ring-foreground ring-inset" />
@@ -90,8 +91,8 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
       <div className="flex flex-col items-center text-center">
         <motion.div
           key={avatar ?? (displayName.trim() ? "initials" : "mascot")}
-          initial={{ scale: 0.9, opacity: 0.6 }}
-          animate={{ scale: 1, opacity: 1 }}
+          initial={{ opacity: 0.4 }}
+          animate={{ opacity: 1 }}
           transition={{ type: "spring", stiffness: 380, damping: 22 }}
         >
           {avatar === null && !displayName.trim() ? (
@@ -165,28 +166,20 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
               </AvatarChoice>
             );
           })}
-          <AvatarChoice
-            active={custom}
-            label={t("onboarding.profile.upload")}
-            onPick={() => fileInput.current?.click()}
-          >
-            {custom && avatar ? (
+          {custom && avatar ? (
+            <AvatarChoice
+              active={true}
+              label={t("onboarding.profile.yours")}
+              onPick={() => fileInput.current?.click()}
+            >
               <img
                 alt=""
                 src={avatar}
                 draggable={false}
                 className="size-full object-cover"
               />
-            ) : uploading ? (
-              <span className="border-muted-foreground/30 border-t-foreground size-4 animate-spin rounded-full border-2" />
-            ) : (
-              <HugeiconsIcon
-                icon={Upload01Icon}
-                className="text-muted-foreground size-4"
-                strokeWidth={1.75}
-              />
-            )}
-          </AvatarChoice>
+            </AvatarChoice>
+          ) : null}
           <input
             ref={fileInput}
             type="file"
@@ -199,6 +192,24 @@ export function WelcomeStep({ onSubmit }: { onSubmit: () => void }) {
               e.target.value = "";
             }}
           />
+        </div>
+        <div className="mt-5 flex justify-center">
+          <Button
+            type="button"
+            variant="muted"
+            className="h-10 gap-2 rounded-full px-5"
+            disabled={uploading}
+            onClick={() => fileInput.current?.click()}
+          >
+            <HugeiconsIcon
+              icon={Upload01Icon}
+              className="size-4"
+              strokeWidth={1.75}
+            />
+            {uploading
+              ? t("onboarding.profile.uploading")
+              : t("onboarding.profile.upload")}
+          </Button>
         </div>
         {uploadError ? (
           <p className="text-destructive mt-3 text-center text-xs">

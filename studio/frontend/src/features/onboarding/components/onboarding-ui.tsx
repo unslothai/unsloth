@@ -4,7 +4,7 @@
 import { MascotImg } from "@/components/mascot-img";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { motion, useReducedMotion } from "motion/react";
+import { motion } from "motion/react";
 import type { ReactNode } from "react";
 
 export function StepHeader({ title, body }: { title: string; body: string }) {
@@ -27,9 +27,9 @@ export function Mascot({
   return (
     <motion.div
       aria-hidden="true"
-      initial={{ scale: 0.85, rotate: -6, opacity: 0 }}
-      animate={{ scale: 1, rotate: 0, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 260, damping: 18, delay: 0.05 }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3, delay: 0.05 }}
       className={cn("mx-auto", className)}
     >
       <MascotImg src={src} className="size-full object-contain" />
@@ -102,64 +102,6 @@ export function Row({
       </div>
       {below ? <div className="mt-5">{below}</div> : null}
     </div>
-  );
-}
-
-/** Two or three choices in one pill, the active one riding a sliding chip. */
-export function Segmented<T extends string>({
-  value,
-  options,
-  onChange,
-  label,
-  id,
-}: {
-  value: T;
-  options: { value: T; label: string; icon?: IconSvgElement }[];
-  onChange: (next: T) => void;
-  label: string;
-  id: string;
-}) {
-  const reduced = useReducedMotion();
-  return (
-    <fieldset className="hub-tab-toggle inline-flex h-9 shrink-0 items-center rounded-full border-0 p-0.5">
-      <legend className="sr-only">{label}</legend>
-      {options.map((option) => {
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onChange(option.value)}
-            className={cn(
-              "relative flex h-8 items-center gap-1.5 rounded-full px-3.5 text-xs font-medium transition-colors",
-              active
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {active ? (
-              <motion.span
-                layoutId={id}
-                className="hub-tab-toggle-pill absolute inset-0 rounded-full"
-                transition={
-                  reduced
-                    ? { duration: 0 }
-                    : { type: "spring", stiffness: 500, damping: 35, mass: 0.5 }
-                }
-              />
-            ) : null}
-            {option.icon ? (
-              <HugeiconsIcon
-                icon={option.icon}
-                className="relative z-10 size-3.5"
-              />
-            ) : null}
-            <span className="relative z-10">{option.label}</span>
-          </button>
-        );
-      })}
-    </fieldset>
   );
 }
 
