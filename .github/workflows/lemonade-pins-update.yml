@@ -21,7 +21,7 @@ permissions:
 jobs:
   update-pins:
     name: pin the latest Lemonade and FastFlowLM releases
-    if: github.repository == 'unslothai/unsloth'
+    if: github.repository == 'unslothai/unsloth' || github.repository == 'unsloth/unsloth'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

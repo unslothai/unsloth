@@ -5,6 +5,8 @@ const DESKTOP_RELEASE_PAGE_BASE_URL: &str = "https://github.com/unslothai/unslot
 const DESKTOP_RELEASE_TAG_PREFIX: &str = "v";
 const DESKTOP_UPDATER_MANIFEST_URL: &str =
     "https://github.com/unslothai/unsloth/releases/latest/download/latest.json";
+// The GitHub org is moving from unslothai to unsloth; a manifest may pin its assets to either.
+const DESKTOP_RELEASE_REPOS: [&str; 2] = ["unslothai/unsloth", "unsloth/unsloth"];
 
 #[allow(dead_code)]
 #[derive(Debug, Serialize)]
@@ -119,9 +121,8 @@ fn validate_channel_metadata(
         return Err("Desktop updater metadata has no platforms".to_string());
     }
 
-    let expected_prefix = format!(
-        "https://github.com/unslothai/unsloth/releases/download/v{normalized_version}/"
-    );
+    let trusted_prefixes = DESKTOP_RELEASE_REPOS
+        .map(|repo| format!("https://github.com/{repo}/releases/download/v{normalized_version}/"));
     for (platform, entry) in &metadata.platforms {
         if entry.url.trim().is_empty() {
             return Err(format!(
@@ -135,7 +136,9 @@ fn validate_channel_metadata(
         }
         if entry.url.contains("/releases/latest/")
             || entry.url.contains("/releases/download/desktop-latest/")
-            || !entry.url.starts_with(&expected_prefix)
+            || !trusted_prefixes
+                .iter()
+                .any(|prefix| entry.url.starts_with(prefix))
         {
             return Err(format!(
                 "Desktop updater metadata has untrusted URL for {platform}: {}",
@@ -457,8 +460,20 @@ mod tests {
     }
 
     #[test]
+    fn updater_policy_accepts_assets_pinned_to_the_renamed_org() {
+        let metadata = metadata_with_url(
+            "https://github.com/unsloth/unsloth/releases/download/v0.1.528-beta/app.AppImage",
+        );
+        assert!(super::validate_channel_metadata(&metadata, "0.1.528-beta").is_ok());
+    }
+
+    #[test]
     fn updater_policy_rejects_moving_legacy_mismatched_and_foreign_asset_urls() {
         for url in [
+            "https://github.com/unsloth/unsloth/releases/latest/download/app.AppImage",
+            "https://github.com/unsloth/unsloth/releases/download/v0.1.529-beta/app.AppImage",
+            "https://github.com/unsloth/unsloth-zoo/releases/download/v0.1.528-beta/app.AppImage",
+            "https://github.com/unsloth/unslothx/releases/download/v0.1.528-beta/app.AppImage",
             "https://github.com/unslothai/unsloth/releases/latest/download/app.AppImage",
             "https://github.com/unslothai/unsloth/releases/download/desktop-latest/app.AppImage",
             "https://github.com/unslothai/unsloth/releases/download/desktop-v0.1.528-beta/app.AppImage",
