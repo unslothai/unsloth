@@ -1730,8 +1730,9 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 
 
 # assistant_only_loss: TRL raises for chat templates it does not know (all Unsloth ones); fall back to Zoo's train_on_responses_only masks.
+# TRL >= 1.18 also passes require_prefix_preservation=False; any keyword arguments are kept as is.
 _SFT_TRAINING_TEMPLATE = re.compile(
-    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\(processing_class\)[ \t]*$",
+    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\((?P<call>processing_class(?:,[^()\n]*)?)\)[ \t]*$",
     flags = re.MULTILINE,
 )
 _SFT_STOP_TOKEN_CHECK = re.compile(
@@ -1758,7 +1759,7 @@ def sft_trainer_assistant_mask_fallback(function_name, function):
         i = match.group("indent")
         return (
             f"{i}try:\n"
-            f"{i}    self.chat_template = get_training_chat_template(processing_class)\n"
+            f"{i}    self.chat_template = get_training_chat_template({match.group('call')})\n"
             f"{i}except ValueError:\n"
             # Zoo's text preparation reads the flag; vision datasets and skip_prepare_dataset never reach it.
             f"{i}    if getattr(self, '_is_vision_dataset', False) or (getattr(args, 'dataset_kwargs', None) or {{}}).get('skip_prepare_dataset'): raise\n"
