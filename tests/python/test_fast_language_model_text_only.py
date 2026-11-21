@@ -134,7 +134,8 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "FastModel"
     ]
-    assert len(fast_model_calls) == 2
+    # Two FastModel delegations plus the EXL3 one.
+    assert len(fast_model_calls) == 3
     for call in fast_model_calls:
         kw = [k for k in call.keywords if k.arg == "text_only"]
         assert len(kw) == 1

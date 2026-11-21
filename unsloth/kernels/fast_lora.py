@@ -23,6 +23,8 @@ from .utils import (
     addmm_,
     fast_dequantize,
     _base_quant_state,
+    _dequantize_for_lora,
+    _is_exl3_quant_state,
     get_lora_parameters,
     get_lora_parameters_bias,
     _lora_fused_ok,
@@ -33,6 +35,14 @@ from .utils import (
 from . import rms_layernorm as _rms_layernorm
 from . import dequant_cache as _dq
 from .fp8_lora import has_fp8_dgrad
+
+
+def _dequantize_t(W, quant_state, dtype):
+    """Transposed dense base weight for the backward pass (EXL3 has its own kernel)."""
+    if _is_exl3_quant_state(quant_state):
+        return _dequantize_for_lora(W, quant_state, transpose = True, dtype = dtype)
+    return fast_dequantize(W.t(), quant_state, dtype = dtype)
+
 
 _is_compiling = torch.compiler.is_compiling
 
@@ -333,6 +343,9 @@ def _add_lora_dX(dX, y_dB, A, S, mask, p):
 
 def _base_dgrad_accum(dX, dY, W, W_quant):
     # dX += dY @ base weight: fast_dequantize(W.t()).t() is the weight, read from the dequant cache when it holds it.
+    if _is_exl3_quant_state(W_quant):
+        W = _dequantize_t(W, W_quant, dY.dtype)
+        return addmm_(dX, dY, W.t())
     if _dq.traced_route(W, W_quant):
         return _dq.nf4_addmm_(dX, dY, W.t(), W_quant)
     W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
@@ -346,6 +359,9 @@ def _base_dgrad(
     out = None,
 ):
     # dY @ base weight into a new tensor (or out, eager only).
+    if _is_exl3_quant_state(W_quant):
+        W = _dequantize_t(W, W_quant, dY.dtype)
+        return torch.matmul(dY, W.t(), out = out)
     if out is None and _dq.traced_route(W, W_quant):
         return _dq.nf4_matmul(dY, W.t(), W_quant)
     W = _dq.dequantize(W.t(), W_quant, dtype = dY.dtype, rows = _dq.rows_of(dY))
