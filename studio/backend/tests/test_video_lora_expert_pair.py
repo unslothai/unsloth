@@ -308,3 +308,32 @@ def test_a_plain_bake_keeps_the_loaded_scheduler(tmp_path):
     )
     assert pipe.scheduler is before and before.config.solver_order == 2
     assert video_lora.recommended_scheduler(pipe) == {}
+
+
+@pytest.mark.parametrize(
+    "family, pairs_only",
+    [("wan2.2-t2v-a14b", True), ("wan2.2-ti2v-5b", False), ("qwen-image", False), (None, False)],
+)
+def test_each_picker_lists_only_what_its_load_accepts(monkeypatch, tmp_path, family, pairs_only):
+    """The two-expert picker shows only pairs (an untagged local adapter would be refused at load); every other
+    picker, including an unfiltered one, never shows a pair."""
+    import asyncio
+    import json
+
+    from routes import models as models_route
+
+    root = tmp_path / "loras"
+    root.mkdir()
+    save_file(
+        {"transformer.blocks.0.attn1.to_q.lora_A.weight": torch.zeros(4, 16)},
+        str(root / "untagged.safetensors"),
+    )
+    (root / "untagged.json").write_text(json.dumps({"kind": "diffusion-lora"}), encoding = "utf-8")
+    monkeypatch.setattr(diffusion_lora, "loras_dir", lambda: root)
+    monkeypatch.setattr(models_route.account_access, "managed_account", lambda: False)
+    body = asyncio.run(models_route.scan_diffusion_loras(family = family, current_subject = "u"))
+    rows = body["loras"]
+    assert rows
+    assert all(r["expert_pair"] is pairs_only for r in rows), [
+        (r["id"], r["expert_pair"]) for r in rows
+    ]

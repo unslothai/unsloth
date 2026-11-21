@@ -461,6 +461,18 @@ def list_loras(
     return merged
 
 
+def two_expert_family(family: Optional[str]) -> bool:
+    """A two-expert video family (Wan2.2-A14B): it loads only high / low-noise pairs."""
+    if not family:
+        return False
+    try:
+        from .video_families import detect_video_family
+        fam = detect_video_family("", override = family)
+    except Exception:  # noqa: BLE001 - an image family name is not a video family
+        return False
+    return bool(getattr(fam, "is_moe", False))
+
+
 def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
 
