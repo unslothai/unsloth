@@ -153,17 +153,39 @@ def _zstd_reader(raw):
         return zstandard.ZstdDecompressor().stream_reader(raw)
 
 
+def _zstd_errors() -> tuple[type[BaseException], ...]:
+    """Decode failures a .zst stream can raise mid-read; each backend names its own ZstdError."""
+    errors: list[type[BaseException]] = [EOFError]
+    try:
+        from compression import zstd  # novermin -- 3.14
+        errors.append(zstd.ZstdError)
+    except ImportError:
+        pass
+    try:
+        import zstandard
+        errors.append(zstandard.ZstdError)
+    except ImportError:
+        pass
+    return tuple(errors)
+
+
 def read_jsonl(path: Path) -> Iterator[dict]:
     """Records of a JSONL(.zst) file; a half-written last line is normal for a live session."""
     with path.open("rb") as raw:
-        stream = _zstd_reader(raw) if path.suffix == ".zst" else raw
-        for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(record, dict):
-                yield record
+        try:
+            stream = _zstd_reader(raw) if path.suffix == ".zst" else raw
+            for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    yield record
+        except _zstd_errors() as exc:
+            # Corrupt or truncated archive: the decoded prefix is all there is.
+            logger.warning(
+                "external_import_corrupt_archive", path = str(path), error = str(exc)
+            )
 
 
 def iso_ms(value) -> Optional[int]:

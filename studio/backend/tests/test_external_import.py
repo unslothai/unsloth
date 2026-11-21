@@ -777,6 +777,83 @@ def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monke
     assert summary.warnings and "zstandard" in summary.warnings[0]
 
 
+def _fake_zstandard(monkeypatch, stream_reader):
+    """A ``zstandard`` stand-in whose decompressor streams via ``stream_reader``."""
+    import sys
+    import types
+
+    fake = types.ModuleType("zstandard")
+    fake.ZstdError = type("ZstdError", (Exception,), {})
+    fake.ZstdDecompressor = lambda: types.SimpleNamespace(stream_reader = stream_reader)
+    monkeypatch.setitem(sys.modules, "compression", None)
+    monkeypatch.setitem(sys.modules, "zstandard", fake)
+    return fake
+
+
+def _ends_badly(head: bytes, error: Exception):
+    """A stream that serves ``head`` and then fails like a truncated archive."""
+    import io
+
+    class EndsBadly(io.BytesIO):
+        def read(self, size = -1):
+            return super().read(size) or self._fail()
+
+        def read1(self, size = -1):
+            return super().read1(size) or self._fail()
+
+        def readinto(self, buf):
+            return super().readinto(buf) or self._fail()
+
+        def _fail(self):
+            raise error
+
+    return EndsBadly(head)
+
+
+def test_codex_a_corrupt_zst_rollout_is_skipped_without_crashing(
+    client, codex_home, monkeypatch
+):
+    fake = _fake_zstandard(
+        monkeypatch, lambda _raw: _ends_badly(b"", fake.ZstdError("corrupt archive"))
+    )
+    _rollout(codex_home, sid = "ok")
+    bad = _rollout(codex_home, cwd = "/srv/api", sid = "bad")
+    bad.rename(bad.with_name(bad.name + ".zst"))
+
+    assert len(codex.list_projects(codex_home)) == 2
+    response = client.post("/api/import/codex")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["new_chats"], body["skipped"], body["warnings"]) == (1, 1, [])
+
+
+def test_codex_a_truncated_zst_rollout_keeps_its_decoded_prefix(codex_home, monkeypatch):
+    path = _rollout(codex_home)
+    head = b"".join(path.read_bytes().splitlines(keepends = True)[:4])
+    path.rename(path.with_name(path.name + ".zst"))
+    fake = _fake_zstandard(
+        monkeypatch, lambda _raw: _ends_badly(head, fake.ZstdError("truncated frame"))
+    )
+
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages, summary.warnings) == (1, 1, [])
+    assert _messages(codex.SOURCE, "019a")[0]["content"] == [
+        {"type": "text", "text": "List the files"}
+    ]
+
+
+def test_codex_a_valid_zst_rollout_still_imports(codex_home, monkeypatch):
+    _fake_zstandard(monkeypatch, lambda raw: raw)
+    path = _rollout(codex_home)
+    path.rename(path.with_name(path.name + ".zst"))
+
+    summary = run_import(codex.SOURCE)
+
+    assert (summary.new_chats, summary.messages, summary.warnings) == (1, 4, [])
+
+
 # Discovery
 
 
