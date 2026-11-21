@@ -705,9 +705,15 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
                 rank = _adapter_rank(model_args["lora_local_path"])
+                if rank > _VLLM_LORA_RANKS[-1]:
+                    _fail(
+                        f"--backend vllm supports LoRA ranks up to {_VLLM_LORA_RANKS[-1]}, "
+                        f"but this adapter was trained with rank {rank}. "
+                        "Use --backend unsloth or --backend hf to evaluate it."
+                    )
                 if rank > 16:
                     model_args["max_lora_rank"] = next(
-                        (r for r in _VLLM_LORA_RANKS if r >= rank), _VLLM_LORA_RANKS[-1]
+                        r for r in _VLLM_LORA_RANKS if r >= rank
                     )
                 if _has_tokenizer_files(model):
                     model_args["tokenizer"] = model_args["lora_local_path"]

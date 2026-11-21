@@ -842,6 +842,70 @@ def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_pat
     assert "16-bit" in result.output
 
 
+def _rank_adapter(tmp_path, **config):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base", **config})
+    )
+    return adapter
+
+
+@pytest.mark.parametrize(
+    "config, expected",
+    [
+        ({}, None),
+        ({"r": 16}, None),
+        ({"r": 24}, 32),
+        ({"r": 32}, 32),
+        ({"r": 257}, 320),
+        ({"r": 300}, 320),
+        ({"r": 512}, 512),
+    ],
+)
+def test_vllm_backend_rounds_adapter_rank_to_a_supported_value(
+    vllm_env, tmp_path, config, expected
+):
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    if expected is None:
+        assert "max_lora_rank" not in vllm_env["model_args"]
+    else:
+        assert vllm_env["model_args"]["max_lora_rank"] == expected
+
+
+@pytest.mark.parametrize(
+    "config, rank",
+    [
+        ({"r": 513}, "513"),
+        ({"r": 1024}, "1024"),
+        ({"r": 16, "rank_pattern": {"down_proj": 640}}, "640"),
+    ],
+)
+def test_vllm_backend_rejects_adapter_rank_above_its_limit(vllm_env, tmp_path, config, rank):
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 2, result.output
+    assert f"rank {rank}" in result.output and "512" in result.output
+    assert "--backend unsloth" in result.output and "--backend hf" in result.output
+    assert "model" not in vllm_env
+
+
 def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "2")
     result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
