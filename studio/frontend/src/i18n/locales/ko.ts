@@ -5100,7 +5100,7 @@ export const ko = {
       examplesHint: "말투를 보여 주는 대화 예시입니다. 각 예시는 <START>로 시작하세요.",
       promptSection: "프롬프트 재정의",
       systemPrompt: "지시문",
-      systemPromptHint: "이 캐릭터에 대해 Unsloth Studio의 롤플레이 지시문을 대체합니다. 기존 지시문을 유지하고 덧붙이려면 {{original}}을 쓰세요. 그룹 채팅에서는 사용되지 않습니다.",
+      systemPromptHint: "이 캐릭터에 대해 Unsloth의 롤플레이 지시문을 대체합니다. 기존 지시문을 유지하고 덧붙이려면 {{original}}을 쓰세요. 그룹 채팅에서는 사용되지 않습니다.",
       postHistory: "최종 지시문",
       postHistoryHint: "채팅 뒤, 이 캐릭터의 각 답변 바로 앞에 전송됩니다.",
       characterNote: "캐릭터 노트",
@@ -5127,7 +5127,7 @@ export const ko = {
       discard: "버리기",
       keepEditing: "계속 편집",
       macrosHint: "{{char}}와 {{user}}는 캐릭터의 이름과 내 이름으로 바뀝니다.",
-      importedNote: "{spec} 카드에서 가져왔습니다. Unsloth Studio에서 편집하지 않는 필드는 내보낼 때를 위해 유지됩니다.",
+      importedNote: "{spec} 카드에서 가져왔습니다. Unsloth에서 편집하지 않는 필드는 내보낼 때를 위해 유지됩니다.",
     },
     lorebook: {
       hint: "최근 메시지에 키워드가 나올 때만 프롬프트에 추가되는 정보입니다.",

@@ -5451,7 +5451,7 @@ export const tr = {
       examplesHint: "Karakterin sesini gösteren örnek konuşmalar. Her örneğe <START> ile başlayın.",
       promptSection: "İstem geçersiz kılmaları",
       systemPrompt: "Talimatlar",
-      systemPromptHint: "Bu karakter için Unsloth Studio'nun rol yapma talimatlarının yerini alır. Onları koruyup üzerine eklemek için {{original}} yazın. Grup sohbetlerinde kullanılmaz.",
+      systemPromptHint: "Bu karakter için Unsloth'nun rol yapma talimatlarının yerini alır. Onları koruyup üzerine eklemek için {{original}} yazın. Grup sohbetlerinde kullanılmaz.",
       postHistory: "Son talimatlar",
       postHistoryHint: "Sohbetten sonra, karakterin her yanıtından hemen önce gönderilir.",
       characterNote: "Karakter notu",
@@ -5478,7 +5478,7 @@ export const tr = {
       discard: "At",
       keepEditing: "Düzenlemeye devam et",
       macrosHint: "{{char}} ve {{user}}, karakterin adına ve sizin adınıza dönüşür.",
-      importedNote: "Bir {spec} kartından içe aktarıldı. Unsloth Studio'nun düzenlemediği alanlar dışa aktarma için korunur.",
+      importedNote: "Bir {spec} kartından içe aktarıldı. Unsloth'nun düzenlemediği alanlar dışa aktarma için korunur.",
     },
     lorebook: {
       hint: "Yalnızca anahtar kelimeleri son mesajlarda geçtiğinde isteme eklenen bilgiler.",

@@ -5183,7 +5183,7 @@ export const zhTW = {
       examplesHint: "展現角色語氣的範例對話。每段範例以 <START> 開頭。",
       promptSection: "覆寫提示詞",
       systemPrompt: "指示",
-      systemPromptHint: "取代 Unsloth Studio 針對這個角色的角色扮演指示。寫入 {{original}} 可保留原本的指示並加以補充。群組聊天中不會使用。",
+      systemPromptHint: "取代 Unsloth 針對這個角色的角色扮演指示。寫入 {{original}} 可保留原本的指示並加以補充。群組聊天中不會使用。",
       postHistory: "最終指示",
       postHistoryHint: "在聊天內容之後、角色每次回覆之前傳送。",
       characterNote: "角色備註",
@@ -5210,7 +5210,7 @@ export const zhTW = {
       discard: "捨棄",
       keepEditing: "繼續編輯",
       macrosHint: "{{char}} 和 {{user}} 會替換成角色的名字和你的名字。",
-      importedNote: "從 {spec} 角色卡匯入。Unsloth Studio 不編輯的欄位會保留，以供匯出。",
+      importedNote: "從 {spec} 角色卡匯入。Unsloth 不編輯的欄位會保留，以供匯出。",
     },
     lorebook: {
       hint: "只有在關鍵字出現在最近的訊息中時，才會加入提示詞的設定。",

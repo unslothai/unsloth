@@ -5135,7 +5135,7 @@ export const en = {
       examplesHint: "Sample exchanges that show their voice. Start each example with <START>.",
       promptSection: "Prompt overrides",
       systemPrompt: "Instructions",
-      systemPromptHint: "Replaces Unsloth Studio's character chat instructions for this character. Write {{original}} to keep them and add to them. Not used in group chats.",
+      systemPromptHint: "Replaces Unsloth's character chat instructions for this character. Write {{original}} to keep them and add to them. Not used in group chats.",
       postHistory: "Final instructions",
       postHistoryHint: "Sent after the chat, right before each of their replies.",
       characterNote: "Character note",
@@ -5162,7 +5162,7 @@ export const en = {
       discard: "Discard",
       keepEditing: "Keep editing",
       macrosHint: "{{char}} and {{user}} become the character's name and yours.",
-      importedNote: "Imported from a {spec} card. Fields Unsloth Studio doesn't edit are kept for export.",
+      importedNote: "Imported from a {spec} card. Fields Unsloth doesn't edit are kept for export.",
     },
     lorebook: {
       hint: "Facts that join the prompt only when their keywords come up in recent messages.",

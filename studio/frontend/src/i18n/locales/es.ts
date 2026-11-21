@@ -5184,7 +5184,7 @@ export const es = {
       examplesHint: "Intercambios de muestra que reflejan su voz. Empieza cada ejemplo con <START>.",
       promptSection: "Sustituciones del prompt",
       systemPrompt: "Instrucciones",
-      systemPromptHint: "Sustituye las instrucciones de rol de Unsloth Studio para este personaje. Escribe {{original}} para conservarlas y ampliarlas. No se usa en chats grupales.",
+      systemPromptHint: "Sustituye las instrucciones de rol de Unsloth para este personaje. Escribe {{original}} para conservarlas y ampliarlas. No se usa en chats grupales.",
       postHistory: "Instrucciones finales",
       postHistoryHint: "Se envían después del chat, justo antes de cada una de sus respuestas.",
       characterNote: "Nota del personaje",
@@ -5211,7 +5211,7 @@ export const es = {
       discard: "Descartar",
       keepEditing: "Seguir editando",
       macrosHint: "{{char}} y {{user}} se sustituyen por el nombre del personaje y el tuyo.",
-      importedNote: "Importado de una tarjeta {spec}. Los campos que Unsloth Studio no edita se conservan para la exportación.",
+      importedNote: "Importado de una tarjeta {spec}. Los campos que Unsloth no edita se conservan para la exportación.",
     },
     lorebook: {
       hint: "Datos que se añaden al prompt solo cuando sus palabras clave aparecen en los mensajes recientes.",

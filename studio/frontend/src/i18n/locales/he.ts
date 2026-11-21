@@ -5193,7 +5193,7 @@ export const he = {
       examplesHint: "חילופי דברים לדוגמה שמראים את הקול שלה. התחל כל דוגמה ב-<START>.",
       promptSection: "דריסות פרומפט",
       systemPrompt: "הנחיות",
-      systemPromptHint: "מחליף את הנחיות משחק התפקידים של Unsloth Studio עבור הדמות הזו. כתוב {{original}} כדי לשמור עליהן ולהוסיף להן. לא בשימוש בצ'אטים קבוצתיים.",
+      systemPromptHint: "מחליף את הנחיות משחק התפקידים של Unsloth עבור הדמות הזו. כתוב {{original}} כדי לשמור עליהן ולהוסיף להן. לא בשימוש בצ'אטים קבוצתיים.",
       postHistory: "הנחיות סיום",
       postHistoryHint: "נשלחות אחרי הצ'אט, ממש לפני כל אחת מהתגובות שלה.",
       characterNote: "הערת דמות",
@@ -5220,7 +5220,7 @@ export const he = {
       discard: "בטל שינויים",
       keepEditing: "המשך לערוך",
       macrosHint: "{{char}} ו-{{user}} מוחלפים בשם הדמות ובשם שלך.",
-      importedNote: "יובא מכרטיס {spec}. שדות ש-Unsloth Studio לא עורך נשמרים לצורך ייצוא.",
+      importedNote: "יובא מכרטיס {spec}. שדות ש-Unsloth לא עורך נשמרים לצורך ייצוא.",
     },
     lorebook: {
       hint: "עובדות שנכנסות לפרומפט רק כשמילות המפתח שלהן מופיעות בהודעות האחרונות.",

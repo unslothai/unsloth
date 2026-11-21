@@ -5180,7 +5180,7 @@ export const it = {
       examplesHint: "Scambi di esempio che mostrano il suo modo di parlare. Inizia ogni esempio con <START>.",
       promptSection: "Sostituzioni del prompt",
       systemPrompt: "Istruzioni",
-      systemPromptHint: "Sostituisce le istruzioni di roleplay di Unsloth Studio per questo personaggio. Scrivi {{original}} per mantenerle e aggiungerne altre. Non viene usato nelle chat di gruppo.",
+      systemPromptHint: "Sostituisce le istruzioni di roleplay di Unsloth per questo personaggio. Scrivi {{original}} per mantenerle e aggiungerne altre. Non viene usato nelle chat di gruppo.",
       postHistory: "Istruzioni finali",
       postHistoryHint: "Inviate dopo la chat, subito prima di ogni sua risposta.",
       characterNote: "Nota del personaggio",
@@ -5207,7 +5207,7 @@ export const it = {
       discard: "Scarta",
       keepEditing: "Continua a modificare",
       macrosHint: "{{char}} e {{user}} diventano il nome del personaggio e il tuo.",
-      importedNote: "Importato da una scheda {spec}. I campi che Unsloth Studio non modifica vengono mantenuti per l'esportazione.",
+      importedNote: "Importato da una scheda {spec}. I campi che Unsloth non modifica vengono mantenuti per l'esportazione.",
     },
     lorebook: {
       hint: "Informazioni che entrano nel prompt solo quando le loro parole chiave compaiono nei messaggi recenti.",

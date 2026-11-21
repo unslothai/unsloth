@@ -5326,7 +5326,7 @@ export const sv = {
       examplesHint: "Exempelrepliker som visar karaktärens röst. Börja varje exempel med <START>.",
       promptSection: "Åsidosätt prompten",
       systemPrompt: "Instruktioner",
-      systemPromptHint: "Ersätter Unsloth Studios rollspelsinstruktioner för den här karaktären. Skriv {{original}} för att behålla dem och lägga till egna. Används inte i gruppchattar.",
+      systemPromptHint: "Ersätter Unsloths rollspelsinstruktioner för den här karaktären. Skriv {{original}} för att behålla dem och lägga till egna. Används inte i gruppchattar.",
       postHistory: "Slutinstruktioner",
       postHistoryHint: "Skickas efter chatten, precis före varje svar från karaktären.",
       characterNote: "Karaktärsanteckning",
@@ -5353,7 +5353,7 @@ export const sv = {
       discard: "Ignorera",
       keepEditing: "Fortsätt redigera",
       macrosHint: "{{char}} och {{user}} ersätts med karaktärens namn och ditt.",
-      importedNote: "Importerad från ett {spec}-kort. Fält som Unsloth Studio inte redigerar behålls vid export.",
+      importedNote: "Importerad från ett {spec}-kort. Fält som Unsloth inte redigerar behålls vid export.",
     },
     lorebook: {
       hint: "Fakta som läggs till i prompten bara när deras nyckelord dyker upp i de senaste meddelandena.",

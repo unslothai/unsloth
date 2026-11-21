@@ -5185,7 +5185,7 @@ export const de = {
       examplesHint: "Beispielwechsel, die die Stimme des Charakters zeigen. Beginnen Sie jedes Beispiel mit <START>.",
       promptSection: "Prompt-Überschreibungen",
       systemPrompt: "Anweisungen",
-      systemPromptHint: "Ersetzt die Rollenspiel-Anweisungen von Unsloth Studio für diesen Charakter. Schreiben Sie {{original}}, um sie zu behalten und zu ergänzen. Wird in Gruppenchats nicht verwendet.",
+      systemPromptHint: "Ersetzt die Rollenspiel-Anweisungen von Unsloth für diesen Charakter. Schreiben Sie {{original}}, um sie zu behalten und zu ergänzen. Wird in Gruppenchats nicht verwendet.",
       postHistory: "Abschließende Anweisungen",
       postHistoryHint: "Wird nach dem Chat gesendet, direkt vor jeder Antwort des Charakters.",
       characterNote: "Charakternotiz",
@@ -5212,7 +5212,7 @@ export const de = {
       discard: "Verwerfen",
       keepEditing: "Weiter bearbeiten",
       macrosHint: "{{char}} und {{user}} werden durch den Namen des Charakters und Ihren Namen ersetzt.",
-      importedNote: "Aus einer {spec}-Karte importiert. Felder, die Unsloth Studio nicht bearbeitet, bleiben für den Export erhalten.",
+      importedNote: "Aus einer {spec}-Karte importiert. Felder, die Unsloth nicht bearbeitet, bleiben für den Export erhalten.",
     },
     lorebook: {
       hint: "Fakten, die nur dann in den Prompt aufgenommen werden, wenn ihre Stichwörter in den letzten Nachrichten vorkommen.",

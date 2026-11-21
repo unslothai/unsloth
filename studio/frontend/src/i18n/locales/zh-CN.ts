@@ -5011,7 +5011,7 @@ export const zhCN = {
       examplesHint: "展示角色语气的示例对话。每段示例以 <START> 开头。",
       promptSection: "提示词覆盖",
       systemPrompt: "指令",
-      systemPromptHint: "替换 Unsloth Studio 针对此角色的角色扮演指令。写入 {{original}} 可保留原指令并在其基础上补充。群聊中不使用。",
+      systemPromptHint: "替换 Unsloth 针对此角色的角色扮演指令。写入 {{original}} 可保留原指令并在其基础上补充。群聊中不使用。",
       postHistory: "最终指令",
       postHistoryHint: "在聊天内容之后、角色每次回复之前发送。",
       characterNote: "角色备注",
@@ -5038,7 +5038,7 @@ export const zhCN = {
       discard: "放弃",
       keepEditing: "继续编辑",
       macrosHint: "{{char}} 和 {{user}} 会替换为角色的名字和你的名字。",
-      importedNote: "从 {spec} 角色卡导入。Unsloth Studio 不编辑的字段会保留，以便导出。",
+      importedNote: "从 {spec} 角色卡导入。Unsloth 不编辑的字段会保留，以便导出。",
     },
     lorebook: {
       hint: "仅当关键词出现在最近消息中时才加入提示词的设定。",

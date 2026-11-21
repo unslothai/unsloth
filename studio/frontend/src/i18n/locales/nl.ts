@@ -5501,7 +5501,7 @@ export const nl = {
       examplesHint: "Voorbeeldgesprekken die laten horen hoe het personage praat. Begin elk voorbeeld met <START>.",
       promptSection: "Prompt-overschrijvingen",
       systemPrompt: "Instructies",
-      systemPromptHint: "Vervangt de rollenspelinstructies van Unsloth Studio voor dit personage. Schrijf {{original}} om ze te behouden en aan te vullen. Wordt niet gebruikt in groepschats.",
+      systemPromptHint: "Vervangt de rollenspelinstructies van Unsloth voor dit personage. Schrijf {{original}} om ze te behouden en aan te vullen. Wordt niet gebruikt in groepschats.",
       postHistory: "Laatste instructies",
       postHistoryHint: "Verzonden na de chat, vlak voor elk antwoord van het personage.",
       characterNote: "Personagenotitie",
@@ -5528,7 +5528,7 @@ export const nl = {
       discard: "Negeren",
       keepEditing: "Verder bewerken",
       macrosHint: "{{char}} en {{user}} worden de naam van het personage en die van jou.",
-      importedNote: "Geïmporteerd uit een {spec}-kaart. Velden die Unsloth Studio niet bewerkt, blijven bewaard voor export.",
+      importedNote: "Geïmporteerd uit een {spec}-kaart. Velden die Unsloth niet bewerkt, blijven bewaard voor export.",
     },
     lorebook: {
       hint: "Feiten die alleen aan de prompt worden toegevoegd wanneer hun trefwoorden in recente berichten voorkomen.",

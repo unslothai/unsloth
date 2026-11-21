@@ -5502,7 +5502,7 @@ export const pl = {
       examplesHint: "Przykładowe wymiany zdań pokazujące sposób mówienia postaci. Zacznij każdy przykład od <START>.",
       promptSection: "Zastąpienia promptu",
       systemPrompt: "Instrukcje",
-      systemPromptHint: "Zastępuje instrukcje odgrywania ról Unsloth Studio dla tej postaci. Wpisz {{original}}, aby je zachować i uzupełnić. Nie jest używane w czatach grupowych.",
+      systemPromptHint: "Zastępuje instrukcje odgrywania ról Unsloth dla tej postaci. Wpisz {{original}}, aby je zachować i uzupełnić. Nie jest używane w czatach grupowych.",
       postHistory: "Instrukcje końcowe",
       postHistoryHint: "Wysyłane po czacie, tuż przed każdą odpowiedzią postaci.",
       characterNote: "Notatka postaci",
@@ -5529,7 +5529,7 @@ export const pl = {
       discard: "Odrzuć",
       keepEditing: "Edytuj dalej",
       macrosHint: "{{char}} i {{user}} zamieniają się w imię postaci i Twoje.",
-      importedNote: "Zaimportowano z karty {spec}. Pola, których Unsloth Studio nie edytuje, są zachowywane do eksportu.",
+      importedNote: "Zaimportowano z karty {spec}. Pola, których Unsloth nie edytuje, są zachowywane do eksportu.",
     },
     lorebook: {
       hint: "Fakty dołączane do promptu tylko wtedy, gdy ich słowa kluczowe pojawią się w ostatnich wiadomościach.",

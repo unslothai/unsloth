@@ -5454,7 +5454,7 @@ export const id = {
       examplesHint: "Contoh percakapan yang menunjukkan gaya bicaranya. Awali setiap contoh dengan <START>.",
       promptSection: "Penggantian prompt",
       systemPrompt: "Instruksi",
-      systemPromptHint: "Menggantikan instruksi roleplay Unsloth Studio untuk karakter ini. Tulis {{original}} untuk mempertahankannya dan menambahkan instruksi lain. Tidak digunakan dalam chat grup.",
+      systemPromptHint: "Menggantikan instruksi roleplay Unsloth untuk karakter ini. Tulis {{original}} untuk mempertahankannya dan menambahkan instruksi lain. Tidak digunakan dalam chat grup.",
       postHistory: "Instruksi akhir",
       postHistoryHint: "Dikirim setelah chat, tepat sebelum setiap balasannya.",
       characterNote: "Catatan karakter",
@@ -5481,7 +5481,7 @@ export const id = {
       discard: "Buang",
       keepEditing: "Lanjutkan mengedit",
       macrosHint: "{{char}} dan {{user}} menjadi nama karakter dan nama Anda.",
-      importedNote: "Diimpor dari kartu {spec}. Kolom yang tidak diedit Unsloth Studio tetap disimpan untuk ekspor.",
+      importedNote: "Diimpor dari kartu {spec}. Kolom yang tidak diedit Unsloth tetap disimpan untuk ekspor.",
     },
     lorebook: {
       hint: "Fakta yang masuk ke prompt hanya saat kata kuncinya muncul di pesan terbaru.",

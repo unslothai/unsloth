@@ -5195,7 +5195,7 @@ export const fr = {
       examplesHint: "Des échanges qui montrent sa façon de parler. Commencez chaque exemple par <START>.",
       promptSection: "Remplacements du prompt",
       systemPrompt: "Instructions",
-      systemPromptHint: "Remplace les instructions de jeu de rôle de Unsloth Studio pour ce personnage. Écrivez {{original}} pour les conserver et les compléter. Non utilisé dans les discussions de groupe.",
+      systemPromptHint: "Remplace les instructions de jeu de rôle de Unsloth pour ce personnage. Écrivez {{original}} pour les conserver et les compléter. Non utilisé dans les discussions de groupe.",
       postHistory: "Instructions finales",
       postHistoryHint: "Envoyées après la discussion, juste avant chacune de ses réponses.",
       characterNote: "Note du personnage",
@@ -5222,7 +5222,7 @@ export const fr = {
       discard: "Abandonner",
       keepEditing: "Continuer à modifier",
       macrosHint: "{{char}} et {{user}} deviennent le nom du personnage et le vôtre.",
-      importedNote: "Importé depuis une carte {spec}. Les champs que Unsloth Studio ne modifie pas sont conservés pour l'export.",
+      importedNote: "Importé depuis une carte {spec}. Les champs que Unsloth ne modifie pas sont conservés pour l'export.",
     },
     lorebook: {
       hint: "Des faits ajoutés au prompt uniquement quand leurs mots-clés apparaissent dans les messages récents.",

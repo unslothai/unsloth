@@ -5449,7 +5449,7 @@ export const vi = {
       examplesHint: "Các đoạn trao đổi mẫu thể hiện giọng điệu của nhân vật. Bắt đầu mỗi ví dụ bằng <START>.",
       promptSection: "Ghi đè lời nhắc",
       systemPrompt: "Hướng dẫn",
-      systemPromptHint: "Thay thế hướng dẫn nhập vai của Unsloth Studio cho nhân vật này. Viết {{original}} để giữ lại chúng và bổ sung thêm. Không dùng trong trò chuyện nhóm.",
+      systemPromptHint: "Thay thế hướng dẫn nhập vai của Unsloth cho nhân vật này. Viết {{original}} để giữ lại chúng và bổ sung thêm. Không dùng trong trò chuyện nhóm.",
       postHistory: "Hướng dẫn cuối",
       postHistoryHint: "Được gửi sau cuộc trò chuyện, ngay trước mỗi câu trả lời của nhân vật.",
       characterNote: "Ghi chú nhân vật",
@@ -5476,7 +5476,7 @@ export const vi = {
       discard: "Hủy bỏ",
       keepEditing: "Tiếp tục chỉnh sửa",
       macrosHint: "{{char}} và {{user}} sẽ được thay bằng tên nhân vật và tên của bạn.",
-      importedNote: "Được nhập từ thẻ {spec}. Các trường Unsloth Studio không chỉnh sửa được giữ lại để xuất.",
+      importedNote: "Được nhập từ thẻ {spec}. Các trường Unsloth không chỉnh sửa được giữ lại để xuất.",
     },
     lorebook: {
       hint: "Các thông tin chỉ được thêm vào lời nhắc khi từ khóa của chúng xuất hiện trong các tin nhắn gần đây.",

@@ -5060,7 +5060,7 @@ export const ja = {
       examplesHint: "話し方がわかるやり取りの例。各例は <START> で始めてください。",
       promptSection: "プロンプトの上書き",
       systemPrompt: "指示",
-      systemPromptHint: "このキャラクターについて Unsloth Studio のロールプレイ指示を置き換えます。元の指示を残して追記するには {{original}} と書きます。グループチャットでは使われません。",
+      systemPromptHint: "このキャラクターについて Unsloth のロールプレイ指示を置き換えます。元の指示を残して追記するには {{original}} と書きます。グループチャットでは使われません。",
       postHistory: "最終指示",
       postHistoryHint: "チャットの後、このキャラクターの各返信の直前に送信されます。",
       characterNote: "キャラクターノート",
@@ -5087,7 +5087,7 @@ export const ja = {
       discard: "破棄",
       keepEditing: "編集を続ける",
       macrosHint: "{{char}} と {{user}} は、キャラクターの名前とあなたの名前に置き換わります。",
-      importedNote: "{spec} カードからインポートしました。Unsloth Studio で編集しない項目はエクスポート用に保持されます。",
+      importedNote: "{spec} カードからインポートしました。Unsloth で編集しない項目はエクスポート用に保持されます。",
     },
     lorebook: {
       hint: "キーワードが最近のメッセージに出てきたときだけプロンプトに加わる情報。",

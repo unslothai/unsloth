@@ -5503,7 +5503,7 @@ export const cs = {
       discard: "Zahodit",
       keepEditing: "Pokračovat v úpravách",
       macrosHint: "{{char}} a {{user}} se nahradí jménem postavy a vaším jménem.",
-      importedNote: "Importováno z karty {spec}. Pole, která Unsloth Studio neupravuje, zůstanou zachována pro export.",
+      importedNote: "Importováno z karty {spec}. Pole, která Unsloth neupravuje, zůstanou zachována pro export.",
     },
     lorebook: {
       hint: "Fakta, která se do promptu přidají jen tehdy, když se jejich klíčová slova objeví v nedávných zprávách.",
