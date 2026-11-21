@@ -68,6 +68,28 @@ def test_auto_settings_carry_masks_unless_an_interval_is_forced_or_masks_are_off
     assert "masks" not in ss.auto_static_settings({"every": 3, "min_steps": 30}, env = {})
 
 
+def test_explicit_head_or_tail_keeps_the_interval():
+    # The docstring promise: an explicit UNSLOTH_STATIC_SKIP_* value wins over the measured mask (benchmarking).
+    plan = {"every": 3, "min_steps": 30, "masks": {30: MASK_30}}
+    for env in ({ss.ENV_HEAD: "0.5"}, {ss.ENV_TAIL: "0.3"}):
+        knobs = ss.auto_static_settings(plan, env = env)
+        assert "masks" not in knobs
+        want = ss.static_schedule(30, every = 3, head = knobs["head"], tail = knobs["tail"])
+        assert (
+            ss.static_schedule(
+                30,
+                every = 3,
+                head = knobs["head"],
+                tail = knobs["tail"],
+                min_steps = knobs["min_steps"],
+                masks = knobs.get("masks"),
+            )
+            == want
+        )
+    # A malformed value is ignored (defaults kept), so the mask still applies.
+    assert ss.auto_static_settings(plan, env = {ss.ENV_HEAD: "junk"})["masks"] == {30: MASK_30}
+
+
 class _DiT:
     def __init__(self):
         self.calls = 0

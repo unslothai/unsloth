@@ -172,8 +172,9 @@ def auto_static_settings(
     out["min_steps"] = int(plan.get("min_steps") or STATIC_MIN_STEPS)
     masks = plan.get("masks")
     mask_off = str(env.get(ENV_MASK, "") or "").strip().lower() in ("0", "false", "off", "no")
-    # An explicit interval (benchmarking) or the kill switch keeps the interval schedule.
-    if masks and not every_override and not mask_off:
+    # An explicit interval / head / tail (benchmarking) or the kill switch keeps the interval schedule.
+    forced = every_override or out["head"] != DEFAULT_HEAD or out["tail"] != DEFAULT_TAIL
+    if masks and not forced and not mask_off:
         out["masks"] = dict(masks)
     out["auto"] = True
     return out
