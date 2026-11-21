@@ -5,7 +5,8 @@
 
 Frozen weights of some repeated blocks live in pinned host RAM and stream to the GPU one block ahead on a side stream
 (unsloth_zoo.block_swap.BlockSwap: the host copy is authoritative, so nothing is ever copied back, and the
-checkpoint recompute prefetches in reverse). Every block must be checkpointed, so the checkpointing budget is off.
+checkpoint recompute prefetches in reverse). Swapped blocks are always checkpointed; the checkpointing budget plans
+the resident blocks into the room the swap freed.
 """
 
 from __future__ import annotations
@@ -280,6 +281,10 @@ def install_dit_block_swap(
     plan = plan_swap(block_bytes, request, need, depth_plan)
     swapped = [mod[i] for (_, mod), idx in zip(lists, plan) for i in idx]
     _place_rest(transformer, swapped, dev)
+    from core.training.diffusion_gc_budget import SWAPPED_ATTR
+
+    for block in swapped:
+        setattr(block, SWAPPED_ATTR, True)
     swappers = []
     try:
         for (_, mod), idx in zip(lists, plan):
@@ -292,6 +297,8 @@ def install_dit_block_swap(
     except Exception as exc:
         for s in swappers:
             s.remove()
+        for block in swapped:
+            block.__dict__.pop(SWAPPED_ATTR, None)
         raise ValueError(f"block_swap could not keep the blocks in host RAM: {exc}") from exc
     LAST_SWAPPERS[:] = swappers
     transformer._unsloth_block_swaps = swappers
@@ -322,6 +329,19 @@ def compile_swapped_blocks(
         for block in mod:
             block.forward = torch.compile(block.forward, fullgraph = fullgraph, dynamic = dynamic)
             n += 1
+    return n
+
+
+def reset_block_swaps(transformer) -> int:
+    """After an out-of-memory error mid-step: give every slot back and arm the first blocks, so the rerun starts from
+    a clean pool (no block left resident or marked as held by the failed graph). Returns the swappers reset."""
+    n = 0
+    for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
+        try:
+            s.reset()
+            n += 1
+        except Exception:  # noqa: BLE001 -- the next forward's steal path still recovers the slots
+            pass
     return n
 
 

@@ -41,7 +41,7 @@ def packing_module(monkeypatch):
 
 def _helper():
     tree = ast.parse(SOURCE_PATH.read_text(encoding = "utf-8"))
-    names = (HELPER, "_unsloth_grpo_packing_leaks")
+    names = (HELPER, "_unsloth_grpo_packing_leaks", "_unsloth_grpo_enable_packed_varlen")
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     namespace = {"os": os, "torch": torch, "UNSLOTH_ENABLE_LOGGING": False}
     exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
