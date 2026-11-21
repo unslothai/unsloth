@@ -19,7 +19,6 @@ if multiprocessing.parent_process() is not None or getattr(
 import sys  # noqa: E402
 
 import pytest  # noqa: E402
-import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _tiny_mm as tiny  # noqa: E402
@@ -135,11 +134,11 @@ def test_stand_in_marks_the_stack_for_the_skip():
     for i in range(3):
         stack[i] = ppn._PPPassThrough(i, ctx, originals[i])
     assert fp._plan(model, stacks, heads) is None
-    # Stage 0's view: its own frozen bottom, stand-ins only above the cut. The cut stays.
+    # Stage 0's view (stand-ins only above the cut) and a sibling stack that could still cut: no cut either.
     for i in range(3):
         stack[i] = originals[i]
     tail = ppn._StageContext(0, 4, True, False, False)
     for i in range(4, LAYERS):
         stack[i] = ppn._PPPassThrough(i, tail, stack[i])
-    plan = fp._plan(model, stacks, heads)
-    assert plan is not None and plan[1] == 3, plan
+    assert fp._plan(model, stacks, heads) is None
+    assert fp._plan(model, [list(originals) + list(stack[3:4])] + stacks, heads) is None

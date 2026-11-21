@@ -80,17 +80,19 @@ def _first_trainable(stack):
 
 def _plan(model, stacks, heads):
     """(stack, k) when the first k layers of one stack, and everything feeding them, hold nothing trainable."""
+    if any(
+        getattr(layer, "_unsloth_pipeline_stand_in", False) for stack in stacks for layer in stack
+    ):
+        # Pipeline parallel: a later stage's first layers are pass-throughs returning the previous stage's
+        # activations (cutting there trains no earlier stage), and a non-last stage exits its forward by raising,
+        # past the hooks' cleanup. Off on every stage and every stack.
+        return None
     for stack in stacks:
         # Runs on every training forward: a stack that trains its first layer (adapters everywhere) or
         # nothing (a frozen vision tower) is settled here, without walking the whole model's parameters.
         k = _first_trainable(stack)
         if not k:
             continue
-        if any(getattr(layer, "_unsloth_pipeline_stand_in", False) for layer in stack[:k]):
-            # Pipeline parallel stage: the layers below its own are pass-throughs returning the previous
-            # stage's activations, whose gradient that stage needs. Cutting there trains no earlier stage.
-            # Stand-ins above the cut (stage 0's view of later stages) do not matter.
-            return None
         trainable = {id(p) for p in model.parameters() if p.requires_grad}
         upper = {id(p) for layer in stack[k:] for p in layer.parameters() if p.requires_grad}
         if not trainable.issubset(upper | heads):
