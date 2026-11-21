@@ -17,12 +17,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CONTEXT_LENGTHS } from "@/config/training";
+import { Spinner } from "@/components/ui/spinner";
+import { useHfTokenStore } from "@/features/hub";
 import {
+  fetchTokenPreview,
   useDrafterCapability,
   useMaxStepsEpochsToggle,
   useTrainingConfigStore,
 } from "@/features/training";
+import { resolveRecommendedContextLength } from "@/features/training/api/token-preview-api";
 import { useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useRef, useState } from "react";
@@ -54,6 +59,10 @@ export function ParamsSection({
   useDrafterCapability(drafterEnabled);
   const store = useTrainingConfigStore(
     useShallow((state) => ({
+      selectedModel: state.selectedModel,
+      dataset: state.dataset,
+      uploadedFile: state.uploadedFile,
+      datasetSource: state.datasetSource,
       projectName: state.projectName,
       trainingMethod: state.trainingMethod,
       isDecision: state.modelType === "decision",
@@ -72,6 +81,47 @@ export function ParamsSection({
       setSaveSteps: state.setSaveSteps,
     })),
   );
+  const hfToken = useHfTokenStore((state) => state.token);
+  const [detectingContextLength, setDetectingContextLength] = useState(false);
+  const hasSelectedDataset = Boolean(
+    store.datasetSource === "huggingface" ? store.dataset : store.uploadedFile,
+  );
+  const canAutoDetectContextLength =
+    Boolean(store.selectedModel) && hasSelectedDataset && !detectingContextLength;
+
+  const autoDetectContextLength = async () => {
+    if (!store.selectedModel || !hasSelectedDataset || detectingContextLength) {
+      return;
+    }
+    setDetectingContextLength(true);
+    try {
+      const response = await fetchTokenPreview({
+        config: useTrainingConfigStore.getState(),
+        hfToken,
+      });
+      const resolved = resolveRecommendedContextLength(response);
+      if (!resolved) {
+        toast.error("Could not determine context length from dataset");
+        return;
+      }
+      store.setContextLength(resolved.recommended);
+      setContextDraft({
+        contextLength: resolved.recommended,
+        value: String(resolved.recommended),
+      });
+      toast.success(
+        `Context length set to ${resolved.recommended.toLocaleString()} (max sampled row: ${resolved.maxTokens.toLocaleString()} tokens)`,
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not auto-detect context length",
+      );
+    } finally {
+      setDetectingContextLength(false);
+    }
+  };
   useMlxTrainingConfigPolicy();
 
   const isCpt = store.trainingMethod === "cpt";
@@ -277,33 +327,60 @@ export function ParamsSection({
 
           {!store.isDecision && (
             <div className="flex flex-col gap-2">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {t("studio.params.contextLength")}
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  {t("studio.params.contextLength")}
+                  <Tooltip disableHoverableContent={false}>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {t("studio.params.contextLengthTooltip")}{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        {t("studio.params.readMore")}
+                      </a>
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
                 <Tooltip disableHoverableContent={false}>
                   <TooltipTrigger asChild={true}>
                     <button
                       type="button"
-                      className="text-foreground/70 hover:text-foreground"
+                      data-testid="auto-detect-context-length"
+                      disabled={!canAutoDetectContextLength}
+                      onClick={() => void autoDetectContextLength()}
+                      className="inline-flex items-center gap-1 text-xs text-primary underline cursor-pointer disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
                     >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
+                      {detectingContextLength ? (
+                        <>
+                          <Spinner className="size-3" />
+                          Detecting…
+                        </>
+                      ) : (
+                        "Auto-detect"
+                      )}
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    {t("studio.params.contextLengthTooltip")}{" "}
-                    <a
-                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline"
-                    >
-                      {t("studio.params.readMore")}
-                    </a>
+                    {hasSelectedDataset
+                      ? "Tokenize a sample of the selected dataset with the model's tokenizer and set Context Length to fit the longest row"
+                      : "Select a model and dataset first to auto-detect context length"}
                   </TooltipContent>
                 </Tooltip>
-              </span>
+              </div>
               <div ref={contextAnchorRef}>
                 <Combobox
                   items={contextItems}
