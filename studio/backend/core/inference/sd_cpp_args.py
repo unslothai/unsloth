@@ -311,11 +311,12 @@ def _conv_direct_in_help(binary: str, size: int, mtime_ns: int) -> bool:
 
 # Builds with per-module --flash-attn (the pinned fork) treat the legacy --diffusion-fa as "--flash-attn
 # off,diffusion=on", turning text-encoder flash attention OFF where the binary's own auto turns it on (CPU, CUDA MMA,
-# Metal). An LLM encoder then materializes the full score matrix: past 4 GiB on Vulkan it falls back to the CPU
-# (leejet/stable-diffusion.cpp #1986, Qwen3-VL-32B at ~4.2k tokens on RADV). The VAE keeps flash attention off, as
-# --diffusion-fa had it. Builds without the module syntax keep --diffusion-fa.
+# HIP MMA, Metal, Vulkan on NVIDIA RTX; elsewhere a timed probe decides). An LLM encoder then materializes the full
+# score matrix. te=auto hands the text encoder back to that per-backend auto, so no backend runs a kernel its own probe
+# rejected. The VAE keeps flash attention off, as --diffusion-fa had it. Builds without the module syntax keep
+# --diffusion-fa.
 LEGACY_DIFFUSION_FA = "--diffusion-fa"
-FLASH_ATTN_MODULES = "off,diffusion=on,te=on"
+FLASH_ATTN_MODULES = "off,diffusion=on,te=auto"
 
 
 def sd_cpp_supports_flash_attn_modules(binary: Optional[str]) -> bool:
@@ -346,7 +347,7 @@ def _flash_attn_modules_in_help(binary: str, size: int, mtime_ns: int) -> bool:
 
 
 def with_module_flash_attn(flags: Sequence[str], binary: Optional[str]) -> list[str]:
-    """``flags`` with ``--diffusion-fa`` replaced by ``--flash-attn off,diffusion=on,te=on`` on builds that take
+    """``flags`` with ``--diffusion-fa`` replaced by ``--flash-attn off,diffusion=on,te=auto`` on builds that take
     module assignments (one occurrence kept); unchanged otherwise."""
     flags = list(flags)
     if LEGACY_DIFFUSION_FA not in flags or not sd_cpp_supports_flash_attn_modules(binary):

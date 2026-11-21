@@ -18,7 +18,7 @@ from core.inference.sd_cpp_args import (
     offload_flags,
 )
 
-FLASH_ATTN_MODULES = "off,diffusion=on,te=on"
+FLASH_ATTN_MODULES = "off,diffusion=on,te=auto"
 
 
 def _clear_help_cache():
