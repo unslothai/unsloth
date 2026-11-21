@@ -13,7 +13,7 @@ import {
 } from "../src/features/characters/prompt/build.ts";
 import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
 import { applyMacros, applyNameMacros } from "../src/features/characters/prompt/macros.ts";
-import { hiddenRoleplayTurnKind } from "../src/features/characters/meta.ts";
+import { hiddenRoleplayTurnKind, ordinaryFallbackTurns } from "../src/features/characters/meta.ts";
 import { tidyCharacterDisplay } from "../src/features/characters/prompt/display.ts";
 import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
 import { mentionedIds, planReplies, seededRandom, shortName } from "../src/features/characters/prompt/speakers.ts";
@@ -603,6 +603,21 @@ test("recursive scanning reads always-on lore, except entries that opt out", () 
   assert.deepEqual(fired([setting(), dragon()], false), [0]);
   assert.deepEqual(fired([setting({ prevent_recursion: true }), dragon()], true), [0]);
   assert.deepEqual(fired([setting(), dragon({ exclude_recursion: true })], true), [0]);
+});
+
+test("a chat whose characters were all deleted still alternates roles", () => {
+  const rp = (kind: string) => ({ roleplay: { kind, speakerId: "a", speakerName: "Ann" } });
+  const chat = [
+    { id: "o", role: "user", metadata: rp("opening") },
+    { id: "g1", role: "assistant", metadata: rp("reply") },
+    { id: "t", role: "user", metadata: rp("turn") },
+    { id: "g2", role: "assistant", metadata: rp("reply") },
+    { id: "u", role: "user" },
+    { id: "r", role: "assistant", metadata: rp("reply") },
+    { id: "stale", role: "user", metadata: rp("turn") },
+    { id: "u2", role: "user" },
+  ];
+  assert.deepEqual(ordinaryFallbackTurns(chat).map((m) => m.id), ["o", "g1", "t", "g2", "u", "r", "u2"]);
 });
 
 test("one lore budget covers the whole cast", () => {

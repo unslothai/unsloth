@@ -80,12 +80,12 @@ test("a saved chat keeps who it speaks as when a default persona appears later",
   assert.equal(pickPersona(null, []), null);
 });
 
-test("a chat with no cast left drops hidden turns, and audio replies keep the speaker", () => {
+test("a chat with no cast left goes through the ordinary fallback, and audio replies keep the speaker", () => {
   const adapter = read("features/chat/api/chat-adapter.ts");
   // The send and the token count both go through characterOutbound.
   assert.match(adapter, /characterOutbound\(characterRun, renderedMessages\)/);
   assert.match(adapter, /characterOutbound\(characterRun, survivingMessages\)/);
   const runtime = read("features/characters/chat-runtime.ts");
-  assert.match(runtime, /: messages\.filter\(\(m\) => !isHiddenRoleplayTurn\(m\)\)/);
+  assert.match(runtime, /: ordinaryFallbackTurns\(messages\)/);
   assert.equal((adapter.match(/\.\.\.audioMetadata,/g) ?? []).length, 2);
 });
