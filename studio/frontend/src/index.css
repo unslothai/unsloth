@@ -6954,11 +6954,34 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* Fades out just under the composer's top edge (vars from ThreadComposerDock). */
+/* Masks the thread only inside the composer's rounded box, fading in across its top edge: the side
+   strips and top-corner layers keep text beside it visible (vars from ThreadComposerDock). */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
+  --clip: var(--thread-composer-clip, 0px);
+  --fade: var(--thread-composer-fade, 0px);
+  --radius: var(--thread-composer-radius, 0px);
+  --below: var(--thread-composer-bottom, 0px);
   mask-image:
-    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), rgb(0 0 0 / .15) calc(100% - var(--thread-composer-clip, 0px) + .3 * var(--thread-composer-fade, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px) + var(--thread-composer-fade, 0px))),
-    linear-gradient(#000, #000);
+    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--clip)), transparent calc(100% - var(--clip) + var(--fade))),
+    linear-gradient(#000, #000),
+    linear-gradient(#000, #000),
+    linear-gradient(#000, #000),
+    radial-gradient(circle at 100% 100%, transparent var(--radius), #000 calc(var(--radius) + 1px)),
+    radial-gradient(circle at 0 100%, transparent var(--radius), #000 calc(var(--radius) + 1px));
+  mask-size:
+    100% 100%,
+    min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%,
+    var(--thread-composer-left, 0px) calc(var(--clip) - var(--below)),
+    var(--thread-composer-right, 0px) calc(var(--clip) - var(--below)),
+    var(--radius) var(--radius),
+    var(--radius) var(--radius);
+  mask-position:
+    0 0,
+    right,
+    left 0 bottom var(--below),
+    right 0 bottom var(--below),
+    left var(--thread-composer-left, 0px) bottom calc(var(--clip) - var(--radius)),
+    right var(--thread-composer-right, 0px) bottom calc(var(--clip) - var(--radius));
 }
 /* Compare's model bars take the wash; the page-colour pane fade would read as a band. */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .compare-pane-header {
