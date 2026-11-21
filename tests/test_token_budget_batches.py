@@ -873,6 +873,11 @@ def test_dataset_label_counts_apply_every_collator_mask():
         }
     )
     assert tb._dataset_label_counts(three) == [2]
+    # Packed row of two 4-token documents, all labels kept: the second document's first token is masked (6, not 7).
+    packed = datasets.Dataset.from_dict(
+        {"input_ids": [list(range(8))], "labels": [list(range(8))], "seq_lengths": [[4, 4]]}
+    )
+    assert tb._dataset_label_counts(packed) == [6]
 
 
 def test_dataset_label_counts_reads_shifted_labels_and_masks():

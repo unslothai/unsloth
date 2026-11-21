@@ -368,15 +368,28 @@ def _dataset_lengths(dataset):
     return [len(ids) for ids in dataset["input_ids"]]
 
 
-def _supervised_count(labels, completion_mask, assistant_mask):
-    # Positions the shifted loss reads (1..n) that survive every mask the collator applies.
+def _supervised_count(
+    labels,
+    completion_mask,
+    assistant_mask,
+    seq_lengths = None,
+):
+    # Positions the shifted loss reads (1..n) that survive every mask the collator applies; in a packed row the first
+    # token of each later document is masked too (packing._mask_padding_free_boundary_labels).
     n = (
         len(labels)
         if labels is not None
         else len(completion_mask if completion_mask is not None else assistant_mask)
     )
+    starts = set()
+    offset = 0
+    for length in seq_lengths or ():
+        starts.add(offset)
+        offset += int(length)
     count = 0
     for k in range(1, n):
+        if k in starts:
+            continue
         if labels is not None and labels[k] == -100:
             continue
         if completion_mask is not None and not completion_mask[k]:
@@ -409,16 +422,18 @@ def _dataset_label_counts(dataset, completion_only_loss = True):
                 rows["labels"][i] if "labels" in rows else None,
                 rows["completion_mask"][i] if "completion_mask" in rows else None,
                 rows["assistant_masks"][i] if "assistant_masks" in rows else None,
+                rows["seq_lengths"][i] if "seq_lengths" in rows else None,
             )
             for i in range(n)
         ]
 
+    read = columns + (["seq_lengths"] if "seq_lengths" in column_names else [])
     if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
         counts = []
-        for rows in dataset.select_columns(columns).iter(batch_size = 4096):
+        for rows in dataset.select_columns(read).iter(batch_size = 4096):
             counts.extend(counts_of(rows))
         return counts
-    return counts_of({column: dataset[column] for column in columns})
+    return counts_of({column: dataset[column] for column in read})
 
 
 def _balance_mode():
