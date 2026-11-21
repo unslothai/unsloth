@@ -73,6 +73,15 @@ def _torch() -> Any:
     return torch
 
 
+def _logger() -> Any:
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001 - Studio's structured logger is optional here
+        import logging
+        return logging.getLogger(__name__)
+
+
 class AdaLNTable(_torch().nn.Module):
     """Returns the armed row; the real module sits in ``__dict__`` so it is never placed, cast or quantised."""
 
@@ -310,6 +319,23 @@ def _device_clone(mod: Any, device: Any) -> Any:
     clone._modules = {
         n: (None if c is None else _device_clone(c, device)) for n, c in mod._modules.items()
     }
+    return clone
+
+
+def _host_copy(mod: Any) -> Any:
+    """Host copy of ``mod`` with its own tensors. Not ``copy.deepcopy``: a deep-copied GGUFParameter is rebuilt
+    without its quant_type (KeyError), so a GGUF time embedder would get no host copy."""
+    import copy
+
+    clone = copy.copy(mod)
+    clone._parameters = {
+        n: (None if t is None else t.detach().to("cpu", copy = True))
+        for n, t in mod._parameters.items()
+    }
+    clone._buffers = {
+        n: (None if t is None else t.detach().to("cpu", copy = True)) for n, t in mod._buffers.items()
+    }
+    clone._modules = {n: (None if c is None else _host_copy(c)) for n, c in mod._modules.items()}
     return clone
 
 
@@ -565,7 +591,13 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
         hs = kwargs.get("hidden_states", args[0] if args else None)
         if hs is not None and hasattr(hs, "device"):
             device = hs.device
-        uninstall(model, device = device, reason = f"unsupported call: {exc}")
+        # logged: a silent fallback hides what the restore left behind
+        uninstall(
+            model,
+            device = device,
+            logger = _logger(),
+            reason = f"unsupported call: {exc}",
+        )
     return None
 
 
@@ -731,7 +763,6 @@ def install(
                 "diffusion.adaln_precompute: off (unrecognised %s layout)", type(model).__name__
             )
         return False
-    import copy
 
     # NVFP4 per-step protected layers and hook-bound layers stay live (a row would ignore the step's mode).
     def _stays_live(mod: Any) -> bool:
@@ -770,9 +801,11 @@ def install(
     st = _State(model, adapter, sites, stands, pipe)
     st.host_bytes = moved
     try:
-        st.tte_host = copy.deepcopy(model.time_text_embed).to("cpu")
-    except Exception:  # noqa: BLE001
+        st.tte_host = _host_copy(model.time_text_embed)
+    except Exception as exc:  # noqa: BLE001
         st.tte_host = None
+        if logger is not None:
+            logger.info("diffusion.adaln_precompute: no host copy of the time embedder (%s)", exc)
     model.__dict__[STATE_ATTR] = st
     # Always eager: a whole-module compile graph-breaks here instead of tracing the keyed lookup.
     torch = _torch()
@@ -823,7 +856,7 @@ def _group_host_copy(go: Any, t: Any, low_cpu_mem_usage: bool) -> Any:
 def _rebuild_streamed(model: Any, restored: list) -> set:
     """Registers restored modules with the offload group streaming their block (cpu_param_dict, prefetcher
     re-size). Returns the ids of the modules a group now owns."""
-    from .diffusion_memory import _offload_groups
+    from .diffusion_memory import TOP_GROUP_HOST_ATTR, _offload_groups
 
     groups = _offload_groups(model)
     if not groups:
@@ -854,11 +887,16 @@ def _rebuild_streamed(model: Any, restored: list) -> set:
         mine = {id(t) for t in list(orig.parameters()) + list(orig.buffers())}
         others = [t for t in _group_tensors(group) if id(t) not in mine]
         onloaded = any(t.device.type != "cpu" for t in others)
+        # Studio's pinned / no-copy-back top-level group onloads only the tensors in this map
+        top_host = getattr(group, TOP_GROUP_HOST_ATTR, None)
         for t in list(orig.parameters()) + list(orig.buffers()):
             if getattr(group, "stream", None) is not None:
                 group.cpu_param_dict[t] = _group_host_copy(
                     go, t, bool(getattr(group, "low_cpu_mem_usage", False))
                 )
+            if isinstance(top_host, dict) and t not in top_host:
+                # pageable on the pinned variant too: these few restored weights upload without the async copy
+                top_host[t] = t.data if t.data.device.type == "cpu" else t.data.cpu()
             if onloaded:
                 t.data = t.data.to(group.onload_device)
         owned.add(id(orig))
