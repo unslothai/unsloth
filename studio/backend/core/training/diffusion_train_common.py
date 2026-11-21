@@ -1202,6 +1202,12 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # Compile: SDXL and DiT trainers, except where the GPU lacks bf16 or the trainer cannot compile.
                 "supports_compile": supports_compile or name == "sdxl",
+                # The DiT trainer streams a bf16 base's blocks from host RAM; block_swap is refused elsewhere.
+                "supports_block_swap": bool(
+                    name in _DIT_TRAIN_FAMILIES
+                    and "bf16" in fam_modes
+                    and not dit_fp16_fallback(name)
+                ),
                 # save_steps is refused for checkpointless families, so hide the control.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
@@ -1276,8 +1282,9 @@ class DiffusionLoraConfig:
     enable_tf32: bool = True
     # "nf4" | "bf16" | "int8" | "fp8" | "auto"; non-nf4 needs a dense base.
     base_precision: str = "nf4"
-    # bf16 only: "off", "auto" (as few blocks as fit) or N repeated blocks kept in host RAM and streamed per step.
-    block_swap: str = "off"
+    # bf16 only: "auto" (as few blocks as fit) or N repeated blocks kept in host RAM and streamed per step; "off" or
+    # 0 none. "" (the default) takes UNSLOTH_DIT_BLOCK_SWAP, so an explicit "off" overrides the server's env.
+    block_swap: str = ""
     # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample chance of using an empty prompt instead of the caption (CFG dropout); 0.0 disables.

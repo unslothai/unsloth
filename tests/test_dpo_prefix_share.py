@@ -476,6 +476,45 @@ def test_training_dropout_is_detected():
     assert dps._dropout_active(off) is False
 
 
+@pytest.mark.parametrize("warm_training", [True, False])
+def test_prefix_share_declines_dropout_added_by_peft(monkeypatch, warm_training):
+    peft = pytest.importorskip("peft")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_TOKR", "1.0")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
+    rng = random.Random(8)
+    ids, mask, _ = _batch([_rand_tokens(rng, 30)], [_rand_tokens(rng, 5)], [_rand_tokens(rng, 6)])
+
+    base = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    adapter = peft.get_peft_model(
+        base, peft.LoraConfig(r = 2, target_modules = ["0"], lora_dropout = 0.0)
+    )
+    state = dps._HookState(adapter.get_base_model())
+    monkeypatch.setattr(base, dps._STATE, state, raising = False)
+
+    def shares_prefix():
+        result = dps._pre_hook(base, (), {"input_ids": ids, "attention_mask": mask})
+        state.pending.clear()
+        return result is not None
+
+    adapter.train(warm_training)
+    assert shares_prefix()
+
+    adapter.add_adapter(
+        "with_dropout", peft.LoraConfig(r = 2, target_modules = ["0"], lora_dropout = 0.5)
+    )
+    adapter.set_adapter("with_dropout")
+    base[0].lora_dropout["with_dropout"].train()
+    assert not shares_prefix()
+
+    adapter.eval()
+    assert shares_prefix()
+
+    adapter.set_adapter("default")
+    adapter.delete_adapter("with_dropout")
+    adapter.train()
+    assert shares_prefix()
+
+
 def test_length_dependent_rope_declines():
     from types import SimpleNamespace as NS
 

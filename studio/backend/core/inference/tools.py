@@ -14229,8 +14229,18 @@ def _mcp_note_matches(specs: list[dict], by_name: dict, listed: list[str], ctx: 
     if box is None or _mcp_thread_key() is None:
         return
     best = [name for name in _mcp_best(specs) if name not in listed]
-    # Bounded on its own: the exchange sits in the protected tail, past truncation.
-    matches = _mcp_fill([], best, by_name, ctx, _MCP_TOOL_MATCH_SHARE)
+    # The exchange sits in the protected tail with the message, so it only gets the room the listing, the message
+    # and a reply leave (as _whole_doc_budget); else it ate the reply on a near-full window (#18529).
+    room = (
+        ctx
+        - max(1024, ctx // 4)
+        - 512
+        - _text_token_cost(
+            json.dumps([by_name[name] for name in listed], separators = (",", ":")), ctx
+        )
+        - _text_token_cost(_MCP_LISTING_QUERY.get(), ctx)
+    )
+    matches = _mcp_fill([], best, by_name, ctx, min(_MCP_TOOL_MATCH_SHARE, max(0, room) / ctx))
     names = [spec["function"]["name"] for spec in matches]
     names += [name for name in _mcp_ran(by_name) if name not in listed]
     box.update(matches = matches, names = list(dict.fromkeys(names)))

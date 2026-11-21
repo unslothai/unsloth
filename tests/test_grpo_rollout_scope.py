@@ -161,3 +161,29 @@ def test_real_trl_generate_is_wrapped_and_still_compiles():
         )
         # Idempotent: a second pass does not nest another wrapper.
         assert ns["_unsloth_wrap_generate_in_rollout_scope"](patched) == patched
+
+
+async def _async_tool(x):
+    return x
+
+
+@pytest.mark.parametrize("where", ["tools", "per_batch_dicts"])
+def test_scope_stays_off_with_an_async_tool(where):
+    # An async tool runs on TRL's event-loop thread while _generate waits on it; a held fold keeps the merged-rollout
+    # lock, so an async tool calling a vLLM engine would deadlock. Each engine call folds on its own instead.
+    pytest.importorskip("unsloth_zoo.vllm_utils").vllm_rollout_scope
+    ns = _load()
+    if where == "tools":
+        trainer, llm = _make(ns, tools = [lambda x: x, _async_tool])
+    else:
+        trainer, llm = _make(ns, _async_tool_dicts = [{}, {"_async_tool": _async_tool}])
+    trainer._generate(["p"])
+    assert llm.inside == [False, False, False]
+
+
+def test_scope_still_on_with_sync_tools_only():
+    pytest.importorskip("unsloth_zoo.vllm_utils").vllm_rollout_scope
+    ns = _load()
+    trainer, llm = _make(ns, _async_tool_dicts = [{}, {}])
+    trainer._generate(["p"])
+    assert llm.inside == [True, True, True]

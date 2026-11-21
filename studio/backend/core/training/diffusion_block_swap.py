@@ -5,7 +5,8 @@
 
 Frozen weights of some repeated blocks live in pinned host RAM and stream to the GPU one block ahead on a side stream
 (unsloth_zoo.block_swap.BlockSwap: the host copy is authoritative, so nothing is ever copied back, and the
-checkpoint recompute prefetches in reverse). Every block must be checkpointed, so the checkpointing budget is off.
+checkpoint recompute prefetches in reverse). Swapped blocks are always checkpointed; the checkpointing budget plans
+the resident blocks into the room the swap freed.
 """
 
 from __future__ import annotations
@@ -28,9 +29,10 @@ LAST_SWAPPERS: list = []
 
 
 def block_swap_request(cfg: Any) -> Optional[Union[int, str]]:
-    """None (off, the default), "auto", or a block count, from cfg.block_swap or UNSLOTH_DIT_BLOCK_SWAP."""
+    """None (off), "auto", or a block count. An unset cfg.block_swap (None or "") takes UNSLOTH_DIT_BLOCK_SWAP; an
+    explicit "off" or 0 is off even when the env asks for a swap."""
     raw = getattr(cfg, "block_swap", None)
-    if raw is None or str(raw).strip().lower() in _OFF:
+    if raw is None or str(raw).strip() == "":
         raw = os.environ.get(BLOCK_SWAP_ENV, "")
     raw = str(raw).strip().lower()
     if raw in _OFF:
@@ -42,6 +44,12 @@ def block_swap_request(cfg: Any) -> Optional[Union[int, str]]:
     except ValueError:
         raise ValueError(f"block_swap={raw!r}: use 'off', 'auto' or a number of blocks.") from None
     return n if n > 0 else None
+
+
+def block_swap_explicit_off(cfg: Any) -> bool:
+    """cfg.block_swap says "off" or 0 outright (not unset): no swap at all, not even auto's int8-band swap."""
+    raw = getattr(cfg, "block_swap", None)
+    return raw is not None and str(raw).strip() != "" and str(raw).strip().lower() in _OFF
 
 
 def block_swap_error(
@@ -66,6 +74,54 @@ def block_swap_error(
     if integrated:
         return "block_swap has nothing to gain on an integrated GPU, whose VRAM is host RAM; turn block_swap off."
     return None
+
+
+def _cuda_device_facts() -> tuple[str, bool]:
+    """("cuda" | "cpu", integrated) for this host. Never raises."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "cpu", False
+    except Exception:  # noqa: BLE001 -- no torch: no CUDA
+        return "cpu", False
+    try:
+        from core.inference.host_pinning import device_is_integrated
+        return "cuda", bool(device_is_integrated("cuda"))
+    except Exception:  # noqa: BLE001 -- unclassifiable: discrete
+        return "cuda", False
+
+
+def block_swap_start_error(cfg: Any, device_facts = None) -> Optional[str]:
+    """Why the start route must refuse the REQUEST's block_swap (not the env var) before evicting residents, or None.
+    Same gates the DiT trainer applies after the load, plus the families whose trainer has no swap path."""
+    raw = getattr(cfg, "block_swap", None)
+    raw = "" if raw is None else str(raw).strip().lower()
+    if raw in _OFF:
+        return None
+    if raw != "auto":
+        try:
+            if int(raw) <= 0:
+                return None
+        except ValueError:
+            return f"block_swap={raw!r}: use 'off', 'auto' or a number of blocks."
+    from core.training.diffusion_train_common import _DIT_TRAIN_FAMILIES, dit_fp16_fallback
+
+    family = str(getattr(cfg, "resolved_family", "") or "").strip().lower()
+    if family not in _DIT_TRAIN_FAMILIES:
+        return (
+            f"block_swap is not available for the {family or 'unknown'} family: only the DiT trainer "
+            f"({', '.join(sorted(_DIT_TRAIN_FAMILIES))}) streams blocks from host RAM. Turn block_swap off."
+        )
+    if dit_fp16_fallback(family):
+        return "block_swap needs a GPU with bf16: this one trains the nf4 fp16 fallback. Turn block_swap off."
+    device, integrated = device_facts if device_facts is not None else _cuda_device_facts()
+    return block_swap_error(
+        raw,
+        str(getattr(cfg, "base_precision", "") or "").strip().lower(),
+        device,
+        bool(getattr(cfg, "gradient_checkpointing", True)),
+        integrated = integrated,
+    )
 
 
 def swap_block_lists(transformer) -> list:
@@ -225,6 +281,10 @@ def install_dit_block_swap(
     plan = plan_swap(block_bytes, request, need, depth_plan)
     swapped = [mod[i] for (_, mod), idx in zip(lists, plan) for i in idx]
     _place_rest(transformer, swapped, dev)
+    from core.training.diffusion_gc_budget import SWAPPED_ATTR
+
+    for block in swapped:
+        setattr(block, SWAPPED_ATTR, True)
     swappers = []
     try:
         for (_, mod), idx in zip(lists, plan):
@@ -237,6 +297,8 @@ def install_dit_block_swap(
     except Exception as exc:
         for s in swappers:
             s.remove()
+        for block in swapped:
+            block.__dict__.pop(SWAPPED_ATTR, None)
         raise ValueError(f"block_swap could not keep the blocks in host RAM: {exc}") from exc
     LAST_SWAPPERS[:] = swappers
     transformer._unsloth_block_swaps = swappers
@@ -267,6 +329,19 @@ def compile_swapped_blocks(
         for block in mod:
             block.forward = torch.compile(block.forward, fullgraph = fullgraph, dynamic = dynamic)
             n += 1
+    return n
+
+
+def reset_block_swaps(transformer) -> int:
+    """After an out-of-memory error mid-step: give every slot back and arm the first blocks, so the rerun starts from
+    a clean pool (no block left resident or marked as held by the failed graph). Returns the swappers reset."""
+    n = 0
+    for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
+        try:
+            s.reset()
+            n += 1
+        except Exception:  # noqa: BLE001 -- the next forward's steal path still recovers the slots
+            pass
     return n
 
 
