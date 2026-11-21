@@ -72,22 +72,38 @@ def _read_kib(path, key):
     return None
 
 
-def _cgroup_memory_limit():
-    """The cgroup v2 memory.max of this process when set, else None (Linux only)."""
+def _cgroup_memory(proc_cgroup = "/proc/self/cgroup", root = "/sys/fs/cgroup"):
+    """(limit, headroom) bytes from cgroup v2 for this process: the tightest memory.max over its cgroup and every
+    ancestor, and the smallest memory.max - memory.current among them. Either is None when unlimited / unreadable."""
+    limit = headroom = None
     try:
-        with open("/proc/self/cgroup", encoding = "ascii") as handle:
+        with open(proc_cgroup, encoding = "ascii") as handle:
             path = next(
                 (line.split(":", 2)[2].strip() for line in handle if line.startswith("0::")), None
             )
         if path is None:
-            return None
-        with open(
-            os.path.join("/sys/fs/cgroup", path.lstrip("/"), "memory.max"), encoding = "ascii"
-        ) as handle:
-            value = handle.read().strip()
-        return None if value == "max" else int(value)
+            return None, None
+        parts = [part for part in path.split("/") if part]
+        for depth in range(len(parts), -1, -1):
+            folder = os.path.join(root, *parts[:depth])
+            try:
+                with open(os.path.join(folder, "memory.max"), encoding = "ascii") as handle:
+                    value = handle.read().strip()
+            except OSError:
+                continue
+            if value == "max":
+                continue
+            value = int(value)
+            limit = value if limit is None else min(limit, value)
+            try:
+                with open(os.path.join(folder, "memory.current"), encoding = "ascii") as handle:
+                    left = max(value - int(handle.read().strip()), 0)
+            except (OSError, ValueError):
+                continue
+            headroom = left if headroom is None else min(headroom, left)
     except Exception:
-        return None
+        pass
+    return limit, headroom
 
 
 def cpu_memory_snapshot():
@@ -99,9 +115,12 @@ def cpu_memory_snapshot():
             peak = _read_kib("/proc/self/status", "VmHWM")
             available = _read_kib("/proc/meminfo", "MemAvailable")
             total = _read_kib("/proc/meminfo", "MemTotal")
-            limit = _cgroup_memory_limit()
+            limit, headroom = _cgroup_memory()
             if limit is not None and total is not None and limit < total:
                 total = limit
+            # Host MemAvailable ignores what the cgroup has already used: cap it by the remaining allowance.
+            if headroom is not None and available is not None and headroom < available:
+                available = headroom
         else:
             import psutil  # macOS / Windows
 
