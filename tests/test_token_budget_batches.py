@@ -725,3 +725,174 @@ def test_balance_steps_aside_for_padded_batches(monkeypatch, capsys):
     assert "batches are padded" in capsys.readouterr().out
     assert padded_tokens(padding_free = True)[0] is True
     assert padded_tokens(padding_free = False, packing = True)[0] is True
+
+
+def _cv(values):
+    mean = sum(values) / len(values)
+    return (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5 / mean
+
+
+def test_label_steps_keep_rows_and_even_out_step_labels():
+    rng = random.Random(0)
+    counts = [rng.choice([2, 3, 5, 400]) for _ in range(256)]
+    indices = list(range(256))
+    rng.shuffle(indices)
+    out = tb.balance_label_steps(indices, counts, 16)
+    assert sorted(out) == sorted(indices)
+    before = [sum(counts[i] for i in indices[s : s + 16]) for s in range(0, 256, 16)]
+    after = [sum(counts[i] for i in out[s : s + 16]) for s in range(0, 256, 16)]
+    assert sum(before) == sum(after)
+    assert _cv(after) < 0.25 * _cv(before)
+    # Steps come out in order of their earliest row, rows keep their relative order inside a step.
+    position = {index: p for p, index in enumerate(indices)}
+    firsts = [min(position[i] for i in out[s : s + 16]) for s in range(0, 256, 16)]
+    assert firsts == sorted(firsts)
+    for s in range(0, 256, 16):
+        step = [position[i] for i in out[s : s + 16]]
+        assert step == sorted(step)
+    with pytest.raises(ValueError):
+        tb.balance_label_steps(indices[:20], counts, 16)
+
+
+@pytest.mark.parametrize("n", [61, 64, 100, 131])
+@pytest.mark.parametrize("keep_first_window", [False, True])
+def test_label_sampler_keeps_the_multiset_and_regroups_only_inside_windows(n, keep_first_window):
+    rng = random.Random(n)
+    counts = [rng.choice([1, 1, 50]) for _ in range(n)]
+    lengths = [c + 10 for c in counts]
+    bs, ga, ws, window = 2, 2, 1, 3
+    step = bs * ga * ws
+    sampler = tb.TokenBalancedSampler(
+        torch.utils.data.SequentialSampler(range(n)),
+        lengths,
+        bs,
+        ga,
+        ws,
+        keep_first_window = keep_first_window,
+        label_counts = counts,
+        label_window = window,
+    )
+    out = list(sampler)
+    assert sorted(out) == list(range(n))
+    start = 0
+    if keep_first_window:
+        assert out[:step] == list(range(step))
+        start = step
+    # Rows only move inside their window of `window` steps; the partial tail step is untouched.
+    full = (n - start) // step * step
+    for a in range(start, start + full, step * window):
+        b = min(a + step * window, start + full)
+        if (b - a) % step == 0:
+            assert sorted(out[a:b]) == list(range(a, b))
+    assert out[start + full :] == list(range(start + full, n))
+
+
+def _label_trainer(
+    dataset,
+    bs,
+    ga,
+    padding_free = True,
+):
+    sampler = torch.utils.data.SequentialSampler(dataset)
+    inner = torch.utils.data.BatchSampler(sampler, bs, drop_last = False)
+    loader = SimpleNamespace(batch_sampler = inner, dataset = dataset)
+    trainer = SimpleNamespace(
+        training_step = None,
+        get_train_dataloader = lambda: loader,
+        args = SimpleNamespace(
+            gradient_accumulation_steps = ga,
+            average_tokens_across_devices = True,
+            padding_free = padding_free,
+            packing = False,
+        ),
+        model_accepts_loss_kwargs = True,
+    )
+    tb.install_token_budget(trainer)
+    trainer.get_train_dataloader()
+    return trainer, inner
+
+
+@pytest.mark.parametrize("padding_free", [True, False])
+def test_labels_mode_evens_out_supervised_tokens_per_step(monkeypatch, capsys, padding_free):
+    datasets = pytest.importorskip("datasets")
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "labels")
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE_WINDOW", "8")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    rng = random.Random(0)
+    rows = []
+    for _ in range(256):
+        prompt, answer = rng.choice([(200, 4), (20, 4), (10, 300)])
+        rows.append([-100] * prompt + [1] * answer)
+    dataset = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * len(r) for r in rows], "labels": rows}
+    )
+    counts = [sum(1 for v in r[1:] if v != -100) for r in rows]
+    bs, ga = 2, 4
+    trainer, inner = _label_trainer(dataset, bs, ga, padding_free)
+    assert trainer._unsloth_token_balance_active
+    assert "regrouping rows over 8 optimizer steps" in capsys.readouterr().out
+    order = [i for b in inner for i in b]
+    assert sorted(order) == list(range(256))
+    step = bs * ga
+    before = [sum(counts[s : s + step]) for s in range(0, 256, step)]
+    after = [sum(counts[i] for i in order[s : s + step]) for s in range(0, 256, step)]
+    assert _cv(after) < 0.5 * _cv(before)
+
+
+def test_labels_mode_steps_aside_without_a_label_column(monkeypatch, capsys):
+    datasets = pytest.importorskip("datasets")
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "labels")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    dataset = datasets.Dataset.from_dict({"input_ids": [[1] * (i % 7 + 1) for i in range(64)]})
+    trainer, inner = _label_trainer(dataset, 2, 4)
+    assert trainer._unsloth_token_balance_active is False
+    assert "UNSLOTH_TOKEN_BALANCE=labels ignored" in capsys.readouterr().out
+    assert [i for b in inner for i in b] == list(range(64))
+
+
+def test_dataset_label_counts_apply_every_collator_mask():
+    datasets = pytest.importorskip("datasets")
+
+    # labels and assistant_masks together: TRL's collator applies both, so only the last token counts.
+    both = datasets.Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]], "labels": [[1, 2, 3, 4]], "assistant_masks": [[0, 0, 0, 1]]}
+    )
+    assert tb._dataset_label_counts(both) == [1]
+    # completion_mask only counts when the collator applies it (completion_only_loss).
+    cm = datasets.Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]], "completion_mask": [[0, 0, 1, 1]]}
+    )
+    assert tb._dataset_label_counts(cm) == [2]
+    assert tb._dataset_label_counts(cm, completion_only_loss = False) is None
+    three = datasets.Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4, 5]],
+            "labels": [[-100, 2, 3, 4, 5]],
+            "completion_mask": [[0, 0, 1, 1, 1]],
+            "assistant_masks": [[0, 1, 1, 0, 1]],
+        }
+    )
+    assert tb._dataset_label_counts(three) == [2]
+    # Packed row of two 4-token documents, all labels kept: the second document's first token is masked (6, not 7).
+    packed = datasets.Dataset.from_dict(
+        {"input_ids": [list(range(8))], "labels": [list(range(8))], "seq_lengths": [[4, 4]]}
+    )
+    assert tb._dataset_label_counts(packed) == [6]
+    # Formatted datasets hand back tensors / arrays per row (a multi-document seq_lengths tensor cannot be truth-tested).
+    three_docs = datasets.Dataset.from_dict(
+        {"input_ids": [list(range(9))], "labels": [list(range(9))], "seq_lengths": [[3, 3, 3]]}
+    )
+    assert tb._dataset_label_counts(three_docs.with_format("numpy")) == [6]
+    assert tb._dataset_label_counts(three.with_format("numpy")) == [2]
+    tensor_row = {"labels": torch.arange(9), "seq_lengths": torch.tensor([3, 3, 3])}
+    assert tb._supervised_count(tensor_row["labels"], None, None, tensor_row["seq_lengths"]) == 6
+
+
+def test_dataset_label_counts_reads_shifted_labels_and_masks():
+    datasets = pytest.importorskip("datasets")
+    labels = datasets.Dataset.from_dict({"input_ids": [[1, 2, 3]], "labels": [[5, -100, 7]]})
+    assert tb._dataset_label_counts(labels) == [1]
+    mask = datasets.Dataset.from_dict({"input_ids": [[1, 2, 3]], "completion_mask": [[1, 0, 1]]})
+    assert tb._dataset_label_counts(mask) == [1]
+    plain = datasets.Dataset.from_dict({"input_ids": [[1, 2, 3]]})
+    assert tb._dataset_label_counts(plain) is None
