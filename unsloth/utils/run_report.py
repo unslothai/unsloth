@@ -317,6 +317,7 @@ class SyncCounter:
     def __init__(self):
         self.steps = {}
         self.step = 0
+        self.start_step = 0
         self.active = False
         self._previous_mode = None
         self._previous_show = None
@@ -334,6 +335,11 @@ class SyncCounter:
             self.steps.setdefault(self.step, Counter())[_sync_site()] += 1
             return
         return self._previous_show(message, category, filename, lineno, file, line)
+
+    def enter(self, step):
+        # Every observed step gets a bucket, so a step with no syncs still counts in the average.
+        self.step = step
+        self.steps.setdefault(step, Counter())
 
     def start(self, use_cuda = True):
         if self.active:
@@ -381,7 +387,7 @@ class SyncCounter:
 
 def format_sync_report(counter, top = _TOP_SITES):
     totals, sites, measured = counter.summary()
-    if not totals:
+    if not any(totals.values()):
         return ["Unsloth: no host-device syncs seen during training."]
     first = min(totals)
     average = sum(sites.values()) / max(measured, 1)
@@ -416,7 +422,9 @@ def install_sync_report(trainer):
 
     class _UnslothSyncReportCallback(TrainerCallback):
         def on_train_begin(self, args, state, control, **kwargs):
-            counter.step = int(state.global_step) + 1
+            # Resumed runs start past step 0: the window counts steps from here.
+            counter.start_step = int(state.global_step)
+            counter.enter(counter.start_step + 1)
             if not counter.start():
                 print("Unsloth: UNSLOTH_SYNC_REPORT needs a CUDA device; skipped.")
 
@@ -425,10 +433,10 @@ def install_sync_report(trainer):
             # logging of step k - 1 (the Trainer logs after on_step_end).
             if not counter.active:
                 return
-            if int(state.global_step) >= steps:
+            if int(state.global_step) - counter.start_step >= steps:
                 finish()
             else:
-                counter.step = int(state.global_step) + 1
+                counter.enter(int(state.global_step) + 1)
 
         def on_train_end(self, args, state, control, **kwargs):
             finish()

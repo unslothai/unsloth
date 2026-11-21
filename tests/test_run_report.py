@@ -380,6 +380,46 @@ def test_sync_report_trainer_end_to_end(monkeypatch, tmp_path, capsys):
     assert "host-device syncs per optimizer step: 1.0 on average over 1 step(s)" in out
 
 
+def test_sync_counter_counts_steps_without_syncs():
+    counter = rr.SyncCounter()
+    counter.start(use_cuda = False)
+    counter.enter(1)
+    for _ in range(5):
+        _site_a()
+    counter.enter(2)
+    for _ in range(4):
+        _site_a()
+    counter.enter(3)
+    counter.enter(4)
+    counter.stop()
+    totals, sites, measured = counter.summary()
+    assert totals == {1: 5, 2: 4, 3: 0, 4: 0} and measured == 3
+    assert "1.3 on average over 3 step(s)" in rr.format_sync_report(counter)[0]
+
+
+def test_sync_report_window_starts_at_the_resumed_step(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "2")
+    original_start = rr.SyncCounter.start
+    monkeypatch.setattr(
+        rr.SyncCounter, "start", lambda self, use_cuda = True: original_start(self, False)
+    )
+    trainer = _tiny_trainer(tmp_path)
+    assert rr.install_sync_report(trainer)
+    callback = [c for c in trainer.callback_handler.callbacks if "SyncReport" in type(c).__name__][
+        0
+    ]
+    state = type("S", (), {"global_step": 100})()
+    callback.on_train_begin(None, state, None)
+    state.global_step = 101
+    callback.on_step_end(None, state, None)
+    # Resumed at 100: one new step done, the window of 2 is still open.
+    assert trainer._unsloth_sync_report.active
+    state.global_step = 102
+    callback.on_step_end(None, state, None)
+    assert not trainer._unsloth_sync_report.active
+    assert sorted(trainer._unsloth_sync_report.steps) == [101, 102]
+
+
 def test_sync_report_wiring():
     assert "install_sync_report" in _calls_in(
         ROOT / "unsloth" / "trainer.py", "_backwards_compatible_trainer"
