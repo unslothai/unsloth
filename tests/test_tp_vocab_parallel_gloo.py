@@ -304,7 +304,7 @@ def test_vocab_parallel_head_refuses_a_forward_reading_the_whole_weight():
     inner.__class__ = Direct.__mro__[1]
     assert tpn._vocab_head_refusal(model, head, embed, 2, tpn._tp_chain(model)) is None
     # Unsloth's own causal LM forward dispatches to vocab_parallel_cross_entropy, so it is not refused.
-    with open(os.path.join(os.path.dirname(tpn.__file__), "llama.py")) as f:
+    with open(os.path.join(os.path.dirname(tpn.__file__), "llama.py"), encoding = "utf-8") as f:
         source = f.read()
     assert "lm_head.weight" in source and "_unsloth_vocab_parallel" in source
     assert "vocab_parallel_cross_entropy(" in source
