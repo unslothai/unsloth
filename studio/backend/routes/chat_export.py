@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from __future__ import annotations
+
 import asyncio
 import json
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
@@ -33,7 +36,7 @@ class ChatPdfTooLong(Exception):
 
 
 class ChatPdfRequest(BaseModel):
-    model: str | None = Field(None, max_length = 2000)
+    model: Optional[str] = Field(None, max_length = 2000)
     title: str = Field("", max_length = 2000)
     html: str = Field(..., min_length = 1, max_length = MAX_EXPORT_HTML_CHARS)
 

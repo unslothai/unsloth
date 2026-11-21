@@ -4,6 +4,8 @@
 """Chat export to PDF with PyMuPDF. Run as `python -m core.chat_pdf` (JSON {title, html} on stdin, PDF on stdout):
 PyMuPDF is not thread safe, so the server renders each export in a child process, never a thread."""
 
+from __future__ import annotations
+
 import html
 import io
 import itertools
