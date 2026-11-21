@@ -767,6 +767,8 @@ _RACE_SOURCES = {
         "_CUT_SKIPPED",
         "_SHAPE_MIN_M",
         "_MIN_ROWS",
+        # the probe input that admits a tile to the race
+        "tie_operands",
     ),
     "diffusion_int8_cutlass": (
         "ABI_VERSION",
@@ -802,6 +804,12 @@ _RACE_SOURCES = {
         "race",
         "_NATIVE_LARGE_M",
         "native_prepare",
+        # which tiles the race times: a probe that admits more tiles must re-race
+        "tiles",
+        "_PROBE_SHAPES",
+        "_scale_dtypes",
+        "_probe_tile",
+        "probed_tiles",
     ),
     # the sm_8x prefetch fix's version: bumped with any change to what it does to the Triton kernel's codegen
     "diffusion_triton_prefetch": ("_TRITON_PREFETCH_SALT",),

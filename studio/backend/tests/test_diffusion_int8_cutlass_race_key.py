@@ -123,6 +123,24 @@ _RACE_CHANGING = {
         "stream = torch.cuda.current_stream(a.device).cuda_stream",
         "stream = 0",
     ),
+    # the probe decides which tiles the race times: one that admits more tiles must race them
+    "the probe's dtype pairs": (
+        "cut",
+        "(x, w) for x in (torch.bfloat16, torch.float32) for w in (torch.bfloat16, torch.float32)",
+        "(x, w) for x in (torch.bfloat16,) for w in (torch.bfloat16,)",
+    ),
+    "the probe shapes": ("cut", "    (1, 64, 64, False),\n", ""),
+    "the probe's tie check": (
+        "cut",
+        "            # near-midpoint products: the double rounding must match\n",
+        "            continue\n",
+    ),
+    "the probe's tie operands": ("gemm", "    k2 = 128\n", "    k2 = 256\n"),
+    "the probed tile set": (
+        "cut",
+        "ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))",
+        "ok = tuple(t for t in range(1, len(tiles(fam))) if _probe_tile(index, fam, t, pairs))",
+    ),
     "the prefetch fix version": (
         "prefetch",
         '"unsloth-sm8x-8bit-prefetch-skip-1"',
