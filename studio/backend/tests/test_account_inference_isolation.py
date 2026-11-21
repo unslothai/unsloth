@@ -879,3 +879,114 @@ def test_the_chat_load_refuses_managed_remote_code_before_the_worker_starts():
     check = src.index("managed_remote_code_refused()")
     assert check < src.index("backend.load_model,")
     assert "MANAGED_REMOTE_CODE_REFUSAL" in src[check : check + 200]
+
+
+def _fake_vad(monkeypatch, loaded = None):
+    from core.inference import vad_audiocpp_sidecar
+
+    calls: list = []
+    sidecar = SimpleNamespace(
+        loaded_model = loaded,
+        status = lambda: {"available": True, "loaded_model": sidecar.loaded_model, "loading": None},
+        load = lambda model: calls.append(("load", model)) or model,
+        unload = lambda keep = None: (
+            False
+            if keep is not None and keep(sidecar.loaded_model)
+            else calls.append(("unload",)) or True
+        ),
+        detect = lambda wav, model: calls.append(("detect", model))
+        or {"segments": [], "speech_ms": 0},
+    )
+    monkeypatch.setattr(vad_audiocpp_sidecar, "get_audio_cpp_vad_sidecar", lambda: sidecar)
+    return sidecar, calls
+
+
+def test_vad_load_and_detect_need_a_grant_on_the_model(monkeypatch):
+    _, calls = _fake_vad(monkeypatch)
+    refused: list = []
+
+    def _refuse(reference, *a, **k):
+        refused.append(reference)
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
+    monkeypatch.setattr(access, "require_model_access", _refuse)
+    client = client_for(BOB)
+    load = client.post("/api/inference/audio/vad/load", json = {"model": "alice/private-vad-GGUF"})
+    detect = client.post(
+        "/api/inference/audio/vad/detect?model=alice/private-vad-GGUF", content = b"RIFF"
+    )
+    assert load.status_code == 404 and detect.status_code == 404
+    assert refused == ["alice/private-vad-GGUF", "alice/private-vad-GGUF"]
+    assert calls == []
+
+
+def test_vad_status_and_unload_leave_another_accounts_detector_alone(monkeypatch):
+    sidecar, calls = _fake_vad(monkeypatch, loaded = "alice/private-vad-GGUF")
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    run_as(ALICE, access.note_resident_account, "vad", "alice/private-vad-GGUF")
+    client = client_for(BOB)
+    assert client.get("/api/inference/audio/vad/status").json()["loaded_model"] is None
+    assert client.post("/api/inference/audio/vad/unload").json() == {"released": False}
+    assert calls == []
+    alice = client_for(ALICE)
+    assert (
+        alice.get("/api/inference/audio/vad/status").json()["loaded_model"] == sidecar.loaded_model
+    )
+    assert alice.post("/api/inference/audio/vad/unload").json() == {"released": True}
+    assert calls == [("unload",)]
+
+
+def test_a_detect_that_loads_the_detector_records_its_account(monkeypatch):
+    sidecar, _ = _fake_vad(monkeypatch)
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    monkeypatch.setattr(access, "require_model_access", lambda *a, **k: None)
+
+    def _detect(wav, model):
+        sidecar.loaded_model = model
+        return {"segments": [], "speech_ms": 0, "model": model}
+
+    sidecar.detect = _detect
+    bob = client_for(BOB)
+    assert (
+        bob.post("/api/inference/audio/vad/detect?model=bob/vad-GGUF", content = b"RIFF").status_code
+        == 200
+    )
+    assert bob.get("/api/inference/audio/vad/status").json()["loaded_model"] == "bob/vad-GGUF"
+    alice = client_for(ALICE)
+    assert (
+        alice.post(
+            "/api/inference/audio/vad/detect?model=bob/vad-GGUF", content = b"RIFF"
+        ).status_code
+        == 200
+    )
+    assert access._resident_accounts["vad"][0] == BOB.account_id
+
+
+def test_vad_routes_never_read_the_locked_resident_on_the_event_loop():
+    import inspect
+    assert "asyncio.to_thread(\n        sidecar.unload," in inspect.getsource(inference.vad_unload)
+    for route in (inference.vad_detect,):
+        source = inspect.getsource(route)
+        assert "sidecar.loaded_model" in source
+        for line in source.splitlines():
+            if "sidecar.loaded_model" in line:
+                assert "asyncio.to_thread(lambda: sidecar.loaded_model)" in line, line
+
+
+def test_vad_unload_judges_the_resident_it_stops_under_the_sidecar_lock(monkeypatch):
+    from core.inference.vad_audiocpp_sidecar import AudioCppVadSidecar
+
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
+    run_as(ALICE, access.note_resident_account, "vad", "alice/vad-GGUF")
+    sidecar = AudioCppVadSidecar.__new__(AudioCppVadSidecar)
+    sidecar._lock = threading.RLock()
+    stopped: list = []
+    sidecar._server = SimpleNamespace(
+        process = SimpleNamespace(poll = lambda: None), stop = lambda: stopped.append(1)
+    )
+    sidecar._model = SimpleNamespace(id = "bob/vad-GGUF")
+    # Bob loaded his detector after Alice was cleared for hers: her unload must leave it running.
+    run_as(BOB, access.note_resident_account, "vad", "bob/vad-GGUF")
+    hidden = lambda resident: run_as(ALICE, access.resident_hidden, "vad", resident)
+    assert sidecar.unload(hidden) is False and stopped == []
+    assert sidecar.unload(lambda resident: False) is True and stopped == [1]
