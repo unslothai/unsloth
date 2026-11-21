@@ -1198,6 +1198,60 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     return str(name or "")
 
 
+def _truncated_output_notice(result: str) -> str | None:
+    if not re.search(
+        r"(?:truncated to [0-9,]+ chars for the model;|output omitted: [0-9]+ chars, no context room left)",
+        result,
+    ):
+        return None
+    saved = re.search(
+        r"full output saved to (\.unsloth_tool_output/[a-f0-9]{12}\.txt)\b",
+        result,
+        re.I,
+    )
+    if saved is None:
+        return "The result was truncated; no complete saved-output reference is available."
+    notice = f"Full output is saved at {saved.group(1)}."
+    shown = re.search(r"showing lines 1-([0-9]+) of ([0-9]+)", result)
+    if shown:
+        notice += f" Only lines 1-{shown.group(1)} of {shown.group(2)} were shown."
+    return notice
+
+
+def _partial_duplicate_result(
+    tool_name: str,
+    notice: str,
+    *,
+    final: bool = False,
+) -> str:
+    prefix = (
+        f"The earlier {tool_name} call already ran; it was not executed again. "
+        "Its output was TRUNCATED, so you have not seen all of the results. "
+    )
+    if final:
+        return (
+            prefix + "Repeated identical calls have not recovered the missing output. "
+            "Provide the final answer now without calling more tools. "
+            "Explain that the analysis is incomplete and what could not be verified. "
+            "Do not infer missing entries or claim a complete answer. " + notice
+        )
+    recovery = (
+        "Read the saved output with a new Python call and extract only the requested fields "
+        "into a compact table, or read the unseen page. Include all imports and variables "
+        "because each Python call starts a fresh process. "
+        if tool_name == "python" and "Full output is saved at " in notice
+        else "Use an enabled tool to retrieve a smaller page or a narrower result containing "
+        "the missing information. "
+    )
+    return (
+        prefix
+        + "Do not repeat the original call or print the entire output again. "
+        + recovery
+        + "Do not infer missing entries or claim the analysis is complete from a partial result. "
+        + notice
+    )
+
+
 def _noop_result(
     reason: NoopReason,
     tool_name: str,
@@ -1288,6 +1342,7 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        self._partial_results: dict[str, str] = {}
         # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
         self._workspace_ran: set[str] = set()
         self._workspace_novel = 0
@@ -1407,7 +1462,11 @@ class ToolLoopController:
             # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             # Nor the media tools: the same prompt again is another image with a fresh seed.
             action = "duplicate"
-            noop = _noop_result("duplicate", tool_name)
+            noop = (
+                _partial_duplicate_result(tool_name, self._partial_results[key])
+                if key in self._partial_results
+                else _noop_result("duplicate", tool_name)
+            )
 
         return ToolCallDecision(
             action = action,
@@ -1479,9 +1538,15 @@ class ToolLoopController:
             self._successful_keys -= stale
             for key in stale:
                 self._duplicate_noop_counts.pop(key, None)
+                self._partial_results.pop(key, None)
             self._workspace_novel_at[decision.key] = self._workspace_novel
         if not failed:
             self._successful_keys.add(decision.key)
+            partial_notice = _truncated_output_notice(result_text)
+            if partial_notice is not None:
+                self._partial_results[decision.key] = partial_notice
+            else:
+                self._partial_results.pop(decision.key, None)
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
                 for spec in _mcp_tool_search_specs(result_text):
                     name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None
@@ -1547,7 +1612,13 @@ class ToolLoopController:
             self._force_final_answer = True
         # Any repeat once the rounds have ended, so a later call in the same batch cannot offer a tool again.
         if decision.action == "duplicate" and self._force_final_answer:
-            result = _noop_result("duplicate", decision.tool_name, final = True)
+            result = (
+                _partial_duplicate_result(
+                    decision.tool_name, self._partial_results[decision.key], final = True
+                )
+                if decision.key in self._partial_results
+                else _noop_result("duplicate", decision.tool_name, final = True)
+            )
         return ToolCallCompletion(
             decision = decision,
             result = result,

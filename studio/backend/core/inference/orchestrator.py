@@ -3392,6 +3392,15 @@ class InferenceOrchestrator:
                         "prompt_tokens_after": _count(suffix),
                     }
             if not truncation:
+                if fitted is not conversation:
+                    # Argument compaction can fit the prompt without evicting any messages.
+                    return {
+                        **unchanged,
+                        "messages": fitted,
+                        "system_prompt": "",
+                        "boundary_applied": True,
+                        "dropped_images": sorted(set(range(len(markers))) - set(_marked(fitted))),
+                    }
                 return {**unchanged, "boundary_applied": True}
 
             recall = _archive_and_recall(

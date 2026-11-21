@@ -55,16 +55,29 @@ def saved_max_chars() -> int | None:
     return _coerce_chars(stored)
 
 
+def is_automatic() -> bool:
+    """Only an unset limit may adapt; failed reads and explicit limits stay conservative."""
+    if locked_by_environment():
+        return False
+    try:
+        from storage.studio_db import get_app_setting
+        from utils.account_context import OWNER, run_as
+        return run_as(OWNER, get_app_setting, MAX_CHARS_SETTING_KEY, None) is None
+    except Exception:
+        return False
+
+
 def effective_max_chars() -> int:
-    """The cap before a small context window lowers it."""
+    """The explicit cap, or the fallback when automatic token measurement is unavailable."""
     if locked_by_environment():
         return environment_max_chars()
     return saved_max_chars() or DEFAULT_MAX_CHARS
 
 
-def set_max_chars(value: Any) -> int:
+def set_max_chars(value: Any) -> int | None:
+    """Save a strict cap, or None to restore automatic measured output."""
     parsed = _coerce_chars(value)
-    if parsed is None:
+    if value is not None and parsed is None:
         raise ValueError(
             f"Tool output limit must be a whole number from {MIN_MAX_CHARS} to {MAX_MAX_CHARS} characters."
         )

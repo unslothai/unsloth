@@ -378,6 +378,7 @@ def fit_checkpoint_context(
     protected_message_ids: Optional[set[int]] = None,
     # Unused: after a reset nothing is left to trim but X, and trading instructions for recall loses.
     reserve_tokens: int = 0,
+    prompt_reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
     can_reset: bool = False,
@@ -395,7 +396,9 @@ def fit_checkpoint_context(
     if context_length <= 1:
         return messages, None
 
-    prompt_target = prompt_budget(context_length, max_tokens)
+    prompt_target = max(
+        1, prompt_budget(context_length, max_tokens) - max(0, int(prompt_reserve_tokens))
+    )
     initial_tokens = count_tokens(list(messages))
     if initial_tokens <= prompt_target and sticky_dropped <= 0 and not force_reset:
         return messages, None

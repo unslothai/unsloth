@@ -133,7 +133,7 @@ def test_an_empty_environment_variable_does_not_lock(monkeypatch):
     assert tools._tool_result_max_chars() == 64000
 
 
-@pytest.mark.parametrize("value", [1999, 200001, True, None, "x", 1.5])
+@pytest.mark.parametrize("value", [1999, 200001, True, "x", 1.5])
 def test_setter_rejects_out_of_range(value):
     with pytest.raises(ValueError):
         limit.set_max_chars(value)
@@ -165,6 +165,7 @@ def test_route_reads_and_saves():
             "min_chars": 2000,
             "max_allowed_chars": 200000,
             "locked_by_environment": False,
+            "automatic": True,
         }
         for _ in range(2):
             response = client.put("/tool-result-limit", json = {"max_chars": 64000})
@@ -272,6 +273,49 @@ def test_an_api_model_mcp_result_honours_a_lowered_environment_cap(monkeypatch):
     tools._REQUEST_CONTEXT_TOKENS.set(0)
     out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
     assert "truncated to 4000 chars for the model; 23098 chars total" in out
+
+
+def test_automatic_can_be_restored_without_overriding_an_explicit_default():
+    with _client(OWNER) as client:
+        assert client.get("/tool-result-limit").json()["automatic"] is True
+        explicit = client.put("/tool-result-limit", json = {"max_chars": 16000})
+        assert explicit.status_code == 200
+        assert explicit.json()["automatic"] is False
+        restored = client.put("/tool-result-limit", json = {"max_chars": None})
+        assert restored.status_code == 200
+        assert restored.json()["automatic"] is True
+        assert restored.json()["max_chars"] == 16000
+        assert client.put("/tool-result-limit", json = {}).status_code == 422
+
+
+@pytest.mark.parametrize("value", ["16000", "invalid", "-1"])
+def test_environment_limit_never_becomes_automatic(monkeypatch, value):
+    monkeypatch.setenv(limit.MAX_CHARS_ENV, value)
+    assert limit.is_automatic() is False
+    with _client(OWNER) as client:
+        assert client.put("/tool-result-limit", json = {"max_chars": None}).status_code == 409
+
+
+def test_unreadable_or_invalid_saved_limit_does_not_enable_automatic(monkeypatch):
+    monkeypatch.setattr(studio_db, "get_app_setting", lambda *args: "invalid")
+    assert limit.is_automatic() is False
+
+    def fail(*args):
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(studio_db, "get_app_setting", fail)
+    assert limit.is_automatic() is False
+
+
+def test_automatic_limit_belongs_to_owner():
+    limit.set_max_chars(16000)
+    token = bind_account(ALICE)
+    try:
+        assert limit.is_automatic() is False
+        limit.set_max_chars(None)
+        assert limit.is_automatic() is True
+    finally:
+        reset_account(token)
 
 
 # A connection (llama.cpp, vLLM, Ollama, Custom) runs tools with `context_tokens=0` and the room it priced (#17553).

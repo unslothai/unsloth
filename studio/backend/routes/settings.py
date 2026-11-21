@@ -731,14 +731,16 @@ class UploadLimitResponse(BaseModel):
 
 
 class ToolResultLimitPayload(BaseModel):
-    max_chars: StrictInt = Field(
+    # Explicit null restores automatic output; omitting the field is still invalid.
+    max_chars: Optional[StrictInt] = Field(
         ..., ge = tool_result_limit.MIN_MAX_CHARS, le = tool_result_limit.MAX_MAX_CHARS
     )
 
 
 class ToolResultLimitResponse(BaseModel):
-    # The cap before a small context window lowers it.
+    # Explicit cap, or the fallback cap when automatic measurement is unavailable.
     max_chars: int
+    automatic: bool = False
     default_chars: int = tool_result_limit.DEFAULT_MAX_CHARS
     min_chars: int = tool_result_limit.MIN_MAX_CHARS
     max_allowed_chars: int = tool_result_limit.MAX_MAX_CHARS
@@ -1795,6 +1797,7 @@ def update_first_token_timeout(
 def _tool_result_limit_response() -> ToolResultLimitResponse:
     return ToolResultLimitResponse(
         max_chars = tool_result_limit.effective_max_chars(),
+        automatic = tool_result_limit.is_automatic(),
         locked_by_environment = tool_result_limit.locked_by_environment(),
     )
 

@@ -3887,7 +3887,7 @@ def test_an_archive_numbered_by_the_old_allocator_converges_on_the_next_compacti
     assert text.index("alpha") < text.index("beta")
 
 
-def _persist_agent_thread():
+def _persist_agent_thread(command = "ls"):
     """A thread whose newest turn is a tool exchange, stored the way the UI stores one."""
     from storage import studio_db
 
@@ -3901,7 +3901,7 @@ def _persist_agent_thread():
         (
             "assistant",
             [
-                _tool_part(type = "tool-call"),
+                _tool_part(command = command),
                 {"type": "text", "text": "the repo has two files."},
             ],
         ),
@@ -3917,7 +3917,7 @@ def _persist_agent_thread():
             }
         )
     return [
-        _assistant_call("terminal", '{"command": "ls"}'),
+        _assistant_call("terminal", json.dumps({"command": command})),
         {"role": "tool", "tool_call_id": "c1", "content": "main.py readme.md"},
         {"role": "assistant", "content": "the repo has two files."},
     ]
@@ -3925,8 +3925,14 @@ def _persist_agent_thread():
 
 def test_an_archived_tool_exchange_is_still_reachable_by_a_query(conn):
     """A stored tool call's row order differs from the wire order, so probes must follow the wire."""
-    tool_turn = _persist_agent_thread()
-    conversation_archive.archive_turns(THREAD, tool_turn)
+    from core.inference.context_window import compact_completed_tool_arguments
+    from core.inference.llama_cpp import _archive_and_recall
+
+    tool_turn = _persist_agent_thread("ls " + "directory/worker " * 90)
+    replay, count = compact_completed_tool_arguments(tool_turn)
+    assert count == 1
+    archived = _archive_and_recall([], replay, thread_id = THREAD, style = "inline", recall_done = True)
+    assert archived["counts"]["archived_messages"] > 0
 
     found = conversation_archive.recall(THREAD, "terminal ls repo files", top_k = 4)
 
