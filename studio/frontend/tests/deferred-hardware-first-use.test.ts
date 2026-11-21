@@ -32,6 +32,7 @@ globalThis.fetch = (async (url: string) => {
 }) as unknown as typeof fetch;
 
 const { fetchDeviceType, forgetMeasuredVerdict, usePlatformStore } = await import("../src/config/env.ts");
+const { cachedRepoIsMlx, isMlxId } = await import("../src/features/hub/lib/format-filters.ts");
 const { routeNeedsHardware } = await import("../src/config/hardware-verdict.ts");
 
 function reset() {
@@ -43,6 +44,7 @@ function reset() {
     detectionDeferred: false,
     chatOnly: true,
     chatOnlyReason: null,
+    mlxInference: null,
   });
   urls = [];
   replies = [];
@@ -80,6 +82,21 @@ test("explicit detection bypasses a cached platform and honours an unsupported r
   assert.equal(state.capabilitiesUnknown(), false);
   assert.equal(state.isTrainUnavailable(), true);
   assert.equal(state.chatOnlyReason, "no_torch");
+});
+
+test("mlx_inference rides with a settled verdict and resets on a backend that omits it", async () => {
+  reset();
+  const chatOnlyMac = { device_type: "mac", chat_only: true, chat_only_reason: "no_torch", version: "2026.1.1" };
+  replies = [{ ...chatOnlyMac, mlx_inference: true }];
+  await fetchDeviceType({ detectHardware: true });
+  assert.equal(usePlatformStore.getState().mlxInference, true);
+  // An older backend on the same port: no field, so the reason has to answer again.
+  replies = [chatOnlyMac];
+  await fetchDeviceType({ detectHardware: true });
+  assert.equal(usePlatformStore.getState().mlxInference, null);
+  replies = [{ ...chatOnlyMac, mlx_inference: false }];
+  await fetchDeviceType({ detectHardware: true });
+  assert.equal(usePlatformStore.getState().mlxInference, false);
 });
 
 test("an unauthenticated navigation never requests a hardware probe", async () => {
@@ -161,13 +178,20 @@ test("auto-load keeps cached non-GGUF models while detection is deferred", () =>
   const lift = (name: string, param: string) => {
     const match = new RegExp(`function ${name}\\(${param}[^)]*\\): boolean \\{([\\s\\S]*?)\\n\\}`).exec(adapterSource);
     assert.ok(match, `${name} moved`);
-    return new Function("usePlatformStore", "isGgufLocalRow", "isMlxId", param, match[1])
-      .bind(
-        null,
-        usePlatformStore,
-        (row: { path: string }) => row.path.endsWith(".gguf"),
-        (id: string) => id.toLowerCase().includes("mlx"),
-      );
+    return new Function(
+      "usePlatformStore",
+      "isGgufLocalRow",
+      "isMlxId",
+      "cachedRepoIsMlx",
+      param,
+      match[1],
+    ).bind(
+      null,
+      usePlatformStore,
+      (row: { path: string }) => row.path.endsWith(".gguf"),
+      isMlxId,
+      cachedRepoIsMlx,
+    );
   };
   const cachedModelRuns = lift("cachedModelRunsOnThisPlatform", "repo");
   const runsHere = lift("runsOnThisPlatform", "row");
@@ -189,6 +213,10 @@ test("auto-load keeps cached non-GGUF models while detection is deferred", () =>
   assert.equal(cachedModelRuns(mlxRepo), true);
   assert.equal(cachedModelRuns({ repo_id: "org/model" }), false);
   assert.equal(runsHere(mlxRow), true);
+  // MLX by its card alone, as the Downloaded picker reads it.
+  const taggedRepo = { repo_id: "FluidVoice-Labs/Qwen3.5-9B-4bit", tags: ["mlx"] };
+  assert.equal(cachedModelRuns(taggedRepo), true);
+  assert.equal(cachedModelRuns({ repo_id: taggedRepo.repo_id, library_name: "mlx" }), true);
   usePlatformStore.setState({ mlxInference: false });
   assert.equal(cachedModelRuns(mlxRepo), false);
   assert.equal(runsHere(mlxRow), false);

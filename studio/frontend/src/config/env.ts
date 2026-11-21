@@ -359,8 +359,14 @@ async function readHealth(
             : data.video_cpu_opt_in === true,
         cpuTraining:
           data.cpu_training === undefined ? previous.cpuTraining : data.cpu_training === true,
+        // A settled reply without the field is an older backend, so reset to null and let the
+        // reason answer; a provisional or deferred reply keeps the stored value.
         mlxInference:
-          data.mlx_inference === undefined ? previous.mlxInference : data.mlx_inference === true,
+          isProvisionalVerdict(data) || isDetectionDeferred(data)
+            ? previous.mlxInference
+            : typeof data.mlx_inference === "boolean"
+              ? data.mlx_inference
+              : null,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

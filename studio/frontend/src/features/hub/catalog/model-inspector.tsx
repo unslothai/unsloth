@@ -53,7 +53,11 @@ import {
   isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
-import { hasMlxCardTag, isMlxId } from "../lib/format-filters";
+import {
+  hasMlxCardTag,
+  isMlxId,
+  namedOrTaggedMlx,
+} from "../lib/format-filters";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -598,7 +602,17 @@ export const ModelInspector = memo(function ModelInspector({
   // A precision folder downloads as it loads, so it need not be on device.
   const isMlx =
     !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
-  const mlxRunsHere = isMlx && deviceType === "mac" && mlxInference === true;
+  // A local folder has no hubRepoId: classify it as its inventory row does (inventoryRowFormat).
+  const runsAsMlx =
+    isMlx ||
+    (!model.isGguf &&
+      model.isLocal &&
+      namedOrTaggedMlx({
+        names: [model.path ?? "", model.title, model.displayId],
+        omlx: model.localSource === "omlx",
+      }));
+  const mlxRunsHere =
+    runsAsMlx && deviceType === "mac" && mlxInference === true;
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,

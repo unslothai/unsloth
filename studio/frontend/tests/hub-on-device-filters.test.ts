@@ -170,6 +170,23 @@ test("the MLX format finds MLX folders, which the scan reports as safetensors", 
   assert.doesNotMatch(page, /matchesFormat\(row\.modelFormat, deferredFormatFilter\)/);
 });
 
+test("the inspector classifies a local MLX folder as its inventory row does", async () => {
+  const { namedOrTaggedMlx } = await import("../src/features/hub/lib/format-filters.ts");
+  // A custom folder has no hubRepoId; its path and title are what mark it MLX.
+  assert.equal(
+    namedOrTaggedMlx({ names: ["/Users/me/models/Qwen3-8B-MLX", "Qwen3-8B-MLX", "Qwen3-8B-MLX"] }),
+    true,
+  );
+  assert.equal(namedOrTaggedMlx({ names: ["/Users/me/models/Qwen3-8B"], omlx: true }), true);
+  assert.equal(namedOrTaggedMlx({ names: ["/Users/me/models/Qwen3-8B", "Qwen3-8B"] }), false);
+  const inspector = readSrc("features/hub/catalog/model-inspector.tsx");
+  assert.match(
+    inspector,
+    /model\.isLocal &&\s*namedOrTaggedMlx\(\{\s*names: \[model\.path \?\? "", model\.title, model\.displayId\],\s*omlx: model\.localSource === "omlx",/,
+  );
+  assert.match(inspector, /const mlxRunsHere =\s*runsAsMlx && deviceType === "mac" && mlxInference === true;/);
+});
+
 test("each Hub visit rescans Studio's trained and exported models", () => {
   const inventory = readSrc("features/hub/inventory/use-hub-inventory.ts");
   assert.match(inventory, /if \(unslothModelsEnabled\) \{\s*refreshUnslothModelInventory\(\)/);

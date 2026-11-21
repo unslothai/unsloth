@@ -251,6 +251,7 @@ import {
 import {
   type CuratedBudget,
   type FormatFilter,
+  cachedRepoIsMlx,
   coerceFormatFilter,
   curatedBudget,
   curatedBudgetText,
@@ -5627,7 +5628,7 @@ export function HubModelPicker({
   const visibleCachedModelRows =
     chatOnly && !task
       ? isMac && mlxInference === true
-        ? visibleCachedModels.filter((c) => isMlxId(c.repo_id, cachedRepoHasMlxTag(c)))
+        ? visibleCachedModels.filter(cachedRepoIsMlx)
         : []
       : visibleCachedModels;
 

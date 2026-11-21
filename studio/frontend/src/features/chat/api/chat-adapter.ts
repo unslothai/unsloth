@@ -50,7 +50,10 @@ import {
   loadedContextFields,
   resolveInitialConfig,
 } from "@/features/model-picker/model-config/per-model-config";
-import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
+import {
+  cachedRepoIsMlx,
+  isMlxId,
+} from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
@@ -3033,13 +3036,13 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
 
 /** On a chat-only install the picker lists no cached non-GGUF repo, except MLX ones on a Mac whose
  * MLX stack works; same wait-for-the-server rule as above. */
-function cachedModelRunsOnThisPlatform(repo: { repo_id?: string }): boolean {
+function cachedModelRunsOnThisPlatform(repo: CachedModelRepo): boolean {
   const platform = usePlatformStore.getState();
   if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;
   return (
     platform.deviceType === "mac" &&
     platform.mlxInference === true &&
-    isMlxId(repo.repo_id ?? "")
+    cachedRepoIsMlx(repo)
   );
 }
 

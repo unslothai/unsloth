@@ -68,6 +68,32 @@ export function isMlxId(id: string, hintedIsMlx?: boolean): boolean {
   return MLX_NAME_RE.test(leaf);
 }
 
+/** A cached repo is MLX by name, card tag or library; the picker and chat auto-load both ask this. */
+export function cachedRepoIsMlx(repo: {
+  repo_id: string;
+  tags?: readonly string[] | null;
+  library_name?: string | null;
+}): boolean {
+  return isMlxId(
+    repo.repo_id,
+    hasMlxCardTag({ tags: repo.tags, libraryName: repo.library_name }),
+  );
+}
+
+/** A local folder or Hub selection is MLX by any name it carries, its card or an oMLX source. */
+export function namedOrTaggedMlx(model: {
+  names: readonly string[];
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+  omlx?: boolean;
+}): boolean {
+  return (
+    hasMlxCardTag(model) ||
+    Boolean(model.omlx) ||
+    model.names.some((name) => isMlxId(name))
+  );
+}
+
 export function detectResultFormat(result: {
   id: string;
   isGguf: boolean;
