@@ -1246,3 +1246,15 @@ def test_a_greeting_is_bounded_after_its_names_are_filled():
     }
     messages, _, _ = opening_messages("t", [ada], "Me", None, 0)
     assert len(messages[-1]["content"][0]["text"]) == MAX_FIELD_CHARS
+
+
+def test_a_character_chat_list_says_when_older_chats_were_left_out(client):
+    from storage import characters_db
+
+    character = _character(client, name = "Ada", firstMes = "Hi")
+    for _ in range(3):
+        client.post("/api/characters/chats", json = {"characterIds": [character["id"]]})
+    chats, has_more = characters_db.chats_for_character(character["id"], limit = 2)
+    assert len(chats) == 2 and has_more
+    assert characters_db.chats_for_character(character["id"], limit = 3)[1] is False
+    assert client.get(f"/api/characters/{character['id']}/chats").json()["hasMore"] is False

@@ -127,11 +127,14 @@ test("saving then failing to open the chat keeps the save and leaves no unsaved-
   assert.match(actions.slice(actions.indexOf("export function useOpenCharacterChat")), /toast\.error\(t\("characters\.chat\.startFailed"\)/);
 });
 
-test("a new picture revision replaces the old object URL instead of leaking it", () => {
+test("an avatar is held while shown, per revision, in the shared bounded URL cache", () => {
   const images = read("features/characters/images.ts");
-  assert.match(images, /new BlobUrlCache\(/);
-  assert.match(images, /cache\.set\(key, url, blob\.size\)/);
-  assert.doesNotMatch(images, /const resolved = new Map/);
+  assert.match(images, /acquireObjectUrl\(key, \(\) => fetchAvatar\(kind, id, rev\)\)/);
+  assert.match(images, /return `avatar:\$\{kind\}:\$\{id\}:\$\{rev\}`;/);
+  assert.match(images, /live = false;\s+release\(\);/);
+  assert.doesNotMatch(images, /BlobUrlCache/);
+  // A large library loads only the cards near the screen.
+  assert.match(read("features/characters/components/character-card.tsx"), /subject=\{seen \? character : \{ \.\.\.character, hasAvatar: false \}\}/);
 });
 
 test("the sidebar re-reads the chat index when another tab changes chats or this tab forks one", () => {

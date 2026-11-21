@@ -61,10 +61,16 @@ test("ordinary chats keep main's thread scaffolding", () => {
   assert.doesNotMatch(thread, /"aui-thread-bottom-spacer shrink-0"/);
 });
 
-test("a send re-reads the cast and personas, not only the scene", () => {
+test("a send re-reads the cast and personas, at most once per chat in a short window", () => {
   const runtime = read("features/characters/chat-runtime.ts");
   assert.match(runtime, /if \(args\.revalidate\) await revalidateParticipants\(scene\);/);
   assert.match(runtime, /getCharacter\(member\.characterId\)/);
+  assert.match(runtime, /if \(last !== undefined && Date\.now\(\) - last < REVALIDATE_MS\) return;/);
+});
+
+test("a resumed reply's prefill goes through the character run", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /characterRun\s*\? characterRun\.prefill\(continuation\.partial\)\s*: continuation\.partial;/);
 });
 
 test("a reply subscribes to its own speaker, not the whole library", () => {

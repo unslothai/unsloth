@@ -5099,6 +5099,7 @@ export const ptBR = {
       showLess: "Mostrar menos",
       chats: "Chats",
       noChats: "Nenhum chat com {name} ainda.",
+      olderChatsHidden: "Mostrando as {count} conversas mais recentes.",
       groupWith: "com {names}",
       greetingsOne: "1 saudação",
       greetingsMany: "{count} saudações",

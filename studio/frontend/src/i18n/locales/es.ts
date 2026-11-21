@@ -5143,6 +5143,7 @@ export const es = {
       showLess: "Mostrar menos",
       chats: "Chats",
       noChats: "Aún no hay chats con {name}.",
+      olderChatsHidden: "Se muestran los {count} chats más recientes.",
       groupWith: "con {names}",
       greetingsOne: "1 saludo",
       greetingsMany: "{count} saludos",

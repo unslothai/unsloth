@@ -1,82 +1,40 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { openImageViewer } from "@/components/image-viewer";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
-import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { acquireObjectUrl, clearCachedObjectUrls, peekObjectUrl } from "@/lib/object-url-cache";
 import { fetchAvatar, type AvatarKind } from "./api";
 import { AVATAR_TYPES } from "./avatar-upload";
 
-// One URL per avatar: a new revision replaces (and revokes) the old one, so edits never pile up blobs.
-const cache = new BlobUrlCache(Number.POSITIVE_INFINITY);
-const cachedRevs = new Map<string, number>();
-const pending = new Map<string, Promise<string | null>>();
-let generation = 0;
-
-function slot(kind: AvatarKind, id: string): string {
-  return `${kind}:${id}`;
+function avatarKey(kind: AvatarKind, id: string, rev: number): string {
+  return `avatar:${kind}:${id}:${rev}`;
 }
 
-function cachedUrl(key: string, rev: number): string | undefined {
-  return cachedRevs.get(key) === rev ? cache.get(key) : undefined;
-}
-
-function loadAvatarUrl(kind: AvatarKind, id: string, rev: number): Promise<string | null> {
-  const key = slot(kind, id);
-  const known = cachedUrl(key, rev);
-  if (known) return Promise.resolve(known);
-  const pendingKey = `${key}:${rev}`;
-  const hit = pending.get(pendingKey);
-  if (hit) return hit;
-  const started = generation;
-  const request = fetchAvatar(kind, id, rev)
-    .then((blob) => {
-      if (started !== generation) return null;
-      // An older revision landing late must not replace a newer picture.
-      if ((cachedRevs.get(key) ?? -1) > rev) return cache.get(key) ?? null;
-      const old = cache.get(key);
-      const url = URL.createObjectURL(blob);
-      cache.set(key, url, blob.size);
-      cachedRevs.set(key, rev);
-      if (old) forgetCutout(old);
-      return url;
-    })
-    // A failed load is not remembered, so the next look tries again.
-    .catch(() => null)
-    .finally(() => pending.delete(pendingKey));
-  pending.set(pendingKey, request);
-  return request;
-}
-
-/** The avatar's object URL, or null while loading, when there is none, or when it failed. */
+/** The avatar's object URL, or null while loading, missing or failed; held while mounted so it is never revoked on screen. */
 export function useAvatarUrl(
   kind: AvatarKind,
   id: string | null | undefined,
   rev: number,
   hasAvatar: boolean,
 ): string | null {
-  const key = id && hasAvatar ? slot(kind, id) : null;
-  const [url, setUrl] = useState<string | null>(() => (key ? (cachedUrl(key, rev) ?? null) : null));
-  useEffect(() => {
-    if (!key || !id) {
-      setUrl(null);
-      return;
-    }
-    const known = cachedUrl(key, rev);
-    if (known !== undefined) {
-      setUrl(known);
-      return;
-    }
+  const key = id && hasAvatar ? avatarKey(kind, id, rev) : null;
+  const [state, setState] = useState<{ key: string; url: string | null } | null>(null);
+  // Layout effect: an avatar already loaded shows before paint instead of flashing the monogram.
+  useLayoutEffect(() => {
+    if (!key || !id) return;
     let live = true;
-    void loadAvatarUrl(kind, id, rev).then((next) => {
-      if (live) setUrl(next);
-    });
+    const { url, release } = acquireObjectUrl(key, () => fetchAvatar(kind, id, rev));
+    const ready = peekObjectUrl(key);
+    if (ready) setState({ key, url: ready });
+    else url.then((next) => live && setState({ key, url: next }), () => live && setState({ key, url: null }));
     return () => {
       live = false;
+      release();
     };
   }, [key, kind, id, rev]);
-  return url;
+  return key && state?.key === key ? state.url : null;
 }
 
 const cutouts = new Map<string, Promise<boolean>>();
@@ -127,11 +85,6 @@ function isCutout(url: string): Promise<boolean> {
   return known;
 }
 
-function forgetCutout(url: string): void {
-  cutouts.delete(url);
-  cutoutAnswers.delete(url);
-}
-
 /** isCutout for a picture on screen; false until it is known, and always false when not enabled. */
 export function useIsCutout(url: string | null, enabled: boolean): boolean {
   const known = url && enabled ? cutoutAnswers.get(url) : false;
@@ -153,10 +106,7 @@ export function useIsCutout(url: string | null, enabled: boolean): boolean {
 
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
-    generation += 1;
-    cache.clear();
-    cachedRevs.clear();
-    pending.clear();
+    clearCachedObjectUrls();
     cutouts.clear();
     cutoutAnswers.clear();
   });
@@ -166,10 +116,11 @@ export function viewAvatar(kind: AvatarKind, id: string, name: string, rev: numb
   const base = name.trim().replace(/[\\/:*?"<>|]+/g, "_") || kind;
   openImageViewer([
     {
-      key: `${slot(kind, id)}:${rev}`,
+      key: avatarKey(kind, id, rev),
       title: name,
       fileName: (contentType) => `${base}.${AVATAR_TYPES[contentType]?.[0] ?? "png"}`,
       load: () => fetchAvatar(kind, id, rev),
+      closeOnClick: true,
     },
   ]);
 }

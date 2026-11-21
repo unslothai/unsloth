@@ -5142,6 +5142,7 @@ export const zhTW = {
       showLess: "顯示較少",
       chats: "聊天",
       noChats: "還沒有與 {name} 的聊天。",
+      olderChatsHidden: "顯示最新的 {count} 個聊天。",
       groupWith: "與 {names}",
       greetingsOne: "1 則開場白",
       greetingsMany: "{count} 則開場白",

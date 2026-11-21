@@ -39,6 +39,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
   const personas = useCharactersStore((s) => s.personas);
   const [missing, setMissing] = useState(false);
   const [chats, setChats] = useState<CharacterChatSummary[] | null>(null);
+  const [moreChats, setMoreChats] = useState(false);
   const { open: openChat, starting } = useOpenCharacterChat();
   const accountName = useAccountName();
   const [notesOpen, setNotesOpen] = useState(false);
@@ -50,7 +51,11 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
       .then((loaded) => live && useCharactersStore.getState().upsert(loaded))
       .catch((error) => live && isNotFound(error) && setMissing(true));
     listCharacterChats(characterId)
-      .then((list) => live && setChats(list))
+      .then((list) => {
+        if (!live) return;
+        setChats(list.chats);
+        setMoreChats(list.hasMore);
+      })
       .catch(() => live && setChats([]));
     const store = useCharactersStore.getState();
     void store.refreshIndex().catch(() => undefined);
@@ -271,6 +276,11 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
                 })}
               </ul>
             )}
+            {chats && moreChats ? (
+              <p className="px-3 text-ui-12 text-muted-foreground">
+                {t("characters.profile.olderChatsHidden", { count: chats.length })}
+              </p>
+            ) : null}
           </section>
         </div>
       </div>

@@ -5522,6 +5522,9 @@ export function createOpenAIStreamAdapter(
         : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
+        const resumedPartial = characterRun
+          ? characterRun.prefill(continuation.partial)
+          : continuation.partial;
         const geminiReplayTurns =
           isGeminiApiProviderType(externalProvider?.providerType)
             ? continuation.geminiReplayTurns
@@ -5536,11 +5539,11 @@ export function createOpenAIStreamAdapter(
             content: continuationCompaction
               ? [
                   continuationCompaction,
-                  ...(continuation.partial
-                    ? [{ type: "text" as const, text: continuation.partial }]
+                  ...(resumedPartial
+                    ? [{ type: "text" as const, text: resumedPartial }]
                     : []),
                 ]
-              : continuation.partial,
+              : resumedPartial,
             ...(resumedThought ? { reasoning_content: resumedThought } : {}),
             ...(continuation.thoughtParts && continuation.thoughtParts.length > 0
               ? {

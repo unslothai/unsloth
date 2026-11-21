@@ -133,6 +133,11 @@ export function replayedReply(text: string, name: string, group: boolean, record
   return group ? `${name}: ${body}` : body;
 }
 
+/** A resumed reply's partial as the prompt replays it: named in a group like replayedReply, untrimmed so it continues mid-word. */
+export function resumedPrefill(partial: string, name: string, namesTurns: boolean): string {
+  return namesTurns && partial ? `${name}: ${stripSpeakerPrefix(partial, name)}` : partial;
+}
+
 export function replyNameOf(
   meta: RoleplayMessageMeta | null | undefined,
   cast: readonly { id: string; name: string }[],

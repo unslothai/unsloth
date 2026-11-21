@@ -5081,6 +5081,7 @@ export const hi = {
       showLess: "कम दिखाएँ",
       chats: "चैट",
       noChats: "{name} के साथ अभी कोई चैट नहीं।",
+      olderChatsHidden: "सबसे नई {count} चैट दिखाई जा रही हैं।",
       groupWith: "{names} के साथ",
       greetingsOne: "1 अभिवादन",
       greetingsMany: "{count} अभिवादन",

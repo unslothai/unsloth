@@ -292,7 +292,7 @@ def get_character_avatar(character_id: str):
 
 @router.put("/{character_id}/avatar")
 async def put_character_avatar(character_id: str, request: Request):
-    _character_or_404(character_id)
+    await asyncio.to_thread(_character_or_404, character_id)
     data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
     data, media_type = await asyncio.to_thread(_checked_avatar, data)
     updated = await asyncio.to_thread(db.set_character_avatar, character_id, data, media_type)
@@ -338,7 +338,8 @@ def export_character(character_id: str, format: Literal["png", "json"] = Query("
 @router.get("/{character_id}/chats")
 def list_character_chats(character_id: str):
     _character_or_404(character_id)
-    return {"chats": db.chats_for_character(character_id)}
+    chats, has_more = db.chats_for_character(character_id)
+    return {"chats": chats, "hasMore": has_more}
 
 
 def _persona_or_404(persona_id: str) -> dict:
@@ -387,7 +388,7 @@ def get_persona_avatar(persona_id: str):
 
 @personas_router.put("/{persona_id}/avatar")
 async def put_persona_avatar(persona_id: str, request: Request):
-    _persona_or_404(persona_id)
+    await asyncio.to_thread(_persona_or_404, persona_id)
     data = await read_limited_body(request, cards.MAX_AVATAR_BYTES, _TOO_LARGE)
     data, media_type = await asyncio.to_thread(_checked_avatar, data)
     updated = await asyncio.to_thread(db.set_persona_avatar, persona_id, data, media_type)

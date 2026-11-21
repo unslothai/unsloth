@@ -5152,6 +5152,7 @@ export const he = {
       showLess: "הצג פחות",
       chats: "צ'אטים",
       noChats: "אין עדיין צ'אטים עם {name}.",
+      olderChatsHidden: "מוצגות {count} השיחות האחרונות.",
       groupWith: "עם {names}",
       greetingsOne: "ברכה אחת",
       greetingsMany: "{count} ברכות",

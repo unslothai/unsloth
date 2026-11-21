@@ -146,12 +146,9 @@ export async function exportCharacter(id: string, format: "png" | "json"): Promi
   return { blob: await response.blob(), filename };
 }
 
-export async function listCharacterChats(id: string): Promise<CharacterChatSummary[]> {
-  const result = await json<{ chats: CharacterChatSummary[] }>(
-    await authFetch(`${CHARACTERS_API}/${encodeURIComponent(id)}/chats`),
-    "Could not load chats",
-  );
-  return result.chats;
+/** The character's newest chats; `hasMore` when older ones were left out. */
+export async function listCharacterChats(id: string): Promise<{ chats: CharacterChatSummary[]; hasMore: boolean }> {
+  return json(await authFetch(`${CHARACTERS_API}/${encodeURIComponent(id)}/chats`), "Could not load chats");
 }
 
 export async function listPersonas(): Promise<Persona[]> {

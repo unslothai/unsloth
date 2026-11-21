@@ -31604,6 +31604,16 @@ async def _proxy_to_external_provider(
         if managed is not None:
             # Stopping the read stops FastFlowLM, which a model swap is waiting on.
             gen = _stop_on_cancel(gen, cancel_event)
+        _stop = _normalize_stop_sequences(payload.stop)
+        # Providers are not sent stop sequences, so the cut is made here; a connection-model route
+        # relays its own (_StopSequenceFilter), which also reports which sequence hit.
+        if (
+            _stop
+            and payload.stream
+            and not _non_stream_custom_responses
+            and _connection_model_ref(payload.model) is None
+        ):
+            gen = _enforce_stop_sequences(gen, _stop, model)
         disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
 
         def _managed_cut_short() -> bool:
@@ -45466,6 +45476,72 @@ class _StopSequenceFilter:
         return out
 
 
+async def _enforce_stop_sequences(gen, stops: list[str], model: str):
+    """Applies ``stops`` to the OpenAI SSE lines of a provider that was not sent them."""
+    stop = _StopSequenceFilter(stops)
+    last_id = None
+
+    def held_chunk() -> Optional[str]:
+        held = stop.flush()
+        if not held:
+            return None
+        return "data: " + json.dumps(
+            {
+                "id": last_id or f"chatcmpl-{uuid.uuid4().hex}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": held}, "finish_reason": None}],
+            }
+        )
+
+    try:
+        async for line in gen:
+            if _is_openai_sse_done(line):
+                held = held_chunk()
+                if held:
+                    yield held
+                yield line
+                return
+            chunk = None
+            if line.startswith("data:"):
+                try:
+                    chunk = json.loads(line[5:].strip())
+                except ValueError:
+                    chunk = None
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                yield line
+                continue
+            last_id = chunk.get("id") or last_id
+            choice = choices[0]
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else None
+            if delta is not None and isinstance(delta.get("content"), str):
+                delta["content"] = stop.feed(delta["content"])
+            if choice.get("finish_reason") is not None and stop.held:
+                # The reply ended partway into a stop sequence, so what was held back is text.
+                choice["delta"] = {
+                    **(delta or {}),
+                    "content": ((delta or {}).get("content") or "") + stop.flush(),
+                }
+            if stop.hit is not None:
+                choice["finish_reason"] = None
+                yield "data: " + json.dumps(chunk)
+                choice["delta"] = {}
+                choice["finish_reason"] = "stop"
+                yield "data: " + json.dumps(chunk)
+                yield "data: [DONE]"
+                return
+            yield "data: " + json.dumps(chunk)
+        # A provider that closes without [DONE] still gets the text held back as a possible stop.
+        held = held_chunk()
+        if held:
+            yield held
+    finally:
+        # Ends the provider request once the stop is seen.
+        await gen.aclose()
+
+
 def _split_connection_text(chunk: dict, think: Any, stop: _StopSequenceFilter) -> dict:
     """Native thinking arrives as <think> markup in content (the Studio chat's form): hand it to the
     emitter as reasoning_content, and apply the stop sequences to what remains visible."""
@@ -45750,7 +45826,7 @@ async def _anthropic_messages_via_connection(
         "tools": anthropic_tools_to_openai(payload.tools or []) or None,
         "tool_choice": anthropic_tool_choice_to_openai(payload.tool_choice),
         "max_tokens": payload.max_tokens,
-        "stop": payload.stop_sequences or None,
+        # No stop here: _anthropic_events_from_openai_sse cuts at it and reports which sequence hit.
         "temperature": payload.temperature,
         "top_p": payload.top_p,
         "top_k": payload.top_k,

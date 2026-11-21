@@ -5070,6 +5070,7 @@ export const ar = {
       showLess: "عرض أقل",
       chats: "المحادثات",
       noChats: "لا توجد محادثات مع {name} بعد.",
+      olderChatsHidden: "تُعرض أحدث {count} محادثة.",
       groupWith: "مع {names}",
       greetingsOne: "تحية واحدة",
       greetingsMany: "التحيات: {count}",

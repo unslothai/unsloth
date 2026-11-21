@@ -10,6 +10,7 @@ import {
   shapeReplayMessage,
   stripSpeakerPrefix,
   type PromptCharacter,
+  resumedPrefill,
 } from "../src/features/characters/prompt/build.ts";
 import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
 import { applyMacros, applyNameMacros } from "../src/features/characters/prompt/macros.ts";
@@ -737,4 +738,11 @@ test("hidden roleplay turns report their kind", () => {
   assert.equal(hiddenRoleplayTurnKind({ role: "user", metadata: meta("turn") }), "turn");
   assert.equal(hiddenRoleplayTurnKind({ role: "assistant", metadata: meta("turn") }), null);
   assert.equal(hiddenRoleplayTurnKind({ role: "user", metadata: {} }), null);
+});
+
+test("a resumed group reply is named like the rest, untrimmed so it continues mid-word", () => {
+  assert.equal(resumedPrefill("Hold on, I", "Rin", true), "Rin: Hold on, I");
+  assert.equal(resumedPrefill("Rin: Hold on, I ", "Rin", true), "Rin: Hold on, I ");
+  assert.equal(resumedPrefill("Hold on, I", "Rin", false), "Hold on, I");
+  assert.equal(resumedPrefill("", "Rin", true), "");
 });

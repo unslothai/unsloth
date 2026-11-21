@@ -15,7 +15,7 @@ import {
   fetchLibraryThumbnail,
 } from "./api";
 import { type EmbeddedBody, embeddedBlobType, itemVersion, streamsPreview } from "./file-name";
-import { acquireObjectUrl } from "./object-url-cache";
+import { acquireObjectUrl } from "@/lib/object-url-cache";
 
 const MAX_BUFFERED_PREVIEW_BYTES = 256 * 1024 * 1024;
 
@@ -159,26 +159,6 @@ export function useLibraryThumbnail(
   }, [key, enabled]);
   const current = enabled && state?.key === key ? state : null;
   return { url: current?.url ?? null, failed: current !== null && current.url === null };
-}
-
-export function useSeen(ref: RefObject<Element | null>): boolean {
-  const [seen, setSeen] = useState(() => typeof IntersectionObserver === "undefined");
-  useEffect(() => {
-    const element = ref.current;
-    if (!element || seen) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setSeen(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "400px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref, seen]);
-  return seen;
 }
 
 /** `baseGap` is the gap at 100%, so `minColumnWidth` scales with interface zoom and text size. */

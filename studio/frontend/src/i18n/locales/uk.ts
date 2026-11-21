@@ -5451,6 +5451,7 @@ export const uk = {
       showLess: "Показати менше",
       chats: "Чати",
       noChats: "Чатів із {name} ще немає.",
+      olderChatsHidden: "Показано {count} найновіших чатів.",
       groupWith: "разом із: {names}",
       greetingsOne: "1 привітання",
       greetingsMany: "Привітань: {count}",

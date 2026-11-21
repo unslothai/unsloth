@@ -5285,6 +5285,7 @@ export const sv = {
       showLess: "Visa mindre",
       chats: "Chattar",
       noChats: "Inga chattar med {name} än.",
+      olderChatsHidden: "Visar de {count} senaste chattarna.",
       groupWith: "med {names}",
       greetingsOne: "1 hälsning",
       greetingsMany: "{count} hälsningar",
