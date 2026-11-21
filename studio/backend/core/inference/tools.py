@@ -10140,6 +10140,17 @@ def _cap_tool_memory(proc, pgid, sandboxed: bool) -> None:
     threading.Thread(target = _memory_watchdog, args = (proc, limit_bytes, pgid), daemon = True).start()
 
 
+def _completion_reason(proc, timed_out: bool, cancel_event) -> str:
+    if timed_out:
+        return "timed_out"
+    # A watchdog kill is forced like a cancel, so MXC still replays its DACL journal.
+    if (cancel_event is not None and cancel_event.is_set()) or getattr(
+        proc, "_unsloth_memory_exceeded", None
+    ):
+        return "cancelled"
+    return "finished"
+
+
 def _memory_exceeded_note(proc) -> str:
     limit_bytes = getattr(proc, "_unsloth_memory_exceeded", None)
     if not limit_bytes:
@@ -24355,15 +24366,7 @@ def _python_exec(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
-            proc._unsloth_completion_reason = (
-                "timed_out"
-                if timed_out
-                else (
-                    "cancelled"
-                    if cancel_event is not None and cancel_event.is_set()
-                    else "finished"
-                )
-            )
+            proc._unsloth_completion_reason = _completion_reason(proc, timed_out, cancel_event)
         if prepared is not None:
             completion = os_sandbox.verify_prepared_completion(prepared, proc)
             if completion is not None and completion.get("timedOut"):
@@ -24639,15 +24642,7 @@ def _bash_exec(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
-            proc._unsloth_completion_reason = (
-                "timed_out"
-                if timed_out
-                else (
-                    "cancelled"
-                    if cancel_event is not None and cancel_event.is_set()
-                    else "finished"
-                )
-            )
+            proc._unsloth_completion_reason = _completion_reason(proc, timed_out, cancel_event)
         if prepared is not None:
             completion = os_sandbox.verify_prepared_completion(prepared, proc)
             if completion is not None and completion.get("timedOut"):

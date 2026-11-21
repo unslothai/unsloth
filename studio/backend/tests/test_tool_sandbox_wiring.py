@@ -2655,3 +2655,14 @@ def test_windows_falls_back_to_the_watchdog_without_a_job_memory_limit(monkeypat
     monkeypatch.setattr(tools.threading, "Thread", _Thread)
     tools._cap_tool_memory(object(), pgid, True)
     assert [target for target, _ in started] == [tools._memory_watchdog]
+
+
+def test_a_memory_watchdog_kill_is_not_a_finished_run():
+    class _Proc:
+        pass
+
+    proc = _Proc()
+    assert tools._completion_reason(proc, False, None) == "finished"
+    proc._unsloth_memory_exceeded = 1024**3
+    assert tools._completion_reason(proc, False, None) == "cancelled"
+    assert tools._completion_reason(proc, True, None) == "timed_out"
