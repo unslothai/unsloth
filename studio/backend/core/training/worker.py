@@ -4704,11 +4704,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     install_windows_rocm_wide_head_sdpa_guard(logger)
 
-    # torch < 2.13 MPS attention is wrong past about 2^29 score elements: split those calls by query rows.
-    from core._mps_sdpa_guard import install_mps_large_attention_guard
-
-    install_mps_large_attention_guard(logger)
-
     # Single-GPU never inits the process group, but transformers/trl import these torch.distributed attrs anyway.
     _td_stubs = {
         "is_initialized": lambda: False,
