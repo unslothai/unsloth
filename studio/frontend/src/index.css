@@ -3287,7 +3287,6 @@ html[data-chat-font] .aui-root {
 	.dark .composer-pill-btn.composer-pill-permissions {
 		color: var(--foreground);
 	}
-	/* The label alone names the level; the icon only stands in for it once collapsed. */
 	.composer-pill-btn.composer-pill-permissions > .composer-pill-glyph {
 		display: none;
 	}
