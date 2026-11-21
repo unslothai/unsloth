@@ -93,8 +93,7 @@ export function CharacterChatPanel({ threadId }: { threadId: string }) {
                   {muted ? <span className="ml-1.5 text-ui-12 font-normal text-nav-fg-muted">{t("characters.panel.muted")}</span> : null}
                 </button>
                 {isGroup ? (
-                  // Out of the layout until wanted, so names are not cut short; always there on
-                  // touch, where an invisible button would still catch a tap.
+                  // Hidden until hovered so names fit; always shown on touch, where hidden buttons still take taps.
                   <span className="hidden shrink-0 items-center group-focus-within/member:flex group-hover/member:flex pointer-coarse:flex">
                     <IconAction
                       label={t("characters.chat.replyNow", { name: character.name })}

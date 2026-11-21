@@ -5904,8 +5904,7 @@ export function createOpenAIStreamAdapter(
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
             runSignal,
-            // A speech model reads the last user turn aloud, which in a character chat is the user's
-            // line or a turn instruction, never the character's reply: the backend refuses instead.
+            // A speech model would read the user's line or a turn instruction aloud as the reply.
             { requireText: Boolean(characterRun) },
           );
 

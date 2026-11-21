@@ -65,7 +65,6 @@ def placeholder_png(name: str) -> bytes:
                 font = font,
                 fill = "white",
                 anchor = "mm",
-                # The built-in face is light; the app draws its initials heavier.
                 stroke_width = 5,
                 stroke_fill = "white",
             )

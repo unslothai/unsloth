@@ -121,8 +121,7 @@ export function CharacterCard({
             size="sm"
             variant="primary"
             onClick={onChat}
-            // Touch has no hover to reveal it, and an invisible button would catch taps meant for the
-            // card; there the profile's own Start button is one tap away.
+            // Not on touch: with no hover it would be an invisible button over the card.
             className="absolute bottom-3 right-3 rounded-full opacity-0 shadow-md transition-opacity focus-visible:opacity-100 group-hover/char:opacity-100 pointer-coarse:hidden"
           >
             {t("characters.chatAction")}

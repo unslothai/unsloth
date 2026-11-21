@@ -65,7 +65,6 @@ export function useCharacterDraft(characterId: string | null) {
     if (!draft) return;
     if (!draft.name.trim()) {
       setShowErrors(true);
-      // The field may be scrolled away, and a screen reader should land on the error.
       document.getElementById("character-name")?.focus();
       return;
     }

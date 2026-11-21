@@ -296,6 +296,5 @@ def test_the_export_placeholder_carries_the_apps_initials():
     assert _initials("   ") == "?"
     plain = Image.open(io.BytesIO(placeholder_png("山田"))).convert("RGB")
     lettered = Image.open(io.BytesIO(placeholder_png("Rin Takeda"))).convert("RGB")
-    # White initials over the middle of the gradient; no boxes for scripts the font lacks.
     assert (255, 255, 255) in {lettered.getpixel((x, 300)) for x in range(120, 280)}
     assert (255, 255, 255) not in {plain.getpixel((x, 300)) for x in range(0, 400, 4)}

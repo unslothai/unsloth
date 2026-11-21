@@ -6,9 +6,8 @@ import { stripSpeakerPrefix } from "./prompt/build.ts";
 
 type ExportRecord = { role?: string; metadata?: unknown; content?: unknown };
 
-/** A character chat without its turn markers, each reply opening with one "Name: " (exports label
- *  every reply Assistant, so the name is what says who spoke); null for an ordinary chat. Training
- *  formats keep a marker where it is the only user turn before a reply, so roles still alternate. */
+/** A character chat for export, each reply opening with "Name: " (exports label every reply Assistant);
+ *  null for an ordinary chat. `alternating` keeps the turn markers training templates need. */
 export function characterChatTranscript<R extends ExportRecord>(records: R[], alternating = false): R[] | null {
   if (!records.some((record) => roleplayMetaOf(record) !== null)) return null;
   const kept = alternating ? alternatingTurns(records) : records.filter((record) => hiddenRoleplayTurnKind(record) === null);

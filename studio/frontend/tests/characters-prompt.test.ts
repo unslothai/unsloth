@@ -582,7 +582,7 @@ test("over budget, higher priority stays; what stays is placed by insertion orde
 });
 
 test("SillyTavern exports match as SillyTavern does: regex only in slashes, substrings by default", () => {
-  // SillyTavern sets use_regex on every exported entry and writes match_whole_words: null.
+  // These exports set use_regex on every entry and match_whole_words: null.
   const st = (keys: string[], extensions: Record<string, unknown> = {}) =>
     entry({ keys, use_regex: true, content: "c", extensions: { position: 0, display_index: 0, match_whole_words: null, ...extensions } });
   const fires = (e: LorebookEntry, text: string) => activateLorebook(book([e]), [text]).fired.length === 1;

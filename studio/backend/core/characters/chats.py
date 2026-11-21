@@ -25,7 +25,7 @@ CHARACTER_CHAT_SETTINGS = {
     "ragEnabled": False,
 }
 OPENING_TEXT = "[Start a new chat]"
-# Bounds the copies of later members' greetings made under alternate greetings in a group.
+# Caps the later members' greetings copied under each alternate greeting in a group.
 MAX_GREETING_COPY_ROWS = 512
 
 _MACRO_PATTERNS = (
@@ -102,7 +102,6 @@ def opening_messages(
         return [(i, g[:MAX_FIELD_CHARS]) for i, g in enumerate(resolved) if g and g.strip()]
 
     texts_by_member = [greeting_texts(c) for c in characters]
-    # Rows the later members' copies may add under alternate greetings (see below).
     copies_left = MAX_GREETING_COPY_ROWS
 
     def reply(parent_id: str, character: dict, source_index: int, text: str) -> dict:

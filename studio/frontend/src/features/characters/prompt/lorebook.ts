@@ -86,11 +86,8 @@ function keyMatcher(key: string, options: KeyOptions): Matcher | null {
   return matcher;
 }
 
-/**
- * SillyTavern writes these on every entry it exports. It also sets use_regex on every entry, but
- * its own matcher treats only /pattern/ keys as regex, and matches substrings unless whole words
- * are turned on, so its cards are matched that way here.
- */
+/** Exports with these fields set use_regex on every entry but mean regex only for /pattern/ keys,
+ *  and substring matches unless whole words is on. */
 function fromSillyTavern(entry: LorebookEntry): boolean {
   const ext = entry.extensions;
   return Boolean(ext) && ("match_whole_words" in ext! || "display_index" in ext!);
