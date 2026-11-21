@@ -2006,6 +2006,46 @@ def producer_linear(down: Any, prefix: Any, gate: Any, value: Any) -> Optional[A
     return y.reshape(*lead, y.shape[-1])
 
 
+def gelu_linear(down: Any, prefix: Any, gate: Any) -> Optional[Any]:
+    """``down(cat([prefix.flatten(-2), gelu_tanh(gate)], -1))`` (no prefix: ``down(gelu_tanh(gate))``) for FLUX.1's
+    MLPs, with the activation, concat, rotation and act quant in one kernel reading the producers' buffers, else None
+    (caller: stock). ``gate``: ``[..., F]`` projection output; ``prefix``: the attention output ``[B, S, H, D]``."""
+    import torch
+
+    rec = _swapped_rec(down)
+    if rec is None:
+        return None
+    kind, group, rotq, weight, fused = rec
+    lead = gate.shape[:-1]
+    f = gate.shape[-1]
+    width = f if prefix is None else f + prefix.shape[-2] * prefix.shape[-1]
+    if (
+        not rotq
+        or group != 256
+        or gate.dtype != torch.bfloat16
+        or not gate.is_cuda
+        or width != down.in_features
+        or gate.numel() < _MIN_ROWS * f
+    ):
+        return None
+    if prefix is not None and (prefix.dim() != 4 or prefix.shape[:2] != lead):
+        return None
+    wq, ws = _payload(kind, weight)
+    if wq.device != gate.device:
+        return None
+    from .diffusion_convrot_quant import convrot_gelu_act_quant
+
+    q = convrot_gelu_act_quant(prefix, gate.reshape(-1, f), group, kind == "v2")
+    if q is None:
+        return None
+    xq, xs = q
+    if fused:
+        y = _OP_HANDLE(xq, wq, xs.reshape(-1), ws, down.bias)
+    else:
+        y = stock_gemm(xq, wq, xs, ws, down.bias)
+    return y.reshape(*lead, y.shape[-1])
+
+
 def situ_linear(down: Any, gate: Any, value: Any) -> Optional[Any]:
     """``down(situ(value, gate))`` for MOSS-Image's SiTU-GLU MLP, with the product, rotation and act quant in one kernel
     reading the projection's two halves (``[..., F]`` views of one output), else None (caller: stock)."""
