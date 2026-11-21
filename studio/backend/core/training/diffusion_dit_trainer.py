@@ -883,11 +883,12 @@ def _pick_auto_precision(
     decision time. ``has_fp8`` is the caller's NVIDIA frozen-fp8 check; fp8 is only picked on sm89+.
     - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16 when the run
       compiles (``compiled``: the gain was measured compiled against compiled).
-    - 1.15x-1.5x: the frozen fp8 base when the run compiles (about 2x eager int8 and 1.8x the bf16 block swap Auto
-      picked here before, at the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has
-      no fallback).
+    - 1.15x-1.5x: the frozen fp8 base (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
+      the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
     - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
       fits where only nf4 did; nf4 trained a worse adapter (held-out MSE above the bare base on Z-Image) 1.75x slower.
+    Every fp8 pick needs ``compiled``: eager fp8 lost to the eager picks it would replace (L4, Z-Image 512 px: 1.41
+    s/step vs bf16 + block swap 1.25-1.36 at 1.33x, 1.69-1.70 vs nf4 1.30-1.34 at 0.93x), so an eager run keeps them.
     UNSLOTH_DIT_AUTO_FP8=0 restores the int8 / nf4 picks."""
     if prequant or device != "cuda" or not free_gb or not dense_gb:
         return "nf4"
@@ -899,7 +900,7 @@ def _pick_auto_precision(
         if fp8 and compiled and fam not in _AUTO_FP8_NOT_OVER_SWAP:
             return "fp8"
         return "int8" if has_torchao else "nf4"
-    if fp8 and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
+    if fp8 and compiled and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
         return "fp8"
     return "nf4"
 
@@ -3482,9 +3483,7 @@ def _maybe_compile_transformer(
     dynamo's suppress_errors keeps a frame that fails to COMPILE at the first step running eager
     instead of raising mid-run."""
     if not _should_compile(cfg, base_is_bnb, device, base_precision, steps_left):
-        # Auto picks eager fp8 only below 1.15x, where the alternative is a slower nf4: nothing to act on.
-        auto = (getattr(cfg, "base_precision", "") or "").strip().lower() == "auto"
-        if base_precision in ("fp8", "mxfp8") and not auto:
+        if base_precision in ("fp8", "mxfp8"):
             _emit(
                 on_event,
                 "warning",

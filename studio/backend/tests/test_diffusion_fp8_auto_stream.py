@@ -174,14 +174,17 @@ def test_fp8_over_bf16_needs_a_compiled_run(monkeypatch):
         dit._pick_auto_precision(False, "cuda", 16.0, 10.0, (8, 9), True, True, "z-image", False)
         == "bf16"
     )
-    # 1.15x-1.5x was measured compiled: an eager run keeps the int8 pick (bf16 + block swap on a discrete card).
+    # Eager fp8 lost to the eager picks it would replace (L4, Z-Image): an eager run keeps them in every band.
     assert (
         dit._pick_auto_precision(False, "cuda", 13.0, 10.0, (8, 9), True, True, "z-image", False)
         == "int8"
     )
-    # Below 1.15x the alternative is nf4, slower and a worse adapter: fp8 stays the pick eager too.
     assert (
         dit._pick_auto_precision(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", False)
+        == "nf4"
+    )
+    assert (
+        dit._pick_auto_precision(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", True)
         == "fp8"
     )
     cfg = types.SimpleNamespace(compile_transformer = "off")
