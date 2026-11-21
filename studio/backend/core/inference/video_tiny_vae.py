@@ -129,24 +129,36 @@ def _build(latent_channels: int, patch: int) -> Any:
             self.frames_to_trim = 3
 
         @torch.no_grad()
-        def decode(self, latents):
-            b, c, t, h, w = latents.shape
-            x = latents.transpose(1, 2).reshape(b * t, c, h, w)
-            for block in self.decoder:
-                if isinstance(block, MemBlock):
-                    nt = x.shape[0]
-                    seq = x.reshape(b, nt // b, *x.shape[1:])
-                    # each frame's memory is the previous frame's input (zeros for the first)
-                    past = F.pad(seq, (0, 0, 0, 0, 0, 0, 1, 0))[:, : nt // b].reshape(x.shape)
-                    x = block(x, past)
-                else:
-                    x = block(x)
-            if self.patch > 1:
-                x = F.pixel_shuffle(x, self.patch)
-            x = x.clamp_(0, 1)
-            nt = x.shape[0]
-            x = x.reshape(b, nt // b, *x.shape[1:])[:, self.frames_to_trim :]
-            return x.transpose(1, 2)
+        def decode(
+            self,
+            latents,
+            chunk_frames: int = 2,
+        ):
+            """Causal over time, so ``chunk_frames`` latent frames at a time with each MemBlock's last input carried
+            over: the same frames as one pass (to float rounding) at a fraction of the peak memory."""
+            b, t = latents.shape[0], latents.shape[2]
+            step = max(1, int(chunk_frames or t))
+            carry: dict = {}
+            outs = []
+            for start in range(0, t, step):
+                piece = latents[:, :, start : start + step]
+                x = piece.transpose(1, 2).reshape(-1, *piece.shape[1:2], *piece.shape[3:])
+                for i, block in enumerate(self.decoder):
+                    if isinstance(block, MemBlock):
+                        seq = x.reshape(b, -1, *x.shape[1:])
+                        # each frame's memory is the previous frame's input to this block (zeros for the first)
+                        first = carry.get(i)
+                        first = torch.zeros_like(seq[:, :1]) if first is None else first
+                        past = torch.cat([first, seq[:, :-1]], 1).reshape(x.shape)
+                        carry[i] = seq[:, -1:].clone()
+                        x = block(x, past)
+                    else:
+                        x = block(x)
+                if self.patch > 1:
+                    x = F.pixel_shuffle(x, self.patch)
+                outs.append(x.clamp_(0, 1).reshape(b, -1, *x.shape[1:]))
+            video = torch.cat(outs, 1) if len(outs) > 1 else outs[0]
+            return video[:, self.frames_to_trim :].transpose(1, 2)
 
     return TinyWanDecoder()
 

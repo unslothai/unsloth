@@ -237,3 +237,14 @@ def test_cuda_tiny_preview_publishes_without_syncing(tmp_path, monkeypatch):
     prev.finish()
     assert torch.equal(lat, before)
     assert got[-1].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 3, 0])
+def test_chunked_decode_matches_one_pass(tmp_path, chunk):
+    path = _random_checkpoint(tmp_path, 48, 2, "k.safetensors")
+    model = TV.load_from_file(path, 48, 2, device = "cpu", dtype = torch.float32)
+    lat = torch.randn(1, 48, 5, 3, 4)
+    one = model.decode(lat, chunk_frames = 5)
+    got = model.decode(lat, chunk_frames = chunk)
+    assert got.shape == one.shape == (1, 3, 17, 48, 64)
+    torch.testing.assert_close(got, one, atol = 1e-2, rtol = 1e-2)
