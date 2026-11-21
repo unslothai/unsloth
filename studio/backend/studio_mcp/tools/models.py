@@ -322,7 +322,11 @@ def _catalog_lookup(caller: Caller, model: str) -> Any:
 
     async def catalog_id() -> Optional[str]:
         found = await row()
-        return found[0] if found else None
+        if not found:
+            return None
+        # A bare name's ":variant" (a GGUF quantization) stays on the full id.
+        _, colon, variant = model.partition(":")
+        return f"{found[0]}:{variant}" if colon and variant else found[0]
 
     lookup.catalog_id = catalog_id
     return lookup
@@ -432,7 +436,7 @@ async def _refuse_certain_chat_unload(
     raise ToolError(chat_kept_refusal(kind, model, "off").detail)
 
 
-# Arguments a chat never passes, left out of the schema it reads; the tools refuse them anyway.
+# Arguments a chat never passes, left out of the schema it reads; checkpoint, export and hf_token are refused too.
 _CHAT_HIDDEN = {
     "load_model": (
         "checkpoint",
@@ -655,9 +659,10 @@ async def load_model(
         refused = {"checkpoint": checkpoint, "export": export, "hf_token": hf_token},
     )
     if kind == "llm" and model and not (checkpoint or export):
-        # An llm load of a catalog image, video or audio model fails only after it has unloaded models.
+        # An llm load of a catalog image, video or speech-to-text model fails only after it has unloaded
+        # models; text-to-speech and audio rows load through the llm route.
         found = await catalog()
-        if found and found != "llm":
+        if found in ("image", "video", "stt"):
             noun = problems.WHAT.get(found, "model")
             raise ToolError(
                 f"'{model}' is {'an' if noun[0] in 'aeiou' else 'a'} {noun} in the Unsloth Studio catalog, not a "

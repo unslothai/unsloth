@@ -1609,6 +1609,41 @@ def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_loa
     assert bodies(studio, "/api/inference/load") == []
 
 
+TTS_ID = "unsloth/Kokoro-82M"
+TTS_CATALOG = {"models": [{"id": TTS_ID, "task": "tts"}]}
+
+
+def test_an_explicit_llm_load_of_a_catalog_tts_row_loads_through_the_llm_route(
+    monkeypatch, fast_polls
+):
+    # The llm route serves text-to-speech and audio models, so only image, video and stt rows are refused.
+    routes = {
+        **PAYLOADS,
+        MEDIA_CATALOG: NO_CATALOG,
+        AUDIO_CATALOG: TTS_CATALOG,
+        V1_MODELS: {"data": []},
+    }
+    result, studio = run_tool(monkeypatch, routes, "load_model", {"model": TTS_ID, "kind": "llm"})
+    assert result["isError"] is False, json.dumps(result)
+    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [TTS_ID]
+
+
+def test_a_bare_catalog_name_keeps_its_variant(monkeypatch, fast_polls):
+    routes = {
+        **PAYLOADS,
+        MEDIA_CATALOG: NO_CATALOG,
+        AUDIO_CATALOG: TTS_CATALOG,
+        V1_MODELS: {"data": []},
+    }
+    result, studio = run_tool(
+        monkeypatch, routes, "load_model", {"model": "Kokoro-82M:Q4_K_M", "kind": "tts"}
+    )
+    assert result["isError"] is False, json.dumps(result)
+    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [
+        f"{TTS_ID}:Q4_K_M"
+    ]
+
+
 def test_a_failed_catalog_read_falls_back_to_an_llm_load(monkeypatch, fast_polls):
     failed = JSONResponse({"detail": "catalog unavailable"}, status_code = 500)
     routes = {**PAYLOADS, MEDIA_CATALOG: failed, AUDIO_CATALOG: failed, V1_MODELS: failed}
