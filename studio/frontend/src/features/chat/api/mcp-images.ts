@@ -64,7 +64,6 @@ export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
 export function isImageToolName(name: unknown, importedFrom?: unknown): boolean {
   // "computer": its screenshots, so a later turn still shows the model the screen its results describe.
-  // "Read": Claude Code's file reader, trusted only in a chat imported from Claude Code.
   return (
     typeof name === "string" &&
     (name === "view_image" ||
