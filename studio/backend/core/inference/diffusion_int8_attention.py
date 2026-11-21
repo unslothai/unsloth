@@ -548,7 +548,11 @@ def _functions(
     config = select_config(
         config, 0
     )  # a config with long overrides names its kernel for short sequences
-    fold = bool(sinks) and (resid_fold_enabled() if fold is None else bool(fold))
+    # default = the plan's own choice (_plan): folded only for RESID_FOLD_HEAD_DIMS, so kernel_function and the
+    # config-fit tests see the kernel a sink-path call of this head dim actually launches
+    if fold is None:
+        fold = resid_fold_enabled() and head_dim in RESID_FOLD_HEAD_DIMS
+    fold = bool(sinks) and bool(fold)
     key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP, bool(sinks), fold)
     found = _LOADED.get(key)
     if found is None:
