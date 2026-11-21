@@ -8944,6 +8944,9 @@ class LlamaCppBackend:
         self._llama_log_fh = None
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
+        # A decision-only GGUF: llama-server answers it on /v1/systemone and cannot generate text.
+        self.is_decision: bool = False
+        self._decision_type: Optional[str] = None
         self._api_key: Optional[str] = None
         self._api_key_file: Optional[Path] = None
         self._slot_save_dir: Optional[str] = None
@@ -19880,6 +19883,7 @@ class LlamaCppBackend:
         self._architecture = None
         self._gguf_type = None
         self._decision_type = None
+        self.is_decision = False
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
@@ -20083,6 +20087,10 @@ class LlamaCppBackend:
                     self._nextn_predict_layers,
                 )
                 self._decision_type = decision_by_arch.get(f"{arch}.decision.type")
+                # Studio serves these from the Decision console (/v1/systemone), so they load instead of being refused.
+                self.is_decision = (
+                    self._decision_type or ""
+                ).strip().lower() in _DECISION_ONLY_GGUF_TYPES
 
             # Decide diffusion routing before the SWA resolver: it can raise on an unknown arch and drop DiffusionGemma to plain llama-server.
             self._is_diffusion = bool(
@@ -21843,14 +21851,8 @@ class LlamaCppBackend:
                 "This GGUF is a LoRA adapter and needs a matching base model. "
                 "Select a full model GGUF for chat, or use this adapter with its base model."
             )
-        decision_type = (getattr(self, "_decision_type", None) or "").strip().lower()
-        if decision_type in _DECISION_ONLY_GGUF_TYPES:
-            return (
-                f"This is a decision model ({decision_type}), not a chat model: llama.cpp "
-                "only answers decision requests with it (POST /v1/systemone) and cannot "
-                "generate text. Pick a chat GGUF, or use a decision model from Settings > "
-                "API > Decision API."
-            )
+        # A decision-only `<arch>.decision.type` is not refused here: Studio loads it and
+        # answers it from the Decision console (llama-server /v1/systemone), its only output.
         arch = (self._architecture or "").strip().lower()
         # A media arch is KV 0 so a partial remote prefix can carry it; the walk still gates the no-arch fallback, since an incomplete read looks like none.
         if (

@@ -16,7 +16,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -28,15 +27,21 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AnswerPreview,
+  ChoiceCriteria,
+  Field,
+  NoulCriteria,
+  ScoreCriteria,
+  SectionLabel,
+} from "@/components/decision/decision-parts";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   BookOpen01Icon,
-  Cancel01Icon,
   CodeIcon,
-  PlusSignIcon,
   SlidersHorizontalIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -60,7 +65,6 @@ import {
 import {
   DECISION_TYPES,
   DEFAULT_MODEL,
-  type DecisionAnswer,
   type DecisionDraft,
   type DecisionResponse,
   type DecisionType,
@@ -68,13 +72,9 @@ import {
   type PresetId,
   type WireQuestion,
   buildRequest,
-  choiceCriterion,
-  criterionText,
   draftFromRequest,
   initialDrafts,
-  noulCriterion,
   requestText,
-  scoreLevels,
 } from "../lib/decision-request";
 import {
   DECISION_MODEL_LABELS,
@@ -138,41 +138,6 @@ function sentQuestions(sent: unknown): Record<string, WireQuestion> {
   return questions && typeof questions === "object"
     ? (questions as Record<string, WireQuestion>)
     : {};
-}
-
-function SectionLabel({ children }: { children: ReactNode }): ReactElement {
-  return (
-    <h3 className="text-ui-11 font-medium uppercase tracking-wider text-muted-foreground">
-      {children}
-    </h3>
-  );
-}
-
-function Field({
-  label,
-  help,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  help: string;
-  htmlFor?: string;
-  children: ReactNode;
-}): ReactElement {
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-col gap-0.5">
-        <label
-          htmlFor={htmlFor}
-          className="text-sm font-semibold text-foreground"
-        >
-          {label}
-        </label>
-        <span className="text-ui-12 text-muted-foreground">{help}</span>
-      </div>
-      {children}
-    </div>
-  );
 }
 
 function ViewToggle<T extends string>({
@@ -264,396 +229,6 @@ function CodeBlock({
           {value}
         </pre>
       )}
-    </div>
-  );
-}
-
-function IconButton({
-  label,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  disabled?: boolean;
-  onClick: () => void;
-}): ReactElement {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon-sm"
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className="shrink-0 text-muted-foreground"
-    >
-      <HugeiconsIcon
-        icon={Cancel01Icon}
-        strokeWidth={1.75}
-        className="size-4"
-      />
-    </Button>
-  );
-}
-
-function AddButton({
-  onClick,
-  children,
-}: {
-  onClick: () => void;
-  children: ReactNode;
-}): ReactElement {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      onClick={onClick}
-      className="w-fit gap-1.5 px-2.5 text-ui-12 text-muted-foreground"
-    >
-      <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-3.5" />
-      {children}
-    </Button>
-  );
-}
-
-function NoulCriteria({
-  draft,
-  update,
-}: {
-  draft: DecisionDraft;
-  update: Update;
-}): ReactElement {
-  const t = useT();
-  const sides = [
-    {
-      key: "yesWhen" as const,
-      label: t("decisions.yesWhen"),
-      dot: "bg-emerald-500",
-      border: "border-emerald-500/35 dark:border-emerald-500/30",
-    },
-    {
-      key: "noWhen" as const,
-      label: t("decisions.noWhen"),
-      dot: "bg-red-500",
-      border: "border-red-500/35 dark:border-red-500/30",
-    },
-  ];
-  return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      {sides.map((side) => (
-        <div key={side.key} className="flex min-w-0 flex-col gap-1.5">
-          <label
-            htmlFor={`decision-${side.key}`}
-            className="inline-flex items-center gap-1.5 text-ui-12 text-muted-foreground"
-          >
-            <span className={cn("size-1.5 rounded-full", side.dot)} />
-            {side.label}
-          </label>
-          <Textarea
-            id={`decision-${side.key}`}
-            value={draft[side.key]}
-            onChange={(e) => update({ [side.key]: e.target.value })}
-            className={cn("min-h-20 dark:border", side.border)}
-          />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ChoiceCriteria({
-  draft,
-  update,
-}: {
-  draft: DecisionDraft;
-  update: Update;
-}): ReactElement {
-  const t = useT();
-  const setOption = (
-    index: number,
-    patch: Partial<DecisionDraft["options"][number]>,
-  ) =>
-    update({
-      options: draft.options.map((option, i) =>
-        i === index ? { ...option, ...patch } : option,
-      ),
-    });
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="hidden gap-2 px-1 text-ui-11 text-muted-foreground sm:flex">
-        <span className="w-36 shrink-0">{t("decisions.optionName")}</span>
-        <span>{t("decisions.optionDescription")}</span>
-      </div>
-      {draft.options.map((option, i) => (
-        <div
-          // biome-ignore lint/suspicious/noArrayIndexKey: rows have no stable id
-          key={i}
-          className="flex items-start gap-2 max-sm:flex-wrap"
-        >
-          <Input
-            value={option.name}
-            onChange={(e) => setOption(i, { name: e.target.value })}
-            placeholder={t("decisions.optionNamePlaceholder")}
-            aria-label={t("decisions.optionNameLabel", { n: i + 1 })}
-            className="font-mono text-ui-12 max-sm:min-w-0 max-sm:flex-1 sm:w-36 sm:shrink-0"
-          />
-          <Input
-            value={option.description}
-            onChange={(e) => setOption(i, { description: e.target.value })}
-            placeholder={t("decisions.optionDescriptionPlaceholder")}
-            aria-label={t("decisions.optionDescriptionLabel", { n: i + 1 })}
-            className="flex-1 max-sm:order-last max-sm:basis-full"
-          />
-          <IconButton
-            label={t("decisions.removeOption", { n: i + 1 })}
-            disabled={draft.options.length <= 1}
-            onClick={() =>
-              update({ options: draft.options.filter((_, j) => j !== i) })
-            }
-          />
-        </div>
-      ))}
-      <AddButton
-        onClick={() =>
-          update({
-            options: [...draft.options, { name: "", description: "" }],
-          })
-        }
-      >
-        {t("decisions.addOption")}
-      </AddButton>
-    </div>
-  );
-}
-
-function ScoreCriteria({
-  draft,
-  update,
-}: {
-  draft: DecisionDraft;
-  update: Update;
-}): ReactElement {
-  const t = useT();
-  return (
-    <div className="flex flex-col gap-2">
-      {draft.levels.map((level, i) => (
-        <div
-          // biome-ignore lint/suspicious/noArrayIndexKey: rows have no stable id
-          key={i}
-          className="flex items-center gap-2"
-        >
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted font-mono text-ui-11 text-muted-foreground">
-            {i}
-          </span>
-          <Input
-            value={level}
-            onChange={(e) =>
-              update({
-                levels: draft.levels.map((l, j) =>
-                  j === i ? e.target.value : l,
-                ),
-              })
-            }
-            aria-label={t("decisions.levelLabel", { n: i })}
-            className="flex-1"
-          />
-          <IconButton
-            label={t("decisions.removeLevel", { n: i })}
-            disabled={draft.levels.length <= 1}
-            onClick={() =>
-              update({ levels: draft.levels.filter((_, j) => j !== i) })
-            }
-          />
-        </div>
-      ))}
-      <AddButton onClick={() => update({ levels: [...draft.levels, ""] })}>
-        {t("decisions.addLevel")}
-      </AddButton>
-    </div>
-  );
-}
-
-function ProbabilityRow({
-  label,
-  hint,
-  index,
-  value,
-  top,
-  mono,
-  percent,
-}: {
-  label: string;
-  hint?: string;
-  index?: string;
-  value: number;
-  top: boolean;
-  mono?: boolean;
-  percent: (value: number) => string;
-}): ReactElement {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-baseline justify-between gap-3">
-        <span
-          className={cn(
-            "min-w-0 truncate text-sm",
-            mono && "font-mono text-ui-13",
-            top ? "font-semibold text-foreground" : "text-muted-foreground",
-          )}
-          title={hint ? `${label}: ${hint}` : label}
-        >
-          {index !== undefined ? (
-            <span className="mr-2 font-mono text-ui-11 font-normal text-muted-foreground">
-              {index}
-            </span>
-          ) : null}
-          {label}
-          {hint ? (
-            <span className="ml-2 font-sans text-ui-12 font-normal text-muted-foreground">
-              {hint}
-            </span>
-          ) : null}
-        </span>
-        <span
-          className={cn(
-            "shrink-0 font-mono text-ui-12 tabular-nums",
-            top ? "text-foreground" : "text-muted-foreground",
-          )}
-        >
-          {percent(value)}
-        </span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width] duration-500",
-            top ? "bg-primary" : "bg-muted-foreground/35",
-          )}
-          style={{ width: `${Math.max(value * 100, 0.5)}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function AnswerHeading({
-  answer,
-  detail,
-}: {
-  answer: string;
-  detail?: string;
-}): ReactElement {
-  const t = useT();
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="text-ui-12 text-muted-foreground">
-        {t("decisions.answer")}
-      </span>
-      <span className="break-words text-ui-34 font-semibold leading-[1.1] tracking-[-0.025em] text-foreground">
-        {answer}
-      </span>
-      {detail ? (
-        <span className="break-words text-ui-15 leading-snug text-muted-foreground">
-          {detail}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function AnswerPreview({
-  answer,
-  question,
-  percent,
-}: {
-  answer: DecisionAnswer;
-  question: WireQuestion | undefined;
-  percent: (value: number) => string;
-}): ReactElement {
-  const t = useT();
-  if (answer.type === "noul") {
-    const yes = answer.noul;
-    const isYes = yes >= 0.5;
-    return (
-      <div className="flex flex-col gap-6">
-        <AnswerHeading
-          answer={isYes ? t("decisions.yes") : t("decisions.no")}
-          detail={noulCriterion(question, isYes)}
-        />
-        <div className="flex flex-col gap-2">
-          <div className="relative flex h-2.5 overflow-hidden rounded-full">
-            <div
-              className="h-full bg-primary transition-[width] duration-500"
-              style={{ width: `${yes * 100}%` }}
-            />
-            <div className="h-full flex-1 bg-red-400/90 dark:bg-red-500/80" />
-            <div className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-card" />
-          </div>
-          <div className="flex justify-between font-mono text-ui-12 tabular-nums">
-            <span
-              className={isYes ? "text-foreground" : "text-muted-foreground"}
-            >
-              {t("decisions.yes")} {percent(yes)}
-            </span>
-            <span
-              className={isYes ? "text-muted-foreground" : "text-foreground"}
-            >
-              {t("decisions.no")} {percent(1 - yes)}
-            </span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-  if (answer.type === "choice") {
-    const rows = Object.entries(answer.probabilities).sort(
-      (a, b) => b[1] - a[1],
-    );
-    return (
-      <div className="flex flex-col gap-6">
-        <AnswerHeading
-          answer={answer.choice}
-          detail={choiceCriterion(question, answer.choice)}
-        />
-        <div className="flex flex-col gap-3.5">
-          {rows.map(([name, value]) => (
-            <ProbabilityRow
-              key={name}
-              label={name}
-              hint={choiceCriterion(question, name)}
-              value={value}
-              top={name === answer.choice}
-              mono={true}
-              percent={percent}
-            />
-          ))}
-        </div>
-      </div>
-    );
-  }
-  const { keys, top, max } = scoreLevels(answer);
-  return (
-    <div className="flex flex-col gap-6">
-      <AnswerHeading
-        answer={criterionText(answer.legend[top]) ?? top}
-        detail={t("decisions.scoreDetail", {
-          score: answer.score.toFixed(2),
-          max,
-        })}
-      />
-      <div className="flex flex-col gap-3.5">
-        {keys.map((key) => (
-          <ProbabilityRow
-            key={key}
-            index={key}
-            label={criterionText(answer.legend[key]) ?? key}
-            value={answer.probabilities[key] ?? 0}
-            top={key === top}
-            percent={percent}
-          />
-        ))}
-      </div>
     </div>
   );
 }

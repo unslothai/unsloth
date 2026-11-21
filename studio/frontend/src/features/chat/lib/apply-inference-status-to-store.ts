@@ -170,7 +170,20 @@ export function applyActiveModelStatusToStore(
   options: ApplyInferenceStatusOptions = {},
 ): void {
   const checkpointId = resolveInferenceCheckpointId(status);
-  if (!checkpointId) return;
+  if (!checkpointId) {
+    // Nothing resident: a stale decision flag would keep the Decision console on an
+    // empty chat. Kept while a load is in flight, so a reload does not flash the Thread.
+    if ((status.loading?.length ?? 0) === 0) {
+      const store = useChatRuntimeStore.getState();
+      if (store.loadedIsDecision || store.loadedDecisionType !== null) {
+        useChatRuntimeStore.setState({
+          loadedIsDecision: false,
+          loadedDecisionType: null,
+        });
+      }
+    }
+    return;
+  }
 
   // Publish residency here, or a load looks unloaded for up to 10s.
   useChatRuntimeStore.setState({
@@ -224,7 +237,9 @@ export function applyActiveModelStatusToStore(
   if (hydratingExistingModel) {
     showLoadWarning(status.memory_warning);
   }
-  const supportsReasoning = status.supports_reasoning ?? false;
+  // A decision model has no text generation, so it never reasons or calls tools in chat.
+  const isDecision = status.is_decision === true;
+  const supportsReasoning = !isDecision && (status.supports_reasoning ?? false);
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
   const reasoningEffortLevels =
@@ -233,7 +248,7 @@ export function applyActiveModelStatusToStore(
       : (["low", "medium", "high"] as const);
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
   const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
-  const supportsTools = status.supports_tools ?? false;
+  const supportsTools = !isDecision && (status.supports_tools ?? false);
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   // Page-start adoption keeps the restored chat / installation value; the pin seeds loads only.
   const pinnedThinking = options.adoptingExistingServerModel
