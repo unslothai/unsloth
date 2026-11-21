@@ -22,6 +22,7 @@ export interface GpuDevice {
   memory_total_gb?: number;
   vram_used_gb?: number;
   vram_free_gb?: number;
+  vram_free_bytes?: number;
   vram_utilization_pct?: number | null;
   shared_memory?: boolean;
   /** A unified host pool (ROCm APU): a total, but not a VRAM ceiling. */
@@ -35,6 +36,8 @@ export interface GpuDevice {
   temperature_c?: number | null;
   power_draw_w?: number | null;
   power_limit_w?: number | null;
+  pcie_link_width?: number;
+  pcie_link_gen?: number;
 }
 
 export interface SystemGpuInfo {

@@ -294,11 +294,13 @@ def test_vulkan_inference_gpu_uses_real_device_names_and_igpu_flag(monkeypatch):
     assert dgpu["index_kind"] == "vulkan"
     assert dgpu["shared_memory"] is False
     assert dgpu["memory_total_gb"] == 16.0
+    assert dgpu["vram_free_bytes"] == 15 * 1024**3
 
     assert igpu["name"] == "AMD Radeon(TM) 8060S Graphics"
     assert igpu["shared_memory"] is True
     # The capped free budget from _get_gpu_memory, NOT the 91 GiB raw total.
     assert igpu["memory_total_gb"] == 12.0
+    assert "vram_free_bytes" not in igpu
 
 
 def test_vulkan_inference_gpu_uses_inventory_fallback_names(monkeypatch):

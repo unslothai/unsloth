@@ -53,6 +53,9 @@ def test_system_gpu_devices_carry_the_live_telemetry_the_probe_already_read(monk
             "temperature_c": 61.0,
             "power_draw_w": 312.5,
             "power_limit_w": 1000.0,
+            "pcie_link_gen": 4,
+            "pcie_link_width": 16,
+            "vram_free_bytes": 0,
             "power_utilization_pct": 31.2,
         },
     )
@@ -64,6 +67,9 @@ def test_system_gpu_devices_carry_the_live_telemetry_the_probe_already_read(monk
     assert device["temperature_c"] == 61.0
     assert device["power_draw_w"] == 312.5
     assert device["power_limit_w"] == 1000.0
+    assert device["pcie_link_gen"] == 4
+    assert device["pcie_link_width"] == 16
+    assert device["vram_free_bytes"] == 0
     assert device["vram_used_gb"] == 10.0
     # No extra probe: one utilization read per cache window, as before.
     main._get_cached_system_gpu_info(_LOGGER)

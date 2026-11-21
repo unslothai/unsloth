@@ -24,7 +24,8 @@ const loaded: Parameters<typeof selectResidentEstimateSettings>[0] = {
   loadedGpuMemoryMode: "auto",
   loadedGpuLayers: null,
   loadedNCpuMoe: null,
-  loadedGpuIds: [0],
+  loadedGpuIds: [1, 0],
+  loadedSplitRatio: [3, 1],
   loadedLlamaExtraArgs: ["--no-kv-offload"],
   loadedCpuFallback: false,
   specFallbackReason: null,
@@ -49,7 +50,8 @@ test("pending controls cannot change the loaded placement or memory requirements
     gpuMemoryMode: "manual",
     gpuLayers: 99,
     nCpuMoe: 0,
-    selectedGpuIds: [1],
+    selectedGpuIds: [0, 1],
+    tensorSplit: [1, 2],
     llamaExtraArgs: ["--swa-full"],
   };
   const request = resolveResidentEstimateRequest(
@@ -76,7 +78,8 @@ test("pending controls cannot change the loaded placement or memory requirements
     gpuMemoryMode: "auto",
     gpuLayers: null,
     nCpuMoe: null,
-    selectedGpuIds: [0],
+    selectedGpuIds: [1, 0],
+    tensorSplit: [3, 1],
     llamaExtraArgs: ["--no-kv-offload"],
   });
   const defaults = resolveResidentEstimateRequest(

@@ -7,6 +7,7 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type * as HookModule from "../src/features/model-picker/hooks/use-memory-estimate.ts";
 import type { MemoryEstimate } from "../src/features/model-picker/api/memory-estimate.ts";
+import * as llamaExtraArgs from "../src/features/model-picker/model-config/llama-extra-args.ts";
 import * as estimateContext from "../src/features/model-picker/model-config/estimate-context.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -22,6 +23,7 @@ const hook = loadWithStubs<typeof HookModule>(
         return { available: true };
       },
     },
+    "../model-config/llama-extra-args": llamaExtraArgs,
     "../model-config/estimate-context": estimateContext,
   },
 );
@@ -126,6 +128,7 @@ test("only a model's first estimate skips the debounce; edits while it runs are 
           return new Promise(() => {});
         },
       },
+      "../model-config/llama-extra-args": llamaExtraArgs,
       "../model-config/estimate-context": estimateContext,
     },
   );
