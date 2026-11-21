@@ -216,7 +216,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             cube = libdevice.mul_rn(libdevice.mul_rn(y, y), y)
             inner = libdevice.mul_rn(0.7978845608028654, libdevice.fma_rn(0.044715, cube, y))
             t = libdevice.add_rn(1.0, libdevice.tanh(inner))
-            return libdevice.mul_rn(libdevice.mul_rn(0.5, y), t).to(tl.bfloat16)
+            out = libdevice.mul_rn(libdevice.mul_rn(0.5, y), t)
+            # the libdevice calls flush subnormals (FTZ builds). Below 2^-30, ATen's x^3 underflows, tanh(u) = u and
+            # 1 + u = 1, so its result is exactly 0.5 * y, subnormal or not (a plain multiply keeps those)
+            return tl.where(tl.abs(y) < 9.313225746154785e-10, y * 0.5, out).to(tl.bfloat16)
 
     @triton.jit
     def gelu_bf16(x_ptr, o_ptr, N, BLOCK: tl.constexpr):
@@ -2348,6 +2351,11 @@ _GELU_PROBE_SHAPES = (
 # the compiled GELU + concat + rotq_h16 until measured. ``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED=1`` arms it on any card
 # whose probe passes, ``0`` turns it off.
 _GELU_ARCHS = ((8, 9), (12, 0))
+# Fewest rows where the fused kernel beat the compiled GELU + concat + rotq_h16 (quant stage, FLUX.1 shapes): L4 wins
+# from 1280 rows (1.29x), RTX PRO 6000 only at 4096+ (1.24-1.54x; 0.83x at 1280, 0.84x at 256). Others: 2048.
+_GELU_MIN_ROWS = {(8, 9): 1024, (12, 0): 2048}
+_GELU_MIN_ROWS_DEFAULT = 2048
+_GELU_DEVICE_MIN_ROWS: dict = {}  # device index -> min rows, set when armed
 GELU_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED"
 # GELU's non-monotonic tail (min near -0.75), saturation and tiny / zero inputs
 _GELU_TAIL = (-90.0, -20.0, -5.0, -3.0, -1.5, -0.75, -0.5, -1e-3, 0.0, 1e-3, 0.5, 3.0, 20.0, 90.0)
@@ -2428,6 +2436,9 @@ def _arm_gelu(index: int) -> bool:
             ok = False
         _GELU_DEVICE[index] = ok
     if _GELU_DEVICE[index]:
+        _GELU_DEVICE_MIN_ROWS[index] = _GELU_MIN_ROWS.get(
+            _device_cap(index), _GELU_MIN_ROWS_DEFAULT
+        )
         _GELU_HANDLE = _gelu_op()
     return bool(_GELU_DEVICE[index])
 
@@ -2443,6 +2454,8 @@ def convrot_gelu_act_quant(prefix: Any, gate: Any, group: int, v2: bool) -> Opti
     reaches HBM. None when this device / layout / group is not covered: the caller keeps the stock GELU (and concat)
     and its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
     if group != 256 or not gelu_armed(gate.device.index):
+        return None
+    if gate.shape[0] < _GELU_DEVICE_MIN_ROWS.get(gate.device.index, _GELU_MIN_ROWS_DEFAULT):
         return None
     if not producer_layout_ok(prefix, gate, gate):
         return None

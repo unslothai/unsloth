@@ -270,3 +270,22 @@ def test_rotq_h16x_gelu_source_contract():
     )
     assert "if _hip_backend():" in src and "libdevice.fma_rn(0.044715, cube, y)" in src
     assert "tl.extra.cuda" not in src
+
+
+def test_gelu_entry_keeps_the_stock_path_below_the_card_min_rows(monkeypatch):
+    """Short activations (FLUX.1's text-stream MLP, small renders) measured slower fused: the caller keeps stock."""
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_convrot_quant as cq
+
+    calls = []
+    monkeypatch.setattr(cq, "_GELU_HANDLE", lambda *a: calls.append(a) or ("q", "s"))
+    monkeypatch.setitem(cq._GELU_DEVICE, None, True)  # noqa: SLF001 - CPU tensors carry device index None
+    monkeypatch.setitem(cq._GELU_DEVICE_MIN_ROWS, None, 2048)  # noqa: SLF001
+    monkeypatch.setattr(cq, "producer_layout_ok", lambda *a: True)
+    small, big = (
+        torch.empty(256, 512, dtype = torch.bfloat16),
+        torch.empty(4096, 512, dtype = torch.bfloat16),
+    )
+    assert cq.convrot_gelu_act_quant(None, small, 256, True) is None and not calls
+    assert cq.convrot_gelu_act_quant(None, big, 256, True) == ("q", "s") and len(calls) == 1
+    assert cq._GELU_MIN_ROWS[(12, 0)] == 2048 and cq._GELU_MIN_ROWS[(8, 9)] == 1024  # noqa: SLF001
