@@ -3361,6 +3361,14 @@ def _architecture_skip_modules(model_types):
     # for a plain Linear4bit whose forward multiplies every group by the whole weight.
     if any(mt.startswith("deepseek_v41") for mt in model_types):
         skip.append("o_a_proj")
+    # Inkling 2 Mini's loop message gates cast their input to `down_proj.weight.dtype` (uint8 once packed, which
+    # truncates the activations to integers) and declare both gate projections fp32-strict; all three are rank 64.
+    if any(mt.startswith("inkling2_loop") for mt in model_types):
+        skip.extend(
+            f"{gate}_message_gate.{proj}"
+            for gate in ("q", "k", "v", "mlp")
+            for proj in ("down_proj", "forget_gate_proj", "message_gate_proj")
+        )
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.

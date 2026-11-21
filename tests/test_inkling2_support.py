@@ -255,3 +255,35 @@ def test_released_nvfp4_mxfp8_experts_decode(tmp_path, loop):
             assert float((got[k] - v).norm() / v.norm()) < (0.05 if ".11." in k else 0.15), k
         else:
             assert torch.equal(got[k], v), k
+
+
+def test_4bit_keeps_mini_message_gates_out_of_bitsandbytes():
+    # MessageGate.forward casts its input to `down_proj.weight.dtype`, uint8 once bitsandbytes packs it, and its two
+    # gate projections are fp32-strict: none of the three may become Linear4bit. Everything else still quantizes.
+    from transformers.quantizers.quantizers_utils import should_convert_module
+    from unsloth.models.vision import _architecture_skip_modules
+    from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+
+    for model_types in (["inkling2_loop"], ["inkling2_loop", "inkling2_loop_text"]):
+        assert len(_architecture_skip_modules(model_types)) == 12
+    assert _architecture_skip_modules(["inkling2", "inkling2_text"]) == []
+
+    skip = list(SKIP_QUANTIZATION_MODULES) + _architecture_skip_modules(["inkling2_loop"])
+    model = _tiny(loop = True)
+    kept, quantized = set(), set()
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear) and "language_model" in name:
+            short = re.sub(r"^.*layers\.\d+\.", "", name)
+            (quantized if should_convert_module(name, skip) else kept).add(short)
+    gates = {
+        f"{g}_message_gate.{p}"
+        for g in ("q", "k", "v", "mlp")
+        for p in ("down_proj", "forget_gate_proj", "message_gate_proj")
+    }
+    assert gates <= kept
+    assert {
+        "self_attn.q_proj.linear",
+        "self_attn.o_proj.linear",
+        "self_attn.o_proj.gate_proj",
+    } <= quantized
+    assert not (kept - gates)
