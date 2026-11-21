@@ -45477,22 +45477,27 @@ async def _enforce_stop_sequences(gen, stops: list[str], model: str):
     """Applies ``stops`` to the OpenAI SSE lines of a provider that was not sent them."""
     stop = _StopSequenceFilter(stops)
     last_id = None
+
+    def held_chunk() -> Optional[str]:
+        held = stop.flush()
+        if not held:
+            return None
+        return "data: " + json.dumps(
+            {
+                "id": last_id or f"chatcmpl-{uuid.uuid4().hex}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": held}, "finish_reason": None}],
+            }
+        )
+
     try:
         async for line in gen:
             if _is_openai_sse_done(line):
-                held = stop.flush()
+                held = held_chunk()
                 if held:
-                    yield "data: " + json.dumps(
-                        {
-                            "id": last_id or f"chatcmpl-{uuid.uuid4().hex}",
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": model,
-                            "choices": [
-                                {"index": 0, "delta": {"content": held}, "finish_reason": None}
-                            ],
-                        }
-                    )
+                    yield held
                 yield line
                 return
             chunk = None
@@ -45525,6 +45530,10 @@ async def _enforce_stop_sequences(gen, stops: list[str], model: str):
                 yield "data: [DONE]"
                 return
             yield "data: " + json.dumps(chunk)
+        # A provider that closes without [DONE] still gets the text held back as a possible stop.
+        held = held_chunk()
+        if held:
+            yield held
     finally:
         # Ends the provider request once the stop is seen.
         await gen.aclose()

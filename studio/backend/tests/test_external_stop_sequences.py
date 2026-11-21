@@ -63,3 +63,9 @@ def test_a_held_back_tail_that_never_completes_a_stop_is_sent_before_done():
     out, _ = _run([_chunk("ends with \nR"), "data: [DONE]"], ["\nRin:"])
     assert _text(out) == "ends with \nR"
     assert out[-1] == "data: [DONE]"
+
+
+def test_a_held_back_tail_is_sent_when_the_provider_closes_without_done():
+    out, closed = _run([_chunk("ends with \nR")], ["\nRin:"])
+    assert _text(out) == "ends with \nR"
+    assert closed == [True]
