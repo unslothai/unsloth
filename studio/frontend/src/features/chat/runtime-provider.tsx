@@ -1811,6 +1811,8 @@ function scheduleGenerationRecovery(
                     store.setLiveDecode(threadId, progress.decode);
                   } else if (progress?.phase === "compacting") {
                     store.setLiveCompacting(threadId, true);
+                  } else if (progress?.phase === "compaction_failed") {
+                    store.setLiveCompacting(threadId, false);
                   }
                   // A frame can end the replay: show what it rebuilt, or a replayed tool result stays hidden.
                   if (update.run.status !== lastPublishedStatus) {

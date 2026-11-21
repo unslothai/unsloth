@@ -296,6 +296,7 @@ def test_a_cut_off_summary_is_not_asked_for_again_until_compact():
 
 def test_a_timed_out_summary_is_not_asked_for_again_until_compact(monkeypatch):
     monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 0.2)
     thread = _saved_thread("thread-timed-out-summary")
     chat = _long_chat()
     options = dict(thread_id = thread, **_SMALL_TRIGGER)
@@ -459,6 +460,99 @@ def test_compact_without_a_saved_thread_is_ignored():
     )
     assert summaries == [] and _truncations(chunks) == []
     assert len(sent["messages"]) == len(_long_chat(turns = 2))
+
+
+def _progress_frames(chunks: list[dict], phase: str) -> list[dict]:
+    return [c for c in chunks if c.get("type") == "generation_progress" and c.get("phase") == phase]
+
+
+_COMPACT_CUSTOM = dict(
+    provider_type = "custom",
+    compact_context = True,
+    context_overflow = "truncate_oldest",
+    context_window = 128_000,
+)
+
+
+@pytest.mark.parametrize(
+    "handler, reason",
+    [(_CutOffSummary, "cut_off"), (_EmptySummary, "empty"), (_StalledSummary, "timed_out")],
+)
+def test_a_failed_compact_tells_the_client_why(handler, reason, monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 0.2)
+    thread = _saved_thread(f"thread-compact-fails-{reason}")
+    chat = _long_chat()
+    chunks, [_], [sent] = _bodies(handler, messages = chat, thread_id = thread, **_COMPACT_CUSTOM)
+    assert [f["reason"] for f in _progress_frames(chunks, "compaction_failed")] == [reason]
+    assert _truncations(chunks) == []
+    assert len(sent["messages"]) == len(chat)
+
+
+def test_a_compact_that_worked_reports_no_failure(monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    thread = _saved_thread("thread-compact-works")
+    chunks, [_], _ = _bodies(_SummarisingHandler, thread_id = thread, **_COMPACT_CUSTOM)
+    assert _progress_frames(chunks, "compacting")
+    assert _progress_frames(chunks, "compaction_failed") == []
+    [truncation] = _truncations(chunks)
+    assert truncation["manual"] is True and truncation["checkpoint_started"] is True
+
+
+def test_an_auto_summary_failure_sends_no_compact_failure(monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    thread = _saved_thread("thread-auto-fails")
+    chunks, _, _ = _bodies(_CutOffSummary, thread_id = thread, **_SMALL_TRIGGER)
+    assert _progress_frames(chunks, "compaction_failed") == []
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True
+
+
+@pytest.mark.parametrize(
+    "provider_type, fields, off",
+    [
+        # Ollama maps reasoning_effort "none" to think=false and rejects only think=true on a model
+        # without thinking (ollama openai/openai.go ThinkingFromReasoningEffort, server/routes.go).
+        ("ollama", {}, {"reasoning_effort": "none"}),
+        ("llama_cpp", {}, {"chat_template_kwargs": {"enable_thinking": False}}),
+        ("vllm", {}, {"chat_template_kwargs": {"enable_thinking": False}}),
+        # A custom endpoint only gets the dialect its connection configured.
+        (
+            "custom",
+            {"provider_reasoning_config": {"enabled": True, "style": "reasoning_effort"}},
+            {"reasoning_effort": "none"},
+        ),
+    ],
+)
+def test_a_self_hosted_summary_is_asked_for_without_thinking(provider_type, fields, off):
+    ep_mod._served_windows.clear()
+    _, [summary_call], _ = _bodies(
+        _SummarisingHandler, provider_type = provider_type, **_SMALL_TRIGGER, **fields
+    )
+    for key, value in off.items():
+        assert summary_call[key] == value
+
+
+def test_a_cloud_summary_keeps_the_providers_thinking_default():
+    _, [summary_call], _ = _bodies(
+        _SummarisingHandler, provider_type = "openrouter", **_SMALL_TRIGGER
+    )
+    assert "reasoning" not in summary_call and "reasoning_effort" not in summary_call
+
+
+def test_a_server_still_reading_the_prompt_is_waited_for(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 2.0)
+
+    async def stream(first_gap: float, later_gap: float):
+        await asyncio.sleep(first_gap)
+        yield 'data: {"choices":[{"delta":{"content":"the "}}]}'
+        await asyncio.sleep(later_gap)
+        yield 'data: {"choices":[{"delta":{"content":"summary"},"finish_reason":"stop"}]}'
+
+    assert asyncio.run(cloud_compaction.collect_summary(stream(0.4, 0.0))) == "the summary"
+    with pytest.raises(cloud_compaction.SummaryTimedOut):
+        asyncio.run(cloud_compaction.collect_summary(stream(0.0, 0.4)))
 
 
 def test_compact_on_anthropic_lowers_the_native_trigger_for_a_long_chat():
