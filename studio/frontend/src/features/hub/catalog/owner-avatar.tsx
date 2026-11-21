@@ -97,12 +97,13 @@ export function OwnerAvatar({
 export function useAvatarImageUrl(
   owner: string,
   repoName?: string,
+  remote = true,
 ): string | null {
   const provider = resolveOwnerProviderLogo(owner, repoName);
   const isUnsloth = isUnslothOwner(owner);
   const remoteUrl = useHfOwnerAvatar(
     owner.trim() || "?",
-    provider == null && !isUnsloth,
+    remote && provider == null && !isUnsloth,
   );
   if (provider) {
     return provider.treatment === "original" ? provider.logoPath : null;
@@ -120,8 +121,8 @@ function ProviderLogoTile({
   className?: string;
 }) {
   const altLabel = `${provider.name} logo`;
-  const bgClass =
-    provider.background === "white" ? "bg-white" : "bg-transparent";
+  const hasTileBg = provider.background === "white";
+  const bgClass = hasTileBg ? "bg-white" : "bg-transparent";
 
   if (provider.treatment === "original") {
     const fit = provider.fit ?? "contain";
@@ -130,7 +131,8 @@ function ProviderLogoTile({
         role="img"
         aria-label={altLabel}
         className={cn(
-          "hub-avatar-tile inline-flex shrink-0 items-center justify-center overflow-hidden",
+          hasTileBg && "hub-avatar-tile",
+          "inline-flex shrink-0 items-center justify-center overflow-hidden",
           bgClass,
           SIZES[size],
           className,
@@ -157,7 +159,8 @@ function ProviderLogoTile({
       role="img"
       aria-label={altLabel}
       className={cn(
-        "hub-avatar-tile inline-flex shrink-0 items-center justify-center overflow-hidden",
+        hasTileBg && "hub-avatar-tile",
+        "inline-flex shrink-0 items-center justify-center overflow-hidden",
         bgClass,
         colorClass,
         SIZES[size],
@@ -221,7 +224,8 @@ function DefaultAvatar({
     <span
       style={showImage ? undefined : { backgroundColor: color }}
       className={cn(
-        "hub-avatar-tile inline-flex shrink-0 items-center justify-center overflow-hidden font-semibold text-white",
+        !showImage && "hub-avatar-tile",
+        "inline-flex shrink-0 items-center justify-center overflow-hidden font-semibold text-white",
         SIZES[size],
         className,
       )}

@@ -27,6 +27,105 @@ const AVATAR_FETCH_DEBOUNCE_MS = 200;
 
 const cache = new LruMap<string, AvatarCacheEntry>(256);
 const inflight = new Map<string, Promise<string | null>>();
+const listeners = new Map<string, Set<() => void>>();
+const persistedUrls = new Map<string, PersistedAvatarEntry>();
+
+const STORAGE_KEY = "unsloth:hf-owner-avatars:v1";
+const MAX_PERSISTED_AVATARS = 256;
+
+interface PersistedAvatarEntry {
+  key: string;
+  url: string;
+  expiresAt: number;
+}
+
+function subscribeAvatarKey(key: string, listener: () => void): () => void {
+  let set = listeners.get(key);
+  if (!set) {
+    set = new Set();
+    listeners.set(key, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = listeners.get(key);
+    if (!current) return;
+    current.delete(listener);
+    if (current.size === 0) listeners.delete(key);
+  };
+}
+
+function notifyAvatarKey(key: string): void {
+  const set = listeners.get(key);
+  if (!set) return;
+  for (const listener of set) listener();
+}
+
+function readStorage(): Storage | null {
+  try {
+    return typeof globalThis.localStorage !== "undefined"
+      ? globalThis.localStorage
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function hydratePersistedAvatars(): void {
+  const storage = readStorage();
+  if (!storage) return;
+  try {
+    const raw = storage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return;
+    for (const item of parsed) {
+      if (
+        item &&
+        typeof item === "object" &&
+        typeof (item as PersistedAvatarEntry).key === "string" &&
+        typeof (item as PersistedAvatarEntry).url === "string" &&
+        typeof (item as PersistedAvatarEntry).expiresAt === "number"
+      ) {
+        const entry = item as PersistedAvatarEntry;
+        persistedUrls.set(entry.key, entry);
+        cache.set(entry.key, {
+          kind: "url",
+          url: entry.url,
+          expiresAt: entry.expiresAt,
+        });
+      }
+    }
+  } catch {
+    // Ignore corrupt or inaccessible storage.
+  }
+}
+
+function persistAvatarUrl(key: string, url: string, expiresAt: number): void {
+  persistedUrls.delete(key);
+  persistedUrls.set(key, { key, url, expiresAt });
+  while (persistedUrls.size > MAX_PERSISTED_AVATARS) {
+    const oldest = persistedUrls.keys().next().value;
+    if (oldest === undefined) break;
+    persistedUrls.delete(oldest);
+  }
+  const storage = readStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(STORAGE_KEY, JSON.stringify([...persistedUrls.values()]));
+  } catch {
+    // Ignore quota or private-mode storage errors.
+  }
+}
+
+hydratePersistedAvatars();
+
+/** Re-hydrate from storage (intended for tests). */
+export function _resetAvatarCacheForTest(): void {
+  cache.clear();
+  inflight.clear();
+  persistedUrls.clear();
+  hydratePersistedAvatars();
+}
 
 // Mirrors the modelInfo limiter in hf-cache.ts.
 const MAX_AVATAR_CONCURRENT = 6;
@@ -51,9 +150,9 @@ function release(): void {
   waiting.shift()?.();
 }
 
-// Keyed by endpoint too: hits and 404s are held long enough to outlive a late mirror switch.
+// Keyed by endpoint + normalized owner: hits and 404s are held long enough to outlive a late mirror switch.
 function avatarKey(name: string): string {
-  return `${getHfEndpoint()}::${name}`;
+  return `${getHfEndpoint()}::${name.trim().toLowerCase()}`;
 }
 
 // Expired transient misses are kept so the failure count can escalate the next backoff.
@@ -66,10 +165,14 @@ function readCache(name: string): AvatarCacheEntry | null {
   return entry;
 }
 
-function readCachedUrl(name: string): string | null {
-  if (!name) return null;
+export function readCachedHfOwnerAvatar(name: string): string | null {
+  if (!name.trim()) return null;
   const entry = readCache(name);
   return entry?.kind === "url" ? entry.url : null;
+}
+
+function readCachedUrl(name: string): string | null {
+  return readCachedHfOwnerAvatar(name);
 }
 
 function transientMiss(name: string): AvatarCacheEntry {
@@ -131,7 +234,10 @@ function loadAvatar(name: string): Promise<string | null> {
     .then(
       ({ url, transient }) => {
         if (url) {
-          cache.set(key, { kind: "url", url, expiresAt: Date.now() + URL_TTL_MS });
+          const expiresAt = Date.now() + URL_TTL_MS;
+          cache.set(key, { kind: "url", url, expiresAt });
+          persistAvatarUrl(key, url, expiresAt);
+          notifyAvatarKey(key);
         } else if (transient) {
           cache.set(key, transientMiss(name));
         } else {
@@ -163,8 +269,19 @@ export function useHfOwnerAvatar(
   const url = state.key === key ? state.url : readCachedUrl(key);
 
   useEffect(() => {
+    if (!key) return;
+    // Sync immediately on mount/key change, and subscribe so remote={false} rows
+    // update live as soon as another view (e.g. detail inspector) fetches this owner's logo.
+    const syncFromCache = () => {
+      setState({ key, url: readCachedUrl(key) });
+    };
+    syncFromCache();
+    const unsubscribe = subscribeAvatarKey(avatarKey(key), syncFromCache);
+
     // Disabled (virtualized rows): never hit the network, to avoid a per-row lookup storm.
-    if (!key || !online || !enabled) return;
+    if (!online || !enabled) {
+      return unsubscribe;
+    }
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let fetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -216,6 +333,7 @@ export function useHfOwnerAvatar(
 
     return () => {
       cancelled = true;
+      unsubscribe();
       if (retryTimer != null) clearTimeout(retryTimer);
       if (fetchTimer != null) clearTimeout(fetchTimer);
     };

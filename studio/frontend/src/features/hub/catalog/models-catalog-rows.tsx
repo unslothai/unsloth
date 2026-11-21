@@ -529,7 +529,6 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           owner={row.owner}
           repoName={row.repo}
           className="size-8 rounded-sm"
-          remote={false}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
           <div className="flex h-[calc(18px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2">
@@ -900,7 +899,6 @@ export const InventoryRow = memo(function InventoryRow({
             owner={row.owner}
             repoName={title}
             className="size-8 shrink-0 rounded-sm text-ui-12"
-            remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -971,7 +969,6 @@ export const InventoryRow = memo(function InventoryRow({
             owner={row.owner}
             repoName={title}
             className="size-9 rounded-md"
-            remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
