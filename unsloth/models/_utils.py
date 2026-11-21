@@ -5364,7 +5364,12 @@ def _download_statistics_background(names):
     if sys.platform != "linux" or "fork" not in mp.get_all_start_methods():
         return None
     proc = mp.get_context("fork").Process(target = _statistics_child, args = (names,), daemon = True)
-    proc.start()
+    try:
+        proc.start()
+    except Exception:
+        # e.g. inside a daemonic multiprocessing worker ("daemonic processes are not allowed to have children"):
+        # the blocking path starts its child inside its own try, so statistics never fail the load.
+        return None
     threading.Thread(
         target = _reap_statistics,
         args = (proc, _STATISTICS_LIMIT_S),

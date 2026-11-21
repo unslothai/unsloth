@@ -210,7 +210,9 @@ def test_default_path_does_not_block_the_load(monkeypatch, rec):
     t0 = time.perf_counter()
     ns["get_statistics"](False)
     elapsed = time.perf_counter() - t0
-    assert elapsed < 0.5, elapsed
+    assert (
+        elapsed < 1.0
+    ), elapsed  # the blocking path takes >= 1.5 s here (slow_download); margin for loaded CI hosts
     assert rec.limits == []  # the blocking time-limited wrapper was not used
     # The reaper thread owns the join; poll the child's side effect instead of racing it on waitpid.
     deadline = time.monotonic() + 30
@@ -235,3 +237,18 @@ def test_background_hang_is_killed_and_warned(monkeypatch, caplog):
         ns["_reap_statistics"](proc, 0.3)
     assert not proc.is_alive()
     assert "HuggingFace seems to be down" in caplog.text
+
+
+def test_background_start_failure_falls_back(monkeypatch):
+    # Inside a daemonic multiprocessing worker Process.start raises AssertionError; the load must not fail.
+    if sys.platform != "linux":
+        pytest.skip("background statistics need the fork start method")
+    import multiprocessing.process as mp_process
+
+    ns = _load(monkeypatch, lambda *a, **k: (lambda f: f), lambda *a, **k: None)
+
+    def refuse(self):
+        raise AssertionError("daemonic processes are not allowed to have children")
+
+    monkeypatch.setattr(mp_process.BaseProcess, "start", refuse)
+    assert ns["_download_statistics_background"](["repeat"]) is None
