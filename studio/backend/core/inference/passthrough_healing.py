@@ -264,6 +264,99 @@ def _parse_minimax_block(
     return calls
 
 
+# MiniMax-M3 puts its namespace token before every tag and expands object and array values into nested
+# elements, one ``<item>`` per array entry (the template's ``to_xml`` macro).
+_MINIMAX_M3_NS = "]<]minimax[>["
+_MINIMAX_M3_OPEN = _MINIMAX_M3_NS + "<tool_call>"
+_MINIMAX_M3_CLOSE = _MINIMAX_M3_NS + "</tool_call>"
+_MINIMAX_M3_INVOKE_RE = re.compile(re.escape(_MINIMAX_M3_NS) + r'<invoke name="([^"<>]+)">')
+_MINIMAX_M3_INVOKE_CLOSE = _MINIMAX_M3_NS + "</invoke>"
+_MINIMAX_M3_TAG_RE = re.compile(re.escape(_MINIMAX_M3_NS) + r'<([^\s<>/"]+)>')
+_MINIMAX_M3_MAX_DEPTH = 32
+
+
+def _minimax_m3_value(text: str, pos: int, tag: str, depth: int) -> Optional[tuple]:
+    """``(value, end past the closer)`` for the value of ``tag`` opened at ``pos``; None if it never closes."""
+    closer = f"{_MINIMAX_M3_NS}</{tag}>"
+    if depth < _MINIMAX_M3_MAX_DEPTH:
+        nested = _minimax_m3_children(text, pos, closer, depth + 1)
+        if nested is not None:
+            return nested
+    # A text value ends at the first closer, as llama-server's own parser reads it.
+    end = text.find(closer, pos)
+    if end < 0:
+        return None
+    return text[pos:end], end + len(closer)
+
+
+def _minimax_m3_children(text: str, pos: int, closer: str, depth: int) -> Optional[tuple]:
+    """Nested elements up to ``closer``: a list when every child is ``<item>``, else a mapping. None
+    when the value is text."""
+    names: list = []
+    values: list = []
+    while True:
+        pos = _WS_RE.match(text, pos).end()
+        if text.startswith(closer, pos):
+            break
+        tag = _MINIMAX_M3_TAG_RE.match(text, pos)
+        if tag is None:
+            return None
+        child = _minimax_m3_value(text, tag.end(), tag.group(1), depth)
+        if child is None:
+            return None
+        names.append(tag.group(1))
+        values.append(child[0])
+        pos = child[1]
+    if not names:
+        return None
+    if all(name == "item" for name in names):
+        return values, pos + len(closer)
+    if len(set(names)) != len(names):
+        return None
+    return dict(zip(names, values)), pos + len(closer)
+
+
+def _parse_minimax_m3_block(
+    block: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list:
+    """Calls of one ``]<]minimax[>[<tool_call>`` block, arguments in any order. A body it cannot
+    read whole yields fewer calls than invokes, so the caller keeps the block as text."""
+    out: list = []
+    if not block.startswith(_MINIMAX_M3_OPEN):
+        return out
+    pos = len(_MINIMAX_M3_OPEN)
+    while (
+        invoke := _MINIMAX_M3_INVOKE_RE.match(block, _WS_RE.match(block, pos).end())
+    ) is not None:
+        args: dict = {}
+        pos = invoke.end()
+        while True:
+            pos = _WS_RE.match(block, pos).end()
+            if block.startswith(_MINIMAX_M3_INVOKE_CLOSE, pos):
+                pos += len(_MINIMAX_M3_INVOKE_CLOSE)
+                break
+            tag = _MINIMAX_M3_TAG_RE.match(block, pos)
+            value = _minimax_m3_value(block, tag.end(), tag.group(1), 0) if tag else None
+            if value is None or tag.group(1) in args:
+                return out
+            args[tag.group(1)] = value[0]
+            pos = value[1]
+        out.append(
+            {
+                "id": f"call_{id_offset + len(out)}",
+                "type": "function",
+                "function": {"name": invoke.group(1), "arguments": json.dumps(args)},
+            }
+        )
+    # Only the block's closer (or a cut-off end) may follow the last call.
+    if block[_WS_RE.match(block, pos).end() :] not in ("", _MINIMAX_M3_CLOSE):
+        return []
+    return out
+
+
 def _parse_glm_block(
     block: str,
     *,
@@ -278,6 +371,15 @@ def _parse_glm_block(
 
 # Most specific marker first.
 _NATIVE_TOOL_FORMATS = (
+    (
+        _MINIMAX_M3_NS,
+        NativeToolFormat(
+            _MINIMAX_M3_OPEN,
+            _MINIMAX_M3_CLOSE,
+            re.compile(re.escape(_MINIMAX_M3_NS) + r"<invoke\s"),
+            _parse_minimax_m3_block,
+        ),
+    ),
     (
         "<minimax:tool_call>",
         NativeToolFormat(
@@ -358,6 +460,19 @@ def native_tool_format(*templates: Any) -> Optional[NativeToolFormat]:
     return None
 
 
+def llama_server_native_format(llama_backend: Any) -> Optional[NativeToolFormat]:
+    """The native format the llama-server passthrough healer reads instead of the generic text forms.
+
+    llama-server parses the model's own call markup, so only MiniMax-M3 is read here: when its parser
+    misses a call, the namespaced block holds the generic ``<tool_call>`` signal, which the generic
+    healer cannot parse and relays as text."""
+    fmt = native_tool_format(
+        getattr(llama_backend, "chat_template_override", None),
+        getattr(llama_backend, "chat_template", None),
+    )
+    return fmt if fmt is not None and fmt.open == _MINIMAX_M3_OPEN else None
+
+
 def _native_block_calls(
     fmt: NativeToolFormat, block: str, allow_incomplete: bool
 ) -> Optional[list]:
@@ -374,13 +489,17 @@ def _native_block_calls(
     def bare(count: Callable[[str], int]) -> int:
         return count(block) - sum(map(count, leaves))
 
+    # MiniMax-M3's own opener and closer hold the generic <tool_call> signal.
+    unwrapped = block.replace(fmt.open, "").replace(fmt.close, "")
     if (
         not calls
         or bare(lambda s: len(fmt.call.findall(s))) != len(calls)
         or bare(lambda s: s.count(fmt.close)) != block.endswith(fmt.close)
         # Other formats' markup is refused even in arguments: decoded text does not locate it.
         or _ATTR_FUNC_OPEN_RE.search(block)
-        or any(m in block for m in _FOREIGN_SIGNALS if m != fmt.open and not fmt.call.fullmatch(m))
+        or any(
+            m in unwrapped for m in _FOREIGN_SIGNALS if m != fmt.open and not fmt.call.fullmatch(m)
+        )
     ):
         return None
     return calls

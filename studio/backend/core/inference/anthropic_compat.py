@@ -1164,11 +1164,12 @@ class AnthropicPassthroughEmitter:
         tools: Optional[list] = None,
         *,
         disable_parallel_tool_use: bool = False,
+        native = None,
     ) -> None:
         """Only tools in ``allowed_tools`` are promoted; never enabled for Unsloth's own tool loop."""
         from core.inference.passthrough_healing import StreamToolCallHealer
 
-        self._healer = StreamToolCallHealer(allowed_tools, tools)
+        self._healer = StreamToolCallHealer(allowed_tools, tools, native = native)
         self._heal_disable_parallel = disable_parallel_tool_use
 
     def start(
