@@ -5275,8 +5275,30 @@ def _tree_attention_eligible(model, device):
         return False
 
 
+def _async_grpo_tree_segment_parents(tree):
+    # TRL >= 1.17 sends tree_segment_parents; TRL 1.16 packs the same trie without it. Each segment's K/V path is its
+    # parent's path plus its own tokens, so the parent is the segment holding the path's last token before its own.
+    parents = tree.get("tree_segment_parents")
+    if parents is not None:
+        return parents
+    cu_q = tree["tree_cu_seqlens_q"].long()
+    cu_k = tree["tree_cu_seqlens_k"].long()
+    kv_index = tree["tree_kv_index"].long()
+    own = cu_q[1:] - cu_q[:-1]
+    has_parent = (cu_k[1:] - cu_k[:-1]) > own
+    before = kv_index[(cu_k[1:] - own - 1).clamp(min = 0).to(kv_index.device)]
+    parents = torch.searchsorted(cu_q.to(before.device), before, right = True) - 1
+    parents = torch.where(has_parent.to(parents.device), parents, torch.full_like(parents, -1))
+    return parents.to(torch.int32)
+
+
 def _async_grpo_tree_seg_info(model, f_kwargs):
     parents = f_kwargs.get("tree_segment_parents")
+    if parents is None and "tree_kv_index" in f_kwargs:
+        try:
+            parents = _async_grpo_tree_segment_parents(f_kwargs)
+        except Exception:
+            parents = None
     position_ids = f_kwargs.get("position_ids")
     if (
         parents is None
@@ -5334,7 +5356,7 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
     # Unroll each root-to-leaf path into its own packed sequence; read each trie position back from one copy.
     tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
     position_ids = f_kwargs.get("position_ids")
-    parents = tree["tree_segment_parents"]
+    parents = _async_grpo_tree_segment_parents(tree)
     cu_seqlens_k = tree["tree_cu_seqlens_k"].long()
     path_lengths = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
     if bool((parents < 0).all()):
