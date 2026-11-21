@@ -1637,6 +1637,22 @@ def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
     return None
 
 
+def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
+    """(found, precision): whether a resume would continue a readable bundle, and the base precision that bundle
+    actually trained on (None when it predates the field). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None:
+                return True, saved.base_precision_effective
+    except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
+        pass
+    return False, None
+
+
 def recorded_bucketing(path_value: str) -> bool:
     """Whether the resumed bundle trained bucketed (pre-field or unreadable: False; preflight_resume refuses)."""
     try:

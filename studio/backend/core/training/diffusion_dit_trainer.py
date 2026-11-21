@@ -105,6 +105,7 @@ from core.training.diffusion_checkpoint import (
     with_resolved_dit,
     with_resolved_revision,
     preflight_resume,
+    recorded_base_precision,
 )
 from core.training.diffusion_samples import (
     discard_samples,
@@ -599,6 +600,35 @@ def _probe_lowp(
         raise RuntimeError("probe GEMM returned non-finite values")
 
 
+class Fp8FallbackDoesNotFit(RuntimeError):
+    """The fp8 conversion failed and the rest of the base, still on the host in bf16, does not fit the card."""
+
+
+# Headroom the bf16 fallback must leave on the card beyond the host-resident weights (activations, optimizer).
+_FP8_FALLBACK_MARGIN = 1.15
+_FP8_FALLBACK_RESERVE = 1 << 30
+
+
+def _host_bytes(module) -> int:
+    return sum(
+        t.numel() * t.element_size()
+        for t in (*module.parameters(), *module.buffers())
+        if t.device.type == "cpu"
+    )
+
+
+def _bf16_fallback_fits(transformer, device) -> bool:
+    """Whether moving the host-resident rest of the base onto ``device`` leaves headroom to train; unknown: yes."""
+    try:
+        import torch
+        if torch.device(device).type != "cuda":
+            return True
+        free = torch.cuda.mem_get_info(torch.device(device))[0]
+    except Exception:  # noqa: BLE001
+        return True
+    return _host_bytes(transformer) * _FP8_FALLBACK_MARGIN + _FP8_FALLBACK_RESERVE <= free
+
+
 def _apply_fp8_training(
     transformer,
     on_event,
@@ -635,6 +665,9 @@ def _apply_fp8_training(
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
         dequantize_placeholders(transformer)
         if device is not None:
+            if not _bf16_fallback_fits(transformer, device):
+                # The host-first load fits where the bf16 base never did; the caller reloads nf4 instead.
+                raise Fp8FallbackDoesNotFit(str(exc)) from exc
             transformer.to(device)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
@@ -800,6 +833,40 @@ def _auto_fp8_family_ok(spec, base_model) -> bool:
         return False
 
 
+def _auto_fp8_run_ok(cfg) -> bool:
+    """Run settings Auto's fp8 pick must respect: a requested block swap streams a bf16 base only, and a resume
+    continues the base its bundle trained on (one that predates the record trained without Auto fp8)."""
+    from core.training.diffusion_block_swap import block_swap_request
+
+    if block_swap_request(cfg) is not None:
+        return False
+    if getattr(cfg, "resume_from_checkpoint", None):
+        found, recorded = recorded_base_precision(cfg.resume_from_checkpoint)
+        if found and recorded != "fp8":
+            return False
+    return True
+
+
+_FP8_PROBE_OK: dict[str, bool] = {}
+
+
+def _auto_fp8_probe_ok(device) -> bool:
+    """Run the fp8 GEMM probe before Auto picks fp8, so a card where it fails gets the nf4 / int8 pick at decision
+    time instead of a bf16 fallback that may not fit. Cached per device."""
+    key = str(device)
+    if key not in _FP8_PROBE_OK:
+        try:
+            _probe_lowp(_convert_fp8, None, device)
+            _FP8_PROBE_OK[key] = True
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "auto base precision: fp8 probe failed (%s); fp8 is not picked", exc
+            )
+            _FP8_PROBE_OK[key] = False
+    return _FP8_PROBE_OK[key]
+
+
 def _pick_auto_precision(
     prequant,
     device,
@@ -816,8 +883,9 @@ def _pick_auto_precision(
     decision time. ``has_fp8`` is the caller's NVIDIA frozen-fp8 check; fp8 is only picked on sm89+.
     - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16 when the run
       compiles (``compiled``: the gain was measured compiled against compiled).
-    - 1.15x-1.5x: the frozen fp8 base (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
-      the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
+    - 1.15x-1.5x: the frozen fp8 base when the run compiles (about 2x eager int8 and 1.8x the bf16 block swap Auto
+      picked here before, at the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has
+      no fallback).
     - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
       fits where only nf4 did; nf4 trained a worse adapter (held-out MSE above the bare base on Z-Image) 1.75x slower.
     UNSLOTH_DIT_AUTO_FP8=0 restores the int8 / nf4 picks."""
@@ -828,7 +896,7 @@ def _pick_auto_precision(
     if free_gb > dense_gb * 1.5:
         return "fp8" if fp8 and compiled and fam in _AUTO_FP8_OVER_BF16 else "bf16"
     if free_gb > dense_gb * 1.15:
-        if fp8 and fam not in _AUTO_FP8_NOT_OVER_SWAP:
+        if fp8 and compiled and fam not in _AUTO_FP8_NOT_OVER_SWAP:
             return "fp8"
         return "int8" if has_torchao else "nf4"
     if fp8 and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
@@ -1002,6 +1070,8 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 and not is_stubbed("torchao")
                 and _auto_fp8_enabled()
                 and _auto_fp8_family_ok(spec, cfg.base_model)
+                and _auto_fp8_run_ok(cfg)
+                and _auto_fp8_probe_ok(device)
             )
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
@@ -3412,7 +3482,9 @@ def _maybe_compile_transformer(
     dynamo's suppress_errors keeps a frame that fails to COMPILE at the first step running eager
     instead of raising mid-run."""
     if not _should_compile(cfg, base_is_bnb, device, base_precision, steps_left):
-        if base_precision in ("fp8", "mxfp8"):
+        # Auto picks eager fp8 only below 1.15x, where the alternative is a slower nf4: nothing to act on.
+        auto = (getattr(cfg, "base_precision", "") or "").strip().lower() == "auto"
+        if base_precision in ("fp8", "mxfp8") and not auto:
             _emit(
                 on_event,
                 "warning",
@@ -3853,15 +3925,18 @@ def _train_dit(
         fp16_report = prepare_fp16_base(transformer)
 
     transformer.requires_grad_(False)
-    transformer.add_adapter(
-        LoraConfig(
+
+    def _lora_config():
+        # Fresh per attach: PEFT rewrites a config's target_modules in place.
+        return LoraConfig(
             r = cfg.lora_rank,
             lora_alpha = cfg.lora_alpha,
             lora_dropout = cfg.lora_dropout,
             init_lora_weights = "gaussian",
             target_modules = list(use_lora_targets),
         )
-    )
+
+    transformer.add_adapter(_lora_config())
     if fp16_amp:
         # After the adapter, so the island wraps the PEFT layer.
         fp16_report["fp32_islands"] = len(install_fp32_islands(transformer, spec.family, device))
@@ -3917,8 +3992,33 @@ def _train_dit(
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "fp8":
-        if not _apply_fp8_training(transformer, on_event, cfg.resolved_family, device = device):
-            base_precision = "bf16"
+        try:
+            if not _apply_fp8_training(transformer, on_event, cfg.resolved_family, device = device):
+                base_precision = "bf16"
+        except Fp8FallbackDoesNotFit as exc:
+            # Below the bf16 fit the base only trains quantized: reload it as nf4 (no fp8 here, and no block swap
+            # either: Auto never picks fp8 with one), with the same adapter and checkpointing.
+            _emit(
+                on_event,
+                "warning",
+                message = f"fp8 training unavailable ({exc}); the bf16 base does not fit, training nf4 instead.",
+            )
+            transformer = None
+            gc.collect()
+            _empty_device_cache(device)
+            with report_model_load_progress(on_event):
+                transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, "nf4")
+            base_precision, base_is_bnb = "nf4", True
+            transformer.requires_grad_(False)
+            transformer.add_adapter(_lora_config())
+            gc_budget = None
+            if cfg.gradient_checkpointing:
+                gc_budget = enable_budgeted_checkpointing(transformer, device)
+                if gc_budget is None:
+                    enable_diffusion_gradient_checkpointing(
+                        transformer, mode = _checkpoint_mode(False)
+                    )
+            cast_training_params(transformer, dtype = torch.float32)
         # Re-collect: a host-resident fp8 load just moved, so the optimizer must not hold host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "mxfp8" and not _apply_mxfp8_training(

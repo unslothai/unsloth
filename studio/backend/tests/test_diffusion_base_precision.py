@@ -353,6 +353,8 @@ def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
             return (10, 0)
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
 
     # The frozen fp8 base (sm100 here) needs no torchao; the kill switch restores the torchao int8 gate.
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: False)
@@ -381,6 +383,7 @@ def test_resolve_auto_uses_klein_variant_size(monkeypatch):
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
     monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
 
     four_b = _cfg(
@@ -443,6 +446,7 @@ def _fake_cuda_with_free_gb(monkeypatch, free_gb: float):
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
     # Independent of whether this host has Triton: the bf16-band fp8 pick only applies to compiled runs.
     monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
 
 
 @pytest.mark.parametrize(
@@ -1195,6 +1199,7 @@ def _fake_cuda(monkeypatch, free_gb, capability):
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
     monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
+    monkeypatch.setattr(dit, "_auto_fp8_probe_ok", lambda device: True)
 
 
 @pytest.mark.parametrize(
