@@ -79,6 +79,8 @@ def _widest_layer_bytes_per_token(
     widest = 0
     for layer in module.modules():
         lora_a = getattr(layer, "lora_A", None)
+        # A PEFT Embedding keeps its factors in lora_embedding_A/B (Parameters), not lora_A/B
+        embed_a = getattr(layer, "lora_embedding_A", None) or {}
         is_tuner = BaseTunerLayer is not None and isinstance(layer, BaseTunerLayer)
         if lora_a is None:
             if is_tuner:
@@ -86,13 +88,21 @@ def _widest_layer_bytes_per_token(
             continue
         if getattr(layer, "merged", False):
             return None
-        active = [a for a in (getattr(layer, "active_adapters", None) or ()) if a in lora_a]
+        active = [
+            a
+            for a in (getattr(layer, "active_adapters", None) or ())
+            if a in lora_a or a in embed_a
+        ]
         if not active:
             continue
         if any(bool((getattr(layer, "use_dora", None) or {}).get(a, False)) for a in active):
             return None  # DoRA rebuilds the weight norm per forward
         base = layer.get_base_layer() if callable(getattr(layer, "get_base_layer", None)) else None
-        out = getattr(base, "out_features", None) or getattr(base, "out_channels", None)
+        out = (
+            getattr(base, "out_features", None)
+            or getattr(base, "out_channels", None)
+            or getattr(base, "embedding_dim", None)
+        )
         if not out:
             return None
         rank = 0
@@ -100,19 +110,21 @@ def _widest_layer_bytes_per_token(
         adapter_elem = 0
         mismatch = False
         for a in active:
-            down = lora_a[a]
-            up = getattr(layer, "lora_B", {})[a]
-            rank += int(
-                getattr(down, "out_features", None) or getattr(down, "out_channels", None) or 0
-            )
-            elem = max(
-                elem, _element_bytes(getattr(down, "weight", None), getattr(up, "weight", None))
-            )
-            adapter_elem = max(
-                adapter_elem,
-                _element_bytes(getattr(down, "weight", None), getattr(up, "weight", None)),
-            )
-            for w in (getattr(down, "weight", None), getattr(up, "weight", None)):
+            if a in embed_a:
+                # embedding(x, A.T) is [tokens, rank], then @ B.T is [tokens, out]: same shape as a Linear
+                down_w = embed_a[a]
+                up_w = getattr(layer, "lora_embedding_B", {})[a]
+                rank += int(down_w.shape[0])
+            else:
+                down = lora_a[a]
+                up = getattr(layer, "lora_B", {})[a]
+                down_w, up_w = getattr(down, "weight", None), getattr(up, "weight", None)
+                rank += int(
+                    getattr(down, "out_features", None) or getattr(down, "out_channels", None) or 0
+                )
+            elem = max(elem, _element_bytes(down_w, up_w))
+            adapter_elem = max(adapter_elem, _element_bytes(down_w, up_w))
+            for w in (down_w, up_w):
                 dt = getattr(w, "dtype", None)
                 if dt is None:
                     continue

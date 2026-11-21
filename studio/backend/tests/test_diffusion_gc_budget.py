@@ -109,9 +109,33 @@ def test_plan_scales_to_the_largest_bucket():
     assert (plain, scaled) == (10, 5)
 
 
-def test_plan_stops_at_an_unmeasured_class():
+def test_plan_skips_an_unmeasured_class():
     budget = _planned({"A": 1.0}, [("A", GIB), ("A", GIB), ("B", GIB), ("A", GIB)])
-    assert budget.plan(0, 80 * GIB, 0, 80 * GIB) == 2
+    assert budget.plan(0, 80 * GIB, 0, 80 * GIB) == 3
+    assert budget.keep == frozenset({0, 1, 3})
+
+
+def test_spare_bytes_now_gives_up_what_another_load_took(monkeypatch):
+    budget = _planned({"B": 1.0}, [("B", GIB)] * 4)
+    # 80 GiB card, margin 8 GiB: headroom (80 - 8) * 0.85 = 61.2 GiB, 4 GiB kept.
+    budget.plan(0, 80 * GIB, 0, 80 * GIB)
+    spare = budget.spare_bytes
+    assert spare > 50 * GIB
+    state = {"free": 80 * GIB, "reserved": 0}
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (state["free"], 80 * GIB))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda: state["reserved"])
+    assert budget.spare_bytes_now() == spare
+    # This process emptying its cache moves bytes from reserved to free: nothing lost.
+    state.update(free = 70 * GIB, reserved = 10 * GIB)
+    assert budget.spare_bytes_now() == spare
+    # Another load took 20 GiB since the plan.
+    state.update(free = 50 * GIB, reserved = 10 * GIB)
+    assert budget.spare_bytes_now() == spare - 20 * GIB
+    state.update(free = 0, reserved = 0)
+    assert budget.spare_bytes_now() == 0
+    budget.step_down()
+    state.update(free = 80 * GIB, reserved = 0)
+    assert budget.spare_bytes_now() == 0
 
 
 def test_fall_back_clears_the_plan():

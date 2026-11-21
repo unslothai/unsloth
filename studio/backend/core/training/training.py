@@ -3372,7 +3372,7 @@ class TrainingBackend:
                 db_action_kwargs = {
                     "status": "stopped" if stopped else "completed",
                     "output_dir": self._output_dir,
-                    "clear_output_dir": self._cancel_requested,
+                    "clear_output_dir": self._cancel_requested or event.get("saved") is False,
                     "expected_job_id": self.current_job_id,
                 }
                 self._terminal_finalize_payload = dict(db_action_kwargs)

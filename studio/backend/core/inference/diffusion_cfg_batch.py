@@ -8,6 +8,7 @@ offloaded loads too; UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED=0 keeps a compiled res
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -950,7 +951,8 @@ class CfgBatchRouter:
                 predicted = self._predict(latent) if self.template is not None else second
                 b_args, b_kwargs = merge_branches(first, predicted, batch)
                 snapshots = _snapshot(predicted)
-                split_output(self._forward(b_args, b_kwargs), batch)
+                with _padded_text_keeps_masks(self.module_ref(), first[1], predicted[1]):
+                    split_output(self._forward(b_args, b_kwargs), batch)
                 _matches(snapshots, second)
                 self._sync(latent)
                 shape.batched_s.append(time.perf_counter() - t0)
@@ -1111,7 +1113,8 @@ class CfgBatchRouter:
             return None
         graphs = _graph_count()
         try:
-            out = self._forward(b_args, b_kwargs)
+            with _padded_text_keeps_masks(self.module_ref(), kwargs, second[1]):
+                out = self._forward(b_args, b_kwargs)
             mine, other = split_output(out, int(latent.shape[0]))
         except Exception as exc:  # noqa: BLE001 - the branch reruns plain
             del b_args, b_kwargs
@@ -1259,6 +1262,32 @@ def _matches(snapshots: list, call: tuple) -> bool:
             return False
     # Every tensor argument under one host read per device (once per guided step), not one torch.equal each.
     return mg._bitwise_equal_all(tensors)
+
+
+@contextlib.contextmanager
+def _padded_text_keeps_masks(module: Any, first: dict, second: dict):
+    """HunyuanVideo-1.5 trim: the doubled call bypasses the pre-hook that set the null-mask flag for one branch, so
+    clear it when ``_pad_text`` padded a branch, else its zero padding is attended."""
+    if module is None or getattr(module, "_unsloth_trim_hook", None) is None:
+        yield
+        return
+    torch = _torch()
+    padded = False
+    for emb_key in {k for k, _ in _PADDED_TEXT}:
+        a, b = first.get(emb_key), second.get(emb_key)
+        if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor) and a.dim() >= 3:
+            padded = padded or a.shape[1] != b.shape[1]
+    if not padded:
+        yield
+        return
+    from .diffusion_attention import _hunyuan_null_mask_state, _set_hunyuan_null_mask
+
+    held = _hunyuan_null_mask_state(module)
+    _set_hunyuan_null_mask(module, False)
+    try:
+        yield
+    finally:
+        _set_hunyuan_null_mask(module, held)
 
 
 def _pad_text(first: dict, second: dict) -> None:

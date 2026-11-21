@@ -471,7 +471,9 @@ import {
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
 import {
   ENGINE_HINT,
-  ENGINE_OPTIONS,
+  ENGINE_HINT_CPU_ONLY,
+  engineOptionsFor,
+  hostEngineChoice,
   type EngineChoice,
   engineModelKey,
   engineRequestField,
@@ -3918,19 +3920,20 @@ export function ImagesPage({
     setEngineChoice(loadedEngine);
   }
   const engineForced = status?.engine_forced ?? null;
-  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced });
+  const engineStatus = status;
+  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced, status: engineStatus });
   useEffect(() => {
-    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced };
-  }, [loadedEngineKey, engineChoice, engineChoices, engineForced]);
+    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced, status: engineStatus };
+  }, [loadedEngineKey, engineChoice, engineChoices, engineForced, engineStatus]);
   // A load's engine: an explicit one it was handed, else the Engine select for the loaded checkpoint, else
   // the choice that checkpoint last loaded with. GGUF only; Auto omits the field.
   const engineFor = useCallback(
     (repoId: string, opts: ImageLoadOptions, advanced: LoadAdvanced) => {
       if (!sendsEngine(opts.kind, opts.filename)) return undefined;
-      if (advanced.engine) return engineRequestField(advanced.engine);
-      const { key, choice, stored } = engineSelection.current;
+      const { key, choice, stored, status: hostStatus } = engineSelection.current;
+      if (advanced.engine) return engineRequestField(hostEngineChoice(advanced.engine, hostStatus));
       const target = engineModelKey(repoId, opts.filename);
-      return engineRequestField(target && target === key ? choice : stored[target]);
+      return engineRequestField(hostEngineChoice(target && target === key ? choice : stored[target], hostStatus));
     },
     [],
   );
@@ -6263,14 +6266,16 @@ export function ImagesPage({
         <AdvancedSelect
           label="Engine"
           hint={
-            status?.engine_forced
-              ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
-              : ENGINE_HINT
+            status?.gguf_diffusers_allowed === false
+              ? ENGINE_HINT_CPU_ONLY
+              : status?.engine_forced
+                ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
+                : ENGINE_HINT
           }
           badge={<ResolvedBadge status={status} controlKey="engine" />}
-          value={engineChoice}
+          value={hostEngineChoice(engineChoice, status) ?? "auto"}
           onValueChange={(v) => setEngineChoice(v as EngineChoice)}
-          options={ENGINE_OPTIONS}
+          options={engineOptionsFor(status)}
         />
       )}
       <AdvancedSelect

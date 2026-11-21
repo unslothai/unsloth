@@ -208,7 +208,15 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     key = (device, str(dtype))
     last = _ROCM_PROBE_INCOMPLETE.get(key)
     if last is not None and time.monotonic() - last < _ROCM_PROBE_RETRY_S:
-        return (SDPA_MATH,) if key in _ROCM_PROBE_FORCED_MATH else ()
+        if key not in _ROCM_PROBE_FORCED_MATH:
+            return ()
+        if not _SDPA_PROBE_READ_ONLY.get():
+            # A read-only probe recorded it without touching the flags: the parent must run what this reports.
+            try:
+                _apply_rocm_guard((SDPA_MATH,))
+            except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
+                pass
+        return (SDPA_MATH,)
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
@@ -224,15 +232,15 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
                 pass
     else:
         _ROCM_PROBE_INCOMPLETE[key] = time.monotonic()
-        if (
-            not _SDPA_PROBE_READ_ONLY.get()
-            and str(dtype) in ("torch.float16", "torch.bfloat16")
-            and not _rocm_children_experimental(device)
+        if str(dtype) in ("torch.float16", "torch.bfloat16") and not _rocm_children_experimental(
+            device
         ):
             # No child answered, and the parent would run unconfirmed fused kernels under its experimental opt-in.
             # Report MATH so callers bound the score matrix; _sdpa_capability does not memoize it, so the probe retries.
+            # A read-only probe reports MATH too (a split plan then drops or guards the card) but leaves the flags.
             try:
-                _apply_rocm_guard((SDPA_MATH,))
+                if not _SDPA_PROBE_READ_ONLY.get():
+                    _apply_rocm_guard((SDPA_MATH,))
                 _ROCM_PROBE_FORCED_MATH.add(key)
                 return (SDPA_MATH,)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load

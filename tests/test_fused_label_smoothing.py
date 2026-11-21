@@ -173,7 +173,7 @@ def test_not_engaged_outside_training(tmp_path):
 
 
 def test_sft_compute_loss_routes_through_fused_label_smoothing():
-    source = (ROOT / "unsloth" / "models" / "rl_replacements.py").read_text()
+    source = (ROOT / "unsloth" / "models" / "rl_replacements.py").read_text(encoding = "utf-8")
     body = source[source.index("def sft_trainer_compute_loss(") :]
     body = body[: body.index('RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)')]
     assert "fused_label_smoothing_compute_loss" in body

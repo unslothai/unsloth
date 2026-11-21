@@ -81,6 +81,8 @@ export interface DiffusionStatus {
   engine_forced?: string | null;
   // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
   native_engine_eligible?: boolean;
+  // False on CPU-only torch: Diffusers engine choice is hidden.
+  gguf_diffusers_allowed?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
   // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
@@ -780,6 +782,8 @@ export interface DiffusionTrainingStartRequest {
   lr_warmup_steps?: number;
   base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto";
   compile_transformer?: "off" | "on" | "auto";
+  // bf16 DiT bases only: blocks streamed from host RAM. Omitted = the server default (off).
+  block_swap?: "off" | "auto" | number;
   cache_latents?: boolean;
   cache_variants?: number;
   enable_tf32?: boolean;
@@ -853,6 +857,13 @@ export interface DiffusionTrainingStatus {
   base_model?: string | null;
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
+  // What block_swap resolved to once the base loaded; absent when it did not run.
+  block_swap?: {
+    swapped_blocks?: number;
+    total_blocks?: number;
+    host_gib?: number;
+    pinned_gib?: number;
+  } | null;
   checkpoint_path?: string | null;
   checkpoint_step?: number | null;
   resume_blocked_reason?: string | null;
@@ -975,6 +986,8 @@ export interface DiffusionTrainableFamily {
   precision_modes?: string[];
   recommended_precision?: string;
   supports_compile?: boolean;
+  // DiT trainer with bf16 on this host; absent on an older backend, which has no block_swap field.
+  supports_block_swap?: boolean;
   // Whether the family loop writes checkpoint bundles; undefined on an older backend reads as true.
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.
