@@ -3601,13 +3601,26 @@ def upload_to_huggingface(
         if os.path.isdir(file_location):
             tfevents_dir = file_location
         else:
-            tfevents_dir = os.path.dirname(file_location) or "."
-        ftevent_files = sorted(
-            os.path.join(root, filename)
-            for root, _, filenames in os.walk(tfevents_dir)
-            for filename in filenames
-            if fnmatch.fnmatch(filename, "*out.tfevents*")
-        )
+            tfevents_dir = os.path.dirname(file_location)
+
+        if tfevents_dir == "":
+            tfevents_dir = "."
+            ftevent_files = sorted(
+                os.path.join(tfevents_dir, filename)
+                for filename in os.listdir(tfevents_dir)
+                if os.path.isfile(os.path.join(tfevents_dir, filename))
+                and fnmatch.fnmatch(filename, "*out.tfevents*")
+            )
+        else:
+            ftevent_files = []
+            for root, dirnames, filenames in os.walk(tfevents_dir):
+                dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+                ftevent_files.extend(
+                    os.path.join(root, filename)
+                    for filename in filenames
+                    if fnmatch.fnmatch(filename, "*out.tfevents*")
+                )
+            ftevent_files.sort()
         if len(ftevent_files) > 0:
             print(
                 "Unsloth: Uploading tensorboard files... Please wait...",

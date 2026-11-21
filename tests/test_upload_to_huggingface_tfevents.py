@@ -109,10 +109,7 @@ def test_tfevents_next_to_bare_filename_in_cwd(hub, tmp_path, monkeypatch):
         _model(), "owner/repo", "token", "finetuned", file_location = "model.gguf"
     )
 
-    assert sorted(_tfevents(hub)) == [
-        "events.out.tfevents.4.host",
-        "nested_run/events.out.tfevents.5.host",
-    ]
+    assert _tfevents(hub) == ["events.out.tfevents.4.host"]
 
 
 def test_tfevents_found_when_file_location_is_a_directory(hub, tmp_path, monkeypatch):
@@ -158,6 +155,23 @@ def test_temp_config_removed_when_upload_fails(tmp_path, monkeypatch):
         assert not os.path.exists(path)
     assert not (tmp_path / "_temporary_unsloth_config.json").exists()
     assert os.listdir(tmp_path) == ["model.gguf"]
+
+
+def test_tfevents_in_hidden_dirs_are_not_uploaded(hub, tmp_path, monkeypatch):
+    export = tmp_path / "export"
+    hidden = export / ".hidden"
+    hidden.mkdir(parents = True)
+    weights = export / "model.gguf"
+    weights.write_bytes(b"GGUF")
+    (export / "events.out.tfevents.1.host").write_bytes(b"x")
+    (hidden / "events.out.tfevents.2.host").write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+
+    save_mod.upload_to_huggingface(
+        _model(), "owner/repo", "token", "finetuned", file_location = str(weights)
+    )
+
+    assert _tfevents(hub) == ["events.out.tfevents.1.host"]
 
 
 def test_tfevents_found_in_dir_with_glob_metacharacters(hub, tmp_path, monkeypatch):
