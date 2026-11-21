@@ -14,13 +14,13 @@ const { normaliseComposerPosition, useChatPreferencesStore } = await import(
 test("new installs put the composer a little above the middle", () => {
   assert.equal(
     useChatPreferencesStore.getInitialState().newChatComposerPosition,
-    40,
+    45,
   );
 });
 
 test("the old on/off setting maps to bottom or the default", () => {
   assert.equal(normaliseComposerPosition(undefined, true), 100);
-  assert.equal(normaliseComposerPosition(undefined, false), 40);
+  assert.equal(normaliseComposerPosition(undefined, false), 45);
   assert.equal(normaliseComposerPosition(30, true), 30);
 });
 
@@ -28,8 +28,8 @@ test("stored positions are clamped whole numbers", () => {
   assert.equal(normaliseComposerPosition(-5), 0);
   assert.equal(normaliseComposerPosition(140), 100);
   assert.equal(normaliseComposerPosition(42.6), 43);
-  assert.equal(normaliseComposerPosition(Number.NaN), 40);
-  assert.equal(normaliseComposerPosition("80"), 40);
+  assert.equal(normaliseComposerPosition(Number.NaN), 45);
+  assert.equal(normaliseComposerPosition("80"), 45);
 });
 
 test("only the top of the range docks the composer", () => {

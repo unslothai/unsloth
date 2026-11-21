@@ -304,8 +304,7 @@ def test_source_cast_matches_the_live_module_cast_bit_for_bit(pipe_dir, tmp_path
     assert hit is not None
     dense = _dense(cand)
     _identical(dense, hit)
-    # the live-module write of the same component, into a second cache root: identical bytes (bar the timestamp-free
-    # metadata, which is the same too)
+    # The live-module write of the same component to a second cache root gives identical bytes.
     monkeypatch.setenv(C.ENV_DIR, str(tmp_path / "cache_live"))
     live = _by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["transformer"]
     live_path = _save(live, dense)

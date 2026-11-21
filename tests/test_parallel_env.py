@@ -1140,8 +1140,7 @@ def test_router_aux_loss_after_init_is_refused_under_cp_for_each_trl_trainer(kin
 
 
 def _strict_sft(monkeypatch, inits):
-    """A trainer whose __init__ takes no unknown keyword, like TRL's SFTTrainer: a CP option left in the
-    constructor kwargs is a TypeError there."""
+    """__init__ rejects unknown keywords, like TRL's SFTTrainer: CP option left in kwargs is a TypeError."""
     import trl
 
     class SFTTrainer:

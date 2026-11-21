@@ -21,6 +21,7 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import _ignore_block_swap_params_for_ddp
+from ._frozen_prefix import install_frozen_prefix_skip
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
@@ -163,6 +164,7 @@ from ..kernels.fused_add_rms_layernorm import (
     fast_add_rms_layernorm_inference_ok,
 )
 from ..kernels import fast_lora as _fast_lora
+from ..kernels.fast_lora import arm_mlp_output_unread, disarm_mlp_output_unread
 from . import _decode_graphs
 from ._lora_fold_generate import lora_fold_generate as _lora_fold_generate
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
@@ -1277,7 +1279,11 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
+        # residual + mlp(x) is this layer's output, so a checkpoint replay of it can skip the down projection.
+        armed = arm_mlp_output_unread(self, self.mlp)
         hidden_states = self.mlp(hidden_states)
+        if armed:
+            disarm_mlp_output_unread()
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
@@ -1286,6 +1292,10 @@ def LlamaDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
+# Its training MLP output only feeds residual + mlp(x): block compile may skip the down projection in a replay.
+LlamaDecoderLayer_fast_forward._unsloth_mlp_output_unread = True
 
 
 # See unslothai/unsloth#404 (comment 2323473452).
@@ -1318,10 +1328,13 @@ def _pad_queries_attend_self(mask_4d, mask_2d):
         return mask_4d
     pad_q = (mask_2d == 0)[:, None, :, None]
     diag = torch.eye(q_len, dtype = torch.bool, device = mask_4d.device)
+    # One [B, 1, T, T] result; the per-query choice broadcasts a [T, T] row set, never a batch-sized one.
     if mask_4d.dtype == torch.bool:
-        return (mask_4d & ~pad_q) | (pad_q & diag)
+        return torch.where(pad_q, diag, mask_4d)
     blocked = torch.finfo(mask_4d.dtype).min
-    return mask_4d.masked_fill(pad_q & ~diag, blocked).masked_fill(pad_q & diag, 0)
+    self_only = torch.zeros(q_len, q_len, dtype = mask_4d.dtype, device = mask_4d.device)
+    self_only.masked_fill_(~diag, blocked)
+    return torch.where(pad_q, self_only, mask_4d)
 
 
 class Gemma2AttentionMaskConverter(AttentionMaskConverter):
@@ -1586,6 +1599,11 @@ def LlamaModel_fast_forward(
                 dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
                     attention_mask, seq_length, inputs_embeds.dtype, key_value_length
                 )
+                # Same pad-query repair as the shared branch: the softcapping kernels add the mask, so a
+                # fully masked pad row would softmax uniformly over every key, its target included.
+                if self.training and past_key_values_length == 0:
+                    dynamic_SWA_mask = _pad_queries_attend_self(dynamic_SWA_mask, attention_mask)
+                    dynamic_GA_mask = _pad_queries_attend_self(dynamic_GA_mask, attention_mask)
             else:
                 dynamic_SWA_mask = attention_mask
                 dynamic_GA_mask = attention_mask
@@ -1699,6 +1717,7 @@ def LlamaModel_fast_forward(
                         **kwargs,
                     )
 
+                custom_forward._unsloth_checkpoint_module = module
                 return custom_forward
 
             layer_outputs = torch.utils.checkpoint.checkpoint(
@@ -2052,6 +2071,11 @@ def _decode_logits(self, hidden_states):
     return apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
 
+def _vocab_parallel_active(head):
+    from .tp_native import vocab_parallel_active
+    return vocab_parallel_active(head)
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -2177,7 +2201,12 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         if keep is not None:
             logits = self.lm_head(slice_hidden_to_keep(hidden_states, keep).to(dtype))
-        elif bsz == 1 and q_len == 1 and type(self.lm_head) is torch.nn.Linear:
+        elif (
+            bsz == 1
+            and q_len == 1
+            and type(self.lm_head) is torch.nn.Linear
+            and not getattr(self.lm_head, "_unsloth_vocab_parallel", False)
+        ):
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
@@ -2217,23 +2246,39 @@ def CausalLM_fast_forward(fast_forward_inference):
                     kwargs.get("packed_seq_lengths"),
                 )
 
-                # fused_linear_cross_entropy is disabled: T4 raises OutOfResources (needs 98304 shared memory).
-                loss = unsloth_fused_ce_loss(
-                    trainer = None,
-                    hidden_states = hidden_states,
-                    lm_head_weight = lm_head,
-                    lm_head_bias = None,
-                    labels = labels if shift_labels is None else shift_labels,
-                    mask = None,
-                    n_items = n_items,
-                    scaling = getattr(self, "accelerator_scaler", None),
-                    target_gb = None,
-                    torch_compile = True,
-                    logit_softcapping = logit_softcapping,
-                    logit_scale_multiply = logit_scale_multiply,
-                    logit_scale_divide = logit_scale_divide,
-                    shift_labels = shift_labels is None,
-                )
+                if getattr(
+                    self.lm_head, "_unsloth_vocab_parallel", False
+                ) and _vocab_parallel_active(self.lm_head):
+                    # Tensor parallel lm_head sharded by vocab rows (tp_native): never the whole logits.
+                    from .tp_native import vocab_parallel_cross_entropy
+                    loss = vocab_parallel_cross_entropy(
+                        self.lm_head,
+                        hidden_states,
+                        labels if shift_labels is None else shift_labels,
+                        n_items = n_items,
+                        logit_softcapping = logit_softcapping,
+                        logit_scale_multiply = logit_scale_multiply,
+                        logit_scale_divide = logit_scale_divide,
+                        shift = shift_labels is None,
+                    )
+                else:
+                    # fused_linear_cross_entropy is disabled: T4 raises OutOfResources (needs 98304 shared memory).
+                    loss = unsloth_fused_ce_loss(
+                        trainer = None,
+                        hidden_states = hidden_states,
+                        lm_head_weight = lm_head,
+                        lm_head_bias = None,
+                        labels = labels if shift_labels is None else shift_labels,
+                        mask = None,
+                        n_items = n_items,
+                        scaling = getattr(self, "accelerator_scaler", None),
+                        target_gb = None,
+                        torch_compile = True,
+                        logit_softcapping = logit_softcapping,
+                        logit_scale_multiply = logit_scale_multiply,
+                        logit_scale_divide = logit_scale_divide,
+                        shift_labels = shift_labels is None,
+                    )
                 if not return_dict:
                     # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
                     output = (EMPTY_LOGITS,) + outputs[1:]
@@ -4594,6 +4639,9 @@ class FastLlamaModel:
                 pass
 
                 llm = load_vllm(**load_vllm_kwargs)
+                if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+                    from unsloth.utils.run_report import report_memory
+                    report_memory("vLLM init", llm)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,
@@ -4990,6 +5038,7 @@ class FastLlamaModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache.
             _unsloth_install_pretrain_detector(model)
+            install_frozen_prefix_skip(model)
             # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
             skip_checkpointing(model, checkpoint_skip_layers)
             return model
@@ -5137,6 +5186,7 @@ class FastLlamaModel:
 
                 # Pre-wrapped PEFT models pass through here too; still arm the pretrain detector so RL trainers can reset a poisoned compile cache.
                 _unsloth_install_pretrain_detector(model)
+                install_frozen_prefix_skip(model)
                 # This branch returns before patch_peft_model, so record the GC mode here too.
                 model._unsloth_gradient_checkpointing = use_gradient_checkpointing
                 model = _exclude_rope_inv_freq_from_ddp(model)
@@ -5578,6 +5628,7 @@ class FastLlamaModel:
             m = m.model
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+        install_frozen_prefix_skip(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         # Not at load: the frozen set matches across ranks only after PEFT; custom loops skip Trainer.
         _ignore_block_swap_params_for_ddp(model)
@@ -5820,6 +5871,7 @@ class FastLlamaModel:
         if not _defer_fp8_lora:
             enable_fp8_lora(model)
         _unsloth_install_pretrain_detector(model)
+        install_frozen_prefix_skip(model)
         _legacy_block_compile(model)
         return model
 

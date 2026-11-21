@@ -644,6 +644,8 @@ def test_cudnn_benchmark_opt_out_image_families():
         "flux.1-kontext",
         "flux.2-dev",
         "flux.2-klein",
+        "flux.3-klein",
+        "flux.3-klein-base",
         "z-image",
         "sdxl",
         "moss-image",

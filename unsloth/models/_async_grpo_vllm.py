@@ -49,8 +49,14 @@ def _logprob(value):
 
 
 def _sampled_logprob(logprobs, position, token_id):
+    # vLLM always records the sampled token; any other entry is another token's logprob and would corrupt the
+    # importance ratio TRL builds from these, so refuse instead of substituting it.
     entry = logprobs[position]
-    return _logprob(entry[token_id] if token_id in entry else next(iter(entry.values())))
+    if token_id not in entry:
+        raise ValueError(
+            f"Unsloth: vLLM returned no logprob for sampled token {token_id} at position {position}."
+        )
+    return _logprob(entry[token_id])
 
 
 def _top_logprobs(entry, num_top_logprobs):
@@ -67,6 +73,34 @@ def _scheduler(llm_engine):
     core = getattr(llm_engine, "engine_core", None)
     core = getattr(core, "engine_core", core)
     return getattr(core, "scheduler", None)
+
+
+def _track_preemptions(scheduler):
+    # vllm:num_preemptions_total needs log_stats (off in-process): bank per-request counts on free so the total
+    # stays monotonic. Once per scheduler, since the engine outlives each server.
+    if scheduler is None or hasattr(scheduler, "_unsloth_preemptions_freed"):
+        return
+    free_blocks = getattr(scheduler, "_free_blocks", None)
+    if free_blocks is None or not isinstance(getattr(scheduler, "requests", None), dict):
+        return
+
+    def _free_blocks(request, *args, **kwargs):
+        result = free_blocks(request, *args, **kwargs)
+        scheduler._unsloth_preemptions_freed += getattr(request, "num_preemptions", 0) or 0
+        return result
+
+    scheduler._unsloth_preemptions_freed = 0
+    scheduler._free_blocks = _free_blocks
+
+
+def _preemptions(scheduler):
+    freed = getattr(scheduler, "_unsloth_preemptions_freed", None)
+    if freed is None:
+        return None
+    live = sum(
+        getattr(request, "num_preemptions", 0) or 0 for request in scheduler.requests.values()
+    )
+    return freed + live
 
 
 class _Engine:
@@ -109,6 +143,10 @@ class _Engine:
             "syncs": 0,
             "sync_steps": 0,
         }
+        try:
+            _track_preemptions(_scheduler(self.engine))
+        except Exception as error:
+            logger.info(f"Unsloth: vLLM preemptions will not be reported: {error}")
         self.thread = threading.Thread(
             target = self._run, name = "unsloth-async-grpo-vllm", daemon = True
         )
@@ -325,7 +363,7 @@ class _Engine:
     def load(self):
         scheduler = _scheduler(self.engine)
         waiting = len(self.pending)
-        usage = running = None
+        usage = running = preemptions = None
         if scheduler is not None:
             try:
                 usage = float(scheduler.kv_cache_manager.usage)
@@ -333,9 +371,19 @@ class _Engine:
                 waiting += len(scheduler.waiting) + len(getattr(scheduler, "skipped_waiting", ()))
             except Exception:
                 usage = running = None
+            try:
+                preemptions = _preemptions(scheduler)
+            except Exception:
+                preemptions = None
         if running is None:
             running = len(self.active)
-        return {"usage": usage, "running": running, "waiting": waiting}
+        return {
+            "usage": usage,
+            "running": running,
+            "waiting": waiting,
+            "preemptions": preemptions,
+            "stats": dict(self.stats),
+        }
 
     def set_paused(self, paused):
         self.paused = paused
@@ -540,6 +588,20 @@ class UnslothAsyncVLLMServer:
             lines.append(f"vllm:kv_cache_usage_perc{{{labels}}} {load['usage']}")
         lines.append(f"vllm:num_requests_running{{{labels}}} {float(load['running'])}")
         lines.append(f"vllm:num_requests_waiting{{{labels}}} {float(load['waiting'])}")
+        if load["preemptions"] is not None:
+            lines.append(f"vllm:num_preemptions_total{{{labels}}} {float(load['preemptions'])}")
+        # Host-side engine counters (no device sync); TRL ignores them.
+        stats = load["stats"]
+        for name, key in (
+            ("requests_finished_total", "requests"),
+            ("generation_tokens_total", "tokens"),
+            ("engine_steps_total", "steps"),
+            ("engine_step_seconds_total", "step_s"),
+            ("engine_max_batch", "max_batch"),
+            ("syncs_total", "syncs"),
+            ("sync_steps_total", "sync_steps"),
+        ):
+            lines.append(f"unsloth:async_grpo_{name}{{{labels}}} {float(stats[key])}")
         return 200, "\n".join(lines) + "\n"
 
     def post(self, path, body):

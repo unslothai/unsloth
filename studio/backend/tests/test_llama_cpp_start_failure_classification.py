@@ -1887,8 +1887,7 @@ _TEMPLATE_PARSE_AT_INIT = (
     "or use a custom chat template via --chat-template\n"
     "0.00.106.114 E srv  server_run_i: exiting due to model loading error\n"
 )
-# A template that raises once the model's BOS token exists. An embedded template and a custom
-# one that passed the model-less argument check both print exactly this.
+# Template that raises once the BOS token exists; embedded and custom templates print this.
 _TEMPLATE_RENDER_AT_INIT = (
     "0.00.168.520 E srv          init: init: chat template parsing error: Unable to generate "
     "parser for this template. Automatic parser generation failed: \n"
@@ -1974,8 +1973,7 @@ class TestRejectedChatTemplate:
         ids = ["parse-at-init", "render-at-init", "argument-syntax", "argument-render"],
     )
     def test_the_output_never_decides_whose_template_it_was(self, output):
-        # Init-time output is identical for an embedded template and a custom one, so the
-        # message blames neither and gives a remedy that holds for both.
+        # Init output is the same for embedded and custom templates; remedy must fit both.
         summary = _classify(output, "/models/m.gguf", "local/m", 1).split("\n\n")[0]
         assert "rejected this model's chat template" in summary
         assert "Fix it under Chat Template in the model's settings" in summary

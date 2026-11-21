@@ -265,9 +265,8 @@ def test_install_swaps_stock_processors_and_uninstall_restores(monkeypatch):
 
 
 def test_a_strided_int8_processor_holds_the_qk_processor_it_would_give_back(monkeypatch):
-    """An INT8 strided processor keeps the processor it replaced, to give back where torch's attention wins its
-    plan's race: the install makes that one the Q / K processor the module would have had without the kernel (as
-    the load does without it, bitwise), and uninstall makes it stock again."""
+    """A strided INT8 processor holds the Q/K processor it replaced; install makes that one the
+    module would have had without the kernel, bitwise; uninstall restores stock."""
     from core.inference import diffusion_flux3_attn as fa
 
     model = _tiny()

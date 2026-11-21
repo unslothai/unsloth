@@ -315,9 +315,7 @@ def host_budget_disabled() -> bool:
 
 
 def _host_free_mib(vae: Any, z: Any) -> Optional[tuple[float, float]]:
-    """``_free_mib`` for a CPU / MPS decode: the planner's safe budget of the live reading (MPS: available RAM and
-    Metal's working set less what Metal holds; CPU: available RAM; each less the planner reserve), after the fp32
-    output accumulator. None elsewhere, under the kill switch, or with no reading."""
+    """Host free MiB for a CPU/MPS decode, net of planner reserve and fp32 output accumulator; else None."""
     kind = getattr(getattr(z, "device", None), "type", None)
     if kind not in ("cpu", "mps") or host_budget_disabled():
         return None

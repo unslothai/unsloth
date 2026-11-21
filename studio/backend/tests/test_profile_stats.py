@@ -1256,9 +1256,7 @@ def test_deleting_a_continuation_restores_its_source(stats_db):
 
 
 def test_out_of_range_timestamps_do_not_break_the_panel(stats_db):
-    """created_at is client supplied and SQLite stores it unchecked. Seeded at noon like the rest of the file:
-    seeded at the wall clock, a run in the last REPLY_DELAY before midnight put the reply on tomorrow, outside
-    the daily series."""
+    """created_at is client supplied and unchecked, so noon seeds keep replies in the daily series."""
     now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:

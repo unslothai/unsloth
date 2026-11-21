@@ -4,7 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as generationLength from "../src/features/chat/api/generation-length.ts";
 import { readSrc } from "./helpers/kit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 // Read as source: importing would drag in the stores and the toast layer.
 const source = readSrc("features/chat/api/chat-adapter.ts");
@@ -21,6 +23,69 @@ const WINDOW_SETTING = /Context in Model settings/;
 const HIDDEN_WINDOW_REMEDY =
   /Start a new chat, or shorten this one, then retry/;
 const BOTH_REMEDIES = /Max Tokens or its context window before answering/;
+const DURABLE_STREAM =
+  /const durableStream = async function\* \(\) \{[\s\S]*?\n {12}\};/;
+const DURABLE_TRACKER =
+  /createReasoningOnlyLengthCheck\(\{\s*cap: requestPayload\.max_tokens \?\? null,\s*contextLength: servedContextLength,/;
+const DURABLE_OBSERVE = /lengthCheck\.observe\(chunk\);\s*yield chunk;/;
+const DURABLE_THROW =
+  /generationStatus === "completed"\) \{\s*lengthCheck\.throwIfReasoningOnlyLength\(\);/;
+
+type LengthCheck = {
+  observe: (chunk: unknown) => void;
+  throwIfReasoningOnlyLength: () => void;
+};
+
+const { createReasoningOnlyLengthCheck, GenerationLengthError, offersKvCacheHint } = loadWithStubs<{
+  createReasoningOnlyLengthCheck: (window: {
+    cap: number | null;
+    contextLength: number | null;
+    kvCacheHint?: boolean;
+  }) => LengthCheck;
+  GenerationLengthError: new (cause: string) => Error & { stopCause: string };
+  offersKvCacheHint: (isGguf: boolean | null, kv: string | null) => boolean;
+}>(new URL("../src/features/chat/api/chat-api.ts", import.meta.url), {
+  "./skill-load-event": { skillLoadCardEvent: () => ({}) },
+  "./thread-read-cache.ts": {},
+  "@/features/auth": { authFetch: async () => new Response(null) },
+  "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
+  "@/lib/sse-framing": {},
+  "../types": {},
+  "../types/api": {},
+  "../utils/chat-history-revision": {},
+  "../utils/openapi-support": {},
+  "../utils/load-warning-toast": {},
+  "../lib/load-request": {},
+  "./generation-length.ts": generationLength,
+  "./gguf-variants-request": {},
+  "./padded-response": {},
+  "@/features/hf-auth": {},
+  "@/features/igpu-carveout": {},
+  "@/features/hub/lib/abort-signals": {},
+  "@/features/hub/lib/hub-token-header": {},
+  "@/features/hub/lib/network": {},
+  "@/features/native-intents/api": {},
+  "@/features/settings/low-disk-check": {},
+  "@/lib/model-lifecycle-events": {},
+});
+
+// The Strix Halo repro: Qwen3-0.6B, Context 1024, a 43-token prompt, Max Tokens 512.
+function reasoningOnlyRun(
+  finish: string,
+  answer?: string,
+  window: { cap: number | null; contextLength: number | null; kvCacheHint?: boolean } = {
+    cap: 512,
+    contextLength: 1024,
+  },
+): LengthCheck {
+  const check = createReasoningOnlyLengthCheck(window);
+  check.observe({ usage: { prompt_tokens: 43 } });
+  check.observe({ choices: [{ delta: { reasoning_content: "Primes below" } }] });
+  check.observe({ choices: [{ delta: { reasoning_content: " 5000..." } }] });
+  if (answer) check.observe({ choices: [{ delta: { content: answer } }] });
+  check.observe({ choices: [{ delta: { content: null }, finish_reason: finish }] });
+  return check;
+}
 
 test("the toast repeats the advice the error chose, not the Max Tokens advice", () => {
   const branch = TOAST_BRANCH.exec(source);
@@ -38,4 +103,76 @@ test("the two remedies really are different text, so passing it through matters"
   assert.doesNotMatch(chatApi, NO_UNLIMITED_CLAIM);
   assert.match(chatApi, HIDDEN_WINDOW_REMEDY);
   assert.match(chatApi, BOTH_REMEDIES);
+});
+
+test("thinking that runs out of Max Tokens throws the Max Tokens advice", () => {
+  assert.throws(
+    () => reasoningOnlyRun("length").throwIfReasoningOnlyLength(),
+    (err: unknown) =>
+      err instanceof GenerationLengthError &&
+      err.stopCause === "max_tokens" &&
+      CAP_REMEDY.test(err.message),
+  );
+});
+
+test("an answer, or a normal stop, is not a length failure", () => {
+  assert.doesNotThrow(() =>
+    reasoningOnlyRun("length", "669").throwIfReasoningOnlyLength(),
+  );
+  assert.doesNotThrow(() => reasoningOnlyRun("stop").throwIfReasoningOnlyLength());
+});
+
+test("server-side chat runs apply the same reasoning-only length check", () => {
+  const durable = DURABLE_STREAM.exec(source);
+  assert.ok(durable, "the durableStream generator moved");
+  assert.match(durable[0], DURABLE_TRACKER);
+  assert.match(durable[0], DURABLE_OBSERVE);
+  assert.match(durable[0], DURABLE_THROW);
+});
+
+// Max Tokens unset: the backend sends the context length, and llama.cpp counts the thinking.
+function windowFilled(kvCacheHint: boolean): Error & { stopCause: string } {
+  const check = reasoningOnlyRun("length", undefined, {
+    cap: 1024,
+    contextLength: 1024,
+    kvCacheHint,
+  });
+  check.observe({ timings: { predicted_n: 981 } });
+  try {
+    check.throwIfReasoningOnlyLength();
+  } catch (err) {
+    return err as Error & { stopCause: string };
+  }
+  throw new Error("no length error");
+}
+
+test("a llama.cpp model that fills its window is also pointed at a q8_0 KV cache", () => {
+  const gguf = windowFilled(true);
+  assert.equal(gguf.stopCause, "context_length");
+  assert.match(gguf.message, /increase the Context in Model settings, or disable thinking/);
+  assert.match(gguf.message, /q8_0 KV Cache Dtype in Model settings fits more context/);
+  assert.doesNotMatch(windowFilled(false).message, /KV Cache/);
+  assert.throws(
+    () =>
+      reasoningOnlyRun("length", undefined, {
+        cap: 512,
+        contextLength: 1024,
+        kvCacheHint: true,
+      }).throwIfReasoningOnlyLength(),
+    (err: unknown) => err instanceof Error && !/KV Cache/.test(err.message),
+  );
+  assert.match(
+    source,
+    /const kvCacheHint =\s*!isExternalRequest &&\s*offersKvCacheHint\(runtime\.loadedIsGguf, runtime\.loadedKvCacheDtype\);/,
+  );
+});
+
+test("the KV cache hint is only offered while the llama.cpp cache is unquantized", () => {
+  assert.equal(offersKvCacheHint(true, null), true);
+  assert.equal(offersKvCacheHint(true, "f16"), true);
+  assert.equal(offersKvCacheHint(true, "bf16"), true);
+  assert.equal(offersKvCacheHint(true, "q8_0"), false);
+  assert.equal(offersKvCacheHint(true, "q4_0"), false);
+  assert.equal(offersKvCacheHint(false, null), false);
+  assert.equal(offersKvCacheHint(null, null), false);
 });

@@ -301,6 +301,31 @@ def test_empty_missing_unsupported_and_corrupt_inputs(ebooks, tokenizer, tmp_pat
         ebooks.load_ebook_dataset(empty, tokenizer = tokenizer)
 
 
+@pytest.mark.parametrize("fallback", ["c1", "art", "missing"])
+def test_foreign_spine_item_uses_its_text_fallback(ebooks, tokenizer, tmp_path, fallback):
+    book = make_epub(tmp_path / "book.epub")
+    with zipfile.ZipFile(book) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    package = files["Books/content.opf"].decode()
+    items = (
+        '<item id="art" href="art.pdf" media-type="application/pdf" fallback="page"/>'
+        f'<item id="page" href="page.png" media-type="image/png" fallback="{fallback}"/>'
+    )
+    files["Books/content.opf"] = package.replace("</manifest>", items + "</manifest>").replace(
+        'idref="c1"', 'idref="art"'
+    )
+    with zipfile.ZipFile(book, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+        archive.writestr("Books/art.pdf", b"")
+        archive.writestr("Books/page.png", b"")
+    text = ebooks.load_ebook_dataset(book, tokenizer = tokenizer)[0]["text"]
+    expected = "Chapter Two\n\nSecond paragraph."
+    if fallback == "c1":
+        expected = "Chapter One\n\nFirst paragraph.\n\n" + expected
+    assert text == expected
+
+
 def test_non_linear_and_nav_documents_are_not_training_text(ebooks, tokenizer, tmp_path):
     book = make_epub(tmp_path / "book.epub")
     with zipfile.ZipFile(book) as archive:

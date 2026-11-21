@@ -1495,8 +1495,7 @@ _NVRTC: Any = None
 _DRIVER: Any = None
 _LAUNCH: Any = None
 _FUNCTIONS: dict = {}
-# (source digest, arch, defines, max_registers) -> (kind, image): what a module is loaded from, made once per process
-# and shared by every card of that architecture
+# Keyed by (source digest, arch, defines, max_registers); built once per process, shared.
 _BINARIES: dict = {}
 _IDENTITY: dict = {}
 
@@ -1743,9 +1742,8 @@ def driver_version() -> Optional[tuple]:
 
 
 def toolchain_identity() -> dict:
-    """What an image depends on besides its source and options: NVRTC (version, and its library file: a patch
-    release keeps the version number) and the driver's CUDA version (which picks the kind, ``binary``). Read once
-    per process."""
+    """Image depends on NVRTC version and its library file (a patch release keeps the version
+    number) and the driver CUDA version (picks kind: binary); read once per process"""
     found = _IDENTITY.get("value")
     if found is None:
         drv = driver_version()
@@ -1759,10 +1757,9 @@ def toolchain_identity() -> dict:
 
 
 def machine_code_matches_driver() -> bool:
-    """Whether NVRTC's machine code is the code a PTX load would run: NVRTC is at least as new as the driver.
-    NVRTC and the driver of one CUDA version compile the same instructions (checked register for register, and
-    bit for bit, on sm75 / sm80 / sm89 / sm120); a newer driver can schedule them differently (the same output
-    bits, other registers), and then the driver keeps compiling NVRTC's PTX itself, as before."""
+    """True if NVRTC is at least the driver version: same instructions bit for bit (checked on sm75
+    sm80 sm89 sm120); a newer driver may schedule them differently, so the driver compiles NVRTC
+    PTX itself"""
     identity = toolchain_identity()
     drv = identity.get("driver")
     return not drv or tuple(identity["nvrtc"]) >= tuple(drv)
@@ -1830,11 +1827,8 @@ def _private(info: os.stat_result) -> bool:
 
 
 def _usable_dir(root: str, version: str) -> bool:
-    """Whether images may be kept in ``root``/``version``: both made (mode 0o700) when missing, and on POSIX both
-    owned by this user and not group- or world-writable (``_private``). Anything else (a shared directory set in
-    ``CACHE_ENV``, a directory that cannot be made) keeps the images in memory, with one warning. Checked once per
-    process per directory. On Windows the mode bits and ``st_uid`` say nothing about the ACLs that decide who can
-    write (the default root is under the user's own profile), so only the directories are made there."""
+    """Images go to disk only in a user-owned dir, not group/world-writable (POSIX; on Windows the
+    dirs are made and used as is); else memory."""
     key = (root, version)
     found = _TRUSTED.get(key)
     if found is not None:

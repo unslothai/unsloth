@@ -50,7 +50,12 @@ from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
-from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .browser_agent import (
+    BROWSER_TOOL_NAMES,
+    execute_browser_tool,
+    is_browser_tool,
+    workspace_path_of,
+)
 from .computer_use import execute_computer_tool, is_computer_tool
 from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
@@ -83,6 +88,7 @@ from core.inference.mcp_image import (
     strip_attached_image_note,
 )
 from core.inference.mcp_client import (
+    UNREACHABLE_SERVER,
     MCP_RESOURCE_TOOL,
     MCP_TOOL_PREFIX,
     MCP_IMAGES_SENTINEL,
@@ -121,6 +127,8 @@ from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference import tool_facts
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
+from integrations.unreal import CALL_GUIDE as UNREAL_CALL_GUIDE
+from integrations.unreal import mcp_adapter as unreal_mcp_adapter
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
@@ -6930,9 +6938,14 @@ def _web_search_fetches_url(name: str, arguments: dict) -> bool:
     return name == "web_search" and bool(str(arguments.get("url", "") or "").strip())
 
 
+def _browser_opens_workspace_file(name: str, arguments: dict) -> bool:
+    """browser_navigate onto a workspace file hands its bytes to the model, so it asks like a read."""
+    return name == "browser_navigate" and workspace_path_of(arguments.get("url")) is not None
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts for anything that can mutate state or run code; unknown tools fail closed."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
@@ -7255,8 +7268,7 @@ _PYTHON_FLAG_LETTERS = frozenset("bBdEhIOPqsSuvVR?")
 
 
 def _quote_end(line: str, i: int) -> int:
-    """Index of the quote closing the one at ``i``; a `$(` or backtick inside double quotes opens a
-    fresh quoting context, as in bash. -1 when unterminated."""
+    """Index of the closing quote or -1; $( and backticks in double quotes open a new context."""
     quote, j, n = line[i], i + 1, len(line)
     while j < n and line[j] != quote:
         if quote == '"' and line[j] == "\\":
@@ -9607,7 +9619,7 @@ def _python_is_high_risk(code: str) -> bool:
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     """Auto mode prompts only for sensitive actions (credentials, privilege, destructive, network exfil); unknown tools fail closed; hard blocks still apply."""
-    if _web_search_fetches_url(name, arguments):
+    if _web_search_fetches_url(name, arguments) or _browser_opens_workspace_file(name, arguments):
         return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
@@ -12894,9 +12906,8 @@ def _edit_file_created_sentinel(target: str, workdir: str) -> str:
 def _edit_file_parent(
     target: str, workdir: "str | None", create_dirs: bool
 ) -> "tuple[int | None, str]":
-    """(folder fd or None, name to use with it). Confined POSIX writes open every parent below the
-    workdir without following links, so a folder swapped for a link mid-call fails instead of
-    carrying the write outside; unconfined calls and Windows keep the path."""
+    """(folder fd or None, name); confined POSIX writes open each parent below workdir without
+    following links, so a swapped link fails; unconfined calls and Windows keep the path."""
     if workdir is None or not file_history.DIR_FD_WALK:
         if create_dirs:
             os.makedirs(os.path.dirname(target) or ".", exist_ok = True)
@@ -13841,12 +13852,13 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
+# A later message's matches, sent after it as a search, get their own share: the listing may fill the preload one.
+_MCP_TOOL_MATCH_SHARE = 0.15
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
-# ranked tools hold until a message's best match is listable and not among them.
+# A thread keeps its first MCP listing: the tool block heads the prompt, so changing it re-reads the whole chat.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -13859,10 +13871,12 @@ _MCP_LISTING_REMEMBER: ContextVar = ContextVar("mcp_listing_remember", default =
 _MCP_PROJECT_SERVER_IDS: ContextVar[frozenset[str] | None] = ContextVar(
     "mcp_project_server_ids", default = None
 )
+# A dict set per request, so the listing can fill it from a thread running in a copy of the request's context.
+_MCP_LISTING_MATCHES: ContextVar = ContextVar("mcp_listing_matches", default = None)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
-# (account, thread) -> (held ranked tools, the last listing's order).
-_MCP_HELD_THREADS: "OrderedDict[tuple, tuple[list[str], list[str]]]" = OrderedDict()
+# (account, thread) -> the MCP tools the thread lists, in order.
+_MCP_HELD_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -13891,6 +13905,7 @@ def set_mcp_listing_context_tokens(
     _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
     _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
     _MCP_LISTING_REMEMBER.set(bool(remember))
+    _MCP_LISTING_MATCHES.set({})
     last_user = next(
         (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
     )
@@ -14092,24 +14107,54 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
-def _mcp_held(by_name: dict) -> tuple[list[str], list[str]]:
+def _mcp_held(by_name: dict) -> list[str] | None:
     key = _mcp_thread_key()
     if key is None:
-        return [], []
+        return None
     with _MCP_LOADED_LOCK:
-        ranked, listed = _MCP_HELD_THREADS.get(key, ((), ()))
-    return [n for n in ranked if n in by_name], list(listed)
+        listed = _MCP_HELD_THREADS.get(key)
+    return None if listed is None else [n for n in listed if n in by_name]
 
 
-def _mcp_hold(ranked: list[str], listed: list[str]) -> None:
+def _mcp_hold(listed: list[str]) -> None:
     key = _mcp_thread_key()
     if key is None or not _MCP_LISTING_REMEMBER.get():
         return
     with _MCP_LOADED_LOCK:
         _MCP_HELD_THREADS.pop(key, None)
-        _MCP_HELD_THREADS[key] = (ranked, listed)
+        _MCP_HELD_THREADS[key] = listed
         while len(_MCP_HELD_THREADS) > _MCP_LOADED_THREADS_MAX:
             _MCP_HELD_THREADS.popitem(last = False)
+
+
+def _mcp_ran(by_name: dict) -> list[str]:
+    return [name for name in reversed(_mcp_loaded_names()) if name in by_name]
+
+
+def _mcp_best(specs: list[dict]) -> list[str]:
+    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
+    return ranked[:_MCP_TOOL_PRELOAD]
+
+
+def _mcp_fill(
+    listing: list[dict],
+    names: list[str],
+    by_name: dict,
+    ctx: int,
+    share: float | None = None,
+) -> list[dict]:
+    chosen = list(listing)
+    left = ctx * (_MCP_TOOL_PRELOAD_SHARE if share is None else share) - _text_token_cost(
+        json.dumps(listing, separators = (",", ":")), ctx
+    )
+    for name in names:
+        if by_name[name] in chosen:
+            continue
+        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+        if cost <= left:
+            chosen.append(by_name[name])
+            left -= cost
+    return chosen
 
 
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
@@ -14160,38 +14205,105 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
         search = _mcp_tool_search_spec(catalog, max_chars)
     listing = [search]
     listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
-    room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
-        json.dumps(listing, separators = (",", ":")), ctx
+    if os.environ.get("UNSLOTH_STUDIO_MCP_SEARCH_ONLY") == "1":
+        return listing
+    held = _mcp_held(by_name)
+    if held is None:
+        wanted = list(dict.fromkeys(_mcp_ran(by_name) + _mcp_best(specs)))
+        names = [spec["function"]["name"] for spec in _mcp_fill(listing, wanted, by_name, ctx)[1:]]
+    else:
+        # A new pin goes last and stays: the block changes once for it, not on every image or forced turn.
+        names = list(dict.fromkeys(held + [spec["function"]["name"] for spec in listing[1:]]))
+        held_cost = _text_token_cost(
+            json.dumps(listing[:1] + [by_name[name] for name in names], separators = (",", ":")), ctx
+        )
+        # Past the share (a smaller window, a grown schema, piled-up pins): the block changes anyway, so re-fit.
+        if held_cost > ctx * _MCP_TOOL_PRELOAD_SHARE:
+            names = [
+                spec["function"]["name"] for spec in _mcp_fill(listing, held, by_name, ctx)[1:]
+            ]
+    _mcp_hold(names)
+    _mcp_note_matches(specs, by_name, names, ctx)
+    return listing[:1] + [by_name[name] for name in names]
+
+
+def _mcp_note_matches(specs: list[dict], by_name: dict, listed: list[str], ctx: int) -> None:
+    box = _MCP_LISTING_MATCHES.get()
+    if box is None or _mcp_thread_key() is None:
+        return
+    best = [name for name in _mcp_best(specs) if name not in listed]
+    # The exchange sits in the protected tail with the message, so it only gets the room the listing, the message
+    # and a reply leave (as _whole_doc_budget); else it ate the reply on a near-full window (#18529).
+    room = (
+        ctx
+        - max(1024, ctx // 4)
+        - 512
+        - _text_token_cost(
+            json.dumps([by_name[name] for name in listed], separators = (",", ":")), ctx
+        )
+        - _text_token_cost(_MCP_LISTING_QUERY.get(), ctx)
     )
-    ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
-    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
-    ranked = ranked[:_MCP_TOOL_PRELOAD]
+    matches = _mcp_fill([], best, by_name, ctx, min(_MCP_TOOL_MATCH_SHARE, max(0, room) / ctx))
+    names = [spec["function"]["name"] for spec in matches]
+    names += [name for name in _mcp_ran(by_name) if name not in listed]
+    box.update(matches = matches, names = list(dict.fromkeys(names)))
 
-    def filled(names: list[str]) -> list[dict]:
-        chosen = list(listing)
-        left = room
-        for name in dict.fromkeys(ran + names):
-            if by_name[name] in chosen:
-                continue
-            cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
-            if cost <= left:
-                chosen.append(by_name[name])
-                left -= cost
-        return chosen
 
-    held, listed_before = _mcp_held(by_name)
-    chosen = filled(held)
-    held = [name for name in held if by_name[name] in chosen]
-    if ranked and (not held or by_name[ranked[0]] not in chosen):
-        fresh = filled(ranked)
-        # A best match too big to list is not worth dropping the held tools for.
-        if not held or by_name[ranked[0]] in fresh:
-            chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
-    # Listed tools keep their places, new ones go last: a reorder in the tool block reprocesses the whole chat.
-    names = [spec["function"]["name"] for spec in chosen[1:]]
-    order = list(dict.fromkeys([name for name in listed_before if name in names] + names))
-    _mcp_hold(held, order)
-    return chosen[:1] + [by_name[name] for name in order]
+def mcp_match_exchange(messages: list[dict], tools) -> dict | None:
+    """The latest message's matches as a mcp_tool_search exchange after it, like the forced knowledge-base
+    search; ``names`` is what the loop accepts beyond the listing: the matches, the tools the thread ran,
+    and every tool an earlier search in ``messages`` gave the model the schema of."""
+    tool_names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
+    box = _MCP_LISTING_MATCHES.get()
+    if MCP_TOOL_SEARCH_NAME not in tool_names or not messages or not box:
+        return None
+    matches = box.get("matches") or []
+    names = list(dict.fromkeys([*(box.get("names") or []), *_mcp_searched_names(messages)]))
+    if not names:
+        return None
+    exchange = {"events": [], "messages": []}
+    # A resumed reply ends past the message: no search to add, but the names stay callable.
+    if matches and messages[-1].get("role") == "user":
+        exchange = build_synthetic_search_exchange(
+            tool_name = MCP_TOOL_SEARCH_NAME,
+            call_prefix = "mcp_auto_",
+            status_label = "Finding MCP tools",
+            query = _mcp_summary(_last_user_text(messages), _MCP_TOOL_SEARCH_SUMMARY_CHARS),
+            text = _mcp_search_result(matches),
+            sources = None,
+        )
+    return {**exchange, "names": names}
+
+
+def _mcp_searched_names(messages: list[dict]) -> list[str]:
+    """Names only: the tool loop checks each against the catalog once."""
+    search_ids = {
+        call.get("id")
+        for message in messages
+        if isinstance(message, dict)
+        for call in message.get("tool_calls") or []
+        if isinstance(call, dict)
+        and (call.get("function") or {}).get("name") == MCP_TOOL_SEARCH_NAME
+    }
+    names = {}
+    for message in messages:
+        if not (
+            isinstance(message, dict)
+            and message.get("role") == "tool"
+            and isinstance(message.get("content"), str)
+            and (
+                message.get("name") == MCP_TOOL_SEARCH_NAME
+                or message.get("tool_call_id") in search_ids
+            )
+        ):
+            continue
+        for line in message["content"].splitlines():
+            if line.startswith("  schema: "):
+                try:
+                    names[json.loads(line[len("  schema: ") :])["function"]["name"]] = None
+                except (ValueError, TypeError, KeyError):
+                    continue
+    return list(names)
 
 
 def _runs_local_mcp(server: dict) -> bool:
@@ -14221,14 +14333,22 @@ def mcp_loadable_specs(tools) -> list[dict]:
     return _cached_mcp_catalog() if MCP_TOOL_SEARCH_NAME in names else []
 
 
+def mcp_tool_specs(names) -> dict[str, dict]:
+    """The full specs of cached MCP tools by name, from one catalog build however many are asked for."""
+    wanted = {name for name in names if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)}
+    if not wanted:
+        return {}
+    found: dict[str, dict] = {}
+    for spec in _cached_mcp_catalog():
+        name = spec["function"]["name"]
+        if name in wanted:
+            found.setdefault(name, spec)
+    return found
+
+
 def mcp_tool_spec(name) -> dict | None:
     """The full spec of a cached MCP tool, for loading it into a running tool loop."""
-    if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX):
-        return None
-    for spec in _cached_mcp_catalog():
-        if spec["function"]["name"] == name:
-            return spec
-    return None
+    return mcp_tool_specs([name]).get(name) if isinstance(name, str) else None
 
 
 def _mcp_search_text(spec: dict) -> tuple[str, str, str]:
@@ -14603,6 +14723,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         seen_names.add(name)
         tool_facts.note_mcp_tool(name, tool, studio = is_studio_tools(server.get("url") or ""))
         description = tool.get("description") or ""
+        if server.get("builtin_id") == "unreal" and raw_name == "call_tool":
+            description = description.rstrip() + "\n" + UNREAL_CALL_GUIDE.strip()
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name
             # The alias is the only name the model may emit; the description carries the real name.
@@ -14692,6 +14814,21 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
+async def _discover_mcp_tools(server: dict) -> list[dict]:
+    if server.get("builtin_id") == "blender":
+        from integrations.blender import runtime_ready
+        from integrations.blender.runtime import ensure_runtime
+        if not runtime_ready():
+            await asyncio.to_thread(ensure_runtime)
+    return await list_tools_async(
+        url = server["url"],
+        headers = parse_server_headers(server),
+        timeout = probe_timeout(server["url"], bool(server.get("use_oauth"))),
+        use_oauth = bool(server.get("use_oauth")),
+        **oauth_client_kwargs(server),
+    )
+
+
 async def get_enabled_mcp_tools(
     include_stdio: bool = True, server_ids: set[str] | None = None
 ) -> list[dict]:
@@ -14714,17 +14851,7 @@ async def get_enabled_mcp_tools(
     ]
     if uncached:
         results = await asyncio.gather(
-            *(
-                list_tools_async(
-                    url = s["url"],
-                    headers = parse_server_headers(s),
-                    timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
-                    use_oauth = bool(s.get("use_oauth")),
-                    **oauth_client_kwargs(s),
-                )
-                for s in uncached
-            ),
-            return_exceptions = True,
+            *(_discover_mcp_tools(s) for s in uncached), return_exceptions = True
         )
         # On-loop re-read so an edit cannot invalidate between it and the cache writes.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
@@ -14749,14 +14876,18 @@ async def get_enabled_mcp_tools(
                 continue
             cache_tools(server["id"], payload)
 
-    listed: list[tuple[dict, list[dict], list[dict]]] = []
-    for server in servers:
-        payload = get_cached_tools(server["id"])
-        if payload is None:
-            continue
-        payload = [public_tool(server, tool) for tool in payload]
-        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
-    return _mcp_listing(listed)
+    def _listing() -> list[dict]:
+        listed: list[tuple[dict, list[dict], list[dict]]] = []
+        for server in servers:
+            payload = get_cached_tools(server["id"])
+            if payload is None:
+                continue
+            payload = [public_tool(server, tool) for tool in payload]
+            listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+        return _mcp_listing(listed)
+
+    # Off the loop: pricing the listing can make several synchronous token-count calls to llama-server.
+    return await asyncio.to_thread(_listing)
 
 
 def mcp_search_argument(name: str, tool: dict) -> str | None:
@@ -15116,19 +15247,35 @@ def execute_tool(
             )
             # As for tool results: a marker anywhere in the text, errors included, would summon a widget.
             return _fit_result_to_room(_drop_forged_ui_sentinels(body), name)
-        result = call_tool_sync(
-            url = url,
-            headers = headers,
-            name = tool_name,
-            args = arguments,
-            timeout = effective_timeout,
-            use_oauth = use_oauth,
-            cancel_event = cancel_event,
-            scope = mcp_scope,
-            **oauth_client_kwargs(server),
-            config_check = _config_current,
-            ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
-        )
+
+        def _call(call_name: str, call_args: dict) -> str:
+            return call_tool_sync(
+                url = url,
+                headers = headers,
+                name = call_name,
+                args = call_args,
+                timeout = effective_timeout,
+                use_oauth = use_oauth,
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                **oauth_client_kwargs(server),
+                config_check = _config_current,
+                ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, call_name)),
+            )
+
+        if server.get("builtin_id") == "unreal" and tool_name == unreal_mcp_adapter.CALL_TOOL:
+            result = unreal_mcp_adapter.call(
+                url, arguments, lambda call_args: _call(tool_name, call_args), _call
+            )
+        else:
+            result = _call(tool_name, arguments)
+        if isinstance(result, str) and UNREACHABLE_SERVER in result:
+            result = result.replace(UNREACHABLE_SERVER, f"'{display}' is not reachable")
+            from integrations.editors import EDITORS  # noqa: PLC0415 (editors imports this package's mcp_client)
+
+            editor = EDITORS.get(server.get("builtin_id") or "")
+            if editor is not None:
+                result += f" {editor.not_ready}"
         if mcp_image is not None and isinstance(result, str):
             # Returned images may be resized copies of the user's; none of them reach the model on this call.
             result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)
@@ -15598,15 +15745,20 @@ def build_synthetic_search_exchange(
     status_label: str,
     query: str,
     text: str,
-    sources: list[dict],
+    sources: list[dict] | None,
 ) -> dict:
-    """Renders a forced retrieval as a normal tool exchange: messages for the model, events for the UI."""
+    """Renders a forced retrieval as a normal tool exchange: messages for the model, events for the UI.
+    ``sources`` None sends no source map, for a tool whose replay does not strip one."""
     import json as _json
     import uuid as _uuid
 
     call_id = call_prefix + _uuid.uuid4().hex[:12]
     args = {"query": query}
-    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    full_result = (
+        text
+        if sources is None
+        else text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    )
     # Local and round-less: the client replays it as its own exchange.
     provenance = {"source": "local"}
     events = [
@@ -17567,8 +17719,8 @@ def _result_char_budget(cap: int) -> int:
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
     cap = _tool_result_max_chars()
-    if not _request_context_tokens():
-        # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
+    if not _request_context_tokens() and _request_result_room() is None:
+        # No window and no priced room (a hosted provider, a server reporting none): a raised setting is not applied blind.
         cap = min(cap, _MAX_OUTPUT_CHARS)
     return _result_char_budget(cap)
 
@@ -19202,9 +19354,8 @@ def _check_signal_escape_patterns(code: str):
             return self._cache[key]
 
         def _converged(self, query, node):
-            # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
-            # until no answer grows (they are finite sets, so this ends); keep only converged answers.
-            # Each pass writes a fresh layer over _final: copying _final per query made scans quadratic.
+            # Self-referential bindings need repeats until no answer grows; keep only converged
+            # answers.
             previous, self._guess = None, {}
             while True:
                 self._cache, self._cyclic = {}, False

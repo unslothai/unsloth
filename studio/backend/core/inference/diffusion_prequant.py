@@ -1511,9 +1511,7 @@ def _fingerprint_threads() -> int:
 
 
 def _digest_weights(state_dict: Any, select: Any, digest_of: Any) -> tuple:
-    """({fqn: digest}, [uncovered fqns]) over the ``.weight`` entries ``select`` keeps, in state-dict order.
-
-    ``digest_of`` returns None for an uncovered weight; a raise counts as uncovered. Runs on a thread pool."""
+    """Digests selected .weight entries; a None or raised digest marks one uncovered. Uses a thread pool."""
     items = state_dict.items() if hasattr(state_dict, "items") else ()
     picked = [
         (key, tensor)

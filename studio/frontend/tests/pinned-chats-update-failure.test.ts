@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The real pins API and sync runtime under the desktop update screen: a failure the stopped
-// backend caused must not toast, however late the queue reports it.
+// A failure the stopped backend caused must not toast, however late the queue reports it.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

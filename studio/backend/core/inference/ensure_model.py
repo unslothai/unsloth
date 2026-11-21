@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether a request may load the model it names, and the coded refusal when it may not.
-
-The routes resolve the target and run the load; this decides, from the request's ``LoadPolicy``
-and what the load would do to the models already loaded, whether it runs."""
+"""Decides whether a request may load its model, from its LoadPolicy and the models already loaded."""
 
 from __future__ import annotations
 

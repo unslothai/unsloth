@@ -555,6 +555,8 @@ _UNSUPPORTED_RUNTIME_LAYERS = (
 _IGNORABLE_LAYERS = (
     "application/vnd.ollama.image.draft",
     "application/vnd.ollama.image.embed",
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.ollama.manifest.list.v2+json",
 )
 
 
@@ -618,6 +620,16 @@ def test_an_ignorable_layer_does_not_hide_the_primary_model(tmp_path, monkeypatc
     rows = ollama.scan_ollama_dir(root)
     assert len(rows) == 1
     assert ollama.is_ollama_manifest_ref(rows[0].load_id)
+
+
+def test_a_manifest_list_pull_anchor_is_listed(tmp_path, monkeypatch):
+    from hub.services.models import ollama
+
+    root = tmp_path / "ollama-list-pull"
+    _write_ollama_store(root, extra_layers = _METADATA_LAYERS + _IGNORABLE_LAYERS)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    assert len(ollama.scan_ollama_dir(root)) == 1
 
 
 @pytest.mark.parametrize("unsupported", _UNSUPPORTED_RUNTIME_LAYERS)
@@ -918,6 +930,21 @@ def test_an_mlx_tag_lists_as_a_chat_only_safetensors_row(mlx_store, monkeypatch)
         ollama.materialize_ollama_model_ref(ref.replace("ollama-mlx:", "ollama-manifest:"))
     monkeypatch.setattr(ollama_mlx, "mlx_host", lambda: False)
     assert ollama.scan_ollama_dir(root) == []
+
+
+def test_an_mlx_tag_pulled_with_a_downgrade_anchor_lists(mlx_store):
+    from hub.services.models import ollama, ollama_mlx
+
+    assert ollama._OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES <= ollama_mlx._ADMITTED_MEDIA_TYPES
+    root, tag_file, _ = mlx_store
+    manifest = json.loads(tag_file.read_text())
+    manifest["layers"] += [
+        {"mediaType": media_type, "digest": f"sha256:{c * 64}", "size": 1}
+        for media_type, c in zip(sorted(ollama._OLLAMA_MANIFEST_REFERENCE_MEDIA_TYPES), "ab")
+    ]
+    tag_file.write_text(json.dumps(manifest))
+    (row,) = ollama.scan_ollama_dir(root)
+    assert ollama.ollama_mlx_ref_for_path(row.id) is not None
 
 
 def test_an_unloaded_mlx_tag_resolves_for_the_api(mlx_store):

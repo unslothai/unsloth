@@ -62,8 +62,7 @@ case "${1:-}" in
 esac
 
 unset UNSLOTH_STUDIO_PASSWORD
-# Managed accounts' tools run as uid 0 with no capabilities and can read /run, so the
-# owner's plaintext must not outlive the moment Studio stores it.
+# Managed accounts' tools run as uid 0 and can read /run; delete the plaintext once stored.
 if [[ -e "$INITIAL" ]] && password_stored; then
     rm -f "$INITIAL"
 fi

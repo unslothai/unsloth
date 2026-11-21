@@ -4611,6 +4611,39 @@ class TestGgufVisionToolRouting:
             result.body = json.loads(response.body)
         return result
 
+    @pytest.mark.parametrize(
+        "field, value", [("grammar", 'root ::= "a"'), ("json_schema", {"type": "object"})]
+    )
+    def test_diffusion_gguf_refuses_a_raw_grammar(self, monkeypatch, field, value):
+        with pytest.raises(HTTPException) as exc:
+            self._run_gguf_case(
+                monkeypatch,
+                payload_kwargs = {field: value},
+                backend_kwargs = {"is_diffusion": True},
+            )
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == field
+
+    @pytest.mark.parametrize("field", ["grammar", "json_schema"])
+    @pytest.mark.parametrize("route", ["audio_reply", "tool_loop"])
+    def test_gguf_route_without_grammar_refuses_a_raw_grammar(self, monkeypatch, route, field):
+        def _no_generation(**_kwargs):
+            raise AssertionError("the constraint would be dropped")
+
+        value = 'root ::= "a"' if field == "grammar" else {"type": "object"}
+        if route == "audio_reply":
+            kwargs = {"backend_kwargs": {"_is_audio": True}}
+        else:
+            kwargs = {
+                "tool_generate": _no_generation,
+                "payload_kwargs": {"enable_tools": True, "enabled_tools": ["web_search"]},
+            }
+        kwargs.setdefault("payload_kwargs", {})[field] = value
+        with pytest.raises(HTTPException) as exc:
+            self._run_gguf_case(monkeypatch, generate = _no_generation, **kwargs)
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == field
+
     def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
         import routes.inference as inf_mod
 

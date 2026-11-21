@@ -33,8 +33,7 @@ _STAGED_4BIT = []
 
 
 def _install_table_provenance():
-    # Best effort: this module is also loaded on its own (outside the unsloth package), where the provenance
-    # hook has nothing to attach to.
+    # Best effort: also loaded standalone outside the unsloth package, with no provenance hook.
     try:
         from .frozen_table_provenance import install
     except ImportError:
