@@ -2943,9 +2943,7 @@ def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
 
 
 # Mirrors the frontend's NO_MLX_REASONS: an Apple Silicon host that still cannot load MLX.
-_NO_MLX_REASONS = frozenset(
-    {"mlx_unavailable", "no_torch", "intel_mac", "rosetta", "detection_failed"}
-)
+_NO_MLX_REASONS = frozenset({"mlx_unavailable", "intel_mac", "rosetta", "detection_failed"})
 
 # Mirrors the backend's PRECISION_FOLDER_SOURCE: an MLX precision subfolder (6-bit/), not a GGUF quant.
 _MLX_PRECISION_FOLDER_RE = re.compile(

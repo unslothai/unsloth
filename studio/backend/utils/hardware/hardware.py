@@ -1512,6 +1512,11 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
         return False
 
 
+def mlx_serves_chat_only() -> bool:
+    """A Chat only (--no-torch) Mac: MLX serves chat, but unsloth_zoo's MLX trainer and export import torch."""
+    return DEVICE == DeviceType.MLX and bool(CHAT_ONLY) and CHAT_ONLY_REASON == "no_torch"
+
+
 def verdict_blames_the_mlx_stack() -> bool:
     """Unlocked deliberately: _DETECT_LOCK spans a whole detection pass, imports included, so taking it would park the post-warm worker behind an early request's first import. The overturn re-reads under the lock, so a straddling read costs one needless measurement."""
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
@@ -1835,10 +1840,19 @@ def _detect_hardware_locked() -> DeviceType:
     # Require the full mlx/mlx-lm/mlx-vlm stack so the gate matches utils.mlx_repair: a partial stack stays chat-only ("mlx_unavailable") and the background self-heal repairs it.
     if is_apple_silicon() and _has_usable_mlx_stack():
         DEVICE = DeviceType.MLX
-        CHAT_ONLY = False
         # platform.machine() ("arm64"), not platform.processor(), which returns "i386" on universal2 / Rosetta builds even on native arm64.
         chip = platform.machine() or "arm64"
         print(f"Hardware detected: MLX — Apple Silicon ({chip})")
+        if _installed_without_torch():
+            # A Chat only install still gets MLX, so MLX models chat here, but unsloth_zoo's MLX
+            # trainer and export import torch: Train/Export stay off, as on any --no-torch host.
+            CHAT_ONLY_REASON = "no_torch"
+            logger.info(
+                "Apple Silicon installed --no-torch (Chat only); MLX serves chat, Train/Export "
+                "are off by request. Reinstall without --no-torch to enable them."
+            )
+            return DEVICE
+        CHAT_ONLY = False
         return DEVICE
 
     DEVICE = DeviceType.CPU
@@ -2182,7 +2196,7 @@ def export_capability() -> dict:
         torchao_export_supported = torchao_export_loadable()
     except Exception:
         torchao_export_supported = not _windows_rocm
-    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+    if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX) and not mlx_serves_chat_only():
         return {
             "export_supported": True,
             "export_unsupported_reason": None,

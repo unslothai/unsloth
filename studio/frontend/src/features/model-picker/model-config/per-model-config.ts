@@ -174,9 +174,9 @@ export const MAX_SEQ_LENGTH_STEP = 128;
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
+// Not "no_torch": a Chat only Mac installs MLX and serves chat on it.
 const NO_MLX_REASONS = new Set([
   "mlx_unavailable",
-  "no_torch",
   "intel_mac",
   "rosetta",
   "detection_failed",

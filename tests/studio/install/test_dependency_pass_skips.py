@@ -1349,8 +1349,22 @@ def mlx(monkeypatch):
     return fake, steps, written, healthy
 
 
-def test_a_recorded_healthy_stack_is_not_re_probed(mlx) -> None:
+def test_a_no_torch_install_reports_mlx_for_chat_not_training(mlx, monkeypatch) -> None:
+    # unsloth_zoo's MLX trainer imports torch, so a Chat only Mac's MLX stack serves chat only.
+    _, steps, _, _ = mlx
+    monkeypatch.setattr(stack, "NO_TORCH", True)
+    stack._report_mlx_stack_health(skipped = False)
+    assert steps == [("mlx", "chat stack ready")]
+    steps.clear()
+    blocked = _FakeSubprocess(stdout = '["mlx-lm is not installed"]')
+    monkeypatch.setattr(stack, "subprocess", blocked)
+    stack._report_mlx_stack_health(skipped = False)
+    assert steps[0] == ("mlx", "MLX models will not load until this is resolved:")
+
+
+def test_a_recorded_healthy_stack_is_not_re_probed(mlx, monkeypatch) -> None:
     fake, steps, written, _ = mlx
+    monkeypatch.setattr(stack, "NO_TORCH", False)
     stack._report_mlx_stack_health(skipped = True)
     assert fake.calls == 0
     assert steps == [("mlx", "training stack ready")]

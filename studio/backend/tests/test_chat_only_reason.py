@@ -278,11 +278,24 @@ def test_a_declined_settle_does_not_mark_the_epoch(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
-def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):
+def test_apple_silicon_no_torch_install_with_usable_mlx_chats_on_mlx_without_training(monkeypatch):
+    # unsloth_zoo's MLX trainer and export import torch, so a Chat only Mac serves chat on MLX only.
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
-    hw.detect_hardware()
+    assert hw.detect_hardware() == hw.DeviceType.MLX
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    capability = hw.export_capability()
+    assert capability["export_supported"] is False
+    assert capability["export_unsupported_reason"] == "no_torch"
+
+
+def test_apple_silicon_full_install_with_usable_mlx_enables_training(monkeypatch):
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
+    assert hw.detect_hardware() == hw.DeviceType.MLX
     assert hw.CHAT_ONLY is False
     assert hw.CHAT_ONLY_REASON is None
 
