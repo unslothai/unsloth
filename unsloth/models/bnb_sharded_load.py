@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pre-quantized bitsandbytes 4-bit checkpoints under sharded loading (tensor / pipeline parallel, native FSDP2).
-
-transformers builds the model on meta with its own Linear4bit replacement (no weight is read), then every rank
-fills it from the safetensors checkpoint: the packed 4-bit bytes it keeps (all, a dim-0 byte range, a tensor
-parallel slice, or none) and the QuantState statistics of what it keeps (absmax and maps, 1/64 of the bytes)."""
+"""Pre-quantized bitsandbytes 4-bit under sharded loading: each rank fills only the packed bytes and
+QuantState stats it keeps (stats are 1/64 of the bytes)"""
 
 from __future__ import annotations
 
@@ -185,9 +182,8 @@ def meta_state_dict(reader):
 
 
 def prequantized_skeleton(original, cls, name, args, kwargs, config, state_dict):
-    """transformers' own model for a pre-quantized bitsandbytes 4-bit checkpoint, on meta, nothing read.
-    `state_dict` holds the non-quantized tensors as meta tensors: transformers' loading (and any patch of it)
-    gives each its parameter dtype, as the full load does; the 4-bit weights stay unloaded."""
+    """The transformers model on meta for a pre-quantized checkpoint; state_dict tensors get their
+    parameter dtype; 4-bit weights stay unloaded"""
     kwargs = {
         k: v
         for k, v in kwargs.items()

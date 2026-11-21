@@ -363,9 +363,11 @@ def load_ltx25_transformer(
     if is_gguf:
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
         install_exact_dequant()
+        install_gguf_mmap()
     state = load_single_file_checkpoint(str(checkpoint_path))
     dit_state = _ltx23_pre_convert({k: v for k, v in state.items() if ltx23_is_dit_key(k)})
     del state
@@ -595,9 +597,11 @@ def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
 
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()
         install_exact_dequant()
+        install_gguf_mmap()
         return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
     from safetensors import safe_open
 

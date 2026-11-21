@@ -34,8 +34,7 @@ STRIDED_SAGE_BACKENDS = frozenset({"sage", "sage_hub"})
 
 
 def strided_install_backend(backend: Any) -> bool:
-    """Whether a load that engaged ``backend`` should install the strided processor: cuDNN / flash SDPA, or a Sage
-    backend unless UNSLOTH_H3_STRIDED_SAGE=0."""
+    """Strided processor for cuDNN or flash SDPA, and Sage unless UNSLOTH_H3_STRIDED_SAGE=0."""
     value = _backend_value(backend)
     if value in (_CUDNN, _FLASH):
         return True
@@ -243,8 +242,7 @@ def _strided_processor_for(base: Any) -> Any:
                 )
                 hidden_states = hidden_states.flatten(2, 3).type_as(query)
             elif sage:
-                # NHD in and out, through the same guarded dispatch the stock processor uses (calls Sage cannot
-                # take still run native there)
+                # NHD in and out via guarded dispatch; calls Sage cannot take still run native.
                 hidden_states = dispatch(
                     query,
                     key,

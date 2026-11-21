@@ -277,9 +277,8 @@ def _build_module_classes():
         def _window_attn(
             self, q: Any, k: Any, v: Any, kgw: Any, vgw: Any, gvalid: Any, k0: int, s: int
         ) -> Any:
-            """Attention over every spatial window of one temporal window. q/k/v (n, H, W, D) start ``k0`` latents into
-            the padded window; kgw / vgw (G, D) are the global tokens of the blocks it overlaps, gvalid (G,) bool or
-            None when all are valid."""
+            """Attention over each spatial window of one temporal window; kgw / vgw are its global
+            tokens."""
             n, H, W, D = q.shape
             ws, tb, hd, dh = self.window, self.block, self.heads, self.dh
             Hp = -(-(H + s) // ws) * ws
@@ -658,8 +657,7 @@ def build_sol_decoder(
     device: Any = "cpu",
     **overrides: Any,
 ) -> Any:
-    """A SolH3Decoder from a vendor-layout state dict (tensors may be float32 on any device); ``overrides`` replace
-    module sizes (tests shrink the window)."""
+    """SolH3Decoder from a vendor state dict; overrides replace sizes (tests shrink window)."""
     import torch
 
     dtype = dtype or torch.float32

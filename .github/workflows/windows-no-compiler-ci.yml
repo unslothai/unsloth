@@ -156,8 +156,9 @@ jobs:
               $global:LASTEXITCODE = 0
               if ($exit -ne 0) { throw "install.ps1 exited $exit" }
           }
+          # A burst of temp writes can overflow the watcher; that run is void, so measure again.
           $seen = Invoke-WithCompilerWatch -Name 'installer' -Action $install `
-              -EvidenceRoot $env:UNSLOTH_EVIDENCE
+              -EvidenceRoot $env:UNSLOTH_EVIDENCE -Attempts 2
 
           # Interpolated, not -f: the format operator binds tighter than concatenation.
           if ($seen.Compilers) {
@@ -217,8 +218,9 @@ jobs:
               "sha256=$((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash)" |
                   Out-File "$env:UNSLOTH_EVIDENCE\setup-measured.txt" -Encoding utf8 -Append
           }
+          # A burst of temp writes can overflow the watcher; that run is void, so measure again.
           $seen = Invoke-WithCompilerWatch -Name 'installer-tauri' -Action $desktop `
-              -EvidenceRoot $env:UNSLOTH_EVIDENCE
+              -EvidenceRoot $env:UNSLOTH_EVIDENCE -Attempts 2
 
           if ($seen.Compilers) {
               $seen.Compilers | ForEach-Object { Write-Host "COMPILER: $_" }

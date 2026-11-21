@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pipeline parallel, one or more stages per rank (every torch schedule, pp_schedules.py); LoRA first; order
-pp outermost then dp then tp, split before parallelizing; save_adapter is collective, rank 0 writes; param
-names unchanged."""
+"""Pipeline parallel, one or more stages per rank (any torch schedule); LoRA first, split before
+parallelizing; order pp, dp, tp; save_adapter collective, rank 0 writes; param names unchanged."""
 
 from __future__ import annotations
 
@@ -1378,6 +1377,9 @@ class _PPPassThrough(_CheckpointLayer):
     pinned off), so the hidden states it hands out stay in this stage's autograd graph."""
 
     gradient_checkpointing = property(lambda self: False, lambda self, value: None)
+    # Read by _frozen_prefix: the hidden states this layer hands out come from the previous stage and carry its
+    # gradient, so they must never become the cut's detached leaf.
+    _unsloth_pipeline_stand_in = True
 
     def __init__(self, index, ctx, source):
         nn.Module.__init__(self)
@@ -1907,8 +1909,7 @@ class _PPStageModule(nn.Module):
             if ctx.num_items_in_batch is not None:
                 kwargs["num_items_in_batch"] = ctx.num_items_in_batch
             if moe is not None:
-                # The model would add an auxiliary loss over the last stage's routers only: it is formed
-                # here from every stage's statistics instead.
+                # Aux loss would cover only last-stage routers; formed here from all stages.
                 kwargs["output_router_logits"] = False
                 ctx.router_logits = []
             else:
@@ -1965,8 +1966,7 @@ class _PPStageModule(nn.Module):
             )
             if stats is None:  # auxiliary loss off: nothing to carry (a zero placeholder)
                 if carry:
-                    # Still tied to the received carry: torch 2.10 / 2.11 pipelining needs a gradient for every
-                    # received input (a zero one here).
+                    # torch 2.10/2.11 pipelining needs a grad per received input; zero here.
                     stats = carry[0].to(device) * 0
                 else:
                     stats = torch.zeros(2 * moe.num_experts + 1, dtype = torch.float32, device = device)
@@ -2051,9 +2051,8 @@ def _refuse_aux_with_reentrant_checkpointing(
     config,
     on = None,
 ):
-    """Reentrant checkpointing (transformers' default, Unsloth smart checkpointing) runs the first layer forward
-    under no_grad, so the captured router logits carry no graph and the auxiliary loss would add its value but
-    no gradient."""
+    """Reentrant checkpointing (transformers' default, Unsloth smart) runs the first layer under
+    no_grad, so router logits carry no graph; the aux loss adds its value but no gradient."""
     if not (getattr(config, "output_router_logits", False) if on is None else on):
         return
     if non_reentrant_checkpointing_only(model) is False:
@@ -2397,8 +2396,7 @@ class PipelineParallel:
                 if self.ctx.ple is not None:
                     example_out = (example_out, per_layer(self.bounds[index][1]))
             if moe is not None:
-                # The router load-balancing statistics travel with the hidden states (gradient back to
-                # every stage's routers).
+                # Router stats travel with hidden states; gradients reach all stages' routers.
                 stats = torch.empty(
                     (2 * moe.num_experts + 1,),
                     dtype = torch.float32,
@@ -2858,15 +2856,21 @@ class PipelineParallel:
 
         local = {}
         raw = gather = None
+        back = {}
         if self.composed or self.dp_mesh is not None or self.tp_mesh is not None:
             # FSDP2 / tensor parallel DTensors: gathered whole (collective over the stage's dp / tp ranks, the
             # same keys in the same order on each), fused tp layouts back in their 1-GPU order.
-            raw = self.model.state_dict(keep_vars = True)
-            from .tp_native import _full, _param_layouts
+            from .tp_native import _full, _is_dtensor, _param_layouts
 
+            full = self.model.state_dict(keep_vars = True)
+            # PEFT selects over local shards: PEFT >= 0.22 gathers selected DTensors into new tensors itself,
+            # which would lose the fused tp layout lookup below, so each selection maps back to its DTensor.
+            raw = {k: v.to_local() if _is_dtensor(v) else v for k, v in full.items()}
+            back = {id(raw[k]): v for k, v in full.items()}
             layouts = _param_layouts(self.model)
 
             def gather(v):
+                v = back.get(id(v), v)
                 return _full(v, v, layouts.get(id(v)))
 
         with torch.no_grad():
@@ -2966,9 +2970,8 @@ def _default_activation_dtype(model, parts):
 
 
 def _local_stage_modules(pp_stage, parts, owned):
-    """One _PPStageModule per local stage of a multi-stage rank. Every one runs the same model; while stage k
-    runs, this rank's layers of its other stages are swapped for pass-throughs and, unless k is the first
-    stage, the embedding for its stub (so it is not looked up for nothing)."""
+    """One _PPStageModule per local stage. While stage k runs, this rank's layers of its other
+    stages become pass-throughs; the embedding becomes a stub unless k is the first stage."""
     layers = parts.layers
     stand_ins = {i: _PPPassThrough(i, pp_stage.ctx, layers[i]) for i in owned}
     embed_owner = _owner(parts.decoder, parts.embed) if pp_stage.is_first else None

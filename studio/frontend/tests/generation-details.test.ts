@@ -87,9 +87,7 @@ test("the time left follows the rate so far and drops out under a second", () =>
   assert.equal(formatPrefillTimeLeft(prefill({ processed: 18500, total: 18880, cached: 0, tokPerS: 1400 }), t), null);
 });
 
-// llama-server's own [processed, time_ms] samples for two prompts. The first, 30,382 tokens through
-// llama-server directly, ended at 34,847 ms; the second, 27,268 tokens through Studio, ended at
-// 18,229 ms and its first batch was slow (warm-up), which a fit through the first sample misreads.
+// Prefill samples: Studio's first batch is slow warm-up, so fitting its first sample misleads.
 const LONG_PROMPTS = [
   {
     total: 30382,

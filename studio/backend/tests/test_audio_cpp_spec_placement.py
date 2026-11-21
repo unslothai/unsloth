@@ -107,7 +107,6 @@ PLACEMENTS = [
     ("new_tts_legacy", {"tasks": ["tts", "clone"]}, {"speak", "clone"}),
     ("mira_tts", {"tasks": ["tts", "clone"], "options": _req("seed")}, {"clone"}),
     ("sopro_tts", SOPRO, {"clone"}),
-    ("lfm2_audio", LFM2, set()),
     ("new_lfm2", {"tasks": ["asr", "tts", "s2s"]}, {"speak"}),
     ("chatterbox", {"tasks": ["clone", "vc"]}, {"clone", "convert"}),
     ("rvc", {"tasks": ["vc"]}, {"convert"}),
@@ -196,11 +195,19 @@ def test_design_only_spec_runs_voice_design(hub):
     assert model.server_task == "vdes" and model.clone is None
 
 
-def test_a_multi_file_package_spec_is_refused(hub):
+def test_a_multi_file_package_spec_loads_only_when_the_repo_has_every_file(hub):
+    # One of LFM2.5's four GGUFs is not a model: the package is refused until all are published.
     model = _resolve(hub, "lfm2_audio", LFM2)
-    assert model.unsupported == acm._MULTI_FILE_PACKAGE
-    assert "multi-file package Unsloth Studio cannot load yet" in model.unsupported
+    assert model.unsupported == acm.PACKAGE_INCOMPLETE
     assert acm.recommended_gguf_files(LFM2)[0] == "LFM2.5-Audio-1.5B-Q8_0.gguf"
+    acm.forget()
+    whole = _resolve(hub, "lfm2_audio", LFM2, files = tuple(LFM2["packages"][0]["files"]))
+    assert whole.unsupported is None and list(whole.workflows) == ["speak"]
+    # The fixture names no precision, so the package id keys the variant.
+    assert [v.key for v in whole.variants] == ["lfm2_audio_1_5b_q8_0"]
+    assert whole.variant.primary == "LFM2.5-Audio-1.5B-Q8_0.gguf" and len(whole.variant.files) == 4
+    # Its one option list serves asr, tts and s2s: defaults of another task are not sent.
+    assert whole.fills_option_defaults is False
 
 
 @pytest.mark.parametrize(
@@ -226,7 +233,7 @@ def test_unsupported_messages_say_unsloth_studio():
     messages = [f.unsupported for f in acm.FAMILIES.values() if f.unsupported]
     for spec in ({"tasks": t} for t in (["vc"], ["svc"], ["s2s"], ["turn"], ["odd"], [])):
         messages.append(acm._family_from_spec_tasks("new_x", spec).unsupported)
-    messages.append(acm._family_from_spec_tasks("lfm2_audio", LFM2).unsupported)
+    messages.append(acm.PACKAGE_INCOMPLETE)
     assert "Unsloth Studio doesn't support voice conversion models yet." in messages
     for message in messages:
         assert message and re.search(r"(?<!Unsloth )Studio", message) is None, message

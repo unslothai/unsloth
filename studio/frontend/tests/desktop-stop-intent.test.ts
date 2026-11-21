@@ -274,8 +274,7 @@ test("a tray stop that fails tells the user why", () => {
   );
 });
 
-// The tray listener is registered once at mount, so run the real runStopServer with that
-// render's state: not attached, whatever the app is attached to now.
+// The tray listener is registered at mount, so run the real runStopServer with that render's state.
 function stopFromMountTimeListener(port: number, stopError?: Error) {
   const hook = USE_TAURI_BACKEND;
   const start = hook.indexOf("  async function runStopServer()");

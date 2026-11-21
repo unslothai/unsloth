@@ -67,6 +67,7 @@ studio = [
     "node_prebuilt_pins.json",
     "lemonade_prebuilt_pins.json",
     "q4nx_converter_pins.json",
+    "hnsw_prebuilt.txt",
     "src-tauri/icons/icon.icns",
     "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
@@ -177,8 +178,6 @@ studio = [
     "av>=12.3.0",
     # No win_arm64 wheel or sdist; RAG treats a missing sqlite_vec as unavailable.
     "sqlite-vec==0.1.9 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    # Mirrors studio.txt: HNSW for gigantic RAG scopes, wheels for every target incl. win_arm64.
-    "usearch==2.26.6",
     # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel only for 1.28.2.
     "pymupdf==1.27.2.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
     "pymupdf==1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
@@ -189,7 +188,6 @@ studio = [
 
 # Optional AWS S3 dataset loading; kept out of the default Studio installation.
 s3 = ["boto3>=1.34.0"]
-
 triton = [
     # Not raised past 3.0.0: torch 2.6.0 pins triton==3.2.0, so a higher floor makes it unresolvable.
     # Known triton defects are gated in unsloth_zoo/loss_utils.py and unsloth/import_fixes.py.
@@ -200,7 +198,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.11.6",
+    "unsloth_zoo>=2026.11.8",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -248,7 +246,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.11.6",
+    "unsloth_zoo>=2026.11.8",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -887,7 +885,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.11.6",
+    "unsloth_zoo>=2026.11.8",
     "packaging",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.18.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",

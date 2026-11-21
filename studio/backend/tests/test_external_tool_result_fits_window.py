@@ -304,7 +304,9 @@ def test_tool_schemas_found_by_search_count_against_the_result_room(monkeypatch)
     search = _spec("mcp_tool_search")
     found = _spec("mcp__srv1__ping", "pings the server " * 300)
     monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda result: [found])
-    monkeypatch.setattr(controller_mod, "_mcp_tool_spec", lambda name: found)
+    monkeypatch.setattr(
+        controller_mod, "_mcp_tool_specs", lambda names: {name: found for name in names}
+    )
     monkeypatch.setattr(tools, "_web_search", lambda *a, **k: str(list(range(4000))))
     transport = FakeTransport(
         [_call_turn("s1", name = "mcp_tool_search"), _call_turn("c1"), _ANSWER_TURN]

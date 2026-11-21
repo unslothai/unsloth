@@ -103,6 +103,7 @@ ROOT_FLAGS = {
     "data-glass-layers": "allow: WebKit only (layers for Glass surfaces); the Chromium gate cannot run it",
     "data-glass-cpu": "allow: WebKitGTK only (cheaper Glass); the Chromium gate cannot run it",
     "webkit-cpu-paint": "allow: WebKitGTK CPU painting only (image shadows); the Chromium gate cannot run it",
+    "webkit-legacy-compositor": "allow: WebKitGTK before 2.54 only (TextureMapper backdrop workaround); the Chromium gate cannot run it",
     "data-glass-motion": "allow: set only while scrolling under software compositing; scroll areas measure it",
     "data-chat-wallpaper-ready": "solid+wallpaper",
     "data-chat-wallpaper-workspace-ready": "liquid-3d+wallpaper",

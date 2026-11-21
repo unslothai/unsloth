@@ -179,6 +179,7 @@ export const pl = {
       add: "Dodaj",
       cancel: "Anuluj",
       removeSite: "Usuń {site}",
+      hostOnly: "Tylko ten host, bez jego subdomen",
       permissionsNote:
         "Wyświetlane są tylko witryny z własnymi uprawnieniami. Działania to logowania, wysyłanie formularzy oraz przyciski, które kupują, wysyłają lub usuwają.",
       siteInvalid: "Wpisz witrynę, np. example.com lub *.example.com.",
@@ -811,6 +812,7 @@ export const pl = {
     failed:
       "Instalacja silnika nie powiodła się. Spróbuj ponownie lub użyj silnika domyślnego.",
     details: "Szczegóły techniczne",
+    lastAttempt: "Ostatnia próba: {time}",
     cancelled: "Anulowano instalację. Możesz spróbować ponownie.",
     scope:
       "Czat tekstowy i z obrazami na procesorach GPU NVIDIA. Pierwsze wczytanie może potrwać dłużej.",
@@ -985,7 +987,6 @@ export const pl = {
     copy: "Kopiuj",
     addScheduledTask: "Dodaj zaplanowane zadanie…",
     compact: "Kompaktuj rozmowę",
-    compactQueued: "Zażądano kompaktowania przy następnej wiadomości",
     compactEmpty: "Nie ma jeszcze czego kompaktować",
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
@@ -1880,6 +1881,12 @@ export const pl = {
       learnMore: "Więcej informacji",
       managedNote:
         "Piaskownicę systemu operacyjnego konfiguruje właściciel tego serwera Unsloth.",
+      trustedFoldersTitle: "Zaufane foldery",
+      trustedFoldersLabel: "Uruchamiaj bez pytania",
+      trustedFoldersDescription: "Python i Terminal mogą odczytywać i uruchamiać pliki z tych folderów bez prośby o zgodę, tylko w Twoich własnych czatach. Zapis do nich nadal wymaga zgody. Jeden folder w wierszu.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Nie udało się wczytać zaufanych folderów.",
+      trustedFoldersSaveError: "Nie udało się zapisać zaufanych folderów.",
     },
     debugging: {
       description: "Czytaj dzienniki Unsloth bez opuszczania aplikacji.",
@@ -2754,6 +2761,54 @@ export const pl = {
     appearance: {
       title: "Wygląd",
       description: "Jak Unsloth wygląda na tym urządzeniu.",
+      themeFile: {
+        title: "Plik motywu",
+        importLabel: "Zaimportuj motyw",
+        import: "Importuj",
+        exportLabel: "Wyeksportuj swój motyw",
+        export: "Eksportuj",
+        exportTitle: "Eksportuj motyw",
+        exportName: "Nazwa motywu",
+        exportNamePlaceholder: "Mój motyw",
+        exportIncludeLayout: "Uwzględnij układ paska bocznego",
+        exportIncludeAssets: "Uwzględnij zaimportowane czcionki i obraz tła",
+        exportAction: "Pobierz",
+        exported: "Motyw zapisano jako {name}",
+        exportFailed: "Nie udało się wyeksportować motywu.",
+        exportBackgroundOmitted: "Obraz tła był zbyt duży, aby go dołączyć, dlatego plik zapisano bez niego.",
+        importTitle: "Importuj motyw",
+        importApplyLayout: "Zastosuj też układ paska bocznego",
+        importApplyAssets: "Zastosuj też czcionki i obraz tła",
+        importApply: "Zastosuj motyw",
+        changesTitle: "Co się zmieni",
+        noChanges: "Ten motyw odpowiada twojemu obecnemu wyglądowi.",
+        warningsTitle: "Ostrzeżenia",
+        applied: "Zastosowano motyw „{name}”",
+        undo: "Cofnij",
+        undone: "Przywrócono poprzedni wygląd",
+        undoneWithoutBackground: "Przywrócono poprzedni wygląd, ale nie udało się przywrócić obrazu tła.",
+        fileTooLarge: "Ten plik jest zbyt duży, aby był motywem.",
+        fileInvalid: "Ten plik nie jest prawidłowym motywem Unsloth.",
+        change: {
+          palette: "Motyw kolorystyczny",
+          colors: "Kolory i kontrast",
+          typography: "Czcionki i rozmiar tekstu",
+          code: "Wyświetlanie kodu",
+          chat: "Szerokość czatu i pole wpisywania",
+          glass: "Szkło",
+          layout: "Układ paska bocznego",
+          fonts: "Zaimportowane czcionki",
+          background: "Obraz tła",
+        },
+        warning: {
+          newerVersion: "Utworzono w nowszej wersji Unsloth. Ustawienia, których ta wersja nie zna, zostały pominięte.",
+          unknownPalette: "Nieznany motyw kolorystyczny „{palette}”, zamiast niego zastosowano Standardowy.",
+          unknown: "Pominięto nieznane ustawienie: {path}",
+          invalid: "Zastąpiono nieprawidłową wartość: {path}",
+          backgroundSkipped: "Nie udało się użyć obrazu tła z tego pliku.",
+          more: "I {count} więcej",
+        },
+      },
       gpuRendering: {
         sectionTitle: "Renderowanie",
         label: "Renderowanie na GPU",
@@ -3384,6 +3439,7 @@ export const pl = {
       groups: {
         replies: { title: "Odpowiedzi" },
         thinkingTools: { title: "Myślenie i narzędzia" },
+        customization: { title: "Personalizacja" },
         conversations: {
           title: "Rozmowy",
         },
@@ -3435,6 +3491,10 @@ export const pl = {
         fitOnDeviceOnly: "Pokazuj tylko mieszczące się modele",
         fitOnDeviceOnlyDescription:
           "Ukrywaj w wyborze modelu i centrum modele zbyt duże dla pamięci GPU i RAM tego urządzenia. Pobrane modele pozostają widoczne.",
+        pickerExpandLoaded: "Pokaż pełną listę modeli",
+        pickerExpandLoadedDescription: "Gdy model jest załadowany, otwieraj wybór modelu na pełnej liście zamiast tylko załadowanego modelu. Rozwinięcie lub zwinięcie wyboru również zmienia to ustawienie.",
+        pickerMonochromeIcons: "Monochromatyczne ikony modeli",
+        pickerMonochromeIconsDescription: "Pokazuj logo modeli i dostawców w czerni, bieli i szarości w wyborze modelu.",
       },
       menu: {
         title: "Menu czatu",

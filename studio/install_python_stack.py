@@ -65,6 +65,7 @@ from backend.utils.wheel_utils import (
     I8GEMM_VERSION,
     flash_attn_package_version,
     flash_attn_wheel_url,
+    int8_gemm_platform_supported,
     int8_gemm_wheel_url,
     install_wheel,
     probe_torch_wheel_env,
@@ -701,20 +702,27 @@ class _FreezeNewTorchForCoreUpdate:
     every with-deps unsloth install. Scoped to Linux and native Windows x64 with torch >= 2.13,
     the releases past that ceiling, so every other install resolves exactly as before; a native
     Windows on ARM interpreter keeps its own UV_OVERRIDE (_woa_overrides_are_load_bearing), an
-    emulated x64 one there is frozen like any x64 install.
+    emulated x64 one there is frozen like any x64 install. Apple Silicon is frozen on every
+    release: only a new install or UNSLOTH_TORCH_UPGRADE=1 through install.sh picks its torch,
+    and an update moving it either way (2.13 back under a cap, 2.11 up under a floor) is never
+    wanted there. Intel macOS has no torch past 2.2.2 to move to and resolves as before.
     """
 
     def __enter__(self):
         self._path = None
         self._previous = os.environ.get("UV_OVERRIDE")
         release = _resident_torch_release()
+        if release is None:
+            return self
         if not (
             (
-                sys.platform.startswith("linux")
-                or (sys.platform == "win32" and not _is_win_arm64_interpreter())
+                (
+                    sys.platform.startswith("linux")
+                    or (sys.platform == "win32" and not _is_win_arm64_interpreter())
+                )
+                and int(release.split(".")[1]) >= 13
             )
-            and release is not None
-            and int(release.split(".")[1]) >= 13
+            or (sys.platform == "darwin" and platform.machine() == "arm64")
         ):
             return self
         pins = _resident_torch_trio_pins()
@@ -7905,9 +7913,15 @@ def _ensure_int8_gemm() -> None:
     """Optional prebuilt int8 GEMM wheel (diffusion INT8, sm75 / sm8x); every failure only warns."""
     if _int8_gemm_install_disabled() or NO_TORCH or IS_MACOS:
         return
+    if not int8_gemm_platform_supported():
+        return
     if _installed_distribution_version(I8GEMM_DISTRIBUTION) == I8GEMM_VERSION:
         return
-    env = probe_torch_wheel_env(include_windows = True)
+    # Bounded like the flash-attn probe: a wedged Windows driver must not hang setup.
+    env = probe_torch_wheel_env(
+        timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT if IS_WINDOWS else None,
+        include_windows = True,
+    )
     wheel_url = int8_gemm_wheel_url(env)
     if not wheel_url or not url_exists(wheel_url):
         return
@@ -10203,7 +10217,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.8.0"
+_MLX_VLM_SPEC = "mlx-vlm>=0.6.4,<=0.8.0"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -10810,8 +10824,14 @@ def _installed_index_digest() -> "str | None":
         return None
     digest = hashlib.sha256()
     for name in sorted(index):
+        # The HNSW pair is also installed at runtime (--no-deps): must not void the evidence.
+        if name in _HNSW_DISTRIBUTIONS:
+            continue
         digest.update(f"{name}=={index[name][0]}\n".encode("utf-8"))
     return digest.hexdigest()
+
+
+_HNSW_DISTRIBUTIONS = frozenset({"usearch", "numkong"})
 
 
 def _installed_index() -> "dict | None":
@@ -11487,6 +11507,57 @@ def _prefetch_diffusers_main() -> int:
     return 0
 
 
+HNSW_INSTALLER = SCRIPT_DIR / "install_hnsw_prebuilt.py"
+_HNSW_OK = {"ready", "already", "disabled"}
+
+
+def _hnsw_auto_install_disabled() -> bool:
+    return os.environ.get("RAG_VEC_ANN_AUTO_INSTALL", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _hnsw_prefetch() -> bool:
+    return os.environ.get("UNSLOTH_HNSW_PREFETCH", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _hnsw_prebuilt_step() -> None:
+    """11e. Optional HNSW pair; never fails the install (RAG falls back to exact search).
+
+    On demand by default: the backend fetches it the first time a knowledge base is large enough
+    to use it (core/rag/hnsw_runtime.py), so most installs never download it. UNSLOTH_HNSW_PREFETCH=1
+    installs it now, e.g. on a machine that will be offline later."""
+    if _hnsw_auto_install_disabled():
+        _progress("HNSW search (disabled)")
+        _record_step("hnsw-prebuilt", "disabled")
+        return
+    if not _hnsw_prefetch():
+        _progress("HNSW search (on demand)")
+        _record_step("hnsw-prebuilt", "on-demand")
+        return
+    _progress("HNSW search")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_unsloth_install_hnsw_prebuilt", HNSW_INSTALLER
+        )
+        module = importlib.util.module_from_spec(spec)
+        # Registered first: dataclasses resolve string annotations through sys.modules.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        result = module.ensure(sys.executable)
+        status, detail = str(result.get("status")), str(result.get("detail") or "")
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - an optional accelerator
+        status, detail = "failed", f"{type(exc).__name__}: {exc}"
+    _record_step("hnsw-prebuilt", status)
+    if status not in _HNSW_OK:
+        _note(
+            f"HNSW search unavailable ({status}: {detail}); large knowledge bases use exact search"
+        )
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -11845,7 +11916,7 @@ def install_python_stack() -> int:
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # Includes lettered steps 8b, 8c (Windows), 11b, 11c, 13b; 11c always spends its slot.
+    # Includes lettered steps 8b, 8c (Windows), 11b, 11c, 11e, 13b; 11c and 11e always spend their slot.
     base_total = 14 if IS_WINDOWS else 15
     if IS_WINDOWS:
         base_total += 1  # 8c, gated exactly as the step is
@@ -11864,6 +11935,7 @@ def install_python_stack() -> int:
         base_total += 1  # MLX stack re-resolve
     if IS_MAC_ARM:
         base_total += 1  # MLX grammar engine (step 11d), same gate as the step itself
+    base_total += 1  # HNSW pair (step 11e), every platform
     if NO_TORCH and not skip_base:
         # no-torch runtime deps get their own slot inside the core step.
         base_total += 1
@@ -12339,6 +12411,8 @@ def install_python_stack() -> int:
                 )
             except SystemExit:
                 _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
+
+    _hnsw_prebuilt_step()
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()

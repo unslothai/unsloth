@@ -119,9 +119,8 @@ def install_for_pipe(
     logger: Any = None,
     explicit_off: Any = None,
 ) -> bool:
-    """Idempotent. Stock unless FLUX.3 on sm70 / sm75, no explicit speed ``off`` (``explicit_off``; None reads
-    ``speed_mode``; a dense load's unset request resolving to off still engages), expected diffusers symbol, and the
-    RMSNorm bound proves Q / K fit."""
+    """Idempotent; only FLUX.3 on sm70/sm75 with no explicit speed off (explicit_off; unset still
+    engages on dense loads), expected diffusers symbol, RMSNorm bound proves Q/K fit."""
     import sys
 
     transformer = getattr(pipe, "transformer", None)
