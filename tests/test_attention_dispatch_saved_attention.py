@@ -7,6 +7,7 @@ logsumexp its backward needs)."""
 
 import pytest
 import torch
+import torch.utils.checkpoint
 from torch.utils._python_dispatch import TorchDispatchMode
 
 ad = pytest.importorskip("unsloth.utils.attention_dispatch")
@@ -237,6 +238,9 @@ def _routed(
     packed = False,
 ):
     calls = []
+    # Automatic mode only routes where a frame can exist: under Unsloth's smart checkpoint.
+    monkeypatch.setattr(torch.utils.checkpoint, "CheckpointFunction", G.UnslothCheckpointFunction)
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", 16)
     monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
@@ -275,6 +279,7 @@ def test_auto_mode_reuses_through_run_attention(monkeypatch, checkpointing):
     """End to end on CPU: first step measured, second step kept and reused, same grads."""
     weights = _weights()
     full = [_grads(weights, _attend()) for _ in range(2)]
+    monkeypatch.setattr(torch.utils.checkpoint, "CheckpointFunction", G.UnslothCheckpointFunction)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", S)
     monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)

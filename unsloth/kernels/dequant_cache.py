@@ -132,12 +132,17 @@ def _storage_ref(W):
         return None
 
 
+def _version(t):
+    # Inference tensors carry no version counter (and cannot be written in place outside inference mode).
+    return None if t.is_inference() else t._version
+
+
 def _offset_key(offset):
     # A nested state's offset may be a Python scalar (_unpack_quant_state accepts it): key it by value.
     if offset is None:
         return None
     if isinstance(offset, torch.Tensor):
-        return (offset.data_ptr(), offset._version)
+        return (offset.data_ptr(), _version(offset))
     return ("value", float(offset))
 
 
@@ -147,19 +152,16 @@ def _scales_key(
     offset = None,
 ):
     """Address and version of every scale tensor W decodes with (absmax; nested quantization's absmax2 and
-    offset): a replaced quant state or an in-place write to one of them changes it. Host reads only."""
-    try:
-        if absmax2 is None and offset is None:
-            return (absmax.data_ptr(), absmax._version)
-        return (
-            absmax.data_ptr(),
-            absmax._version,
-            None if absmax2 is None else (absmax2.data_ptr(), absmax2._version),
-            _offset_key(offset),
-        )
-    except RuntimeError:
-        # Inference tensors carry no version counter (and cannot be written in place outside inference mode).
-        return (absmax.data_ptr(), None)
+    offset): a replaced quant state or an in-place write to one of them changes it. Host reads only. Each
+    tensor's version is read on its own, so an inference tensor among them does not hide the others' writes."""
+    if absmax2 is None and offset is None:
+        return (absmax.data_ptr(), _version(absmax))
+    return (
+        absmax.data_ptr(),
+        _version(absmax),
+        None if absmax2 is None else (absmax2.data_ptr(), _version(absmax2)),
+        _offset_key(offset),
+    )
 
 
 def _raw_stream(index):
@@ -529,6 +531,8 @@ def _lookup(
         # More tokens than any step the budget was measured on: its activations may need what the cache holds.
         _drop_device(index, "rows_drops")
         return decode(False)
+    if W.is_inference():
+        return decode(False)  # no version counter to tell an in place reload: never cached
     # Hit path kept short: it runs for every frozen linear, three times per micro-batch.
     entry = _CACHE.get((W.data_ptr(), dtype))
     scales = _scales_key(absmax, absmax2, offset)

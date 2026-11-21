@@ -180,7 +180,21 @@ class _Handler(BaseHTTPRequestHandler):
             time.sleep(20)
         if "LOADFAIL" in prompt and _on_load_failure is not None:
             _on_load_failure()
-        data = _script(prompt).encode()
+        script = _script(prompt)
+        if self.server.usage_chunk:
+            # Real FastFlowLM: usage comes in its own empty-choices chunk, and only on include_usage.
+            wanted = (body.get("stream_options") or {}).get("include_usage")
+            events = [e for e in script.split("\n\n") if e]
+            script = ""
+            for event in events:
+                if event.startswith("data: {") and '"usage"' in event:
+                    chunk = json.loads(event[6:])
+                    usage = chunk.pop("usage")
+                    event = "data: " + json.dumps(chunk)
+                    if wanted:
+                        event += "\n\ndata: " + json.dumps({**chunk, "choices": [], "usage": usage})
+                script += event + "\n\n"
+        data = script.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(data)))
@@ -214,6 +228,7 @@ def flm(monkeypatch):
     thread.start()
 
     def install(**caps):
+        httpd.usage_chunk = caps.get("usage_chunk", False)
         upstream = nb.ManagedUpstream(
             provider_type = "lemonade",
             base_url = f"http://127.0.0.1:{httpd.server_address[1]}/v1",
@@ -427,6 +442,14 @@ def test_non_streaming_reply_is_collected_from_the_stream(flm):
     choice = body["choices"][0]
     assert choice["message"]["content"] == "one two seven eight"
     assert choice["finish_reason"] == "length"
+    assert body["usage"] == _USAGE
+
+
+def test_non_streaming_reply_keeps_a_separate_usage_chunk(flm):
+    flm(usage_chunk = True)
+    status, body = _call(stream = False)
+    assert status == 200
+    assert body["choices"][0]["message"]["content"] == "one two seven eight"
     assert body["usage"] == _USAGE
 
 

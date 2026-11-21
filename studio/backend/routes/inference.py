@@ -32356,6 +32356,9 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
     wants_stream = bool(payload.stream)
     relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
     update: dict = {"stream": True}
+    if not wants_stream:
+        # The proxy drops the usage-only chunk unless the payload opts in, and the reply needs it.
+        update["stream_options"] = {"include_usage": True}
     if upstream.context_length and _rolling_context_policy(payload) is not None:
         # Lemonade does not compact, so fit the chat to the loaded window as managed engines do.
         window = min(filter(None, (payload.context_window, upstream.context_length)))
@@ -52576,12 +52579,20 @@ async def generate_diffusion_image(
     if request.provider_id:
         return await _external_image_generation(request, http_request)
     # A run admitted mid-switch renders the old model with the new pick's settings, or is cancelled by the swap.
+    # A load that already published its pipeline only finishes its tail (encoder pins): wait that out instead.
     if await asyncio.to_thread(_image_load_in_flight):
-        raise HTTPException(
-            status_code = 409,
-            detail = IMAGE_LOAD_IN_FLIGHT_MSG,
-            headers = problem_headers("loading", kind = "image"),
-        )
+        stops_before = _direct_stops
+        waited = await _wait_image_load_tail(lambda: _direct_stops != stops_before)
+        if waited is None:
+            # Stop while waiting: this run never reached the engine, so cancel_generate could not end it.
+            from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+            raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
+        if not waited:
+            raise HTTPException(
+                status_code = 409,
+                detail = IMAGE_LOAD_IN_FLIGHT_MSG,
+                headers = problem_headers("loading", kind = "image"),
+            )
     global _direct_image_runs, _direct_image_last_end
     _direct_image_runs += 1
     headers = http_request.headers if http_request is not None else {}
@@ -54069,6 +54080,37 @@ def _image_load_in_flight() -> bool:
         )
     except Exception:  # noqa: BLE001 -- no readable load state: the engine's own guards decide
         return False
+
+
+# Cap on the wait for a published load's tail; the encoder pins it waits for take seconds, not minutes.
+IMAGE_LOAD_TAIL_WAIT_S = 300.0
+_IMAGE_LOAD_TAIL_POLL_S = 0.1
+
+
+def _image_load_tail_only() -> bool:
+    """The image load in flight already published its pipeline (status reads loaded) and only finishes its tail."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    try:
+        tail = getattr(get_active_diffusion_engine(), "load_tail_pending", None)
+        return bool(tail()) if callable(tail) else False
+    except Exception:  # noqa: BLE001 -- unreadable: refuse as before
+        return False
+
+
+async def _wait_image_load_tail(stopped = None) -> Optional[bool]:
+    """True once the in-flight image load is over, when all that was left was its tail. False (refuse with 409, as
+    before) for a load or switch that has not published its pipeline yet, or a tail that outlasts the cap. None when
+    ``stopped()`` turns true (a Stop) during the wait."""
+    deadline = time.monotonic() + IMAGE_LOAD_TAIL_WAIT_S
+    while await asyncio.to_thread(_image_load_in_flight):
+        if stopped is not None and stopped():
+            return None
+        if time.monotonic() >= deadline or not await asyncio.to_thread(_image_load_tail_only):
+            return False
+        await asyncio.sleep(_IMAGE_LOAD_TAIL_POLL_S)
+    if stopped is not None and stopped():
+        return None
+    return True
 
 
 def _image_load_preparing_progress() -> Optional[DiffusionLoadProgressResponse]:

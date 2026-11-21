@@ -1445,7 +1445,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -1461,8 +1461,8 @@
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "FLUX.1-schnell-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/FLUX.1-schnell-FP8",
     "convrot_spec": [
      0,
      []
@@ -4833,6 +4833,7 @@
    ]
   },
   "int8_family_convrot_default_on": [
+   "flux.1",
    "flux.2-klein",
    "flux.3-klein",
    "flux.3-klein-base",
@@ -4843,6 +4844,7 @@
    "z-image"
   ],
   "int8_family_convrot_filename": {
+   "flux.1": "FLUX.1-schnell-INT8-ConvRot.safetensors",
    "flux.2-klein": "FLUX.2-klein-4B-INT8-ConvRot.safetensors",
    "flux.3-klein": "flux-3-image-klein-INT8-ConvRot.safetensors",
    "moss-image": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
@@ -4851,6 +4853,7 @@
    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
   },
   "int8_family_convrot_repo": {
+   "flux.1": "unsloth/FLUX.1-schnell-FP8",
    "flux.2-klein": "unsloth/FLUX.2-klein-4B-FP8",
    "flux.3-klein": "unsloth/flux-3-image-klein-FP8",
    "moss-image": "unsloth/MOSS-Image-SFT-FP8",
