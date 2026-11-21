@@ -368,30 +368,57 @@ def _dataset_lengths(dataset):
     return [len(ids) for ids in dataset["input_ids"]]
 
 
-def _shifted_count(row):
-    return sum(1 for value in row[1:] if value != -100)
+def _supervised_count(labels, completion_mask, assistant_mask):
+    # Positions the shifted loss reads (1..n) that survive every mask the collator applies.
+    n = (
+        len(labels)
+        if labels is not None
+        else len(completion_mask if completion_mask is not None else assistant_mask)
+    )
+    count = 0
+    for k in range(1, n):
+        if labels is not None and labels[k] == -100:
+            continue
+        if completion_mask is not None and not completion_mask[k]:
+            continue
+        if assistant_mask is not None and not assistant_mask[k]:
+            continue
+        count += 1
+    return count
 
 
-def _dataset_label_counts(dataset):
-    """Supervised tokens per row as the loss sees them (shifted, != -100): from a labels column
-    (train_on_responses_only), else a completion_mask / assistant_masks column. None otherwise."""
+def _dataset_label_counts(dataset, completion_only_loss = True):
+    """Supervised tokens per row as the loss sees them: shifted labels != -100, and also inside the
+    completion_mask (when the collator applies it) and assistant_masks columns, as TRL's collator
+    masks every one that is present. None when the dataset has none of these columns."""
     column_names = getattr(dataset, "column_names", None)
     if column_names is None:
         return None
-    for column, count in (
-        ("labels", _shifted_count),
-        ("completion_mask", lambda row: sum(1 for value in row[1:] if value)),
-        ("assistant_masks", lambda row: sum(1 for value in row[1:] if value)),
-    ):
-        if column not in column_names:
-            continue
-        if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
-            counts = []
-            for rows in dataset.select_columns([column]).iter(batch_size = 4096):
-                counts.extend(count(row) for row in rows[column])
-            return counts
-        return [count(row) for row in dataset[column]]
-    return None
+    columns = [
+        column
+        for column in ("labels", "completion_mask", "assistant_masks")
+        if column in column_names and (column != "completion_mask" or completion_only_loss)
+    ]
+    if not columns:
+        return None
+
+    def counts_of(rows):
+        n = len(rows[columns[0]])
+        return [
+            _supervised_count(
+                rows["labels"][i] if "labels" in rows else None,
+                rows["completion_mask"][i] if "completion_mask" in rows else None,
+                rows["assistant_masks"][i] if "assistant_masks" in rows else None,
+            )
+            for i in range(n)
+        ]
+
+    if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
+        counts = []
+        for rows in dataset.select_columns(columns).iter(batch_size = 4096):
+            counts.extend(counts_of(rows))
+        return counts
+    return counts_of({column: dataset[column] for column in columns})
 
 
 def _balance_mode():
@@ -551,7 +578,12 @@ def _balance_dataloader(
         return False
     label_counts = None
     if labels_mode:
-        label_counts = _dataset_label_counts(dataset)
+        # TRL's collator applies completion_mask only with completion_only_loss; others are assumed to apply it.
+        collator = getattr(trainer, "data_collator", None)
+        label_counts = _dataset_label_counts(
+            dataset,
+            completion_only_loss = getattr(collator, "completion_only_loss", True) is not False,
+        )
         if label_counts is None or len(label_counts) != len(lengths):
             return False
     if keep_first_window and len(sampler) % (world_size * batch_sampler.batch_size) == 0:

@@ -850,6 +850,31 @@ def test_labels_mode_steps_aside_without_a_label_column(monkeypatch, capsys):
     assert [i for b in inner for i in b] == list(range(64))
 
 
+def test_dataset_label_counts_apply_every_collator_mask():
+    datasets = pytest.importorskip("datasets")
+
+    # labels and assistant_masks together: TRL's collator applies both, so only the last token counts.
+    both = datasets.Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]], "labels": [[1, 2, 3, 4]], "assistant_masks": [[0, 0, 0, 1]]}
+    )
+    assert tb._dataset_label_counts(both) == [1]
+    # completion_mask only counts when the collator applies it (completion_only_loss).
+    cm = datasets.Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]], "completion_mask": [[0, 0, 1, 1]]}
+    )
+    assert tb._dataset_label_counts(cm) == [2]
+    assert tb._dataset_label_counts(cm, completion_only_loss = False) is None
+    three = datasets.Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4, 5]],
+            "labels": [[-100, 2, 3, 4, 5]],
+            "completion_mask": [[0, 0, 1, 1, 1]],
+            "assistant_masks": [[0, 1, 1, 0, 1]],
+        }
+    )
+    assert tb._dataset_label_counts(three) == [2]
+
+
 def test_dataset_label_counts_reads_shifted_labels_and_masks():
     datasets = pytest.importorskip("datasets")
     labels = datasets.Dataset.from_dict({"input_ids": [[1, 2, 3]], "labels": [[5, -100, 7]]})
