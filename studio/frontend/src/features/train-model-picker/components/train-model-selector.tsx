@@ -782,7 +782,7 @@ export function TrainModelSelector({
   const sortMenu = (
     <NonModalDropdownMenu
       align="end"
-      className="w-auto min-w-[140px]"
+      className="w-auto min-w-36"
       trigger={(ref) => (
         <button
           ref={ref}
