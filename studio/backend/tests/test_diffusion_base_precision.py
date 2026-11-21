@@ -380,6 +380,7 @@ def test_resolve_auto_uses_klein_variant_size(monkeypatch):
             return (10, 0)
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
 
     four_b = _cfg(
@@ -440,6 +441,8 @@ def _fake_cuda_with_free_gb(monkeypatch, free_gb: float):
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    # Independent of whether this host has Triton: the bf16-band fp8 pick only applies to compiled runs.
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
 
 
 @pytest.mark.parametrize(
@@ -1191,6 +1194,7 @@ def _fake_cuda(monkeypatch, free_gb, capability):
 
     monkeypatch.setattr(torch, "cuda", _FakeCuda)
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+    monkeypatch.setattr(dit, "_auto_run_compiles", lambda cfg: True)
 
 
 @pytest.mark.parametrize(

@@ -165,3 +165,21 @@ def test_pick_auto_precision_per_family(family, ratio, expected):
     # Below sm89 nothing changes.
     old = dit._pick_auto_precision(False, "cuda", 10.0 * ratio, 10.0, (8, 6), True, True, family)
     assert old == ("bf16" if ratio > 1.5 else "int8" if ratio > 1.15 else "nf4")
+
+
+def test_fp8_over_bf16_needs_a_compiled_run(monkeypatch):
+    assert (
+        dit._pick_auto_precision(False, "cuda", 16.0, 10.0, (8, 9), True, True, "z-image", False)
+        == "bf16"
+    )
+    # The lower bands do not depend on compile: fp8 eager still beats int8 eager / nf4.
+    assert (
+        dit._pick_auto_precision(False, "cuda", 13.0, 10.0, (8, 9), True, True, "z-image", False)
+        == "fp8"
+    )
+    cfg = types.SimpleNamespace(compile_transformer = "off")
+    assert dit._auto_run_compiles(cfg) is False
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert dit._auto_run_compiles(types.SimpleNamespace(compile_transformer = "auto")) is False

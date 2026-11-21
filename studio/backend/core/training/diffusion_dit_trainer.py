@@ -777,6 +777,17 @@ def _auto_fp8_enabled() -> bool:
     return os.environ.get(AUTO_FP8_ENV, "1").strip().lower() not in ("0", "off", "false", "no")
 
 
+def _auto_run_compiles(cfg) -> bool:
+    """Whether the run will take the regional compile (Triton present, compile not switched off)."""
+    if (getattr(cfg, "compile_transformer", None) or "auto").strip().lower() == "off":
+        return False
+    try:
+        import importlib.util
+        return importlib.util.find_spec("triton") is not None
+    except Exception:  # noqa: BLE001 -- unknown: assume eager
+        return False
+
+
 def _auto_fp8_family_ok(spec, base_model) -> bool:
     """Auto never picks fp8 for a family whose explicit fp8 training is refused (qwen-image, moss-image)."""
     family = getattr(spec, "family", None)
@@ -798,11 +809,13 @@ def _pick_auto_precision(
     has_fp8,
     has_torchao = True,
     family: Optional[str] = None,
+    compiled: bool = True,
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
     decision time. ``has_fp8`` is the caller's NVIDIA frozen-fp8 check; fp8 is only picked on sm89+.
-    - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16.
+    - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16 when the run
+      compiles (``compiled``: the gain was measured compiled against compiled).
     - 1.15x-1.5x: the frozen fp8 base (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
       the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
     - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
@@ -813,7 +826,7 @@ def _pick_auto_precision(
     fp8 = has_fp8 and capability is not None and tuple(capability) >= (8, 9)
     fam = str(family or "").strip().lower()
     if free_gb > dense_gb * 1.5:
-        return "fp8" if fp8 and fam in _AUTO_FP8_OVER_BF16 else "bf16"
+        return "fp8" if fp8 and compiled and fam in _AUTO_FP8_OVER_BF16 else "bf16"
     if free_gb > dense_gb * 1.15:
         if fp8 and fam not in _AUTO_FP8_NOT_OVER_SWAP:
             return "fp8"
@@ -1001,6 +1014,7 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         has_fp8,
         has_torchao,
         getattr(spec, "family", None),
+        _auto_run_compiles(cfg),
     )
 
 
