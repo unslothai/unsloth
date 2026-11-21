@@ -287,3 +287,19 @@ def test_4bit_keeps_mini_message_gates_out_of_bitsandbytes():
         "self_attn.o_proj.gate_proj",
     } <= quantized
     assert not (kept - gates)
+
+
+def test_fastmodel_keeps_inkling2_eager_unless_told_otherwise():
+    # Compiled, Inkling 2 recompiled per sequence length (A100 Mini QLoRA: 85-840 s per step vs 4.4 s eager). The
+    # branch must cover both model types, sit in the model-type chain, and leave an explicit user choice alone.
+    import unsloth.models.loader as loader_module
+
+    source = pathlib.Path(loader_module.__file__).read_text()
+    branch = re.search(r'elif "inkling2" in model_types_all:(.*?)\n        else:\n', source, re.S)
+    assert branch
+    body = branch.group(1)
+    assert re.search(
+        r'if os\.environ\.get\("UNSLOTH_COMPILE_DISABLE", "0"\) == "0":\s*\n\s*'
+        r'os\.environ\["UNSLOTH_COMPILE_DISABLE"\] = "partial"',
+        body,
+    )
