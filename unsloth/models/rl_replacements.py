@@ -5232,8 +5232,9 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
 
 def _unsloth_grpo_head_hooked(model):
     """True when GRPO must score real logits from the head's own call: hidden-states scorers read ``lm_head.weight``
-    and bypass its hooks / patched ``forward``. Unsloth, ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already
-    handled. A square head keeps hidden states: the width dispatch could not tell them from logits."""
+    and bypass its hooks / patched ``forward``, and on a PEFT LoRA head ``.weight`` is the base weight alone. Unsloth,
+    ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already handled. A square head keeps hidden states: the width
+    dispatch could not tell them from logits."""
     try:
         head = model.get_output_embeddings()
     except Exception:
@@ -5258,6 +5259,23 @@ def _unsloth_grpo_head_hooked(model):
         return True
     if "forward" in vars(head) and not hasattr(head, "_hf_hook"):
         return True
+    # An active unmerged adapter on the head (fused_label_smoothing._head_not_fusable): generate() samples with it.
+    # Under fast inference the head LoRA stays untrained, as get_peft_model warns: vLLM samples without it.
+    try:
+        from peft.tuners.tuners_utils import BaseTunerLayer as _TunerLayer
+    except Exception:
+        _TunerLayer = None
+    if _TunerLayer is not None and getattr(model, "vllm_engine", None) is None:
+        for _module in head.modules():
+            if not isinstance(_module, _TunerLayer) or getattr(_module, "disable_adapters", False):
+                continue
+            _merged = set(getattr(_module, "merged_adapters", None) or ())
+            _held = set()
+            for _layer_name in getattr(_module, "adapter_layer_names", None) or ():
+                _held.update(getattr(_module, _layer_name, None) or ())
+            for _adapter in getattr(_module, "active_adapters", None) or ():
+                if _adapter in _held and _adapter not in _merged:
+                    return True
     for _name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
         for _hook in (getattr(head, _name, None) or {}).values():
             _fn = getattr(_hook, "func", _hook)  # functools.partial
