@@ -203,3 +203,83 @@ def test_skip_in_front_of_the_compiled_call_decides_outside_it():
         torch.testing.assert_close(a, b)
     ss.uninstall_static_step_skip(pipe)
     assert unet._compiled_call_impl is graphed and "forward" not in unet.__dict__
+
+
+@pytest.mark.parametrize(
+    "skip_first", [True, False], ids = ["skip-then-compile", "compile-then-skip"]
+)
+def test_fullgraph_whole_compile_without_a_graph_keeps_the_skip_outside(skip_first, monkeypatch):
+    # Max tier compiles the U-Net whole with fullgraph=True; with CUDA graphs off (or ROCm) nothing fronts the skip
+    # at graph install, and on torch 2.13+ its dynamo-disabled frames inside that trace raise on the first render.
+    dynamo = pytest.importorskip("torch._dynamo")
+    from torch._dynamo.utils import counters
+
+    from core.inference import diffusion_speed as sp
+
+    eager_pipe = _sdxl_pipe(_LinearUNet())
+    ss.install_static_step_skip(eager_pipe, settings = {"mode": "taylor1", "every": 2})
+    expected = _linear_render(eager_pipe, 25)
+
+    dynamo.reset()
+    counters.clear()
+
+    class UNet2DConditionModel(_LinearUNet):  # noqa: N801 - the class name diffusion_speed whole-compiles
+        pass
+
+    pipe = _sdxl_pipe(UNet2DConditionModel())
+    pipe.unet.load_state_dict(eager_pipe.unet.state_dict())
+    unet = pipe.unet
+    real_compile = unet.compile
+
+    def eager_compile(**kwargs):
+        assert kwargs.get("fullgraph") is True
+        real_compile(backend = "eager", fullgraph = True, dynamic = False)
+
+    monkeypatch.setattr(unet, "compile", eager_compile)
+    monkeypatch.setattr(sp, "unet_compiles_regionally", lambda *a, **k: False)
+    if skip_first:
+        ss.install_static_step_skip(pipe, settings = {"mode": "taylor1", "every": 2})
+        assert sp._compile_repeated_blocks(pipe, None, max_autotune = True)
+    else:
+        assert sp._compile_repeated_blocks(pipe, None, max_autotune = True)
+        ss.install_static_step_skip(pipe, settings = {"mode": "taylor1", "every": 2})
+    skip = ss._find(pipe)
+    assert ss.fronting_skip(unet) is skip and skip.compiled_call is not None
+    got = _linear_render(pipe, 25)
+    assert ss.static_skip_stats(pipe)["stats"]["computed"] == 16
+    assert counters["stats"]["unique_graphs"] == 1 and not counters["recompiles"]
+    for a, b in zip(expected, got):
+        torch.testing.assert_close(a, b)
+    compiled = skip.compiled_call
+    ss.uninstall_static_step_skip(pipe)
+    assert unet._compiled_call_impl is compiled and "forward" not in unet.__dict__
+
+
+def test_force_eager_gate_keeps_a_fronted_skip_off_the_compiled_call():
+    # A detailer pass gates a whole-compiled U-Net to eager; a fronted skip must not route it back into the compiled
+    # (graphed) call, which would recompile at every crop size.
+    from core.inference import diffusion_bg_compile as bg
+
+    pipe = _sdxl_pipe(_LinearUNet())
+    ss.install_static_step_skip(pipe, settings = {"mode": "taylor1", "every": 2})
+    unet = pipe.unet
+    unet.compile(backend = "eager")
+    compiled = unet._compiled_call_impl
+    entered = []
+
+    def graphed(*args, **kwargs):
+        entered.append(1)
+        return compiled(*args, **kwargs)
+
+    unet._compiled_call_impl = graphed
+    ss.front_compiled_call(unet)
+    restore = bg.gate_compiled_eager([unet])
+    token = bg._FORCE_EAGER.set(True)
+    try:
+        _linear_render(pipe, 25)
+    finally:
+        bg._FORCE_EAGER.reset(token)
+        restore()
+    assert not entered and ss.static_skip_stats(pipe)["stats"]["computed"] == 16
+    _linear_render(pipe, 25)
+    assert len(entered) == 16

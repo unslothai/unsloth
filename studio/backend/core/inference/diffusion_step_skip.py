@@ -438,7 +438,9 @@ class StaticStepSkip:
 
     def _compute(self, args: tuple, kwargs: dict) -> Any:
         call = self.compiled_call
-        if call is None:
+        if call is None or _eager_forced():
+            # Under force_eager (a detailer pass) the eager gate already runs ``_call_impl``, which read this layer
+            # from ``forward``: compute eagerly here rather than enter the compiled (graphed) call at a new size.
             return self._forward(args, kwargs)
         self._inside = True
         try:
@@ -580,7 +582,13 @@ def _opaque_to_dynamo() -> None:
         for name in ("_remember", "_skipped"):
             setattr(StaticStepSkip, name, disable(getattr(StaticStepSkip, name)))
         module = sys.modules[__name__]
-        for name in ("_call_signature", "_split_output", "_timestep_of", "_stream_timesteps"):
+        for name in (
+            "_call_signature",
+            "_split_output",
+            "_timestep_of",
+            "_stream_timesteps",
+            "_eager_forced",
+        ):
             setattr(module, name, disable(getattr(module, name)))
     except Exception:  # noqa: BLE001 - an old torch keeps the plain call
         pass
@@ -612,6 +620,20 @@ def front_compiled_call(module: Any) -> bool:
         skip.compiled_call = call
         module._compiled_call_impl = skip
     return True
+
+
+def fronting_skip(module: Any) -> Optional[StaticStepSkip]:
+    """The skip layer sitting at ``module._compiled_call_impl`` (``front_compiled_call``), else None."""
+    call = getattr(module, "_compiled_call_impl", None)
+    return call if isinstance(call, StaticStepSkip) and call.module is module else None
+
+
+def _eager_forced() -> bool:
+    try:
+        from .diffusion_bg_compile import eager_forced
+    except Exception:  # noqa: BLE001 - no background compile layer: never forced
+        return False
+    return bool(eager_forced())
 
 
 def unfront_compiled_call(module: Any, call: Any, restore: Any) -> None:
@@ -678,6 +700,8 @@ def install_static_step_skip(
         # Written into the instance dict, like GraphedForward: nn.Module.__setattr__ would inspect it.
         slots["forward"] = skip
         slots[_SLOT] = skip
+        # Already whole-module compiled: decide in front of the compiled call, never inside its trace.
+        front_compiled_call(transformer)
     except Exception as exc:  # noqa: BLE001 - best-effort, the load proceeds uncached
         _warn(logger, str(exc))
         return None
