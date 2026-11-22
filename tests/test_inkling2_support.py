@@ -335,3 +335,38 @@ def test_all_linear_trains_every_family_through_the_remap(monkeypatch, flags):
     assert any(n.endswith("self_attn.q_proj.linear") and "language_model" in n for n in wrapped)
     params = list(out.peft_config["default"].target_parameters or [])
     assert any(p.endswith("experts.gate_up_proj") for p in params), params
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_fast_inference_switches_inkling2_to_unsloth_inference(loop):
+    # No vLLM release registers Inkling 2 (0.34.0 has Inkling v1 only and pins transformers < 5.23), so
+    # fast_inference = True must fall back before a vLLM engine is built, for Mini and for Small.
+    from unsloth.models.loader import _vllm_unsupported_model_types
+    from unsloth_zoo.hf_utils import get_transformers_model_type
+
+    model_types = get_transformers_model_type(_tiny(loop).config)
+    assert _vllm_unsupported_model_types(model_types)
+    assert _vllm_unsupported_model_types(["llama"]) == []
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_merged_exports_refuse_inkling2(loop):
+    # Colab A100, real Mini 4-bit + LoRA r 8: merged_16bit wrote the released checkpoint back bit for bit (0 of 1244
+    # tensors changed, reload KL to the base 0.0): its names (attn.wq_du, controllers.*) and NVFP4 experts never match
+    # the LoRA targets. Every merged / GGUF export must refuse; the adapter save must not.
+    inkling2 = _inkling2()
+    model = _tiny(loop)
+    for method in ("merged_16bit", "merged_4bit", "forced_merged_4bit", "gguf"):
+        with pytest.raises(NotImplementedError, match = "Inkling 2"):
+            inkling2.raise_if_merging_inkling2(model, method)
+    inkling2.raise_if_merging_inkling2(model, "lora")
+    inkling2.raise_if_merging_inkling2(
+        SimpleNamespace(config = SimpleNamespace(model_type = "llama")), "merged_16bit"
+    )
+    # Each export entry point runs it right after the Mistral-format guard.
+    source = (_ROOT / "unsloth" / "save.py").read_text()
+    sites = re.findall(
+        r"raise_if_merging_mistral_format_view\((\w+), ([^)]+)\)[^\n]*\n\s*raise_if_merging_inkling2\(\1, \2\)",
+        source,
+    )
+    assert len(sites) == 4, sites

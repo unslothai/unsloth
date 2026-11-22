@@ -24,6 +24,7 @@ __all__ = [
     "register_inkling2_expert_dequantization",
     "patch_inkling2_model",
     "inkling2_lora_target_modules",
+    "raise_if_merging_inkling2",
 ]
 
 INKLING2_MODEL_TYPES = frozenset(
@@ -80,6 +81,23 @@ def _get(cfg, key):
 
 def is_inkling2_config(config) -> bool:
     return bool(_model_types(config) & INKLING2_MODEL_TYPES)
+
+
+def raise_if_merging_inkling2(model, save_method):
+    """Merged and GGUF exports re-read the base checkpoint and add the LoRA deltas to its tensors. The released Inkling 2
+    checkpoints name them in Inkling's own layout (``attn.wq_du``, ``controllers.*``; transformers renames them on
+    load) and pack the experts in NVFP4 / MXFP8, so the merge places no LoRA weight and writes the base unchanged."""
+    if str(save_method).strip().lower() == "lora":
+        return
+    if not is_inkling2_config(getattr(model, "config", None)):
+        return
+    raise NotImplementedError(
+        f'Unsloth: `save_method = "{save_method}"` (merged and GGUF exports) does not support Inkling 2 yet: its '
+        "checkpoint stores the weights under Inkling's own names with the MoE experts packed in NVFP4 / MXFP8, so the "
+        "merge cannot place the LoRA weights and would write the base model unchanged.\n"
+        'Save the LoRA adapter instead (`model.save_pretrained(...)` or `save_method = "lora"`): it reloads with '
+        "Unsloth, and with transformers through `peft.PeftModel.from_pretrained`."
+    )
 
 
 def inkling2_owns_modelopt_quantization(config) -> bool:
