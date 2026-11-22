@@ -1667,6 +1667,7 @@ export const ja = {
       lockedGrants: "UNSLOTH_MXC_PERSISTENT_READ_GRANTS で設定されています",
       memoryLabel: "メモリ上限",
       memoryDescription: "サンドボックス内の Python または Terminal の 1 回の呼び出しが確保できるメモリの上限です。次の呼び出しから適用されます。既定値は {defaultSize} GB です。",
+      memoryAuto: "自動",
       memoryLocked: "UNSLOTH_STUDIO_SANDBOX_AS_GB で設定されています",
       memoryInvalid: "{min} から {max} までの整数を入力してください。",
       restored: "{count} 個のフォルダーからアクセスを削除しました。",

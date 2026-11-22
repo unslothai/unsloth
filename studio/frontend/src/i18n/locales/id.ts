@@ -1814,6 +1814,7 @@ export const id = {
       memoryLabel: "Batas memori",
       memoryDescription:
         "Memori maksimum yang dapat dicadangkan oleh satu panggilan Python atau Terminal dalam sandbox. Berlaku mulai panggilan berikutnya. Default-nya {defaultSize} GB.",
+      memoryAuto: "Otomatis",
       memoryLocked: "Diatur oleh UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Masukkan bilangan bulat dari {min} hingga {max}.",
       restored: "Akses dicabut dari {count} folder.",

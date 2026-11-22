@@ -165,7 +165,7 @@ def test_peft_guard_installed_after_peft_import_shims():
     calls = [
         line.strip()
         for line in (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "_gpu_init.py")
-        .read_text()
+        .read_text(encoding = "utf-8")
         .splitlines()
         if line.strip().endswith("()") and not line.startswith((" ", "\t", "#"))
     ]

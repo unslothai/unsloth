@@ -1827,6 +1827,7 @@ export const pl = {
       memoryLabel: "Limit pamięci",
       memoryDescription:
         "Maksymalna ilość pamięci, jaką może zarezerwować jedno wywołanie Python lub Terminal w piaskownicy. Obowiązuje od następnego wywołania. Domyślnie {defaultSize} GB.",
+      memoryAuto: "Automatycznie",
       memoryLocked: "Ustawione przez UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Wpisz liczbę całkowitą od {min} do {max}.",
       restored: "Odebrano dostęp do folderów (liczba: {count}).",
