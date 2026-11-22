@@ -1572,6 +1572,14 @@ def _eager_decode_scope(stream):
     return eager_scope()
 
 
+def _generate_stream_installed(model):
+    """A per-block generate stream is active on the model's decoder blocks."""
+    layers = _language_decoder_layers(model)
+    if layers is None:
+        return False
+    return isinstance(layers.__dict__.get("_unsloth_block_swap", None), _GenerateBlockStream)
+
+
 def _wrap_generate(model):
     """Run `generate` (the root's and every inner module's that has one) inside native_fsdp2_unsharded."""
     import weakref
@@ -1594,13 +1602,14 @@ def _wrap_generate(model):
                 return _generate(*args, **kwargs)
             _GENERATE_DEPTH[0] += 1
             try:
-                stream, resident = _generate_gather_plan(target)
-                with (
-                    native_fsdp2_unsharded(target, stream_blocks = stream, resident_blocks = resident),
-                    torch.no_grad(),
-                    _eager_decode_scope(stream),
-                ):
-                    return _generate(*args, **kwargs)
+                stream, resident = _generate_gather_plan(
+                    target, request_bytes = _generate_request_bytes(target, args, kwargs)
+                )
+                with native_fsdp2_unsharded(target, stream_blocks = stream, resident_blocks = resident):
+                    # Eager only when a block really streams: with every block resident (or no
+                    # decoder block list) nothing all-gathers per step and CUDA graphs stay on.
+                    with torch.no_grad(), _eager_decode_scope(_generate_stream_installed(target)):
+                        return _generate(*args, **kwargs)
             finally:
                 _GENERATE_DEPTH[0] -= 1
 
@@ -2510,7 +2519,9 @@ def _synchronized_empty_cache():
 def _generate_resident_override():
     """UNSLOTH_FSDP2_GENERATE_RESIDENT=N: decoder blocks kept gathered for a streamed generate. Under
     "block" exactly N (default 0: every block streams); under "auto" at most N (0 = stream every block
-    whenever the whole gather does not fit, the behaviour before partial residency). Unset = None."""
+    whenever the whole gather does not fit, the behaviour before partial residency). Unset = None.
+    Never raises: a value that is not a non-negative integer warns and counts as 0, so one rank's typo
+    cannot leave its peers waiting in the plan's agreement or in a weight all-gather."""
     value = os.environ.get("UNSLOTH_FSDP2_GENERATE_RESIDENT", "").strip()
     if not value:
         return None
@@ -2519,9 +2530,13 @@ def _generate_resident_override():
     except ValueError:
         n = -1
     if n < 0:
-        raise ValueError(
-            f"Unsloth: UNSLOTH_FSDP2_GENERATE_RESIDENT={value} must be a non-negative integer."
+        import warnings
+        warnings.warn(
+            "Unsloth: UNSLOTH_FSDP2_GENERATE_RESIDENT must be a non-negative integer; keeping no decoder "
+            "block resident (every block streams).",
+            stacklevel = 2,
         )
+        return 0
     return n
 
 
@@ -2533,63 +2548,203 @@ def _generate_streams_blocks(model):
     return _generate_gather_plan(model)[0]
 
 
-def _generate_gather_plan(model):
+def _agree_min_over_ranks(
+    dist,
+    device,
+    values,
+    mesh = None,
+):
+    """Elementwise MIN of a list of ints over the ranks of `mesh` (the world when None). The callers
+    always pass the same fixed number of values, whatever the rank's own settings, so the reduction
+    lines up on every rank. gloo groups reduce on the host."""
+    group = mesh.get_group(0) if mesh is not None else None
+    try:
+        backend = str(dist.get_backend(group))
+    except Exception:
+        backend = ""
+    if backend == "gloo":
+        device = torch.device("cpu")
+    t = torch.tensor([int(v) for v in values], dtype = torch.int64, device = device)
+    if mesh is None:
+        dist.all_reduce(t, op = dist.ReduceOp.MIN)
+    else:
+        for dim in range(mesh.ndim):
+            dist.all_reduce(t, op = dist.ReduceOp.MIN, group = mesh.get_group(dim))
+    return [int(v) for v in t.tolist()]
+
+
+def _param_groups_or_empty(unit):
+    try:
+        return _unit_param_groups(unit)
+    except Exception:
+        return []
+
+
+def _units_offload_to_cpu(units):
+    """Any unit keeps its shards on the host (CPUOffloadPolicy)."""
+    return any(
+        getattr(fsdp_param, "offload_to_cpu", False)
+        for unit in units
+        for group in _param_groups_or_empty(unit)
+        for fsdp_param in getattr(group, "fsdp_params", ())
+    )
+
+
+def _forward_prefetch_depth(units):
+    """Most units any unit all-gathers ahead in its pre-forward (explicit forward prefetch, including
+    the lookahead the recompute hook restores)."""
+    depth = 0
+    for unit in units:
+        n = len(getattr(unit, "_unsloth_forward_prefetch", None) or ())
+        try:
+            state = unit._get_fsdp_state()
+            n = max(n, len(getattr(state, "_states_to_forward_prefetch", None) or ()))
+        except Exception:
+            pass
+        depth = max(depth, n)
+    return depth
+
+
+def _generate_request_bytes(model, args, kwargs):
+    """Upper estimate of the device memory one generate call allocates besides the weights: the KV cache
+    for batch x (prompt + max_new_tokens), one decoder layer's prefill activations and the last-token
+    logits, times 1.25. None when the request's shape or the model's dimensions are unknown."""
+    try:
+        ids = kwargs.get("input_ids")
+        if ids is None:
+            ids = kwargs.get("inputs")
+        if ids is None and args and isinstance(args[0], torch.Tensor):
+            ids = args[0]
+        if ids is None:
+            ids = kwargs.get("inputs_embeds")
+        if not isinstance(ids, torch.Tensor) or ids.dim() < 2:
+            return None
+        batch, prompt = int(ids.shape[0]), int(ids.shape[1])
+        gen = kwargs.get("generation_config") or getattr(model, "generation_config", None)
+
+        def pick(name):
+            value = kwargs.get(name)
+            return value if value is not None else getattr(gen, name, None)
+
+        new = pick("max_new_tokens")
+        if new is None:
+            max_length = pick("max_length")
+            if max_length is None:
+                return None
+            new = max(0, int(max_length) - prompt)
+        batch *= max(1, int(pick("num_beams") or 1)) * max(
+            1, int(pick("num_return_sequences") or 1)
+        )
+        config = getattr(model, "config", None)
+        if config is not None and hasattr(config, "get_text_config"):
+            config = config.get_text_config()
+        layers = getattr(config, "num_hidden_layers", None)
+        hidden = getattr(config, "hidden_size", None)
+        heads = getattr(config, "num_attention_heads", None)
+        vocab = getattr(config, "vocab_size", None)
+        if not all(isinstance(v, int) and v > 0 for v in (layers, hidden, heads, vocab)):
+            return None
+        kv_heads = getattr(config, "num_key_value_heads", None) or heads
+        head_dim = getattr(config, "head_dim", None) or hidden // heads
+        inter = getattr(config, "intermediate_size", None) or 4 * hidden
+        dtype = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
+        width = dtype.itemsize if isinstance(dtype, torch.dtype) else 4
+        tokens = batch * (prompt + int(new))
+        kv = 2 * layers * tokens * kv_heads * head_dim * width
+        act = batch * prompt * (4 * hidden + 3 * inter) * width
+        logits = 2 * batch * vocab * 4
+        return int(1.25 * (kv + act + logits))
+    except Exception:
+        return None
+
+
+def _generate_gather_plan(model, request_bytes = None):
     """(stream, resident): stream = generate gathers decoder blocks one at a time; resident = how many of
-    them (the lowest indices) stay gathered for the whole call anyway. Collective on CUDA in "auto"
-    mode. Gathering every unit at once needs the whole model's weights on each rank next to its
-    shards (a 12B 4-bit model after training on 2x 16 GB ran out of memory there), so "auto" streams
-    unless every rank has the free memory for the whole gather; when streaming it keeps the longest
-    prefix of blocks gathered that fits on every rank (one all-reduce of one flag per prefix length,
-    so every rank picks the same set), and only the rest pays an all-gather per decode step."""
+    them (the first, in decode order) stay gathered for the whole call anyway. Collective on CUDA in
+    "auto" mode and whenever "block" runs distributed. Gathering every unit at once needs the whole
+    model's weights on each rank next to its shards (a 12B 4-bit model after training on 2x 16 GB ran
+    out of memory there), so "auto" streams unless every rank has the free memory for the whole gather;
+    when streaming it keeps the longest prefix of blocks gathered that fits on every rank.
+
+    Every rank computes its own cap and its own fits locally (nothing here raises on a bad setting),
+    then one all_reduce MIN of two ints ([whole gather fits, resident blocks]) picks the plan, so ranks
+    with different free memory, caps or request sizes still pick the same blocks. A prefix is counted
+    as fitting only when every shorter one does, so the minimum fits on every rank. Budget for keeping
+    k blocks: the larger of the up-front gather's peak (each unit's all-gather output next to its copied
+    weights while the earlier ones stay held) and decode's (the k blocks plus the streamed block, its
+    all-gather output and the forward-prefetch lookahead), plus a workspace of the request estimate
+    (`request_bytes`, KV cache etc.; at least 1 GiB). With no estimate, "auto" keeps no block resident
+    unless UNSLOTH_FSDP2_GENERATE_RESIDENT caps it explicitly. CPU-offloaded models always stream every
+    block."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not is_native_fsdp2(model):
         return False, 0
     mode = _generate_gather_mode()
+    if mode == "all":
+        return False, 0
     override = _generate_resident_override()
-    if mode != "auto":
-        return mode == "block", (override or 0) if mode == "block" else 0
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
     block_lists = _stream_block_lists(model, units) if units else []
-    if not units or not block_lists:
-        return False, 0
-    groups = _unit_param_groups(units[0])
+    # Decode order: the executor walks the lists in order and keeps each list's lowest indices.
+    ordered = [found[i] for _, found in block_lists for i in sorted(found)]
+    groups = _param_groups_or_empty(units[0]) if units else []
     mesh_info = getattr(groups[0], "mesh_info", None) if groups else None
+    mesh = getattr(mesh_info, "mesh", None)
     device = getattr(groups[0], "device", None) if groups else None
-    if device is None or torch.device(device).type != "cuda":
-        return False, 0  # host memory: keep the single gather
     import torch.distributed as dist
 
-    if not dist.is_available() or not dist.is_initialized():
+    distributed = device is not None and dist.is_available() and dist.is_initialized()
+    offloaded = bool(units) and _units_offload_to_cpu(units)
+    if mode == "block":
+        cap = 0 if offloaded else min(override or 0, len(ordered))
+        if distributed:
+            cap = _agree_min_over_ranks(dist, device, [0, cap], mesh)[1]
+        return True, cap
+    if not ordered:
+        return False, 0
+    if device is None or torch.device(device).type != "cuda":
+        return False, 0  # host memory: keep the single gather
+    if not distributed:
         return False, 0
     sizes = [_unit_gathered_bytes(unit) for unit in units]
     scratch = 1 << 30  # decode scratch
     need = sum(sizes) + max(sizes) + scratch  # gathered weights + one all-gather buffer + scratch
-    blocks = {}
-    for _, found in block_lists:
-        blocks.update(found)
-    block_ids = {id(unit) for unit in blocks.values()}
-    fixed = sum(size for unit, size in zip(units, sizes) if id(unit) not in block_ids)
-    block_sizes = [_unit_gathered_bytes(blocks[i]) for i in sorted(blocks)]
-    # Largest prefix tried: all blocks but one (all of them is the whole gather above), or the override.
-    top = len(block_sizes) - 1 if override is None else min(override, len(block_sizes) - 1)
-    # Prefix k stays gathered; the streamed rest needs two block buffers (FSDP2 may prefetch the next).
-    needs = [
-        fixed + sum(block_sizes[:k]) + 2 * max(block_sizes[k:]) + scratch for k in range(top + 1)
-    ]
+    limit = len(ordered) - 1  # all of them is the whole gather above
+    if offloaded:
+        cap = 0
+    elif override is not None:
+        cap = min(override, limit)
+    else:
+        cap = 0 if request_bytes is None else limit
+    workspace = max(scratch, int(request_bytes or 0))
+    size_of = {id(unit): size for unit, size in zip(units, sizes)}
+    block_sizes = [size_of.get(id(unit), 0) for unit in ordered]
+    fixed = sum(
+        size for unit, size in zip(units, sizes) if id(unit) not in {id(b) for b in ordered}
+    )
+    depth = _forward_prefetch_depth(units)
+    needs = []
+    for k in range(cap + 1):
+        streamed = {id(unit) for unit in ordered[k:]}
+        held = setup = 0
+        for unit, size in zip(units, sizes):
+            if id(unit) in streamed:
+                continue
+            setup = max(setup, held + 2 * size)  # all-gather output + copied-out weights
+            held += size
+        ahead = min(depth, len(ordered) - k - 1)
+        decode = fixed + sum(block_sizes[:k]) + (2 + ahead) * max(block_sizes[k:])
+        needs.append(max(setup, decode) + workspace)
     _synchronized_empty_cache()  # follows the last step's zero_grad() with no host sync in between
     free = torch.cuda.mem_get_info(device)[0]
-    flags = _agree_over_ranks(
-        dist,
-        device,
-        [free >= need] + [free >= n for n in needs],
-        getattr(mesh_info, "mesh", None),
-    )
-    if flags[0]:
+    resident = -1
+    for k, n in enumerate(needs):
+        if free < n:
+            break
+        resident = k
+    whole, resident = _agree_min_over_ranks(dist, device, [free >= need, max(0, resident)], mesh)
+    if whole:
         return False, 0
-    resident = 0
-    for k in range(top + 1):
-        if flags[k + 1]:
-            resident = k
     return True, resident
 
 
@@ -2616,6 +2771,9 @@ class _GenerateBlockStream:
 
     def __init__(self, units):
         self.units = units  # {block index: FSDP unit}
+        # CPU-offloaded shards live on the host between gathers: the decode loops must not repair
+        # per-layer devices from them (the gathered blocks publish their own device on enter).
+        self.keeps_weights_on_device = not _units_offload_to_cpu(units.values())
 
     def enter(self, index):
         unit = self.units.get(index)
@@ -2720,6 +2878,7 @@ def native_fsdp2_unsharded(
     saved = {}
     streams = []
     streamed = set()
+    resident_ids = set()
     try:
         _rebind_swapped_modules(root, units)
         _lazy_init_root(root, units)
@@ -2730,6 +2889,7 @@ def native_fsdp2_unsharded(
                     continue
                 order = sorted(blocks)
                 kept, keep = order[:keep], keep - min(keep, len(order))
+                resident_ids.update(id(blocks[i]) for i in kept)
                 blocks = {i: blocks[i] for i in order[len(kept) :]}
                 _GENERATE_PLAN_STATS["resident_blocks"] += len(kept)
                 _GENERATE_PLAN_STATS["streamed_blocks"] += len(blocks)
@@ -2747,6 +2907,8 @@ def native_fsdp2_unsharded(
         for unit in units:
             if id(unit) not in streamed:
                 unit.unshard()
+                if id(unit) in resident_ids:
+                    _publish_gathered_device(unit)  # as a streamed block does on enter
         for unit in units:
             if id(unit) in streamed:
                 saved[id(unit)] = _reshard_after_forward_on(unit)
