@@ -3758,6 +3758,7 @@ from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
     _strip_glm_calls,
+    _strip_lfm_calls,
     _strip_minimax_calls,
     _strip_mistral_closed_calls,
 )
@@ -6924,6 +6925,8 @@ def _strip_tool_xml_for_display(
         seg = _strip_mistral_closed_calls(seg)
         # llama-server leaves MiniMax blocks in content when tool_choice is "none".
         seg = _strip_minimax_calls(seg, final = is_last)
+        # Same for LFM2 / LFM2.5 ``<|tool_call_start|>[name(...)]<|tool_call_end|>`` blocks.
+        seg = _strip_lfm_calls(seg, final = is_last)
         seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
         if is_last:
             seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)

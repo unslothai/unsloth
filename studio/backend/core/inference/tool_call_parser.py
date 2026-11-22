@@ -6,6 +6,7 @@
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations
 
+import ast
 import json
 import bisect
 import re
@@ -42,6 +43,8 @@ TOOL_XML_SIGNALS = (
     "<|tool_call_begin|>",
     "<|content_invoke_tool_json|>",
     "<minimax:tool_call>",
+    # LFM2 / LFM2.5 pythonic call list.
+    "<|tool_call_start|>",
 )
 
 
@@ -377,6 +380,10 @@ _MINIMAX_BLOCK_OPEN = "<minimax:tool_call>"
 _MINIMAX_BLOCK_CLOSE = "</minimax:tool_call>"
 _MINIMAX_INVOKE_OPEN_RE = re.compile(r'<invoke\s+name="([\w\.\-]+)">')
 _MINIMAX_INVOKE_CLOSE = "</invoke>"
+
+# LFM2 / LFM2.5: ``<|tool_call_start|>[name(key='value', n=1), other(...)]<|tool_call_end|>``.
+_LFM_CALL_START = "<|tool_call_start|>"
+_LFM_CALL_END = "<|tool_call_end|>"
 
 # Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
@@ -799,6 +806,7 @@ _CONTAINING_WRAPPERS = (
     '<function name="',
     "[TOOL_CALLS]",
     "<minimax:tool_call>",
+    _LFM_CALL_START,
 ) + _INFERENCE_WRAPPER_OPENERS
 
 
@@ -1302,6 +1310,26 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _strip_lfm_calls(text: str, *, final: bool) -> str:
+    """Strip LFM ``<|tool_call_start|>`` blocks whose body opens like a call list; any other block (a mention, a
+    non-call body) stays as text. ``final`` also drops a trailing unclosed call-shaped (or empty) block."""
+    if _LFM_CALL_START not in text:
+        return text
+    out: list[str] = []
+    pos = 0
+    for start, end, closed in _lfm_block_spans(text):
+        body = text[start + len(_LFM_CALL_START) : end - len(_LFM_CALL_END) if closed else end]
+        if closed:
+            if not _LFM_CALL_SHAPE_RE.match(body):
+                continue
+        elif not (final and (_LFM_CALL_SHAPE_RE.match(body) or not body.strip())):
+            break
+        out.append(text[pos:start])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _strip_minimax_calls(text: str, *, final: bool) -> str:
     """Strip ``<minimax:tool_call>`` blocks at the close the parser uses; ``final`` drops a trailing unclosed block."""
     if _MINIMAX_BLOCK_OPEN not in text:
@@ -1326,6 +1354,7 @@ def strip_segment(
     """Strips markup from one non-think segment; seg_final enables end-of-turn arms. routes/inference.py differs, pinned by tests/test_route_strip_drift.py."""
     seg = _strip_mistral_closed_calls(segment)
     seg = _strip_minimax_calls(seg, final = seg_final)
+    seg = _strip_lfm_calls(seg, final = seg_final)
     # Name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
     if seg_final:
@@ -1911,6 +1940,8 @@ _EMBEDDED_MARKER_RE = re.compile(
     + re.escape(_KIMI_CALL_BEGIN)
     + "|"
     + re.escape(_MINIMAX_BLOCK_OPEN)
+    + "|"
+    + re.escape(_LFM_CALL_START)
 )
 # The lookahead mirrors the ``_TOOL_ALL_PATS`` python_tag arm so a prose mention is not one.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(
@@ -2300,10 +2331,12 @@ def parse_tool_calls_from_text(
         _km_bare = content.find(_KIMI_CALL_BEGIN)
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
         _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
+        _lfm_pos = content.find(_LFM_CALL_START)
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
             (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
+            (_lfm_pos if _lfm_pos >= 0 else len(content), _parse_lfm_tool_calls),
         ]
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
@@ -4469,6 +4502,332 @@ def _parse_minimax_tool_calls(
                     "id": f"call_{id_offset + len(out)}",
                     "type": "function",
                     "function": {"name": im.group(1), "arguments": json.dumps(args)},
+                }
+            )
+    return out
+
+
+# A block body that opens like a call list: ``[name(``, ``name(`` or the JSON ``[{`` spelling (``[`` or ``[name``
+# at the end of an open block is a call still streaming). Display strips only these.
+_LFM_CALL_SHAPE_RE = re.compile(
+    r"\s*(?:\[\s*(?:[A-Za-z_][\w.\-]*\s*(?:\(|\Z)|\{|\Z)|[A-Za-z_][\w.\-]*\s*\()"
+)
+# Auto-Heal: one keyword whose quoted string holds the same quote unescaped (``query='what's new'``).
+_LFM_ONE_STRING_CALL_RE = re.compile(
+    r"\A\s*(\[)?\s*([A-Za-z_][\w.\-]*)\s*\(\s*([A-Za-z_][\w\-]*)\s*=\s*(['\"])(.*)\4\s*,?\s*\)\s*(\])?\s*\Z",
+    re.DOTALL,
+)
+# A second ``, key=`` inside that string means the value's end is unknowable, so it is refused.
+_LFM_SECOND_KEY_RE = re.compile(r",\s*[A-Za-z_][\w\-]*\s*=")
+_LFM_ESCAPE_RE = re.compile(r"\\(['\"\\nrt])")
+_LFM_ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
+_LFM_NAME_RE = re.compile(r"[A-Za-z_][\w.\-]*")
+_LFM_KEY_RE = re.compile(r"[A-Za-z_][\w\-]*")
+_LFM_WS_RE = re.compile(r"\s*")
+_LFM_LITERAL_NAMES = {
+    "true": True,
+    "false": False,
+    "null": None,
+    "True": True,
+    "False": False,
+    "None": None,
+}
+_LFM_MAX_DEPTH = 64
+
+
+class _LfmFail:
+    """Not a value; a fixed repr keeps the refactor guard's golden digests stable."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<not a value>"
+
+
+_LFM_FAIL = _LfmFail()
+
+
+def _lfm_string_end(text: str, pos: int, n: int) -> int:
+    """Index just past the Python string literal opening at ``text[pos]``, or -1 when it does not close by ``n``."""
+    quote = text[pos]
+    j = pos + 1
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == quote:
+            return j + 1
+        j += 1
+    return -1
+
+
+def _lfm_block_close(text: str, body_start: int) -> int:
+    """Start of the ``<|tool_call_end|>`` closing the block whose body starts at ``body_start``, or -1. A closer
+    inside a quoted argument is data; when the quotes never balance, the first closer is taken."""
+    first = text.find(_LFM_CALL_END, body_start)
+    if first < 0:
+        return -1
+    n = len(text)
+    j = body_start
+    while j < n:
+        c = text[j]
+        if c in "'\"":
+            end = _lfm_string_end(text, j, n)
+            if end < 0:
+                return first
+            j = end
+            continue
+        if text.startswith(_LFM_CALL_END, j):
+            return j
+        j += 1
+    return first
+
+
+def _lfm_block_spans(text: str) -> list[tuple[int, int, bool]]:
+    """``(start, end, closed)`` per ``<|tool_call_start|>`` block; an unclosed block runs to the end of the text."""
+    spans: list[tuple[int, int, bool]] = []
+    pos = 0
+    while True:
+        start = text.find(_LFM_CALL_START, pos)
+        if start < 0:
+            return spans
+        body_start = start + len(_LFM_CALL_START)
+        close = _lfm_block_close(text, body_start)
+        if close < 0:
+            spans.append((start, len(text), False))
+            return spans
+        pos = close + len(_LFM_CALL_END)
+        spans.append((start, pos, True))
+
+
+def _lfm_value(node: ast.AST, depth: int = 0) -> Any:
+    """A JSON value from one argument's AST: Python literals plus the JSON spellings true/false/null the template
+    and llama.cpp both accept. Anything else (a name, a call, an f-string, bytes) is not a value."""
+    if depth > _LFM_MAX_DEPTH:
+        return _LFM_FAIL
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        return _LFM_FAIL
+    if isinstance(node, ast.Name):
+        return _LFM_LITERAL_NAMES.get(node.id, _LFM_FAIL)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, (ast.USub, ast.UAdd))
+        and isinstance(node.operand, ast.Constant)
+        and type(node.operand.value) in (int, float)
+    ):
+        return -node.operand.value if isinstance(node.op, ast.USub) else node.operand.value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        items = [_lfm_value(item, depth + 1) for item in node.elts]
+        return _LFM_FAIL if any(item is _LFM_FAIL for item in items) else items
+    if isinstance(node, ast.Dict):
+        out: dict = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            key = _lfm_value(key_node, depth + 1) if key_node is not None else _LFM_FAIL
+            if not isinstance(key, str):
+                return _LFM_FAIL
+            value = _lfm_value(value_node, depth + 1)
+            if value is _LFM_FAIL:
+                return _LFM_FAIL
+            out[key] = value
+        return out
+    return _LFM_FAIL
+
+
+def _lfm_argument_value(src: str) -> Any:
+    src = src.strip()
+    try:
+        tree = ast.parse(src, mode = "eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        # A sampled string may hold raw line breaks the template would have escaped (code, multi-line text).
+        if (
+            len(src) < 2
+            or src[0] not in "'\""
+            or src[-1] != src[0]
+            or "\n" not in src
+            and "\r" not in src
+        ):
+            return _LFM_FAIL
+        try:
+            tree = ast.parse(src.replace("\r", "\\r").replace("\n", "\\n"), mode = "eval")
+        except (SyntaxError, ValueError, MemoryError, RecursionError):
+            return _LFM_FAIL
+    try:
+        return _lfm_value(tree.body)
+    except RecursionError:
+        return _LFM_FAIL
+
+
+def _lfm_value_end(body: str, pos: int) -> int:
+    """End of the argument value at ``body[pos:]``: the next top-level ``,`` or ``)``, or -1."""
+    depth = 0
+    n = len(body)
+    j = pos
+    while j < n:
+        c = body[j]
+        if c in "'\"":
+            end = _lfm_string_end(body, j, n)
+            if end < 0:
+                return -1
+            j = end
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in "]}":
+            depth -= 1
+            if depth < 0:
+                return -1
+        elif c == ")":
+            if depth == 0:
+                return j
+            depth -= 1
+        elif c == "," and depth == 0:
+            return j
+        j += 1
+    return -1
+
+
+def _lfm_pythonic_calls(body: str) -> "list[tuple[str, dict]] | None":
+    """``[name(key=value, ...), ...]`` (brackets optional) as ``(name, arguments)``; None unless the whole body is
+    that list. Keyword arguments only, as the template renders them and llama.cpp's LFM2 grammar requires."""
+    n = len(body)
+    pos = _LFM_WS_RE.match(body, 0).end()
+    bracketed = pos < n and body[pos] == "["
+    if bracketed:
+        pos = _LFM_WS_RE.match(body, pos + 1).end()
+        if pos < n and body[pos] == "]":
+            return None
+    calls: list[tuple[str, dict]] = []
+    while True:
+        name_m = _LFM_NAME_RE.match(body, pos)
+        if name_m is None:
+            return None
+        pos = _LFM_WS_RE.match(body, name_m.end()).end()
+        if pos >= n or body[pos] != "(":
+            return None
+        pos = _LFM_WS_RE.match(body, pos + 1).end()
+        args: dict = {}
+        if pos < n and body[pos] == ")":
+            pos += 1
+        else:
+            while True:
+                key_m = _LFM_KEY_RE.match(body, pos)
+                if key_m is None:
+                    return None
+                pos = _LFM_WS_RE.match(body, key_m.end()).end()
+                if pos >= n or body[pos] != "=":
+                    return None
+                value_start = pos + 1
+                value_end = _lfm_value_end(body, value_start)
+                if value_end < 0:
+                    return None
+                value = _lfm_argument_value(body[value_start:value_end])
+                if value is _LFM_FAIL:
+                    return None
+                args[key_m.group(0)] = value
+                pos = value_end + 1
+                if body[value_end] == ")":
+                    break
+                pos = _LFM_WS_RE.match(body, pos).end()
+                if pos < n and body[pos] == ")":
+                    # Trailing comma before the close.
+                    pos += 1
+                    break
+        calls.append((name_m.group(0), args))
+        pos = _LFM_WS_RE.match(body, pos).end()
+        if pos < n and body[pos] == ",":
+            pos = _LFM_WS_RE.match(body, pos + 1).end()
+            continue
+        if bracketed:
+            if pos >= n or body[pos] != "]":
+                return None
+            pos = _LFM_WS_RE.match(body, pos + 1).end()
+        return calls if pos == n else None
+
+
+def _lfm_json_calls(body: str) -> "list[tuple[str, dict]] | None":
+    """The JSON spelling older LFM2 templates asked for: ``[{"name": ..., "arguments": {...}}, ...]``."""
+    try:
+        value = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    items = value if isinstance(value, list) else [value]
+    calls: list[tuple[str, dict]] = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
+            return None
+        args = item.get("arguments", item.get("parameters", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except (ValueError, RecursionError):
+                return None
+        if not isinstance(args, dict):
+            return None
+        calls.append((item["name"], args))
+    return calls or None
+
+
+def _lfm_one_string_call(body: str) -> "list[tuple[str, dict]] | None":
+    m = _LFM_ONE_STRING_CALL_RE.match(body)
+    if m is None or bool(m.group(1)) != bool(m.group(6)):
+        return None
+    raw = m.group(5)
+    if _LFM_SECOND_KEY_RE.search(raw):
+        return None
+    value = _LFM_ESCAPE_RE.sub(lambda e: _LFM_ESCAPES.get(e.group(1), e.group(1)), raw)
+    return [(m.group(2), {m.group(3): value})]
+
+
+def _lfm_call_list(body: str, *, heal: bool = False) -> "list[tuple[str, dict]] | None":
+    stripped = body.strip()
+    if not stripped:
+        return None
+    if stripped[0] in "[{":
+        calls = _lfm_json_calls(stripped)
+        if calls is not None:
+            return calls
+    calls = _lfm_pythonic_calls(stripped)
+    if calls is None and heal:
+        calls = _lfm_one_string_call(stripped)
+    return calls
+
+
+def _parse_lfm_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    """LFM2 / LFM2.5 calls that reach Studio as text: llama-server's LFM2 parser returns the block as content when
+    it is not armed (``tool_choice`` "none", a template it does not detect). A block whose body is not a whole
+    call list stays text; an unclosed block runs only with Auto-Heal and a complete list. A block inside
+    reasoning is a rehearsal and is skipped. Auto-Heal also reads one string argument holding its own quote
+    unescaped, as ``_parse_closed_call_unescaped_quotes`` does for JSON."""
+    out: list[dict] = []
+    if _LFM_CALL_START not in content:
+        return out
+    think_spans = _merge_spans(_tool_healing._think_spans_outside_tool_markup(content))
+    think_starts = [s for s, _ in think_spans]
+    for start, end, closed in _lfm_block_spans(content):
+        think_idx = bisect.bisect_right(think_starts, start) - 1
+        if think_idx >= 0 and start < think_spans[think_idx][1]:
+            continue
+        if not closed and not allow_incomplete:
+            continue
+        body = content[start + len(_LFM_CALL_START) : end - len(_LFM_CALL_END) if closed else end]
+        calls = _lfm_call_list(body, heal = allow_incomplete)
+        if calls is None:
+            continue
+        for name, args in calls:
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
                 }
             )
     return out
