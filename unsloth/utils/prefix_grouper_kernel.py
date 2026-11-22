@@ -67,7 +67,35 @@ if TORCH_SUPPORTS_PREFIX_GROUPER:
 
 
 # dynamic=True: T changes almost every batch; static recompiles per T (~14 s each).
-_flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
+_flex_attention_dynamic = torch.compile(flex_attention, dynamic = True)
+
+
+def _rocm_static_flex_entry(query, key, value, **kwargs):
+    # Its own code object, so static graphs keep their own recompile budget.
+    return flex_attention(query, key, value, **kwargs)
+
+
+# ROCm: flex compiled with a symbolic sequence length returned inf / NaN gradients on gfx1151 (torch 2.11), so
+# calls whose backward runs compile per padded length there. UNSLOTH_ROCM_FLEX_STATIC=0 keeps the dynamic kernel.
+_ROCM_FLEX_STATIC = bool(getattr(torch.version, "hip", None)) and (
+    os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0"
+)
+_flex_attention_static = (
+    torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
+)
+
+
+def _flex_attention_compiled(query, key, value, **kwargs):
+    if (
+        _flex_attention_static is not None
+        and query.device.type == "cuda"
+        and torch.is_grad_enabled()
+        and (query.requires_grad or key.requires_grad or value.requires_grad)
+    ):
+        return _flex_attention_static(query, key, value, **kwargs)
+    return _flex_attention_dynamic(query, key, value, **kwargs)
+
+
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
 # fp32 needs 32/32 for a ~1e-6 floor; bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
