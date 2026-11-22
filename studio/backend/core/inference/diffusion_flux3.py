@@ -867,44 +867,96 @@ def load_flux3_pipeline(
     common: dict[str, Any] = {"local_files_only": local_files_only, "cache_dir": _live_cache_dir()}
     if token:
         common["token"] = token
-    index = _read_index(repo_id, token, local_files_only)
+    from . import diffusion_hub_snapshot as snap
+
+    # One Hub call: an unchanged, already validated snapshot reads every component from the cache.
+    components = {
+        "loader": "flux3",
+        "text_encoder": text_encoder is None,
+        "transformer": transformer is None and with_transformer,
+        "dtype": str(dtype),
+        "storage_dtype": str(storage_dtype),
+        "transformer_storage": transformer_storage,
+    }
+    cached = (
+        not local_files_only
+        and snap.current_snapshot(
+            repo_id, components, token = token, cache_dir = common["cache_dir"], logger = logger
+        )
+        is not None
+    )
+
+    def cache_first(load: Callable[[bool], Any], *, name: str) -> Any:
+        return snap.cache_first(
+            load,
+            cached = cached,
+            name = name,
+            logger = logger,
+            on_fallback = lambda: snap.forget(repo_id, components, cache_dir = common["cache_dir"]),
+        )
+
+    def _kw(local: bool) -> dict[str, Any]:
+        return dict(common, local_files_only = local_files_only or local)
+
+    index = cache_first(
+        lambda local: _read_index(repo_id, token, local_files_only or local),
+        name = FLUX3_INDEX,
+    )
     check_cancelled()
-    tokenizer = AutoProcessor.from_pretrained(repo_id, subfolder = "text_encoder", **common)
+    tokenizer = cache_first(
+        lambda local: AutoProcessor.from_pretrained(
+            repo_id, subfolder = "text_encoder", **_kw(local)
+        ),
+        name = "the processor",
+    )
     check_cancelled()
     if text_encoder is None:
-        text_encoder = _manual_cast_load(
-            lambda load_dtype: Qwen3VLForConditionalGeneration.from_pretrained(
-                repo_id, subfolder = "text_encoder", dtype = load_dtype, **common
+        text_encoder = cache_first(
+            lambda local: _manual_cast_load(
+                lambda load_dtype: Qwen3VLForConditionalGeneration.from_pretrained(
+                    repo_id, subfolder = "text_encoder", dtype = load_dtype, **_kw(local)
+                ),
+                name = "text_encoder",
+                repo_id = repo_id,
+                dtype = dtype,
+                storage_dtype = storage_dtype,
+                hf_token = token,
+                local_files_only = local_files_only or local,
             ),
-            name = "text_encoder",
-            repo_id = repo_id,
-            dtype = dtype,
-            storage_dtype = storage_dtype,
-            hf_token = token,
-            local_files_only = local_files_only,
+            name = "the text encoder",
         )
         text_encoder.eval()
         check_cancelled()
     if transformer is None and with_transformer:
-        transformer_storage_at = transformer_load_storage(
-            storage_dtype, dtype, transformer_storage, repo_id, token, local_files_only
-        )
-        transformer = _manual_cast_load(
-            lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
-                repo_id, subfolder = "transformer", torch_dtype = load_dtype, **common
-            ),
-            name = "transformer",
-            repo_id = repo_id,
-            dtype = dtype,
-            storage_dtype = transformer_storage_at,
-            hf_token = token,
-            local_files_only = local_files_only,
-        )
+
+        def _transformer(local: bool) -> Any:
+            transformer_storage_at = transformer_load_storage(
+                storage_dtype, dtype, transformer_storage, repo_id, token, local_files_only or local
+            )
+            return _manual_cast_load(
+                lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
+                    repo_id, subfolder = "transformer", torch_dtype = load_dtype, **_kw(local)
+                ),
+                name = "transformer",
+                repo_id = repo_id,
+                dtype = dtype,
+                storage_dtype = transformer_storage_at,
+                hf_token = token,
+                local_files_only = local_files_only or local,
+            )
+
+        transformer = cache_first(_transformer, name = "the transformer")
         check_cancelled()
-    vae = diffusers.AutoencoderKLFlux2.from_pretrained(
-        repo_id, subfolder = "vae", torch_dtype = dtype, **common
+    vae = cache_first(
+        lambda local: diffusers.AutoencoderKLFlux2.from_pretrained(
+            repo_id, subfolder = "vae", torch_dtype = dtype, **_kw(local)
+        ),
+        name = "the VAE",
     )
     check_cancelled()
+    if not cached and not local_files_only:
+        # This load revalidated every file it read: the next one may read them from the cache.
+        snap.note_validated(repo_id, components, token = token, cache_dir = common["cache_dir"])
     _pin_compute_dtype(transformer, dtype)
     blocks = flux3_blocks_class(index, transformer)
     reason = flux3_family_blocks_mismatch(family_name, blocks, repo_id)

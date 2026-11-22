@@ -428,6 +428,52 @@ def _probe_tile(index: int, fam: int, tile: int, pairs: tuple) -> bool:
 
 
 _PROBED: dict = {}
+# The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, these module sources and the
+# loaded library's bytes (``_probe_extra``): any change re-probes. UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off.
+PROBE_PERSIST_SOURCES = ("diffusion_int8_cutlass.py", "diffusion_int8_gemm.py")
+_PROBE_STORE: list = [None]
+
+
+def _probe_extra() -> dict:
+    from .diffusion_int8_gemm import _sources_digest
+
+    lib = library_path()
+    if not lib:
+        raise RuntimeError("no library")
+    return {"abi": ABI_VERSION, "lib": _sources_digest(lib)}
+
+
+def _probe_store() -> Any:
+    if _PROBE_STORE[0] is None:
+        from .diffusion_probe_cache import Namespace
+        _PROBE_STORE[0] = Namespace("int8_cutlass_tiles", PROBE_PERSIST_SOURCES, extra = _probe_extra)
+    return _PROBE_STORE[0]
+
+
+def _stored_tiles(index: int, fam: int) -> Optional[tuple]:
+    """The persisted probe verdict for this card, or None (missing, stale, malformed). Never raises."""
+    try:
+        got = _probe_store().get(f"cuda:{int(index)}", f"tiles|{fam}")
+        n = len(tiles(fam))
+        if (
+            not isinstance(got, dict)
+            or got.get("n") != n
+            or not isinstance(got.get("ok"), list)
+            or not all(isinstance(t, int) and 0 <= t < n for t in got["ok"])
+        ):
+            return None
+        return tuple(got["ok"])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _store_tiles(index: int, fam: int, ok: tuple) -> None:
+    try:
+        _probe_store().put(
+            f"cuda:{int(index)}", f"tiles|{fam}", {"n": len(tiles(fam)), "ok": list(ok)}
+        )
+    except Exception:  # noqa: BLE001 - the next process probes again
+        pass
 
 
 def probed_tiles(index: int) -> tuple:
@@ -438,8 +484,16 @@ def probed_tiles(index: int) -> tuple:
         import torch
         fam = family(torch.cuda.get_device_capability(index))
         if fam is not None and library() is not None:
-            pairs = _scale_dtypes(fam)
-            ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
+            stored = _stored_tiles(index, fam)
+            if stored is not None:
+                ok = stored
+            else:
+                pairs = _scale_dtypes(fam)
+                ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
+                failed = [t for t in range(len(tiles(fam))) if t not in ok]
+                # a failure persists only when it repeats: one transient error must not drop a tile for good
+                if not any(_probe_tile(index, fam, t, pairs) for t in failed):
+                    _store_tiles(index, fam, ok)
     except Exception:  # noqa: BLE001
         ok = ()
     _PROBED[index] = ok
