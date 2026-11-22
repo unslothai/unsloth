@@ -6,6 +6,7 @@ reference K/V cache is exact for the model it was trained as (and not for stock 
 
 from __future__ import annotations
 
+import sys
 import types
 
 import pytest
@@ -563,6 +564,10 @@ def test_kv_checkpoint_refuses_a_stock_workflow_pipe(monkeypatch, workflow):
         be, "_from_pipe_no_recast", lambda pipe, cls: built.append(cls) or types.SimpleNamespace()
     )
     monkeypatch.setattr(d.prompt_cache, "install", lambda *a, **k: None)
+    # the stock half only needs the class name to resolve: no real diffusers on the CPU CI legs
+    fake = types.ModuleType("diffusers")
+    fake.Flux2KleinInpaintPipeline = object
+    monkeypatch.setitem(sys.modules, "diffusers", fake)
     kv = _kv_load_state("someone/klein-quants", "flux-2-klein-9b-kv-Q4_K_M.gguf")
     with pytest.raises(ValueError, match = "Flux2KleinKVPipeline") as info:
         be._workflow_pipe(kv, "Flux2KleinInpaintPipeline", workflow)
