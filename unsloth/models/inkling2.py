@@ -23,6 +23,7 @@ __all__ = [
     "drop_inkling2_quantization_config",
     "register_inkling2_expert_dequantization",
     "patch_inkling2_model",
+    "checkpoint_inkling2_message_inputs",
     "inkling2_lora_target_modules",
     "raise_if_merging_inkling2",
     "raise_if_inkling2_parallel_unsupported",
@@ -313,6 +314,52 @@ def _unsloth_lora_target_modules(
     )
 
 
+def _checkpointed_message_input(text_model, forward):
+    """Inkling-2-Mini's loop message residual runs in the text model's forward, between the checkpointed decoder
+    layers, so everything its fp32 attention saves for backward stays on the GPU for the whole step: about 60 MB per
+    call at 1024 tokens, 24 calls (12 loop layers x 2 later passes), so 1.4 GB. Under gradient checkpointing run it
+    checkpointed too: only its inputs (block states the layers keep anyway) are held, and backward recomputes the
+    small attention, which gives the same values and gradients."""
+    import weakref
+
+    import torch
+    from torch.utils.checkpoint import checkpoint
+
+    owner = weakref.ref(text_model)
+
+    def message_input_forward(*args, **kwargs):
+        tm = owner()
+        if (
+            tm is None
+            or not getattr(tm, "gradient_checkpointing", False)
+            or not tm.training
+            or not torch.is_grad_enabled()
+            or torch.compiler.is_compiling()
+        ):
+            return forward(*args, **kwargs)
+        return checkpoint(forward, *args, use_reentrant = False, preserve_rng_state = False, **kwargs)
+
+    message_input_forward._unsloth_checkpointed_message_input = True
+    return message_input_forward
+
+
+def checkpoint_inkling2_message_inputs(model) -> int:
+    """Wrap every loop text model's `message_input` call (see _checkpointed_message_input). Returns the count."""
+    n = 0
+    for module in model.modules():
+        message_input = getattr(module, "message_input", None)
+        if message_input is None or not type(message_input).__name__.endswith(
+            "LoopMessageAttentionResidual"
+        ):
+            continue
+        if getattr(message_input.forward, "_unsloth_checkpointed_message_input", False):
+            continue
+        # The instance forward (accelerate's device hook when the model is split) stays inside the checkpoint.
+        message_input.forward = _checkpointed_message_input(module, message_input.forward)
+        n += 1
+    return n
+
+
 def patch_inkling2_model(model) -> bool:
     """Give a loaded Inkling 2 model Unsloth's LoRA target mapping. Returns True when the model is Inkling 2."""
     config = getattr(model, "config", None)
@@ -321,4 +368,5 @@ def patch_inkling2_model(model) -> bool:
     cls = type(model)
     if getattr(cls, "unsloth_lora_target_modules", None) is not _unsloth_lora_target_modules:
         cls.unsloth_lora_target_modules = _unsloth_lora_target_modules
+    checkpoint_inkling2_message_inputs(model)
     return True

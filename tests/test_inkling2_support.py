@@ -405,3 +405,49 @@ def test_vision_only_training_maps_the_vision_tower(monkeypatch, targets):
     if len(targets) > 1:
         assert {"fc1", "fc2"} <= leaves
     assert not list(out.peft_config["default"].target_parameters or [])
+
+
+def _saved_bytes_and_grads(model, ids):
+    model.zero_grad(set_to_none = True)
+    saved = [0]
+
+    def pack(t):
+        saved[0] += t.numel() * t.element_size()
+        return t
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+        out = model(input_ids = ids, labels = ids, use_cache = False)
+    out.loss.backward()
+    grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    return float(out.loss), saved[0], grads
+
+
+def test_loop_message_input_is_checkpointed_under_gradient_checkpointing():
+    """The loop message residual runs between the checkpointed layers: without its own checkpoint everything its
+    fp32 attention saves stays on the GPU for the whole step (1.4 GB on Inkling-2-Mini at 1024 tokens)."""
+    m = _inkling2()
+    model = _tiny(loop = True)
+    model.train()
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+    ids = torch.randint(0, 250, (2, 16))
+    loss0, saved0, grads0 = _saved_bytes_and_grads(model, ids)
+    assert m.checkpoint_inkling2_message_inputs(model) == 1
+    assert m.checkpoint_inkling2_message_inputs(model) == 0  # idempotent
+    loss1, saved1, grads1 = _saved_bytes_and_grads(model, ids)
+    assert loss1 == loss0
+    assert grads1.keys() == grads0.keys()
+    for n in grads0:
+        assert torch.equal(grads0[n], grads1[n]), n
+    # 2 passes x 6 loop layers -> 6 message calls; each saved its fp32 norm, queries, keys and values before.
+    assert saved1 < saved0
+    # Without gradient checkpointing (or in eval) the wrapper is a pass-through.
+    model.gradient_checkpointing_disable()
+    _, saved_off, grads_off = _saved_bytes_and_grads(model, ids)
+    for n in grads0:
+        torch.testing.assert_close(grads_off[n], grads0[n])
+    assert saved_off > saved0
+
+
+def test_message_input_checkpoint_skips_inkling2_small():
+    m = _inkling2()
+    assert m.checkpoint_inkling2_message_inputs(_tiny(loop = False)) == 0
