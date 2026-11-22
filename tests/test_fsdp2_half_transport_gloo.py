@@ -11,9 +11,15 @@ leaves a float32-accumulated gradient, which must take the original collective (
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 
-import pytest
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+
+import pytest  # noqa: E402
 
 torch = pytest.importorskip("torch")
 dist = pytest.importorskip("torch.distributed")
@@ -55,15 +61,17 @@ def _model():
 
 def _grads(rank, world, dtype, transport, micro, sync_each):
     from torch.distributed import fsdp
+    from torch.distributed.device_mesh import init_device_mesh
 
     install_half_transport_reduce = _reduce_module().install_half_transport_reduce
 
     os.environ["UNSLOTH_FSDP2_REDUCE_TRANSPORT"] = "auto" if transport else "off"
     model = _model()
     policy = fsdp.MixedPrecisionPolicy(param_dtype = dtype, reduce_dtype = torch.float32)
+    mesh = init_device_mesh("cpu", (world,))  # the gloo world is CPU, also on a host with CUDA
     for block in model:
-        fsdp.fully_shard(block, mp_policy = policy)
-    fsdp.fully_shard(model, mp_policy = policy)
+        fsdp.fully_shard(block, mesh = mesh, mp_policy = policy)
+    fsdp.fully_shard(model, mesh = mesh, mp_policy = policy)
     comms = install_half_transport_reduce([*model, model])
     g = torch.Generator().manual_seed(100 + rank)
     for i in range(micro):
