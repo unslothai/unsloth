@@ -175,9 +175,11 @@ EAGER_ORDER = [
     "doctor",
     "run",
     "install-kernels",
+    "worker",
     "studio",
     "start",
     "mcp",
+    "cluster",
     "connect",
 ]
 
