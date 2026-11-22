@@ -601,7 +601,7 @@ def _has_unprotected_snapshot(
     for entry in entries:
         # mirror scan_cache_dir's repo id derivation from the folder name.
         repo_type, sep, name = entry.name.partition("--")
-        if not sep or repo_type != "models" or name.replace("--", "/").lower() != wanted:
+        if not sep or repo_type[:-1] != "model" or name.replace("--", "/").lower() != wanted:
             continue
         try:
             if not entry.is_dir():
