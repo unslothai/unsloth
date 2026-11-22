@@ -176,10 +176,13 @@ def lanczos_resize(
     crop: tuple[int, int, int, int] | None = None,
     mean: tuple[float, float, float] | None = None,
     std: tuple[float, float, float] | None = None,
+    vertical_first: bool = False,
 ) -> torch.Tensor:
     """Resize CUDA uint8 HWC/NHWC RGB to ``height x width`` matching Pillow's Lanczos rounding.
 
     ``crop=(top, left, h, w)`` crops the resized image; ``mean`` + ``std`` fuse normalisation (float32 out).
+    ``vertical_first`` runs the vertical pass first, as Pillow >= 13 does when the height shrinks by more than twice
+    the width.
     """
     from .rocm_bf16 import is_rocm_torch
 
@@ -214,6 +217,27 @@ def lanczos_resize(
         if any(not math.isfinite(v) for v in mean + std) or any(v <= 0 for v in std):
             raise ValueError("mean/std must be finite and std must be positive")
 
+    # Launch on the operand's device: Triton uses the current device and stream.
+    with torch.cuda.device(image.device):
+        return _launch(
+            image,
+            height,
+            width,
+            top,
+            left,
+            output_h,
+            output_w,
+            crop,
+            normalize,
+            mean,
+            std,
+            vertical_first,
+        )
+
+
+def _launch(
+    image, height, width, top, left, output_h, output_w, crop, normalize, mean, std, vertical_first
+):
     source_h, source_w = image.shape[-3:-1]
     if (source_h, source_w) == (height, width) and crop is None:
         image = image.contiguous()
@@ -225,9 +249,52 @@ def lanczos_resize(
         )
         return output
     batch_size = image.shape[0] if image.ndim == 4 else 1
-    stride_batch = image.stride(0) if image.ndim == 4 else 0
     coeff_x, bounds_x, taps_x = _coefficients(source_w, width, image.device)
     coeff_y, bounds_y, taps_y = _coefficients(source_h, height, image.device)
+    if vertical_first and source_h != height:
+        # The vertical pass reads whole contiguous rows; it keeps only the cropped rows, all source columns.
+        image = image.contiguous()
+        rows = torch.empty(
+            (batch_size, output_h, source_w, 3), dtype = torch.uint8, device = image.device
+        )
+        _vertical_lanczos[(triton.cdiv(output_h * source_w * 3, 256), batch_size)](
+            image,
+            rows,
+            coeff_y,
+            bounds_y,
+            None,
+            output_h,
+            source_w,
+            top,
+            image.stride(0) if image.ndim == 4 else 0,
+            taps_y,
+            False,
+            256,
+        )
+        pixels = torch.empty(
+            (*image.shape[:-3], output_h, output_w, 3), dtype = torch.uint8, device = image.device
+        )
+        _horizontal_lanczos[(triton.cdiv(output_h * output_w * 3, 256), batch_size)](
+            rows,
+            pixels,
+            coeff_x,
+            bounds_x,
+            output_h,
+            output_w,
+            left,
+            rows.stride(0),
+            *rows.stride()[-3:],
+            taps_x,
+            256,
+        )
+        if not normalize:
+            return pixels
+        output = torch.empty_like(pixels, dtype = torch.float32)
+        _normalize_rgb[(triton.cdiv(pixels.numel(), 256),)](
+            pixels, output, _normalization(mean, std, image.device), pixels.numel(), 256
+        )
+        return output
+    stride_batch = image.stride(0) if image.ndim == 4 else 0
     intermediate = torch.empty(
         (batch_size, source_h, output_w, 3), dtype = torch.uint8, device = image.device
     )

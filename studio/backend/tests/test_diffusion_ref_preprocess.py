@@ -111,3 +111,99 @@ def test_config_gate():
     assert rp._config_ok(proc)
     proc2 = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16, do_normalize = False)
     assert not rp._config_ok(proc2)
+
+
+@pytest.mark.parametrize("mode", ["RGBA", "LA", "P", "CMYK", "L"])
+def test_non_rgb_resize_stays_stock(monkeypatch, mode):
+    """Pillow resizes RGBA / LA premultiplied, P with NEAREST and CMYK in its own space before preprocess converts: only
+    RGB sources may defer to the RGB Lanczos kernel; the rest must get the stock resized image."""
+    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
+    pipe = _Pipe(device = torch.device("cuda"))
+    stock_proc = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16)
+    assert rp.install(pipe) is True
+    rgb = _img(1500, 900, 7)
+    assert isinstance(
+        pipe.image_processor._resize_to_target_area(rgb, 1024 * 1024), rp.DeferredResize
+    )
+    src = _img(1500, 900, 7, mode = "RGB")
+    if mode in ("RGBA", "LA"):
+        alpha = Image.fromarray(
+            np.random.default_rng(8).integers(0, 256, (900, 1500), dtype = np.uint8), "L"
+        )
+        src = src.convert(mode)
+        src.putalpha(alpha)
+    elif mode == "P":
+        src = src.quantize(64)
+    else:
+        src = src.convert(mode)
+    got = pipe.image_processor._resize_to_target_area(src, 1024 * 1024)
+    ref = stock_proc._resize_to_target_area(src, 1024 * 1024)
+    assert not isinstance(got, rp.DeferredResize)
+    assert got.mode == ref.mode and np.array_equal(np.asarray(got), np.asarray(ref))
+
+
+def test_kernel_launches_on_operand_device(monkeypatch):
+    """Triton launches on the current device: the resize must run under torch.cuda.device(image.device)."""
+    pytest.importorskip("triton")
+    from core.inference import diffusion_lanczos_triton as K
+
+    entered = []
+
+    class _Dev:
+        def __init__(self, d):
+            self.d = d
+
+        def __enter__(self):
+            entered.append(self.d)
+
+        def __exit__(self, *a):
+            entered.append("exit")
+
+    class _Img:
+        is_cuda = True
+        dtype = torch.uint8
+        ndim = 3
+        shape = (40, 30, 3)
+        device = "cuda:1"
+
+    from core.inference import rocm_bf16
+
+    monkeypatch.setattr(rocm_bf16, "is_rocm_torch", lambda _t: False)
+    monkeypatch.setattr(K.torch.cuda, "device", _Dev)
+    monkeypatch.setattr(K, "_launch", lambda *a, **k: (list(entered), "out"))
+    seen, out = K.lanczos_resize(_Img(), 20, 15)
+    assert out == "out" and seen == ["cuda:1"] and entered == ["cuda:1", "exit"]
+
+
+def _emulate(arr, w, h, vertical_first):
+    """The kernel's integer math in numpy (Pillow 8 bpc rounding), in the given pass order."""
+    from core.inference import diffusion_lanczos_triton as K
+
+    def one(a, axis, n):
+        c, b, _ = K._coefficients(a.shape[axis], n, torch.device("cpu"))
+        c, b = c.numpy().astype(np.int64), b.numpy()
+        a = np.moveaxis(a, axis, 0).astype(np.int64)
+        out = np.empty((n, *a.shape[1:]), np.int64)
+        for i in range(n):
+            f, k = b[i]
+            out[i] = (np.tensordot(c[i, :k], a[f : f + k], axes = 1) + (1 << 21)) >> 22
+        return np.moveaxis(np.clip(out, 0, 255).astype(np.uint8), 0, axis)
+
+    if vertical_first:
+        return one(one(arr, 0, h), 1, w)
+    return one(one(arr, 1, w), 0, h)
+
+
+@pytest.mark.parametrize(
+    "src, dst",
+    [((60, 200), (30, 70)), ((200, 60), (70, 30)), ((40, 130), (37, 64)), ((97, 13), (11, 31))],
+)
+def test_pass_order_matches_installed_pillow(src, dst):
+    """Pillow >= 13 runs the vertical pass first when the height shrinks by more than twice the width; the GPU path must
+    pick the same order or tall references (phone screenshots, > 2:1) stop being byte-identical."""
+    pytest.importorskip("triton")
+    (sw, sh), (w, h) = src, dst
+    arr = np.random.default_rng(sw * sh).integers(0, 256, (sh, sw, 3), dtype = np.uint8)
+    ref = np.asarray(Image.fromarray(arr, "RGB").resize((w, h), Image.Resampling.LANCZOS))
+    got = _emulate(arr, w, h, rp._pillow_vertical_first(sw, sh, w, h))
+    assert np.array_equal(got, ref)

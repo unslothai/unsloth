@@ -68,6 +68,30 @@ def _target_size(image: Any, target_area: int) -> tuple:
     return int(width * scale), int(height * scale)
 
 
+_PILLOW_ORDER: dict = {}
+
+
+def _pillow_vertical_first(src_w: int, src_h: int, w: int, h: int) -> bool:
+    """Pillow >= 13 runs the vertical pass first when the height shrinks by more than twice the width (Resample.c
+    `horizontal_first`); older Pillow always runs horizontal first. Which one is installed is read once from Pillow."""
+    if not ((src_h - h) > 0 and (src_h - h) > (src_w - w) * 2):
+        return False
+    adaptive = _PILLOW_ORDER.get("adaptive")
+    if adaptive is None:
+        import numpy as np
+        from PIL import Image
+
+        a = np.random.default_rng(0).integers(0, 256, (97, 13, 3), dtype = np.uint8)
+        im = Image.fromarray(a, "RGB")
+        lz = Image.Resampling.LANCZOS
+        full = np.asarray(im.resize((11, 31), lz))
+        adaptive = bool(
+            np.array_equal(full, np.asarray(im.resize((13, 31), lz).resize((11, 31), lz)))
+        )
+        _PILLOW_ORDER["adaptive"] = adaptive
+    return adaptive
+
+
 def _table(device):
     import numpy as np
     import torch
@@ -105,7 +129,14 @@ def _gpu_preprocess(
     )
     if isinstance(image, DeferredResize):
         from .diffusion_lanczos_triton import lanczos_resize
-        out = lanczos_resize(px, h1, w1, crop = (top, left, height, width))
+        src_h, src_w = px.shape[0], px.shape[1]
+        out = lanczos_resize(
+            px,
+            h1,
+            w1,
+            crop = (top, left, height, width),
+            vertical_first = _pillow_vertical_first(src_w, src_h, w1, h1),
+        )
     else:
         out = px[top : top + height, left : left + width]
     f = _table(device)[out.long()]
@@ -132,14 +163,18 @@ def _probe(proc: Any, stock_area, stock_pre, device) -> bool:
     from PIL import Image
 
     rng = np.random.default_rng(1234)
-    img = Image.fromarray(rng.integers(0, 256, size = (601, 1203, 3), dtype = np.uint8), "RGB")
     target = 512 * 256
-    ref_img = stock_area(img, target)
-    w, h = ref_img.size
-    w, h = w // 16 * 16, h // 16 * 16
-    ref = stock_pre(ref_img, height = h, width = w, resize_mode = "crop")
-    got = _gpu_preprocess(proc, DeferredResize(img, *_target_size(img, target)), h, w, device)
-    return bool(torch.equal(got.cpu(), ref) and got.stride() == ref.stride())
+    # A wide image (horizontal pass first) and a tall one (vertical first on Pillow >= 13).
+    for shape in ((601, 1203, 3), (1203, 401, 3)):
+        img = Image.fromarray(rng.integers(0, 256, size = shape, dtype = np.uint8), "RGB")
+        ref_img = stock_area(img, target)
+        w, h = ref_img.size
+        w, h = w // 16 * 16, h // 16 * 16
+        ref = stock_pre(ref_img, height = h, width = w, resize_mode = "crop")
+        got = _gpu_preprocess(proc, DeferredResize(img, *_target_size(img, target)), h, w, device)
+        if not (torch.equal(got.cpu(), ref) and got.stride() == ref.stride()):
+            return False
+    return True
 
 
 def _config_ok(proc: Any) -> bool:
@@ -175,7 +210,9 @@ def install(pipe: Any, logger: Any = None) -> bool:
     stock_pre = proc.preprocess
 
     def _resize_to_target_area(image, target_area = 1024 * 1024):
-        if not enabled() or _device_of(pipe) is None or not _is_pil(image):
+        # RGB only: Pillow resizes RGBA / LA premultiplied, P / 1 with NEAREST and CMYK / YCbCr in their own space, then
+        # preprocess converts, so convert-then-RGB-Lanczos would differ.
+        if not enabled() or _device_of(pipe) is None or not _is_pil(image) or image.mode != "RGB":
             return stock_area(image, target_area)
         return DeferredResize(image, *_target_size(image, target_area))
 
