@@ -28,6 +28,8 @@ const QUANTIZATION_NAMES: Record<string, string> = {
   awq: "AWQ",
   gptq: "GPTQ",
   "auto-round": "AutoRound",
+  modelopt: "NVIDIA ModelOpt",
+  fbgemm_fp8: "FBGEMM FP8",
 };
 
 /** Root-mounted: a Default-engine load only vLLM / SGLang can run waits here for an engine. */

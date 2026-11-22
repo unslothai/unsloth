@@ -17889,9 +17889,29 @@ _NOT_SUPPORTED_HINTS = (
     "does not support",
 )
 
-_NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
-    "We are working on supporting NVFP4 inference. For now it is not supported"
+# The frontend keys its "Open settings" button on this wording (model-memory-action.ts).
+# The first line is the toast's title, the rest its description.
+_GPU_QUANT_ENGINE_MESSAGE = (
+    "{fmt} models run on the vLLM or SGLang engine.\nInstall one in Settings > System > "
+    "More engines, then choose it as Inference engine in this model's run settings."
 )
+_GPU_QUANT_NO_ENGINE_MESSAGE = (
+    "{fmt} models run on the vLLM or SGLang engine.\nThose need Linux or Windows with an "
+    "NVIDIA GPU. On this computer, try a GGUF or MLX build of this model instead."
+)
+_NVFP4_ENGINE_MESSAGE = _GPU_QUANT_ENGINE_MESSAGE.format(fmt = "NVFP4")
+_NVFP4_NO_ENGINE_MESSAGE = _GPU_QUANT_NO_ENGINE_MESSAGE.format(fmt = "NVFP4")
+
+
+def _gpu_quant_inference_message(fmt: str) -> str:
+    try:
+        from core.inference.engine_install import gpu_platform, support_reason
+        if gpu_platform() != "rocm" and support_reason("vllm", wait = False) is None:
+            return _GPU_QUANT_ENGINE_MESSAGE.format(fmt = fmt)
+    except Exception:
+        pass
+    return _GPU_QUANT_NO_ENGINE_MESSAGE.format(fmt = fmt)
+
 
 # Users cannot pip install into Studio's environment, so give our own message.
 _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
@@ -17923,10 +17943,17 @@ _MANAGED_ENGINE_QUANTIZATIONS = {
     "awq": ("gptqmodel", "awq"),
     "gptq": ("gptqmodel", "auto_gptq"),
     "auto-round": ("auto_round",),
+    # Transformers has no ModelOpt loader; plain "fp8" stays on Default, which runs it.
+    "modelopt": (),
+    "fbgemm_fp8": ("fbgemm_gpu",),
 }
 _OFFERED_ENGINES = ("vllm", "sglang")
 # SGLang registers auto-round too, but only vLLM has been run on it (#7997).
-_OFFERED_ENGINES_FOR = {"auto-round": ("vllm",)}
+_OFFERED_ENGINES_FOR = {
+    "auto-round": ("vllm",),
+    "modelopt": ("vllm",),
+    "fbgemm_fp8": ("vllm",),
+}
 
 
 def _managed_engine_offer(
@@ -17994,7 +18021,7 @@ def _managed_engine_offer_for(config, hf_token) -> Optional[dict]:
             if support_reason(name) is not None:
                 return False
             if gpu_platform() == "rocm":
-                if method == "auto-round":
+                if method in ("auto-round", "fbgemm_fp8"):
                     # Unmeasured on ROCm vLLM; an explicit vLLM load still gets to try (#7997).
                     return False
                 text_config = metadata.get("text_config")
@@ -18045,6 +18072,18 @@ def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
     return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
 
 
+# The metadata repr names the scheme: compressed-tensors "float-quantized", HF / ModelOpt "fp8".
+_FP8_METADATA_MARKERS = ("fp8", "float-quantized")
+
+
+def _is_unsupported_fp8_inference_error(msg: str) -> bool:
+    """The same MLX error for an FP8 checkpoint; NVFP4 is checked first, as mixed ones carry both."""
+    lower_msg = _diagnosis_text(msg).lower()
+    return "per-module mlx quantization metadata" in lower_msg and any(
+        marker in lower_msg for marker in _FP8_METADATA_MARKERS
+    )
+
+
 # The two transformers sites, reworded in 5.10 to add a version: match only what survived.
 _MISSING_COMPRESSED_TENSORS_SIGNATURES = (
     "is required for compressed-tensors quantization",
@@ -18061,7 +18100,9 @@ def _is_missing_compressed_tensors_error(msg: str) -> bool:
 def _unsupported_quantization_detail(msg: str, engine: Optional[str] = None) -> Optional[str]:
     """The refusal to show for a quantization error, or None; the one place signatures are added."""
     if _is_unsupported_nvfp4_inference_error(msg):
-        return _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
+        return _gpu_quant_inference_message("NVFP4")
+    if _is_unsupported_fp8_inference_error(msg):
+        return _gpu_quant_inference_message("FP8")
     if _is_missing_compressed_tensors_error(msg):
         return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE + _vllm_engine_hint(engine)
     return None

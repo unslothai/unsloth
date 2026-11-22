@@ -24,7 +24,10 @@ import {
   MULTI_MODEL_REFUSAL_TITLE,
   refusalHeadersOf,
 } from "@/lib/multi-model-refusal";
-import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
+import {
+  engineSettingsAction,
+  modelMemorySettingsAction,
+} from "@/features/settings/lib/model-memory-action";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isBackendDownForDesktopUpdate,
@@ -3481,7 +3484,9 @@ export function useChatModelRuntime() {
             const refusal = isMultiModelRefusal(null, refusalHeadersOf(err), message);
             const title = refusal ? MULTI_MODEL_REFUSAL_TITLE : summary;
             const description = refusal ? message : detail || undefined;
-            const action = refusal ? modelMemorySettingsAction() : logsAction;
+            const action = refusal
+              ? modelMemorySettingsAction()
+              : (engineSettingsAction(message) ?? logsAction);
             if (loadToastDismissedRef.current) {
               toast.error(title, { description, action });
             } else {

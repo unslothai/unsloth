@@ -103,6 +103,7 @@ const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
   eetq: "EETQ quantization",
   hqq: "HQQ quantization",
   fbgemm_fp8: "FBGEMM FP8 quantization",
+  modelopt: "NVIDIA ModelOpt quantization",
   finegrained_fp8: "fine-grained FP8 quantization",
   quark: "Quark quantization",
   vptq: "VPTQ quantization",
@@ -134,9 +135,15 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "awq",
   "gptq",
   "auto-round",
+  "modelopt",
+  "fbgemm_fp8",
 ]);
-// Not offered on ROCm vLLM, matching /validate: AutoRound is unmeasured there.
-const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set(["auto-round"]);
+// Not offered on ROCm vLLM, matching /validate.
+const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set([
+  "auto-round",
+  "modelopt",
+  "fbgemm_fp8",
+]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
 // Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
 const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);

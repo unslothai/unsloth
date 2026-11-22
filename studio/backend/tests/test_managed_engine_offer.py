@@ -59,7 +59,7 @@ def offer(
 @pytest.fixture(autouse = True)
 def _no_awq_or_gptq_packages():
     real = importlib.util.find_spec
-    missing = {"gptqmodel", "awq", "auto_gptq", "auto_round"}
+    missing = {"gptqmodel", "awq", "auto_gptq", "auto_round", "fbgemm_gpu"}
     with patch.object(
         importlib.util,
         "find_spec",
@@ -302,3 +302,32 @@ def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
             assert engines(w8a8) == engines(w4a16) == engines(awq) == ["vllm"]
             for metadata in (fp8, nvfp4, NVFP4, gptq, AUTOROUND):
                 assert engines(metadata) is None, metadata
+
+
+def test_modelopt_and_fbgemm_fp8_are_offered_vllm_and_plain_fp8_stays_on_default():
+    modelopt = {"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"}}
+    fbgemm = {"quantization_config": {"quant_method": "fbgemm_fp8"}}
+    assert offer(modelopt) == {"quantization": "modelopt", "engines": ["vllm"]}
+    assert offer(fbgemm) == {"quantization": "fbgemm_fp8", "engines": ["vllm"]}
+    assert offer({"quantization_config": {"quant_method": "fp8"}}) is None
+
+
+def test_fbgemm_fp8_is_not_offered_where_default_can_run_it():
+    real = importlib.util.find_spec
+    with patch.object(
+        importlib.util,
+        "find_spec",
+        side_effect = lambda name, *a: object() if name == "fbgemm_gpu" else real(name, *a),
+    ):
+        assert offer({"quantization_config": {"quant_method": "fbgemm_fp8"}}) is None
+
+
+def test_amd_is_not_offered_modelopt_or_fbgemm_fp8(tmp_path):
+    amd = {"vllm": None, "sglang": "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."}
+    with (
+        patch("core.inference.engine_install.gpu_platform", return_value = "rocm"),
+        patch("core.inference.engine_install.support_reason", side_effect = amd.get),
+    ):
+        for method in ("modelopt", "fbgemm_fp8"):
+            metadata = {"quantization_config": {"quant_method": method}}
+            assert route._managed_engine_offer_for(_config(tmp_path, metadata), None) is None
