@@ -39054,6 +39054,8 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         compact_context: bool = False,
         chat_template_kwargs: Optional[dict] = None,
+        _allow_length_recovery: bool = True,
+        _cumulative_prefix: str = "",
     ) -> Generator[Union[str, dict], None, None]:
         """Streams a chat completion via /v1/chat/completions (llama-server applies template and vision); yields cumulative text like InferenceBackend."""
         if not self.is_loaded:
@@ -39227,12 +39229,13 @@ class LlamaCppBackend:
 
         served_by = getattr(self, "_process", None)
         url = f"{self.base_url}/v1/chat/completions"
-        cumulative = ""
+        cumulative = _cumulative_prefix
         in_thinking = False
         _stream_done = False
         _metadata_usage = None
         _metadata_timings = None
         _metadata_finish_reason = None
+        _length_recovery = None
 
         def _replay_on_replacement_server():
             context_overflow_ = retry_context_overflow
@@ -39412,13 +39415,32 @@ class LlamaCppBackend:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
                     )
-                    yield {
+                    _first_metadata = {
                         "type": "metadata",
                         # Never None: consumers call usage.get(...).
                         "usage": _metadata_usage or {},
                         "timings": _metadata_timings,
                         "finish_reason": _metadata_finish_reason,
                     }
+                    # The thought filled the window: answer once more with thinking off rather
+                    # than end the turn with no answer (the tool loop does the same).
+                    _spent = (_metadata_usage or {}).get("completion_tokens") or 0
+                    if (
+                        _allow_length_recovery
+                        # Turning thinking off is the lever; without it the retry thinks again.
+                        and not getattr(self, "_reasoning_always_on", False)
+                        and _metadata_finish_reason == "length"
+                        and reasoning_text.strip()
+                        and not answer_text.strip()
+                        and not (cancel_event is not None and cancel_event.is_set())
+                        and (max_tokens is None or _spent < max_tokens)
+                    ):
+                        _length_recovery = (
+                            _first_metadata,
+                            None if max_tokens is None else max_tokens - _spent,
+                        )
+                    else:
+                        yield _first_metadata
 
         except _LlamaStreamCancelled:
             return
@@ -39452,6 +39474,73 @@ class LlamaCppBackend:
             # Died mid-generation: recover MTP, re-raise unchanged for this request.
             self._maybe_recover_from_mtp_crash(e)
             raise
+
+        if _length_recovery is None:
+            return
+        from core.inference.chat_template_helpers import append_assistant_turn
+
+        first_metadata, retry_cap = _length_recovery
+        logger.info(
+            "Turn ended inside its reasoning (%d chars, finish_reason length); answering once "
+            "with thinking off",
+            len(reasoning_text),
+        )
+        # The image is attached to the original user turn here, before a user turn is added.
+        recovery_messages = self._build_openai_messages(retry_messages, retry_image_b64)
+        append_assistant_turn(
+            recovery_messages,
+            {
+                "role": "assistant",
+                "content": _unfinished_thought_progress(resumed_reasoning + reasoning_text),
+            },
+            continue_final_message = continue_final_message,
+        )
+        if resumed_reasoning:
+            recovery_messages[-1].pop("reasoning_content", None)
+        recovery_messages.append(
+            {"role": "user", "content": _continue_after_length_message(tools = False)}
+        )
+        answered = False
+        try:
+            for event in self.generate_chat_completion(
+                recovery_messages,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_tokens = retry_cap,
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+                stop = stop,
+                cancel_event = cancel_event,
+                enable_thinking = False,
+                reasoning_effort = None,
+                preserve_thinking = preserve_thinking,
+                seed = seed,
+                promote_reasoning_only = promote_reasoning_only,
+                perf_callback = perf_callback,
+                reasoning_provenance = reasoning_provenance,
+                context_overflow = context_overflow,
+                context_policy = context_policy,
+                compaction_headroom_ratio = compaction_headroom_ratio,
+                thread_id = thread_id,
+                tools_withheld = tools_withheld,
+                compact_context = compact_context,
+                chat_template_kwargs = chat_template_kwargs,
+                _allow_respawn_retry = False,
+                _allow_length_recovery = False,
+                _cumulative_prefix = cumulative,
+            ):
+                answered = answered or isinstance(event, str)
+                yield event
+        except Exception as e:
+            # Nothing of the retry reached the client: end the turn as it would have ended.
+            if answered:
+                raise
+            logger.info("Not answering after the thought: %s", e)
+            yield first_metadata
 
     # ── Tool-calling agentic loop ──────────────────────────────
 

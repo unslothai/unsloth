@@ -966,8 +966,9 @@ def test_a_request_that_withdrew_the_tool_loop_never_resets(monkeypatch):
 
 def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop():
     """The gate is only as good as its caller, so pin the wiring too: the plain GGUF
-    generator takes the flag, forwards it to its own respawn retry (which refits, and so
-    re-asks the reset question), and the route feeds it `_client_disabled_tool_calls`."""
+    generator takes the flag, forwards it to its own respawn retry and to the retry after a
+    thought that filled the window (both refit, and so re-ask the reset question), and the
+    route feeds it `_client_disabled_tool_calls`."""
     import inspect
 
     from core.inference import llama_cpp
@@ -978,7 +979,7 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
         in inspect.signature(llama_cpp.LlamaCppBackend.generate_chat_completion).parameters
     )
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
-    assert body.count("tools_withheld = tools_withheld") == 2
+    assert body.count("tools_withheld = tools_withheld") == 3
 
     route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     assert "tools_withheld = _tool_loop_unusable" in route

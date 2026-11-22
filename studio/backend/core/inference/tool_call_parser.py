@@ -292,11 +292,17 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
     )
 
 
-def continue_after_length_message() -> str:
+def continue_after_length_message(tools: bool = True) -> str:
     """The user message appended when a turn ended inside its own reasoning. The instruction is to
     ACT, not to think more carefully: the previous turn ended with nothing to show because
     thinking consumed the whole window, so asking for more deliberation is asking for the same
     ending a second time."""
+    if not tools:
+        # Talking about running out of room makes small models narrate it instead of answering.
+        return (
+            "Using what you worked out above, give your answer to my request now, without "
+            "thinking further. If it will not all fit, give the first part."
+        )
     return (
         "You ran out of room while thinking, so nothing was produced. Stop thinking and "
         "act: call a tool or answer now. If it will not all fit, deliver the first part "
