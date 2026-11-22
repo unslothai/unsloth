@@ -194,6 +194,15 @@ def need_mib(vae: Any) -> int:
     return _module_mib(vae) + max(1024, _WORKING_MIB * tile_px // _WORKING_TILE_PX)
 
 
+def _cuda_autocast_state() -> tuple:
+    """(enabled, dtype) of the calling thread's CUDA autocast."""
+    import torch
+    try:
+        return torch.is_autocast_enabled("cuda"), torch.get_autocast_dtype("cuda")
+    except (AttributeError, TypeError):  # torch < 2.4
+        return torch.is_autocast_enabled(), torch.get_autocast_gpu_dtype()
+
+
 def _stray_tensors(module: Any, device: Any) -> list:
     """Tensors the copy holds on another CUDA card (parameters, buffers and plain tensor attributes)."""
     import torch
@@ -289,6 +298,9 @@ def split_tiled_decode(
     coords = [(i, j) for i in row_starts for j in col_starts]
     decoded: dict = {}
     grad, inference = torch.is_grad_enabled(), torch.is_inference_mode_enabled()
+    autocast = (
+        _cuda_autocast_state()
+    )  # thread-local too: the partner must decode at the caller's precision
 
     def run(module: Any, latents: Any, todo: list) -> None:
         for i, j in todo:
@@ -335,7 +347,16 @@ def split_tiled_decode(
 
     def partner_run(todo: list) -> None:
         try:
-            with streams(), torch.inference_mode(inference), torch.set_grad_enabled(grad):
+            with (
+                streams(),
+                torch.inference_mode(inference),
+                torch.set_grad_enabled(grad),
+                (
+                    torch.autocast("cuda", dtype = autocast[1], enabled = autocast[0])
+                    if on_cuda
+                    else contextlib.nullcontext()
+                ),
+            ):
                 if on_cuda:
                     side.wait_event(ready)
                 copy = replica
@@ -358,10 +379,10 @@ def split_tiled_decode(
     )
     worker.start()
     try:
-        run(vae, z, coords[0::2])
-    finally:
-        worker.join()
-    try:
+        try:
+            run(vae, z, coords[0::2])
+        finally:
+            worker.join()
         if errors:
             raise errors[0]
         if on_cuda:

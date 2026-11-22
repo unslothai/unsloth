@@ -165,3 +165,48 @@ def test_a_copy_holding_tensors_on_another_card_is_detected():
     assert vm._stray_tensors(m, torch.device("cpu")) == []
     m.cache = types.SimpleNamespace()  # not a tensor
     assert vm._stray_tensors(m, torch.device("cuda", 1)) == []
+
+
+def test_a_failing_load_card_still_releases_the_copy(monkeypatch):
+    # The load card raising (an OOM, say) must still clear the copy the partner built, or the frame kept alive by the
+    # traceback holds it while the stock decode retries.
+    import gc
+    import weakref
+
+    from core.inference import diffusion_multigpu as dm
+
+    vae = _vae()
+    z = _latents(vae)
+    built = []
+
+    def fake_build(src, device):
+        copy = _vae()
+        built.append(weakref.ref(copy))
+        return copy
+
+    class Boom(torch.nn.Module):
+        def forward(self, x):
+            raise RuntimeError("load card out of memory")
+
+    monkeypatch.setattr(dm, "build_replica", fake_build)
+    vae.post_quant_conv = Boom()
+    with torch.no_grad(), pytest.raises(RuntimeError, match = "load card out of memory") as info:
+        vm.split_tiled_decode(vae, z, torch.device("cpu"))
+    gc.collect()
+    assert info.tb is not None  # the failed decode's frames are still alive here
+    assert built and built[0]() is None
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs two CUDA cards"
+)
+def test_split_tiles_keep_the_callers_autocast_on_two_cards():
+    # Autocast is thread-local: the partner thread decodes at the caller's precision, so the result is still the
+    # stock tiled decode under the same autocast.
+    vae = _vae().to("cuda:0")
+    z = _latents(vae).to("cuda:0")
+    with torch.no_grad(), torch.autocast("cuda", dtype = torch.float16):
+        ref = vae.tiled_decode(z, return_dict = False)[0]
+        out = vm.split_tiled_decode(vae, z, torch.device("cuda:1"))
+    assert out.dtype == ref.dtype
+    assert torch.equal(out, ref)
