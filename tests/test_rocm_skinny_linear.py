@@ -107,6 +107,27 @@ def test_pick_config_measured_rule():
             assert cfg[3] == 1 or -(-N // 64) * cfg[3] <= 512
 
 
+def test_routing_rule_matches_measurements():
+    mod = _load()
+    # (N, K) -> routed, from the gfx1151 sweep (Linux and Windows agree)
+    measured = {
+        (2048, 1024): True,
+        (1024, 1024): True,
+        (1024, 2048): True,
+        (3072, 1024): True,
+        (1024, 3072): True,
+        (4096, 2560): True,
+        (1024, 2560): True,
+        (9728, 2560): True,
+        (1024, 4096): True,
+        (2560, 4096): False,
+        (4096, 4096): False,
+        (14336, 4096): False,
+    }
+    for (N, K), want in measured.items():
+        assert mod.routed(N, K) is want, (N, K)
+
+
 @pytest.mark.skipif(not _have_triton(), reason = "triton not installed")
 def test_forced_config_env():
     mod = _load(env = {"UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG": "32,128,4,2"})

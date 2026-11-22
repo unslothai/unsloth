@@ -16,8 +16,10 @@ import torch
 import unsloth.models._decode_graphs as G
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
-# The unset default only turns graphs on for NVIDIA CUDA; ROCm keeps them off unless the flag is 1.
-rl_default = pytest.mark.skipif(not G._DEFAULT_OK, reason = "RL default is NVIDIA CUDA only")
+# The unset default turns graphs on for NVIDIA CUDA and gfx1151 ROCm; other ROCm archs need the flag at 1.
+rl_default = pytest.mark.skipif(
+    not G._DEFAULT_OK, reason = "RL default is NVIDIA CUDA / gfx1151 only"
+)
 MODEL = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 PROMPTS = ["Once upon a time there was", "def f(x):"]
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
@@ -56,7 +58,43 @@ def test_rl_default_is_nvidia_cuda_only(runtime):
         runtime.setenv(ENV, "1")
         assert G.enabled() is True
     runtime.setattr(torch.version, "hip", "6.4.0", raising = False)
+    runtime.setattr(G, "_rocm_default_ok", lambda: False)
     assert G._default_ok() is False
+
+
+def test_rl_default_rocm_only_gfx1151_with_skinny_linear(runtime):
+    """ROCm turns the RL default on only for gfx1151 with the skinny decode linear enabled (measured exact
+    and faster there); other HIP archs, or the kill switch, keep it off."""
+    import types
+
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    runtime.setattr(torch.cuda, "is_available", lambda: True)
+    runtime.setattr(torch.cuda, "current_device", lambda: 0)
+    runtime.setattr(S, "triton", types.SimpleNamespace())
+    for arch, want in (
+        ("gfx1151", True),
+        ("gfx1100", False),
+        ("gfx942", False),
+        ("gfx1201", False),
+    ):
+        runtime.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda i, a = arch: types.SimpleNamespace(gcnArchName = a + ":xnack-"),
+        )
+        assert G._default_ok() is want, arch
+        runtime.setenv("UNSLOTH_ROCM_SKINNY_LINEAR", "0")
+        assert G._default_ok() is False
+        runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR")
+    runtime.setattr(S, "triton", None)
+    runtime.setattr(
+        torch.cuda, "get_device_properties", lambda i: types.SimpleNamespace(gcnArchName = "gfx1151")
+    )
+    assert G._default_ok() is False
+    runtime.setattr(torch.version, "hip", None, raising = False)
+    assert G._default_ok() is True
 
 
 def test_rl_scope_is_per_thread(runtime):

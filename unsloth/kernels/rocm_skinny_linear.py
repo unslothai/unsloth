@@ -18,6 +18,7 @@ __all__ = [
     "skinny_linear_supported",
     "skinny_decode_linear",
     "pick_config",
+    "routed",
     "STATS",
 ]
 
@@ -171,6 +172,13 @@ def pick_config(N, K):
     return 64, 64, 2, split, 2
 
 
+def routed(N, K):
+    """Shapes the kernel takes. Measured on gfx1151 (Linux and Windows, M = 1 to 16, LoRA r32): faster than
+    rocBLAS for every Qwen3-0.6B / Qwen3-4B projection with K <= 3072 and for Llama-3-8B k / v (N = 1024);
+    slower for K = 4096 with N >= 2560 (Qwen3-4B o_proj, Llama-3-8B q / gate_up), which keep rocBLAS."""
+    return K <= 3072 or N <= 1024
+
+
 # Archs with a measured decode win; others keep rocBLAS / hipBLASLt unless UNSLOTH_ROCM_SKINNY_LINEAR=all.
 _ARCHS = ("gfx1151",)
 
@@ -277,6 +285,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
         return None
     dtype = X.dtype
     if dtype not in (torch.bfloat16, torch.float16) or W.dtype != dtype or W.dim() != 2:
+        return None
+    if not routed(W.shape[0], W.shape[1]):
         return None
     if W.device != X.device or not skinny_linear_supported(X.device):
         return None

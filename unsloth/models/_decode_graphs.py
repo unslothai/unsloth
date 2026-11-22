@@ -105,12 +105,28 @@ def enabled():
 
 
 def _default_ok():
-    # The RL default is NVIDIA CUDA only: HIP graph replay is not verified bitwise against the eager
-    # step on ROCm (=1 still forces it), and XPU / MPS / CPU never take the graphed step.
+    # The RL default is NVIDIA CUDA, plus gfx1151 ROCm with the skinny decode linear on: there graph
+    # replay was measured token for token equal to the eager step (GRPO losses equal) and faster.
+    # Other HIP archs are unverified (=1 still forces it); XPU / MPS / CPU never take the graphed step.
     try:
-        return torch.version.hip is None and torch.cuda.is_available()
+        if not torch.cuda.is_available():
+            return False
+        if torch.version.hip is None:
+            return True
+        return _rocm_default_ok()
     except Exception:
         return False
+
+
+def _rocm_default_ok():
+    if os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") == "0":
+        return False
+    from ..kernels import rocm_skinny_linear
+
+    if rocm_skinny_linear.triton is None:
+        return False
+    arch = torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName.split(":")[0]
+    return arch in rocm_skinny_linear._ARCHS
 
 
 _DEFAULT_OK = _default_ok()
