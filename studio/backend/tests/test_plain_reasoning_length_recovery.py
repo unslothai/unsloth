@@ -187,3 +187,37 @@ def test_a_model_that_always_thinks_is_not_retried(monkeypatch):
 
     assert len(payloads) == 1
     assert _finishes(events) == ["length"]
+
+
+def test_the_retry_keeps_the_question_and_evicts_nothing(monkeypatch):
+    backend = _make_backend(monkeypatch, [_thought_cut(), _answer()], [])
+    calls: list[dict] = []
+    original = backend.generate_chat_completion
+
+    def recording(messages, **kwargs):
+        calls.append({"messages": messages, **kwargs})
+        return original(messages, **kwargs)
+
+    monkeypatch.setattr(backend, "generate_chat_completion", recording)
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "Create a Flappy Bird game in HTML"}],
+            enable_thinking = True,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    retry = calls[1]
+    # A fit protects only the newest user turn, which here is the request the retry added.
+    assert retry["context_overflow"] is None
+    assert retry["messages"][0] == {"role": "user", "content": "Create a Flappy Bird game in HTML"}
+
+
+def test_usage_counts_both_attempts(monkeypatch):
+    answer = [_sse({"content": _ANSWER}), _finish("stop"), _usage(200), _done()]
+    backend = _make_backend(monkeypatch, [_thought_cut(completion_tokens = 3_000), answer], [])
+
+    [metadata] = [e for e in _plain(backend) if isinstance(e, dict) and e.get("type") == "metadata"]
+
+    assert metadata["usage"]["completion_tokens"] == 3_200
+    assert metadata["finish_reason"] == "stop"

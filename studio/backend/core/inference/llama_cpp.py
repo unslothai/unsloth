@@ -2361,6 +2361,23 @@ _GPU_OOM_HEADROOM_STEP_MIB = 1024.0
 _GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
 
+def _merge_attempt_metadata(first: dict, last: dict) -> dict:
+    """Usage and timings of both attempts, with the last attempt's finish reason."""
+    usage = dict(last.get("usage") or {})
+    for key in ("completion_tokens", "total_tokens"):
+        spent = (first.get("usage") or {}).get(key)
+        if spent:
+            usage[key] = (usage.get(key) or 0) + spent
+    timings = last.get("timings")
+    first_timings = first.get("timings")
+    if isinstance(timings, dict) and isinstance(first_timings, dict):
+        timings = dict(timings)
+        for key in ("predicted_n", "predicted_ms"):
+            if first_timings.get(key):
+                timings[key] = (timings.get(key) or 0) + first_timings[key]
+    return {**last, "usage": usage, "timings": timings}
+
+
 def _finalize_reasoning_only_cumulative(
     cumulative: str,
     reasoning_text: str,
@@ -39522,18 +39539,19 @@ class LlamaCppBackend:
                 promote_reasoning_only = promote_reasoning_only,
                 perf_callback = perf_callback,
                 reasoning_provenance = reasoning_provenance,
-                context_overflow = context_overflow,
-                context_policy = context_policy,
-                compaction_headroom_ratio = compaction_headroom_ratio,
+                # No eviction: the first prompt fit and the note adds little, while a fit would
+                # protect only the request just added and could drop the user's question.
+                context_overflow = None,
                 thread_id = thread_id,
                 tools_withheld = tools_withheld,
-                compact_context = compact_context,
                 chat_template_kwargs = chat_template_kwargs,
                 _allow_respawn_retry = False,
                 _allow_length_recovery = False,
                 _cumulative_prefix = cumulative,
             ):
                 answered = answered or isinstance(event, str)
+                if isinstance(event, dict) and event.get("type") == "metadata":
+                    event = _merge_attempt_metadata(first_metadata, event)
                 yield event
         except Exception as e:
             # Nothing of the retry reached the client: end the turn as it would have ended.
