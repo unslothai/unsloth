@@ -751,17 +751,26 @@ def _live_row_race(index: Any, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> N
     key = _cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None)
     entry = (_CUT_PLAN.get(index) or {}).get(key)
     b = cut.row_bucket(m)
-    if not entry or b in entry or not cut.live_race_enabled():
+    if not entry or b in entry:
         return
     tried = _CUT_LIVE.setdefault(index, set())
     if (key, b) in tried or sum(1 for k_, _b in tried if k_ == key) >= cut._MAX_ROW_RACES:
         return
+    if not cut.live_race_enabled():
+        return
     import torch
 
     try:
-        if torch.compiler.is_compiling() or torch.cuda.is_current_stream_capturing():
+        if torch.compiler.is_compiling():
             return
+        import contextlib
+        with torch.cuda.device(a.device) if a.is_cuda else contextlib.nullcontext():
+            if torch.cuda.is_current_stream_capturing():
+                return
     except Exception:  # noqa: BLE001 - no CUDA runtime: nothing to race
+        return
+    # a call the prebuilt kernel cannot take (bias dtype, alignment, strides) must not decide its shape's bucket
+    if not cut.eligible(a, w, xs, ws, bias, torch.bfloat16):
         return
     from .diffusion_cuda_graph import hold_off_capture
 
@@ -781,7 +790,9 @@ def _live_row_race(index: Any, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> N
             r = cut.race(index, w, ws, bias, xs.dtype, today, b)
         except Exception:  # noqa: BLE001 - a failed race keeps the call on the plan's slot
             return
-        if cut.mode() == "force" and r.get("us"):
+        if not r.get("us"):
+            return  # nothing was timed: no verdict to keep
+        if cut.mode() == "force":
             best = min((t for t in r["us"] if t.isdigit()), key = lambda t: r["us"][t], default = None)
             r["tile"] = int(best) if best is not None else None
         r["live"] = True

@@ -224,3 +224,22 @@ def test_today_wins_the_live_race(monkeypatch):
     g8._CUT_PLAN[None] = {key: {512: None, 4096: 3}}
     g8._run(a, w, xs, ws, None)
     assert raced == [(4224, True)] and calls == [] and g8._CUT_PLAN[None][key][4224] is None
+
+
+def test_an_ineligible_call_or_an_untimed_race_records_nothing(monkeypatch):
+    """A call the prebuilt kernel cannot take (here: eligible() refuses it) never races its shape's bucket, and a
+    race that timed nothing leaves the bucket unrecorded: a later eligible call of the shape still races it."""
+    table, raced, calls = _env(monkeypatch)
+    a, w, xs, ws = _operands(4176)
+    key = g8._cut_key(64, 64, xs.dtype, ws.dtype, False)
+    g8._CUT_PLAN[None] = {key: {512: None, 4096: 3}}
+    monkeypatch.setattr(cut, "eligible", lambda *a_: False)
+    monkeypatch.setattr(
+        g8, "reference", lambda a_, w_, xs_, ws_, b_: torch.zeros(a_.shape[0], w_.shape[0])
+    )
+    g8._run(a, w, xs, ws, None)
+    assert raced == [] and 4224 not in g8._CUT_PLAN[None][key] and not g8._CUT_LIVE.get(None)
+    monkeypatch.setattr(cut, "eligible", lambda *a_: True)
+    monkeypatch.setattr(cut, "race", lambda *a_, **k_: {"tile": None, "us": {}})
+    g8._run(a, w, xs, ws, None)
+    assert 4224 not in g8._CUT_PLAN[None][key] and "ck" not in table
