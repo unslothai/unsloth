@@ -8,13 +8,15 @@ import { embeddedSummary } from "../src/features/rag/components/source-folder-co
 import { SETTINGS_TABS } from "../src/features/settings/stores/settings-dialog-store.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-test("a knowledge base reports embedding progress only while it is unfinished", () => {
-  assert.equal(embeddedSummary({ documentCount: 5, indexedCount: 2 }), " · 2 of 5 embedded (40%)");
-  assert.equal(embeddedSummary({ documentCount: 3, indexedCount: 2 }), " · 2 of 3 embedded (66%)");
-  assert.equal(embeddedSummary({ documentCount: 5, indexedCount: 5 }), "");
-  assert.equal(embeddedSummary({ documentCount: 0, indexedCount: 0 }), "");
-  // An older server sends no indexedCount: the row reads as it always did.
-  assert.equal(embeddedSummary({ documentCount: 5 }), "");
+test("a knowledge base reports embedding progress only while documents are embedding", () => {
+  assert.equal(embeddedSummary({ indexedCount: 2, indexingCount: 3 }), " · 2 of 5 embedded (40%)");
+  assert.equal(embeddedSummary({ indexedCount: 2, indexingCount: 1 }), " · 2 of 3 embedded (66%)");
+  // Dividing first gives 56.99... for 57 / 100.
+  assert.equal(embeddedSummary({ indexedCount: 57, indexingCount: 43 }), " · 57 of 100 embedded (57%)");
+  // Nothing left to embed, even with failed rows: no summary that never reaches 100%.
+  assert.equal(embeddedSummary({ indexedCount: 4, indexingCount: 0 }), "");
+  // An older server sends neither count: the row reads as it always did.
+  assert.equal(embeddedSummary({}), "");
 });
 
 test("knowledge bases get a Settings tab under Data & access, not a sidebar entry", () => {

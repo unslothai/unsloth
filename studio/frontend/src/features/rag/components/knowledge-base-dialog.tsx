@@ -132,21 +132,34 @@ export function KnowledgeBaseManager({
     ? (ragUnavailableReason ?? undefined)
     : undefined;
 
+  const refreshSeq = useRef(0);
   const refresh = useCallback(async (quiet = false): Promise<KnowledgeBase[] | null> => {
+    // Only the newest answer is shown: an older one could still list a base deleted since.
+    const requestId = ++refreshSeq.current;
     if (!quiet) setLoading(true);
     try {
       const rows = await listKnowledgeBases();
-      setKbs(rows);
+      if (requestId === refreshSeq.current) setKbs(rows);
       return rows;
     } catch (err) {
-      toast.error("Failed to load knowledge bases", {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      if (!quiet) {
+        toast.error("Failed to load knowledge bases", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
       return null;
     } finally {
-      setLoading(false);
+      if (requestId === refreshSeq.current) setLoading(false);
     }
   }, []);
+
+  const embedding =
+    open && view.kind === "list" && kbs.some((kb) => (kb.indexingCount ?? 0) > 0);
+  useEffect(() => {
+    if (!embedding) return;
+    const timer = window.setTimeout(() => void refresh(true), 3000);
+    return () => window.clearTimeout(timer);
+  }, [embedding, kbs, refresh]);
 
   const wasOpenRef = useRef(false);
   useEffect(() => {

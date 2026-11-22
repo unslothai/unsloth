@@ -425,7 +425,15 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
                     "description": kb.get("description"),
                     "createdAt": kb.get("created_at"),
                     "documentCount": len(docs),
-                    "indexedCount": sum(1 for doc in docs if doc.get("status") == "completed"),
+                    # A completed row without chunks is a legacy empty index the next upload redoes.
+                    "indexedCount": sum(
+                        1
+                        for doc in docs
+                        if doc.get("status") == "completed" and doc.get("num_chunks")
+                    ),
+                    "indexingCount": sum(
+                        1 for doc in docs if doc.get("status") in ("pending", "running")
+                    ),
                 }
             )
         return {"knowledgeBases": out, **_availability(True)}

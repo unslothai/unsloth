@@ -52,10 +52,10 @@ export function runningPercent(progress: number): number {
   return Math.max(0, Math.min(99, Math.floor(value)));
 }
 
-/** Only while some documents are not embedded yet, so a finished base reads as before. */
-export function embeddedSummary(kb: { documentCount?: number; indexedCount?: number }): string {
-  const total = kb.documentCount ?? 0;
-  const indexed = kb.indexedCount;
-  if (indexed == null || total === 0 || indexed >= total) return "";
-  return ` · ${indexed} of ${total} embedded (${Math.floor((indexed / total) * 100)}%)`;
+/** Only while documents are still embedding; failed and legacy empty rows count on neither side. */
+export function embeddedSummary(kb: { indexedCount?: number; indexingCount?: number }): string {
+  const indexing = kb.indexingCount ?? 0;
+  if (!indexing || kb.indexedCount == null) return "";
+  const total = kb.indexedCount + indexing;
+  return ` · ${kb.indexedCount} of ${total} embedded (${Math.floor((kb.indexedCount * 100) / total)}%)`;
 }

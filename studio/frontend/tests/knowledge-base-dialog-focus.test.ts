@@ -100,7 +100,10 @@ globalThis.window = { setTimeout, clearTimeout } as unknown as Window &
 const KB = { id: "kb-1", name: "Product docs", documentCount: 0 };
 const ITEM = { kind: "native", token: "tok-notes", name: "notes.md" };
 
-function harness(rows: Array<typeof KB> = [KB]) {
+function harness(
+  rows: Array<typeof KB> = [KB],
+  lister: () => Promise<Array<typeof KB>> = async () => rows,
+) {
   const state = { uploading: false };
   const uploads: unknown[][] = [];
   const abandoned: unknown[][] = [];
@@ -139,7 +142,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
       },
       "@/lib/utils": { cn: () => "" },
       "../api/rag-api": {
-        listKnowledgeBases: async () => rows,
+        listKnowledgeBases: () => lister(),
         listKnowledgeBaseDocuments: async () => [],
       },
       "../api/rag-availability": {
@@ -287,6 +290,18 @@ function harness(rows: Array<typeof KB> = [KB]) {
     set uploading(value: boolean) {
       state.uploading = value;
     },
+    get rowCount() {
+      let count = 0;
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) return node.forEach(walk);
+        if (!node || typeof node !== "object" || !("props" in node)) return;
+        const element = node as StubElement;
+        if (element.props.title === "Open to add or remove documents") count += 1;
+        walk(element.props.children);
+      };
+      walk(tree);
+      return count;
+    },
     openRow() {
       const row = find(tree, (e) => e.props.title === "Open to add or remove documents");
       (row!.props.onClick as () => void)();
@@ -391,4 +406,28 @@ test("a handoff into the knowledge base on screen waits for its running upload w
   await app.settle();
   assert.deepEqual(app.uploads, [[ITEM], [LATER]]);
   assert.deepEqual(app.abandoned, []);
+});
+
+test("an older list answer never replaces a newer one", async () => {
+  const OTHER = { ...KB, id: "kb-2", name: "Old notes" };
+  const answers: Array<(rows: Array<typeof KB>) => void> = [];
+  const app = harness([KB], () => new Promise((resolve) => answers.push(resolve)));
+  const openWith = app.open(null);
+  answers.shift()!([KB, OTHER]);
+  await openWith;
+  assert.equal(app.rowCount, 2);
+
+  app.openRow();
+  await app.settle();
+  app.back();
+  const stale = answers.shift()!;
+  await app.settle();
+  app.openRow();
+  await app.settle();
+  app.back();
+  answers.shift()!([KB]);
+  await app.settle();
+  stale([KB, OTHER]);
+  await app.settle();
+  assert.equal(app.rowCount, 1);
 });

@@ -33,6 +33,7 @@ TABS = [
     "connections",
     "library",
     "data",
+    "knowledge",
     "api-keys",
     "remote-lan",
     "agents",
