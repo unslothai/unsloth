@@ -11696,6 +11696,12 @@ class DiffusionBackend:
                         )
                     except Exception as exc:  # noqa: BLE001 - optional lever: stock modules stay
                         logger.warning("diffusion.adaln_precompute: not installed: %s", exc)
+                    # FLUX.2 edit references: resize / crop / normalise on the GPU, byte-identical to the CPU path.
+                    try:
+                        from .diffusion_ref_preprocess import install as install_ref_preprocess
+                        install_ref_preprocess(pipe, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - optional lever: the stock CPU path stays
+                        logger.warning("diffusion.ref_preprocess: not installed: %s", exc)
 
                     self._raise_if_load_cancelled(_load_token)
                     speed_offload = plan.offload_policy != OFFLOAD_NONE and not split_expected
