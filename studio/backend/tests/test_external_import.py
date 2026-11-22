@@ -757,7 +757,6 @@ def test_cursor_drops_the_placeholder_beside_an_image_only_paste(cursor_home):
     t = cursor.read_transcript(path, "t", "s1")
 
     assert t.messages[0]["content"] == [{"type": "image", "image": f"data:image/png;base64,{PNG}"}]
-    # No image left to show: the turn keeps its text so later message ids do not shift.
     assert len(t.messages) == 3 and t.messages[2]["content"][0]["type"] == "text"
 
 
