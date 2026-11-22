@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import os
+import sys
 from functools import update_wrapper
 from typing import Any, Optional
 
@@ -405,6 +406,9 @@ class StaticStepSkip:
         self.owner: Optional[str] = None
         # Of the last armed forward: the post-render reset empties the plan but status still reports it.
         self.planned_skips = 0
+        # Set while fronting a whole-module compiled call (front_compiled_call): computes run through it.
+        self.compiled_call: Any = None
+        self._inside = False
         self.reset(None)
 
     def reset(
@@ -482,11 +486,29 @@ class StaticStepSkip:
         return inner(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
+        if self._inside:
+            # The compiled call this layer fronts reads ``forward`` (this layer): run what it wraps.
+            return self._forward(args, kwargs)
+        return self._dispatch(args, kwargs)
+
+    def _compute(self, args: tuple, kwargs: dict) -> Any:
+        call = self.compiled_call
+        if call is None or _eager_forced():
+            # Under force_eager (a detailer pass) the eager gate already runs ``_call_impl``, which read this layer
+            # from ``forward``: compute eagerly here rather than enter the compiled (graphed) call at a new size.
+            return self._forward(args, kwargs)
+        self._inside = True
+        try:
+            return call(*args, **kwargs)
+        finally:
+            self._inside = False
+
+    def _dispatch(self, args: tuple, kwargs: dict) -> Any:
         if not self.plan:
             if self.counting:
                 self.stats["calls"] += 1
                 self.stats["computed"] += 1
-            return self._forward(args, kwargs)
+            return self._compute(args, kwargs)
         if self.context is not None:
             key = self.context
         else:
@@ -515,7 +537,7 @@ class StaticStepSkip:
             if out is not None:
                 self.stats["skipped"] += 1
                 return out
-        out = self._forward(args, kwargs)
+        out = self._compute(args, kwargs)
         self.stats["computed"] += 1
         if step < self.last_skip:
             self._remember(key, sig, args, kwargs, out)
@@ -586,13 +608,96 @@ def _context_wrapper(skip: StaticStepSkip, module: Any, prior: Any) -> Any:
     return cache_context
 
 
-def _find(pipe: Any) -> Optional[StaticStepSkip]:
+def _denoiser(pipe: Any) -> Any:
+    """The step denoiser: ``pipe.transformer``, else a U-Net pipeline's ``pipe.unet`` (SDXL)."""
     transformer = getattr(pipe, "transformer", None)
+    return transformer if transformer is not None else getattr(pipe, "unet", None)
+
+
+_OPAQUE = False
+
+
+def _opaque_to_dynamo() -> None:
+    """A whole-module compile (``nn.Module.compile``: the SDXL U-Net) traces ``_call_impl`` into the forward slot,
+    i.e. into this layer: dynamo then guards on its step counters and recompiles every step until the recompile
+    limit drops the compile. The schedule's frames run outside dynamo; only ``_forward`` (the wrapped forward) is
+    traced, as its own frame, so the denoiser is compiled exactly as without the layer."""
+    global _OPAQUE
+    if _OPAQUE:
+        return
+    try:
+        disable = getattr(getattr(_torch(), "compiler", None), "disable", None)
+        if not callable(disable):
+            return
+        _OPAQUE = True
+        # Frames that reach the forward: skipped themselves, their callees still traced (recursive=False).
+        for name in ("__call__", "_dispatch", "_compute"):
+            setattr(StaticStepSkip, name, disable(getattr(StaticStepSkip, name), recursive = False))
+        # Pure bookkeeping: never traced at all.
+        for name in ("_remember", "_skipped"):
+            setattr(StaticStepSkip, name, disable(getattr(StaticStepSkip, name)))
+        module = sys.modules[__name__]
+        for name in (
+            "_call_signature",
+            "_split_output",
+            "_timestep_of",
+            "_stream_timesteps",
+            "_eager_forced",
+        ):
+            setattr(module, name, disable(getattr(module, name)))
+    except Exception:  # noqa: BLE001 - an old torch keeps the plain call
+        pass
+
+
+def _find(pipe: Any) -> Optional[StaticStepSkip]:
+    transformer = _denoiser(pipe)
     try:
         skip = transformer.__dict__.get(_SLOT) if transformer is not None else None
     except Exception:  # noqa: BLE001 - no instance dict
         return None
     return skip if isinstance(skip, StaticStepSkip) else None
+
+
+def front_compiled_call(module: Any) -> bool:
+    """Put ``module``'s skip layer in front of its whole-module compiled call (``Module.compile``).
+
+    ``Module.__call__`` serves such a module from ``_compiled_call_impl``, which reads ``forward`` (this layer)
+    inside the compiled region: a CUDA graph captured around that call (GraphedCompiledCall) would bake one
+    computed step in and replay it on every step, bypassing the schedule. In front, the layer decides first and
+    computes through the call; the call's own read of ``forward`` passes straight through."""
+    skip = getattr(module, "__dict__", {}).get(_SLOT)
+    if not isinstance(skip, StaticStepSkip) or skip.module is not module:
+        return False
+    call = getattr(module, "_compiled_call_impl", None)
+    if call is None:
+        return False
+    if call is not skip:
+        skip.compiled_call = call
+        module._compiled_call_impl = skip
+    return True
+
+
+def fronting_skip(module: Any) -> Optional[StaticStepSkip]:
+    """The skip layer sitting at ``module._compiled_call_impl`` (``front_compiled_call``), else None."""
+    call = getattr(module, "_compiled_call_impl", None)
+    return call if isinstance(call, StaticStepSkip) and call.module is module else None
+
+
+def _eager_forced() -> bool:
+    try:
+        from .diffusion_bg_compile import eager_forced
+    except Exception:  # noqa: BLE001 - no background compile layer: never forced
+        return False
+    return bool(eager_forced())
+
+
+def unfront_compiled_call(module: Any, call: Any, restore: Any) -> None:
+    """Undo ``front_compiled_call`` for ``call`` (the fronted callable), leaving ``restore`` in its place."""
+    skip = getattr(module, "__dict__", {}).get(_SLOT)
+    if isinstance(skip, StaticStepSkip) and skip.compiled_call is call:
+        skip.compiled_call = restore
+        if restore is None and getattr(module, "_compiled_call_impl", None) is skip:
+            module._compiled_call_impl = None
 
 
 def install_static_step_skip(
@@ -602,9 +707,9 @@ def install_static_step_skip(
     logger: Any = None,
 ) -> Optional[str]:
     """``TC_STATIC`` or None (uncached). Never sets ``_unsloth_step_cache``, which runs the CUDA graph eager."""
-    transformer = getattr(pipe, "transformer", None)
+    transformer = _denoiser(pipe)
     if transformer is None:
-        _warn(logger, "pipeline has no transformer")
+        _warn(logger, "pipeline has no transformer or unet")
         return None
     # A second denoiser takes part of the CFG trajectory this layer would not see.
     for attr in ("transformer_2", "unconditional_transformer"):
@@ -616,6 +721,7 @@ def install_static_step_skip(
         _warn(logger, "transformer has no forward")
         return None
     knobs = settings if settings is not None else static_skip_settings(logger = logger)
+    _opaque_to_dynamo()
     existing = _find(pipe)
     if existing is not None:
         existing.armed = True
@@ -652,6 +758,8 @@ def install_static_step_skip(
         # Written into the instance dict, like GraphedForward: nn.Module.__setattr__ would inspect it.
         slots["forward"] = skip
         slots[_SLOT] = skip
+        # Already whole-module compiled: decide in front of the compiled call, never inside its trace.
+        front_compiled_call(transformer)
     except Exception as exc:  # noqa: BLE001 - best-effort, the load proceeds uncached
         _warn(logger, str(exc))
         return None
@@ -726,6 +834,9 @@ def uninstall_static_step_skip(pipe: Any) -> bool:
     skip.reset(None)
     try:
         slots = skip.module.__dict__
+        if getattr(skip.module, "_compiled_call_impl", None) is skip:
+            skip.module._compiled_call_impl = skip.compiled_call
+        skip.compiled_call = None
         if slots.get("forward") is skip:
             if skip.inner is None:
                 slots.pop("forward", None)

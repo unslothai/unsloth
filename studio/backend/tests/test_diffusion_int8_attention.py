@@ -281,10 +281,15 @@ def test_alias_is_a_native_pick_with_the_overlay(monkeypatch):
 
 
 def _variants(config: dict) -> list:
-    """The kernels a table entry compiles: the one of short calls, and the one from ``long_keys`` keys on."""
-    short = I.select_config(config, 0)
-    long = I.select_config(config, 10**9)
-    return [short] if long == short else [short, long]
+    """The kernels a table entry compiles: the one of short calls, the one from ``long_keys`` keys on, and the
+    sink-path kernel when the entry gives that one other orderings (``sinks``)."""
+    out = []
+    for keys in (0, 10**9):
+        for sinks in (False, True):
+            chosen = I.kernel_variant(I.select_config(config, keys), sinks)
+            if chosen not in out:
+                out.append(chosen)
+    return out
 
 
 def test_every_config_fits_its_card():
@@ -337,6 +342,59 @@ def test_long_overrides_apply_from_long_keys_on():
     assert I._config_key(entry) != I._config_key(short) and hash(I._config_key(entry)) is not None
     plain = I.kernel_config((8, 9), 128)
     assert I.select_config(plain, 0) == I.select_config(plain, 10**9) == plain
+
+
+def test_sink_orderings_reach_only_the_sink_kernel(monkeypatch):
+    """sm89 at head dim 128 gives its sink-path kernel other product / copy orderings (L4: 1.3-1.9% per call
+    sustained at 4096-4608 tokens, the plain kernel is not faster with them). They name another compiled kernel, move
+    no output bit, and ``UNSLOTH_DIFFUSION_INT8_ATTENTION_SINK_ORDER=0`` keeps the shipped one; no other entry has
+    them."""
+    monkeypatch.delenv(I.SINK_ORDER_ENV, raising = False)
+    with_sinks = {
+        (capability, head_dim)
+        for capability, table in I.KERNEL_CONFIGS.items()
+        for head_dim, entry in table.items()
+        if "sinks" in entry
+    }
+    assert with_sinks == {((8, 9), 128)}
+    entry = I.kernel_config((8, 9), 128)
+    plain, sink = I.kernel_variant(entry, False), I.kernel_variant(entry, True)
+    assert "sinks" not in plain and "sinks" not in sink
+    assert plain == {"bn": 128, "wpc": 12, "nq": 1, "stages": 2, "max_registers": 168}
+    assert sink == dict(plain, flush_tail = 1, qkw = 1, pvw = 8, spread = 5)
+    assert set(sink) - set(plain) <= set(I.SINK_ORDER_KEYS)
+    assert I.kernel_defines(128, sink)["QKW"] == 1 and "QKW" not in I.kernel_defines(128, plain)
+    assert hash(I._config_key(entry)) is not None and I._config_key(entry) != I._config_key(plain)
+    monkeypatch.setenv(I.SINK_ORDER_ENV, "0")
+    assert I.kernel_variant(entry, True) == plain
+    # an override never sets anything but the orderings
+    odd = dict(plain, sinks = {"wpc": 4, "qkw": 1})
+    monkeypatch.delenv(I.SINK_ORDER_ENV)
+    assert I.kernel_variant(odd, True) == dict(plain, qkw = 1)
+
+
+@needs_kernel
+def test_sink_orderings_do_not_change_the_output():
+    """The sink-path kernel with and without the table's orderings: the same bits (sinks and fold on)."""
+    entry = _cuda_config(128)
+    base = I.kernel_variant(entry, False)
+    other = (
+        dict(base, flush_tail = 1, qkw = 1, pvw = 8, spread = 5)
+        if base.get("stages") == 2
+        else dict(base, qkw = 1)
+    )
+    for keys in (300, 1039):
+        q, k, v = _case((1, keys, 3, 128), _card_dtype(), seed = keys)
+        outs = []
+        for cfg in (
+            dict(base, sinks = {}),
+            dict(base, sinks = {x: other[x] for x in I.SINK_ORDER_KEYS if x in other}),
+        ):
+            I.forget_plans()
+            p = I.quantise(q, k, v, cfg, mode = I.MODE_RACE)
+            assert p["sinks"]
+            outs.append(I.attend(p))
+        assert torch.equal(outs[0], outs[1])
 
 
 def test_sm75_has_its_own_config():

@@ -10,7 +10,10 @@ the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` s
 16384-row race on sustained timings (the 4096-row race on short ones, as before).
 Large calls (1024 to 8191 rows) take the winner of a race at their own row bucket once an earlier load recorded it
 (``row_bucket``: a 1024^2 FLUX.3 joint call has 4176 rows, where the 4096-row winner's 256-row tile leaves a 17th row
-tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call."""
+tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call. A bucket
+no earlier load recorded is raced at its first call (``UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE=0``: next load only).
+Winners within ``_FILL_TIE`` of the fastest go to the tile whose last row tile is fullest at the race's row count
+(``pick``; ``UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES=0`` keeps the fastest)."""
 
 from __future__ import annotations
 
@@ -74,8 +77,50 @@ def row_race_enabled() -> bool:
     return raw not in ("0", "off", "false", "no")
 
 
+LIVE_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE"
+
+
+def live_race_enabled() -> bool:
+    """A large call's unrecorded row bucket is raced in this load, at its first call (``diffusion_int8_gemm``)."""
+    raw = (os.environ.get(LIVE_RACE_ENV) or "").strip().lower()
+    return row_race_enabled() and raw not in ("0", "off", "false", "no")
+
+
 def row_bucket(m: int) -> int:
     return -(-int(m) // ROW_BUCKET) * ROW_BUCKET
+
+
+FILL_TIE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES"
+# Race timings this close to the fastest winner are a tie. L4, 3072x9216 at 4224 rows: the same tile's sustained race
+# timing moved 1.7-5.7% between loads, and a 256-row tile won by 2.1% while it runs 2.4% slower sustained at 4176 rows
+# (2252 vs 1779 us in the pipeline) than the 128-row tile it beat.
+_FILL_TIE = 0.03
+
+
+def fill_ties_enabled() -> bool:
+    raw = (os.environ.get(FILL_TIE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def last_tile_fill(m: int, rows: int) -> float:
+    """How full the last of an ``m``-row call's row tiles of ``rows`` rows is (1.0 when ``rows`` divides ``m``)."""
+    rest = int(m) % int(rows)
+    return rest / int(rows) if rest else 1.0
+
+
+def pick(timing: dict, top: Any, base_name: str, m: int, rows: dict) -> tuple:
+    """(tile the race keeps or None for today's path, its fastest winner). A winner beats ``base_name`` by ``_MARGIN``;
+    of the winners within ``_FILL_TIE`` of the fastest, the one whose last row tile is fullest at ``m`` rows (``rows``:
+    tile -> rows per tile) is kept, then the faster. At a row count every tile height divides (512, 4096, 16384) that is
+    the fastest winner, as before; ``UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES=0`` keeps the fastest everywhere."""
+    wins = [t for t in top if timing[t] < timing[base_name] * (1.0 - _MARGIN)]
+    if not wins:
+        return None, None
+    fastest = min(wins, key = lambda t: timing[t])
+    if not fill_ties_enabled() or any(not rows.get(t) for t in wins):
+        return fastest, fastest
+    near = [t for t in wins if timing[t] <= timing[fastest] * (1.0 + _FILL_TIE)]
+    return max(near, key = lambda t: (last_tile_fill(m, rows[t]), -timing[t])), fastest
 
 
 def large_points(rows: Any = None) -> tuple:
@@ -618,10 +663,15 @@ def race(
             }
             if decides:
                 timing = sustained
-    best = min(top, key = lambda t: timing[t])
-    keep = timing[best] < timing[base_name] * (1.0 - _MARGIN)
+    dims = tiles(fam)
+    rows = {t: int(dims[t][0]) for t in top if 0 <= t < len(dims)}
+    best, fastest = pick(timing, top, base_name, m, rows)
+    if best != fastest:
+        info["fill_tie"] = (
+            fastest  # the faster winner this race passed over for a fuller last row tile
+        )
     us = {str(k_): round(v, 1) for k_, v in timing.items()}
-    return {"tile": best if keep else None, "us": us, "m": m, **info}
+    return {"tile": best, "us": us, "m": m, **info}
 
 
 # (card, N, K) -> {race M: tile or None}, sm75 NativeWeightOnlyLinear

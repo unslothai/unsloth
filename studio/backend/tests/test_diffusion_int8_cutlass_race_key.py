@@ -43,6 +43,7 @@ def src(tmp_path, monkeypatch):
     for env in (
         cut.CUTLASS_ENV,
         cut.SUSTAINED_ENV,
+        cut.FILL_TIE_ENV,
         g8.INT8_GEMM_TILES_ENV,
         g8.INT8_GEMM_UNLISTED_ENV,
     ):
@@ -116,6 +117,12 @@ _RACE_CHANGING = {
     ),
     "today's path pick": ("gemm", "if cfg is not None and _aligned(a, w):", "if cfg is not None:"),
     "the race margin": ("cut", "_MARGIN = 0.02", "_MARGIN = 0.03"),
+    "the fill tie band": ("cut", "_FILL_TIE = 0.03", "_FILL_TIE = 0.05"),
+    "the fill tie-break": (
+        "cut",
+        "return max(near, key = lambda t: (last_tile_fill(m, rows[t]), -timing[t])), fastest",
+        "return fastest, fastest",
+    ),
     "the race points": ("cut", "_RACE_M = (512, 4096)", "_RACE_M = (256, 4096)"),
     "the sustained timing window": ("cut", "_SUSTAIN_S = 0.25", "_SUSTAIN_S = 0.5"),
     "the prebuilt kernels' launch": (
@@ -184,6 +191,12 @@ def test_force_mode_does_not_reuse_auto_verdicts(src, monkeypatch):
     auto = g8._cut_cache_key(0)
     monkeypatch.setenv(cut.CUTLASS_ENV, "force")
     assert g8._cut_cache_key(0) != auto
+
+
+def test_fill_ties_off_does_not_reuse_tie_broken_verdicts(src, monkeypatch):
+    on = g8._cut_cache_key(0)
+    monkeypatch.setenv(cut.FILL_TIE_ENV, "0")
+    assert g8._cut_cache_key(0) != on
 
 
 def test_every_keyed_name_is_still_defined():

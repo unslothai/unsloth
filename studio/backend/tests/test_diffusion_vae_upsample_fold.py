@@ -73,7 +73,9 @@ def test_strip_fold_matches_the_whole_map(monkeypatch, h):
     )  # 2 input rows per strip
     whole = st._fold_upsample(conv, x, conv.bias)  # noqa: SLF001
     strips = st._fold_upsample(conv, x, conv.bias, full_max = 0)  # noqa: SLF001
-    assert torch.equal(whole, strips)
+    # Not bitwise: the CPU conv backend may block a strip-sized input differently from the whole map and sum the taps
+    # in another order (fp64 here, so ~1e-16). A seam or halo bug is off by O(1) and still fails.
+    assert (whole - strips).abs().max().item() < 1e-10
     assert (strips - _chain(conv, x)).abs().max().item() < 1e-6
 
 

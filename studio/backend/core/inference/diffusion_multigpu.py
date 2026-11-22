@@ -4740,6 +4740,9 @@ def end_cfg_render(pipe: Any) -> None:
             fallback, router.fallback, router.fallback_pending = router.fallback, None, False
             reason = router.disabled_reason
             uninstall_cfg_parallel(pipe)
+            # else status()["multi_gpu"] still reads "cfg_replica" with nothing saying why one card runs
+            with contextlib.suppress(TypeError):
+                _CFG_DECLINES[pipe] = f"disabled at run time: {reason}"
             try:
                 result = fallback(pipe)
             except Exception as exc:  # noqa: BLE001 - an optional lever: one card stands
