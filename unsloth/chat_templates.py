@@ -1161,21 +1161,44 @@ _GEMMA4_ARGUMENT_PARSER = r'''
                         {%- if ns.i + 4 > (ns.s | length) -%}
                             {%- set ns.err = 'bad unicode' -%}
                         {%- else -%}
-                            {%- set code = ns.s[ns.i:ns.i + 4] | int(base=16) -%}
-                            {%- set ns.i = ns.i + 4 -%}
-                            {%- if code >= 55296 and code <= 56319 and ns.i + 6 <= (ns.s | length) and ns.s[ns.i] == '\\' and ns.s[ns.i + 1] == 'u' -%}
-                                {%- set low = ns.s[ns.i + 2:ns.i + 6] | int(base=16) -%}
-                                {%- if low >= 56320 and low <= 57343 -%}
-                                    {%- set code = 65536 + (code - 55296) * 1024 + (low - 56320) -%}
-                                    {%- set ns.i = ns.i + 6 -%}
+                            {#- Jinja int keeps a leading number and returns 0 for other bad text. -#}
+                            {%- set code = ns.s[ns.i:ns.i + 4] -%}
+                            {%- set hex = namespace(ok=true) -%}
+                            {%- for digit in code -%}
+                                {%- if digit not in '0123456789abcdefABCDEF' -%}
+                                    {%- set hex.ok = false -%}
                                 {%- endif -%}
+                            {%- endfor -%}
+                            {%- if not hex.ok -%}
+                                {%- set ns.err = 'bad unicode' -%}
+                            {%- else -%}
+                                {%- set point = namespace(v=code | int(base=16)) -%}
+                                {%- set ns.i = ns.i + 4 -%}
+                                {%- if point.v >= 55296 and point.v <= 56319 and ns.i + 6 <= (ns.s | length) and ns.s[ns.i] == '\\' and ns.s[ns.i + 1] == 'u' -%}
+                                    {%- set lowcode = ns.s[ns.i + 2:ns.i + 6] -%}
+                                    {%- set lowhex = namespace(ok=true) -%}
+                                    {%- for digit in lowcode -%}
+                                        {%- if digit not in '0123456789abcdefABCDEF' -%}
+                                            {%- set lowhex.ok = false -%}
+                                        {%- endif -%}
+                                    {%- endfor -%}
+                                    {%- if lowhex.ok -%}
+                                        {%- set low = lowcode | int(base=16) -%}
+                                        {%- if low >= 56320 and low <= 57343 -%}
+                                            {%- set point.v = 65536 + (point.v - 55296) * 1024 + (low - 56320) -%}
+                                            {%- set ns.i = ns.i + 6 -%}
+                                        {%- endif -%}
+                                    {%- endif -%}
+                                {%- endif -%}
+                                {%- set buf.s = buf.s ~ ('%c' | format(point.v)) -%}
                             {%- endif -%}
-                            {%- set buf.s = buf.s ~ ('%c' | format(code)) -%}
                         {%- endif -%}
                     {%- else -%}
                         {%- set ns.err = 'bad escape' -%}
                     {%- endif -%}
                 {%- endif -%}
+            {%- elif c < ' ' -%}
+                {%- set ns.err = 'bad control' -%}
             {%- else -%}
                 {%- set buf.s = buf.s ~ c -%}
                 {%- set ns.i = ns.i + 1 -%}
@@ -1588,7 +1611,7 @@ gemma4_template = \
             {%- if function['arguments'] is mapping -%}
                 {{- emit_sorted_arguments(function['arguments']) -}}
             {%- elif function['arguments'] is string -%}
-                {%- set parsed = namespace(s=function['arguments'] | trim, i=0, value=none, err='') -%}
+                {%- set parsed = namespace(s=function['arguments'], i=0, value=none, err='') -%}
                 {%- set _ = json_parse_value(parsed) -%}
                 {%- set _ = json_skip(parsed) -%}
                 {%- if parsed.err or parsed.i != (parsed.s | length) or parsed.value is not mapping -%}
@@ -1935,7 +1958,7 @@ gemma4_thinking_template = \
             {%- if function['arguments'] is mapping -%}
                 {{- emit_sorted_arguments(function['arguments']) -}}
             {%- elif function['arguments'] is string -%}
-                {%- set parsed = namespace(s=function['arguments'] | trim, i=0, value=none, err='') -%}
+                {%- set parsed = namespace(s=function['arguments'], i=0, value=none, err='') -%}
                 {%- set _ = json_parse_value(parsed) -%}
                 {%- set _ = json_skip(parsed) -%}
                 {%- if parsed.err or parsed.i != (parsed.s | length) or parsed.value is not mapping -%}
