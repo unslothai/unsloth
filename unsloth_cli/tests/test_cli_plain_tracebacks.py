@@ -88,7 +88,7 @@ def test_quiet_logging_keeps_level_filter(capsys):
 @pytest.mark.parametrize("command", ["inference.py", "chat.py"])
 def test_verbose_branch_uses_plain_tracebacks(command):
     """Both branches of `if not verbose:` pick a logging setup, so --verbose gets plain tracebacks too."""
-    tree = ast.parse((_COMMANDS / command).read_text())
+    tree = ast.parse((_COMMANDS / command).read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.If)
