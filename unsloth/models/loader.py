@@ -514,6 +514,9 @@ def _adapter_file_shapes(path):
         from safetensors import safe_open
         with safe_open(path, framework = "pt") as handle:
             return {key: tuple(handle.get_slice(key).get_shape()) for key in handle.keys()}
+    from unsloth.import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
     state_dict = torch.load(path, map_location = "meta", weights_only = True)
     return {key: tuple(value.shape) for key, value in state_dict.items()}
 
@@ -1240,6 +1243,7 @@ _VLLM_ENGINE_KWARGS = (
     "max_num_batched_tokens",
     "return_args",
     "training",
+    "speculative_config",
 )
 
 

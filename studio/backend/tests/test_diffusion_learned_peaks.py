@@ -2447,3 +2447,26 @@ def test_partially_quantized_text_encoders_neither_read_nor_record(klein_pipe):
         encoding = "utf-8"
     )
     assert "peak_te = _peak_te_label(te_quant, te_outcome)" in src
+
+
+def test_a_split_render_records_no_learned_peak(monkeypatch):
+    # A split's probe sees only the primary card, padded to the streamed scale; its sample raised the shared max-wins
+    # key so the next load declined the split (Z-Image on 2x T4: headroom 5376 -> 8448 MiB, one card + group offload).
+    import core.inference.diffusion_layer_split_plan as lsp
+    import core.inference.diffusion_multigpu as mg
+
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+
+    class _Pipe:
+        _unsloth_peak_identity = state.pipe._unsloth_peak_identity
+        vae = state.pipe.vae
+        components = {}
+
+    state.pipe = _Pipe()
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    assert diffusion._start_peak_probe(state) is not None  # one card: measured
+    monkeypatch.setattr(lsp, "is_layer_split", lambda pipe: pipe is state.pipe)
+    assert diffusion._start_peak_probe(state) is None  # layer split
+    monkeypatch.setattr(lsp, "is_layer_split", lambda pipe: False)
+    monkeypatch.setitem(mg._PLACEMENTS, state.pipe, {"secondary": "cuda:1"})
+    assert diffusion._start_peak_probe(state) is None  # companion split

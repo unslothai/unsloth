@@ -13,7 +13,7 @@ register("./bundler-resolver.mjs", import.meta.url);
 const { resetHfEndpoints, setHfEndpoints, setHubSessionRefresh } = await import(
   "../src/lib/hf-endpoint.ts"
 );
-const { fetchHub, hubRejectionScope } = await import("../src/lib/hub-fetch.ts");
+const { fetchHub, hubRejectionScope, resetHubRateLimits } = await import("../src/lib/hub-fetch.ts");
 const {
   HF_TOKEN_REJECTION_RECHECK_MS,
   clearHfTokenRejected,
@@ -157,6 +157,8 @@ test("403, 404, 429 and 5xx answer for the resource, not the token, and are neve
       assert.equal(isHfTokenRejected(CLASSIC), false);
     } finally {
       hub.restore();
+      // The 429 opens a rate-limit window; this test is about the token, not the window.
+      resetHubRateLimits();
     }
   }
 });

@@ -2495,6 +2495,17 @@ def _unit_gathered_bytes(unit):
     return total
 
 
+def _synchronized_empty_cache():
+    """`torch.cuda.empty_cache()` after a device synchronize. Under expandable segments every stream owns its own
+    segment and releasing a page waits only on THAT stream, while FSDP2 allocates gathered weights and reduced
+    gradients on its side streams and the default stream reads them. A grad freed by `zero_grad()` (or a weight
+    freed by `reshard()`) while an optimizer / decode kernel reading it is still queued on the default stream
+    (no host sync since the step, e.g. `logging_steps > 1`) could be unmapped under that kernel. Only called
+    where an empty_cache runs anyway, so it adds no per-step sync."""
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
 def _generate_streams_blocks(model):
     """Collective on CUDA in "auto" mode: True when generate should gather decoder blocks one at a
     time. Gathering every unit at once needs the whole model's weights on each rank next to its
@@ -2522,7 +2533,7 @@ def _generate_streams_blocks(model):
     need = (
         sum(sizes) + max(sizes) + (1 << 30)
     )  # gathered weights + one all-gather buffer + decode scratch
-    torch.cuda.empty_cache()
+    _synchronized_empty_cache()  # follows the last step's zero_grad() with no host sync in between
     free = torch.cuda.mem_get_info(device)[0]
     fits = _agree_over_ranks(dist, device, [free >= need], getattr(mesh_info, "mesh", None))[0]
     return not fits
@@ -2688,7 +2699,7 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
             if id(unit) in saved:
                 _reshard_after_forward_restore(unit, saved[id(unit)])
         if streams and torch.cuda.is_available():
-            torch.cuda.empty_cache()  # the next whole-root gather needs its buffer in one piece
+            _synchronized_empty_cache()  # the next whole-root gather needs its buffer in one piece
         if errors:
             raise errors[0]
 
@@ -4433,6 +4444,8 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
             f"'adamw_torch' (or 'adamw_torch_fused'), or build a DTensor-compatible optimizer after "
             f"`unsloth.models.fsdp2_native.shard_model(model)` and pass it to the Trainer."
         )
+    if cpu_shards and _fused_cpu_adamw(training_args, name):
+        return True
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
@@ -4443,7 +4456,8 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
             "torch's AdamW)."
         )
         return False
-    if target == "adamw_torch_fused" and not torch.cuda.is_available():
+    # Fused AdamW steps CPU shards fine; a non-CUDA accelerator mesh keeps adamw_torch.
+    if target == "adamw_torch_fused" and not torch.cuda.is_available() and not cpu_shards:
         target = "adamw_torch"
     _print_rank0(
         f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
@@ -4454,6 +4468,38 @@ def _swap_bnb_optimizer(training_args, cpu_shards = False):
         training_args.optim = OptimizerNames(target)
     except Exception:
         training_args.optim = target
+    return True
+
+
+def _fused_cpu_adamw(
+    training_args,
+    name,
+    label = "native FSDP2",
+):
+    """optim = 'adamw_torch' leaves torch's AdamW to pick foreach / fused itself, and foreach only covers
+    accelerator tensors: CPU shards (UNSLOTH_FSDP2_CPU_OFFLOAD, a CPU mesh) step one tensor at a time,
+    2.6-4.9x slower than the fused CPU kernel (torch >= 2.4) for the same update (fp32, within 1 ulp).
+    Switch to adamw_torch_fused, unless optim_args is set (FlashAdamW keys off it) or
+    UNSLOTH_CPU_FUSED_ADAMW=0. True when switched."""
+    if name != "adamw_torch" or getattr(training_args, "optim_args", None):
+        return False
+    if os.environ.get("UNSLOTH_CPU_FUSED_ADAMW", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    _print_rank0(
+        f"Unsloth: {label} keeps the trainable shards on the CPU, where torch's AdamW would step one "
+        "tensor at a time. Switching optim = 'adamw_torch' to 'adamw_torch_fused' (fused CPU kernel, same "
+        "update; UNSLOTH_CPU_FUSED_ADAMW=0 keeps adamw_torch)."
+    )
+    try:
+        from transformers.training_args import OptimizerNames
+        training_args.optim = OptimizerNames("adamw_torch_fused")
+    except Exception:
+        training_args.optim = "adamw_torch_fused"
     return True
 
 

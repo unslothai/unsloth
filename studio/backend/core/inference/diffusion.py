@@ -99,6 +99,8 @@ from .diffusion_families import (
     resolve_local_gguf_child,
     supported_family_names,
     family_for_checkpoint,
+    family_pipeline_class,
+    companion_base,
     transformer_config_overrides_for,
     transformer_variant_differs_from_base,
 )
@@ -247,6 +249,7 @@ from .diffusion_memory import (
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
+    reference_kv_cache_mib,
     image_activation_verdict,
     ACTIVATION_REFUSE,
     raise_on_unified_memory_shortfall,
@@ -280,6 +283,7 @@ from .diffusion_memory import (
     without_cfg_off,
     live_vae_saver_tag,
     planned_vae_saver_tag,
+    encoder_window_pad_mib,
     stream_window_pad_mib,
     with_label_part,
     applied_plan,
@@ -701,14 +705,49 @@ def _state_shift_node(state: Any) -> Optional[str]:
     )
 
 
+def _pipe_takes_kwarg(pipe: Any, name: str) -> bool:
+    """True unless ``pipe.__call__`` is inspectable and accepts neither ``name`` nor ``**kwargs``."""
+    call = getattr(pipe, "__call__", None)
+    if call is None:
+        return True
+    try:
+        params = inspect.signature(call).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _gguf_pick_runs_native(fam: Any, kind: Optional[str], gguf_filename: Optional[str]) -> bool:
+    """Whether a GGUF load of ``fam`` would select the native sd.cpp engine on this host (``predict_engine``, no side
+    effect). Any other kind, a refusal or an unreadable prediction answers False: the caller keeps its diffusers check."""
+    if kind != "gguf":
+        return False
+    try:
+        from . import diffusion_engine_router as router
+        return (
+            router.predict_engine(fam, model_kind = "gguf", gguf_filename = gguf_filename)
+            == router.ENGINE_SD_CPP
+        )
+    except Exception:  # noqa: BLE001 - unknown: the diffusers class check stands
+        return False
+
+
+def _flux2_klein_distilled(pipe: Any) -> bool:
+    """Flux2KleinPipeline reads ``is_distilled`` from its config; Flux2KleinKVPipeline (klein 9B KV, step-distilled)
+    takes no guidance at all and does not register the flag."""
+    if type(pipe).__name__ == "Flux2KleinKVPipeline":
+        return True
+    return bool(getattr(getattr(pipe, "config", None), "is_distilled", False))
+
+
 def _guidance_supported(state: Any) -> bool:
     """FLUX.2 klein base and distilled share a family; Flux2KleinPipeline turns guidance off on ``is_distilled``."""
     if not state.family.uses_guidance:
         return False
-    config = getattr(getattr(state, "pipe", None), "config", None)
-    return not (
-        state.family.name == "flux.2-klein" and bool(getattr(config, "is_distilled", False))
-    )
+    pipe = getattr(state, "pipe", None)
+    if pipe is not None and not _pipe_takes_kwarg(pipe, state.family.cfg_kwarg):
+        return False
+    return not (state.family.name == "flux.2-klein" and _flux2_klein_distilled(pipe))
 
 
 def _live_preview_available(state: Any) -> bool:
@@ -732,9 +771,7 @@ def _note_multigpu_default_request(
 ) -> None:
     try:
         steps, guidance = default_generation_params(*identifiers)
-        distilled = family.name == "flux.2-klein" and bool(
-            getattr(getattr(pipe, "config", None), "is_distilled", False)
-        )
+        distilled = family.name == "flux.2-klein" and _flux2_klein_distilled(pipe)
         own_negative = (
             family.name in _CFG_WITHOUT_NEGATIVE_PROMPT_FAMILIES and float(guidance) > 1.0
         )
@@ -1865,6 +1902,8 @@ class _LoadState:
     display_repo_id: Optional[str] = None
     # Defaulted so older positional constructions keep working.
     offload_policy: str = OFFLOAD_NONE
+    # The caller's base_repo before the companion remap: the only name a generic KV file's weights go by.
+    checkpoint_base: Optional[str] = None
     vae_tiling: bool = False
     memory_mode: str = "auto"
     # Resolved load kind ("gguf"|"single_file"|"pipeline"); lets the UI gate GGUF-only controls.
@@ -3347,7 +3386,13 @@ def _start_peak_probe(state: Any) -> Any:
         return None
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
+        from .diffusion_multigpu import is_split
 
+        if is_split(pipe):
+            # The probe sees only the primary card of a companion / layer split, and a resident split is padded to
+            # the streamed scale: its sample (Z-Image on 2x T4: 1782 MiB vs 1151 on one card) would raise the shared
+            # max-wins key and decline the next load's split. Splits are priced from the one-card samples.
+            return None
         index = _peak_device_index(state)
         graphs = cuda_graph.live_graph_count(index)
         generation = cuda_graph.capture_generation(index)
@@ -3382,6 +3427,7 @@ def _start_peak_probe(state: Any) -> Any:
         if probe.device is None:
             return None
         probe.window_pad = window_pad
+        probe.encoder_pad = encoder_window_pad_mib(pipe)
         probe.failed_captures = cuda_graph.failed_capture_count()
         probe.conditioning_hits = _conditioning_cache_hits(pipe)
         return probe
@@ -3977,6 +4023,38 @@ def _conditioning_cache_hits(pipe: Any) -> int:
     return hits
 
 
+def _encoder_releases(pipe: Any) -> int:
+    """Times the per-render residency check streamed this pipe's encoders from the card (0 without one)."""
+    try:
+        return int(getattr(te_residency.of(pipe), "releases", 0) or 0)
+    except Exception:  # noqa: BLE001 - measurement only
+        return 0
+
+
+def _note_encoder_release(
+    probe: Any, residency_released: bool, releaser_was: bool, releaser_now: bool
+) -> None:
+    """A per-render residency release makes the render unrecordable; a whole-encoder release keeps the whole-render pad."""
+    if probe is None:
+        return
+    if residency_released:
+        probe.encoder_released = True
+    if releaser_now and not releaser_was:
+        probe.encode_peak = None
+
+
+def _padded_peak(probe: Any, peak: int, pad: int) -> int:
+    """The encoders' pad share goes only on the prompt-encode phase: on the denoise peak (a 1.2 GB embedding x 3 on
+    Qwen3-VL) it raised the next load's peak and streamed the encoder whole. No encode reading: the whole pad."""
+    parts = getattr(probe, "encoder_pad", None)
+    encode = getattr(probe, "encode_peak", None)
+    if not isinstance(parts, tuple) or len(parts) != 2 or encode is None:
+        return int(peak) + int(pad)
+    share = max(0, min(int(parts[0]), int(pad)))
+    window = max(0, int(parts[1]))
+    return max(int(peak), min(int(encode), int(peak)) + window) + int(pad) - share
+
+
 def _record_peak_probe(
     state: Any,
     probe: Any,
@@ -4009,6 +4087,9 @@ def _record_peak_probe(
             # the decode streamed lent groups out, so its peak is net of their bytes: a sample would under-size the
             # bucket (the placement that lent them already held a sample covering this decode)
             return
+        if getattr(probe, "encoder_released", False):
+            # encoders streamed out after the encode reading: a sample would under-size the bucket
+            return
         if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
             return
@@ -4032,14 +4113,14 @@ def _record_peak_probe(
         graphs = cuda_graph.live_graph_count(index)
         generation = cuda_graph.capture_generation(index)
         pad = int(getattr(probe, "window_pad", 0) or 0)
-        peak += pad
+        peak = _padded_peak(probe, peak, pad)
         split = getattr(probe, "phase_peaks", None) or {}
         phases = {}
         if PHASE_PRE_DECODE in split and PHASE_DECODE in split:
             pre, dec = int(split[PHASE_PRE_DECODE]), int(split[PHASE_DECODE])
             phases = {
-                PHASE_PRE_DECODE: pre + pad,
-                PHASE_DECODE: dec + pad,
+                PHASE_PRE_DECODE: _padded_peak(probe, pre, pad),
+                PHASE_DECODE: _padded_peak(probe, dec, pad),
                 PHASE_DECODE_UNPADDED: dec,
                 PHASE_UNPADDED: max(pre, dec),
             }
@@ -4526,13 +4607,14 @@ def _kick_early_probe_prewarm(fam: Any, target: Any) -> bool:
         ordinal = getattr(target, "ordinal", None)
         index = int(ordinal) if ordinal is not None else torch.cuda.current_device()
         rotated = getattr(getattr(fam, "profile", None), "int8_convrot", None) is not None
-        producer = (
-            rotated
-            and not flux_convrot_fused_disabled()
-            and getattr(fam, "transformer_class", None)
-            in ("Flux2Transformer2DModel", "Flux3Transformer2DModel")
+        cls = getattr(fam, "transformer_class", None)
+        fused_on = rotated and not flux_convrot_fused_disabled()
+        producer = fused_on and cls in ("Flux2Transformer2DModel", "Flux3Transformer2DModel")
+        gelu = fused_on and cls == "FluxTransformer2DModel"
+        extra = {"gelu": True} if gelu else {}
+        return start_early_probe_prewarm(
+            index, rotated = rotated, producer = producer, logger = logger, **extra
         )
-        return start_early_probe_prewarm(index, rotated = rotated, producer = producer, logger = logger)
     except Exception:  # noqa: BLE001 - a warm-up only
         return False
 
@@ -5702,8 +5784,19 @@ class DiffusionBackend:
                 f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
                 f"engine available."
             )
-        if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
-            assert_pipeline_class_available(fam.pipeline_class, fam.name)
+        pick_pipeline_class = family_pipeline_class(fam, base_repo, repo_id, gguf_filename)
+        if pick_pipeline_class and pick_pipeline_class != fam.pipeline_class:
+            # A checkpoint with its own pipeline (klein 9B KV) needs that class on a diffusers load: the family's
+            # buildability answers for the default class, so check this one before eviction. A GGUF the router sends to
+            # the native sd.cpp engine imports no pipeline class (text to image there; it refuses the KV reference
+            # edits), so an older diffusers (the Python 3.9 pin) keeps loading it as before.
+            try:
+                assert_pipeline_class_available(pick_pipeline_class, fam.name)
+            except ValueError:
+                if not _gguf_pick_runs_native(fam, kind, gguf_filename):
+                    raise
+        elif not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
+            assert_pipeline_class_available(pick_pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
         if (
             kind == "gguf"
@@ -9076,7 +9169,10 @@ class DiffusionBackend:
                 # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
                 comfy_compile = False
                 transformer_cls = _family_model_class(diffusers, fam.transformer_class)
-                pipeline_cls = _family_model_class(diffusers, fam.pipeline_class)
+                # A checkpoint of the family that runs another pipeline (klein 9B KV) names it; else the family's.
+                pipeline_cls = _family_model_class(
+                    diffusers, family_pipeline_class(fam, base, base_repo, repo_id, gguf_filename)
+                )
 
                 # Decide placement up front (weights still on CPU). Budgets the GGUF; dense is preflighted below.
                 plan = self._plan_memory(
@@ -9362,6 +9458,7 @@ class DiffusionBackend:
                         content_variant_hint(repo_id, gguf_filename),
                         repo_id,
                         display_repo_id,
+                        base_repo,
                     )
                 ):
                     dense_declined = True
@@ -12276,6 +12373,7 @@ class DiffusionBackend:
                         repo_id = repo_id,
                         display_repo_id = display_repo_id,
                         base_repo = base,
+                        checkpoint_base = base_repo,
                         device = device,
                         gpu_ordinal = target.ordinal,
                         placed_ordinal = placed_cuda_ordinal(target),
@@ -14514,6 +14612,14 @@ class DiffusionBackend:
             raise ValueError(
                 f"{workflow} is not supported for the '{state.family.name}' model family."
             )
+        variant = _checkpoint_variant_pipeline(state)
+        if variant is not None:
+            # from_pipe over the stock workflow class would run this checkpoint's weights as another model.
+            raise ValueError(
+                f"{workflow.capitalize()} is not available for this checkpoint: it runs through diffusers' {variant}, "
+                f"and {class_name} would run its weights through the stock {state.family.pipeline_class} path, which "
+                f"is a different model. Text to image and reference edits work; use the stock checkpoint for {workflow}."
+            )
         cached = self._aux_pipes.get(class_name)
         if cached is not None:
             return cached
@@ -15826,6 +15932,9 @@ class DiffusionBackend:
                             )
                         else:
                             kwargs["guidance_schedule"] = None
+                if not _pipe_takes_kwarg(pipe, state.family.cfg_kwarg):
+                    # A guidance-free pipeline (Flux2KleinKVPipeline) would raise on the kwarg.
+                    kwargs.pop(state.family.cfg_kwarg, None)
                 layer_count = int(getattr(fam, "layer_count", 0) or 0)
                 if layer_count:
                     if "layers" in call_params:
@@ -15967,6 +16076,7 @@ class DiffusionBackend:
                 guard_batch = 1
                 guard_condition_pixels = 0
                 guard_reference_pixels = 0
+                guard_kv_mib = 0
 
                 try:
                     # Forward dims, not sliders: conditioned workflows size from the input image; same derivation as the compile-cache registration below.
@@ -15975,6 +16085,18 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
+                    # A prefix-KV pipeline (klein 9B KV) holds every reference token's K/V through the whole denoise,
+                    # on top of what the activation estimate and any measured placement priced.
+                    if init_pil is not None:
+                        guard_kv_mib = reference_kv_cache_mib(
+                            pipe, [init_pil, *ref_extra], batch_size = guard_batch
+                        )
+                        if guard_kv_mib:
+                            logger.info(
+                                "diffusion.generate: pricing ~%d MiB of reference K/V cache (%d image(s))",
+                                guard_kv_mib,
+                                1 + len(ref_extra),
+                            )
                     guard_condition_pixels = (
                         int(
                             (1 + len(ref_extra))
@@ -16050,6 +16172,9 @@ class DiffusionBackend:
                         ),
                         step_cache = auto_step_cache_on,
                     )
+                    if guard_kv_mib and getattr(state.pipe, "_unsloth_measured_reserve", None):
+                        # the measured reserve never saw the cache: stream that much more of the denoiser
+                        extra_mib = int(extra_mib) + guard_kv_mib
                     if getattr(state.pipe, TIER_MOVED_ATTR, False):
                         extra_mib = _hold_captured_release(state, extra_mib)
                         guard_release_mib = extra_mib
@@ -16088,6 +16213,7 @@ class DiffusionBackend:
                             ),
                             controlnet = workflow == "controlnet" and control_pil is not None,
                             measured_activation = guard_measured,
+                            persistent_mib = guard_kv_mib,
                             logger = logger,
                         )
 
@@ -16470,11 +16596,23 @@ class DiffusionBackend:
                                 float_seeds.seed()
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
+                            if peak_probe is not None:
+                                peak_probe.mark_encode()
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
+                            releaser_was = releaser_now = False
                             if state.te_releaser is not None:
+                                releaser_was = bool(getattr(state.te_releaser, "released", False))
                                 state.te_releaser.release()
+                                releaser_now = bool(getattr(state.te_releaser, "released", False))
                             # resident encoders stream from the host when the rest of this render does not fit
+                            releases = _encoder_releases(state.pipe)
                             te_residency.after_encode(state.pipe, te_residency_need, logger = logger)
+                            _note_encoder_release(
+                                peak_probe,
+                                _encoder_releases(state.pipe) > releases,
+                                releaser_was,
+                                releaser_now,
+                            )
                             if whole_tier is not None and not whole_release:
                                 # pinned after the encode, released before the decode
                                 release = pin_denoiser_for_call(
@@ -17197,7 +17335,7 @@ class DiffusionBackend:
                 family = state.family,
             ),
             # Workflows the loaded family supports, so the UI can gate its tabs.
-            "workflows": _family_workflows(state.family),
+            "workflows": _state_workflows(state),
             "supports_negative_prompt": state.family.uses_negative_prompt,
             "supports_inpaint_only_masked": inpaint_class_accepts_padding_mask_crop(
                 getattr(state.family, "inpaint_pipeline_class", None)
@@ -17214,9 +17352,7 @@ class DiffusionBackend:
             else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
             "textual_inversion": getattr(state.family, "textual_inversion", None),
             **_hires_status(state.family),
-            "conditioning": conditioning_capabilities(
-                state.family, _family_workflows(state.family)
-            ),
+            "conditioning": conditioning_capabilities(state.family, _state_workflows(state)),
             "supports_lora": lora_reason is None,
             "lora_unavailable_reason": lora_reason,
             # Only Speed=Auto's 3rd-image compile blocks LoRA: a reload stays eager until then.
@@ -17363,6 +17499,40 @@ def _peak_workflow(fam: Any, workflow: Optional[str]) -> Optional[str]:
     return workflow
 
 
+# Workflows the loaded pipe serves itself; the rest are built with from_pipe over a stock workflow class.
+_MAIN_PIPE_WORKFLOWS = frozenset({"txt2img", "reference", "edit"})
+
+
+def _checkpoint_variant_pipeline(state: Any) -> Optional[str]:
+    """The diffusers pipeline a checkpoint of its family needs instead of the family's (``pipeline_class_variants``:
+    FLUX.2 klein 9B KV -> Flux2KleinKVPipeline), or None for every other load."""
+    fam = getattr(state, "family", None)
+    if fam is None or not getattr(fam, "pipeline_class_variants", ()):
+        return None
+    try:
+        variant = family_pipeline_class(
+            fam,
+            getattr(state, "base_repo", None),
+            getattr(state, "repo_id", None),
+            getattr(state, "gguf_filename", None),
+            getattr(state, "display_repo_id", None),
+            getattr(state, "checkpoint_base", None),
+        )
+    except Exception:  # noqa: BLE001 - unreadable: the family's own workflows stand
+        return None
+    return variant if variant and variant != getattr(fam, "pipeline_class", None) else None
+
+
+def _state_workflows(state: Any) -> list[str]:
+    """``_family_workflows`` for the loaded checkpoint. A variant-pipeline checkpoint keeps only the workflows its own
+    pipe runs: the family's img2img / inpaint classes are the stock model's (Flux2KleinInpaintPipeline conditions on
+    the source image through the stock bidirectional path every step, which is not the KV model)."""
+    workflows = _family_workflows(state.family)
+    if _checkpoint_variant_pipeline(state) is None:
+        return workflows
+    return [w for w in workflows if w in _MAIN_PIPE_WORKFLOWS]
+
+
 def _family_workflows(fam: DiffusionFamily) -> list[str]:
     """Instruction-editing families have no txt2img mode, so expose only the edit workflow."""
     if getattr(fam, "edit", False):
@@ -17400,9 +17570,16 @@ def _resolve_base_repo(
         if tag and _is_trusted_diffusion_repo(tag):
             # Map mirrors back to the vendor id (status base_repo, adapter base_model).
             base = canonical_base(tag)
+            # A distilled student whose card tags its teacher (nvidia/Qwen-Image-Flash -> Qwen/Qwen-Image) is its
+            # own curated base: the teacher's hosted quantized artifacts hold other weights.
+            named = named_variant_base(fam, repo_id, gguf_filename) or ""
+            if named.lower() in (getattr(fam, "prequant_excluded_bases", ()) or ()):
+                base = named
         elif tag is None:
             # No card tag: only a curated variant the name spells out.
             base = named_variant_base(fam, repo_id, gguf_filename) or ""
+    # A KV-style checkpoint's card tags its gated repo; the file holds the denoiser, the rest is another base's bytes.
+    base = companion_base(base) or base
     # Returns the UPSTREAM id; the swap happens at the fetch sites only.
     resolved = resolve_base_repo(fam, base)
     _remember_companion_base(repo_id, resolved)

@@ -496,6 +496,12 @@ def test_render_time_replica_failure_hands_over_to_cfg_batching_between_renders(
     )  # router gone, cfg_batch can wrap it
     mg.end_cfg_render(pipe)
     assert calls == ["cfg_batch"]  # once
+    # the fallback stays visible where the placement is reported (2x T4: the router was gone and status was silent)
+    status = mg.placement_status(pipe)
+    assert status["cfg_parallel"]["armed"] is False
+    assert status["cfg_parallel"]["declined"].startswith(
+        "disabled at run time: replica unavailable"
+    )
 
 
 def test_no_fallback_without_a_failure_and_none_registered():

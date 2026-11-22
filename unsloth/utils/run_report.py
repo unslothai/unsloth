@@ -5,6 +5,7 @@
 
 UNSLOTH_MEMORY_REPORT=1: per-device memory outside torch's allocator (CUDA context, NCCL, vLLM, other
 processes) at load, vLLM init, first forward and first optimizer step; explains OOMs max_memory_reserved cannot.
+On the CPU backend the same stages report the process RSS, its peak and the RAM still available.
 UNSLOTH_BATCH_REPORT=N (1 / true = 16): real-token and supervised-token share over the first N micro-batches.
 UNSLOTH_SYNC_REPORT=N (1 / true = 16): host-device syncs per optimizer step over the first N steps, by
 call site, from torch.cuda.set_sync_debug_mode("warn"); every .item(), nonzero, bool(tensor), D2H copy
@@ -14,6 +15,7 @@ and stream synchronize stalls the CPU until the GPU drains, so the top sites are
 __all__ = [
     "memory_report_enabled",
     "report_memory",
+    "cpu_memory_snapshot",
     "install_memory_report",
     "batch_report_size",
     "batch_token_counts",
@@ -75,8 +77,104 @@ def memory_snapshot(index):
     return total, free, reserved, allocated, max(total - free - reserved, 0)
 
 
-def report_memory(stage, owner = None):
-    """Print one line per device for `stage`; once per (stage, owner) so repeated calls stay quiet."""
+def _read_kib(path, key):
+    with open(path, encoding = "ascii", errors = "ignore") as handle:
+        for line in handle:
+            if line.startswith(key + ":"):
+                return int(line.split()[1]) * 1024
+    return None
+
+
+def _cgroup_memory(proc_cgroup = "/proc/self/cgroup", root = "/sys/fs/cgroup"):
+    """(limit, headroom) bytes from cgroup v2 for this process: the tightest memory.max over its cgroup and every
+    ancestor, and the smallest memory.max - memory.current among them. Either is None when unlimited / unreadable."""
+    limit = headroom = None
+    try:
+        with open(proc_cgroup, encoding = "ascii") as handle:
+            path = next(
+                (line.split(":", 2)[2].strip() for line in handle if line.startswith("0::")), None
+            )
+        if path is None:
+            return None, None
+        parts = [part for part in path.split("/") if part]
+        for depth in range(len(parts), -1, -1):
+            folder = os.path.join(root, *parts[:depth])
+            try:
+                with open(os.path.join(folder, "memory.max"), encoding = "ascii") as handle:
+                    value = handle.read().strip()
+            except OSError:
+                continue
+            if value == "max":
+                continue
+            value = int(value)
+            limit = value if limit is None else min(limit, value)
+            try:
+                with open(os.path.join(folder, "memory.current"), encoding = "ascii") as handle:
+                    left = max(value - int(handle.read().strip()), 0)
+            except (OSError, ValueError):
+                continue
+            headroom = left if headroom is None else min(headroom, left)
+    except Exception:
+        pass
+    return limit, headroom
+
+
+def cpu_memory_snapshot():
+    """(rss, peak rss, available, total) bytes of host RAM for this process; unknown fields are None."""
+    rss = peak = available = total = None
+    try:
+        if os.path.exists("/proc/self/status"):
+            rss = _read_kib("/proc/self/status", "VmRSS")
+            peak = _read_kib("/proc/self/status", "VmHWM")
+            available = _read_kib("/proc/meminfo", "MemAvailable")
+            total = _read_kib("/proc/meminfo", "MemTotal")
+            limit, headroom = _cgroup_memory()
+            if limit is not None and total is not None and limit < total:
+                total = limit
+            # Host MemAvailable ignores what the cgroup has already used: cap it by the remaining allowance.
+            if headroom is not None and available is not None and headroom < available:
+                available = headroom
+        else:
+            import psutil  # macOS / Windows
+
+            info = psutil.Process().memory_info()
+            rss = info.rss
+            peak = getattr(info, "peak_wset", None)
+            memory = psutil.virtual_memory()
+            available, total = memory.available, memory.total
+    except Exception:
+        pass
+    if peak is None:
+        try:
+            import resource
+            import sys
+
+            # ru_maxrss is KiB on Linux, bytes on macOS.
+            maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            peak = maxrss if sys.platform == "darwin" else maxrss * 1024
+        except Exception:
+            pass
+    return rss, peak, available, total
+
+
+def _cpu_memory_line(stage):
+    rss, peak, available, total = cpu_memory_snapshot()
+    if rss is None and peak is None:
+        return None
+    gb = lambda value: "?" if value is None else f"{value / _GB:.2f}"  # noqa: E731
+    return (
+        f"Unsloth: memory at {stage} on cpu: process RSS {gb(rss)} GB (peak {gb(peak)} GB), "
+        f"{gb(available)} GB of {gb(total)} GB RAM available."
+    )
+
+
+def report_memory(
+    stage,
+    owner = None,
+    cpu = False,
+):
+    """Print one line per device for `stage`; once per (stage, owner) so repeated calls stay quiet. cpu = True (the CPU
+    backend) reports host RAM instead of CUDA devices."""
     if not memory_report_enabled():
         return None
     if owner is not None:
@@ -91,6 +189,12 @@ def report_memory(stage, owner = None):
             return None
         seen.add(stage)
     lines = []
+    if cpu:
+        line = _cpu_memory_line(stage)
+        if line is not None:
+            print(line)
+            lines.append(line)
+        return lines
     for index in _devices():
         snapshot = memory_snapshot(index)
         if snapshot is None:
@@ -107,7 +211,7 @@ def report_memory(stage, owner = None):
     return lines
 
 
-def install_memory_report(trainer):
+def install_memory_report(trainer, cpu = False):
     """First forward through a one-shot hook, first optimizer step through a callback."""
     if not memory_report_enabled() or getattr(trainer, "_unsloth_memory_report_installed", False):
         return False
@@ -115,6 +219,8 @@ def install_memory_report(trainer):
     if not isinstance(model, torch.nn.Module):
         return False
     trainer._unsloth_memory_report_installed = True
+    # The GPU route's calls stay exactly report_memory(stage, owner).
+    extra = {"cpu": True} if cpu else {}
 
     handle = None
 
@@ -123,7 +229,7 @@ def install_memory_report(trainer):
             handle.remove()
         except Exception:
             pass
-        report_memory("first forward", trainer)
+        report_memory("first forward", trainer, **extra)
 
     handle = model.register_forward_hook(first_forward)
 
@@ -131,7 +237,7 @@ def install_memory_report(trainer):
 
     class _UnslothMemoryReportCallback(TrainerCallback):
         def on_step_end(self, args, state, control, **kwargs):
-            report_memory("first optimizer step", trainer)
+            report_memory("first optimizer step", trainer, **extra)
 
     trainer.add_callback(_UnslothMemoryReportCallback())
     return True

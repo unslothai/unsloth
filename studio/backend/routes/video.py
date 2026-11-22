@@ -424,7 +424,9 @@ async def load_video_model_gated(
             from core.inference import video_lora
 
             # Before the GPU is touched: a LoRA this load cannot bake, or one for another family, is a 400.
-            lora_refusal = video_lora.load_refusal(fam, kind, request.transformer_quant)
+            lora_refusal = video_lora.load_refusal(
+                fam, kind, request.transformer_quant, request.loras
+            )
             if lora_refusal and video_lora.has_active(request.loras):
                 raise ValueError(lora_refusal)
             await asyncio.to_thread(
@@ -854,6 +856,7 @@ async def generate_video(
         continuation_video = request.continuation_video,
         continuation_keep = request.continuation_keep,
         live_preview = request.live_preview,
+        draft_decode = request.draft_decode,
     )
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.
     for attempt in range(2):
