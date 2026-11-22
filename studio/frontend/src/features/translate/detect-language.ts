@@ -220,7 +220,9 @@ const LATIN: Record<string, [ReadonlySet<string>, string, RegExp?]> = {
     /^(?:ngi|nge|ngo|uku|oku|kwe|ezi|isi|izi|umu|ubu)[a-z]{3,}$/,
   ],
   af: [
-    words(`${DUTCH_AFRIKAANS} nie ek jy hy sy hulle julle vir baie sal mekaar hul sê hoekom mense dankie asseblief hom n sodat teen elkeen kry dis my`),
+    words(
+      `${DUTCH_AFRIKAANS} nie ek jy hy sy hulle julle vir baie sal mekaar hul sê hoekom mense dankie asseblief hom n sodat teen elkeen kry dis my`,
+    ),
     "ê",
   ],
   so: [
@@ -236,8 +238,10 @@ const LATIN: Record<string, [ReadonlySet<string>, string, RegExp?]> = {
 const CLOSE = [new Set(["id", "ms"]), new Set(["nl", "af"])];
 
 function latin(text: string): string | null {
-  // Yoruba and Igbo write ẹ ị ọ ụ too, but none of Vietnamese's other letters.
-  const vietnamese = count(text, /(?![ẹịọụ])[ơưđăạ-ỹ]/gu);
+  // Yoruba and Igbo write ẹ ị ọ ụ too, but none of Vietnamese's other letters nor its closed syllables.
+  const vietnamese =
+    count(text, /(?![ẹịọụ])[ơưđăạ-ỹ]/gu) +
+    count(text, /[ẹịọụ](?:ch|c|ng|nh|p|t)(?![\p{L}\p{M}])/gu);
   if (vietnamese > 0 && vietnamese + countOf(text, "ẹịọụ") >= 2) return "vi";
   // Elisions split too: French "l'homme" counts "l".
   const tokens = tokensOf(text);

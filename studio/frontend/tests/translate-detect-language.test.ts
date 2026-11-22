@@ -208,10 +208,20 @@ test("only the start of a long text is read", () => {
 });
 
 test("Vietnamese keeps its short phrases while Yoruba and Igbo dot-below vowels are not Vietnamese", () => {
-  for (const text of ["Mẹ ơi", "Chị ơi", "Cụ ạ", "Đẹp"])
+  for (const text of [
+    "Mẹ ơi",
+    "Chị ơi",
+    "Cụ ạ",
+    "Đẹp",
+    "Dịch vụ",
+    "Dịch vụ du lịch",
+  ])
     assert.equal(detectTranslateLanguage(text), "vi", text);
   assert.equal(detectTranslateLanguage("Mo fẹ́ jẹun"), "yo");
-  assert.equal(detectTranslateLanguage("Achọrọ m ịga ahịa echi n'ụtụtụ."), "ig");
+  assert.equal(
+    detectTranslateLanguage("Achọrọ m ịga ahịa echi n'ụtụtụ."),
+    "ig",
+  );
 });
 
 test("Dutch and Afrikaans are told apart by the words they do not share", () => {
