@@ -650,6 +650,9 @@ def test_no_probability_is_packed_unclamped():
     # the native P path: rounded, then saturated at 255 by the pack (cvt.pack.sat) or the conversion (cvt.rni.sat)
     assert source.count("prob_rn(fmaf(") == 8 and source.count("cvt.pack.sat.u8.s32.b32") == 2
     assert "cvt.rni.sat.u8.f32" in source
+    # an infinite score scale: the native path's offset becomes +inf, so its keys saturate to the 255 the clamp gives
+    # the NaN exponents of the MAGIC_F path, and padded keys stay 0
+    assert "if (fa == inf) oa = inf;" in source and "if (fb == inf) ob = inf;" in source
 
 
 def test_native_p_reaches_the_kernel_as_a_define():

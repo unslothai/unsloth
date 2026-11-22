@@ -47,8 +47,11 @@ KERNEL_SOURCE = r"""
 // int8 rounding noise of hundreds of units.
 // NATIVE_P (per card) rounds and packs the probabilities with conversion instructions instead (cvt.rni + cvt.pack.sat,
 // one F2IP per two keys on sm89+, against a clamp, an add and the shift-add pack per key): the same bytes for every
-// fp32 input but NaN (round to nearest even, then saturate at 255 = clamp at 255, then round). The scores and the P.V
-// sums keep MAGIC_F: reading the bits as a float is free, and a converted score rounds differently.
+// fp32 input but NaN (round to nearest even, then saturate at 255 = clamp at 255, then round). The only NaN exponent
+// is an infinite score scale (a +-Inf in Q or K; amax ignores NaN and the scale is floored at 1e-30), and that key
+// group gets an offset of +inf: its keys saturate to the 255 the clamp gives NaN, its padded keys stay 0. The same
+// bits on every input, including +-Inf scales. The scores and the P.V sums keep MAGIC_F: reading the bits as a
+// float is free, and a converted score rounds differently.
 //
 // Method notes (ideas, not code): int8 Q/K with a softmax-invariant K shift and block scales follows SageAttention
 // (arXiv 2410.02367); K scales per accumulator lane group follow SageAttention2 (arXiv 2411.10958); integer
@@ -702,7 +705,16 @@ extern "C" __global__ void unsloth_i8attn(
 #pragma unroll
       for (int kb = 0; kb < KB32; ++kb) {
         const float fa = f0[kb], fb = f1[kb];
-        const float oa = -MAGIC_F * fa + (LOG2_255 - mt0), ob = -MAGIC_F * fb + (LOG2_255 - mt1);
+        float oa = -MAGIC_F * fa + (LOG2_255 - mt0), ob = -MAGIC_F * fb + (LOG2_255 - mt1);
+#if NATIVE_P
+        // An infinite score scale (a +-Inf in the Q row or the K group) makes every exponent of the group NaN, which
+        // the clamp of prob turns into 255 and a conversion into 0. An offset of +inf gives a key (bits as a float
+        // always above 2^22) an exponent of +inf, which saturates to 255, and a padded key (-3e38) NaN, which
+        // converts to the 0 its -inf gives the clamp: the bytes of the MAGIC_F path
+        const float inf = __int_as_float(0x7f800000);
+        if (fa == inf) oa = inf;
+        if (fb == inf) ob = inf;
+#endif
 #pragma unroll
         for (int h = 0; h < 2; ++h) {
           const int na = 4 * kb + 2 * h, nb = na + 1;
