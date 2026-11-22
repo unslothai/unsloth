@@ -247,6 +247,8 @@ def _routing_environment(monkeypatch, model):
 
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
+        # Called by _gemma_rope_the_zoo_export_drops, not by the save itself.
+        "_gemma_live_linear_rope",
         "_collect_garbage",
         "unsloth_generic_save",
         os = os,

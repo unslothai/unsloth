@@ -182,7 +182,88 @@ def test_save_to_gguf_records_the_scaling_before_quantizing():
             lines.setdefault("def _quantize_one", []).append(node)
     (record,) = lines.get("_record_gemma_linear_rope_in_gguf", [None])
     assert record is not None, "save_to_gguf no longer records Gemma's linear RoPE"
-    assert [ast.unparse(a) for a in record.args] == ["model_directory", "initial_files"]
+    assert [ast.unparse(a) for a in record.args] == [
+        "model_directory",
+        "initial_files",
+        "gemma_linear_rope",
+    ]
     (convert,) = lines["_convert_into_gguf_directory"]
     (quantize,) = lines["def _quantize_one"]
     assert convert.lineno < record.lineno < quantize.lineno
+
+
+@pytest.mark.parametrize("arch", ["gemma", "gemma2"])
+def test_the_live_factor_wins_over_an_unscaled_staged_config(tmp_path, arch):
+    """A reused checkpoint stages the base's config.json, unscaled; the live rotary is what ran."""
+    pytest.importorskip("gguf")
+    record = _load("_record_gemma_linear_rope_in_gguf")["_record_gemma_linear_rope_in_gguf"]
+    path = tmp_path / f"{arch}.gguf"
+    _tiny_gguf(path, arch)
+    before_fields, before_tensors = _read(path)
+    unscaled = _config(tmp_path / "model", arch, {"rope_scaling": None})
+
+    record(unscaled, [str(path)], 4.0)
+
+    fields, tensors = _read(path)
+    assert fields.pop(f"{arch}.rope.scaling.type") == "linear"
+    assert fields.pop(f"{arch}.rope.scaling.factor") == pytest.approx(4.0)
+    assert fields == before_fields
+    assert tensors == before_tensors
+
+    # And a live model that applied none leaves a scaled-looking config's GGUF alone.
+    other = tmp_path / "other.gguf"
+    _tiny_gguf(other, arch)
+    raw = other.read_bytes()
+    record(_config(tmp_path / "scaled", arch, _LINEAR["rope_scaling"]), [str(other)], 1.0)
+    assert other.read_bytes() == raw
+
+
+@pytest.mark.parametrize("tensor_mib", [1, 68], ids = ["one_chunk", "two_chunks"])
+def test_recording_the_scaling_never_holds_a_second_copy_of_the_weights(
+    tmp_path, monkeypatch, tensor_mib
+):
+    """The preflight budgets one intermediate GGUF, so the edit may not stage a full copy of it."""
+    gguf = pytest.importorskip("gguf")
+    import numpy as np
+
+    record = _load("_record_gemma_linear_rope_in_gguf")["_record_gemma_linear_rope_in_gguf"]
+    path = tmp_path / "out" / "gemma.gguf"
+    path.parent.mkdir()
+    writer = gguf.GGUFWriter(str(path), "gemma")
+    writer.add_context_length(16384)
+    writer.add_tensor("token_embd.weight", np.arange(64, dtype = np.float32).reshape(2, 32))
+    if tensor_mib:
+        count = tensor_mib * 1024 * 1024 // 4
+        writer.add_tensor("blk.0.ffn_up.weight", np.arange(count, dtype = np.float32) % 251)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    size = path.stat().st_size
+    _, before_tensors = _read(path)
+
+    peak = [0]
+    real_replace, real_collect = os.replace, gc.collect
+
+    def _measure():
+        total = sum(p.stat().st_size for p in path.parent.iterdir())
+        peak[0] = max(peak[0], total)
+
+    def replace(src, dst):
+        _measure()
+        return real_replace(src, dst)
+
+    def collect(*args):
+        _measure()
+        return real_collect(*args)
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(gc, "collect", collect)
+    record(_config(tmp_path / "model", "gemma", _LINEAR["rope_scaling"]), [str(path)])
+    _measure()
+
+    assert peak[0] <= size + 4096, f"{peak[0] - size} bytes beyond the one GGUF"
+    fields, tensors = _read(path)
+    assert fields["gemma.rope.scaling.type"] == "linear"
+    assert tensors == before_tensors
+    assert sorted(os.listdir(path.parent)) == ["gemma.gguf"]
