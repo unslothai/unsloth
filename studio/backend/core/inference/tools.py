@@ -154,6 +154,19 @@ EMPTY_SEARCH_RESULTS = (
     "No results found.",
     "No results found within the website access limits.",
 )
+EMPTY_PAGE_TEXT = "(page returned no readable text)"
+_UNREADABLE_PAGE = re.compile(
+    r"\((?:PDF contains no extractable text[^()]*|PDF content could not be read as text"
+    r"|[^()]*; not readable as text)\)"
+)
+
+
+def is_unreadable_page(text: str) -> bool:
+    """A fetch that succeeded but yielded no text (empty page, image, binary, textless PDF)."""
+    text = text.strip()
+    return text == EMPTY_PAGE_TEXT or bool(_UNREADABLE_PAGE.fullmatch(text))
+
+
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 # While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
@@ -10056,7 +10069,122 @@ _sandbox_as_bytes = 8 * 1024 * 1024 * 1024
 
 def _refresh_sandbox_memory_limit() -> None:
     global _sandbox_as_bytes
-    _sandbox_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+    # RLIMIT_AS only works on Linux; Windows and macOS get the limit from _cap_tool_memory.
+    _sandbox_as_bytes = (
+        sandbox_memory_limit.memory_limit_bytes() if sys.platform == "linux" else None
+    )
+
+
+_MEMORY_WATCHDOG_POLL_S = 1.0
+
+
+_darwin_libproc = None
+
+
+def _darwin_footprint_bytes(pid: int) -> int:
+    """phys_footprint (what Activity Monitor shows): unlike RSS it still counts compressed and swapped pages."""
+    global _darwin_libproc
+    import ctypes
+
+    if _darwin_libproc is None:
+        _darwin_libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno = True)
+    # rusage_info_v0: a 16 byte uuid, then ten uint64 fields; phys_footprint is the eighth.
+    info = (ctypes.c_uint64 * 12)()
+    if _darwin_libproc.proc_pid_rusage(ctypes.c_int(pid), ctypes.c_int(0), ctypes.byref(info)) != 0:
+        return 0
+    return int(info[9])
+
+
+def _tree_processes(pid: int) -> list:
+    import psutil
+    try:
+        root = psutil.Process(pid)
+        return [root, *root.children(recursive = True)]
+    except psutil.Error:
+        return []
+
+
+def _tree_memory_bytes(processes: list) -> int:
+    import psutil
+
+    total = 0
+    for process in processes:
+        used = 0
+        try:
+            info = process.memory_info()
+            # Windows vms is the commit charge, what a job memory limit counts; untouched pages miss rss.
+            used = max(info.rss, info.vms) if sys.platform == "win32" else info.rss
+        except psutil.Error:
+            pass
+        if sys.platform == "darwin":
+            try:
+                used = max(used, _darwin_footprint_bytes(process.pid))
+            except Exception:  # noqa: BLE001 - RSS alone still counts
+                pass
+        total += used
+    return total
+
+
+def _memory_watchdog(
+    proc,
+    limit_bytes: int,
+    pgid,
+    poll_s: float = _MEMORY_WATCHDOG_POLL_S,
+) -> None:
+    try:
+        while proc.poll() is None:
+            processes = _tree_processes(proc.pid)
+            if _tree_memory_bytes(processes) > limit_bytes:
+                proc._unsloth_memory_exceeded = limit_bytes
+                # A descendant in its own session is outside the group, so kill what was measured too.
+                for process in reversed(processes[1:]):
+                    try:
+                        process.kill()
+                    except Exception:  # noqa: BLE001 - already gone, or a pid psutil saw reused
+                        pass
+                _killpg_captured(pgid)
+                _kill_process_tree(proc)
+                return
+            time.sleep(poll_s)
+    except Exception:  # noqa: BLE001 - an uncapped run, not a failed tool call
+        logger.debug("sandbox memory watchdog stopped", exc_info = True)
+
+
+def _cap_tool_memory(proc, pgid, sandboxed: bool) -> None:
+    """The sandbox memory limit where RLIMIT_AS does not work: a job memory limit on Windows, a watchdog elsewhere."""
+    if not sandboxed or sys.platform == "linux":
+        return
+    limit_bytes = sandbox_memory_limit.memory_limit_bytes()
+    if limit_bytes is None:
+        return
+    if (
+        isinstance(pgid, tuple)
+        and pgid[0] == "windows-job"
+        and pgid[1].set_memory_limit(limit_bytes)
+    ):
+        return
+    threading.Thread(target = _memory_watchdog, args = (proc, limit_bytes, pgid), daemon = True).start()
+
+
+def _completion_reason(proc, timed_out: bool, cancel_event) -> str:
+    if timed_out:
+        return "timed_out"
+    # A watchdog kill is forced like a cancel, so MXC still replays its DACL journal.
+    if (cancel_event is not None and cancel_event.is_set()) or getattr(
+        proc, "_unsloth_memory_exceeded", None
+    ):
+        return "cancelled"
+    return "finished"
+
+
+def _memory_exceeded_note(proc) -> str:
+    limit_bytes = getattr(proc, "_unsloth_memory_exceeded", None)
+    if not limit_bytes:
+        return ""
+    return (
+        f"Stopped: this call used more than the {limit_bytes // (1024**3)} GB sandbox memory limit "
+        "(Settings > Security > Memory limit).\n"
+    )
 
 
 def _sandbox_preexec():
@@ -18060,7 +18188,7 @@ def _dense_char_limit(
 
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
-        return "(page returned no readable text)"
+        return EMPTY_PAGE_TEXT
     max_chars = _dense_char_limit(text, max_chars)
     if len(text) > max_chars:
         return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
@@ -22256,6 +22384,45 @@ class _WindowsToolJob:
             return False
         return bool(self._kernel32.TerminateJobObject(self._handle, 1))
 
+    def set_memory_limit(self, limit_bytes: int) -> bool:
+        if not self._handle:
+            return False
+        import ctypes
+        from ctypes import wintypes
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimits),
+                ("IoInfo", ctypes.c_uint64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        info = _ExtendedLimits()
+        info.BasicLimitInformation.LimitFlags = 0x200  # JOB_OBJECT_LIMIT_JOB_MEMORY
+        info.JobMemoryLimit = limit_bytes
+        # 9 = JobObjectExtendedLimitInformation
+        return bool(
+            self._kernel32.SetInformationJobObject(
+                self._handle, 9, ctypes.byref(info), ctypes.sizeof(info)
+            )
+        )
+
     def active_processes(self) -> "int | None":
         """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses; None when the query fails."""
         if not self._handle:
@@ -22319,6 +22486,13 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
             ctypes.c_void_p,
         ]
         kernel32.QueryInformationJobObject.restype = BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
         kernel32.CloseHandle.restype = BOOL
 
@@ -24224,6 +24398,7 @@ def _python_exec(
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
+        _cap_tool_memory(proc, pgid, not disable_sandbox)
         _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
@@ -24239,15 +24414,7 @@ def _python_exec(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
-            proc._unsloth_completion_reason = (
-                "timed_out"
-                if timed_out
-                else (
-                    "cancelled"
-                    if cancel_event is not None and cancel_event.is_set()
-                    else "finished"
-                )
-            )
+            proc._unsloth_completion_reason = _completion_reason(proc, timed_out, cancel_event)
         if prepared is not None:
             completion = os_sandbox.verify_prepared_completion(prepared, proc)
             if completion is not None and completion.get("timedOut"):
@@ -24269,7 +24436,7 @@ def _python_exec(
                 else ""
             )
 
-        result = output or ""
+        result = _memory_exceeded_note(proc) + (output or "")
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Detect on full output (truncation may hide it), append after truncation; use the real workdir.
@@ -24507,6 +24674,7 @@ def _bash_exec(
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
+        _cap_tool_memory(proc, pgid, not disable_sandbox)
         _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
@@ -24522,15 +24690,7 @@ def _bash_exec(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
-            proc._unsloth_completion_reason = (
-                "timed_out"
-                if timed_out
-                else (
-                    "cancelled"
-                    if cancel_event is not None and cancel_event.is_set()
-                    else "finished"
-                )
-            )
+            proc._unsloth_completion_reason = _completion_reason(proc, timed_out, cancel_event)
         if prepared is not None:
             completion = os_sandbox.verify_prepared_completion(prepared, proc)
             if completion is not None and completion.get("timedOut"):
@@ -24552,7 +24712,7 @@ def _bash_exec(
                 else ""
             )
 
-        result = output or ""
+        result = _memory_exceeded_note(proc) + (output or "")
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.

@@ -1319,8 +1319,8 @@ def health_app(tmp_path, monkeypatch):
 
     import main as _main
 
-    # Pin the hardware snapshot (MLX self-repair can hold it); health_check reads all three fields.
-    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None))
+    # Pin the hardware snapshot (MLX self-repair can hold it); health_check reads all four fields.
+    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None, False))
     app = FastAPI()
     app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
 

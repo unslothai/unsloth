@@ -1735,6 +1735,7 @@ export const zhTW = {
       memoryLabel: "記憶體上限",
       memoryDescription:
         "單次沙箱化 Python 或終端機呼叫可保留的記憶體上限。從下一次呼叫開始生效。預設值為 {defaultSize} GB。",
+      memoryAuto: "自動",
       memoryLocked: "由 UNSLOTH_STUDIO_SANDBOX_AS_GB 設定",
       memoryInvalid: "請輸入 {min} 到 {max} 之間的整數。",
       restored: "已移除 {count} 個資料夾的存取權。",
@@ -5911,7 +5912,7 @@ export const zhTW = {
     checking: "正在檢查…",
     installPrompt: "若要安裝 Unsloth，請按一下「開始使用」。",
     getStarted: "開始使用",
-    chatOnly: "僅聊天（GGUF）：安裝較小，不含訓練功能",
+    chatOnly: "僅聊天：安裝較小，不含訓練功能",
     installLocation: "安裝位置：",
     changeLocation: "變更",
     useDefaultLocation: "使用預設值",

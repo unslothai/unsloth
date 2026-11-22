@@ -20,6 +20,7 @@ import {
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
 import { unwrapPastedTextContent } from "../src/features/chat/utils/pasted-text.ts";
+import { conversationModelLabel } from "../src/features/chat/utils/conversation-markdown-export.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const DIALOG = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
@@ -111,6 +112,7 @@ async function exportedBodies(turns: unknown[] = TURNS) {
     liveThreadBranch: () => null,
     savedBranchHead: () => undefined,
     conversationExportBasename: () => "plot",
+    conversationModelLabel,
     orderByParentChain,
     unwrapPastedTextContent,
     toolResultModelText: (result: { text?: unknown }) => result?.text ?? result,
