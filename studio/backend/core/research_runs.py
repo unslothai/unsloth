@@ -1043,13 +1043,18 @@ def _mcp_evidence(sources: list[dict]) -> str:
     return f"\n\nMCP tools:\n{text}"
 
 
-def _question_url(raw: str) -> str:
-    """GFM autolink tail trim plus quotes, so 'url' and **url** fetch the bare URL."""
+def _question_url(question: str, match: re.Match) -> str:
+    """GFM tail trim, plus the closing half of a *_~' run that opens the URL ('url', **url**)."""
+    opener = question[: match.start()]
+    closer = opener[len(opener.rstrip("*_~'")) :][::-1]
+    url = match.group(0)
     while True:
-        trimmed = _trim_url_tail(raw.rstrip("*_~'"))
-        if trimmed == raw:
-            return raw
-        raw = trimmed
+        trimmed = _trim_url_tail(url)
+        if closer and trimmed.endswith(closer):
+            trimmed, closer = trimmed[: -len(closer)], ""
+        if trimmed == url:
+            return url
+        url = trimmed
 
 
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
@@ -2456,7 +2461,7 @@ class ResearchSupervisor:
         question_urls = [
             url
             for url in dict.fromkeys(
-                _question_url(match.group(0)) for match in _QUESTION_URL.finditer(question)
+                _question_url(question, match) for match in _QUESTION_URL.finditer(question)
             )
             if check_url_access(url, website_policy)[0]
         ]
@@ -2560,7 +2565,14 @@ class ResearchSupervisor:
         )
         for position in range(start_position, max_steps):
             await self._check_active(run["id"])
-            linked_url = next((url for url in question_urls if url not in fetched_urls), None)
+            linked_url = (
+                next(
+                    (url for url in question_urls if url not in fetched_urls),
+                    None,
+                )
+                if len(sources) < max_sources
+                else None
+            )
             if linked_url is not None:
                 action = {"action": "fetch", "title": "Reading the linked page", "url": linked_url}
             else:

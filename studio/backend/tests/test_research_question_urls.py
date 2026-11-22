@@ -53,6 +53,7 @@ def _run(
     website_policy: dict | None = None,
     page: str = PAGE,
     question: str = QUESTION,
+    max_sources: int = 5,
 ):
     from core import research_runs as worker
 
@@ -72,7 +73,7 @@ def _run(
             "websitePolicy": website_policy,
             "budgets": {
                 "maxSteps": 2,
-                "maxSources": 5,
+                "maxSources": max_sources,
                 "modelTimeoutSeconds": 900,
                 "toolTimeoutSeconds": 10,
             },
@@ -149,3 +150,22 @@ def test_a_linked_page_without_readable_text_is_not_cited(research_home, monkeyp
 
     assert calls[0] == {"url": LINKED}
     assert LINKED not in [source["url"] for source in finished["sources"]]
+
+
+@pytest.mark.parametrize("question", [f"Research {LINKED}_ and compare it"])
+def test_a_trailing_underscore_in_a_bare_link_is_kept(research_home, monkeypatch, question):
+    _, calls, _ = _run(monkeypatch, question = question)
+
+    assert calls[0] == {"url": f"{LINKED}_"}
+
+
+SECOND = "https://example.net/second"
+
+
+@pytest.mark.parametrize("question", [f"Compare {LINKED} with {SECOND}"])
+def test_linked_pages_past_the_source_cap_are_not_fetched(research_home, monkeypatch, question):
+    finished, calls, _ = _run(monkeypatch, question = question, max_sources = 1)
+
+    assert calls[0] == {"url": LINKED}
+    assert {"url": SECOND} not in calls
+    assert [source["url"] for source in finished["sources"]] == [LINKED]
