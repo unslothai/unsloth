@@ -3347,7 +3347,13 @@ def _start_peak_probe(state: Any) -> Any:
         return None
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
+        from .diffusion_multigpu import is_split
 
+        if is_split(pipe):
+            # The probe sees only the primary card of a companion / layer split, and a resident split is padded to
+            # the streamed scale: its sample (Z-Image on 2x T4: 1782 MiB vs 1151 on one card) would raise the shared
+            # max-wins key and decline the next load's split. Splits are priced from the one-card samples.
+            return None
         index = _peak_device_index(state)
         graphs = cuda_graph.live_graph_count(index)
         generation = cuda_graph.capture_generation(index)
@@ -4526,13 +4532,14 @@ def _kick_early_probe_prewarm(fam: Any, target: Any) -> bool:
         ordinal = getattr(target, "ordinal", None)
         index = int(ordinal) if ordinal is not None else torch.cuda.current_device()
         rotated = getattr(getattr(fam, "profile", None), "int8_convrot", None) is not None
-        producer = (
-            rotated
-            and not flux_convrot_fused_disabled()
-            and getattr(fam, "transformer_class", None)
-            in ("Flux2Transformer2DModel", "Flux3Transformer2DModel")
+        cls = getattr(fam, "transformer_class", None)
+        fused_on = rotated and not flux_convrot_fused_disabled()
+        producer = fused_on and cls in ("Flux2Transformer2DModel", "Flux3Transformer2DModel")
+        gelu = fused_on and cls == "FluxTransformer2DModel"
+        extra = {"gelu": True} if gelu else {}
+        return start_early_probe_prewarm(
+            index, rotated = rotated, producer = producer, logger = logger, **extra
         )
-        return start_early_probe_prewarm(index, rotated = rotated, producer = producer, logger = logger)
     except Exception:  # noqa: BLE001 - a warm-up only
         return False
 
@@ -17400,6 +17407,11 @@ def _resolve_base_repo(
         if tag and _is_trusted_diffusion_repo(tag):
             # Map mirrors back to the vendor id (status base_repo, adapter base_model).
             base = canonical_base(tag)
+            # A distilled student whose card tags its teacher (nvidia/Qwen-Image-Flash -> Qwen/Qwen-Image) is its
+            # own curated base: the teacher's hosted quantized artifacts hold other weights.
+            named = named_variant_base(fam, repo_id, gguf_filename) or ""
+            if named.lower() in (getattr(fam, "prequant_excluded_bases", ()) or ()):
+                base = named
         elif tag is None:
             # No card tag: only a curated variant the name spells out.
             base = named_variant_base(fam, repo_id, gguf_filename) or ""

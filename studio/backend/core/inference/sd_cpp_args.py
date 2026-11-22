@@ -309,6 +309,59 @@ def _conv_direct_in_help(binary: str, size: int, mtime_ns: int) -> bool:
     return text is not None and re.search(r"(?<![\w-])--conv-direct\b", text) is not None
 
 
+# Builds with per-module --flash-attn (the pinned fork) treat the legacy --diffusion-fa as "--flash-attn
+# off,diffusion=on", turning text-encoder flash attention OFF where the binary's own auto turns it on (CPU, CUDA MMA,
+# HIP MMA, Metal, Vulkan on NVIDIA RTX; elsewhere a timed probe decides). An LLM encoder then materializes the full
+# score matrix. te=auto hands the text encoder back to that per-backend auto, so no backend runs a kernel its own probe
+# rejected. The VAE keeps flash attention off, as --diffusion-fa had it. Builds without the module syntax keep
+# --diffusion-fa.
+LEGACY_DIFFUSION_FA = "--diffusion-fa"
+FLASH_ATTN_MODULES = "off,diffusion=on,te=auto"
+
+
+def sd_cpp_supports_flash_attn_modules(binary: Optional[str]) -> bool:
+    """True when ``binary --help`` documents per-module ``--flash-attn`` assignments. Fails closed."""
+    import os
+
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _flash_attn_modules_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _flash_attn_modules_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return (
+        text is not None
+        and re.search(r"(?<![\w-])--flash-attn\b", text) is not None
+        and re.search(r"\bte=(?:on|off)\b", text) is not None
+    )
+
+
+def with_module_flash_attn(flags: Sequence[str], binary: Optional[str]) -> list[str]:
+    """``flags`` with ``--diffusion-fa`` replaced by ``--flash-attn off,diffusion=on,te=auto`` on builds that take
+    module assignments (one occurrence kept); unchanged otherwise."""
+    flags = list(flags)
+    if LEGACY_DIFFUSION_FA not in flags or not sd_cpp_supports_flash_attn_modules(binary):
+        return flags
+    out: list[str] = []
+    for f in flags:
+        if f == LEGACY_DIFFUSION_FA:
+            if "--flash-attn" not in out:
+                out += ["--flash-attn", FLASH_ATTN_MODULES]
+        else:
+            out.append(f)
+    return out
+
+
 # Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
 _CONV_DIRECT_SLOW_BACKENDS = ("vulkan", "rocm", "hip")
 
@@ -1016,7 +1069,7 @@ def build_sd_cpp_command(
         cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
-        cmd += offload
+        cmd += with_module_flash_attn(offload, binary)
     cmd += metal_placement_flags(offload)
     cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
@@ -1131,7 +1184,7 @@ def build_sd_cpp_video_command(
         cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
-        cmd += offload
+        cmd += with_module_flash_attn(offload, binary)
     cmd += metal_placement_flags(offload)
     cmd += mmap_flags(binary, extra_args, offload)
     if verbose:
@@ -1236,14 +1289,13 @@ def build_sd_cpp_server_command(
         cmd += ["--threads", str(int(threads))]
 
     offload = list(offload or [])
-    if offload:
-        cmd += offload
-    # De-dup speed flags against offload (may already include --diffusion-fa).
+    # De-dup speed flags against offload (may already include --diffusion-fa); then the module form of it.
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
-    cmd += speed_flags_without(
+    speed = speed_flags_without(
         native_speed_flags(native_speed, backend_args, accelerator, binary), offload
     )
+    cmd += with_module_flash_attn([*offload, *speed], binary)
     cmd += placement
     cmd += mmap_flags(binary, extra_args, offload)
     if verbose:

@@ -681,7 +681,11 @@ def _builtin_specs() -> list[PatchSpec]:
             flux_convrot_fused,
             flux_convrot_fused_uninstall,
             group = GROUP_FUSED_DIT,
-            classes = ("Flux2Transformer2DModel", "Flux3Transformer2DModel"),
+            classes = (
+                "FluxTransformer2DModel",
+                "Flux2Transformer2DModel",
+                "Flux3Transformer2DModel",
+            ),
             warn = "flux convrot producer fusion",
             env = "UNSLOTH_DIFFUSION_FLUX_CONVROT_FUSED",
         ),

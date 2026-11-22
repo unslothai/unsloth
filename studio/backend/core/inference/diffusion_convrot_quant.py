@@ -23,6 +23,7 @@ _ROTQ_OP_NAME = "convrot_act_quant_int8"
 _SWIGLU_OP_NAME = "convrot_swiglu_act_quant_int8"
 _PRODUCER_OP_NAME = "convrot_producer_act_quant_int8"
 _SITU_OP_NAME = "convrot_situ_act_quant_int8"
+_GELU_OP_NAME = "convrot_gelu_act_quant_int8"
 
 # (BLOCK_M group rows, BLOCK_K, num_warps, num_stages) per (major, minor); measured end to end. Absent = stock.
 _ROTQ_CONFIG = {
@@ -71,6 +72,11 @@ _SITU_DEVICE: dict = {}
 _SITU_CALLS = [0]
 _SITU_HANDLE: Any = None
 _SITU_OFF: set = set()  # devices whose last arming had the switch off (the probe verdict is kept)
+# device index -> rotq_h16x with the GELU(tanh) activation (FLUX.1's MLP down projections) passed its probe
+_GELU_DEVICE: dict = {}
+_GELU_CALLS = [0]
+_GELU_HANDLE: Any = None
+_GELU_OFF: set = set()  # devices whose last arming had the switch off (the probe verdict is kept)
 # 16 group rows per program: fastest (within 2%) on L4; 128 rows overflow 100 KB smem. One masked row per program at
 # K 12288 was 1.2x slower on A100 and spilled on B200.
 _H16_TILE_ROWS = 16
@@ -155,6 +161,14 @@ def _triton_ok() -> bool:
         return False
 
 
+def _hip_backend() -> bool:
+    try:
+        import torch
+        return is_rocm_torch(torch)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @lru_cache(maxsize = 1)
 @publishes_closure_globals
 def _kernels() -> Optional[types.SimpleNamespace]:
@@ -183,6 +197,35 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         vf = v.to(tl.float32)
         gate = 4.0 * libdevice.tanh(gf / 4.0) * tl.sigmoid(gf)
         return (gate * (25.0 * libdevice.tanh(vf / 25.0))).to(tl.bfloat16)
+
+    if _hip_backend():
+        # ROCm's libdevice has no *_rn; with fp fusion off at launch the plain ops are the same IEEE ops
+        @triton.jit
+        def _gelu_bf16(g):
+            y = g.to(tl.float32)
+            inner = 0.7978845608028654 * (y + 0.044715 * (y * y * y))
+            return (0.5 * y * (1.0 + libdevice.tanh(inner))).to(tl.bfloat16)
+
+    else:
+
+        @triton.jit
+        def _gelu_bf16(g):
+            # F.gelu(approximate="tanh") on bf16, op for op as ATen / Inductor compute it in fp32 (x + k * x^3 is one
+            # FMA in both), one bf16 rounding; *_rn: ptxas FMA-fuses packed f32x2 on sm_100 even with fusion off
+            y = g.to(tl.float32)
+            cube = libdevice.mul_rn(libdevice.mul_rn(y, y), y)
+            inner = libdevice.mul_rn(0.7978845608028654, libdevice.fma_rn(0.044715, cube, y))
+            t = libdevice.add_rn(1.0, libdevice.tanh(inner))
+            # plain multiplies (fusion is off at launch, and a mul * mul has no FMA to form): libdevice's mul_rn
+            # flushes subnormals, ATen keeps 0.5 * y there (the flushed fma above only makes t exactly 1, as ATen's)
+            return ((0.5 * y) * t).to(tl.bfloat16)
+
+    @triton.jit
+    def gelu_bf16(x_ptr, o_ptr, N, BLOCK: tl.constexpr):
+        # ``_gelu_bf16`` alone, for the exhaustive bf16 check (``gelu_matches_reference``)
+        offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        m = offs < N
+        tl.store(o_ptr + offs, _gelu_bf16(tl.load(x_ptr + offs, mask = m, other = 0.0)), mask = m)
 
     @triton.jit(do_not_specialize = ["M"])
     def rotq_i8(
@@ -495,7 +538,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         sah,
         CAT: tl.constexpr,  # groups below NA come from the attention prefix
         HD: tl.constexpr,  # prefix head width
-        ACT: tl.constexpr,  # 0 SwiGLU, 1 SiTU-GLU
+        ACT: tl.constexpr,  # 0 SwiGLU, 1 SiTU-GLU, 2 GELU(tanh) of the gate alone (no value load)
     ):
         # bf16 [TM, 256] of the activation the producer would have written: silu(gate) * value, after the prefix
         offs = tl.arange(0, 256)
@@ -509,20 +552,26 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             mlp = live & (grp >= NA)
             mcol = tl.where(mlp, grp - NA, 0)[:, None] * 256 + offs[None, :]
             g = tl.load(g_ptr + row[:, None] * sg + mcol, mask = mlp[:, None], other = 0.0)
-            v = tl.load(v_ptr + row[:, None] * sv + mcol, mask = mlp[:, None], other = 0.0)
-            if ACT == 1:
-                prod = _situ_bf16(g, v)
+            if ACT == 2:
+                prod = _gelu_bf16(g)
             else:
-                prod = _swiglu_bf16(g, v)
+                v = tl.load(v_ptr + row[:, None] * sv + mcol, mask = mlp[:, None], other = 0.0)
+                if ACT == 1:
+                    prod = _situ_bf16(g, v)
+                else:
+                    prod = _swiglu_bf16(g, v)
             x = tl.where(pre[:, None], xa, prod)
         else:
             col = grp[:, None] * 256 + offs[None, :]
             g = tl.load(g_ptr + row[:, None] * sg + col, mask = live[:, None], other = 0.0)
-            v = tl.load(v_ptr + row[:, None] * sv + col, mask = live[:, None], other = 0.0)
-            if ACT == 1:
-                x = _situ_bf16(g, v)
+            if ACT == 2:
+                x = _gelu_bf16(g)
             else:
-                x = _swiglu_bf16(g, v)
+                v = tl.load(v_ptr + row[:, None] * sv + col, mask = live[:, None], other = 0.0)
+                if ACT == 1:
+                    x = _situ_bf16(g, v)
+                else:
+                    x = _swiglu_bf16(g, v)
         return x
 
     @triton.jit
@@ -898,7 +947,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(s_ptr + srow, s.to(s_ptr.dtype.element_ty), mask = srow < M)
 
     return types.SimpleNamespace(
-        rotq_i8 = rotq_i8, rotq_h16 = rotq_h16, rotq_h16x = rotq_h16x, triton = triton
+        rotq_i8 = rotq_i8,
+        rotq_h16 = rotq_h16,
+        rotq_h16x = rotq_h16x,
+        gelu_bf16 = gelu_bf16,
+        triton = triton,
     )
 
 
@@ -954,6 +1007,12 @@ def situ_reference(g2d: Any, v2d: Any) -> Any:
     return ((4.0 * torch.tanh(g / 4.0) * torch.sigmoid(g)) * (25.0 * torch.tanh(v / 25.0))).to(
         torch.bfloat16
     )
+
+
+def gelu_reference(g2d: Any) -> Any:
+    """FLUX.1's down-projection input: ``F.gelu(gate, approximate="tanh")`` on bf16 (ATen, eager)."""
+    import torch.nn.functional as F
+    return F.gelu(g2d, approximate = "tanh")
 
 
 def swiglu_reference(g2d: Any, v2d: Any) -> Any:
@@ -1207,10 +1266,13 @@ def producer_reference(
     act: int = 0,
 ) -> Any:
     """The bf16 activation the stock producer writes: ``cat([prefix.flatten, silu(gate) * value], -1)`` (act 1: the
-    SiTU-GLU product, no prefix)."""
+    SiTU-GLU product, no prefix; act 2: ``gelu_tanh(gate)``, ``value`` unused)."""
     import torch
 
-    prod = situ_reference(gate, value) if act == 1 else swiglu_reference(gate, value)
+    if act == 2:
+        prod = gelu_reference(gate)
+    else:
+        prod = situ_reference(gate, value) if act == 1 else swiglu_reference(gate, value)
     if prefix is None:
         return prod
     return torch.cat([prefix.reshape(gate.shape[0], -1), prod], dim = -1)
@@ -1228,7 +1290,7 @@ def _h16x_launch(
     act: int = 0,
 ) -> tuple:
     """``rotq_h16x`` on a producer accepted by ``producer_layout_ok``: (int8 [M, K], scale [M]). ``act`` 1 builds the
-    SiTU-GLU product instead of SwiGLU (no prefix). Strides stay
+    SiTU-GLU product instead of SwiGLU (no prefix), 2 GELU(tanh) of ``gate`` (``value`` is not read). Strides stay
     specialized (multiple-of-16 hints keep the loads vectorized); only M and the sequence length are not."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard
@@ -1442,8 +1504,8 @@ def _producer_run(
     """Op body: ``rotq_h16x`` where it passed its probe, else the stock product (and concat), rotation and quant."""
     kind = "v2" if v2 else "v1"
     index = gate.device.index
-    verdicts = _SITU_DEVICE if act == 1 else _PRODUCER_DEVICE
-    (_SITU_CALLS if act == 1 else _PRODUCER_CALLS)[0] += 1
+    verdicts = (_PRODUCER_DEVICE, _SITU_DEVICE, _GELU_DEVICE)[act]
+    (_PRODUCER_CALLS, _SITU_CALLS, _GELU_CALLS)[act][0] += 1
     if group == 256 and verdicts.get(index) and producer_layout_ok(prefix, gate, value):
         try:
             return _h16x_launch(prefix, gate, value, kind, act = act)
@@ -1537,6 +1599,51 @@ def _situ_op() -> Any:
     except Exception:  # noqa: BLE001
         return None
     return getattr(getattr(torch.ops, _OP_NAMESPACE), _SITU_OP_NAME)
+
+
+@lru_cache(maxsize = 1)
+def _gelu_op() -> Any:
+    """``unsloth_studio::convrot_gelu_act_quant_int8(prefix?, gate, group, v2)``: the rotated, quantized
+    ``cat([prefix, gelu_tanh(gate)])`` read straight from the producers' buffers (opaque to Inductor), or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _OP_NAMESPACE, None)
+    if ns is not None and hasattr(ns, _GELU_OP_NAME):
+        return getattr(ns, _GELU_OP_NAME)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_OP_NAMESPACE}::{_GELU_OP_NAME}",
+            mutates_args = (),
+            schema = "(Tensor? prefix, Tensor gate, int group, bool v2) -> (Tensor, Tensor)",
+        )
+        def _convrot_gelu_act_quant_int8(prefix, gate, group, v2):
+            return _producer_run(prefix, gate, gate, group, v2, 2)
+
+        @_convrot_gelu_act_quant_int8.register_fake
+        def _fake_convrot_gelu_act_quant_int8(prefix, gate, group, v2):
+            k = gate.shape[1]
+            if prefix is not None:
+                k = k + (
+                    prefix.shape[-2] * prefix.shape[-1] if prefix.dim() == 4 else prefix.shape[-1]
+                )
+            return (
+                gate.new_empty((gate.shape[0], k), dtype = torch.int8),
+                gate.new_empty(
+                    (gate.shape[0],),
+                    dtype = torch.float32
+                    if _rotq_scale_fp32("v2" if v2 else "v1")
+                    else torch.bfloat16,
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(getattr(torch.ops, _OP_NAMESPACE), _GELU_OP_NAME)
 
 
 @lru_cache(maxsize = 1)
@@ -1760,6 +1867,8 @@ def _adopt_verdict(index: int, v: dict) -> Optional[tuple]:
     _SWIGLU_DEVICE[index] = sw
     if isinstance(v.get("producer"), bool) and h16:
         _PRODUCER_DEVICE[index] = v["producer"]
+    if isinstance(v.get("gelu"), bool) and h16:
+        _GELU_DEVICE[index] = v["gelu"]
     _ROTQ_HANDLE = _rotq_op()
     if sw:
         _SWIGLU_HANDLE = _swiglu_op()
@@ -2031,11 +2140,26 @@ def _warm_producer(dev: Any, m: int, pre: Optional[tuple], f: int, kind: str, tf
     _h16x_launch(prefix, gate, value, kind, tf32x3 = tf32x3)
 
 
+def _warm_gelu(dev: Any, m: int, pre: Optional[tuple], f: int, kind: str, tf32x3: bool) -> None:
+    import torch
+    prefix, gate, _value = _producer_probe_inputs(
+        m, pre, f, torch.Generator(device = "cpu").manual_seed(8), dev
+    )
+    _h16x_launch(prefix, gate, gate, kind, tf32x3 = tf32x3, act = 2)
+
+
+def _warm_gelu_exhaustive(dev: Any) -> None:
+    k = _kernels()
+    x = _warm_input(1, 1024, dev).reshape(-1)
+    k.gelu_bf16[(1,)](x, x.clone(), x.numel(), BLOCK = 1024, num_warps = 4, enable_fp_fusion = False)
+
+
 def probe_warm_jobs(
     index: int,
     *,
     rotq: bool = True,
     producer: bool = False,
+    gelu: bool = False,
 ) -> list:
     """Zero-argument launches matching the cold probes' shapes, kinds and layouts (every candidate tile)."""
     from functools import partial
@@ -2079,6 +2203,17 @@ def probe_warm_jobs(
     ):
         for m, pre, f in _PRODUCER_PROBE_SHAPES:
             jobs += [partial(_warm_producer, dev, m, pre, f, kind, tf32x3) for kind in kinds]
+    if (
+        gelu
+        and want is not None
+        and rotquant_h16_enabled()
+        and rotquant_producer_enabled()
+        and gelu_arch_ok(cap)
+        and _gelu_op() is not None
+    ):
+        jobs.append(partial(_warm_gelu_exhaustive, dev))
+        for m, pre, f in _GELU_PROBE_SHAPES:
+            jobs += [partial(_warm_gelu, dev, m, pre, f, kind, tf32x3) for kind in kinds]
     return jobs
 
 
@@ -2089,6 +2224,7 @@ def prewarm_probe_kernels(
     producer: bool = False,
     extra: tuple = (),
     logger: Any = None,
+    gelu: bool = False,
 ) -> int:
     """Run ``extra`` + ``probe_warm_jobs`` on a thread pool; returns launches run. Never raises; skipped in capture/trace."""
     if not probe_prewarm_enabled():
@@ -2101,7 +2237,8 @@ def prewarm_probe_kernels(
 
         if torch.cuda.is_current_stream_capturing() or torch.compiler.is_compiling():
             return 0
-        jobs = list(extra) + probe_warm_jobs(index, rotq = rotq, producer = producer)
+        more = {"gelu": True} if gelu else {}
+        jobs = list(extra) + probe_warm_jobs(index, rotq = rotq, producer = producer, **more)
         workers = min(_PREWARM_MAX_WORKERS, os.cpu_count() or 1, len(jobs))
         if workers < 2:
             return 0
@@ -2230,6 +2367,164 @@ def convrot_situ_act_quant(gate: Any, value: Any, group: int, v2: bool) -> Optio
 
 def situ_call_count() -> int:
     return _SITU_CALLS[0]
+
+
+# (M, prefix (B, heads, head dim) or None, GELU width): FLUX.1's FF (K 12288) and single-block proj_out (3072 + 12288)
+_GELU_PROBE_SHAPES = (
+    (65, None, 256 * 4),
+    (130, None, 256 * 48),
+    (33, (1, 2, 128), 256 * 3),
+    (2 * 41, (2, 24, 128), 256 * 48),
+)
+# Cards where the fused GELU producer was measured end to end (FLUX.1-schnell ConvRot INT8, 1024 px); others keep
+# the compiled GELU + concat + rotq_h16 until measured. ``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED=1`` arms it on any card
+# whose probe passes, ``0`` turns it off.
+_GELU_ARCHS = ((8, 9), (12, 0))
+# Fewest rows where the fused kernel beat the compiled GELU (+ concat) + rotq_h16 (quant stage, FLUX.1 shapes), as
+# (with the attention prefix, without it); None = never. L4 wins from 1280 rows with or without the prefix (1.22-1.50x);
+# RTX PRO 6000 wins with the prefix at 4352 rows (1.28x) but not at 1280 (0.76x), and never without it (FF at 4096
+# rows 0.94x, text FF 0.63x). Other cards: 2048 / 2048.
+_GELU_MIN_ROWS = {(8, 9): (1024, 1024), (12, 0): (2048, None)}
+_GELU_MIN_ROWS_DEFAULT = (2048, 2048)
+_GELU_DEVICE_MIN_ROWS: dict = {}  # device index -> min rows, set when armed
+GELU_FUSED_ENV = "UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED"
+# GELU's non-monotonic tail (min near -0.75), saturation and tiny / zero inputs
+_GELU_TAIL = (-90.0, -20.0, -5.0, -3.0, -1.5, -0.75, -0.5, -1e-3, 0.0, 1e-3, 0.5, 3.0, 20.0, 90.0)
+
+
+def gelu_arch_ok(cap: Optional[tuple]) -> bool:
+    """The GELU producer serves this compute capability by default (or the switch forces it)."""
+    mode = _env_mode(GELU_FUSED_ENV)
+    if mode == "off":
+        return False
+    if mode == "force":
+        return True
+    return cap is not None and tuple(cap) in _GELU_ARCHS
+
+
+def gelu_probe_pending(index: int) -> bool:
+    """``_arm_gelu`` would probe card ``index`` (no in-process verdict and none persisted)."""
+    if index in _GELU_DEVICE:
+        return False
+    stored = _verdict_load(index)
+    return not (isinstance(stored, dict) and isinstance(stored.get("gelu"), bool))
+
+
+def gelu_matches_reference(dev: Any) -> bool:
+    """``_gelu_bf16`` equals ``gelu_reference`` on every finite bf16 input, bit for bit (signed zeros included)."""
+    import torch
+
+    x = torch.arange(-(2**15), 2**15, dtype = torch.int32).to(torch.int16).view(torch.bfloat16)
+    x = x[torch.isfinite(x)].to(dev)
+    out = torch.empty_like(x)
+    k = _kernels()
+    with torch.cuda.device(dev):
+        k.gelu_bf16[(k.triton.cdiv(x.numel(), 1024),)](
+            x, out, x.numel(), BLOCK = 1024, num_warps = 4, enable_fp_fusion = False
+        )
+    return bool(torch.equal(out.view(torch.int16), gelu_reference(x).view(torch.int16)))
+
+
+def _gelu_probe(index: int) -> bool:
+    """``gelu_matches_reference`` on the card, then ``rotq_h16x`` with GELU(tanh) vs ``producer_reference`` (ATen GELU,
+    concat) and the stock rotation + quant: ``codes_close`` on every probe shape, v1 and v2."""
+    import torch
+
+    dev = torch.device("cuda", index)
+    g = torch.Generator(device = "cpu").manual_seed(8)
+    try:
+        if not gelu_matches_reference(dev):
+            return False
+        for m, pre, f in _GELU_PROBE_SHAPES:
+            prefix, gate, _value = _producer_probe_inputs(m, pre, f, g, dev)
+            gate[1, : len(_GELU_TAIL)] = torch.tensor(_GELU_TAIL, device = dev)
+            if not producer_layout_ok(prefix, gate, gate):
+                return False
+            ref = producer_reference(prefix, gate, gate, 2).contiguous()
+            for kind in ("v1", "v2"):
+                rq, rs = rotquant_reference(ref, 256, kind)
+                q, s = _h16x_launch(prefix, gate, gate, kind, act = 2)
+                if not codes_close(q, s, rq, rs):
+                    return False
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _arm_gelu(index: int, logger: Any = None) -> bool:
+    """Per load, outside any trace, after ``rotq_h16`` was armed on the device: the GELU producer's probe (once per
+    device, behind the producer switch and ``UNSLOTH_DIFFUSION_FLUX1_GELU_FUSED``, on ``_GELU_ARCHS`` unless forced);
+    publishes its op handle."""
+    global _GELU_HANDLE
+    if (
+        not rotquant_producer_enabled()
+        or not _H16_DEVICE.get(index)
+        or not gelu_arch_ok(_device_cap(index))
+    ):
+        _GELU_OFF.add(index)
+        return False
+    _GELU_OFF.discard(index)
+    if index not in _GELU_DEVICE:
+        stored = _verdict_load(index)
+        if (
+            isinstance(stored, dict)
+            and isinstance(stored.get("gelu"), bool)
+            and _gelu_op() is not None
+        ):
+            # a verdict this card, this source and these switches already reached (no probe compile on later loads)
+            _GELU_DEVICE[index] = stored["gelu"]
+        else:
+            ok, why = False, "codes or GELU bits differ, or a probe launch failed"
+            try:
+                if _gelu_op() is None:
+                    why = "custom op unavailable"
+                else:
+                    ok = _gelu_probe(index)
+            except Exception as exc:  # noqa: BLE001 - the stock GELU, concat and act quant stay
+                ok, why = False, f"{type(exc).__name__}: {exc}"
+            _GELU_DEVICE[index] = ok
+            if not ok and logger is not None:
+                logger.info(
+                    "diffusion.convrot_quant: the FLUX.1 GELU producer failed its probe on cuda:%d (%s); FLUX.1 keeps "
+                    "the compiled GELU + concat + rotq_h16",
+                    index,
+                    why,
+                )
+            if _ROTQ_DEVICE.get(index) is not None:
+                _verdict_store(index, {"gelu": ok})
+    if _GELU_DEVICE[index]:
+        _GELU_DEVICE_MIN_ROWS[index] = _GELU_MIN_ROWS.get(
+            _device_cap(index), _GELU_MIN_ROWS_DEFAULT
+        )
+        _GELU_HANDLE = _gelu_op()
+    return bool(_GELU_DEVICE[index])
+
+
+def gelu_armed(index: Any) -> bool:
+    """The GELU ``rotq_h16x`` serves card ``index`` (its probe passed and the switches were on when armed)."""
+    return _GELU_HANDLE is not None and index not in _GELU_OFF and bool(_GELU_DEVICE.get(index))
+
+
+def convrot_gelu_act_quant(prefix: Any, gate: Any, group: int, v2: bool) -> Optional[tuple]:
+    """``convrot_act_quant`` of ``cat([prefix, gelu_tanh(gate)], -1)`` read from the producers' own buffers (the
+    projection output and the attention output in its native layout), so neither the activation nor the concat
+    reaches HBM. None when this device / layout / group is not covered: the caller keeps the stock GELU (and concat)
+    and its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
+    if group != 256 or not gelu_armed(gate.device.index):
+        return None
+    rows = _GELU_DEVICE_MIN_ROWS.get(gate.device.index, _GELU_MIN_ROWS_DEFAULT)[prefix is None]
+    if rows is None or gate.shape[0] < rows:
+        return None
+    if not producer_layout_ok(prefix, gate, gate):
+        return None
+    return _GELU_HANDLE(prefix, gate, group, v2)
+
+
+def gelu_call_count() -> int:
+    return _GELU_CALLS[0]
 
 
 def producer_armed(index: Any) -> bool:

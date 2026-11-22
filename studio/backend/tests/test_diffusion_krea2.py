@@ -328,7 +328,8 @@ def test_krea2_collate_and_forward_roundtrip():
     ]
     pe_b, mask_b = spec.collate(entries, "cpu", torch.float32)
     assert pe_b.shape == (2, 8, 12, 16)
-    assert mask_b.shape == (2, 8)
+    # Nothing padded: no mask, so attention runs unmasked.
+    assert mask_b is None
 
     captured = {}
 

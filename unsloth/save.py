@@ -45,6 +45,7 @@ except Exception:
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
+import threading
 import math
 import requests
 import torch
@@ -6930,6 +6931,166 @@ def _cast_state_dict_16bit(model, state_dict, target_dtype):
     }
 
 
+def _planned_save_dtypes(model, tensors, target_dtype):
+    """Per key, the dtype `_cast_state_dict_16bit` (or a float32 export) would write; planned on meta, no copies."""
+    meta = {
+        k: torch.empty(v.shape, dtype = v.dtype, device = "meta")
+        for k, v in tensors.items()
+        if torch.is_tensor(v) and v.is_floating_point()
+    }
+    if target_dtype == torch.float32:
+        return {k: torch.float32 for k in meta}
+    return {k: v.dtype for k, v in _cast_state_dict_16bit(model, meta, target_dtype).items()}
+
+
+class _CastShardsOnWrite:
+    """Cast to the export dtype one output shard at a time, as transformers writes it.
+
+    Casting the whole state dict first holds a second copy of every weight whose dtype changes
+    (on the GPU for an fp32 master saved as 16-bit, on the host for a float32 export). Here
+    transformers plans, de-aliases and shards the original tensors, and each shard is cast to
+    the host right before its safetensors write. `engaged` stays 0 if this transformers wrote
+    through another function: the caller then saves again with the eager cast.
+    """
+
+    def __init__(self, model, state_dict, target_dtype, max_shard_size):
+        self.model = model
+        self.target_dtype = target_dtype
+        self.engaged = 0
+        self.max_shard_size = max_shard_size
+        self.state_dict = dict(state_dict)
+        planned = _planned_save_dtypes(model, state_dict, target_dtype)
+        storages = {}
+        for k in planned:
+            v = state_dict[k]
+            if v.device.type != "meta":
+                storages.setdefault((v.device, v.untyped_storage().data_ptr()), []).append(k)
+        # The eager cast gave every alias (tied embeddings) its own copy, so each was written:
+        # keep that by casting all but the first alias of a dtype-changing storage now.
+        for names in storages.values():
+            if len(names) > 1 and any(planned[k] != state_dict[k].dtype for k in names):
+                for k in names[1:]:
+                    self.state_dict[k] = state_dict[k].to(device = "cpu", dtype = planned[k])
+        seen, ratio = set(), None
+        for k, dtype in planned.items():
+            v = self.state_dict[k]
+            if v.device.type != "meta":
+                key = (v.device, v.untyped_storage().data_ptr(), v.storage_offset(), v.shape)
+                if key in seen:
+                    continue
+                seen.add(key)
+            if v.numel() == 0:
+                continue
+            r = torch.empty((), dtype = dtype).element_size() / v.element_size()
+            ratio = r if ratio is None else max(ratio, r)
+        # transformers plans shards on the original sizes. Scale the limit by the largest per-tensor export / original
+        # ratio, so no written shard passes max_shard_size even when some tensors keep their dtype (one uniform cast
+        # gives the eager layout; a mix plans a little smaller).
+        if ratio is not None and ratio != 1.0:
+            try:
+                from huggingface_hub.serialization._base import parse_size_to_int
+                limit = (
+                    parse_size_to_int(max_shard_size)
+                    if isinstance(max_shard_size, str)
+                    else int(max_shard_size)
+                )
+                self.max_shard_size = max(1, int(limit / ratio))
+            except Exception:
+                pass
+
+    def _write_one(self, original, tensors, filename, *args, **kwargs):
+        planned = _planned_save_dtypes(self.model, tensors, self.target_dtype)
+        cast = {
+            k: v.to(device = "cpu", dtype = planned[k]) if k in planned and planned[k] != v.dtype else v
+            for k, v in tensors.items()
+        }
+        self.engaged += 1
+        return original(cast, filename, *args, **kwargs)
+
+    def __enter__(self):
+        import transformers.modeling_utils as modeling_utils
+
+        with _CAST_HOOK_LOCK:
+            if _CAST_HOOK_STATE["users"] == 0:
+                original = getattr(modeling_utils, "safe_save_file", None)
+                if original is None:
+                    self._installed = False
+                    return self
+                _CAST_HOOK_STATE["original"] = original
+                modeling_utils.safe_save_file = _dispatch_cast_save
+            _CAST_HOOK_STATE["users"] += 1
+        self._installed = True
+        _cast_hook_stack().append(self)
+        return self
+
+    def __exit__(self, *exc):
+        if not getattr(self, "_installed", False):
+            return False
+        stack = _cast_hook_stack()
+        if self in stack:
+            stack.remove(self)
+        import transformers.modeling_utils as modeling_utils
+
+        with _CAST_HOOK_LOCK:
+            _CAST_HOOK_STATE["users"] -= 1
+            if _CAST_HOOK_STATE["users"] == 0:
+                if getattr(modeling_utils, "safe_save_file", None) is _dispatch_cast_save:
+                    modeling_utils.safe_save_file = _CAST_HOOK_STATE["original"]
+                _CAST_HOOK_STATE["original"] = None
+        return False
+
+
+# One dispatcher stands in for transformers' safe_save_file while any _CastShardsOnWrite is open. Each thread
+# writes through its own innermost caster (a thread-local stack), so overlapping saves never cast each other's
+# shards, and the original is put back only when the last one closes.
+_CAST_HOOK_LOCK = threading.Lock()
+_CAST_HOOK_STATE = {"users": 0, "original": None}
+_CAST_HOOK_LOCAL = threading.local()
+
+
+def _cast_hook_stack():
+    stack = getattr(_CAST_HOOK_LOCAL, "stack", None)
+    if stack is None:
+        stack = _CAST_HOOK_LOCAL.stack = []
+    return stack
+
+
+def _dispatch_cast_save(tensors, filename, *args, **kwargs):
+    original = _CAST_HOOK_STATE["original"]
+    stack = getattr(_CAST_HOOK_LOCAL, "stack", None)
+    if stack:
+        return stack[-1]._write_one(original, tensors, filename, *args, **kwargs)
+    return original(tensors, filename, *args, **kwargs)
+
+
+def _restamp_index_total_size(save_directory, variant = None):
+    """The index's total_size is planned on the pre-cast sizes: recount it from the shard headers."""
+    import struct
+
+    name = "model.safetensors.index.json"
+    if variant:
+        name = f"model.safetensors.index.{variant}.json"
+    path = os.path.join(save_directory, name)
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding = "utf-8") as f:
+        index = json.load(f)
+    total = 0
+    for shard in sorted(set(index.get("weight_map", {}).values())):
+        with open(os.path.join(save_directory, shard), "rb") as f:
+            header = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+        total += sum(
+            v["data_offsets"][1] - v["data_offsets"][0]
+            for k, v in header.items()
+            if k != "__metadata__"
+        )
+    metadata = index.setdefault("metadata", {})
+    if metadata.get("total_size") != total:
+        metadata["total_size"] = total
+        with open(path, "w", encoding = "utf-8") as f:
+            f.write(json.dumps(index, indent = 2, sort_keys = True) + "\n")
+
+
 @contextmanager
 def _unmerge_flags_on_error(streamed):
     try:
@@ -7070,15 +7231,30 @@ def unsloth_generic_save(
         is_qwen3_5_vlm = _is_qwen3_5_vlm(model)
         if ("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None:
             state_dict = model.state_dict()
+        _cast_shards = None
         if "16bit" in save_method:
-            if _requests_float32(dtype):
+            _target_dtype = (
+                torch.float32
+                if _requests_float32(dtype)
+                else (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
+            )
+            if (
+                os.environ.get("UNSLOTH_SAVE_EAGER_CAST", "0") != "1"
+                and (safe_serialization is not False or not _honours_safe_serialization(_real_save))
+                and state_dict
+                and all(type(v) in (torch.Tensor, torch.nn.Parameter) for v in state_dict.values())
+            ):
+                # Cast each output shard as it is written, not a whole second state dict up front.
+                _cast_shards = _CastShardsOnWrite(model, state_dict, _target_dtype, max_shard_size)
+                state_dict = _cast_shards.state_dict
+                _save_kwargs["max_shard_size"] = _cast_shards.max_shard_size
+            elif _requests_float32(dtype):
                 # On the CPU: a float32 copy of a 16-bit model would double its GPU footprint.
                 state_dict = {
                     k: v.to(device = "cpu", dtype = torch.float32) if v.is_floating_point() else v
                     for k, v in state_dict.items()
                 }
             else:
-                _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
                 state_dict = _cast_state_dict_16bit(model, state_dict, _target_dtype)
         if is_qwen3_5_vlm:
             state_dict = _qwen3_5_vlm_state_dict_for_save(state_dict)
@@ -7093,10 +7269,29 @@ def unsloth_generic_save(
 
         # BEFORE the write: transformers 5 pops tensors out of a supplied state dict as it writes.
         _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
+        # References only: transformers 5 pops the dict it is given, an eager re-save needs it back.
+        _uncast_state_dict = dict(state_dict) if _cast_shards is not None else None
 
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
         with _internal_mtp_save():
-            model.save_pretrained(save_directory, **_save_kwargs)
+            with _cast_shards if _cast_shards is not None else nullcontext():
+                model.save_pretrained(save_directory, **_save_kwargs)
+            if _cast_shards is not None and not _cast_shards.engaged:
+                # This transformers wrote through another function, uncast: write it again eagerly.
+                _save_kwargs["max_shard_size"] = max_shard_size
+                if _requests_float32(dtype):
+                    _save_kwargs["state_dict"] = {
+                        k: v.to(device = "cpu", dtype = torch.float32) if v.is_floating_point() else v
+                        for k, v in _uncast_state_dict.items()
+                    }
+                else:
+                    _save_kwargs["state_dict"] = _cast_state_dict_16bit(
+                        model, _uncast_state_dict, _target_dtype
+                    )
+                model.save_pretrained(save_directory, **_save_kwargs)
+            elif _cast_shards is not None:
+                _restamp_index_total_size(save_directory, variant)
+        _uncast_state_dict = None
         _release_layout_for_merged_save(model, save_directory, save_method)
         if "16bit" in save_method and _requests_float32(dtype):
             _stamp_saved_config_float32(save_directory)

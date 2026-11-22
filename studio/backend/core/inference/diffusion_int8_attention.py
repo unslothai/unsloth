@@ -53,6 +53,12 @@ from typing import Any, Callable, Optional
 
 INT8_ATTENTION_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_KERNEL"
 IMPL_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_IMPL"
+# ``0`` keeps the sink path's clipped keys in a launch of their own after the kernel (unsloth_i8resid); unset, the
+# kernel adds them back before its store (RFOLD): one launch and one pass over the output less per sink-path call.
+RESID_FOLD_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_RESID_FOLD"
+# Head dims whose folded kernel keeps the tile loop's register spills at or below the sink kernel's on every config
+# card (64: the NQ 2 configs spill inside the loop once the fold is compiled in, so they keep the separate launch).
+RESID_FOLD_HEAD_DIMS = (128,)
 BACKEND = "unsloth_int8"
 _OP = "unsloth_studio::int8_attention_nhd"
 HEAD_DIMS = (64, 128)
@@ -235,6 +241,11 @@ def _dtype_kinds() -> dict:
     # filled in one step: a concurrent first call never sees a partial table
     _KINDS.update({getattr(torch, name.split(".", 1)[1]): kind for name, kind in _OUT_KIND.items()})
     return _KINDS
+
+
+def resid_fold_enabled() -> bool:
+    """Whether the sink-path attention kernel adds the clipped keys back itself (``RESID_FOLD_ENV``)."""
+    return (os.environ.get(RESID_FOLD_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
 def _env_mode() -> str:
@@ -530,12 +541,19 @@ def _functions(
     head_dim: int,
     config: dict,
     sinks: bool = False,
+    fold: Optional[bool] = None,
 ) -> tuple:
-    """(attention kernel, quantiser kernels, shared bytes), with or without the sink path; compiled on first use."""
+    """(attention kernel, quantiser kernels, shared bytes), with or without the sink path (``fold``: its kernel adds
+    the clipped keys back itself, default ``resid_fold_enabled()``); compiled on first use."""
     config = select_config(
         config, 0
     )  # a config with long overrides names its kernel for short sequences
-    key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP, bool(sinks))
+    # default = the plan's own choice (_plan): folded only for RESID_FOLD_HEAD_DIMS, so kernel_function and the
+    # config-fit tests see the kernel a sink-path call of this head dim actually launches
+    if fold is None:
+        fold = resid_fold_enabled() and head_dim in RESID_FOLD_HEAD_DIMS
+    fold = bool(sinks) and bool(fold)
+    key = (index, head_dim, tuple(sorted(config.items())), ROT_GROUP, bool(sinks), fold)
     found = _LOADED.get(key)
     if found is None:
         import torch
@@ -550,7 +568,7 @@ def _functions(
             cuda_kernel.load(
                 index,
                 capability,
-                {**kernel_defines(head_dim, config), **extra},
+                {**kernel_defines(head_dim, config), **extra, **({"RFOLD": 1} if fold else {})},
                 config.get("max_registers"),
                 shared,
             ),
@@ -752,8 +770,11 @@ def _plan(
     config = select_config(config, Sk)
     bn, wpc, nq = int(config["bn"]), int(config["wpc"]), int(config["nq"])
     fn0, kernels0, shared = _functions(index, D, config, sinks = False)
+    fold = mode != MODE_MAIN and resid_fold_enabled() and D in RESID_FOLD_HEAD_DIMS
     fn, kernels = (
-        _functions(index, D, config, sinks = True)[:2] if mode != MODE_MAIN else (None, None)
+        _functions(index, D, config, sinks = True, fold = fold)[:2]
+        if mode != MODE_MAIN
+        else (None, None)
     )
     # log2(e) turns the kernel's 2^x into e^x; the rotation adds sqrt(group) in norm to Q and to K
     mul = (1.0 / math.sqrt(D) if scale is None else float(scale)) * LOG2E / min(int(ROT_GROUP), D)
@@ -839,6 +860,9 @@ def _plan(
             else None
         ),
         "mode": int(mode),
+        # the sink-path kernel adds the clipped keys back itself (RFOLD): no unsloth_i8resid launch
+        "fold": fold,
+        "rstride": vrows,
         "kernels0": (kernels0["unsloth_i8stats_q"], kernels0["unsloth_i8quant_kv"], fn0),
         "calls": 0,
         "sinks": None,
@@ -958,6 +982,12 @@ def _launch_attention(plan: dict, base: int, out_ptr: int, stream: int, sinks: b
         )
         return
     args += (base + off["rcnt"], base + off["rml"])
+    if plan.get("fold"):
+        args += (base + off["ridx"], base + off["rres"], plan["rstride"])
+        plan["kernels"][2].launch(
+            plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream
+        )
+        return
     plan["kernels"][2].launch(plan["attn_grid"], plan["attn_threads"], args, plan["shared"], stream)
     args = (
         base + off["qi"],
@@ -2204,6 +2234,10 @@ def install_auto(
         dispatch.rocm_auto_dits(_device_index(torch.device(device))) if rocm else dispatch.AUTO_DITS
     )
     if type(transformer).__name__ not in listed:
+        return 0
+    if type(
+        transformer
+    ).__name__ in dispatch.AUTO_SINGLE_EXPERT_ONLY and dispatch.two_expert_pipeline(pipe):
         return 0
     dtype = getattr(target, "dtype", None)
     if str(dtype) not in ("torch.float16", "torch.bfloat16"):

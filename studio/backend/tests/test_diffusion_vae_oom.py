@@ -1753,7 +1753,9 @@ def test_every_decode_rewrap_site_restores_the_oom_scope():
     changed = True
     while changed:
         changed = False
-        names = {k[1].split(".")[-1] for k in dirty}
+        # A dunder is reached through `with` / object protocols, not by a call to that name, and a bare
+        # `__exit__` matches every context manager in the tree (a scoped swap restores on exit).
+        names = {k[1].split(".")[-1] for k in dirty if not k[1].split(".")[-1].startswith("__")}
         for k, node in funcs.items():
             if k in dirty:
                 continue

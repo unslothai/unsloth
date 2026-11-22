@@ -32,6 +32,8 @@ ENV_MODE = "UNSLOTH_STATIC_SKIP_MODE"
 ENV_HEAD = "UNSLOTH_STATIC_SKIP_HEAD"
 ENV_TAIL = "UNSLOTH_STATIC_SKIP_TAIL"
 ENV_EVERY = "UNSLOTH_STATIC_SKIP_EVERY"
+# Kill switch for the measured per-step masks: 0 keeps the family's interval schedule.
+ENV_MASK = "UNSLOTH_STATIC_SKIP_MASK"
 
 _SLOT = "_unsloth_static_skip"
 
@@ -49,6 +51,35 @@ def _is_tensor(obj: Any) -> bool:
     return bool(callable(is_tensor) and is_tensor(obj))
 
 
+def parse_mask(mask: Any) -> tuple:
+    """A per-step compute mask ("1" compute, "0" skip; or bools) as a tuple of bools, () when malformed.
+
+    A usable mask computes its first ``MIN_HEAD_STEPS`` steps (taylor1 needs two computed points) and its last step."""
+    if isinstance(mask, str):
+        text = mask.strip()
+        if not text or set(text) - {"0", "1"}:
+            return ()
+        out = tuple(c == "1" for c in text)
+    elif isinstance(mask, (tuple, list)) and all(isinstance(c, bool) for c in mask):
+        out = tuple(mask)
+    else:
+        return ()
+    if len(out) < STATIC_MIN_STEPS or not all(out[:MIN_HEAD_STEPS]) or not out[-1]:
+        return ()
+    return out
+
+
+def _mask_for(masks: Any, n: int) -> tuple:
+    if not masks:
+        return ()
+    try:
+        raw = masks.get(n)
+    except AttributeError:
+        return ()
+    out = parse_mask(raw) if raw is not None else ()
+    return out if len(out) == n else ()
+
+
 def static_schedule(
     steps: Optional[int],
     *,
@@ -56,16 +87,25 @@ def static_schedule(
     tail: float = DEFAULT_TAIL,
     every: int = DEFAULT_EVERY,
     min_steps: int = STATIC_MIN_STEPS,
+    masks: Optional[dict] = None,
 ) -> tuple:
     """Per step, compute (True) or skip (False); empty (compute all) below ``min_steps`` (never below
-    ``STATIC_MIN_STEPS``)."""
+    ``STATIC_MIN_STEPS``). ``masks`` maps a step count to a measured per-step mask (``parse_mask``), used at exactly
+    that step count even below ``min_steps``; a step count without one keeps the interval schedule."""
     try:
         n = int(steps)  # type: ignore[arg-type]
         every = int(every)
         floor = max(STATIC_MIN_STEPS, int(min_steps))
     except (TypeError, ValueError):
         return ()
-    if n < floor or every < 2:
+    # A measured mask is the measurement at its own step count, so it also stands below the interval's floor
+    # (``parse_mask`` still keeps it at STATIC_MIN_STEPS or more).
+    mask = _mask_for(masks, n)
+    if mask:
+        return mask
+    if n < floor:
+        return ()
+    if every < 2:
         return ()
     first = max(MIN_HEAD_STEPS, round(n * float(head)))
     last = max(1, round(n * float(tail)))
@@ -128,9 +168,16 @@ def auto_static_settings(
     explicit ``UNSLOTH_STATIC_SKIP_*`` value still wins (benchmarking)."""
     env = os.environ if env is None else env
     out = static_skip_settings(env, logger)
-    if out["every"] == DEFAULT_EVERY and plan.get("every") and not _every_override_valid(env):
+    every_override = _every_override_valid(env)
+    if out["every"] == DEFAULT_EVERY and plan.get("every") and not every_override:
         out["every"] = int(plan["every"])
     out["min_steps"] = int(plan.get("min_steps") or STATIC_MIN_STEPS)
+    masks = plan.get("masks")
+    mask_off = str(env.get(ENV_MASK, "") or "").strip().lower() in ("0", "false", "off", "no")
+    # An explicit interval / head / tail (benchmarking) or the kill switch keeps the interval schedule.
+    forced = every_override or out["head"] != DEFAULT_HEAD or out["tail"] != DEFAULT_TAIL
+    if masks and not forced and not mask_off:
+        out["masks"] = dict(masks)
     out["auto"] = True
     return out
 
@@ -324,6 +371,7 @@ class StaticStepSkip:
         every: int = DEFAULT_EVERY,
         min_steps: int = STATIC_MIN_STEPS,
         auto: bool = False,
+        masks: Optional[dict] = None,
         logger: Any = None,
     ) -> None:
         # First, so nothing update_wrapper copies over can shadow the state set below.
@@ -345,6 +393,8 @@ class StaticStepSkip:
         self.head, self.tail, self.every = float(head), float(tail), int(every)
         self.min_steps = int(min_steps)
         self.auto = bool(auto)
+        self.masks = dict(masks) if masks else None
+        self.masked = False
         self.logger = logger
         self.armed = True
         self.context: Any = None
@@ -376,6 +426,7 @@ class StaticStepSkip:
                 tail = self.tail,
                 every = self.every,
                 min_steps = self.min_steps,
+                masks = self.masks,
             )
             if self.armed and not compute_all
             else ()
@@ -384,6 +435,8 @@ class StaticStepSkip:
         self.last_skip = skips[-1] if skips else -1
         if steps is not None:
             self.planned_skips = len(skips)
+            # Whether this generation's plan is a measured mask (status survives the post-render reset).
+            self.masked = bool(self.plan) and bool(_mask_for(self.masks, len(self.plan)))
         self.step_signal = bool(step_signal)
         # An empty schedule still counts, so status never reports the previous generation's skips.
         self.counting = steps is not None
@@ -415,6 +468,8 @@ class StaticStepSkip:
             "every": self.every,
             "min_steps": self.min_steps,
             "auto": self.auto,
+            "mask_steps": sorted(self.masks) if self.masks else [],
+            "masked": self.masked,
             "armed": bool(self.armed),
             "planned_skips": self.planned_skips,
             "stats": dict(self.stats if self.stats["calls"] else self.last_stats),
@@ -570,6 +625,8 @@ def install_static_step_skip(
         existing.every = int(knobs.get("every", existing.every))
         existing.min_steps = int(knobs.get("min_steps", STATIC_MIN_STEPS))
         existing.auto = bool(knobs.get("auto", False))
+        masks = knobs.get("masks")
+        existing.masks = dict(masks) if masks else None
         existing.reset(None)
         return TC_STATIC
     try:
@@ -583,6 +640,7 @@ def install_static_step_skip(
             every = knobs.get("every", DEFAULT_EVERY),
             min_steps = knobs.get("min_steps", STATIC_MIN_STEPS),
             auto = knobs.get("auto", False),
+            masks = knobs.get("masks"),
             logger = logger,
         )
         prior_ctx = slots.get("cache_context")
@@ -599,13 +657,14 @@ def install_static_step_skip(
         return None
     if logger is not None:
         logger.info(
-            "diffusion.step_skip: static engaged (mode=%s head=%s tail=%s every=%s min_steps=%s%s)",
+            "diffusion.step_skip: static engaged (mode=%s head=%s tail=%s every=%s min_steps=%s%s%s)",
             skip.mode,
             skip.head,
             skip.tail,
             skip.every,
             skip.min_steps,
             ", auto" if skip.auto else "",
+            f", masks for {sorted(skip.masks)} steps" if skip.masks else "",
         )
     return TC_STATIC
 

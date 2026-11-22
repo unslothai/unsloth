@@ -88,7 +88,8 @@
     "default": 2,
     "max": 3,
     "steps": 20
-   }
+   },
+   "nvidia/Qwen-Image-Flash": null
   },
   "qwen-image-2.1": {
    "Qwen/Qwen-Image-2.1": {
@@ -5044,6 +5045,7 @@
    "krea/krea-2-turbo",
    "lodestones/chroma1-hd",
    "minimaxai/minimax-h3-image",
+   "nvidia/qwen-image-flash",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",
@@ -5058,6 +5060,8 @@
    "tongyi-mai/z-image-turbo"
   ],
   "trusted_video_repos": [
+   "fastvideo/fastwan2.1-t2v-1.3b-diffusers",
+   "fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
    "lightricks/ltx-2",

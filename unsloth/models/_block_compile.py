@@ -1010,6 +1010,8 @@ def _gdn_chunk_adapter(original):
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
+            # A prefix-trie row (TRL AsyncGRPO) scans along each sample's path, not the packed order.
+            and "tree_segment_parents" not in kwargs
             and kwargs.get("use_qk_l2norm_in_kernel") is True
             # Only the self-checked default; packed batches only if their self-check passed.
             and (cu_seqlens is None or (_GDN_VARLEN[0] and q.shape[0] == 1))
@@ -1122,6 +1124,7 @@ def _causal_conv1d_adapter(original, depthwise_conv):
             and weight.dim() == 2
             and activation in (None, "silu", "swish")
             and all(kwargs.get(key) is None for key in ("seq_idx", "cu_seqlens", "initial_states"))
+            and "tree_segment_parents" not in kwargs
             and not kwargs.get("return_final_states")
         ):
             out = depthwise_conv(hidden_states.to(weight.dtype), weight)

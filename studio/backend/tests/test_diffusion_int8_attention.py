@@ -2448,11 +2448,10 @@ def test_a_call_on_another_card_uses_that_cards_stream(monkeypatch):
         return launch(self, grid, block, values, shared, stream)
 
     monkeypatch.setattr(K.Function, "launch", spy)
-    names = {
-        K.KERNEL_NAME,
-        *K.QUANT_KERNELS,
-        "unsloth_i8resid",
-    }  # a plan's first calls take the sink path
+    # a plan's first calls take the sink path, whose kernel adds the clipped keys back itself (RFOLD)
+    names = {K.KERNEL_NAME, *K.QUANT_KERNELS} | (
+        set() if I.resid_fold_enabled() else {"unsloth_i8resid"}
+    )
     assert torch.cuda.current_device() == 0
     out = I.int8_attention(q, k, v)
     usual = torch.cuda.current_stream(OTHER).cuda_stream
