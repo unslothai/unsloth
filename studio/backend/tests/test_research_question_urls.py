@@ -137,6 +137,7 @@ def test_a_linked_page_that_fails_to_load_is_not_cited(research_home, monkeypatc
         f"Research **{LINKED}** and compare it",
         f"Research [{LINKED}] and compare it",
         f"研究{LINKED}，并比较",
+        f"Research **[the release]({LINKED})** and compare it",
     ],
 )
 def test_a_quoted_link_is_read_without_its_delimiter(research_home, monkeypatch, question):
@@ -145,8 +146,19 @@ def test_a_quoted_link_is_read_without_its_delimiter(research_home, monkeypatch,
     assert calls[0] == {"url": LINKED}
 
 
-def test_a_linked_page_without_readable_text_is_not_cited(research_home, monkeypatch):
-    finished, calls, _ = _run(monkeypatch, page = "(page returned no readable text)")
+@pytest.mark.parametrize(
+    "page",
+    [
+        "(page returned no readable text)",
+        "(non-text content: image/png, 2048 bytes; not readable as text)",
+        "(binary content, 2048 bytes; not readable as text)",
+        "(PDF contains no extractable text)",
+        "(PDF contains no extractable text in the first 40 pages)",
+        "(PDF content could not be read as text)",
+    ],
+)
+def test_a_linked_page_without_readable_text_is_not_cited(research_home, monkeypatch, page):
+    finished, calls, _ = _run(monkeypatch, page = page)
 
     assert calls[0] == {"url": LINKED}
     assert LINKED not in [source["url"] for source in finished["sources"]]

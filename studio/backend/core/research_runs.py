@@ -33,10 +33,10 @@ from core.inference.http_stream import aiter_sse_lines
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import (
-    EMPTY_PAGE_TEXT,
     EMPTY_SEARCH_RESULTS,
     RAG_SOURCES_SENTINEL,
     execute_mcp_tool,
+    is_unreadable_page,
     execute_tool,
     is_high_risk_tool_call,
     mcp_search_tools,
@@ -1048,6 +1048,14 @@ def _question_url(question: str, match: re.Match) -> str:
     opener = question[: match.start()]
     closer = opener[len(opener.rstrip("*_~'")) :][::-1]
     url = match.group(0)
+    if opener.endswith("]("):
+        # A Markdown link destination ends at its balancing ')', whatever follows it.
+        depth = 0
+        for index, char in enumerate(url):
+            depth += (char == "(") - (char == ")")
+            if depth < 0:
+                url = url[:index]
+                break
     while True:
         trimmed = _trim_url_tail(url)
         if closer and trimmed.endswith(closer):
@@ -1061,9 +1069,10 @@ def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     """empty searches must report missing evidence even when the tool succeeds."""
     if rag_sources:
         return False
-    return is_tool_error(web_result) or web_result.strip() in (
-        *EMPTY_SEARCH_RESULTS,
-        EMPTY_PAGE_TEXT,
+    return (
+        is_tool_error(web_result)
+        or web_result.strip() in EMPTY_SEARCH_RESULTS
+        or is_unreadable_page(web_result)
     )
 
 
