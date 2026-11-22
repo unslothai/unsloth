@@ -29,6 +29,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from . import diffusion_vae_fused as fused
+from .rocm_bf16 import is_rocm_torch
 
 STRIPS_ENV = "UNSLOTH_FLUX_VAE_STRIPS"
 FULL_MAP_ENV = "UNSLOTH_FLUX_VAE_FULL_MAP"
@@ -634,7 +635,7 @@ def _fold_on(x: Any) -> bool:
     if mode == "force":
         return True
     torch = fused._torch()
-    if not x.is_cuda or getattr(torch.version, "hip", None):
+    if not x.is_cuda or is_rocm_torch(torch):
         return False
     try:
         return tuple(torch.cuda.get_device_capability(x.device)) in _FOLD_CAPS
