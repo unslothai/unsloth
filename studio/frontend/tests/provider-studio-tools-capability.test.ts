@@ -14,12 +14,7 @@ const {
   setProviderModelCapabilities,
 } = await import("../src/features/chat/external-providers.ts");
 
-// Self-hosted connections (llama.cpp / vLLM / Ollama / custom) take a
-// user-supplied model id, so there is never a per-model registry entry to key
-// the capability off. The backend declares studio_tools once per provider type
-// and sync-external-providers parks it under the wildcard. Without the fallback
-// below, every self-hosted model reads as "not capable" and the composer's
-// Search / Code / MCP / Docs pills stay greyed out.
+// Self-hosted models have no per-model registry entry, so the wildcard capability must apply.
 
 test("a provider-level capability applies to any model on that provider", () => {
   setProviderModelCapabilities("llama_cpp", {
@@ -58,7 +53,6 @@ test("a known provider answers even before a model is chosen", () => {
     [PROVIDER_CAPABILITY_WILDCARD]: { studio_tools: true },
   });
 
-  // The composer asks while the model picker is still empty; answering null
-  // there would grey the pills out until the user picked a model.
+  // The composer asks before a model is picked; null would grey out the pills.
   assert.equal(providerModelSupportsStudioTools("ollama", null), true);
 });

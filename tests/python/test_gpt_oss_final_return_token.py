@@ -62,3 +62,29 @@ def test_earlier_turns_and_generation_prompt_keep_end():
     assert "<|return|>" not in text
     prompt = _render([USER, REPLY, {"role": "user", "content": "Bye"}], add_generation_prompt = True)
     assert prompt == text + "<|start|>assistant"
+
+
+@pytest.mark.parametrize("thinking", ["Greet back.", ""])
+def test_earlier_answer_with_thinking_stays_on_the_final_channel(thinking):
+    # Matches openai/gpt-oss-20b: an earlier turn's reasoning is dropped and its answer is
+    # rendered on final. Labelling the answer as analysis fed it back as reasoning.
+    earlier = {"role": "assistant", "content": "Hello!", "thinking": thinking}
+    text = _render([USER, earlier, {"role": "user", "content": "Bye"}], add_generation_prompt = True)
+    assert "<|start|>assistant<|channel|>final<|message|>Hello!<|end|>" in text
+    assert "<|channel|>analysis<|message|>Hello!" not in text
+    if thinking:
+        assert thinking not in text
+    assert text == _render(
+        [USER, REPLY, {"role": "user", "content": "Bye"}], add_generation_prompt = True
+    )
+
+
+@pytest.mark.parametrize(
+    "earlier",
+    [{"thinking": "Let me think."}, {"content": None, "thinking": "Let me think."}],
+)
+def test_earlier_turn_with_only_thinking_keeps_its_analysis(earlier):
+    # Matches unsloth/gpt-oss-20b: a previous turn with reasoning but no answer stays on analysis.
+    earlier = {"role": "assistant", **earlier}
+    text = _render([USER, earlier, {"role": "user", "content": "Bye"}], add_generation_prompt = True)
+    assert "<|start|>assistant<|channel|>analysis<|message|>Let me think.<|end|>" in text

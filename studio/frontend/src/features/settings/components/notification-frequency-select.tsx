@@ -42,7 +42,7 @@ export function NotificationFrequencySelect({
         setNotificationFrequency(channel, value as NotificationFrequency)
       }
     >
-      <SelectTrigger aria-label={label} className="w-40" size="sm">
+      <SelectTrigger aria-label={label} className="w-48" size="sm">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

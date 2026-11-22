@@ -154,8 +154,6 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
 
 
 # ─── Public API ───────────────────────────────────────────────────────
-
-
 def llm_generate_vlm_instruction(
     column_names: list[str],
     samples: list[dict],
@@ -304,8 +302,6 @@ def llm_generate_dataset_warning(
 
 
 # ─── Dataset Conversion Advisor ──────────────────────────────────────
-
-
 def _parse_json_response(text: str) -> Optional[dict]:
     """Parse JSON from LLM response, handling markdown fences and noise."""
     if not text:
@@ -751,8 +747,7 @@ def llm_conversion_advisor(
     model_name: Optional[str] = None,
     model_type: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Full conversion advisor: fetch the HF card, then run the multi-pass LLM analysis, falling back to simple llm_classify_columns() if that fails. Returns a result dict (success, suggested_mapping, system_prompt, label_mapping, dataset_type, is_conversational, user_notification, ...) or None."""
-    # Fetch the HF dataset card if this looks like a HF dataset (has a slash).
+    """Fetch the HF dataset card only when the name looks like a HF dataset (has a slash)."""
     dataset_card = None
     dataset_metadata = None
     if dataset_name and "/" in dataset_name:

@@ -1,45 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install a prebuilt ``audiocpp_server`` (audio.cpp) for Studio's audio.cpp engine.
-
-audio.cpp vendors its own patched ggml, so unlike whisper.cpp it cannot share the
-llama.cpp runtime: every bundle is self-contained (the server links ggml statically).
-Releases are named ``audio-<tag>-bin-<os>-<arch>-<backend>.{zip,tar.gz}``, the scheme
-upstream uses and the Unsloth fork keeps, so one resolver serves both. Windows CUDA
-bundles need the CUDA runtime DLLs, which upstream publishes as a separate
-``audio-<tag>-cudart-windows-x64-<line>.zip``; that download is skipped when the
-running Python's torch already ships the same CUDA runtime line.
-
-The bundle is extracted into a staging directory beside the managed tree, started once
-with ``--help`` so a bundle this host cannot load is refused, and swapped in only then,
-so an interrupted or unusable install never replaces a working tree.
-
-The newest unslothai/audio.cpp release is installed unless ``UNSLOTH_AUDIO_CPP_TAG`` (or
-``--published-release-tag``) names one. The release is resolved like whisper.cpp's, through
-prebuilt_core: the download host first, then the GitHub API. Every bundle and CUDA runtime
-archive must match the sha256 in the release's own ``audio-cpp-prebuilt-sha256.json``, which
-is bound to the release tag; an archive the index does not cover is refused. That checksum
-comes from the same release as the archive, so it proves integrity (a corrupt or swapped
-download), not authenticity. A user-picked repo or tag whose release publishes no index
-falls back to GitHub's asset digest.
-
-A re-run whose install record already names the newest release (one HEAD to github.com,
-no API call) or the pinned one (no network call) downloads nothing, an intact install newer
-than the release a lookup names is never replaced by it, and a lookup that cannot answer
-keeps a complete install.
-
-Usage:
-    python studio/install_audio_cpp_prebuilt.py                 # auto-detect host
-    python studio/install_audio_cpp_prebuilt.py --accelerator cpu
-    python studio/install_audio_cpp_prebuilt.py --print-asset   # resolve only
-    python studio/install_audio_cpp_prebuilt.py --published-release-tag v0.9.1-unsloth.1
-"""
+"""Installs prebuilt audiocpp_server, checked with --help before swap; archives must match audio-
+cpp-prebuilt-sha256.json (uncovered refused); newest release unless UNSLOTH_AUDIO_CPP_TAG or
+--published-release-tag names one; a newer intact install is never replaced; a failed lookup
+keeps the install."""
 
 from __future__ import annotations
 
 import argparse
 import datetime
+import errno
 import fnmatch
 import glob
 import hashlib
@@ -50,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tarfile
 import urllib.error
 import urllib.request
@@ -93,7 +65,6 @@ OWNERSHIP_MARKER = ".unsloth-studio-owned"
 SERVER_NAME = "audiocpp_server.exe" if sys.platform == "win32" else "audiocpp_server"
 
 ACCELERATORS = ("auto", "cpu", "cuda", "vulkan", "metal")
-# The staged server's --help must exit 0 within this long before it replaces the live tree.
 SMOKE_TIMEOUT_SECONDS = 30.0
 USER_AGENT = "unsloth-audio-cpp-installer"
 
@@ -109,7 +80,6 @@ class ReleaseLookupUnavailable(RuntimeError):
 
 
 def log(message: str) -> None:
-    # prebuilt_core's download retries report through this.
     print(f"audio.cpp: {message}", file = sys.stderr, flush = True)
 
 
@@ -255,18 +225,69 @@ def default_install_dir() -> Path:
     return legacy if root == (Path.home() / ".unsloth" / "studio").resolve() else root / "audio.cpp"
 
 
+# detect_accelerator and the release pick both ask within one install, so a version nvidia-smi reported
+# is kept for a few minutes: a later install in the same Studio process asks again. Keyed on its mtime
+# (a driver update replaces it) and the runner, so a stubbed subprocess.run never reads another stub's
+# answer. No answer is not kept: a driver that recovers is seen next time.
+_DRIVER_CUDA_MEMO: Optional[tuple] = None
+_DRIVER_CUDA_MEMO_TTL_S = 300.0
+
+
 def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
     """The CUDA version the installed NVIDIA driver supports, from nvidia-smi, or None."""
+    global _DRIVER_CUDA_MEMO
     exe = shutil.which("nvidia-smi")
     if not exe:
         return None
     try:
-        out = subprocess.run([exe], capture_output = True, text = True, timeout = 15).stdout
+        stamp = os.stat(exe).st_mtime_ns
+    except OSError:
+        stamp = None
+    runner = subprocess.run
+    memo = _DRIVER_CUDA_MEMO
+    if (
+        memo is not None
+        and memo[:2] == (exe, stamp)
+        and memo[2] is runner
+        and time.monotonic() - memo[4] < _DRIVER_CUDA_MEMO_TTL_S
+    ):
+        return memo[3]
+    try:
+        out = runner([exe], capture_output = True, text = True, timeout = 15).stdout
     except (OSError, subprocess.SubprocessError):
         return None
-    # Newer drivers print "CUDA UMD Version: X.Y" in place of "CUDA Version: X.Y" (same rule as the llama installer).
     match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", out or "")
-    return (int(match.group(1)), int(match.group(2))) if match else None
+    if not match:
+        return None
+    version = (int(match.group(1)), int(match.group(2)))
+    _DRIVER_CUDA_MEMO = (exe, stamp, runner, version, time.monotonic())
+    return version
+
+
+def _nvidia_has_prebuilt_arch() -> Optional[bool]:
+    """Any NVIDIA card sm_75+ (audio.cpp CUDA*_ARCHS in unsloth-prebuilt-build.yml start at 75); None if unreadable."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            timeout = 15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    caps = []
+    for line in (out.stdout or "").splitlines() if out.returncode == 0 else ():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", line)
+        if not match:
+            # Old driver ("[N/A]"): unknown, keep the CUDA answer.
+            return None
+        caps.append((int(match.group(1)), int(match.group(2))))
+    return any(cap >= (7, 5) for cap in caps) if caps else None
 
 
 def _nvidia_gpu_present() -> bool:
@@ -305,7 +326,10 @@ def detect_accelerator() -> str:
     system = platform.system().lower()
     if system == "darwin":
         return "metal"
-    if nvidia_driver_cuda_version() is not None:
+    # Pascal / Volta-only hosts: the fork's bundles have no kernels for them. Other publishers set their own archs.
+    if nvidia_driver_cuda_version() is not None and (
+        _repo().casefold() != DEFAULT_REPO.casefold() or _nvidia_has_prebuilt_arch() is not False
+    ):
         return "cuda"
     # No HIP bundle is published (#13042); never beside NVIDIA, which Vulkan could enumerate first.
     if _amd_gpu_present() and not _nvidia_gpu_present():
@@ -393,13 +417,22 @@ def resolve_release_asset(
 
 
 def cudart_asset_for(asset_names: Sequence[str], bundle: str) -> Optional[str]:
-    """The separate Windows CUDA runtime archive matching a CUDA bundle's line."""
-    match = _CUDA_LINE.search(bundle)
-    if not match or "-windows-" not in bundle:
+    """The Windows CUDA runtime matching the bundle's architecture and CUDA line."""
+    host = re.search(r"-bin-(?:windows|win)-([^-]+)-", bundle, re.IGNORECASE)
+    arch = _ARCH_TOKENS.get(host.group(1).lower()) if host else None
+    if host is None or arch is None:
+        return None
+    match = _CUDA_LINE.match("-" + bundle[host.end() :])
+    if not match:
         return None
     line = match.group(0)[1:]
     for name in asset_names:
-        if "-cudart-windows-" in name and name.endswith(f"-{line}.zip"):
+        runtime = re.search(r"-cudart-(?:windows|win)-([^-]+)-", name, re.IGNORECASE)
+        if (
+            runtime is not None
+            and _ARCH_TOKENS.get(runtime.group(1).lower()) == arch
+            and name.endswith(f"-{line}.zip")
+        ):
             return name
     return None
 
@@ -609,6 +642,7 @@ def resolve_for_request(
     detected: Optional[str],
     token: Optional[str],
     tag: Optional[str] = None,
+    supply_runtime: bool = True,
 ) -> tuple[str, str, Optional[dict], Optional[str]]:
     """``(accelerator, repo, release, asset)``. An auto-detected GPU the published bundles do not
     cover (an older driver, Linux arm64) falls back to the CPU build, which still runs every model;
@@ -617,9 +651,10 @@ def resolve_for_request(
     repo, release, chosen = resolve(accel, token, tag)
     if requested == "auto" and accel == "cuda" and chosen:
         major = _cuda_major(chosen)
+        if supply_runtime and not _linux_cuda_runtime_available(major):
+            _install_linux_cuda_runtime_wheels(major)
         if not _linux_cuda_runtime_available(major):
-            # The Linux CUDA bundles load cudart / cuBLAS from torch's nvidia-* wheels, as the
-            # llama.cpp ones do; a Studio without torch (or with another CUDA line) runs the CPU build.
+            # Linux CUDA bundles load cudart / cuBLAS from torch's nvidia-* wheels.
             print(
                 f"audio.cpp: no CUDA {major} runtime (cudart, cuBLAS) for {chosen}; installing the CPU build",
                 flush = True,
@@ -658,7 +693,6 @@ def _extract(archive: Path, target: Path) -> None:
         return
     with tarfile.open(archive, "r:gz") as tf:
         if hasattr(tarfile, "data_filter"):
-            # Refuses absolute paths, parent traversal, device files and links leaving the tree.
             tf.extractall(target, filter = "data")
             return
         # Pythons without extraction filters: the same containment rules, checked by hand.
@@ -782,8 +816,7 @@ def read_install_record(root: Path) -> dict:
 
 
 def _backend_of(asset: str) -> str:
-    # The Intel macOS bundle keeps the "-metal" name but is built with Metal off (Intel runners
-    # have no usable GPU), so it can only run on the CPU backend.
+    # The Intel macOS bundle keeps the "-metal" name but is built with Metal off (CPU only).
     if "-macos-x64-" in asset:
         return "cpu"
     if "-metal" in asset:
@@ -795,8 +828,7 @@ def _backend_of(asset: str) -> str:
     return "cpu"
 
 
-# What earlier Studio builds left in the managed dir without an ownership marker: the server's
-# scratch home. A tree holding nothing else is Studio's, not the user's.
+# Leftovers of older Studio builds; a tree holding nothing else is Studio's, not the user's.
 _STUDIO_LEFTOVERS = frozenset({".child_home"})
 
 
@@ -811,10 +843,38 @@ def _sweep_retired_trees(target: Path) -> None:
             owned = False
         if owned:
             shutil.rmtree(old, ignore_errors = True)
-    # Staging dirs of a killed run; the install lock is held, so none belongs to a live one.
     for staging in target.parent.glob(".audio.cpp-staging-*"):
         if staging.is_dir() and not staging.is_symlink():
             shutil.rmtree(staging, ignore_errors = True)
+
+
+def _retire_tree(target: Path, retired: Path) -> None:
+    """os.replace, or on EXDEV copy then remove: overlayfs will not rename an image-layer
+    directory, where the Docker image keeps audio.cpp (#17638)."""
+    try:
+        os.replace(target, retired)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV or target.is_symlink():
+            raise
+        print(f"audio.cpp: {exc.strerror}; copying {target} aside instead", flush = True)
+    # Renamed to ``retired`` only once whole, so a rollback never restores a partial copy.
+    copying = retired.with_name(retired.name + ".copying")
+    shutil.rmtree(copying, ignore_errors = True)
+    try:
+        shutil.copytree(target, copying, symlinks = True)
+        os.replace(copying, retired)
+    except BaseException:
+        shutil.rmtree(copying, ignore_errors = True)
+        raise
+    try:
+        shutil.rmtree(target)
+    except OSError:
+        # A half-removed tree is no install: put the copy back.
+        shutil.rmtree(target, ignore_errors = True)
+        if not target.exists():
+            os.replace(retired, target)
+        raise
 
 
 def _is_unreadable(target: Path) -> bool:
@@ -845,7 +905,7 @@ def _server_in_use(server: Optional[Path]) -> bool:
 
 
 def _cuda_runtime_satisfied(record: dict) -> bool:
-    """A CUDA install that skipped its cudart archive still has torch's runtime to lean on."""
+    """A CUDA install that skipped its cudart archive still has torch's or the wheels' runtime to lean on."""
     if (
         record.get("backend") != "cuda"
         or record.get("cudart_asset")
@@ -853,7 +913,10 @@ def _cuda_runtime_satisfied(record: dict) -> bool:
     ):
         return True
     match = _CUDA_LINE.search(str(record.get("asset") or ""))
-    return bool(match) and torch_provides_cuda_runtime(int(match.group(1)))
+    if not match:
+        return False
+    major = int(match.group(1))
+    return torch_provides_cuda_runtime(major) or _windows_wheel_runtime_present(major)
 
 
 def _intact_install(target: Path, record: dict) -> Optional[Path]:
@@ -870,10 +933,8 @@ def _intact_install(target: Path, record: dict) -> Optional[Path]:
             return None
     except OSError:
         return None
-    # Removed or quarantined phonemizer data: reinstall rather than keep a bundle Kokoro cannot use.
     if record.get("espeak") is True and not (server.parent / "espeak-ng-data.bin").is_file():
         return None
-    # A Windows CUDA install that leaned on torch's runtime is broken once torch moves lines.
     return server if _cuda_runtime_satisfied(record) else None
 
 
@@ -888,9 +949,12 @@ def _record_fits_request(record: dict, requested: str, detected: Optional[str]) 
         requested == "auto"
         and detected == "cuda"
         and record.get("accelerator") == "cpu"
-        and _linux_cuda_runtime_available(torch_cuda_major())
+        and (
+            _linux_cuda_runtime_available(torch_cuda_major())
+            or (_cuda_runtime_wheels_installable() and not record.get("cuda_runtime_wheels_tried"))
+        )
     ):
-        # Installed as the CPU fallback; torch's CUDA runtime is here now, so look up the GPU build.
+        # A CPU fallback whose CUDA runtime is here now, or a chat-only one from before the wheel step.
         return False
     return True
 
@@ -986,6 +1050,110 @@ def _ldconfig_libs() -> set[str]:
     return {line.split()[0] for line in out.splitlines()[1:] if line.strip()}
 
 
+# Chat-only (no torch) installs have no nvidia-* wheels; the CUDA bundles link these three.
+_LINUX_CUDA_RUNTIME_WHEELS = {
+    12: ("nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12", "nvidia-cufft-cu12"),
+    13: ("nvidia-cuda-runtime", "nvidia-cublas", "nvidia-cufft"),
+}
+
+
+def _cuda_runtime_wheels_installable() -> bool:
+    """Linux x86_64 without torch: the only hosts where the CUDA runtime comes from these wheels."""
+    return (
+        sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and torch_cuda_major() is None
+    )
+
+
+def _install_linux_cuda_runtime_wheels(major: Optional[int]) -> None:
+    """Never raises: the caller falls back to the CPU build."""
+    wheels = _LINUX_CUDA_RUNTIME_WHEELS.get(major or 0)
+    if not wheels or not _cuda_runtime_wheels_installable():
+        return
+    _pip_install_wheels(wheels, f"CUDA {major} runtime")
+
+
+def _pip_install_wheels(wheels: Sequence[str], what: str) -> None:
+    """Installs ``wheels`` into this env; never raises (each caller re-checks and falls back)."""
+    try:
+        if __package__:
+            from .install_llama_prebuilt import _uv_for_wheels
+        else:
+            from install_llama_prebuilt import _uv_for_wheels  # type: ignore[no-redef]
+        uv = _uv_for_wheels()
+    except Exception:  # noqa: BLE001
+        uv = shutil.which("uv")
+    cmd = (
+        [uv, "pip", "install", "--python", sys.executable]
+        if uv
+        else [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    )
+    print(f"audio.cpp: no {what}; installing {', '.join(wheels)}", flush = True)
+    try:
+        result = subprocess.run([*cmd, "--only-binary", ":all:", *wheels], timeout = 1800)
+        if result.returncode != 0:
+            print(
+                f"audio.cpp: CUDA runtime wheel install failed (exit {result.returncode})",
+                flush = True,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"audio.cpp: CUDA runtime wheel install failed ({exc})", flush = True)
+
+
+# Windows x64 chat-only: llama.cpp's step installed cudart + cuBLAS already; only cuFFT is missing.
+_WINDOWS_CUFFT_WHEELS = {12: "nvidia-cufft-cu12", 13: "nvidia-cufft"}
+_CUFFT_DLL = {12: "cufft64_11", 13: "cufft64_12"}
+
+
+def _windows_wheel_runtime_present(major: int, *, cufft: bool = True) -> bool:
+    """Whether the env's nvidia-* wheels (or torch) carry the DLLs a line-``major`` Windows bundle loads."""
+    if sys.platform != "win32":
+        return False
+    dirs = [Path(d) for d in _cuda_runtime_dirs("cuda")]
+    patterns = [f"cudart64_{major}*.dll", f"cublas64_{major}*.dll", f"cublasLt64_{major}*.dll"]
+    if cufft:
+        patterns.append(f"{_CUFFT_DLL.get(major, 'cufft64_')}*.dll")
+    return all(any(any(d.glob(pattern)) for d in dirs) for pattern in patterns)
+
+
+def _windows_runtime_from_wheels(major: Optional[int]) -> bool:
+    """True when llama.cpp's wheels for this line plus cuFFT replace the cudart archive. Never raises."""
+    if (
+        major not in _WINDOWS_CUFFT_WHEELS
+        or sys.platform != "win32"
+        or platform.machine().lower() not in ("amd64", "x86_64")
+        or torch_cuda_major() is not None
+        or not _windows_wheel_runtime_present(major, cufft = False)
+    ):
+        return False
+    if not _windows_wheel_runtime_present(major):
+        _pip_install_wheels((_WINDOWS_CUFFT_WHEELS[major],), f"cuFFT for CUDA {major}")
+    return _windows_wheel_runtime_present(major)
+
+
+def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
+    return requested == "auto" and detected == "cuda" and _cuda_runtime_wheels_installable()
+
+
+def _mark_runtime_wheels_tried(
+    target: Path, record: dict, requested: str, detected: Optional[str]
+) -> None:
+    """A kept CPU install records the wheel attempt too, or every run would retry it."""
+    if (
+        record.get("accelerator") != "cpu"
+        or record.get("cuda_runtime_wheels_tried")
+        or not _runtime_wheels_marker(requested, detected)
+    ):
+        return
+    try:
+        (target / INSTALL_RECORD).write_text(
+            json.dumps({**record, "cuda_runtime_wheels_tried": True}, indent = 2), encoding = "utf-8"
+        )
+    except OSError:
+        pass
+
+
 def _linux_cuda_runtime_available(major: Optional[int]) -> bool:
     """Whether the CUDA libraries a line-``major`` Linux bundle links but does not ship (cudart,
     cuBLAS, cuFFT) are in torch's nvidia-* wheels or on the system loader path. True off Linux,
@@ -1062,7 +1230,7 @@ def smoke_test_staged_server(
     if result.returncode != 0:
         output = "\n".join(s.strip() for s in (result.stderr, result.stdout) if s and s.strip())
         if backend == "cuda" and "libcuda.so" in output and nvidia_driver_cuda_version() is None:
-            # No NVIDIA driver on this host (a Docker image build): libcuda arrives with the driver at run time.
+            # No NVIDIA driver (e.g. Docker image build): libcuda arrives with the driver at run time.
             print(
                 "audio.cpp: no NVIDIA driver here to load the CUDA build; skipping its start check",
                 flush = True,
@@ -1184,7 +1352,14 @@ def _install_locked(
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     try:
         accel, repo, release, chosen = resolve_for_request(
-            requested, "cpu" if vulkan_unusable else detected, token, release_tag
+            requested,
+            "cpu" if vulkan_unusable else detected,
+            token,
+            release_tag,
+            # A CPU fallback that already tried the wheels does not retry them for every new release.
+            supply_runtime = not (
+                existing.get("accelerator") == "cpu" and existing.get("cuda_runtime_wheels_tried")
+            ),
         )
     except (ReleaseLookupUnavailable, GitHubRateLimited) as exc:
         # The lookup could not answer, which says nothing about the tree on disk. Keep a complete one
@@ -1219,6 +1394,7 @@ def _install_locked(
         and _intact_install(target, existing) is not None
     ):
         print(f"audio.cpp: already matches {chosen}", flush = True)
+        _mark_runtime_wheels_tried(target, existing, requested, detected)
         return _intact_install(target, existing)
     if (
         not force
@@ -1231,12 +1407,18 @@ def _install_locked(
     ):
         # The lookup named an older release than the one installed: never downgrade to it.
         print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
+        _mark_runtime_wheels_tried(target, existing, requested, detected)
         return _intact_install(target, existing)
 
     cudart = cudart_asset_for(list(assets), chosen)
     cuda_match = _CUDA_LINE.search(chosen)
     cuda_major = int(cuda_match.group(1)) if cuda_match else None
     torch_runtime = bool(cudart and cuda_major and torch_provides_cuda_runtime(cuda_major))
+    if cudart and not torch_runtime and _windows_runtime_from_wheels(cuda_major):
+        print(
+            f"audio.cpp: CUDA runtime from this env's nvidia wheels; skipping {cudart}", flush = True
+        )
+        cudart = None
     cudart_expected = (
         _expected_sha256(release, assets[cudart]) if cudart and not torch_runtime else None
     )
@@ -1248,7 +1430,6 @@ def _install_locked(
         )
 
     if target.exists() and _server_in_use(_locate_server(target)):
-        # Checked again before the swap; here it saves the download.
         raise PermissionError(f"audiocpp_server in {target} is running")
     target.parent.mkdir(parents = True, exist_ok = True)
     staging = core.make_staging_dir(target.parent, ".audio.cpp-staging-")
@@ -1299,11 +1480,10 @@ def _install_locked(
             "asset_sha256": digest,
             "cudart_asset": cudart_used,
             "backend": backend,
-            # What was asked and seen, so a re-run knows without a lookup whether this still fits.
             "accelerator": accel,
             "accelerator_request": requested,
             "detected_accelerator": detected,
-            # Static eSpeak-ng builds ship their phoneme data beside the server; upstream bundles do not.
+            "cuda_runtime_wheels_tried": _runtime_wheels_marker(requested, detected),
             "espeak": (server.parent / "espeak-ng-data.bin").is_file(),
             "server_relpath": server.relative_to(tree).as_posix(),
             "server_sha256": core.sha256_file(server),
@@ -1313,15 +1493,13 @@ def _install_locked(
             "installed_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         (tree / INSTALL_RECORD).write_text(json.dumps(record, indent = 2), encoding = "utf-8")
-        # A running server would keep its files after the swap and serve the old build; the
-        # caller stops it (or reports busy) instead.
+        # A running server would keep serving the old build; the caller stops it instead.
         if target.exists() and _server_in_use(_locate_server(target)):
             raise PermissionError(f"audiocpp_server in {target} is running")
-        # Swap: the old tree moves aside first so a failed rename can put it back.
         retired = None
         if target.exists():
             retired = target.with_name(target.name + f".old-{os.getpid()}")
-            os.replace(target, retired)
+            _retire_tree(target, retired)
         try:
             os.replace(tree, target)
         except OSError:
@@ -1342,7 +1520,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--accelerator",
         default = _accelerator_from_env(),
-        # setup.sh / setup.ps1 forward UNSLOTH_AUDIO_CPP_ACCELERATOR verbatim ("CUDA", " cpu ").
         type = lambda value: value.strip().lower(),
         choices = list(ACCELERATORS),
         help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else auto (detect; CPU when no bundle covers the GPU)",
@@ -1367,7 +1544,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.print_asset:
             detected = detect_accelerator() if args.accelerator == "auto" else None
             _, repo, release, chosen = resolve_for_request(
-                args.accelerator, detected, token, release_tag
+                args.accelerator, detected, token, release_tag, supply_runtime = False
             )
             print(f"{repo} {release.get('tag_name') if release else '-'} {chosen or '(none)'}")
             return EXIT_OK if chosen else EXIT_FAILED
@@ -1382,13 +1559,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file = sys.stderr)
         return EXIT_FAILED
     except core.BusyInstallConflict as exc:
-        # Another setup (the desktop app, a second shell) holds the install lock.
         print(f"error: another audio.cpp install is running ({exc})", file = sys.stderr)
         return EXIT_BUSY
     except PermissionError as exc:
-        # Windows: a running audiocpp_server holds the tree open.
         print(
-            f"error: the audio.cpp runtime is in use ({exc}); stop Studio and retry",
+            f"error: the audio.cpp runtime is in use ({exc}); stop Unsloth Studio and retry",
             file = sys.stderr,
         )
         return EXIT_BUSY

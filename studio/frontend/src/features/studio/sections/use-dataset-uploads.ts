@@ -317,9 +317,7 @@ export function useDatasetUploads() {
       stopScaleChanged?.();
     };
     const hitsTarget = (position: { x: number; y: number }) => {
-      // A registered drop zone owns this position outright: bounds alone would
-      // also fire this listener for a dialog opened over the upload button, so
-      // the same file would upload here and stage in the dialog.
+      // A registered drop zone owns this position, or a dialog over the button would double-upload.
       if (nativeDropTargetAt(position) !== null) return false;
       const target = document.getElementById(datasetDropTargetId);
       return (

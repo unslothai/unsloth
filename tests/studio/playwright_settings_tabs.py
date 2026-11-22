@@ -14,6 +14,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _en_catalog import en_string  # noqa: E402
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
@@ -37,6 +38,7 @@ TABS = [
     "agents",
     "keyboard-shortcuts",
     "browser",
+    "computer-use",
     "debugging",
     "sandbox",
     "about",
@@ -68,7 +70,7 @@ LAN_STATUS = {
     "keyless_scope": "off",
     "keyless_tools": False,
 }
-PANEL = 'div[role="dialog"] main div.hover-scrollbar'
+PANEL = 'div[role="dialog"] main [data-settings-main-scroll]'
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
 # vite appends ?t= or ?v= to module URLs.
@@ -212,7 +214,7 @@ def open_dialog(page, tab: str | None = None) -> None:
 
 ON_SUBPAGE_JS = """() => ({
     subpage: !!document.querySelector('div[role="dialog"] main header button'),
-    elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+    elements: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
@@ -220,7 +222,7 @@ ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
     setTimeout(() => {
-        const panel = document.querySelector('div[role="dialog"] main div.hover-scrollbar');
+        const panel = document.querySelector('div[role="dialog"] main [data-settings-main-scroll]');
         window.__abandonedAt = {
             elements: panel ? panel.querySelectorAll('*').length : null,
             subpage: !!document.querySelector('div[role="dialog"] main header button'),
@@ -300,7 +302,7 @@ def run_chunk_fail(page) -> None:
             nav: document.querySelectorAll('[data-testid^="settings-tab-"]').length,
             harness: !!document.querySelector('[data-testid="harness-root"]'),
             boundary: !!document.querySelector('[data-testid="harness-error-boundary"]'),
-            panelText: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+            panelText: (document.querySelector('div[role="dialog"] main [data-settings-main-scroll]')
                 || {}).innerText || null,
             bodyText: (document.body.innerText || '').trim().length,
         })"""
@@ -348,13 +350,20 @@ def run_lan_address_actions(page) -> None:
         if address.count() != 1:
             fail(f"LAN address {url}: expected one visible row, found {address.count()}")
             continue
+        # The row is the widest ancestor that still names only this address, not the text's
+        # parent: the copy button now sits inside the URL pill and the QR button beside it.
         labels = address.evaluate(
-            """(node) => [...node.parentElement.querySelectorAll('button')]
-                .map((button) => button.getAttribute('aria-label'))"""
+            """(node, urls) => {
+                const names = (el) => urls.filter((u) => el.textContent.includes(u)).length;
+                let row = node.parentElement;
+                while (row.parentElement && names(row.parentElement) === 1) row = row.parentElement;
+                return [...row.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'));
+            }""",
+            LAN_URLS,
         )
         rows[url] = labels
         expected = [f"Show QR code for {url}", f"Copy {url}"]
-        if labels != expected:
+        if sorted(labels) != sorted(expected):
             fail(f"LAN address {url}: row actions {labels}, expected {expected}")
 
     if len(rows) != len(LAN_URLS):
@@ -451,9 +460,7 @@ def run_keystroke_search(page) -> None:
     toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
     until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
-    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
-    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
-    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    # bindingFromEvent drops Meta chords off macOS, so a hardcoded Meta records nothing on Linux.
     mac = page.evaluate(
         "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
     )
@@ -523,6 +530,84 @@ def run_keystroke_search(page) -> None:
     report["steps"].append("keystroke-search")
 
 
+def run_shortcut_recorder(page) -> None:
+    """Selecting a chord records the next one ahead of the shortcut it names and of the dialog's
+    own Escape; the row's switch and Backspace turn the action off without losing the dialog."""
+    open_dialog(page, "keyboard-shortcuts")
+    settle_panel(page)
+    row = page.locator(f'{PANEL} [data-settings-label="New chat"]')
+    chord = row.locator('button[aria-label^="Change shortcut"]').first
+    box = row.locator("input")
+    stored_js = "() => localStorage.getItem('unsloth_keyboard_shortcuts')"
+    # Same platform read as run_keystroke_search: Meta records nothing off macOS.
+    mac = page.evaluate(
+        "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
+    )
+    mod = "Meta" if mac else "Control"
+    state: dict = {"mod": mod}
+
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    state["placeholder"] = box.get_attribute("placeholder")
+    # A dialog gone here means the press reached Radix before the recorder.
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(SETTLE_MS)
+    state["after_escape"] = {
+        "dialog": page.locator('div[role="dialog"]').count(),
+        "recording": box.count(),
+    }
+
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    page.keyboard.press(f"{mod}+Shift+KeyY")
+    until(page, f"() => ({stored_js})()?.includes('Mod+Shift+KeyY')")
+    state["recorded"] = {"stored": page.evaluate(stored_js), "shown": chord.inner_text()}
+
+    switch = row.locator('button[role="switch"]')
+    click_forced(switch, timeout = 15000)
+    until(page, f"() => ({stored_js})()?.includes('\"disabled\":true')")
+    state["switched_off"] = {
+        "checked": switch.get_attribute("aria-checked"),
+        "stored": page.evaluate(stored_js),
+    }
+
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    # Hold the box before the key: Backspace closes the recorder in the same render (#14896), so
+    # resolving the locator afterwards waits 30 s for an input that is already gone.
+    recorder = box.element_handle()
+    page.keyboard.press("Backspace")
+    until(page, "el => el && !el.isConnected", arg = recorder)
+    state["cleared"] = {"shown": chord.inner_text(), "stored": page.evaluate(stored_js)}
+
+    click_forced(page.get_by_role("button", name = "Restore defaults"), timeout = 15000)
+    until(page, f"() => ({stored_js})() === null")
+    state["reset"] = {
+        "stored": page.evaluate(stored_js),
+        "checked": switch.get_attribute("aria-checked"),
+    }
+    report["shortcut_recorder"] = state
+
+    if state["placeholder"] != "Press key sequence":
+        fail(f"shortcut recorder: no recorder box ({state['placeholder']})")
+    if state["after_escape"]["dialog"] != 1:
+        fail("shortcut recorder: Escape closed the dialog instead of cancelling")
+    if state["after_escape"]["recording"] != 0:
+        fail("shortcut recorder: Escape left the recorder open")
+    if "Mod+Shift+KeyY" not in (state["recorded"]["stored"] or ""):
+        fail(f"shortcut recorder: the chord was not stored ({state['recorded']})")
+    if "Y" not in state["recorded"]["shown"]:
+        fail(f"shortcut recorder: the row does not show the chord ({state['recorded']})")
+    if state["switched_off"]["checked"] != "false":
+        fail(f"shortcut recorder: the switch did not turn off ({state['switched_off']})")
+    if state["cleared"]["shown"].strip() != "none":
+        fail(f"shortcut recorder: Backspace did not clear the chord ({state['cleared']})")
+    if state["reset"]["stored"] is not None or state["reset"]["checked"] != "true":
+        fail(f"shortcut recorder: Reset all left overrides ({state['reset']})")
+    page.evaluate("() => window.__settingsSmoke.close()")
+    report["steps"].append("shortcut-recorder")
+
+
 def assert_model_memory_rows() -> None:
     """The image/video idle row moved to Model memory; keepKv renders without a backend."""
     labels = {
@@ -537,6 +622,105 @@ def assert_model_memory_rows() -> None:
     for tab, label, present in expected:
         if (label in labels[tab]) != present:
             fail(f"{tab}: '{label}' {'missing' if present else 'still renders'} ({labels[tab]})")
+
+
+PANEL_SCROLL_JS = """(sel) => {
+    const root = document.querySelector(sel);
+    return root ? { top: root.scrollTop, max: root.scrollHeight - root.clientHeight } : null;
+}"""
+
+
+def run_scroll_resets_on_tab_switch(page) -> None:
+    """A tab opens at its top, not at the offset the previous tab was scrolled to (#14337)."""
+    until(page, DIALOG_GONE)
+    open_dialog(page, "appearance")
+    settle_panel(page)
+    page.evaluate(
+        "(sel) => { const r = document.querySelector(sel); r.scrollTop = r.scrollHeight; }", PANEL
+    )
+    scrolled = page.evaluate(PANEL_SCROLL_JS, PANEL)
+    report["scroll_reset"] = {"scrolled": scrolled}
+    if not scrolled or scrolled["top"] <= 0:
+        fail(f"scroll reset: appearance panel did not scroll, nothing to test ({scrolled})")
+        close_dialog(page)
+        return
+    click_tab_and_observe(page, "general")
+    after = page.evaluate(PANEL_SCROLL_JS, PANEL)
+    report["scroll_reset"]["after"] = after
+    if not after or after["top"] != 0:
+        fail(f"scroll reset: general opened at {after}, appearance was left at {scrolled['top']}")
+    else:
+        log(f"scroll reset: general opened at the top, appearance was left at {scrolled['top']}")
+    close_dialog(page)
+    report["steps"].append("scroll-reset")
+
+
+SEARCH_STATE_JS = """() => {
+    const aside = document.querySelector('div[role="dialog"] aside');
+    if (!aside) return null;
+    const results = [...aside.querySelectorAll('button:not([data-testid]):not([aria-label])')];
+    const nav = aside.querySelector('nav');
+    return {
+        query: aside.querySelector('input')?.value ?? null,
+        results: results.map(b => b.innerText.trim()),
+        current: results.filter(b => b.getAttribute('aria-current') === 'true')
+            .map(b => b.innerText.trim()),
+        navVisible: !!nav && getComputedStyle(nav).display !== 'none',
+    };
+}"""
+
+
+def run_search_reuse(page, query: str, first_label: str) -> None:
+    """A result click keeps the query, so the next result is one click away (#16313)."""
+    after_first = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"] = {"after_first": after_first}
+    if not after_first or after_first["query"] != query:
+        fail(f"search reuse: opening '{first_label}' cleared the query ({after_first})")
+        close_dialog(page)
+        return
+    if first_label not in after_first["results"] or after_first["navVisible"]:
+        fail(f"search reuse: results did not stay after opening '{first_label}' ({after_first})")
+    if after_first["current"] != [first_label]:
+        fail(f"search reuse: opened result not marked current ({after_first['current']})")
+    # The last result sits in another tab when the query spans tabs, so the jump crosses panels.
+    second = next(
+        (txt for txt in reversed(after_first["results"]) if txt and txt != first_label), None
+    )
+    if second is None:
+        fail(f"search reuse: '{query}' has no second result to open ({after_first['results']})")
+        close_dialog(page)
+        return
+    buttons = page.locator('div[role="dialog"] aside button:not([data-testid]):not([aria-label])')
+    click_forced(buttons.nth(after_first["results"].index(second)))
+    until(
+        page,
+        f"""label => ({SEARCH_STATE_JS})()?.current?.[0] === label""",
+        arg = second,
+    )
+    after_second = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["after_second"] = after_second
+    if after_second["query"] != query or after_second["current"] != [second]:
+        fail(
+            f"search reuse: second result '{second}' did not open from the kept list ({after_second})"
+        )
+    else:
+        log(f"search reuse: '{first_label}' then '{second}' opened from one '{query}' search")
+    # A panel link (Data > Manage storage) switches tabs through openDialog, not the list.
+    page.evaluate("() => window.__settingsSmoke.open('about')")
+    until(page, "() => window.__settingsSmoke.state().activeTab === 'about'")
+    page.wait_for_timeout(100)
+    left = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["after_panel_link"] = left
+    if left["query"] != query or left["current"]:
+        fail(f"search reuse: a panel link left a stale current result ({left})")
+    click_forced(page.locator('div[role="dialog"] aside button[aria-label]').first)
+    until(page, f"() => ({SEARCH_STATE_JS})()?.navVisible === true")
+    cleared = page.evaluate(SEARCH_STATE_JS)
+    report["search_reuse"]["cleared"] = cleared
+    if cleared["query"] != "" or not cleared["navVisible"] or cleared["results"]:
+        fail(f"search reuse: the clear button did not bring the tab list back ({cleared})")
+    close_dialog(page)
+    report["steps"].append("search-reuse")
 
 
 def run(page) -> None:
@@ -646,9 +830,70 @@ def run(page) -> None:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
 
+    if index is not None:
+        run_search_reuse(page, query, target_label)
+
+    run_composer_search(page)
+
     run_keystroke_search(page)
 
+    run_shortcut_recorder(page)
+
+    run_scroll_resets_on_tab_switch(page)
+
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
+
+
+# (label key, section title key) for each control moved out of Appearance into the Chat tab.
+# test_settings_tabs_composer_search_sections.py checks these against chat-tab.tsx, so a later
+# regrouping fails there in the unit tests instead of only in this browser run.
+COMPOSER_SEARCH_SECTIONS = (
+    ("settings.appearance.custom.chatWidth.label", "settings.chat.groups.customization.title"),
+    ("settings.chat.composerPosition", "settings.chat.groups.customization.title"),
+    ("chatBackground.outline", "settings.chat.groups.customization.title"),
+    ("settings.appearance.custom.sentAttachments.label", "settings.general.chatDefaults"),
+)
+
+
+def run_composer_search(page) -> None:
+    """The controls moved out of Appearance must be reachable through search in the Chat tab section
+    that now holds them (chat-tab.tsx): width, position and outline in Customization, sent-message
+    attachments in Chat defaults."""
+    results = []
+    for key, section_key in COMPOSER_SEARCH_SECTIONS:
+        label = en_string(key)
+        close_dialog(page)
+        open_dialog(page, "appearance")
+        settle_panel(page)
+        if label in snapshot(page).get("labels", []):
+            fail(f"composer search: '{label}' still renders in Appearance")
+        search = page.locator('div[role="dialog"] aside input').first
+        search.fill(label)
+        entry = page.locator('div[role="dialog"] aside').get_by_role(
+            "button", name = label, exact = True
+        )
+        click_forced(entry, timeout = 15000)
+        until(
+            page,
+            """label => document.querySelector('.settings-search-hit')?.dataset.settingsLabel === label""",
+            arg = label,
+            timeout = 15000,
+        )
+        state = page.evaluate(
+            """() => {
+                const hit = document.querySelector('.settings-search-hit');
+                return {
+                    tab: window.__settingsSmoke.state().activeTab,
+                    label: hit?.dataset.settingsLabel,
+                    section: hit?.closest('section')?.dataset.settingsLabel,
+                };
+            }"""
+        )
+        results.append(state)
+        if state != {"tab": "chat", "label": label, "section": en_string(section_key)}:
+            fail(f"composer search: '{label}' reached {state}")
+    report["composer_search"] = results
+    report["steps"].append("composer-search")
 
 
 def write_report() -> None:

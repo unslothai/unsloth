@@ -16,7 +16,7 @@ export function loadFailureLogFamily(
   return isDiffusion === true ? "diffusion-server" : "llama-server";
 }
 
-/** Pull the log path out of a load diagnostic (`llama_cpp.py` appends `Full log: <path>`). */
+/** `llama_cpp.py` appends `Full log: <path>`. */
 export function failureLogPath(message: string): string | null {
   const at = message.lastIndexOf("Full log: ");
   if (at === -1) return null;
@@ -44,7 +44,7 @@ export function viewLogsAction(
   };
 }
 
-// Messages the backend writes to the server log; client-input refusals carry their own text instead.
+// Messages the backend logs; client-input refusals carry their own text instead.
 const LOGGED_GENERATION_FAILURES = [
   "Image generation failed.",
   "Video generation failed.",

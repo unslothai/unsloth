@@ -164,7 +164,7 @@ test("recording starts and stops back to the empty card", () => {
   assert.match(hook, /createAudioRecorder\(stream\)/);
 });
 
-test("a too-large or empty file is refused before any upload, at the server's 200 MiB", () => {
+test("a too-large or empty file is refused before any upload, at the server's cap", () => {
   assert.equal(AUDIO_INPUT_MAX_BYTES, 200 * 1024 * 1024);
   assert.equal(
     audioFileProblem({ size: AUDIO_INPUT_MAX_BYTES, type: "audio/wav" }),
@@ -178,6 +178,26 @@ test("a too-large or empty file is refused before any upload, at the server's 20
     audioFileProblem({ size: 0, type: "audio/wav" }),
     "This file is empty.",
   );
+  // The server's cap follows the upload setting; null is no cap at all.
+  const mib = 1024 * 1024;
+  assert.equal(
+    audioFileProblem({ size: 300 * mib, type: "audio/wav" }, 500 * mib),
+    null,
+  );
+  assert.equal(
+    audioFileProblem({ size: 500 * mib + 1, type: "audio/wav" }, 500 * mib),
+    "Audio is too large. Keep it under 500 MB.",
+  );
+  assert.equal(
+    audioFileProblem({ size: 10 * 1024 * mib, type: "audio/wav" }, null),
+    null,
+  );
+  assert.equal(
+    audioFileProblem({ size: 0, type: "audio/wav" }, null),
+    "This file is empty.",
+  );
+  assert.match(hook, /await loadUploadLimitSettings\(\)/);
+  assert.match(hook, /audioFileProblem\(\s*\{[^}]*\},\s*maxBytes,\s*\)/);
   assert.match(
     audioFileProblem({ size: 10, type: "image/png", name: "a.png" }) ?? "",
     /not an audio file/,
@@ -225,10 +245,7 @@ test("the whole card is the drop target, with every way in", () => {
   for (const tab of ["Upload", "Record", "From history", "Saved voice"]) {
     assert.ok(card.includes(`label: "${tab}"`), tab);
   }
-  assert.match(
-    card,
-    /corner-squircle grid gap-3 rounded-4xl bg-card p-4 ring-1/,
-  );
+  assert.doesNotMatch(section, /bg-card|ring-1/);
   assert.doesNotMatch(card, /shadow-/);
   assert.ok(
     hook.indexOf('void drawBlob("local", file)') <
@@ -247,7 +264,6 @@ test("a superseded microphone request releases its stream", () => {
     hook,
     /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
   );
-  // Leaving the Audio page ends a recording.
   assert.match(
     hook,
     /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/,
@@ -325,7 +341,6 @@ test("a history pick carries a transcript only from speech clips", async () => {
   for (const workflow of ["speak", "clone", "edit"]) {
     assert.equal(clipReference({ ...clip, workflow }).transcript, "Hello there.");
   }
-  // Convert and Music prompts are labels, not what the clip says.
   assert.equal(clipReference({ ...clip, workflow: "convert" }).transcript, null);
   assert.equal(clipReference({ ...clip, workflow: "music" }).transcript, null);
 });
@@ -353,8 +368,7 @@ test("an upload that replaces a selection clears it, so a failed upload cannot r
 });
 
 test("a long history prompt or voice name truncates and keeps the duration visible", () => {
-  // Grid items default to min-width: auto; without a minmax(0, 1fr) column one long prompt
-  // made its row thousands of pixels wide and pushed the duration off the card.
+  // Grid items default to min-width: auto, so a minmax(0, 1fr) column is needed for long prompts.
   const historyList = card.slice(card.indexOf('tab === "history"'));
   assert.match(historyList, /<ul className="[^"]*\bmin-w-0\b[^"]*grid-cols-\[minmax\(0,1fr\)\]/);
   assert.match(historyList, /<li key=\{clip\.id\} className="min-w-0">/);
@@ -367,7 +381,6 @@ test("a long history prompt or voice name truncates and keeps the duration visib
 
 test("a saved voice cannot take a name another voice already has", () => {
   const dialog = readSrc("features/audio/components/save-voice-dialog.tsx");
-  // Case-insensitive, and the voice being edited may keep its own name.
   assert.match(
     dialog,
     /voice\.id !== voiceId &&\s*voice\.name\.trim\(\)\.toLowerCase\(\) === clean\.toLowerCase\(\)/,
@@ -379,8 +392,6 @@ test("a saved voice cannot take a name another voice already has", () => {
 });
 
 test("a deleted clip or voice keeps the card in error, which holds Clone's Generate", () => {
-  // A 404 for a history clip or saved voice fails the card instead of marking it loaded, and the
-  // card refetches (and fails again) after Dismiss while the stale selection stays.
   assert.match(hook, /"This saved voice was deleted\. Pick another one\."/);
   assert.match(hook, /"This clip was deleted\. Pick another one\."/);
   const generation = readSrc("features/audio/hooks/use-clone-generation.ts");

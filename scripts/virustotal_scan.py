@@ -36,10 +36,9 @@ from typing import Callable, Iterable, Sequence
 API_ROOT = "https://www.virustotal.com/api/v3"
 API_KEY_ENV = "VT_API_KEY"
 
-# Signature sidecars are a few hundred bytes of base64 produced by the Tauri updater signer.
 SKIPPED_SUFFIXES = (".sig",)
 
-# The public API allows 4 requests/minute. 20s between requests keeps us just inside that even if the runner clock and VirusTotal's window disagree slightly.
+# Public API allows 4 requests/minute; 20s leaves slack for clock skew.
 DEFAULT_REQUEST_INTERVAL = 20.0
 DEFAULT_TIMEOUT_SECONDS = 1500.0
 
@@ -47,11 +46,10 @@ DEFAULT_TIMEOUT_SECONDS = 1500.0
 DEFAULT_FAIL_THRESHOLD = 0
 
 _MAX_ATTEMPTS = 4
-# A failed upload means fetching a fresh signed URL, so this is deliberately small: each retry re-sends 40+ MB and spends two more requests of quota.
+# Small: each retry re-sends 40+ MB and spends two requests of quota.
 _UPLOAD_ATTEMPTS = 2
 _SOCKET_TIMEOUT = 300.0
 
-# Transport contract: (method, url, headers, body, timeout) -> (status, response_bytes).
 Transport = Callable[[str, str, "dict[str, str]", "bytes | None", float], "tuple[int, bytes]"]
 
 
@@ -104,7 +102,6 @@ def parse_stats(raw: object) -> ScanStats:
         suspicious = _count("suspicious"),
         undetected = _count("undetected"),
         harmless = _count("harmless"),
-        # `confirmed-timeout` is a separate bucket that means the same thing to us.
         timeout = _count("timeout") + _count("confirmed-timeout"),
     )
 
@@ -163,7 +160,7 @@ def _md_text(text: str) -> str:
     return escaped.replace("<", "&lt;").replace(">", "&gt;")
 
 
-# Also written by the workflow's placeholder step, so a reader sees one heading whether or not the scan produced a summary. Says neither "pre-flight" nor "post-publish": the scan runs after `publish-release`, but `inputs.draft` defaults to true, so the ordinary run has uploaded the assets to a draft rather than published them, and naming the assets is the only wording true of both dispatches.
+# Also written by the workflow's placeholder step. Names the assets since the release may be a draft.
 SUMMARY_HEADING = "### VirusTotal release asset scan"
 
 
@@ -262,7 +259,6 @@ def _default_transport(
         with urllib.request.urlopen(request, timeout = timeout, context = context) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
-        # 404 on a hash lookup is an expected control-flow signal, not a failure.
         return error.code, error.read()
 
 
@@ -331,13 +327,12 @@ class VirusTotalClient:
             if deadline is not None and self._clock() >= deadline:
                 raise TimeoutError(f"deadline reached before {method} {_redact_url(url)}")
             self._throttle(deadline)
-            # Re-check: pacing sleeps between the check above and the call below, so without this a request could start after the deadline and then block for the full socket timeout, overrunning the step's own budget.
+            # Re-check: pacing may have slept past the deadline.
             if deadline is not None and self._clock() >= deadline:
                 raise TimeoutError(
                     f"deadline reached while pacing before {method} {_redact_url(url)}"
                 )
             try:
-                # Clamp the socket budget to what is left.
                 socket_timeout = _SOCKET_TIMEOUT
                 if deadline is not None:
                     socket_timeout = max(1.0, min(socket_timeout, deadline - self._clock()))
@@ -349,7 +344,6 @@ class VirusTotalClient:
                 self._last_request_at = self._clock()
 
             if status == 429:
-                # Quota or minute-rate exhaustion.
                 last_error = "429 rate limited"
                 if attempt < max_attempts:
                     self._backoff(backoff * (2 ** (attempt - 1)), deadline)
@@ -388,7 +382,8 @@ class VirusTotalClient:
         if status == 404:
             return None
         if not isinstance(payload, dict):
-            # A 200 whose body did not parse (a proxy error page, a truncated read) proves nothing about whether VirusTotal holds this file. Returning None would be indistinguishable from a 404 and would upload the bundle, disclosing an unreleased build. Fail closed instead.
+            # A malformed 200 body must not look like a 404, which would upload an unreleased
+            # build. Fail closed.
             raise RuntimeError("VirusTotal hash lookup returned a malformed body")
         return payload
 
@@ -407,7 +402,7 @@ class VirusTotalClient:
             upload_url = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(upload_url, str) or not upload_url:
                 raise RuntimeError("VirusTotal did not return an upload URL")
-            # Mask before the URL is ever used, so anything that later echoes it (a traceback, a future debug print, a library error string) is scrubbed.
+            # Mask before first use so any later echo is scrubbed.
             _mask_in_actions(upload_url)
 
             try:
@@ -431,7 +426,7 @@ class VirusTotalClient:
             if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
                 analysis_id = payload["data"].get("id")
             if not isinstance(analysis_id, str) or not analysis_id:
-                # An accepted upload whose acknowledgement did not parse is a failed attempt, not a dead end: VirusTotal may well be analysing the file already. Raising straight out would report the asset unavailable after we had paid the disclosure cost of sending it, so spend the remaining attempt on a fresh signed URL instead.
+                # Unparsed upload ack: retry with a fresh URL, since the disclosure cost is already paid.
                 last_error = RuntimeError("VirusTotal upload did not return an analysis id")
                 if attempt < attempts:
                     continue
@@ -443,7 +438,6 @@ class VirusTotalClient:
     def wait_for_analysis(self, analysis_id: str, deadline: float) -> object:
         """Poll until the analysis completes or the caller's deadline passes."""
         while True:
-            # Checked inside request() too, but raising the analysis-specific message here keeps the summary row readable.
             if self._clock() >= deadline:
                 raise TimeoutError(f"analysis {analysis_id} did not complete before the deadline")
             _, payload = self.request(
@@ -524,7 +518,6 @@ def scan_file(client: VirusTotalClient, path: Path, deadline: float) -> FileRepo
             return report
 
         analysis_id = client.upload(path, deadline = deadline)
-        # wait_for_analysis only returns once status == "completed".
         attributes = _attributes(client.wait_for_analysis(analysis_id, deadline))
         _record(
             report,
@@ -560,7 +553,7 @@ def _emit(report: FileReport) -> None:
         flush = True,
     )
     if report.detections:
-        # ::warning:: and not ::error:: so the release still ships; see the module docstring.
+        # ::warning:: so the release still ships.
         print(
             f"::warning title=VirusTotal detection::{_gha_escape(report.name)}: "
             f"{stats.malicious} malicious, {stats.suspicious} suspicious "
@@ -623,7 +616,7 @@ def collect_paths(paths: Sequence[Path]) -> list[Path]:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    # The key never comes from argv: CLI arguments are world-readable in /proc.
+    # Never from argv: CLI arguments are world-readable in /proc.
     api_key = os.environ.get(API_KEY_ENV, "").strip()
 
     def _write_markdown(text: str) -> None:
@@ -632,7 +625,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output_markdown.write_text(text, encoding = "utf-8")
 
     if not api_key:
-        # A missing secret must never break a release: forks and re-runs by contributors without the org secret still have to be able to publish. The env var NAME is written out literally rather than interpolated from API_KEY_ENV; test_missing_key_skips_without_failing asserts the two stay in step.
+        # A missing secret must not break a release.
+        # test_missing_key_skips_without_failing checks the literal name.
         print(
             "virustotal_scan: VT_API_KEY is unset or empty; skipping the scan.",
             flush = True,

@@ -49,7 +49,12 @@ def _load():
         return torch.empty_like(tensor, **kwargs)
 
     namespace["torch"] = types.SimpleNamespace(
-        Tensor = torch.Tensor, empty_like = empty_like, cuda = cuda, strided = torch.strided
+        Tensor = torch.Tensor,
+        empty_like = empty_like,
+        cuda = cuda,
+        strided = torch.strided,
+        inference_mode = torch.inference_mode,
+        no_grad = torch.no_grad,
     )
     namespace["_is_parkable_tensor"] = lambda value: isinstance(value, torch.Tensor)
     return fns, cuda
@@ -209,3 +214,38 @@ def test_nested_or_layerwise_optimizer_state_is_declined():
     layerwise = types.SimpleNamespace(optimizer_dict = {}, param_groups = [], state = {})
     trainer = types.SimpleNamespace(model = _Model(), optimizer = layerwise)
     assert fns["_park_optimizer_to_host"](trainer) is None
+
+
+def test_park_under_outer_inference_mode_restores_ordinary_tensors(monkeypatch):
+    # An eval loop wrapped in torch.inference_mode() around the rollout must not turn the
+    # optimizer moments / grads into inference tensors, or the next optimizer.step() raises.
+    fns, _ = _load()
+    trainer, model, optimizer = _trainer_after_one_step()
+    state_before, grads_before = _snapshot(optimizer, model)
+
+    class Trainer:
+        def _generate_and_score_completions(self, inputs):
+            return inputs
+
+    fns["_wrap_grpo_generate_and_score"](Trainer)
+    instance = Trainer()
+    instance.__dict__.update(vars(trainer))
+    monkeypatch.setenv("UNSLOTH_PARK_OPTIMIZER_DURING_ROLLOUT", "1")
+    with torch.inference_mode():
+        assert instance._generate_and_score_completions("x") == "x"
+    assert getattr(instance, "_unsloth_park_count", 0) == 1
+    for p, s in optimizer.state.items():
+        for k, v in s.items():
+            if isinstance(v, torch.Tensor):
+                assert not v.is_inference(), k
+                assert torch.equal(v, state_before[(id(p), k)])
+    for p in model.parameters():
+        assert not p.grad.is_inference()
+        assert torch.equal(p.grad, grads_before[id(p)])
+    for host in instance._unsloth_park_buffers.values():
+        assert not host.is_inference()
+    optimizer.step()
+    # A second rollout reuses the pinned buffers outside inference mode as well.
+    with torch.inference_mode():
+        instance._generate_and_score_completions("x")
+    optimizer.step()

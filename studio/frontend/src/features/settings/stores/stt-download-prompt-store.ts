@@ -28,7 +28,7 @@ export const useSttDownloadPromptStore = create<SttDownloadPromptState>(
   }),
 );
 
-/** Ask the user to download `model`. Safe to call from non-React code. */
+/** Safe to call from non-React code. */
 export function requestSttDownload(
   model: SttModel,
   options?: Omit<SttDownloadRequest, "model">,

@@ -63,9 +63,8 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def test_every_endpoint_resolves_to_a_route_that_exists():
-    """The rule that turns a list of strings into a check. A typo'd path 404s
-    exactly like a missing router, so the payload would go red naming a tab
-    that is perfectly fine."""
+    """Each endpoint must resolve to a declared route, since a typo'd path 404s just like a missing
+    router and would wrongly fail a healthy tab."""
     prefixes = _mounted_prefixes()
     declared = _declared_get_paths()
     unresolved = []

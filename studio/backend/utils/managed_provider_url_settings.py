@@ -13,17 +13,14 @@ from typing import Any
 MANAGED_PRIVATE_PROVIDER_URLS_SETTING_KEY = "managed_private_provider_urls_allowed"
 DEFAULT_MANAGED_PRIVATE_PROVIDER_URLS_ALLOWED = False
 
-# Refuses private addresses for EVERY account, owner included, and outranks the stored preference:
-# what an operator set in the environment is not undone from a settings page.
+# Blocks private addresses for every account, owner included; outranks the stored preference, so an env setting is not undone from a settings page.
 BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
-# Asked by every managed outbound request; uncached it costs a fresh SQLite connection (~600us) on
-# the shared loop. A write drops the entry, so the TTL only bounds staleness in ANOTHER process.
+# Cache briefly: each uncached read costs a SQLite connection on the shared loop.
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
 _cached: tuple[float, bool] | None = None
-# Bumped by every write: a read that started earlier must not publish what it saw, or a disable
-# keeps allowing private egress for the rest of the TTL.
+# Bumped by every write so an older read cannot publish stale state; otherwise a disable keeps allowing private egress for the rest of the TTL.
 _generation = 0
 
 
@@ -68,13 +65,7 @@ def private_urls_locked_by_environment() -> bool:
 
 
 def get_managed_private_provider_urls_allowed() -> bool:
-    """Whether a managed account may use a provider base URL that resolves to a private address.
-
-    Installation-wide, so it is read from the owner's store whoever is asking. A missing setting
-    keeps the refusal that shipped, and a read failure fails closed: an unreadable settings DB must
-    not quietly widen what a managed account can dial.
-    """
-    # Before the cache: the strict answer is never the held one.
+    """Installation-wide, read from the owner store; a missing setting keeps the refusal, an unreadable one fails closed so managed accounts cannot widen reach."""
     if private_urls_locked_by_environment():
         return False
     held = _remembered()

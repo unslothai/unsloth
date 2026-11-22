@@ -11,7 +11,8 @@ import {
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 
-// Desktop quit never fires beforeunload; Rust asks instead, from the tray and (outside macOS) the close button.
+// Desktop quit never fires beforeunload; Rust asks instead, from the tray and (outside macOS) the
+// close button.
 function publishTrainingActive(active: boolean): void {
   if (!isTauri) return;
   void import("@tauri-apps/api/core")
@@ -19,8 +20,7 @@ function publishTrainingActive(active: boolean): void {
     .catch(() => {});
 }
 
-/** Mounts a beforeunload guard that warns while training is starting or active.
-* Call once at the app root. */
+/** Call once at the app root. */
 export function useTrainingUnloadGuard() {
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -45,9 +45,7 @@ export function useTrainingUnloadGuard() {
   }, []);
 }
 
-/**
-* Removes the active beforeunload guard (if any). Call before intentionally ending the session
-* so the "Server stopped" page renders without the browser prompting to confirm leaving. */
+/** Call before intentionally ending the session so the browser does not prompt. */
 export function removeTrainingUnloadGuard() {
   if (currentHandler) {
     window.removeEventListener("beforeunload", currentHandler);

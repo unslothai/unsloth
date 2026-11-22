@@ -105,7 +105,6 @@ SKILL_NAME = "matrix-skill"
 
 @seeder("skill")
 def seed_skill(account) -> dict[str, str]:
-    # Skills of a managed account live in its own workspace; the owner reads the home folders.
     from core.inference import skills as skills_module
 
     if account.is_owner:
@@ -113,7 +112,7 @@ def seed_skill(account) -> dict[str, str]:
     else:
         root = run_as(account, workspace_root) / "skills" / SKILL_NAME
     root.mkdir(parents = True, exist_ok = True)
-    # Quoted: the sentinel carries a colon, which a plain YAML scalar cannot.
+    # Quoted: the sentinel carries a colon.
     (root / "SKILL.md").write_text(
         f"---\nname: {SKILL_NAME}\ndescription: {json.dumps(SENTINEL, ensure_ascii = False)}\n"
         "---\nInstructions\n",
@@ -141,6 +140,12 @@ CORE_FACTORIES = {
         "chat", {"messages": [MESSAGE]}, fragment = SENTINEL
     ),
     "routes.chat_history:GET:/projects/{project_id}": Factory("project", fragment = SENTINEL),
+    # #17849: the project's folder browser and git status, read through the project's own lookup.
+    "routes.chat_history:GET:/projects/{project_id}/files": Factory("project"),
+    "routes.chat_history:GET:/projects/{project_id}/files/search": Factory(
+        "project", query = {"q": "notes"}
+    ),
+    "routes.chat_history:GET:/projects/{project_id}/changes": Factory("project"),
     "routes.chat_history:PATCH:/projects/{project_id}": Factory(
         "project", {"name": EDITED}, fragment = EDITED
     ),
@@ -162,23 +167,25 @@ CORE_FACTORIES = {
         "training", {"display_name": EDITED}, fragment = EDITED
     ),
     "routes.auth:DELETE:/api-keys/{key_id}": Factory("api-key"),
+    "routes.auth:PATCH:/api-keys/{key_id}": Factory(
+        "api-key", {"access": "inference"}, fragment = "inference"
+    ),
     "routes.mcp_servers:PUT:/{server_id}": Factory(
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
     "routes.mcp_servers:DELETE:/{server_id}": Factory("mcp", success = 204),
-    # Seeded disabled: its own account gets 400 before any network call, every other account 404.
     "routes.mcp_servers:GET:/{server_id}/ui-resource": Factory(
         "mcp", success = 400, query = {"uri": "ui://matrix/app.html"}
     ),
     "routes.mcp_servers:POST:/{server_id}/ui-tool-call": Factory(
         "mcp", {"tool_name": "refresh"}, success = 400
     ),
-    # Nothing cached for the seeded server: its own account gets 409, every other account 404.
     "routes.mcp_servers:GET:/{server_id}/tools": Factory("mcp", success = 409),
     "routes.skills:PUT:/{name}/enabled": Factory(
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),
     "routes.skills:GET:/{name}": Factory("skill", fragment = SENTINEL, absent = SENTINEL),
+    "routes.skills:GET:/{name}/export": Factory("skill", fragment = SKILL_NAME),
     "routes.skills:PUT:/{name}": Factory(
         "skill",
         {"description": EDITED, "instructions": "Instructions"},
@@ -196,6 +203,7 @@ from . import (  # noqa: E402  domain tables import Factory and register their s
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 
@@ -206,6 +214,7 @@ DOMAINS = (
     factories_providers,
     factories_rag,
     factories_runs,
+    factories_scheduled_tasks,
     factories_training,
 )
 

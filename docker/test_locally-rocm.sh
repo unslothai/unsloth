@@ -49,9 +49,7 @@ warn()   { printf "${YELLOW}WARN${NC}  %s\n" "$*"; }
 err()    { printf "${RED}ERROR${NC} %s\n" "$*" >&2; }
 fail()   { err "$*"; exit 1; }
 
-# AMD GPU device flags used for all `docker run` invocations. --group-add needs
-# NUMERIC gids: a name is resolved inside the container, where the host's
-# video/render groups do not exist.
+# --group-add needs NUMERIC gids: names resolve inside the container.
 AMD_DEVICE_FLAGS=(--device /dev/kfd --device /dev/dri)
 for _grp in video render; do
     _gid="$(getent group "$_grp" 2>/dev/null | cut -d: -f3)" || _gid=""
@@ -97,7 +95,6 @@ else
     warn "Then: sudo usermod -aG video,render \$USER  (log out and back in)"
 fi
 
-# Check the user is in the video group -- required for /dev/dri access.
 if id -nG 2>/dev/null | grep -qw video; then
     echo "  video group:  ok (current user is a member)"
 else
@@ -128,9 +125,7 @@ else
     BUILD_LOG="$LOG_DIR/build.log"
     echo "  log:           $BUILD_LOG"
 
-    # Through build.sh, not a bare docker build: it freezes UNSLOTH_REF and
-    # UNSLOTH_ZOO_REF to commits first, so a rerun after main moved cannot reuse
-    # the install layer of an earlier build and validate stale code.
+    # Through build.sh: it freezes the git refs so a rerun cannot reuse a stale install layer.
     IMAGE_NAME="${TAG%%:*}" TAG="${TAG#*:}" ROCM_VERSION="$ROCM_VERSION" \
         TORCH_INDEX_URL="$TORCH_INDEX_URL" ROCM_GFX="$ROCM_GFX" \
         bash "$BUILD_SH" --rocm 2>&1 | tee "$BUILD_LOG"
@@ -139,7 +134,6 @@ else
         fail "build exited $rc -- see $BUILD_LOG"
     fi
 
-    # Sanity-check the build's own self-test ran and passed.
     if grep -q "FAIL: missing packages\|Expected a ROCm torch wheel" "$BUILD_LOG"; then
         fail "build-time sanity check failed -- see $BUILD_LOG"
     fi
@@ -258,7 +252,6 @@ INNER
 fi
 
 # ============================================================================
-# Summary
 # ============================================================================
 banner "summary"
 echo "  image:    $TAG"

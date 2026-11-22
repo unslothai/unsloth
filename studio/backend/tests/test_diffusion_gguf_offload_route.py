@@ -80,7 +80,6 @@ def test_offloading_q4_pick_takes_the_cached_int8_checkpoint(policy):
 
 
 def test_sequential_offload_keeps_the_gguf():
-    # torchao never measured under sequential offload: the caller's decline stands.
     assert _decide(_plan(OFFLOAD_SEQUENTIAL)) == (None, None)
 
 

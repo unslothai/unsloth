@@ -318,7 +318,7 @@ def test_the_capability_read_checks_a_tool_it_has_no_answer_for(host, linux, mon
     _capability_client(OWNER).get("/api/sandbox/capability")
     assert refreshed == []
     _capability_client(OWNER).get("/api/sandbox/capability", params = {"refresh": "1"})
-    assert refreshed == [("python", True), ("terminal", True)]
+    assert refreshed == [("python", True), ("terminal", False)]
     refreshed.clear()
     _capability_client(ALICE).get("/api/sandbox/capability", params = {"refresh": "1"})
     assert refreshed == []
@@ -456,7 +456,6 @@ def test_windows_runtime_only_is_a_windows_operation(host, windows):
 
 
 def test_a_remote_owner_may_install_the_runtime_but_not_prepare(host, windows, monkeypatch):
-    # The runtime install has no administrator prompt; the chained setup ends in one (UAC).
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     calls, _saved, _plan = host
     with _client(OWNER) as client:

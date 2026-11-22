@@ -16,7 +16,6 @@ interface DeltaFragment {
   arguments: string;
 }
 
-/** Accumulate `delta.tool_calls[]` fragments the way the chat adapter does. */
 function accumulate(
   fragments: DeltaFragment[],
 ): (StreamedToolCallPart & { argsText: string })[] {
@@ -150,10 +149,7 @@ test("replayed arguments keep parsable text and fall back otherwise", () => {
     toolCallReplayArguments('{"query":"first"}', { query: "first" }),
     '{"query":"first"}',
   );
-  // Two calls glued into one slot. The stream adapter no longer produces this
-  // (see tests/parallel-tool-call-arguments.test.ts), but threads stored before
-  // it split them still hold it, and `_raw` is the adapter's own marker rather
-  // than a parameter any tool declares, so it must not go back on the wire.
+  // Legacy stored threads can hold two glued calls; `_raw` is an adapter marker, not a tool param.
   assert.equal(
     toolCallReplayArguments('{"query":"first"}{"query":"second"}', {
       _raw: '{"query":"first"}{"query":"second"}',

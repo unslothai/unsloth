@@ -22,6 +22,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -49,6 +50,13 @@ def _plan(
     **kwargs,
 ):
     return ToolLaunchPlan(argv = argv, workdir = str(workdir), env = {"PATH": "/usr/bin"}, **kwargs)
+
+
+@pytest.fixture
+def bwrap():
+    """Skip without bubblewrap, as ``prepared`` does: the test calls the real ``prepare()``, which resolves bwrap first."""
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
 
 
 @pytest.fixture
@@ -149,7 +157,7 @@ def test_the_writable_workdir_bind_lands_after_the_root_goes_read_only(prepared,
     assert argv[argv.index("--chdir") + 1] == workdir
 
 
-def test_both_spellings_of_a_symlinked_workdir_get_a_mount_point(tmp_path):
+def test_both_spellings_of_a_symlinked_workdir_get_a_mount_point(bwrap, tmp_path):
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -196,7 +204,6 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     if sandbox_linux.shutil.which("bwrap") is None:
         pytest.skip("bubblewrap is not installed on this host")
     etc = tmp_path / "etc"
-    # Debian, Fedora (conf/ and lib/), and Arch layouts.
     fedora = etc / "java" / "java-25-openjdk" / "java-25-openjdk"
     roots = (etc / "java-21-openjdk", fedora / "conf", fedora / "lib", etc / "java21-openjdk")
     secrets = []
@@ -211,13 +218,11 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     outside = tmp_path / "outside"
     outside.mkdir()
     secrets.append(outside / "private-key")
-    # A non-JDK tree the glob also matches.
     service = etc / "java-service"
     (service / "security").mkdir(parents = True)
     secrets += [service / "security" / "token", service / "app.properties"]
     for secret in secrets:
         secret.write_text("SECRET", encoding = "utf-8")
-    # Bind-source symlinks could expose host secrets; each target carries a marker.
     (outside / "java.security").write_text("", encoding = "utf-8")
     linked = etc / "java-8-openjdk"
     linked.mkdir()
@@ -260,7 +265,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     java = shutil.which("java")
     if sandbox_linux.shutil.which("bwrap") is None or java is None:
         pytest.skip("needs bubblewrap and a Java runtime")
-    # Force Java to load java.security.
     payload = (java, "-XshowSettings:security:properties", "-version")
     if subprocess.run(payload, capture_output = True).returncode != 0:
         pytest.skip("this JVM does not support -XshowSettings:security")
@@ -285,7 +289,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     completed = run(payload)
     assert completed.returncode == 0, completed.stderr
     assert "Error loading java.security" not in completed.stderr
-    # Distro JDKs reach cacerts through /etc links.
     keytool = os.path.join(os.path.dirname(os.path.realpath(java)), "keytool")
     if os.access(keytool, os.X_OK):
         completed = run((keytool, "-list", "-cacerts", "-storepass", "changeit"))
@@ -295,13 +298,104 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     assert f"user.home = {tmp_path}" in properties, properties
 
 
-def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
+def test_pip_gets_a_writable_prefix_inside_the_workdir(prepared):
     argv = prepared.argv
     packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
-    assert argv[argv.index("PIP_TARGET") + 1] == packages
+    assert argv[argv.index("PIP_PREFIX") + 1] == packages
+    assert argv[argv.index("PIP_IGNORE_INSTALLED") + 1] == "1"
+    assert "PIP_TARGET" not in argv
     pythonpath = argv[argv.index("PYTHONPATH") + 1].split(os.pathsep)
-    assert packages in pythonpath
     assert pythonpath[-1] == packages
+    assert (
+        sysconfig.get_path("purelib", vars = {"base": packages, "platbase": packages}) in pythonpath
+    )
+
+
+def test_prefix_dirs_ignore_scheme_paths_on_another_drive(monkeypatch):
+    from core.inference import os_sandbox
+
+    real = os_sandbox.sysconfig.get_paths
+
+    def get_paths(scheme, vars):
+        # relpath raises on nt for a path on another drive; None makes it raise here too.
+        return {**real(scheme, vars = vars), "stdlib": None, "include": None}
+
+    monkeypatch.setattr(os_sandbox.sysconfig, "get_paths", get_paths)
+    assert os_sandbox._pip_prefix_dirs() == (
+        os_sandbox._PIP_PREFIX_LIB_DIRS,
+        os_sandbox._PIP_PREFIX_SCRIPTS_DIR,
+    )
+
+
+def test_commands_follow_the_prefix_schemes_scripts_dir(monkeypatch):
+    from core.inference import os_sandbox
+
+    monkeypatch.setattr(os_sandbox, "_PIP_PREFIX_SCRIPTS_DIR", os.path.join("local", "bin"))
+    path = sandbox_linux._path(_plan("/w"), "/w/p").split(os.pathsep)
+    assert path == ["/usr/bin", "/w/p/local/bin", "/w/p/bin"]
+
+
+def _wheel(directory, name, version):
+    info = f"{name}-{version}.dist-info"
+    files = {
+        f"shared/{name}.py": f"VERSION = {version!r}\ndef main():\n    print(VERSION)\n",
+        f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        f"{info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{info}/entry_points.txt": f"[console_scripts]\n{name} = shared.{name}:main\n",
+    }
+    import zipfile
+
+    with zipfile.ZipFile(directory / f"{name}-{version}-py3-none-any.whl", "w") as wheel:
+        for path, text in files.items():
+            wheel.writestr(path, text)
+        wheel.writestr(f"{info}/RECORD", "".join(f"{p},,\n" for p in [*files, f"{info}/RECORD"]))
+
+
+def test_successive_pip_installs_in_the_jail_keep_every_command_module_and_version(tmp_path):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    workdir = tmp_path / "session"
+    wheels = workdir / "wheels"
+    wheels.mkdir(parents = True)
+    for name, version in (("alpha", "1.0"), ("beta", "1.0"), ("beta", "2.0")):
+        _wheel(wheels, name, version)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": os.path.join(os.path.dirname(sandbox_linux.__file__), "sandbox_site"),
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    }
+
+    def run(*argv):
+        launch = sandbox_linux.prepare(ToolLaunchPlan(argv = argv, workdir = str(workdir), env = env))
+        try:
+            return subprocess.run(
+                launch.argv,
+                env = launch.env,
+                pass_fds = launch.pass_fds,
+                preexec_fn = launch.preexec_fn,
+                capture_output = True,
+                text = True,
+                timeout = 180,
+            )
+        finally:
+            launch.cleanup()
+
+    if run("/bin/true").returncode != 0:
+        pytest.skip("bubblewrap cannot create a sandbox on this host")
+    if run(sys.executable, "-m", "pip", "--version").returncode != 0:
+        pytest.skip(
+            reason = "pip is not installed in this interpreter, so there is no install to run"
+        )
+    for spec in ("alpha", "beta==1.0", "beta==2.0"):
+        done = run(
+            sys.executable, "-m", "pip", "install", "--no-index", "--find-links", str(wheels), spec
+        )
+        assert done.returncode == 0, done.stdout + done.stderr
+    probe = "import shared.alpha, shared.beta, importlib.metadata as m; print(shared.beta.VERSION, m.version('beta'))"
+    seen = run(sys.executable, "-c", probe)
+    assert seen.stdout.split() == ["2.0", "2.0"], seen.stdout + seen.stderr
+    commands = run("/bin/sh", "-c", "alpha && beta")
+    assert commands.stdout.split() == ["1.0", "2.0"], commands.stdout + commands.stderr
 
 
 def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
@@ -345,7 +439,7 @@ def test_nothing_binds_or_creates_the_filesystem_root(prepared):
     assert "/" not in directories
 
 
-def test_a_launch_with_no_command_is_refused_rather_than_handed_to_bwrap(tmp_path):
+def test_a_launch_with_no_command_is_refused_rather_than_handed_to_bwrap(bwrap, tmp_path):
     with pytest.raises(SandboxUnavailableError, match = "needs a command"):
         sandbox_linux.prepare(_plan(tmp_path, argv = ()))
 
@@ -509,7 +603,9 @@ def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
     assert _pairs(prepared.argv, "--bind") == [(workdir, workdir)]
 
 
-def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_path, monkeypatch):
+def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(
+    bwrap, tmp_path, monkeypatch
+):
     cache = tmp_path / "hostcache"
     for name in ("hub", "datasets", "modules", "xet", "assets"):
         (cache / name).mkdir(parents = True)
@@ -535,7 +631,7 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(tmp_pat
         launch.cleanup()
 
 
-def test_the_cache_mount_points_are_made_here_and_left(tmp_path, cache):
+def test_the_cache_mount_points_are_made_here_and_left(bwrap, tmp_path, cache):
     workdir = tmp_path / "session"
     workdir.mkdir()
 
@@ -547,7 +643,7 @@ def test_the_cache_mount_points_are_made_here_and_left(tmp_path, cache):
     assert (workdir / ".cache" / "huggingface" / "hub").is_dir()
 
 
-def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, cache):
+def test_a_cache_directory_the_tool_call_wrote_is_left_alone(bwrap, tmp_path, cache):
     workdir = tmp_path / "session"
     (workdir / ".cache" / "huggingface").mkdir(parents = True)
     (workdir / ".cache" / "notes.txt").write_text("the user's")
@@ -557,7 +653,7 @@ def test_a_cache_directory_the_tool_call_wrote_is_left_alone(tmp_path, cache):
     assert (workdir / ".cache" / "notes.txt").read_text() == "the user's"
 
 
-def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(tmp_path, monkeypatch):
+def test_the_model_cache_bind_is_absent_when_the_host_has_no_cache(bwrap, tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox_linux, "_model_cache_binds", lambda workdir: {})
     launch = sandbox_linux.prepare(_plan(tmp_path))
     try:
@@ -576,7 +672,7 @@ def test_the_inner_home_and_tmpdir_are_set_by_bwrap_not_by_the_caller_environmen
     assert prepared.env == {"PATH": "/usr/bin"}
 
 
-def test_a_tmpdir_inside_the_workdir_survives_into_the_jail(tmp_path):
+def test_a_tmpdir_inside_the_workdir_survives_into_the_jail(bwrap, tmp_path):
     scratch = tmp_path / "unsloth-tmp"
     scratch.mkdir()
     plan = ToolLaunchPlan(
@@ -591,7 +687,7 @@ def test_a_tmpdir_inside_the_workdir_survives_into_the_jail(tmp_path):
         launch.cleanup()
 
 
-def test_a_tmpdir_outside_the_workdir_is_replaced_by_the_private_tmpfs(tmp_path):
+def test_a_tmpdir_outside_the_workdir_is_replaced_by_the_private_tmpfs(bwrap, tmp_path):
     plan = ToolLaunchPlan(
         argv = ("/bin/true",),
         workdir = str(tmp_path),
@@ -604,7 +700,7 @@ def test_a_tmpdir_outside_the_workdir_is_replaced_by_the_private_tmpfs(tmp_path)
         launch.cleanup()
 
 
-def test_the_outer_setsid_preexec_is_preserved(tmp_path):
+def test_the_outer_setsid_preexec_is_preserved(bwrap, tmp_path):
     ran = []
     launch = sandbox_linux.prepare(_plan(tmp_path, preexec_fn = lambda: ran.append("plan")))
     try:
@@ -615,7 +711,7 @@ def test_the_outer_setsid_preexec_is_preserved(tmp_path):
         launch.cleanup()
 
 
-def test_the_plan_policy_fields_survive_preparation(tmp_path):
+def test_the_plan_policy_fields_survive_preparation(bwrap, tmp_path):
     launch = sandbox_linux.prepare(_plan(tmp_path, timeout_seconds = 42, terminate_descendants = False))
     try:
         assert launch.timeout_seconds == 42
@@ -625,7 +721,7 @@ def test_the_plan_policy_fields_survive_preparation(tmp_path):
         launch.cleanup()
 
 
-def test_cleanup_releases_the_descriptor_and_the_private_identity_directory(tmp_path):
+def test_cleanup_releases_the_descriptor_and_the_private_identity_directory(bwrap, tmp_path):
     launch = sandbox_linux.prepare(_plan(tmp_path))
     identity_dir = launch.cleanup_paths[0]
     handle = launch.owned_files[0]
@@ -681,10 +777,19 @@ def test_a_hard_link_wholly_inside_the_workdir_is_allowed(tmp_path):
 def test_a_nested_host_mount_under_the_workdir_is_refused(tmp_path, monkeypatch):
     nested = tmp_path / "mounted"
     nested.mkdir()
-    real = os.path.ismount
-    monkeypatch.setattr(
-        os.path, "ismount", lambda path: os.path.samefile(path, nested) or real(path)
-    )
+    identity = (nested.stat().st_dev, nested.stat().st_ino)
+    real = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        # A mount answers with its own device; path/.. still answers with the host's.
+        info = real(path, *args, **kwargs)
+        if (info.st_dev, info.st_ino) != identity:
+            return info
+        fields = list(info)
+        fields[2] = info.st_dev + 1
+        return os.stat_result(fields, {"st_mtime_ns": info.st_mtime_ns})
+
+    monkeypatch.setattr(os, "lstat", lstat)
     with pytest.raises(SandboxUnavailableError, match = "nested host mount"):
         sandbox_linux._validate_workdir(str(tmp_path))
 
@@ -714,7 +819,7 @@ def test_an_overrun_does_not_stop_a_real_finding_from_refusing(tmp_path, monkeyp
         sandbox_linux._validate_workdir(str(tmp_path))
 
 
-def test_an_incomplete_scan_reaches_the_execution_record(tmp_path, monkeypatch):
+def test_an_incomplete_scan_reaches_the_execution_record(bwrap, tmp_path, monkeypatch):
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 2)
     for name in ("a", "b", "c", "d"):
         (tmp_path / name).write_text("")
@@ -1063,7 +1168,7 @@ def test_a_runtime_path_symlinked_out_of_the_workdir_is_not_bound(tmp_path, monk
     assert not any(sandbox_linux._within(str(secret), path) for path in paths)
 
 
-def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(tmp_path, cache):
+def test_a_symlinked_cache_ancestor_is_refused_rather_than_written_through(bwrap, tmp_path, cache):
     """Refused rather than unlinked: symlinking a cache leaf at another volume is a legitimate layout."""
     workdir = tmp_path / "session"
     workdir.mkdir()
@@ -1082,12 +1187,15 @@ def test_the_probe_launch_sets_no_new_privs_like_a_real_one(tmp_path):
 
     assert sandbox_probe._PR_SET_NO_NEW_PRIVS == 38
     source = inspect.getsource(sandbox_probe._run_probe)
-    assert "preexec_fn = _no_new_privs" in source
-    assert not [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(sandbox_probe._no_new_privs)))
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-    ]
+    assert "preexec_fn = _probe_preexec" in source
+    assert "_no_new_privs()" in inspect.getsource(sandbox_probe._probe_preexec)
+    for hook in (sandbox_probe._no_new_privs, sandbox_probe._probe_preexec):
+        # Runs between fork and exec: an import there can deadlock on the import lock.
+        assert not [
+            node
+            for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(hook))))
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
 
 
 def test_the_pip_targets_script_directory_is_last_on_path(prepared):
@@ -1189,7 +1297,9 @@ def test_the_plan_pre_exec_still_runs_before_the_scope():
     assert ran == ["plan"]
 
 
-def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
+def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(
+    bwrap, tmp_path, monkeypatch
+):
     workdir = tmp_path / "session"
     workdir.mkdir()
     executable = workdir / "python"
@@ -1229,7 +1339,7 @@ def _within_for_test(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def test_a_runtime_origin_is_excluded_under_the_workdir_alias_too(tmp_path, monkeypatch):
+def test_a_runtime_origin_is_excluded_under_the_workdir_alias_too(bwrap, tmp_path, monkeypatch):
     real = tmp_path / "real"
     real.mkdir()
     alias = tmp_path / "alias"
@@ -1316,7 +1426,11 @@ def _share_cache_paths(monkeypatch, cache):
 
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: _Paths()
+    module.effective_cache_home = lambda: cache
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    # The resolver prefers these over cache_home; a caller's own settings must not leak in.
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_symlinked_runtime_entry_inside_the_workdir_is_protected_by_name(tmp_path, monkeypatch):
@@ -1354,10 +1468,7 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     session = str(tmp_path / "session")
     assert sandbox_linux._model_cache_binds(session) == {}
     assert sandbox_linux._model_cache_binds(session) == {}
-    # `started` is filled from the scan workers, which a loaded runner can schedule after
-    # the launch that started them has returned, so counting it between the two launches
-    # reads a slow first-launch worker as a second one. Wait until every worker either
-    # launch started has reached the scan, then compare workers to paths.
+    # Scan workers may run late, so wait for each launched worker to reach the scan before counting.
     workers = [
         t
         for t in threading.enumerate()
@@ -1455,7 +1566,7 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
     link.symlink_to(real)
     monkeypatch.setattr(sys, "executable", str(link))
 
-    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
+    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Unsloth"):
         sandbox_linux._runtime_paths_under(str(workdir))
 
 
@@ -1506,7 +1617,9 @@ def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatc
     assert str(prefix / "ssl") in paths
 
 
-def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller_used(tmp_path):
+def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller_used(
+    bwrap, tmp_path
+):
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -1522,7 +1635,7 @@ def test_a_workdir_reached_through_a_symlink_is_bound_at_the_spelling_the_caller
         launch.cleanup()
 
 
-def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, cache):
+def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(bwrap, tmp_path, cache):
     workdir = tmp_path / "session"
     (workdir / ".cache" / "huggingface").mkdir(parents = True)
     (workdir / ".cache" / "huggingface" / "hub").write_text("not a directory")
@@ -1558,11 +1671,15 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
         path.mkdir(parents = True)
     import utils.hf_cache_settings as cache_settings
 
+    # datasets/assets follow the real HF home, which a Studio-selected folder leaves in place.
+    monkeypatch.setenv("HF_HOME", str(home))
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
         lambda: cache_settings.HuggingFaceCachePaths(
-            cache_home = home, hub_cache = hub, xet_cache = xet, source = "studio"
+            cache_home = hub.parent, hub_cache = hub, xet_cache = xet, source = "studio"
         ),
     )
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
@@ -1579,7 +1696,10 @@ def _real_cache(monkeypatch, home):
     paths = types.SimpleNamespace(cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet")
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: paths
+    module.effective_cache_home = lambda: home
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_cache_component_holding_an_ipc_node_is_not_shared(tmp_path, monkeypatch):
@@ -1616,7 +1736,7 @@ def test_a_clean_cache_component_is_still_shared(tmp_path, monkeypatch):
 
 
 def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
-    tmp_path, monkeypatch
+    bwrap, tmp_path, monkeypatch
 ):
     host = tmp_path / "hostcache"
     (host / "hub").mkdir(parents = True)
@@ -1642,7 +1762,7 @@ def test_a_trusted_system_gitconfig_is_bound_and_an_untrusted_one_is_not(tmp_pat
     assert sandbox_linux._trusted_system_file(str(good)) is False, "world-writable accepted"
 
 
-def test_a_runtime_under_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
+def test_a_runtime_under_the_workdir_is_re_bound_read_only(bwrap, tmp_path, monkeypatch):
     workdir = tmp_path / "session"
     venv = workdir / "venv"
     (venv / "lib").mkdir(parents = True)
@@ -1665,7 +1785,7 @@ def test_a_runtime_under_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch
         launch.cleanup()
 
 
-def test_a_runtime_symlinked_out_of_the_workdir_is_not_re_bound(tmp_path, monkeypatch):
+def test_a_runtime_symlinked_out_of_the_workdir_is_not_re_bound(bwrap, tmp_path, monkeypatch):
     """The negative control for the rule above."""
     workdir = tmp_path / "session"
     (workdir / "venv").mkdir(parents = True)
@@ -1803,7 +1923,7 @@ def test_an_editable_root_at_the_filesystem_root_is_refused(tmp_path, monkeypatc
 
 
 def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings(
-    tmp_path, monkeypatch
+    bwrap, tmp_path, monkeypatch
 ):
     real = tmp_path / "real"
     venv = real / "venv"
@@ -1834,7 +1954,9 @@ def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings
         launch.cleanup()
 
 
-def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):
+def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(
+    bwrap, tmp_path, monkeypatch
+):
     real = tmp_path / "real"
     (real / "venv" / "lib").mkdir(parents = True)
     (real / "venv" / "bin").mkdir()
@@ -2051,6 +2173,7 @@ def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatc
         hub_cache = str(state),
         xet_cache = str(elsewhere / "xet"),
     )
+    settings.effective_cache_home = lambda: elsewhere
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 
@@ -2080,6 +2203,7 @@ def test_a_cache_configured_as_a_home_directory_is_not_shared(monkeypatch, tmp_p
         hub_cache = str(home),
         xet_cache = str(models / "xet"),
     )
+    settings.effective_cache_home = lambda: models
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 
@@ -3030,3 +3154,47 @@ def test_a_launch_finding_a_check_in_progress_waits_for_its_answer(
     threading.Timer(0.05, release.set).start()
     assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) is None
     assert walks == [str(component)]
+
+
+def test_every_real_prepare_call_skips_without_bubblewrap():
+    """A test that runs the real prepare() errors on a host without bwrap unless it asks for the skip or fakes which()."""
+    import ast
+
+    tree = ast.parse(open(__file__, encoding = "utf-8").read())
+    unguarded = []
+    for node in tree.body:
+        if not (isinstance(node, ast.FunctionDef) and node.name.startswith("test_")):
+            continue
+        if {"bwrap", "prepared"} & {a.arg for a in node.args.args}:
+            continue
+        calls = [
+            c
+            for c in ast.walk(node)
+            if isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Attribute)
+            and c.func.attr == "prepare"
+            and isinstance(c.func.value, ast.Name)
+            and c.func.value.id == "sandbox_linux"
+        ]
+        # Guarded too: an inline skip, a faked which(), or a PATH the test sets to its own bwrap.
+        guarded = any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Attribute)
+            and (
+                (
+                    c.func.attr == "skip"
+                    and isinstance(c.func.value, ast.Name)
+                    and c.func.value.id == "pytest"
+                )
+                or (
+                    c.func.attr in ("setattr", "setenv")
+                    and any(
+                        isinstance(a, ast.Constant) and a.value in ("which", "PATH") for a in c.args
+                    )
+                )
+            )
+            for c in ast.walk(node)
+        )
+        if calls and not guarded:
+            unguarded.append(node.name)
+    assert not unguarded, unguarded

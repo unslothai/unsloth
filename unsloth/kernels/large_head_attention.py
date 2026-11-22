@@ -8,13 +8,17 @@
 # non-decreasing down the rows (causal, packed, right padding, sliding window).
 # UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched.
 
-import functools
 import os
 import sys
 
 import torch
 import triton
 import triton.language as tl
+
+try:
+    from triton.tools.tensor_descriptor import TensorDescriptor
+except ImportError:  # Triton < 3.4
+    TensorDescriptor = None
 
 __all__ = [
     "large_head_attention",
@@ -25,6 +29,9 @@ __all__ = [
 
 # calls: kernel ran; fallback: a qualifying call went back to SDPA after an error.
 LARGE_HEAD_ENGAGED = {"calls": 0, "fallback": 0}
+# Set to True on a 4D mask by unsloth/models/_block_compile.py (eager scan before the compiled
+# block) when the mask is exactly causal with no padding; compiled graphs cannot scan a mask.
+PLAIN_CAUSAL_ATTR = "_unsloth_plain_causal"
 _SUPPORTED_HEAD_DIMS = (512,)
 _INT32_MAX = 2**31 - 1
 
@@ -79,9 +86,9 @@ def _lh_fwd(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -148,8 +155,8 @@ def _lh_bwd_pre(
     sdom,
     H,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -204,9 +211,9 @@ def _lh_bwd_dq(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -289,24 +296,31 @@ def _lh_bwd_dkdv(
     sdvb,
     sdvh,
     sdvn,
+    sds,
     HKV,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    NSPLIT,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per step
+    BLOCK_N: tl.constexpr,  # key rows per program
+    DO_DK: tl.constexpr,  # compute and store dK
+    DO_DV: tl.constexpr,  # compute and store dV
 ):
-    # One program owns a kv block of one kv head and loops over its G query heads,
-    # so GQA needs no atomics and no repeated K / V.
+    # One program owns a kv block of one kv head and loops over its query heads (all G, or G / NSPLIT
+    # of them into an fp32 partial summed afterwards when B * HKV * kv blocks would leave SMs idle,
+    # e.g. Gemma-4 global layers: one kv head), so GQA needs no atomics and no repeated K / V.
     start_n = tl.program_id(0)
-    off_bkh = tl.program_id(1)
+    off_split = tl.program_id(1) % NSPLIT
+    off_bkh = tl.program_id(1) // NSPLIT
     off_b = (off_bkh // HKV).to(tl.int64)
     off_hk = (off_bkh % HKV).to(tl.int64)
     H = HKV * G
+    GS = G // NSPLIT
     K += off_b * skb + off_hk * skh
     V += off_b * svb + off_hk * svh
-    DK += off_b * sdkb + off_hk * sdkh
-    DV += off_b * sdvb + off_hk * sdvh
+    DK += off_b * sdkb + off_hk * sdkh + off_split.to(tl.int64) * sds
+    DV += off_b * sdvb + off_hk * sdvh + off_split.to(tl.int64) * sds
     LO += off_b * S
     HI += off_b * S
     QLO += off_b * S
@@ -317,14 +331,15 @@ def _lh_bwd_dkdv(
     offs_d = tl.arange(0, HEAD_DIM)
     col_ok = offs_n < S
     k = tl.load(K + offs_n[:, None] * skn + offs_d[None, :], mask = col_ok[:, None], other = 0.0)
-    v = tl.load(V + offs_n[:, None] * svn + offs_d[None, :], mask = col_ok[:, None], other = 0.0)
+    if DO_DK:
+        v = tl.load(V + offs_n[:, None] * svn + offs_d[None, :], mask = col_ok[:, None], other = 0.0)
     # Query rows attending any key of this block: [QLO[first key], QHI[last key]].
     m_start = tl.load(QLO + start_n * BLOCK_N)
     m_end = tl.load(QHI + tl.minimum(start_n * BLOCK_N + BLOCK_N, S) - 1) + 1
     dk = tl.zeros([BLOCK_N, HEAD_DIM], tl.float32)
     dv = tl.zeros([BLOCK_N, HEAD_DIM], tl.float32)
-    for g in range(G):
-        off_h = off_hk * G + g
+    for g in range(GS):
+        off_h = off_hk * G + off_split * GS + g
         Qh = Q + off_b * sqb + off_h * sqh
         DOh = DO + off_b * sdob + off_h * sdoh
         row_base = (off_b * H + off_h) * S
@@ -338,27 +353,280 @@ def _lh_bwd_dkdv(
                 DOh + cur_m[:, None] * sdom + offs_d[None, :], mask = row_ok[:, None], other = 0.0
             )
             lse = tl.load(LSE + row_base + cur_m, mask = row_ok, other = 0.0)
-            delta = tl.load(DELTA + row_base + cur_m, mask = row_ok, other = 0.0)
             lo = tl.load(LO + cur_m, mask = row_ok, other = S)
             hi = tl.load(HI + cur_m, mask = row_ok, other = -1)
             s = tl.dot(q, tl.trans(k)) * qk_scale
             keep = (offs_n[None, :] >= lo[:, None]) & (offs_n[None, :] <= hi[:, None])
             p = tl.where(keep, tl.exp2(s - lse[:, None]), 0.0)
-            dv += tl.dot(tl.trans(p.to(do.dtype)), do)
-            dp = tl.dot(do, tl.trans(v))
-            ds = p * (dp - delta[:, None])
-            dk += tl.dot(tl.trans(ds.to(q.dtype)), q)
-    dk = dk * sm_scale
-    tl.store(
-        DK + offs_n[:, None] * sdkn + offs_d[None, :],
-        dk.to(DK.dtype.element_ty),
-        mask = col_ok[:, None],
-    )
-    tl.store(
-        DV + offs_n[:, None] * sdvn + offs_d[None, :],
-        dv.to(DV.dtype.element_ty),
-        mask = col_ok[:, None],
-    )
+            if DO_DV:
+                dv += tl.dot(tl.trans(p.to(do.dtype)), do)
+            if DO_DK:
+                delta = tl.load(DELTA + row_base + cur_m, mask = row_ok, other = 0.0)
+                dp = tl.dot(do, tl.trans(v))
+                ds = p * (dp - delta[:, None])
+                dk += tl.dot(tl.trans(ds.to(q.dtype)), q)
+    if DO_DK:
+        dk = dk * sm_scale
+        tl.store(
+            DK + offs_n[:, None] * sdkn + offs_d[None, :],
+            dk.to(DK.dtype.element_ty),
+            mask = col_ok[:, None],
+        )
+    if DO_DV:
+        tl.store(
+            DV + offs_n[:, None] * sdvn + offs_d[None, :],
+            dv.to(DV.dtype.element_ty),
+            mask = col_ok[:, None],
+        )
+
+
+# TMA variants (sm12x; tensor descriptors, Triton >= 3.4): the same math with every Q / K / V / dO tile
+# loaded by TMA in two head_dim halves (a TMA box dimension is at most 256 elements), so each [*, 512]
+# product is two chained dots and each accumulator is two halves.
+@triton.jit
+def _tma_tile(
+    desc,
+    b,
+    h,
+    row0,
+    col0,
+    ROWS: tl.constexpr,  # rows of the tile
+    HALF: tl.constexpr,  # columns of the tile: half of head_dim
+):
+    return desc.load([b, h, row0, col0]).reshape(ROWS, HALF)
+
+
+@triton.jit
+def _lh_fwd_tma(
+    desc_q,
+    desc_k,
+    desc_v,
+    O,
+    LSE,
+    LO,
+    HI,
+    qk_scale,
+    sob,
+    soh,
+    som,
+    H,
+    G,
+    S,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
+):
+    HALF: tl.constexpr = HEAD_DIM // 2
+    start_m = tl.program_id(0)
+    off_bh = tl.program_id(1)
+    off_b = off_bh // H
+    off_h = off_bh % H
+    off_hk = off_h // G
+    O += off_b.to(tl.int64) * sob + off_h.to(tl.int64) * soh
+    LO += off_b.to(tl.int64) * S
+    HI += off_b.to(tl.int64) * S
+    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, HALF)
+    row_ok = offs_m < S
+    lo = tl.load(LO + offs_m, mask = row_ok, other = S)
+    hi = tl.load(HI + offs_m, mask = row_ok, other = -1)
+    n_start = (tl.load(LO + start_m * BLOCK_M) // BLOCK_N) * BLOCK_N
+    n_end = tl.load(HI + tl.minimum(start_m * BLOCK_M + BLOCK_M, S) - 1) + 1
+    q0 = _tma_tile(desc_q, off_b, off_h, start_m * BLOCK_M, 0, BLOCK_M, HALF)
+    q1 = _tma_tile(desc_q, off_b, off_h, start_m * BLOCK_M, HALF, BLOCK_M, HALF)
+    m_i = tl.full([BLOCK_M], float("-inf"), tl.float32)
+    l_i = tl.zeros([BLOCK_M], tl.float32)
+    acc0 = tl.zeros([BLOCK_M, HALF], tl.float32)
+    acc1 = tl.zeros([BLOCK_M, HALF], tl.float32)
+    for start_n in range(n_start, n_end, BLOCK_N):
+        cur = start_n + offs_n
+        k0 = _tma_tile(desc_k, off_b, off_hk, start_n, 0, BLOCK_N, HALF)
+        k1 = _tma_tile(desc_k, off_b, off_hk, start_n, HALF, BLOCK_N, HALF)
+        s = tl.dot(q1, tl.trans(k1), tl.dot(q0, tl.trans(k0))) * qk_scale
+        keep = (cur[None, :] >= lo[:, None]) & (cur[None, :] <= hi[:, None])
+        s = tl.where(keep, s, float("-inf"))
+        m_new = tl.maximum(m_i, tl.max(s, 1))
+        m_use = tl.where(m_new == float("-inf"), 0.0, m_new)
+        p = tl.exp2(s - m_use[:, None])
+        alpha = tl.exp2(m_i - m_use)
+        l_i = l_i * alpha + tl.sum(p, 1)
+        v0 = _tma_tile(desc_v, off_b, off_hk, start_n, 0, BLOCK_N, HALF)
+        v1 = _tma_tile(desc_v, off_b, off_hk, start_n, HALF, BLOCK_N, HALF)
+        p = p.to(v0.dtype)
+        acc0 = tl.dot(p, v0, acc0 * alpha[:, None])
+        acc1 = tl.dot(p, v1, acc1 * alpha[:, None])
+        m_i = m_new
+    l_safe = tl.where(l_i == 0.0, 1.0, l_i)
+    out = O + offs_m[:, None] * som + offs_d[None, :]
+    tl.store(out, (acc0 / l_safe[:, None]).to(O.dtype.element_ty), mask = row_ok[:, None])
+    tl.store(out + HALF, (acc1 / l_safe[:, None]).to(O.dtype.element_ty), mask = row_ok[:, None])
+    tl.store(LSE + off_bh.to(tl.int64) * S + offs_m, m_i + tl.log2(l_safe), mask = row_ok)
+
+
+@triton.jit
+def _lh_bwd_dq_tma(
+    desc_q,
+    desc_k,
+    desc_v,
+    desc_do,
+    DQ,
+    LSE,
+    DELTA,
+    LO,
+    HI,
+    qk_scale,
+    sm_scale,
+    sdqb,
+    sdqh,
+    sdqm,
+    H,
+    G,
+    S,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
+):
+    HALF: tl.constexpr = HEAD_DIM // 2
+    start_m = tl.program_id(0)
+    off_bh = tl.program_id(1)
+    off_b = off_bh // H
+    off_h = off_bh % H
+    off_hk = off_h // G
+    DQ += off_b.to(tl.int64) * sdqb + off_h.to(tl.int64) * sdqh
+    LO += off_b.to(tl.int64) * S
+    HI += off_b.to(tl.int64) * S
+    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, HALF)
+    row_ok = offs_m < S
+    lo = tl.load(LO + offs_m, mask = row_ok, other = S)
+    hi = tl.load(HI + offs_m, mask = row_ok, other = -1)
+    n_start = (tl.load(LO + start_m * BLOCK_M) // BLOCK_N) * BLOCK_N
+    n_end = tl.load(HI + tl.minimum(start_m * BLOCK_M + BLOCK_M, S) - 1) + 1
+    m0 = start_m * BLOCK_M
+    q0 = _tma_tile(desc_q, off_b, off_h, m0, 0, BLOCK_M, HALF)
+    q1 = _tma_tile(desc_q, off_b, off_h, m0, HALF, BLOCK_M, HALF)
+    do0 = _tma_tile(desc_do, off_b, off_h, m0, 0, BLOCK_M, HALF)
+    do1 = _tma_tile(desc_do, off_b, off_h, m0, HALF, BLOCK_M, HALF)
+    lse = tl.load(LSE + off_bh.to(tl.int64) * S + offs_m, mask = row_ok, other = 0.0)
+    delta = tl.load(DELTA + off_bh.to(tl.int64) * S + offs_m, mask = row_ok, other = 0.0)
+    dq0 = tl.zeros([BLOCK_M, HALF], tl.float32)
+    dq1 = tl.zeros([BLOCK_M, HALF], tl.float32)
+    for start_n in range(n_start, n_end, BLOCK_N):
+        cur = start_n + offs_n
+        k0 = _tma_tile(desc_k, off_b, off_hk, start_n, 0, BLOCK_N, HALF)
+        k1 = _tma_tile(desc_k, off_b, off_hk, start_n, HALF, BLOCK_N, HALF)
+        v0 = _tma_tile(desc_v, off_b, off_hk, start_n, 0, BLOCK_N, HALF)
+        v1 = _tma_tile(desc_v, off_b, off_hk, start_n, HALF, BLOCK_N, HALF)
+        s = tl.dot(q1, tl.trans(k1), tl.dot(q0, tl.trans(k0))) * qk_scale
+        keep = (cur[None, :] >= lo[:, None]) & (cur[None, :] <= hi[:, None])
+        p = tl.where(keep, tl.exp2(s - lse[:, None]), 0.0)
+        dp = tl.dot(do1, tl.trans(v1), tl.dot(do0, tl.trans(v0)))
+        ds = (p * (dp - delta[:, None])).to(k0.dtype)
+        dq0 = tl.dot(ds, k0, dq0)
+        dq1 = tl.dot(ds, k1, dq1)
+    out = DQ + offs_m[:, None] * sdqm + offs_d[None, :]
+    tl.store(out, (dq0 * sm_scale).to(DQ.dtype.element_ty), mask = row_ok[:, None])
+    tl.store(out + HALF, (dq1 * sm_scale).to(DQ.dtype.element_ty), mask = row_ok[:, None])
+
+
+@triton.jit
+def _lh_bwd_dkdv_tma(
+    desc_q,
+    desc_k,
+    desc_v,
+    desc_do,
+    DK,
+    DV,
+    LSE,
+    DELTA,
+    LO,
+    HI,
+    QLO,
+    QHI,
+    qk_scale,
+    sm_scale,
+    sdkb,
+    sdkh,
+    sdkn,
+    sdvb,
+    sdvh,
+    sdvn,
+    sds,
+    HKV,
+    G,
+    S,
+    NSPLIT,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per step
+    BLOCK_N: tl.constexpr,  # key rows per program
+    DO_DK: tl.constexpr,  # compute and store dK
+    DO_DV: tl.constexpr,  # compute and store dV
+):
+    tl.static_assert(DO_DK != DO_DV)  # one of dK / dV per pass
+    HALF: tl.constexpr = HEAD_DIM // 2
+    start_n = tl.program_id(0)
+    off_split = tl.program_id(1) % NSPLIT
+    off_bkh = tl.program_id(1) // NSPLIT
+    off_b = off_bkh // HKV
+    off_hk = off_bkh % HKV
+    H = HKV * G
+    GS = G // NSPLIT
+    DK += off_b.to(tl.int64) * sdkb + off_hk.to(tl.int64) * sdkh + off_split.to(tl.int64) * sds
+    DV += off_b.to(tl.int64) * sdvb + off_hk.to(tl.int64) * sdvh + off_split.to(tl.int64) * sds
+    LO += off_b.to(tl.int64) * S
+    HI += off_b.to(tl.int64) * S
+    QLO += off_b.to(tl.int64) * S
+    QHI += off_b.to(tl.int64) * S
+    n0 = start_n * BLOCK_N
+    offs_n = n0 + tl.arange(0, BLOCK_N)
+    offs_m = tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, HALF)
+    col_ok = offs_n < S
+    k0 = _tma_tile(desc_k, off_b, off_hk, n0, 0, BLOCK_N, HALF)
+    k1 = _tma_tile(desc_k, off_b, off_hk, n0, HALF, BLOCK_N, HALF)
+    if DO_DK:
+        v0 = _tma_tile(desc_v, off_b, off_hk, n0, 0, BLOCK_N, HALF)
+        v1 = _tma_tile(desc_v, off_b, off_hk, n0, HALF, BLOCK_N, HALF)
+    m_start = tl.load(QLO + n0)
+    m_end = tl.load(QHI + tl.minimum(n0 + BLOCK_N, S) - 1) + 1
+    acc0 = tl.zeros([BLOCK_N, HALF], tl.float32)
+    acc1 = tl.zeros([BLOCK_N, HALF], tl.float32)
+    for g in range(GS):
+        off_h = off_hk * G + off_split * GS + g
+        row_base = (off_b.to(tl.int64) * H + off_h) * S
+        for start_m in range(m_start, m_end, BLOCK_M):
+            cur_m = start_m + offs_m
+            row_ok = cur_m < S
+            q0 = _tma_tile(desc_q, off_b, off_h, start_m, 0, BLOCK_M, HALF)
+            q1 = _tma_tile(desc_q, off_b, off_h, start_m, HALF, BLOCK_M, HALF)
+            do0 = _tma_tile(desc_do, off_b, off_h, start_m, 0, BLOCK_M, HALF)
+            do1 = _tma_tile(desc_do, off_b, off_h, start_m, HALF, BLOCK_M, HALF)
+            lse = tl.load(LSE + row_base + cur_m, mask = row_ok, other = 0.0)
+            lo = tl.load(LO + cur_m, mask = row_ok, other = S)
+            hi = tl.load(HI + cur_m, mask = row_ok, other = -1)
+            s = tl.dot(q1, tl.trans(k1), tl.dot(q0, tl.trans(k0))) * qk_scale
+            keep = (offs_n[None, :] >= lo[:, None]) & (offs_n[None, :] <= hi[:, None])
+            p = tl.where(keep, tl.exp2(s - lse[:, None]), 0.0)
+            if DO_DV:
+                pt = tl.trans(p.to(do0.dtype))
+                acc0 = tl.dot(pt, do0, acc0)
+                acc1 = tl.dot(pt, do1, acc1)
+            if DO_DK:
+                delta = tl.load(DELTA + row_base + cur_m, mask = row_ok, other = 0.0)
+                dp = tl.dot(do1, tl.trans(v1), tl.dot(do0, tl.trans(v0)))
+                dst = tl.trans((p * (dp - delta[:, None])).to(q0.dtype))
+                acc0 = tl.dot(dst, q0, acc0)
+                acc1 = tl.dot(dst, q1, acc1)
+    if DO_DK:
+        out = DK + offs_n[:, None] * sdkn + offs_d[None, :]
+        tl.store(out, (acc0 * sm_scale).to(DK.dtype.element_ty), mask = col_ok[:, None])
+        tl.store(out + HALF, (acc1 * sm_scale).to(DK.dtype.element_ty), mask = col_ok[:, None])
+    else:
+        out = DV + offs_n[:, None] * sdvn + offs_d[None, :]
+        tl.store(out, acc0.to(DV.dtype.element_ty), mask = col_ok[:, None])
+        tl.store(out + HALF, acc1.to(DV.dtype.element_ty), mask = col_ok[:, None])
 
 
 def _bench_in_place(kernel_call, quantiles = None):
@@ -389,6 +657,94 @@ del _kernel
 
 _LOG2E = 1.4426950408889634
 
+# Fixed (BLOCK_M, BLOCK_N, num_warps, num_stages) per head_dim and GPU class, timed on Colab at Gemma-4
+# shapes (plans/impl_kh.md): 512 = global layers (16 q / 1 kv head, S 1K-8K), 256 = zoo's sliding band
+# (16 q / 8 kv heads, window 1024, S 2K-8K). dk / dv: dK and dV in two passes, one fp32 accumulator each;
+# dkdv: one pass for both. Other GPUs / head dims keep the autotuned configs and the fused pass.
+_TILES = {
+    512: {
+        "sm80": {"fwd": (32, 32, 4, 3), "dq": (32, 32, 4, 2), "dk": (16, 64, 8, 2), "dv": (32, 64, 8, 2)},
+        "sm8x_101k": {"fwd": (32, 32, 4, 2), "dq": (16, 32, 4, 2), "dkdv": (16, 32, 8, 1)},
+        "sm12x": {
+            "fwd": (32, 16, 4, 3), "dq": (32, 16, 4, 2), "dk": (16, 32, 4, 2), "dv": (16, 64, 8, 2),
+            "tma": {"fwd": (32, 32, 4, 2), "dq": (32, 64, 8, 1), "dk": (32, 64, 8, 2), "dv": (16, 64, 8, 3)},
+        },
+    },
+    256: {
+        "sm80": {"fwd": (64, 32, 4, 2), "dq": (64, 64, 4, 2), "dkdv": (64, 64, 8, 1)},
+        "sm12x": {"fwd": (32, 32, 4, 3), "dq": (32, 32, 4, 3), "dkdv": (16, 64, 8, 3)},
+    },
+}  # fmt: skip
+_TILE_CLASS = {}
+
+
+def _tiles(device, head_dim = 512):
+    """The fixed tile table for this GPU and head_dim, or None (autotune, fused dK / dV pass)."""
+    if head_dim not in _TILES or os.environ.get("UNSLOTH_LH_TILES", "1") == "0":
+        return None
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if index not in _TILE_CLASS:
+        props = torch.cuda.get_device_properties(index)
+        smem = getattr(props, "shared_memory_per_block_optin", 0)
+        name = None
+        if props.major == 8:
+            name = "sm80" if smem >= 160 * 1024 else ("sm8x_101k" if smem >= 99 * 1024 else None)
+        elif props.major == 12 and smem >= 99 * 1024:
+            name = "sm12x"
+        _TILE_CLASS[index] = name
+    return _TILES[head_dim].get(_TILE_CLASS[index])
+
+
+def _launch(kernel, grid, tile, *args, **kwargs):
+    """A fixed tile launches the jit function directly (one compiled variant); a tile this GPU cannot
+    fit drops the whole table for the device, so later calls autotune as before."""
+    if tile is not None:
+        bm, bn, w, st = tile
+        try:
+            return kernel.fn[grid(bm, bn)](
+                *args, BLOCK_M = bm, BLOCK_N = bn, num_warps = w, num_stages = st, **kwargs
+            )
+        except triton.runtime.errors.OutOfResources:
+            index = args[0].device.index
+            _TILE_CLASS[index if index is not None else torch.cuda.current_device()] = None
+    return kernel[lambda meta: grid(meta["BLOCK_M"], meta["BLOCK_N"])](*args, **kwargs)
+
+
+_TMA_BROKEN = set()
+
+
+def _tma_tiles(tiles, device, *tensors):
+    """The TMA tile table when this GPU's table has one and every operand can back a descriptor."""
+    tma = tiles and tiles.get("tma")
+    if tma is None or TensorDescriptor is None or os.environ.get("UNSLOTH_LH_TMA", "1") == "0":
+        return None
+    if device.index in _TMA_BROKEN:
+        return None
+    for t in tensors:
+        if (
+            t.data_ptr() % 16
+            or t.stride(-1) != 1
+            or any(x * t.element_size() % 16 for x in t.stride()[:-1])
+        ):
+            return None
+    return tma
+
+
+def _desc(t, rows):
+    return TensorDescriptor.from_tensor(t, [1, 1, rows, t.shape[-1] // 2])
+
+
+def _tma_failed(device, exc):
+    # Out of memory and compile-time tracing errors are not this path's to swallow.
+    if isinstance(exc, torch.cuda.OutOfMemoryError) or type(exc).__module__.startswith(
+        "torch._dynamo"
+    ):
+        raise exc
+    _TMA_BROKEN.add(device.index)
+    _warn_once(
+        f"Unsloth: head_dim 512 attention TMA path failed ({exc}); using the pointer kernels."
+    )
+
 
 def _fwd_impl(q, k, v, lo, hi, scale):
     B, H, S, D = q.shape
@@ -396,8 +752,42 @@ def _fwd_impl(q, k, v, lo, hi, scale):
     # (B, S, H, D) storage so the caller's transpose(1, 2).contiguous() is free.
     o = torch.empty((B, S, H, D), device = q.device, dtype = q.dtype).transpose(1, 2)
     lse = torch.empty((B, H, S), device = q.device, dtype = torch.float32)
+    tiles = _tiles(q.device, D)
+    tma = _tma_tiles(tiles, q.device, q, k, v)
+    if tma is not None:
+        bm, bn, w, st = tma["fwd"]
+        try:
+            with torch.cuda.device(q.device):
+                _lh_fwd_tma[(triton.cdiv(S, bm), B * H)](
+                    _desc(q, bm),
+                    _desc(k, bn),
+                    _desc(v, bn),
+                    o,
+                    lse,
+                    lo,
+                    hi,
+                    scale * _LOG2E,
+                    o.stride(0),
+                    o.stride(1),
+                    o.stride(2),
+                    H,
+                    H // HKV,
+                    S,
+                    HEAD_DIM = D,
+                    BLOCK_M = bm,
+                    BLOCK_N = bn,
+                    num_warps = w,
+                    num_stages = st,
+                    enable_fp_fusion = True,
+                )
+            return o, lse
+        except Exception as exc:
+            _tma_failed(q.device, exc)
     with torch.cuda.device(q.device):
-        _lh_fwd[lambda meta: (triton.cdiv(S, meta["BLOCK_M"]), B * H)](
+        _launch(
+            _lh_fwd,
+            lambda bm, bn: (triton.cdiv(S, bm), B * H),
+            tiles and tiles["fwd"],
             q,
             k,
             v,
@@ -427,15 +817,47 @@ def _fwd_impl(q, k, v, lo, hi, scale):
     return o, lse
 
 
+_SM_COUNT = {}
+
+
+def _dkdv_splits(
+    device,
+    bkh,
+    S,
+    G,
+    block_n = 32,
+):
+    """Query-head groups the dK / dV pass splits into, so that kv blocks x kv heads x splits fill the
+    GPU about twice over (1 = no split: one kv head over a short sequence ran on 64 programs)."""
+    if os.environ.get("UNSLOTH_LH_DKDV_SPLIT", "1") == "0" or G == 1:
+        return 1
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    sms = _SM_COUNT.get(index)
+    if sms is None:
+        sms = _SM_COUNT[index] = torch.cuda.get_device_properties(index).multi_processor_count
+    programs = triton.cdiv(S, block_n) * bkh
+    split = 1
+    while split * 2 <= G and G % (split * 2) == 0 and programs * split < 2 * sms:
+        split *= 2
+    return split
+
+
 def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     B, H, S, D = q.shape
     HKV = k.shape[1]
     G = H // HKV
-    if do.stride(-1) != 1:
+    if do.stride(-1) != 1 or _row_span(do) > _INT32_MAX:
         do = do.contiguous()
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
+    tiles = _tiles(q.device, D)
+    if tiles is None or os.environ.get("UNSLOTH_LH_SPLIT_DKDV", "1") == "0":
+        passes = [(None, True, True)]
+    elif "dkdv" in tiles:
+        passes = [(tiles["dkdv"], True, True)]
+    else:
+        passes = [(tiles["dk"], True, False), (tiles["dv"], False, True)]
     delta = torch.empty((B, H, S), device = q.device, dtype = torch.float32)
     positions = (
         torch.arange(S, device = q.device, dtype = torch.int32).expand(lo.shape[0], S).contiguous()
@@ -461,46 +883,81 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
             num_warps = 4,
             enable_fp_fusion = True,
         )
-        _lh_bwd_dkdv[lambda meta: (triton.cdiv(S, meta["BLOCK_N"]), B * HKV)](
-            q,
-            k,
-            v,
-            do,
-            dk,
-            dv,
-            lse,
-            delta,
-            lo,
-            hi,
-            qlo,
-            qhi,
-            scale * _LOG2E,
-            scale,
-            q.stride(0),
-            q.stride(1),
-            q.stride(2),
-            k.stride(0),
-            k.stride(1),
-            k.stride(2),
-            v.stride(0),
-            v.stride(1),
-            v.stride(2),
-            do.stride(0),
-            do.stride(1),
-            do.stride(2),
-            dk.stride(0),
-            dk.stride(1),
-            dk.stride(2),
-            dv.stride(0),
-            dv.stride(1),
-            dv.stride(2),
-            HKV,
-            G,
-            S,
-            HEAD_DIM = D,
-            enable_fp_fusion = True,
-        )
-        _lh_bwd_dq[lambda meta: (triton.cdiv(S, meta["BLOCK_M"]), B * H)](
+        tma = _tma_tiles(tiles, q.device, q, k, v, do) if len(passes) == 2 else None
+        if tma is not None:
+            try:
+                _bwd_tma(tma, do, q, k, v, dq, dk, dv, lse, delta, lo, hi, qlo, qhi, scale)
+                return dq, dk, dv
+            except Exception as exc:
+                _tma_failed(q.device, exc)
+        partial = None
+        for tile, do_dk, do_dv in passes:
+            nsplit = _dkdv_splits(q.device, B * HKV, S, G, tile[1] if tile else 32)
+            if nsplit > 1:
+                # One fp32 partial buffer, reused by the dV pass after dK is summed out of it.
+                shape = (nsplit, B, HKV, S, D)
+                if partial is None or partial.shape != shape:
+                    partial = torch.empty(shape, device = q.device, dtype = torch.float32)
+                dk_out = dv_out = partial
+                if do_dk and do_dv:
+                    dv_out = torch.empty_like(partial)
+            else:
+                dk_out, dv_out = dk, dv
+            _launch(
+                _lh_bwd_dkdv,
+                lambda bm, bn, nsplit = nsplit: (triton.cdiv(S, bn), B * HKV * nsplit),
+                tile,
+                q,
+                k,
+                v,
+                do,
+                dk_out,
+                dv_out,
+                lse,
+                delta,
+                lo,
+                hi,
+                qlo,
+                qhi,
+                scale * _LOG2E,
+                scale,
+                q.stride(0),
+                q.stride(1),
+                q.stride(2),
+                k.stride(0),
+                k.stride(1),
+                k.stride(2),
+                v.stride(0),
+                v.stride(1),
+                v.stride(2),
+                do.stride(0),
+                do.stride(1),
+                do.stride(2),
+                dk_out.stride(-4),
+                dk_out.stride(-3),
+                dk_out.stride(-2),
+                dv_out.stride(-4),
+                dv_out.stride(-3),
+                dv_out.stride(-2),
+                dk_out.stride(0) if nsplit > 1 else 0,
+                HKV,
+                G,
+                S,
+                nsplit,
+                HEAD_DIM = D,
+                DO_DK = do_dk,
+                DO_DV = do_dv,
+                enable_fp_fusion = True,
+            )
+            if nsplit > 1:
+                if do_dk:
+                    dk.copy_(dk_out.sum(0))
+                if do_dv:
+                    dv.copy_(dv_out.sum(0))
+        _launch(
+            _lh_bwd_dq,
+            lambda bm, bn: (triton.cdiv(S, bm), B * H),
+            tiles and tiles["dq"],
             q,
             k,
             v,
@@ -536,9 +993,88 @@ def _bwd_impl(do, q, k, v, o, lse, lo, hi, scale):
     return dq, dk, dv
 
 
-# Opaque custom ops keep torch.compile from tracing into Triton (no graph break, no
-# re-emission with fp fusion). The plain autograd.Function is the fallback for torch
-# builds without torch.library.custom_op.
+def _bwd_tma(tma, do, q, k, v, dq, dk, dv, lse, delta, lo, hi, qlo, qhi, scale):
+    B, H, S, D = q.shape
+    HKV = k.shape[1]
+    G = H // HKV
+    partial = None
+    for key, do_dk in (("dk", True), ("dv", False)):
+        bm, bn, w, st = tma[key]
+        nsplit = _dkdv_splits(q.device, B * HKV, S, G, bn)
+        out = dk if do_dk else dv
+        if nsplit > 1:
+            if partial is None or partial.shape[0] < nsplit:
+                partial = torch.empty((nsplit, B, HKV, S, D), device = q.device, dtype = torch.float32)
+            target = partial[:nsplit]
+        else:
+            target = out
+        _lh_bwd_dkdv_tma[(triton.cdiv(S, bn), B * HKV * nsplit)](
+            _desc(q, bm),
+            _desc(k, bn),
+            _desc(v, bn),
+            _desc(do, bm),
+            target,
+            target,
+            lse,
+            delta,
+            lo,
+            hi,
+            qlo,
+            qhi,
+            scale * _LOG2E,
+            scale,
+            target.stride(-4),
+            target.stride(-3),
+            target.stride(-2),
+            target.stride(-4),
+            target.stride(-3),
+            target.stride(-2),
+            target.stride(0) if nsplit > 1 else 0,
+            HKV,
+            G,
+            S,
+            nsplit,
+            HEAD_DIM = D,
+            BLOCK_M = bm,
+            BLOCK_N = bn,
+            DO_DK = do_dk,
+            DO_DV = not do_dk,
+            num_warps = w,
+            num_stages = st,
+            enable_fp_fusion = True,
+        )
+        if nsplit > 1:
+            out.copy_(target.sum(0))
+    bm, bn, w, st = tma["dq"]
+    _lh_bwd_dq_tma[(triton.cdiv(S, bm), B * H)](
+        _desc(q, bm),
+        _desc(k, bn),
+        _desc(v, bn),
+        _desc(do, bm),
+        dq,
+        lse,
+        delta,
+        lo,
+        hi,
+        scale * _LOG2E,
+        scale,
+        dq.stride(0),
+        dq.stride(1),
+        dq.stride(2),
+        H,
+        G,
+        S,
+        HEAD_DIM = D,
+        BLOCK_M = bm,
+        BLOCK_N = bn,
+        num_warps = w,
+        num_stages = st,
+        enable_fp_fusion = True,
+    )
+
+
+# Opaque custom ops keep torch.compile from tracing into Triton (no graph break, no re-emission with
+# fp fusion); the plain autograd.Function is the fallback without torch.library.custom_op.
 _HAS_CUSTOM_OP = (
     hasattr(torch, "library")
     and hasattr(torch.library, "custom_op")
@@ -638,13 +1174,10 @@ def intervals_from_mask(
     S,
     _rows = 1024,
 ):
-    """(lo, hi) int32 [B, S] such that query i attends exactly keys lo[i]..hi[i], or None.
-
-    None unless every row of `mask` (bool, or additive float with 0 = keep) allows one
-    non-empty contiguous key range and both ends are non-decreasing down the rows. One
-    host sync; the verdict is cached on the mask so every layer sharing it reuses it.
-    Inference tensors have no version counter, so they are rescanned on every call.
-    """
+    """Returns (lo, hi) int32 [B, S] (query i attends lo[i]..hi[i]) or None unless each mask row
+    (bool, or additive float with 0 = keep) is one non-empty contiguous key range with
+    non-decreasing ends; one host sync, cached on the mask, but inference tensors are rescanned
+    each call."""
     if not torch.is_tensor(mask) or mask.dim() != 4 or mask.shape[1] != 1:
         return None
     if mask.shape[-2] != S or mask.shape[-1] != S or mask.shape[0] not in (1, B):
@@ -707,9 +1240,27 @@ def large_head_attention(
     return out.transpose(1, 2)
 
 
-@functools.lru_cache(maxsize = 1)
+# Read once, like a cache, but dynamo reads (and guards on) this list instead of tracing through an
+# lru_cache wrapper, which warns and re-reads the environment, so compiled code agrees with eager.
+_ENABLED = [None]
+
+
 def _enabled():
-    return os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    if _ENABLED[0] is None:
+        _ENABLED[0] = os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    return _ENABLED[0]
+
+
+_enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
+
+
+def _row_span(x):
+    """Largest int32 element offset for a [B, H, S, D] operand (row and column offsets must stay
+    below 2^31; batch and head offsets are int64); a strided view can reach past it, but a
+    non-unit last stride is copied contiguous first, so numel bounds it."""
+    if x.stride(-1) != 1:
+        return x.numel()
+    return (x.shape[-2] - 1) * x.stride(-2) + (x.shape[-1] - 1)
 
 
 def _shapes_qualify(query, key, value):
@@ -729,7 +1280,9 @@ def _shapes_qualify(query, key, value):
         return False
     if key.dtype != query.dtype or value.dtype != query.dtype:
         return False
-    return max(query.numel(), key.numel(), value.numel()) <= _INT32_MAX
+    if max(query.numel(), key.numel(), value.numel()) > _INT32_MAX:
+        return False
+    return max(_row_span(query), _row_span(key), _row_span(value)) <= _INT32_MAX
 
 
 _SELF_CHECK = {}
@@ -744,9 +1297,13 @@ def _measured_faster_on(device):
         return False
 
 
-def _self_check(device, dtype):
-    """One small fwd + bwd against SDPA math per (device, dtype) before first use."""
-    key = (str(device), dtype)
+def _self_check(
+    device,
+    dtype,
+    head_dim = 512,
+):
+    """One small fwd + bwd against SDPA math per (device, dtype[, head_dim]) before first use."""
+    key = (str(device), dtype) if head_dim == 512 else (str(device), dtype, head_dim)
     if key in _SELF_CHECK:
         return _SELF_CHECK[key]
     passed = False
@@ -764,11 +1321,16 @@ def _self_check(device, dtype):
         with torch.inference_mode(False), torch.enable_grad(), hooks:
             q, k, v, g = [
                 torch.randn(shape, device = device, dtype = dtype, generator = gen)
-                for shape in ((1, 4, 80, 512), (1, 2, 80, 512), (1, 2, 80, 512), (1, 80, 4, 512))
+                for shape in (
+                    (1, 4, 80, head_dim),
+                    (1, 2, 80, head_dim),
+                    (1, 2, 80, head_dim),
+                    (1, 80, 4, head_dim),
+                )
             ]
             q, k, v = [x.requires_grad_() for x in (q, k, v)]
             lo, hi = _dense_intervals(1, 80, True, device)
-            out = large_head_attention(q, k, v, lo, hi, 512**-0.5)
+            out = large_head_attention(q, k, v, lo, hi, head_dim**-0.5)
             grads = torch.autograd.grad(out, (q, k, v), g)
             qf, kf, vf = [x.detach().float().requires_grad_() for x in (q, k, v)]
             ref = torch.nn.functional.scaled_dot_product_attention(
@@ -836,6 +1398,14 @@ if hasattr(torch.compiler, "assume_constant_result"):
     _math_sdpa_requested = torch.compiler.assume_constant_result(_math_sdpa_requested)
 
 
+def _is_capturing(device):
+    try:
+        with torch.cuda.device(device):
+            return torch.cuda.is_current_stream_capturing()
+    except Exception:
+        return False
+
+
 def _make_router(original):
     def _sdpa_large_head(
         module,
@@ -856,6 +1426,10 @@ def _make_router(original):
             and not dropout
             # The kernel only reads the mask's structure, so a trainable mask would get no grad.
             and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
+            # transformers 4.x pairs is_causal with a mask (SDPA applies both); intervals carry only the mask.
+            and not (
+                attention_mask is not None and is_causal is not None and is_causal is not False
+            )
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
@@ -867,15 +1441,36 @@ def _make_router(original):
             B, S = query.shape[0], query.shape[2]
             intervals = None
             compiling = torch.compiler.is_compiling()
+            # A host sync (mask scan, first self check) is illegal while a CUDA graph is captured,
+            # and a captured graph would replay one mask's verdict for whatever the buffer holds
+            # later. So capture only reads cached self checks and sends masked calls to SDPA.
+            capturing = not compiling and _is_capturing(query.device)
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
-            elif not compiling and _SELF_CHECK.get((str(query.device), query.dtype), True):
+            elif (
+                compiling
+                and getattr(attention_mask, PLAIN_CAUSAL_ATTR, None) is True
+                and attention_mask.shape[-2] == S
+                and attention_mask.shape[-1] == S
+            ):
+                # Block compile scanned this mask eagerly (no padding, plain causal), so the
+                # graph needs no host sync; the masked SDPA it replaces repeats the kv heads.
+                intervals = _dense_intervals(B, S, True, query.device)
+            elif (
+                not compiling
+                and not capturing
+                and _SELF_CHECK.get((str(query.device), query.dtype), True)
+            ):
                 # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
                 # masks cannot cache the verdict, so they are rescanned per layer: one sync each, only
                 # at prefill (decode never qualifies), cheaper than SDPA's repeated KV heads and mask.
-                intervals = intervals_from_mask(attention_mask, B, S)
-            if compiling:
+                try:
+                    intervals = intervals_from_mask(attention_mask, B, S)
+                except torch.cuda.OutOfMemoryError:
+                    # The mask scan allocates row chunks; near capacity, SDPA below decides as before.
+                    LARGE_HEAD_ENGAGED["fallback"] += 1
+            if compiling or capturing:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)
             elif intervals is not None:
                 checked = _self_check(query.device, query.dtype)
@@ -890,7 +1485,6 @@ def _make_router(original):
                     LARGE_HEAD_ENGAGED["calls"] += 1
                     return out, None
                 except torch.cuda.OutOfMemoryError:
-                    # SDPA below either fits or raises the same OOM the previous path would.
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                 except Exception as exc:
                     LARGE_HEAD_ENGAGED["fallback"] += 1
@@ -924,34 +1518,40 @@ _PATCHED = [False]
 
 
 def patch_large_head_attention(model = None):
-    """Route transformers' `sdpa` attention through the large head kernel when a call
-    qualifies; everything else reaches the previous `sdpa` function unchanged. With a
-    model, only installs if one of its modules has head_dim > 256."""
+    """Routes transformers' sdpa attention through the large head kernel when a call qualifies, else
+    the previous sdpa; with a model, installs only if a module has head_dim > 256."""
     if not _enabled() or not torch.cuda.is_available() or torch.version.hip is not None:
         return False
     if model is not None:
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())
         if not any(isinstance(d, int) and d in _SUPPORTED_HEAD_DIMS for d in head_dims):
             return False
+        # Forced float32 (zoo's Gemma-4 patch) runs attention in float32 on raw SDPA, never through
+        # this router: installing would only self check and autotune fp16 at load for nothing.
+        if getattr(model, "_unsloth_forced_float32", False) is True:
+            return False
         # Compiled graphs only read the cached verdict, so check before any tracing.
         try:
-            targets = {
-                (p.device, p.dtype)
-                for p in model.parameters()
-                if p.is_cuda and p.dtype in (torch.float16, torch.bfloat16)
-            }
+            targets = set()
+            for p in model.parameters():
+                if not p.is_cuda:
+                    continue
+                # bnb 4-bit weights are packed into uint8 or a float quant storage dtype that can
+                # differ from the compute dtype, which is on the quant state.
+                quant_state = getattr(p, "quant_state", None)
+                dtype = getattr(quant_state, "dtype", None) if quant_state is not None else p.dtype
+                if dtype in (torch.float16, torch.bfloat16):
+                    targets.add((p.device, dtype))
         except Exception:
             targets = set()
         passed = [_self_check(device, dtype) for device, dtype in targets]
         if passed and not any(passed):
-            # Every call would go back to SDPA, so leave it unwrapped.
             return False
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
         current = ALL_ATTENTION_FUNCTIONS["sdpa"]
     except Exception:
         return False
-    # Other wrappers (unsloth_zoo's gemma-4 sliding router) may sit on top of ours.
     if _PATCHED[0] or getattr(current, "_unsloth_large_head", False):
         return True
     # unsloth/utils/hf_packed_attention.py sends packed rows (packed_seq_lengths) past head dim 256 to

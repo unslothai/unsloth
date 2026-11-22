@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe optional Hub files without caching missing entries.
-
-``hf_hub_download`` can leave a ref pointing to a snapshot that is not on disk after a 404, causing
-``scan_cache_dir`` to omit the repo. Metadata requests answer the same question without changing
-the cache.
-"""
+"""Probe optional Hub files via metadata, since hf_hub_download can leave a dangling ref after a 404."""
 
 from __future__ import annotations
 
@@ -25,11 +20,8 @@ def hf_file_definitely_absent(
     revision: Optional[str] = None,
     token: Optional[str] = None,
 ) -> bool:
-    """Return True only when the Hub confirms that *filename* is absent.
-
-    Offline, authentication, rate-limit, and resolution failures return False so callers preserve
-    their existing download and error handling.
-    """
+    """True only when the Hub confirms absence; any other failure returns False so existing handling
+    runs."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
@@ -55,3 +47,37 @@ def hf_file_definitely_absent(
         logger.debug("Could not probe %s for %s: %s", repo_id, filename, exc)
         return False
     return False
+
+
+def is_repo_not_found(exc: BaseException) -> bool:
+    """A gated repo subclasses this error but exists."""
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+    return isinstance(exc, RepositoryNotFoundError) and not isinstance(exc, GatedRepoError)
+
+
+def hub_repo_not_found(repo_id: str, token: Optional[str] = None) -> bool:
+    """True only when the active source answers that it has no such repo for this caller; any
+    other failure is no answer."""
+    try:
+        from huggingface_hub import HfApi
+
+        from hub.utils.hf_tokens import call_with_anonymous_retry
+        call_with_anonymous_retry(
+            lambda sent: HfApi().model_info(repo_id, token = sent, timeout = 10.0), token
+        )
+    except Exception as exc:  # noqa: BLE001 - no answer is not an answer of "absent"
+        return is_repo_not_found(exc)
+    return False
+
+
+def repo_not_found_message(repo_id: str) -> str:
+    from utils.hub_settings import MODELSCOPE, active_source
+    if active_source() == MODELSCOPE:
+        return (
+            f"{repo_id} is not on ModelScope. "
+            "Switch the model source to Hugging Face in Settings to use it."
+        )
+    return (
+        f"{repo_id} was not found on Hugging Face. "
+        "Check the name, or set a token with access if the repository is private."
+    )

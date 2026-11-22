@@ -35,7 +35,6 @@ export function useAppShellReadySignal(): () => void {
   return useContext(AppShellReadyContext);
 }
 
-/** Suppress the portal itself, without changing its owner's controlled/open store state. */
 export function AppPortalGate({ children }: { children: ReactNode }): ReactNode {
   return useContext(AppRevealedContext) ? children : null;
 }

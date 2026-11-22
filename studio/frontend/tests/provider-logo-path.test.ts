@@ -17,16 +17,20 @@ test("connections use the model hub's canonical provider images", () => {
     ["deepseek", "deepseek-ai"],
     ["mistral", "mistralai"],
     ["huggingface", "huggingface"],
-    ["kimi", "moonshotai"],
     ["qwen", "qwen"],
     ["qwencloud", "qwen"],
-    ["zai", "zai-org"],
     ["deepinfra", "deepinfra"],
+    ["minimax", "minimax"],
   ]) {
     const hubLogo = PROVIDER_LOGOS.find(({ id }) => id === hubId);
     assert.ok(hubLogo, hubId);
     assert.equal(providerLogoPath(connection), hubLogo.logoPath, connection);
   }
+});
+
+test("boxed hub images give way to transparent marks that follow the theme", () => {
+  assert.equal(providerLogoPath("kimi"), "/provider-logos/moonshot.svg");
+  assert.equal(providerLogoPath("zai"), "/provider-logos/zai.svg");
 });
 
 test("Gemini keeps its own logo, separate from Google's hub image", () => {
@@ -41,7 +45,7 @@ test("every supported connection resolves to an existing public asset", () => {
   for (const type of [
     "openai", "openai_codex", "deepseek", "mistral", "huggingface", "kimi",
     "qwen", "qwencloud", "gemini", "anthropic", "openrouter", "vllm", "ollama", "llama_cpp",
-    "liquid", "typesafe", "zai", "deepinfra",
+    "liquid", "typesafe", "zai", "deepinfra", "minimax", "opencode", "opencode_go",
   ]) {
     const path = providerLogoPath(type);
     assert.ok(path?.startsWith("/"), type);

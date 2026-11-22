@@ -14,7 +14,10 @@ export const ENGINE_OPTIONS: Array<[EngineChoice, string]> = [
 ];
 
 export const ENGINE_HINT =
-  "Which engine runs this GGUF. Auto keeps the host's choice: diffusers on a GPU, native sd.cpp on CPU. Native applies LoRAs to GGUF models and usually needs less VRAM, but has no torch.compile or quantised fast paths and is often slower on CUDA. Diffusers runs a GGUF without LoRA. Applies on the next load (Reapply).";
+  "Which engine runs this GGUF. Auto keeps the host's choice: diffusers on a GPU, native sd.cpp on CPU. Native usually needs less VRAM, but has no torch.compile or quantised fast paths and is often slower on CUDA. Applies on the next load (Reapply).";
+
+export const ENGINE_HINT_CPU_ONLY =
+  "Which engine runs this GGUF. This device has no GPU PyTorch can use, so GGUF image models run on the native sd.cpp engine only. Applies on the next load (Reapply).";
 
 const KEY = "unsloth:images:engine-by-model";
 
@@ -72,9 +75,27 @@ interface EngineStatus {
   engine?: string | null;
   engine_forced?: string | null;
   native_engine_eligible?: boolean;
+  /** False on CPU-only torch: GGUF runs on sd.cpp only. */
+  gguf_diffusers_allowed?: boolean;
   lora_via_native?: boolean;
+  lora_after_reload?: boolean;
   supports_lora?: boolean;
+  lora_unavailable_reason?: string | null;
   resolved?: Record<string, { source: string; requested?: string | boolean | null }> | null;
+}
+
+/** An older backend that omits the flag keeps Diffusers. */
+export function diffusersEngineOffered(status: EngineStatus | null | undefined): boolean {
+  return status?.gguf_diffusers_allowed !== false;
+}
+
+export function engineOptionsFor(status: EngineStatus | null | undefined): Array<[EngineChoice, string]> {
+  return diffusersEngineOffered(status) ? ENGINE_OPTIONS : ENGINE_OPTIONS.filter(([value]) => value !== "diffusers");
+}
+
+/** A Diffusers pick reads as Auto on a CPU-only host (the backend would refuse it). */
+export function hostEngineChoice(choice: EngineChoice | undefined, status: EngineStatus | null | undefined): EngineChoice | undefined {
+  return choice === "diffusers" && !diffusersEngineOffered(status) ? "auto" : choice;
 }
 
 /** The select shows only for a loaded GGUF the native engine can run. */
@@ -97,6 +118,18 @@ export function offersNativeLoraReload(status: EngineStatus | null | undefined):
   );
 }
 
+/** The note under the LoRA slot after Speed=Auto compiled the model on its 3rd image: a reload defers again. */
+export function offersCompiledLoraReload(status: EngineStatus | null | undefined): boolean {
+  return Boolean(status?.loaded && status.lora_after_reload && !status.supports_lora);
+}
+
+/** The LoRA slot's text when LoRA is off and neither reload note applies, so the slot never renders blank. */
+export function loraUnavailableNote(status: EngineStatus | null | undefined): string | null {
+  if (!status?.loaded || status.supports_lora) return null;
+  if (offersNativeLoraReload(status) || offersCompiledLoraReload(status)) return null;
+  return status.lora_unavailable_reason || "LoRAs cannot be applied to this model on its current engine.";
+}
+
 interface ReloadStatus {
   loaded: boolean;
   repo_id?: string | null;
@@ -112,6 +145,13 @@ function baseRepoOf(status: ReloadStatus): { baseRepo?: string } {
   return status.base_repo ? { baseRepo: status.base_repo } : {};
 }
 
+/** The page's own GGUF target with the resident's base repo when it names none (one seeded from a status read that
+ *  left it out), so the reload keeps the companions it runs with now. ``last`` itself otherwise. */
+function withResidentBase<T extends { kind?: string | null }>(last: T, status: ReloadStatus): T {
+  if (last.kind !== "gguf" || (last as { baseRepo?: string }).baseRepo || !status.base_repo) return last;
+  return { ...last, ...baseRepoOf(status) };
+}
+
 /** The GGUF the native-reload note names: the page's own last load only while it is still the resident model (another
  *  client may have replaced it), else the checkpoint status reports. */
 export function nativeReloadTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
@@ -120,7 +160,7 @@ export function nativeReloadTarget<T extends { repoId: string; kind?: string | n
 ): T | { repoId: string; kind: "gguf"; filename: string; displayRepoId?: string; baseRepo?: string } | null {
   if (!status?.loaded || status.model_kind !== "gguf" || !status.repo_id || !status.gguf_filename) return null;
   if (last && last.repoId === status.repo_id && last.kind === "gguf" && last.filename === status.gguf_filename) {
-    return last;
+    return withResidentBase(last, status);
   }
   return {
     repoId: status.repo_id,
@@ -213,7 +253,7 @@ export function reapplyTarget<T extends { repoId: string; kind?: string | null; 
     last.kind === status.model_kind &&
     (last.kind === "pipeline" || last.filename === status.gguf_filename)
   ) {
-    return last;
+    return withResidentBase(last, status);
   }
   return residentReloadTarget(status);
 }

@@ -9,13 +9,13 @@ import {
   loadSttModel,
   sttEngineFor,
   sttEngineStatusFor,
-} from "@/features/chat";
+} from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
   finishExternalJob,
-  invalidateGgufVariantsCache,
   startExternalJob,
   updateExternalJob,
-} from "@/features/hub";
+} from "@/features/hub/download-manager/external-jobs";
+import { invalidateGgufVariantsCache } from "@/features/hub/inventory/api";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
@@ -32,15 +32,10 @@ import {
   sttReplacementAction,
 } from "./stt-download-trackers";
 
-/**
- * Shows a dictation model download in the shared download panel, and loads the
- * model once it lands. The STT sidecars own the transfer, so progress is
- * polled from their status rather than driven by the hub poll loop.
- */
+/** The STT sidecars own the transfer, so progress is polled from their status. */
 
 const POLL_MS = 750;
-// A download reports nothing for a moment while the worker starts. Without this
-// the first poll would read "not downloading" and call it finished.
+// A starting worker reports nothing at first; without this grace it would read as finished.
 const START_GRACE_MS = 8_000;
 
 const trackers = new SttDownloadTrackers();
@@ -273,8 +268,7 @@ function trackSttDownloadNow(
           translate("settings.voice.dictation.sttCancelDownloadFailed"),
           { description: error instanceof Error ? error.message : undefined },
         );
-        // The row is already showing "cancelling" and progress updates never
-        // reset state, so put it back or it stays there for the whole transfer.
+        // The row already shows "cancelling" and progress never resets state, so restore it.
         throw error;
       }
     },

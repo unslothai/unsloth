@@ -123,9 +123,8 @@ def test_full_lists_every_drifted_entry(oracle, capsys):
 
 
 def test_strict_oracle_is_the_one_lint_pins_against(oracle):
-    """--colab-pin is fed COLAB_FALLBACK_FILE, and that is the snapshot whose
-    drift is fatal. If these ever diverge the tripwire is guarding the wrong
-    file again."""
+    """--colab-pin is fed COLAB_FALLBACK_FILE, the snapshot whose drift is fatal; the strict oracle
+    must stay that same file or the tripwire guards the wrong one."""
     assert nv.COLAB_ORACLE_FILES[nv.COLAB_STRICT_ORACLE] == nv.COLAB_FALLBACK_FILE.name
 
 
@@ -218,9 +217,8 @@ def test_refresh_all_writes_nothing_into_a_fresh_dir_on_failure(oracle, tmp_path
 
 
 def test_cron_lint_survives_a_strict_drift_failure():
-    """The strict step exits 1 on a Colab rotation, which is exactly when the
-    live-PyPI pass is worth having. Without `if: always()` on the steps after
-    it, the job would only ever lint on the days nothing drifted."""
+    """The strict step exits 1 on a Colab rotation, so steps after it need if: always() to keep the
+    live-PyPI lint running on drift days."""
     wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
     rest = wf.split("\n  static-with-pypi:", 1)[1]
     nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
@@ -343,9 +341,8 @@ def test_a_rule_bearing_oracle_that_will_not_fetch_still_fails_the_refresh(oracl
 def test_a_refresh_never_acknowledges_a_payload_the_rules_cannot_read(
     oracle, tmp_path, name, payload
 ):
-    """Writing it would leave upstream and snapshot equally empty of the key, and colab-diff
-    compares the two parses, so the strict tripwire would go quiet on the very rotation it
-    exists to catch."""
+    """A refresh must not acknowledge a payload the rules cannot read: upstream and snapshot would
+    both lack the key and colab-diff would go quiet on that rotation."""
     upstream, _ = oracle
     upstream[name] = payload
     out_dir = tmp_path / "rotated"

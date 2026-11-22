@@ -61,7 +61,7 @@ printf '%s\n' "$PS_FINDER" | grep -q '^function Find-InstalledUv {' || {
 fake_uv() {  # fake_uv <dir> [exit code] [version]
     # It prints a version because the finder reads one; a silent stand-in would be refused.
     mkdir -p "$1"
-    printf '#!/bin/sh\necho "uv %s (0123456 2026-01-01)"\nexit %s\n' "${3:-0.12.12}" "${2:-0}" > "$1/uv"
+    printf '#!/bin/sh\necho "uv %s (0123456 2026-01-01)"\nexit %s\n' "${3:-0.13.5}" "${2:-0}" > "$1/uv"
     chmod +x "$1/uv"
 }
 
@@ -102,23 +102,23 @@ for shell in sh bash; do
     assert_eq "$shell: ...and with nothing else installed that is a miss" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$BROKEN" "$shell" "$PROBE")"
 
-    # Below the floor, uv's managed-Python manifest tops out at a CPython that cannot import torch.
+    # Below the floor, uv's bundled roots still trust the emSign CAs (GHSA-hq85-5cpj-mr62).
     OLD="$CASE/old uv"
-    fake_uv "$OLD" 0 0.4.0
+    fake_uv "$OLD" 0 0.12.1
     assert_eq "$shell: a uv below the minimum version is not reused" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
     case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$DIAG")" in
         *"old=$OLD/uv"*) ok "$shell: ...and the diagnostic names the version it refused" ;;
         *) bad "$shell: ...and the diagnostic names the version it refused ($(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$DIAG"))" ;;
     esac
-    fake_uv "$OLD" 0 0.9.3
+    fake_uv "$OLD" 0 0.13.4
     assert_eq "$shell: a uv exactly at the minimum version is reused" \
         "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
     # A prerelease of the floor is below it; install.sh's _uv_version_ok refuses it too.
-    fake_uv "$OLD" 0 "0.9.3-rc.1"
+    fake_uv "$OLD" 0 "0.13.4-rc.1"
     assert_eq "$shell: a prerelease of the minimum version is not reused" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
-    fake_uv "$OLD" 0 "0.9.4-rc1"
+    fake_uv "$OLD" 0 "0.13.5-rc1"
     assert_eq "$shell: a prerelease above the minimum version is reused" \
         "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
     # Runs but answers as something else; a Windows stand-in cannot express this.
@@ -255,7 +255,7 @@ BODY
 done
 
 # Source contract: the reuse sits between the PATH probe and the download, in both shells.
-_probe_at=$(grep -n '^if command -v uv &>/dev/null; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
+_probe_at=$(grep -n '^if command -v uv &>/dev/null && \[ -z "\$_SETUP_UV_PATH_OLD" \]; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
 _reuse_at=$(grep -n '^elif _setup_find_installed_uv; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
 _install_at=$(grep -n 'if _setup_install_uv_pinned[ ;]' "$SETUP_SH" | head -1 | cut -d: -f1)
 if [ -n "$_probe_at" ] && [ -n "$_reuse_at" ] && [ -n "$_install_at" ] \
@@ -264,7 +264,7 @@ if [ -n "$_probe_at" ] && [ -n "$_reuse_at" ] && [ -n "$_install_at" ] \
 else
     bad "setup.sh reuses an installed uv before it downloads one (probe=$_probe_at reuse=$_reuse_at install=$_install_at)"
 fi
-_ps_probe_at=$(grep -n '^if (Get-Command uv -ErrorAction SilentlyContinue) {$' "$SETUP_PS1" | head -1 | cut -d: -f1)
+_ps_probe_at=$(grep -n '^if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not \$pathUvOld) {$' "$SETUP_PS1" | head -1 | cut -d: -f1)
 _ps_reuse_at=$(grep -n '} elseif ((\$installedUvDir = Find-InstalledUv)) {' "$SETUP_PS1" | head -1 | cut -d: -f1)
 _ps_install_at=$(grep -n 'Invoke-SetupCommand { Install-UvFromPinnedRelease }' "$SETUP_PS1" | head -1 | cut -d: -f1)
 if [ -n "$_ps_probe_at" ] && [ -n "$_ps_reuse_at" ] && [ -n "$_ps_install_at" ] \
@@ -304,8 +304,7 @@ else
     bad "setup.ps1 reuses only a uv with an ok verdict"
 fi
 
-# Each side clears its platform's installer floor; the numbers differ on purpose (install.ps1
-# excludes the bad CPython via $PythonSkip and stays at 0.8.16).
+# Each side clears its platform's installer floor.
 _sh_floor=$(grep '^_SETUP_UV_MIN_VERSION="' "$SETUP_SH" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _ps_floor=$(grep '^\$SetupUvMinVersion = "' "$SETUP_PS1" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _install_floor=$(grep '^UV_MIN_VERSION="' "$SCRIPT_DIR/../../install.sh" | head -1 | sed 's/.*"\(.*\)"/\1/')

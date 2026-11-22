@@ -24,7 +24,6 @@ test("a sent message's annotations read back as they were made", () => {
   const text = annotationsContentText(annotations);
   assert.ok(isAnnotationsContent(text));
   const parsed = parseAnnotationsContent(text);
-  // The quote marks in the name cannot close the header's attribute.
   assert.equal(parsed?.file, "Copy of  NVIDIA  Asks.docx");
   assert.deepEqual(parsed?.items, annotations.items);
 });

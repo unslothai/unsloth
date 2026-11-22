@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/api/train/start must run backend.start_training off the event loop.
-
-start_training() runs the _free_vram_for_training before_spawn hook inline, and that
-hook's diffusion/video unload() blocks on the engines' generation locks until an
-in-flight denoise step reaches its cancel callback (seconds to tens of seconds for
-video). Executed inline in the async route it would freeze every concurrent
-status/cancel/UI request -- the same reason start_diffusion_training offloads
-_free_gpu_for_diffusion_training via asyncio.to_thread. The backend guards the
-overlapping-starts window this offload opens with a compare-and-set reservation.
-"""
+"""start_training runs off the event loop, since its before_spawn unload can block for seconds."""
 
 import asyncio
 import contextlib
@@ -38,7 +29,7 @@ class _FakeBackend:
         before_spawn = None,
         **kwargs,
     ):
-        # The real backend runs before_spawn synchronously inside this call, so this thread is the one the blocking VRAM hook runs on.
+        # before_spawn runs synchronously here, so this is the hook's thread.
         self.start_thread = threading.current_thread()
         self.hook = before_spawn
         self.current_job_id = job_id
@@ -82,15 +73,13 @@ def test_start_route_offloads_blocking_start(monkeypatch):
     loop_thread, resp = asyncio.run(_run())
 
     assert resp.status == "queued", resp
-    # The VRAM-freeing hook was wired in and the blocking call left the loop thread.
     assert fake.hook is not None
     assert fake.start_thread is not None
     assert fake.start_thread is not loop_thread
 
 
 def test_backend_start_guard_blocks_overlapping_starts():
-    # With the route offloaded to worker threads, two overlapping /train/start requests can reach
-    # start_training concurrently, so the compare-and-set reservation must let exactly one proceed.
+    # Offloaded routes can overlap start_training; the reservation lets exactly one proceed.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()
@@ -116,24 +105,21 @@ def test_backend_start_guard_blocks_overlapping_starts():
     t = threading.Thread(target = _first, daemon = True)
     t.start()
     assert first_entered.wait(timeout = 5.0)
-    # A second start while the first is still inside the impl: refused by the guard, without ever entering the impl.
     results["second"] = backend.start_training("job-b")
     release_first.set()
     t.join(timeout = 5.0)
 
     assert results["first"] is True
     assert results["second"] is False
-    # The reservation is cleared once the winning start returns, so a later start may proceed.
     assert backend._spawn_in_progress is False
     assert backend._new_job_spawn_id is None
 
 
 def test_is_training_active_true_during_start_reservation():
-    # A run reserved in start_training but not yet spawned must already read as active, else the load/start guards let another pipeline race it for the freed VRAM.
+    # Reserved-but-not-spawned must read active, or other pipelines race for freed VRAM.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()
-    # Not reserved yet: idle.
     assert backend.is_training_active() is False
 
     entered = threading.Event()
@@ -155,11 +141,9 @@ def test_is_training_active_true_during_start_reservation():
     t = threading.Thread(target = lambda: backend.start_training("job-a"), daemon = True)
     t.start()
     assert entered.wait(timeout = 5.0)
-    # Inside the pre-spawn window: reserved, so active even though no proc/progress is set.
     captured["in_window"] = backend.is_training_active()
     release.set()
     t.join(timeout = 5.0)
 
     assert captured["in_window"] is True
-    # Reservation cleared once the start returns; with no live proc it reads idle again.
     assert backend.is_training_active() is False

@@ -86,10 +86,10 @@ test("under Off, the speech load says it unloads the chat model and offers to ke
 test("the chat model's automatic loads keep the speech model loaded", () => {
   const loads =
     chatAdapter.match(
-      /const loadResp = await loadModel\(\{[\s\S]*?\n\s*\}\)/g,
+      /const loadResp = await loadModel\(\{[\s\S]*?\}\)/g,
     ) ?? [];
   assert.equal(loads.length, 2);
-  for (const load of loads) assert.match(load, /alongside: true,/);
+  for (const load of loads) assert.match(load, /alongside: true\b/);
   // Silent before: say what they unloaded to make room.
   assert.equal(chatAdapter.match(/reportEvicted\(loadResp\);/g)?.length, 2);
   assert.match(

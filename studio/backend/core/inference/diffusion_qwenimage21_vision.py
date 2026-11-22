@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 vision SDPA gives NaN conditioning on gfx1151: use query-chunked eager there.
-
-UNSLOTH_QWEN_IMAGE_ROCM_VISION_EAGER: auto (gfx1151 only), 1 (any ROCm GPU), 0 (off).
-"""
+"""Vision SDPA gives NaN on gfx1151; query-chunked eager there (UNSLOTH_QWEN_IMAGE_ROCM_VISION_EAGER)."""
 
 from __future__ import annotations
 

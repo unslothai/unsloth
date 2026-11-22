@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { validateChatSearch, type ChatSearch } from "./chat-search";
+export {
+  loadChatPage,
+  loadedChatPage,
+  prefetchChatPage,
+} from "./load-chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
-  addScanFolder,
   browseFolders,
   ChatThreadDeletedError,
+  createBrowseFolder,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,
@@ -21,12 +26,10 @@ export {
   listLoras,
   listModels,
   listRecommendedFolders,
-  listScanFolders,
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
   notifyChatProjectsUpdated,
-  removeScanFolder,
   subscribeChatHistoryUpdated,
   revealCachedModel,
   revealFineTunedModel,
@@ -38,13 +41,13 @@ export {
   type ChatAttachmentRecord,
   type KvCacheEstimate,
   type LocalModelInfo,
-  type ScanFolderInfo,
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
 } from "./api/chat-api";
 export type {
   ApiMonitorEntry,
   BackendModelDetails,
+  EngramTableDetail,
   GgufVariantDetail,
   GgufVariantsResponse,
   InferenceStatusResponse,
@@ -67,11 +70,8 @@ export {
 } from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
-export {
-  hydrateModelDisclaimerPreference,
-  refreshModelDisclaimerPreference,
-  saveModelDisclaimerPreference,
-} from "./sync-model-disclaimer-preference";
+export { forgetAgentsMd } from "./utils/agents-md";
+export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   ChatComposerFocusableContext,
   pythonToolRunsInStudio,
@@ -91,8 +91,23 @@ export {
   reconcilePersistedGpuSelection,
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
-export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
-export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export {
+  gpuLayersPatch,
+  moeCpuOffloadApplies,
+  resolveStagedDiffusionClassification,
+} from "./lib/gpu-placement";
+export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export type { PlacementPool } from "./lib/partial-offload";
+export {
+  betweenToolRounds,
+  runningReplyTail,
+  formatLiveDecode,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "./lib/generation-progress";
+export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
+export { useThrottledLiveGeneration } from "./hooks/use-throttled-live-generation";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -105,11 +120,13 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export {
+  FullAccessConfirmDialog,
   PermissionModeDropdown,
   useActivePermissionMode,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "./permission-mode-select";
-export { sandboxSwitchState } from "./sandbox-level";
+export { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 export { pickSandboxLevel } from "./sandbox-pick";
 export { SandboxSetupDialog } from "./sandbox-setup-dialog";
 export {
@@ -165,11 +182,27 @@ export {
   rewindTouchesConversation,
   rewindTouchesFiles,
 } from "./utils/rewind";
+export { isSkillsCommand } from "./utils/skills-command";
 export {
   isCompactCommand,
   requestThreadCompaction,
   useCompactRequestStore,
 } from "./stores/compact-request-store";
+export { countContext } from "./api/context-breakdown";
+export {
+  contextReportBranch,
+  shownContextReport,
+  useContextReportStore,
+} from "./stores/context-report-store";
+export {
+  type ContextView,
+  deriveContextView,
+  isContextCommand,
+} from "./utils/context-command";
+export {
+  formatTokenCountFull,
+  getSeverityColor,
+} from "./lib/context-usage-bar-state";
 export {
   folderRingKey,
   planKey,
@@ -208,6 +241,7 @@ export {
   type SectionLanding,
 } from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedChatsSync } from "./hooks/use-pinned-chats-sync";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,
@@ -242,9 +276,14 @@ export type {
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
+  COMPACTION_NOTICE_LABEL,
+  COMPACTION_NOTICE_TEXT,
+  type CompactionNoticeKind,
   type ContextTruncation,
+  compactionNoticeKind,
   promptWasShortened,
 } from "./utils/context-truncation";
+export { cloudCompactionTrigger } from "./utils/auto-compaction";
 export { SectionNameDialog } from "./components/section-name-dialog";
 export { removeCustomSectionWithUndo } from "./stores/remove-custom-section";
 export {
@@ -278,7 +317,6 @@ export {
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";
-// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,
   type StopRunningChatsDecision,
@@ -326,9 +364,11 @@ export {
 } from "./stores/plus-menu-prefs-store";
 export {
   useChatModelRuntime,
+  resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
+export { providerModelDisplayName, useModelDisplayNamesVersion } from "./model-display-names";
 export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
@@ -340,9 +380,13 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export type { ExternalProviderConfig } from "./external-providers";
+export {
+  externalReasoningTakesEffort,
+  getExternalReasoningCapabilities,
+} from "./provider-capabilities";
 // A provider catalogue lands async, so capability reads need to re-run when it does.
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
-// What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
 export {
   noteEffortDisplacedByPin,
   reconcilePinnedReasoningEffort,
@@ -405,12 +449,16 @@ export {
   OpenProjectFolderItem,
 } from "./components/open-chat-folder-item";
 export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
+export { ExportFormatItems } from "./components/export-format-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
-export { pickAndImportChats } from "./utils/import-chats";
+export { CHAT_IMPORT_ACCEPT, pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
-export { showForkCreatedToast } from "./utils/fork-toast";
+export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { clearAllChatsWithToast } from "./utils/clear-all-chats-toast";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
+export { readIncompleteInfo } from "./utils/continuation";
+export { priorPassTiming } from "./utils/continued-timing";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -445,6 +493,8 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+export { useBookmarkedTurnsStore } from "./stores/bookmarked-turns-store";
 export {
   type DocumentAnnotation,
   type DocumentAnnotations,
@@ -472,13 +522,15 @@ export {
   onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
-export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  emitChatAttachmentDeleted,
+  prepareChatAttachmentDeletion,
+} from "./utils/chat-attachment-events";
 export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   reasoningTailCapped,
-  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
@@ -508,7 +560,11 @@ export {
 } from "./utils/export-chat-history";
 export {
   adoptLegacyDraft,
+  flushComposerDraft,
   latestDraft,
+  latestPasteDraft,
+  NEW_CHAT_DRAFT_ID,
+  stageComposerDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
@@ -522,6 +578,12 @@ export {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+export {
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html-format";
 export {
   COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
@@ -573,20 +635,25 @@ export {
   createChatProject,
   deleteChatProject,
   moveChatItemToProject,
+  projectActivityAt,
   renameChatProject,
+  sortProjectsByActivity,
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
   dictationFailed,
+  dictationProducedClip,
   dictationProducedTranscript,
 } from "./adapters/dictation-outcome";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
   isStudioDictationAvailable,
+  micRecordsForModel,
   notifyStudioDictationUnavailable,
+  setMicAudioClipTarget,
 } from "./adapters/studio-dictation-adapter";
 export {
   StudioModelDictationAdapter,
@@ -631,10 +698,12 @@ export {
   effectiveSendShortcut,
   followUpSubmitIntent,
   imeKeydownBlocksComposerSubmit,
+  parkedSendSteer,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
+  type ParkedSendSteerState,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
 

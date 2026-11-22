@@ -223,6 +223,23 @@ def test_shutdown_ends_a_gpu_worker(home, client, gpu):
     assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
+def test_a_chat_load_ends_an_idle_gpu_worker(home, client, gpu, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT)
+    with laya_runtime._run_lock:
+        gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 0
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+    assert _post(client).status_code == 200
+    assert gpu.placed == ["cuda", "cuda"]
+
+
 def test_training_takes_the_gpu_from_a_load_in_flight_or_a_model_it_missed(home, client, gpu):
     def training_starts():
         gpu.training, gpu.on_build = True, None
@@ -391,7 +408,10 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     served = _clef_fine_tune(home, "clef_served_1")
     assert _listed(client) == [served]
     # The trainer's "Use in Decision API" names every run laya-ft:; the layout picks the prefix.
-    assert _put(client, enabled = True, model = "laya-ft:clef_served_1").status_code == 200
+    put = _put(client, enabled = True, model = "laya-ft:clef_served_1")
+    assert put.status_code == 200
+    # The trainer opens Try under the PUT answer's name.
+    assert put.json()["model"] == served
     assert client.get("/api/settings/systemone").json()["model"] == served
 
     answer = _post(client).json()
@@ -639,6 +659,127 @@ def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, mo
     assert len(clef.agents) == 2
 
 
+def test_an_image_load_ends_an_idle_clef_worker(home, client, clef):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_a_load_claimed_as_the_eviction_starts_keeps_the_idle_worker(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    run_lock, claimed = laya_runtime._run_lock, laya_runtime._loaded
+
+    class ClaimedInTheGap:
+        def acquire(self, *args, **kwargs):
+            laya_runtime._loading = claimed
+            return run_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            run_lock.release()
+
+    monkeypatch.setattr(laya_runtime, "_loading", None)
+    monkeypatch.setattr(laya_runtime, "_run_lock", ClaimedInTheGap())
+    unloads = laya_runtime._unloads
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert not clef.agents[0].closed
+    assert laya_runtime._unloads == unloads
+
+
+@pytest.mark.parametrize("owner", ["chat", "diffusion"])
+@pytest.mark.parametrize("policy, ends", [("off", True), ("fit", False), ("always", False)])
+def test_only_off_ends_an_idle_worker_on_a_load(
+    home, client, clef, monkeypatch, owner, policy, ends
+):
+    from core.inference import gpu_arbiter
+
+    for name in ("_residents", "_media_needs", "_accounts"):
+        monkeypatch.setattr(gpu_arbiter, name, {})
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(owner, lambda: None, policy = policy)
+    assert clef.agents[0].closed is ends
+    assert (client.get("/api/settings/systemone").json()["loaded_model"] is None) is ends
+    if not ends:
+        assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
+@pytest.mark.parametrize("loading", ["chat", "diffusion", "video"])
+def test_a_decision_waits_for_a_gpu_load_in_flight_after_the_eviction(
+    home, client, clef, monkeypatch, loading
+):
+    from core.inference import gpu_arbiter, gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: loading == "chat")
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: owner == loading)
+    if loading != "chat":
+        monkeypatch.setitem(gpu_arbiter._residents, loading, None)
+    response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert len(clef.agents) == 1
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: False)
+    assert _post(client).status_code == 200 and len(clef.agents) == 2
+
+
+def test_a_cpu_media_load_or_a_settled_gpu_leaves_a_decision_load_alone(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: True)
+    for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO):
+        monkeypatch.delitem(gpu_arbiter._residents, owner, raising = False)
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
+def test_a_decision_load_waits_while_the_arbiter_is_mid_acquire(home, client, clef, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    with gpu_arbiter._lock:
+        response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert not clef.agents and laya_runtime._loading is None
+    assert _post(client).status_code == 200
+
+
+def test_a_resident_worker_answers_during_a_gpu_load(home, client, clef, monkeypatch):
+    from core.inference import gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: True)
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
 def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
     from core.systemone import clef_runtime
 
@@ -727,7 +868,7 @@ def test_a_chat_model_that_takes_the_gpu_during_the_warm_up_retires_the_reload(
     assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
-def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
+def test_a_settings_change_during_the_reloads_lookup_never_starts_its_worker(
     home, client, clef, monkeypatch
 ):
     from core.systemone import clef_runtime
@@ -762,7 +903,7 @@ def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
     laya_runtime.unload(reload_after_training = True)
     clef.training = False
     _reload_finished()
-    assert stopped == [True]
+    assert stopped == [] and len(clef.agents) == 1
     settings = client.get("/api/settings/systemone").json()
     assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
 
@@ -795,15 +936,14 @@ def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
     calls = []
 
     class Process:
-        exitcode = None
+        exitcode = pid = None
 
         def __init__(self, **kwargs):
-            self.child = kwargs["args"][0]
+            self.child = kwargs["args"][1]
 
         def start(self):
-            # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
-            # Keeping the parent's close from releasing it works on Windows too, where a pipe
-            # end is a handle os.dup cannot copy.
+            # A live child keeps its pipe end open, so the parent sees no EOF; the no-op close also
+            # works on Windows, where os.dup cannot copy a pipe handle.
             held.append(self.child)
             self.child.close = lambda: None
 
@@ -835,15 +975,14 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
     calls = []
 
     class Process:
-        exitcode = None
+        exitcode = pid = None
 
         def __init__(self, **kwargs):
-            self.child = kwargs["args"][0]
+            self.child = kwargs["args"][1]
 
         def start(self):
-            # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
-            # Keeping the parent's close from releasing it works on Windows too, where a pipe
-            # end is a handle os.dup cannot copy.
+            # A live child keeps its pipe end open, so the parent sees no EOF; the no-op close also
+            # works on Windows, where os.dup cannot copy a pipe handle.
             held.append(self.child)
             self.child.close = lambda: None
 
@@ -869,6 +1008,119 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
             del child.close
             child.close()
     assert "kill" in calls
+
+
+def test_unsloth_shutting_down_stops_a_clef_worker_still_loading(monkeypatch):
+    from core.systemone import clef_runtime
+    from utils import process_lifetime
+
+    calls = []
+
+    class Process:
+        exitcode = pid = None
+
+        def __init__(self, **kwargs):
+            self.child = kwargs["args"][1]
+
+        def start(self):
+            held.append(self.child)
+            self.child.close = lambda: None
+
+        def join(self, timeout = None):
+            calls.append("join")
+
+        def is_alive(self):
+            return "kill" not in calls
+
+        def kill(self):
+            calls.append("kill")
+
+    held = []
+    reads = iter([False])
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: next(reads, True))
+    monkeypatch.setattr(clef_runtime._CTX, "Process", Process)
+    monkeypatch.setattr(clef_runtime, "LOAD_TIMEOUT_S", 600)
+    try:
+        started = time.monotonic()
+        with pytest.raises(clef_runtime.ClefWorkerError, match = "stopped while it loaded"):
+            clef_runtime.ClefAgent("unused")
+        assert time.monotonic() - started < 30
+    finally:
+        for child in held:
+            del child.close
+            child.close()
+    assert "kill" in calls
+
+
+def _running(pid):
+    try:
+        with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
+            # X (EXIT_DEAD) shows for an instant while init reaps the zombie, so it is dead too.
+            return stat.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X", "x")
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PDEATHSIG is Linux only")
+def test_a_loading_clef_worker_dies_with_unsloth(tmp_path):
+    import signal
+    import subprocess
+
+    # The worker's load never returns, as a long GPU load would: its first import blocks.
+    (tmp_path / "torch").mkdir()
+    (tmp_path / "torch" / "__init__.py").write_text(
+        "import os, time\n"
+        "with open(os.environ['CLEF_WORKER_PID'], 'w') as f:\n"
+        "    f.write(str(os.getpid()))\n"
+        "time.sleep(600)\n",
+        encoding = "utf-8",
+    )
+    pid_file = tmp_path / "worker.pid"
+    unsloth = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import threading\n"
+            "from core.systemone.clef_runtime import ClefAgent\n"
+            "threading.Thread(target = ClefAgent, args = ('unused',)).start()\n"
+            "threading.Event().wait()\n",
+        ],
+        cwd = Path(laya_runtime.__file__).resolve().parents[2],
+        env = dict(os.environ, PYTHONPATH = str(tmp_path), CLEF_WORKER_PID = str(pid_file)),
+    )
+    worker = None
+    try:
+        deadline = time.monotonic() + 60
+        while worker is None and time.monotonic() < deadline:
+            text = pid_file.read_text(encoding = "utf-8") if pid_file.exists() else ""
+            worker = int(text) if text else None
+            time.sleep(0.1)
+        assert worker is not None, "the Clef worker never started loading"
+        unsloth.kill()
+        unsloth.wait()
+        deadline = time.monotonic() + 15
+        while _running(worker) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _running(worker)
+    finally:
+        unsloth.kill()
+        unsloth.wait()
+        if worker is not None and _running(worker):
+            # It can finish dying after the check; a cleanup error must not hide the real failure.
+            try:
+                os.kill(worker, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_shutdown_ends_a_clef_worker(home, client, clef):
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    laya_runtime.shutdown()
+    assert clef.agents[0].closed
+    assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
 def test_the_catalog_offers_the_stock_clef_models():
@@ -914,7 +1166,7 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
     assert all(
         m["available"] and m["unavailable_reason"] is None
         for m in models
-        if not m["llama_cpp_only"] and m["name"] != "clef-omni"
+        if not m["llama_cpp_only"] and m["name"] not in ("clef-omni", "decider-2b")
     )
 
 
@@ -1402,6 +1654,113 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
     asked, connection = {"q": systemone.QuestionIn(type = "noul")}, catalog.Connection("p", "m")
     with pytest.raises(systemone.HTTPException, match = "Audio is not forwarded"):
         asyncio.run(systemone._decide(connection, "s", asked, None, [clip]))
+
+
+def test_decider_is_served_only_by_the_mlx_engine(home, client, engine):
+    entry = catalog.CHECKPOINTS["decider-2b"]
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(entry)) == "mlx_vlm"
+    assert laya_runtime.select(entry)[0].backend == "mlx"
+    plan = laya_runtime.download_plan(entry)
+    assert plan["repo"] == entry.source and "decider_config.json" in plan["files"]
+    assert not laya_runtime._mlx_reads(entry, "images") and not laya_runtime._mlx_reads(
+        entry, "audio"
+    )
+    with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
+        laya_runtime.select(entry, preference = "llama.cpp")
+    listed = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    assert listed["decider-2b"]["llama_cpp_only"] and not listed["clef-omni"]["llama_cpp_only"]
+
+
+def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, engine):
+    clip = "data:audio/wav;base64,AA=="
+    for name, hears in (
+        ("d1-omni-600m", True),
+        ("d1-omni-2b", True),
+        ("d1-2b", False),
+        ("d1-3b", False),
+    ):
+        entry = catalog.CHECKPOINTS[name]
+        assert laya_runtime._mlx_family(laya_runtime._mlx_target(entry)) == "d1"
+        assert (
+            laya_runtime._mlx_reads(entry, "images")
+            and laya_runtime._mlx_reads(entry, "audio") == hears
+        )
+        repo = catalog.MLX_COMPANIONS[name]
+        assert "config.json" in repo.files and "model.safetensors" in repo.files
+    assert laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = None)[0].backend == "mlx"
+    with pytest.raises(laya_runtime.Unavailable, match = "does not hear audio here"):
+        laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = [clip])
+    assert not laya_runtime._mlx_reads(catalog.CHECKPOINTS["kev-4b"], "images")
+
+
+def test_an_older_zoo_without_d1_keeps_llama_cpp_for_d1_and_no_decider(home, client, engine):
+    sys.modules["unsloth_zoo.mlx.decision"].FAMILIES = dict.fromkeys(("laya", "kev", "clef"))
+    d1 = catalog.CHECKPOINTS["d1-2b"]
+    assert laya_runtime._mlx_target(d1) is None
+    assert laya_runtime._native_target(d1) == d1
+    assert laya_runtime._mlx_target(catalog.CHECKPOINTS["decider-2b"]) is None
+    assert laya_runtime._mlx_target(catalog.CHECKPOINTS["kev-4b"]) is not None
+
+
+def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypatch):
+    folder = home / "d1_ft"
+    folder.mkdir()
+    config = {
+        "architectures": ["D1Model"],
+        "model_type": "lfm3_omni",
+        "vision_config": {},
+        "audio_encoder_config": {},
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"")
+    engine.cached.add(catalog.CLEF_FINE_TUNE_PREFIX + "d1_ft")
+    tuned = catalog.fine_tune(catalog.CLEF_FINE_TUNE_PREFIX + "d1_ft")
+    assert tuned.layout == "clef" and tuned.description.startswith("d1 fine-tuned")
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(tuned)) == "d1"
+    zoo = sys.modules["unsloth_zoo.mlx.decision"]
+    zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
+    assert laya_runtime.input_modalities(tuned) == ["text", "image", "audio"]
+    assert laya_runtime.select(tuned)[0].backend == "mlx"
+    for runtime in ("pytorch", "llama.cpp"):
+        with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
+            laya_runtime.select(tuned, preference = runtime)
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(folder))
+    local = catalog.default_checkpoint()
+    assert (local.name, local.layout, local.backend) == (catalog.LOCAL_NAME, "clef", "mlx")
+    for stock in (
+        {
+            "model_type": "lfm2_vl",
+            "architectures": ["Lfm2VlForConditionalGeneration"],
+            "auto_map": {"AutoModel": "modeling_d1.D1Model"},
+        },
+        {
+            "model_type": "d1_omni",
+            "architectures": ["D1OmniModel"],
+            "auto_map": {"AutoModel": "modeling_d1.D1OmniModel"},
+        },
+    ):
+        (folder / "config.json").write_text(json.dumps(stock), encoding = "utf-8")
+        local = catalog.default_checkpoint()
+        assert (local.layout, local.backend, laya_runtime._mlx_family(local)) == (
+            "clef",
+            "mlx",
+            "d1",
+        )
+    plain = catalog.fine_tune(_clef_fine_tune(home, "clef_ft"))
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
+
+
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_a_processor_only_model_keeps_the_engine_token_limit(engine, wrapped):
+    tokens = SimpleNamespace(encode = lambda text, add_special_tokens = False: [0] * len(text))
+    agent = laya_runtime._EngineAgent.__new__(laya_runtime._EngineAgent)
+    processor = SimpleNamespace(tokenizer = tokens) if wrapped else tokens
+    agent.model, agent.positions = SimpleNamespace(processor = processor), None
+    with pytest.raises(laya_runtime.Unavailable, match = "longer than"):
+        agent.decide(
+            "x" * (laya_runtime._ENGINE_TOKENS + 1), {"q": {"type": "noul", "instructions": "i"}}
+        )
 
 
 def test_clef_omni_is_served_by_the_mlx_engine_or_not_at_all(home, client, engine, monkeypatch):

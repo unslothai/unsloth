@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The reaper must never signal pid 0 or pid 1.
-
-`killpg(1, sig)` is not "process group 1". POSIX defines it as `kill(-1, sig)`:
-every process the caller has permission to signal. So a single record naming
-pid 1 as a child turns the startup sweep into a SIGTERM of everything the user
-owns, a five second wait, then a SIGKILL of the same.
-
-That is not hypothetical. It was observed on a shared build box, from a record
-holding `{"pid": 1, "identity": "...", "pgid": 1}`: starting Unsloth killed the
-user's tmux server and all twenty of their unrelated agent processes within one
-second, then SIGKILLed the replacement tmux server exactly `timeout` later.
-
-Nothing rejected it on the way in or on the way out:
-
-  * `adopt_pid` guarded `not pid`, which rejects None and 0 but not 1.
-  * The recycled-pid defence compares a recorded start time against the current
-    one. init's start time never changes, so a recorded pid 1 matches forever.
-    The check designed to make this safe is what guaranteed it fired.
-  * `getpgid(1) == 1`, so pid 1 reads as a group leader and selects `killpg`.
-  * The liveness probe between SIGTERM and SIGKILL is `killpg(1, 0)`, which can
-    never fail, so the grace period always runs to completion.
-
-These tests assert the outcome rather than the helper: no signalling call in
-this module is reached with a pid below 2, on any path, and the same floor is
-asserted at the sibling boundaries in `llama_cpp` and `download_registry` that
-signal on a pid they read from disk rather than one they hold a handle to.
-"""
+"""Reaper must never signal pid 0 or 1; killpg(1, sig) is kill(-1, sig), hitting every user process."""
 
 from __future__ import annotations
 
@@ -64,15 +38,9 @@ def recorded_signals(monkeypatch):
     return sent
 
 
-# --- the guard itself ------------------------------------------------------
-
-
 @pytest.mark.parametrize("pid", [None, 0, 1, -1, -12345, "1", 1.0, True, False])
 def test_unsignalable_values_are_rejected(pid):
-    """`True` is here for the floor's benefit, not the bool check's: `True >= 2`
-    is already False, so `not isinstance(pid, bool)` is belt to the floor's
-    braces and this case would still pass without it. It earns its place by
-    pinning the behaviour if the floor is ever expressed a different way."""
+    """True is pinned for the pid floor: it stays rejected if the floor is ever rewritten."""
     assert pl.is_signalable_pid(pid) is False
 
 
@@ -85,9 +53,6 @@ def test_the_public_name_is_the_internal_one():
 @pytest.mark.parametrize("pid", [2, 3, 12345, 4194304])
 def test_real_pids_are_accepted(pid):
     assert pl._signalable(pid) is True
-
-
-# --- the write side: the bad record cannot be created ----------------------
 
 
 def test_adopt_pid_refuses_init(monkeypatch):
@@ -103,9 +68,6 @@ def test_adopt_pid_refuses_init(monkeypatch):
 def test_own_process_group_refuses_group_one(monkeypatch):
     monkeypatch.setattr(pl.os, "getpgid", lambda pid: 1)
     assert pl._own_process_group(1) is None
-
-
-# --- the signal side: an existing bad record cannot fire -------------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -135,13 +97,42 @@ def test_terminate_descendants_skips_init(recorded_signals, monkeypatch):
     assert recorded_signals == []
 
 
+# A walk rooted at pid 1 is the whole machine, so a test stand-in at pid 1 SIGTERMs everything.
+_INIT_OWNS_EVERYTHING = {1: [4242], 4242: [4243]}
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process table")
+@pytest.mark.parametrize("pid", [1, True])
+def test_collect_descendants_never_walks_init(monkeypatch, pid):
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: _INIT_OWNS_EVERYTHING)
+    monkeypatch.setattr(pl, "_pid_identity", lambda p: "start")
+    assert pl.collect_descendants_known(pid) == ([], True)
+    assert pl.collect_descendants(pid) == []
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process table")
+def test_collect_descendants_still_walks_a_real_pid(monkeypatch):
+    """The floor must not disarm the walk it guards."""
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: _INIT_OWNS_EVERYTHING)
+    monkeypatch.setattr(pl, "_pid_identity", lambda p: "start")
+    assert pl.collect_descendants_known(4242) == ([(4243, "start")], True)
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process table")
+def test_llama_unload_walk_never_names_inits_children(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(pl, "_child_pid_map", lambda: _INIT_OWNS_EVERYTHING)
+    monkeypatch.setattr(pl, "_pid_identity", lambda p: "start")
+    assert LlamaCppBackend._collect_descendants(1) == ([], True)
+
+
 # --- the end to end case that actually happened ----------------------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_poisoned_record_is_dropped_not_retried(tmp_path, monkeypatch, recorded_signals):
-    """A record written by a build without the guard must fire nothing, and must
-    not survive to be retried on every subsequent launch."""
+    """A record from a build without the guard must fire nothing, and is dropped, not retried."""
     import json
 
     record = tmp_path / "4157196.json"
@@ -150,19 +141,13 @@ def test_poisoned_record_is_dropped_not_retried(tmp_path, monkeypatch, recorded_
             {
                 "owner_pid": 4157196,
                 "owner_identity": "243506968",
-                # Verbatim from the record that caused the incident. "963" is
-                # init's start time in jiffies on that machine, so it is not
-                # portable, and nothing here compares against it: the pid floor
-                # short-circuits before identity is ever read. It stays because a
-                # regression test for a specific incident should carry the bytes
-                # that caused it.
+                # Verbatim from the incident record; '963' (init's start time there) is never compared.
                 "children": [{"pid": 1, "identity": "963", "pgid": 1}],
             }
         ),
         encoding = "utf-8",
     )
     monkeypatch.setattr(pl, "_breadcrumb_dir", lambda: tmp_path)
-    # The owner is long gone, which is what makes the sweep consider the record.
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == 1)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
 
@@ -202,7 +187,7 @@ def test_poisoned_pgid_does_not_make_a_record_immortal(
         encoding = "utf-8",
     )
     monkeypatch.setattr(pl, "_breadcrumb_dir", lambda: tmp_path)
-    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)  # the child is long gone
+    monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
 
     pl.reap_recorded_children(timeout = 0.01)
@@ -234,9 +219,7 @@ def test_terminate_pid_sends_nothing(recorded_signals, monkeypatch, pid):
 
 
 def test_terminate_all_never_signals_a_poisoned_tracked_pid(monkeypatch, recorded_signals):
-    """The in-memory table cannot hold a 1 now, but `terminate_all` is what runs
-    at shutdown and at `atexit`, so it carries its own floor. Nothing else covers
-    that line: the existing suites drive it with real spawned pids only."""
+    """terminate_all runs at shutdown and atexit, so it carries its own pid 1 floor."""
     monkeypatch.setattr(pl, "_tracked_pids", {1: "963", 0: "0"})
     monkeypatch.setattr(pl, "_tracked_pgids", {1: 1, 0: 0})
     monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
@@ -244,9 +227,6 @@ def test_terminate_all_never_signals_a_poisoned_tracked_pid(monkeypatch, recorde
     pl.terminate_all(timeout = 0.01)
 
     assert recorded_signals == []
-
-
-# --- the same shape elsewhere: the llama-server group killer ---------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -284,8 +264,7 @@ def test_kill_process_group_still_kills_a_real_group(monkeypatch):
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_valid_record_still_reaps(tmp_path, monkeypatch, recorded_signals):
-    """The guard must not disarm the feature it protects: a real child is still
-    signalled."""
+    """The guard must not disarm reaping: a real child with a valid record is still signalled."""
     import json
 
     record = tmp_path / "999999.json"
@@ -308,16 +287,10 @@ def test_valid_record_still_reaps(tmp_path, monkeypatch, recorded_signals):
     reaped = pl.reap_recorded_children(timeout = 0.01)
 
     assert 424242 in reaped
-    # The signal number is asserted, not just the pid. Without it a fully
-    # disarmed reaper passes: `_group_has_members` emits `killpg(pid, 0)` as a
-    # liveness probe, and a bare `pid == 424242` match accepts that probe as
-    # proof of a kill that never happened.
+    # Assert the signal number: killpg(pid, 0) liveness probes would otherwise pass as a kill.
     assert any(
         pid == 424242 and sig == signal.SIGTERM for _call, pid, sig in recorded_signals
     ), "a genuine orphan must still be sent a terminating signal"
-
-
-# --- the sibling reapers that read a pid off disk ---------------------------
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -351,15 +324,7 @@ def test_llama_pidfile_reaper_refuses_init(tmp_path, monkeypatch, recorded_signa
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
 def test_llama_orphan_sweep_skips_init(tmp_path, monkeypatch):
-    """The orphan sweep must not kill pid 1 even when pid 1 looks exactly like an
-    owned, parentless llama-server.
-
-    That is not a contrived shape: #7894 established Unsloth can run as a
-    container entrypoint, and a container whose entrypoint is llama-server puts
-    a process this sweep recognises at pid 1. Killing it takes the container
-    down. The /proc scan and the psutil scan both feed one kill loop, so the
-    floor sits on the loop rather than in each scanner.
-    """
+    """Pid 1 must never be signalled: Unsloth can run as a container entrypoint (issue 7894)."""
     from core.inference import llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -374,8 +339,6 @@ def test_llama_orphan_sweep_skips_init(tmp_path, monkeypatch):
     for pid in (1, mypid + 1):
         d = root / str(pid)
         d.mkdir()
-        # Same 52-field stat shape the scanner parses; only comm and the start
-        # time field are read.
         fields = " ".join(["0"] * 50)
         (d / "stat").write_bytes(f"{pid} (llama-server) S {fields}".encode())
         (d / "exe").symlink_to(binary)
@@ -422,8 +385,7 @@ def test_download_registry_never_signals_init(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_kill_orphan_refuses_init_on_its_own(monkeypatch):
-    """The helper that sends the signal carries the floor itself, so it does not
-    depend on every future caller having checked first."""
+    """The signal helper refuses pid 1 itself, not relying on callers to check first."""
     from hub.utils import download_registry as dr
 
     sent: "list[tuple[int, int]]" = []

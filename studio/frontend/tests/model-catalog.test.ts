@@ -16,13 +16,17 @@ const {
   setProviderModelCatalog,
 } = await import("../src/features/chat/model-catalog.ts");
 const {
+  externalStopWindow,
   getExternalReasoningCapabilities,
   getPublishedExternalMaxOutputTokens,
   reasoningFieldsAfterCatalogRefresh,
 } = await import("../src/features/chat/provider-capabilities.ts");
-const { providerModelSupportsVision } = await import(
-  "../src/features/chat/external-providers.ts"
-);
+const {
+  isGeminiApiProviderType,
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+} = await import("../src/features/chat/external-providers.ts");
 
 test("an OpenRouter route exposes the snapshot's effort ladder", () => {
   const caps = getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro");
@@ -245,6 +249,11 @@ test("a flagged vLLM connection takes a catalogued ladder and keeps the switch o
   const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3.8-27B", flagged);
   assert.equal(qwen.reasoningStyle, "reasoning_effort");
   assert.deepEqual([...qwen.reasoningEffortLevels], ["none", "low", "medium", "xhigh"]);
+  const r1 = getExternalReasoningCapabilities("vllm", "deepseek-ai/DeepSeek-R1", flagged);
+  assert.equal(r1.reasoningAlwaysOn, true);
+  assert.equal(r1.supportsReasoningOff, false);
+  assert.equal(getExternalReasoningCapabilities("vllm", "Qwen/Qwen3-14B").supportsReasoning, true);
+  assert.equal(getExternalReasoningCapabilities("vllm", "my-served-name").supportsReasoning, false);
   for (const model of ["my-served-name", "Qwen/Qwen3.5-35B-A3B"]) {
     const caps = getExternalReasoningCapabilities("vllm", model, flagged);
     assert.equal(caps.reasoningStyle, "enable_thinking", model);
@@ -293,10 +302,7 @@ test("a served models.dev catalog outranks the bundled snapshot and feeds the na
 });
 
 test("a served bucket overrides its own models without hiding the rest of the bundled one", async () => {
-  // The browser cache survives an app upgrade and the backend serves an expired disk copy
-  // while offline, so a bucket written by an older release can omit models the newer
-  // bundled snapshot knows. Replacing the namespace wholesale dropped their controls.
-  // DeepSeek, not Ollama: the Ollama branch has a by-name fallback that hides the defect.
+  // A stale browser cache can omit models; DeepSeek avoids Ollama's by-name fallback.
   const { setModelsDevCatalog } = await import("../src/features/chat/model-catalog.ts");
   const bundled = getExternalReasoningCapabilities("deepseek", "deepseek-v4-pro");
   assert.deepEqual([...bundled.reasoningEffortLevels], ["none", "high", "max"]);
@@ -428,4 +434,71 @@ test("a mandatory OpenRouter alias keeps its catalog effort ladder", () => {
   const fallback = getExternalReasoningCapabilities("openrouter", "~google/gemini-pro-latest");
   assert.equal(fallback.reasoningAlwaysOn, true);
   assert.equal(fallback.supportsReasoningOff, false);
+});
+
+test("a model is older only when the served catalog dates it over a year back", async () => {
+  const { isOlderModel, setModelsDevCatalog } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  setModelsDevCatalog({
+    fetched_at: 1_700_000_000,
+    providers: {
+      gemini: {
+        "gemini-old": { released: "2025-06-17" },
+        "gemini-new": { released: "2026-10-13" },
+        "gemini-undated": {},
+      },
+    },
+  });
+  const now = Date.parse("2026-11-14");
+  assert.equal(isOlderModel("gemini", "gemini-old", now), true);
+  assert.equal(isOlderModel("gemini", "Gemini-Old", now), true);
+  assert.equal(isOlderModel("gemini", "gemini-new", now), false);
+  assert.equal(isOlderModel("gemini", "gemini-undated", now), false);
+  assert.equal(isOlderModel("llama_cpp", "gemini-old", now), false);
+});
+
+test("NVIDIA NIM offers no reasoning control, since no request field reaches its models", () => {
+  setProviderModelCatalog(
+    "nvidia",
+    [
+      {
+        id: "nvidia/nemotron-3-super-120b-a12b",
+        input_modalities: ["text"],
+        reasoning: { supported_efforts: ["low", "medium"], mandatory: false },
+      },
+    ],
+    1,
+  );
+  try {
+    for (const id of ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-nano-30b-a3b"]) {
+      assert.equal(getExternalReasoningCapabilities("nvidia", id).supportsReasoning, false);
+    }
+  } finally {
+    clearProviderModelCatalog("nvidia");
+  }
+});
+
+test("SGLang and Vertex connections read the registry entry they are sent as", () => {
+  setProviderModelCapabilities("custom", { "*": { studio_tools: true } });
+  setProviderModelCapabilities("gemini", { "gemini-3-pro": { studio_tools: true, vision: true } });
+  try {
+    assert.equal(providerModelSupportsStudioTools("sglang", "qwen3"), true);
+    assert.equal(providerModelSupportsStudioTools("vertex", "gemini-3-pro"), true);
+    assert.equal(providerModelSupportsVision("vertex", "gemini-3-pro"), true);
+    assert.equal(providerModelSupportsStudioTools("cohere", "command-a"), null);
+  } finally {
+    setProviderModelCapabilities("custom", undefined);
+    setProviderModelCapabilities("gemini", undefined);
+  }
+});
+
+test("Vertex is the Gemini API for replay and stop handling", () => {
+  assert.equal(isGeminiApiProviderType("vertex"), true);
+  assert.equal(isGeminiApiProviderType("gemini"), true);
+  assert.equal(isGeminiApiProviderType("openrouter"), false);
+  const vertex = "https://aiplatform.googleapis.com/v1/publishers/google";
+  assert.equal(externalStopWindow("vertex", vertex), Number.POSITIVE_INFINITY);
+  assert.equal(externalStopWindow("gemini", "https://generativelanguage.googleapis.com/v1beta"), Number.POSITIVE_INFINITY);
+  assert.equal(externalStopWindow("gemini", "https://litellm.example/v1"), null);
 });

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Decides what a sidebar drop does. Pure: no DOM, no React, so the hover cue, the hint and the
-// drop itself all read the same answer.
+// Pure (no DOM/React) so the hover cue, hint and drop read the same answer.
 
 import {
   customSectionIdOf,
@@ -29,36 +28,25 @@ export type SidebarSection =
   | `section:${string}`;
 export type DropEdge = "top" | "bottom";
 
-/** The row being carried. */
 export interface SidebarDragItem {
   kind: SidebarRowKind;
   id: string;
-  /** Section it was picked up from. */
   section: SidebarSection;
-  /** Order scope of the list it was picked up from. */
   scope: string;
   /** For a chat, the folder it is filed in. Null outside every folder, and for a folder or page. */
   projectId: string | null;
 }
 
-/** A spot a row can be dropped on: a row, a folder block, a section body or a section header. */
 export interface SidebarDropZone {
   section: SidebarSection;
-  /** The row under the pointer, if any, with the scope it is drawn in. */
   row?: { id: string; kind: SidebarRowKind; scope: string };
-  /** The folder this spot belongs to: its row, a chat under it, or its empty line. */
   folderId?: string;
-  /** For a chat under a folder: its place in the folder's block. */
   block?: { index: number; count: number };
-  /** The row a line landing below this spot is drawn on: the last row of a folder's block, or
-   *  SIDEBAR_TAIL_SCOPE for the strip a section draws past its last row. */
   blockEnd?: { scope: string; id: string };
-  /** The section header. It stands for the top of its first row (given as `row`), so the gap
-   *  above the first row is not dead space, and takes a drop while the section is collapsed. */
+  /** Stands for the top of its first row and takes drops while collapsed. */
   header?: boolean;
 }
 
-/** The sidebar as it stands, as far as a drop needs to know. */
 export interface SidebarDropContext {
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
@@ -66,14 +54,11 @@ export interface SidebarDropContext {
   projectSort: SidebarProjectSort;
   pinnedChatIds: ReadonlySet<string>;
   pinnedProjectIds: ReadonlySet<string>;
-  /** The custom section each chat and folder is filed in. Pinned still draws a pinned row. */
   sectionByChatId: Readonly<Record<string, string>>;
   sectionByProjectId: Readonly<Record<string, string>>;
   sectionByPageId: Readonly<Record<string, string>>;
   /** A custom section's chat sort. */
   sectionSort: (sectionId: string) => SidebarChatSort;
-  /** Row ids per list, in drawn order. Pinned and every custom section are one list of folders
-   *  and chats each. */
   orders: {
     pinned: string[];
     projects: string[];
@@ -83,40 +68,31 @@ export interface SidebarDropContext {
   };
 }
 
-/** What the drop does, for the hint. */
 export type SidebarDropAction =
   | { kind: "reorder" }
   | { kind: "pin" }
   | { kind: "unpin" }
   | { kind: "move"; projectId: string | null }
-  /** Filed into a custom section, or out of one with null. */
   | { kind: "section"; sectionId: string | null };
 
-/** What to paint: a line on one edge of a row, or a ring around a whole target. Row keys are
- *  `scope:id`, since one chat can be drawn in two lists. */
+/** Row keys are `scope:id`, since one chat can be drawn in two lists. */
 export type SidebarDropCue =
   | {
       line: {
         rowKey: string;
         edge: DropEdge;
-        /** The folder the row lands inside, when the line is between its chats. Unset for a
-         *  line under a folder's last chat that lands below the folder, beside it in its list:
-         *  the two sit in the same place and would otherwise read the same. */
         folderId?: string;
       };
     }
   | { ring: string };
 
-/** Where a chat from another list lands: its slot against a row of that list. Kept beside the
- *  order snapshot, so a move that finishes after the list was reordered can re-aim the slot
- *  instead of writing the snapshot over the newer order. */
+/** Kept with the order snapshot so a late move can re-aim instead of overwriting newer order. */
 export interface SidebarDropPlace {
   id: string;
   targetId: string;
   edge: DropEdge;
 }
 
-/** Everything the drop changes. */
 export interface SidebarDropEffects {
   orders: Array<{ scope: string; ids: string[]; place?: SidebarDropPlace }>;
   pinChat?: string;
@@ -124,10 +100,8 @@ export interface SidebarDropEffects {
   pinProject?: string;
   unpinProject?: string;
   moveChat?: { chatId: string; projectId: string | null };
-  /** The row's custom section, set or cleared. */
   fileInSection?: { kind: SidebarRowKind; id: string; sectionId: string | null };
-  /** The list to switch to Manual, or its own rule undoes the drop. A custom section is named
-   *  by its scope. */
+  /** Switch this list to Manual, or its sort undoes the drop. */
   switchSort?: "chats" | "pinned" | "projects" | `section:${string}`;
 }
 
@@ -137,32 +111,23 @@ export interface SidebarDropPlan {
   effects: SidebarDropEffects;
 }
 
-/** The row is already in the slot under the pointer: its own row, or the edge it sits on.
- *  Nothing is painted and a drop does nothing, but the spot still claims the drag, so the
- *  section around it does not answer with its last slot instead. */
+/** Already in place: nothing painted, but the spot still claims the drag. */
 export const STAY = "stay";
 export type SidebarDropOutcome = SidebarDropPlan | typeof STAY | null;
 
-/** The scope of the strip a section draws past its last row, so "after everything" has a row to
- *  aim at. A scope of its own rather than an id of its own: a row's id is whatever a restored
- *  backup or the API put in the database, and the backend takes any string, so no id is safe to
- *  reserve. Every scope is one of the four above or `project:<id>`, none of which is this, so a
- *  key built on it cannot be a real row's however a row was named. */
+/** A dedicated scope, not id: any string can be a real row id, but no real scope equals this. */
 export const SIDEBAR_TAIL_SCOPE = "sidebar-tail";
 
 export const rowKey = (scope: string, id: string): string => `${scope}:${id}`;
 export const sectionRingKey = (section: SidebarSection): string =>
   `section:${section}`;
 
-/** Whether the section is one the user made. */
 export function isCustomSection(
   section: SidebarSection,
 ): section is `section:${string}` {
   return customSectionIdOf(section) !== null;
 }
 
-/** The custom section a row is drawn in by its own filing: null when it is pinned (Pinned draws
- *  it) or filed nowhere. A chat under a filed folder is drawn there by the folder, not by this. */
 function ownSection(
   kind: SidebarRowKind,
   id: string,
@@ -177,10 +142,7 @@ function ownSection(
   return ctx.sectionByChatId[id] ?? null;
 }
 
-/** A row carried out to a list that is not a custom section leaves its section, or the section
- *  would keep drawing it there and the drop would read as ignored. A reorder moves nothing out,
- *  and neither does a pin: Pinned draws a pinned row whatever its section, which it keeps for when
- *  it is unpinned, as a pin from its menu does. */
+/** Leaving to a non-section list unfiles the row; reorders and pins keep the section. */
 function leavingSection(
   drag: SidebarDragItem,
   outcome: SidebarDropOutcome,
@@ -211,7 +173,6 @@ const line = (scope: string, id: string, edge: DropEdge): SidebarDropCue => ({
   line: {
     rowKey: rowKey(scope, id),
     edge,
-    // A line against a folder's chats lands among them.
     ...(scope.startsWith(FOLDER_SCOPE_PREFIX)
       ? { folderId: scope.slice(FOLDER_SCOPE_PREFIX.length) }
       : {}),
@@ -221,8 +182,7 @@ const ring = (key: string): SidebarDropCue => ({ ring: key });
 
 export { dropEdgeAt };
 
-/** The plan for dropping `drag` on `zone`, STAY when the row is already there, or null when
- *  this spot has no answer and the zone around it may. */
+/** STAY when already there; null lets the surrounding zone answer. */
 export function planSidebarDrop(
   drag: SidebarDragItem,
   zone: SidebarDropZone,
@@ -230,7 +190,6 @@ export function planSidebarDrop(
   ctx: SidebarDropContext,
 ): SidebarDropOutcome {
   if (zone.header) {
-    // Pinned and custom sections hold both kinds in one order; the others hold one each.
     const first =
       zone.row &&
       (zone.section === "pinned" ||
@@ -261,9 +220,7 @@ export function planSidebarDrop(
   );
 }
 
-// A custom section is one list of folders and chats, as Pinned is. A row from anywhere else is
-// filed into it at the slot the line shows; a pinned row loses its pin, since Pinned would
-// otherwise keep drawing it. A chat still files into a folder here by landing on its chats.
+// A pinned row dropped into a section loses its pin, or Pinned keeps drawing it.
 function planSectionDrop(
   drag: SidebarDragItem,
   zone: SidebarDropZone,
@@ -324,7 +281,6 @@ function planSectionDrop(
   return { action: { kind: "section", sectionId }, cue, effects };
 }
 
-/** The line for landing against a folder: above its row, or below the last row of its block. */
 function folderLine(
   scope: string,
   folderId: string,
@@ -332,15 +288,11 @@ function folderLine(
   zone: SidebarDropZone,
 ): SidebarDropCue {
   if (edge === "bottom" && zone.blockEnd) {
-    // Drawn under the folder's last chat, but the row lands below the folder, in `scope`.
     return { line: { rowKey: rowKey(zone.blockEnd.scope, zone.blockEnd.id), edge: "bottom" } };
   }
   return line(scope, folderId, edge);
 }
 
-// Pinned is one list: folders and chats in the order they were dropped into. A row of either
-// kind lands in the slot the line shows. A chat still files into a pinned folder by landing on
-// that folder's chats, or on the lower half of its row.
 function planPinnedDrop(
   drag: SidebarDragItem,
   zone: SidebarDropZone,
@@ -366,16 +318,13 @@ function planPinnedDrop(
   let target: { id: string; edge: DropEdge } | null = null;
   if (zone.row) {
     if (zone.folderId && zone.row.kind === "chat" && zone.block) {
-      // A folder over another folder's chats aims at that folder; the block's middle decides.
       target = { id: zone.folderId, edge: blockEdge(zone.block, edge) };
     } else {
       target = { id: zone.row.id, edge };
     }
   } else if (zone.folderId) {
-    // A folder block's own rows (Show more, or an empty folder) are its tail: below it.
     target = { id: zone.folderId, edge: "bottom" };
   } else if (ids.length > 0) {
-    // The section's own space: last.
     target = { id: ids[ids.length - 1], edge: "bottom" };
   }
   if (target?.id === drag.id) return STAY;
@@ -407,8 +356,6 @@ function planPinnedDrop(
   return { action: { kind: "pin" }, cue, effects };
 }
 
-// A folder over Projects: reorders among its folders, or comes back out of Pinned. A folder's
-// block (its row plus its chats) is one target, aimed at the folder.
 function planFolderDrop(
   drag: SidebarDragItem,
   zone: SidebarDropZone,
@@ -428,7 +375,6 @@ function planFolderDrop(
         : { id: zone.folderId, edge };
   }
   if (!pinned && ownSection("project", drag.id, ctx) === null) {
-    // Same list: only a folder is a slot to land against.
     if (!target) return null;
     const next = insertIdAt(ids, drag.id, target.id, target.edge);
     if (next === ids) return STAY;
@@ -438,7 +384,6 @@ function planFolderDrop(
       effects: { orders: [{ scope: PROJECT_ORDER_SCOPE, ids: next }], switchSort },
     };
   }
-  // Out of Pinned or a custom section: unpinned or unfiled, landing against a folder or last.
   const next = placeIdAt(ids, drag.id, target?.id ?? null, target?.edge ?? "bottom");
   return {
     action: pinned ? { kind: "unpin" } : { kind: "section", sectionId: null },
@@ -453,8 +398,6 @@ function planFolderDrop(
   };
 }
 
-/** Which end of a folder the pointer aims at from inside its block: the line flips once, at
- *  the block's middle. */
 function blockEdge(block: { index: number; count: number }, edge: DropEdge): DropEdge {
   const at = block.index + (edge === "bottom" ? 1 : 0);
   return at * 2 >= block.count ? "bottom" : "top";
@@ -467,16 +410,13 @@ function planChatDrop(
   ctx: SidebarDropContext,
 ): SidebarDropOutcome {
   const pinned = ctx.pinnedChatIds.has(drag.id);
-  // Picked up from the Pinned list itself, not from inside a pinned folder.
   const fromPinnedList = drag.scope === PINNED_ORDER_SCOPE;
-  // Drawn in a custom section by its own filing, which a drop anywhere else takes away.
   const inSection = ownSection("chat", drag.id, ctx) !== null;
 
   if (zone.folderId) {
     const folderId = zone.folderId;
     const sameFolder = drag.projectId === folderId;
     if (fromPinnedList || inSection) {
-      // Another pinned folder keeps the pin; a folder under Projects takes it away.
       if (!sameFolder) {
         return moveChat(
           drag,
@@ -487,7 +427,6 @@ function planChatDrop(
           fromPinnedList && zone.section !== "pinned",
         );
       }
-      // Dropping it on its own folder unpins it, or takes it back out of its section.
       const landing = landingIn(
         projectOrderScope(folderId),
         ctx.orders.projectChats(folderId),
@@ -509,10 +448,7 @@ function planChatDrop(
     if (!sameFolder) return moveChat(drag, zone, edge, ctx, folderId, false);
     const folderScope = projectOrderScope(folderId);
     if (zone.row?.kind !== "chat") {
-      // The folder's own row is its head, where the chat already is. Its block tail, the empty
-      // line or Show more, is the end of the rows on screen and takes a drop: a folder with
-      // more than a screenful draws Show more directly under its last visible chat, so without
-      // this there is nothing below that chat a chat already in the folder can land on.
+      // Block tail takes a drop: Show more sits right under the last visible chat.
       if (zone.row || zone.blockEnd?.scope !== folderScope) return STAY;
       return reorder(
         drag,
@@ -536,9 +472,6 @@ function planChatDrop(
   }
 
   if (zone.section === "recents") {
-    // Recents holds chats that are neither pinned nor filed, so landing here takes both away.
-    // With folders off every chat is a Recents row, and only the pin goes. A custom section's
-    // own chat leaves the section the same way.
     const filed = drag.projectId !== null && ctx.organizeBy === "project";
     if (pinned || filed || inSection) {
       const landing =
@@ -567,8 +500,7 @@ function planChatDrop(
       };
     }
     if (zone.row?.kind !== "chat") {
-      // The end strip, and the empty sidebar below it: last. The rest of the section's own space
-      // stays nothing for its own rows, so a pointer beside a row does not send it to the end.
+      // Space beside a row stays inert so it does not send the row to the end.
       const ids = ctx.orders.recents;
       const last = ids[ids.length - 1];
       if (zone.row || zone.blockEnd?.scope !== SIDEBAR_TAIL_SCOPE || last === undefined) {
@@ -588,11 +520,9 @@ function planChatDrop(
     );
   }
 
-  // Projects outside any folder has nothing to file a chat into.
   return null;
 }
 
-/** Files a chat into `projectId`, in a slot when the folder is on Manual order. */
 function moveChat(
   drag: SidebarDragItem,
   zone: SidebarDropZone,
@@ -621,11 +551,7 @@ function moveChat(
   };
 }
 
-/** Where a chat from another list lands here: its slot against a row of that list. A sorted
- *  list switches to Manual, the same as a reorder within one, or the sort would run again and
- *  put the chat back where it wants it. Without that a drop aimed at the end of a folder landed
- *  wherever Priority or Last updated felt like, which reads as the slot being ignored. Null only
- *  when there is no row to land against, and the caller lights the whole target instead. */
+/** A sorted list switches to Manual, or the sort moves the chat again. */
 function landingIn(
   scope: string,
   ids: string[],
@@ -644,7 +570,6 @@ interface Landing {
   resorts: boolean;
 }
 
-/** The slot against one row of the list. Null when that row is the chat itself. */
 function slotAt(
   scope: string,
   ids: string[],
@@ -665,10 +590,6 @@ function slotAt(
   };
 }
 
-/** The list's own space, past its last row: last, the slot Pinned already gives it. A flat list
- *  has no container row of its own, so ringing the whole section says only that the chat is going
- *  somewhere in there, when it does in fact land somewhere. Null when there is no row to land
- *  against, and the caller lights the section instead. */
 function lastIn(
   scope: string,
   ids: string[],
@@ -679,8 +600,6 @@ function lastIn(
   return last === undefined ? null : slotAt(scope, ids, chatId, last, "bottom", sort);
 }
 
-/** Reorders a chat within its list. A sorted list switches to Manual, or the sort would undo
- *  the drop. */
 function reorder(
   drag: SidebarDragItem,
   scope: string,
@@ -703,12 +622,10 @@ function reorder(
   };
 }
 
-/** The folder or section to outline. A drop that files the chat into a folder lights that folder
- *  even while a line shows its slot, so "into the folder" never reads as "under it". */
+/** A filing drop lights the folder even while a line shows the slot. */
 export function litRingKey(plan: SidebarDropPlan | null): string | null {
   if (!plan) return null;
   if ("ring" in plan.cue) return plan.cue.ring;
-  // A line among a folder's chats lands in that folder, a reorder inside it included.
   if (plan.cue.line.folderId !== undefined) return folderRingKey(plan.cue.line.folderId);
   if (plan.action.kind === "move" && plan.action.projectId) {
     return folderRingKey(plan.action.projectId);
@@ -716,8 +633,7 @@ export function litRingKey(plan: SidebarDropPlan | null): string | null {
   return null;
 }
 
-/** Whether two plans land the row identically. `place` is ignored: it names the same slot
- *  from different neighbours. */
+/** `place` is ignored: it names the same slot from different neighbours. */
 export function equivalentDrop(a: SidebarDropPlan, b: SidebarDropPlan): boolean {
   const landing = (plan: SidebarDropPlan) =>
     JSON.stringify({
@@ -734,7 +650,6 @@ export function equivalentDrop(a: SidebarDropPlan, b: SidebarDropPlan): boolean 
   return landing(a) === landing(b);
 }
 
-/** Changes exactly when the painted state does, so equal plans skip a re-render. */
 export function planKey(plan: SidebarDropPlan | null): string {
   if (!plan) return "";
   const cue =

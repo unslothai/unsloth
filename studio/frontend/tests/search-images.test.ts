@@ -157,7 +157,6 @@ test("extractSearchImages leaves malformed or foreign envelopes alone", () => {
   ]) {
     const { text, images } = extractSearchImages(raw);
     if (raw.endsWith("tail")) {
-      // A later sentinel bounds the payload and survives the strip.
       assert.deepEqual(
         images.map((e) => e.id),
         ["0123456789ab"],
@@ -258,7 +257,6 @@ test("holdBackPartialSearchImageToken trims a token still arriving", () => {
     holdBackPartialSearchImageToken("Golden [[img:", false),
     "Golden [[img:",
   );
-  // Inside closed code nothing is held back; an open fence is still streaming, so trimming is harmless.
   assert.equal(
     holdBackPartialSearchImageToken("```\n[[img:\n```", true),
     "```\n[[img:\n```",
@@ -309,8 +307,6 @@ test("placeSubjectImages puts a subject's image under the paragraph naming it", 
   const text =
     "Top breeds:\n\n1. **German Shepherd** - loyal.\n2. **Labrador** - friendly.\n\nEnjoy!";
   const out = placeSubjectImages(text, images, false);
-  // Pug is never named in the answer, so its image is left out rather than piled
-  // at the end; the tool card still shows it.
   assert.equal(
     out,
     "Top breeds:\n\n1. **German Shepherd** - loyal.\n\n   [[img:aaaaaaaaaaaa]]\n2. **Labrador** - friendly.\n\n   [[img:bbbbbbbbbbbb]]\n\nEnjoy!",
@@ -336,7 +332,6 @@ test("placeSubjectImages puts a subject's image under the paragraph naming it", 
 test("placeSubjectImages never splits a list item a model wrapped over lines", () => {
   const golden = { ...ENTRY, id: "aaaaaaaaaaaa", subject: "Golden Retriever" };
   const images = new Map([[golden.id, golden]]);
-  // The screenshot bug: the card landed after "and", cutting the sentence in half.
   const wrapped =
     "4. **Golden Retriever:** Known for being gentle, patient, and\ndevoted, making them excellent family companions.\n5. **Poodle:** Clever.";
   const out = placeSubjectImages(wrapped, images, false);
@@ -344,7 +339,7 @@ test("placeSubjectImages never splits a list item a model wrapped over lines", (
     out.includes("patient, and\ndevoted, making them excellent family companions."),
     "the sentence must stay intact",
   );
-  // Its own block, indented to the item's content column so the list keeps numbering.
+  // Indented to the item's content column so the list keeps numbering.
   assert.ok(out.includes("family companions.\n\n   [[img:aaaaaaaaaaaa]]\n5. "));
 });
 
@@ -357,16 +352,13 @@ test("placeSubjectImages respects tokens the model placed, streaming, and code",
     placeSubjectImages("German Shepherd is", images, true),
     "German Shepherd is",
   );
-  // Named only inside code, or not named at all: nothing is inserted anywhere.
   const code = "```\nGerman Shepherd\n```";
   assert.equal(placeSubjectImages(code, images, false), code);
   assert.equal(placeSubjectImages("Nothing here", images, false), "Nothing here");
-  // Entries without a subject (web_search images) are never auto-placed.
   assert.equal(
     placeSubjectImages("Labrador", new Map([[ENTRY.id, ENTRY]]), false),
     "Labrador",
   );
-  // Word boundaries: "Pug" must not match inside "Pugilist", so nothing is placed.
   const pug = { ...ENTRY, id: "cccccccccccc", subject: "Pug" };
   assert.equal(
     placeSubjectImages("Pugilist", new Map([[pug.id, pug]]), false),
@@ -387,7 +379,6 @@ test("answerTextFromParts keeps the answer and drops reasoning", () => {
   ];
   const answer = answerTextFromParts(parts);
   assert.equal(answer, "1. **Labrador Retriever:** friendly.\n\n2. **Poodle:** clever.");
-  // The reasoning list must never become a subject to illustrate.
   assert.deepEqual(extractListSubjects(answer), ["Labrador Retriever", "Poodle"]);
   assert.equal(answerTextFromParts([{ type: "reasoning", text: "x" }]), "");
 });
@@ -412,15 +403,12 @@ test("extractListSubjects reads the lead of each listed item", () => {
     "Poodle",
     "Golden Retriever",
   ]);
-  // One item is not a list; prose is not a list.
   assert.deepEqual(extractListSubjects("1. **Only one:** thing"), []);
   assert.deepEqual(extractListSubjects("Dogs are great. Cats too."), []);
-  // Section labels are skipped; procedures and code answers are never illustrated.
   assert.deepEqual(
     extractListSubjects("- **Pros:** fast\n- **Cons:** pricey\n- **Honda Civic:** a\n- **Mazda 3:** b"),
     ["Honda Civic", "Mazda 3"],
   );
-  // A mostly-step list is a procedure and is never illustrated.
   assert.deepEqual(
     extractListSubjects(
       "1. **Install Python:** from python.org.\n2. **Open the terminal:** and run it.",
@@ -433,7 +421,6 @@ test("extractListSubjects reads the lead of each listed item", () => {
     ),
     [],
   );
-  // A comparison that merely ends in a "Choose X if" line keeps its subjects.
   assert.deepEqual(
     extractListSubjects(
       "## Honda Civic\nSporty.\n\n## Toyota Corolla\nCalm.\n\n## Choose the Civic if\nyou want fun.",
@@ -449,8 +436,7 @@ test("extractListSubjects reads the lead of each listed item", () => {
 });
 
 test("the inline card is block-level, so a list item cannot flow text around it", () => {
-  // A list item styles its paragraphs `[&>p]:inline`. An inline card lands in the
-  // middle of the sentence and the text wraps around it, which is what shipped once.
+  // List paragraphs are [&>p]:inline, so an inline card would land mid-sentence.
   const wrapper = /data-search-image=\{entry\.id\}/.test(SEARCH_IMAGE)
     ? SEARCH_IMAGE.slice(SEARCH_IMAGE.indexOf("if (!entry) return null;"))
     : "";
@@ -461,7 +447,6 @@ test("the inline card is block-level, so a list item cannot flow text around it"
 test("searchResultText reaches the citations inside an image-bearing result", () => {
   const blocks = "Title: A\nURL: https://a.test\nSnippet: s";
   assert.equal(searchResultText(blocks), blocks);
-  // The shape that used to make the whole Sources row vanish.
   assert.equal(searchResultText({ text: blocks, webImages: [ENTRY] }), blocks);
   assert.equal(searchResultText({ text: "t", images: [{ data: "", mimeType: "" }] }), "");
   assert.equal(searchResultText(undefined), "");
@@ -473,8 +458,6 @@ test("placeSubjectImages never splices a token into a code fence", () => {
   const text =
     "The Pug is small. Here is code:\n```python\nprint(1)\n\nprint(2)\n```\nDone.";
   const out = placeSubjectImages(text, images, false);
-  // The card goes under the paragraph that names the Pug, and the fence is
-  // reached neither as an insertion point nor as somewhere to splice into.
   assert.ok(!/```python\nprint\(1\)\n\n\[\[img:/.test(out));
   assert.equal(
     out,
@@ -490,7 +473,6 @@ test("placeSubjectImages illustrates a subject once per message", () => {
     placeSubjectImages(first, images, false, ""),
     "A Pug is small.\n\n[[img:cccccccccccc]]",
   );
-  // The later text part sees what the earlier one already named, so it adds nothing.
   assert.equal(placeSubjectImages("The Pug again.", images, false, first), "The Pug again.");
 });
 
@@ -538,13 +520,11 @@ test("missingListSubjects matches coverage on word boundaries", () => {
       result: { text: "t", webImages: [{ ...ENTRY, subject }] },
     },
   ];
-  // "cat" must not swallow Caterpillar or Catalina Island.
   assert.deepEqual(missingListSubjects(answer, covered("cat")), [
     "Caterpillar",
     "Catalina Island",
     "Pug",
   ]);
-  // A longer subject that contains the item as a whole word still covers it.
   assert.deepEqual(missingListSubjects(answer, covered("a Pug dog")), [
     "Caterpillar",
     "Catalina Island",
@@ -594,7 +574,6 @@ test("thumbnails load from Unsloth's own endpoint, which the img policy allows",
     safeMarkdownUrl("blob:https://studio/abc", "src", imgNode),
     "blob:https://studio/abc",
   );
-  // The deny rule this feature routes around stays in force for remote images.
   assert.equal(
     safeMarkdownUrl("https://img.example.com/x.png", "src", imgNode),
     null,
@@ -606,19 +585,13 @@ test("thumbnails load from Unsloth's own endpoint, which the img policy allows",
 });
 
 test("an on-disk image survives sanitize as a path, and is rewritten before it reaches the DOM", () => {
-  // The sanitizer's job ends at "carries no scheme, so keep it": what it cannot know is that the
-  // route answers on the Authorization header. So the surviving path must be resolved per chat --
-  // the session the src RECORDS wins (the model echoes real workdir paths out of the stdout it saw;
-  // a moved chat's older files still sit in the folder named there, which is what the tool card
-  // above the prose already resolves to) -- and fetched, not handed to an <img> unchanged.
+  // The route authenticates via header, so sandbox paths must be resolved per chat and fetched.
   const imgNode = { tagName: "img" } as Parameters<typeof safeMarkdownUrl>[2];
   const written =
     "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png";
   assert.equal(safeMarkdownUrl(written, "src", imgNode), written);
 
-  // The recorded session survives a move: p1 is where this chat lives NOW, and the file it wrote
-  // while living under __LOCALID_Y3VK67e is still there -- which is also what the tool card above
-  // this prose resolves from its envelope, so prose and card must never disagree.
+  // The recorded session wins over the current scope so prose matches the tool card.
   assert.equal(
     markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null }),
     "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png",
@@ -627,8 +600,6 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
     markdownSandboxImageSrc(written, { threadId: "t-1", projectId: "p1" }),
     "/api/inference/sandbox/__LOCALID_Y3VK67e/outputs/loss%20curve%20%231.png",
   );
-  // A bare path records nothing; only then does this chat's scope decide. `project-<id>` else
-  // threadId, exactly as sandboxSessionIdFor resolves it for a tool call's own envelope.
   assert.equal(
     markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: "p1" }),
     "/api/inference/sandbox/project-p1/outputs/plot.png",
@@ -637,7 +608,6 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
     markdownSandboxImageSrc("outputs/plot.png", { threadId: "t-1", projectId: null }),
     "/api/inference/sandbox/t-1/outputs/plot.png",
   );
-  // The not-path-safe form records in the query instead of a path segment, and round-trips the same.
   assert.equal(
     markdownSandboxImageSrc("/api/inference/sandbox/_/plot.png?session=session%2Fid", {
       threadId: "t-1",
@@ -645,11 +615,7 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
     }),
     "/api/inference/sandbox/_/plot.png?session=session%2Fid",
   );
-  // A bare relative path is the same file: every scheme-carrying src is already gone by now. It
-  // arrives percent-encoded, because in a URL a literal `#` starts a fragment and a raw space ends the
-  // destination -- so the decoded name comes back out encoded again, and the raw form below is not
-  // something markdown delivers here (it would have parsed as a fragment). Both are asserted so the
-  // two behaviours stay distinguishable.
+  // Paths arrive percent-encoded since a raw # or space breaks a markdown URL.
   assert.equal(
     sandboxFileForSrc("outputs/loss%20curve%20%231.png"),
     "outputs/loss curve #1.png",
@@ -659,8 +625,6 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
     null,
     "a raw `#` is a fragment delimiter, not part of the name",
   );
-  // What the route serves inline and what it serves as an attachment are different questions, and
-  // only the first is an <img>: a .csv stays a download card rather than becoming a broken image.
   assert.equal(sandboxFileForSrc("report.csv"), null);
   assert.equal(sandboxFileForSrc("diagram.svg"), null);
   assert.equal(
@@ -668,22 +632,17 @@ test("an on-disk image survives sanitize as a path, and is rewritten before it r
     "photo.avif",
     "AVIF is inline on the backend too; the two lists must not drift",
   );
-  // A `..` -- raw or `%2e%2e`-encoded -- pops the scope segment prepended above: one dot reads
-  // another chat's folder, two land on another route. It stays raw and fails honestly instead.
+  // A `..` (raw or encoded) would pop the scope segment and reach another chat's folder.
   assert.equal(sandboxFileForSrc("../project-other/plot.png"), null);
   assert.equal(sandboxFileForSrc("outputs/%2e%2e/other/plot.png"), null);
-  // A single `.` is noise URL parsing drops anyway; it changes nothing about which file this is.
   assert.equal(sandboxFileForSrc("./plot.png"), "plot.png");
-  // Somebody else's URL, left exactly as it was.
   assert.equal(sandboxFileForSrc("/assets/logo.png"), null);
   assert.equal(sandboxFileForSrc("data:image/png;base64,AAAA"), null);
   assert.equal(sandboxFileForSrc("//img.example.com/x.png"), null);
 });
 
 test("extractListSubjects stays linear on a bullet padded with whitespace", () => {
-  // The single-regex form backtracked at ~O(n^3.5): 250 leading spaces in one
-  // bullet blocked the render thread for 13 s, and this runs on every finished
-  // answer while the setting is on.
+  // The single-regex form backtracked catastrophically on long leading whitespace.
   const padded = `- ${" ".repeat(5000)}${"x".repeat(80)}y\n- Beagle: small`;
   const started = Date.now();
   assert.deepEqual(extractListSubjects(padded), []);
@@ -708,8 +667,6 @@ test("extractListSubjects reads the same leads after the marker split", () => {
 test("placeSubjectImages never splices a token into display math", () => {
   const pug = { ...ENTRY, id: "cccccccccccc", subject: "Pug" };
   const images = new Map([[pug.id, pug]]);
-  // A blank line inside `$$ ... $$` used to read as the end of the block, so the
-  // card landed mid-equation and KaTeX was handed markup instead of LaTeX.
   const text = "The Pug weighs:\n$$\na = 1\n\nb = 2\n$$\nDone.";
   const out = placeSubjectImages(text, images, false);
   assert.ok(!/a = 1\n\n\s*\[\[img:/.test(out), "the equation must stay intact");
@@ -722,15 +679,12 @@ test("stripSearchImageTokens takes the tokens and their blank line", () => {
     stripSearchImageTokens("Golden Retriever\n\n[[img:0123456789ab]]\n\nDone."),
     "Golden Retriever\n\nDone.",
   );
-  // Untouched without a token, and an unknown-length id is not a token.
   assert.equal(stripSearchImageTokens("plain answer"), "plain answer");
   assert.equal(stripSearchImageTokens("[[img:nothex]]"), "[[img:nothex]]");
-  // Two cards in a row collapse to one gap, not three blank lines.
   assert.equal(
     stripSearchImageTokens("A\n\n[[img:0123456789ab]]\n\n[[img:abcdef012345]]\n\nB"),
     "A\n\nB",
   );
-  // Inline, and inside code — the same rule rewriteSearchImageTokens follows.
   assert.equal(stripSearchImageTokens("see [[img:0123456789ab]] here"), "see  here");
   assert.equal(
     stripSearchImageTokens("```\n[[img:0123456789ab]]\n```"),
@@ -741,8 +695,6 @@ test("stripSearchImageTokens takes the tokens and their blank line", () => {
 test("placeSubjectImages steps past a subject that code mentions first", () => {
   const go = { ...ENTRY, id: "cccccccccccc", subject: "Go" };
   const images = new Map([[go.id, go]]);
-  // The first occurrence is inside code, which shows no card. Abandoning the subject
-  // there dropped the picture for the prose item that names it further down.
   const text = "Run `Go` first.\n\n1. **Go:** compiled and fast\n2. **Rust:** strict";
   const out = placeSubjectImages(text, images, false);
   assert.ok(out.includes("Run `Go` first."), "the snippet must stay as written");
@@ -752,10 +704,8 @@ test("placeSubjectImages steps past a subject that code mentions first", () => {
 test("placeSubjectImages ignores an earlier part that only named a subject in code", () => {
   const go = { ...ENTRY, id: "cccccccccccc", subject: "Go" };
   const images = new Map([[go.id, go]]);
-  // A code-only mention earlier carries no card, so it must not suppress this one.
   const out = placeSubjectImages("Go is compiled.", images, false, "Type `Go` to start.");
   assert.equal(out, "Go is compiled.\n\n[[img:cccccccccccc]]");
-  // A real earlier mention still wins: one card per message.
   assert.equal(
     placeSubjectImages("Go is compiled.", images, false, "Go is a language."),
     "Go is compiled.",
@@ -765,8 +715,7 @@ test("placeSubjectImages ignores an earlier part that only named a subject in co
 test("placeSubjectImages still places a subject whose token only sits in code", () => {
   const pug = { ...ENTRY, id: "cccccccccccc", subject: "Pug" };
   const images = new Map([[pug.id, pug]]);
-  // rewriteSearchImageTokens leaves a token inside a fence alone, so it renders no
-  // picture; counting it as "already placed" meant the answer showed nothing at all.
+  // A token inside a fence renders nothing, so it must not count as already placed.
   const text = "Here is the token:\n\n```\n[[img:cccccccccccc]]\n```\n\nThe Pug is small.";
   const out = placeSubjectImages(text, images, false);
   assert.ok(out.includes("```\n[[img:cccccccccccc]]\n```"), "the fence stays as written");
@@ -774,15 +723,11 @@ test("placeSubjectImages still places a subject whose token only sits in code", 
     out.endsWith("The Pug is small.\n\n[[img:cccccccccccc]]"),
     `a real card must still be placed, got ${JSON.stringify(out)}`,
   );
-  // A token the model placed in prose still wins, so nothing is placed twice.
   const placed = "The Pug is small.\n\n[[img:cccccccccccc]]";
   assert.equal(placeSubjectImages(placed, images, false), placed);
 });
 
-// A replayed turn keeps its tokens in the model's context, but they resolve
-// against the message whose search produced them: repeating one in a later
-// answer renders nothing at all. So history is replayed without them, and the
-// model has to search again to get a token this message can resolve.
+// Replayed tokens resolve against their own message, so history is replayed without them.
 const sanitizeAssistantReplayJs = ts.transpileModule(
   [
     liftAdapterFunction("function sanitizeAssistantReplayText("),
@@ -809,7 +754,6 @@ test("a token from an earlier turn is unresolvable in the message that repeats i
 
   assert.equal(collectSearchImages(earlier).size, 1);
   assert.equal(collectSearchImages(later).size, 0);
-  // Silently nothing, which is why the token must not survive into replay.
   assert.equal(
     rewriteSearchImageTokens(repeatText, collectSearchImages(later)),
     "Here it is again:\n\n",
@@ -821,7 +765,6 @@ test("replayed assistant text carries no image tokens", () => {
     sanitizeAssistantReplayText(`The retriever:\n\n[[img:${ENTRY.id}]]\n\nand more.`),
     "The retriever:\n\nand more.",
   );
-  // The audio placeholder this shares the chokepoint with is untouched.
   assert.equal(
     sanitizeAssistantReplayText("clip: data:audio/mp3;base64,QUJD"),
     "clip: [audio]",
@@ -842,12 +785,7 @@ test("a replayed web_search result carries no image tokens either", () => {
   );
 });
 
-// Search images is read by the backend out of SQLite when the tool schema is
-// picked, not carried in the request, and the mirror to /api/chat/settings is a
-// 400 ms trailing-edge debounce -- so a message sent right after the toggle used
-// to run on the previous value. The store and the adapter cannot be imported in
-// a bare node test (a .tsx barrel sits in both graphs), so these pin the source
-// the way the sibling store tests do.
+// The backend reads this setting from SQLite and the mirror is debounced, so sends must flush.
 const storeSource = readSrc("features/chat/stores/chat-runtime-store.ts");
 
 test("a queued settings patch is sent before a run reads it", () => {
@@ -856,10 +794,7 @@ test("a queued settings patch is sent before a run reads it", () => {
   );
   assert.ok(flush.length > 0, "flushPendingChatSettings is gone");
   const body = flush.slice(0, flush.indexOf("\n}\n") + 2);
-  // Nothing queued and nothing in flight is the common case and must not cost a
-  // send anything.
   assert.match(body, /if \(!queued && unsettledFlushes === 0\) return;/);
-  // The debounce is cut short rather than waited out.
   assert.match(body, /clearTimeout\(pendingTimer\)/);
   // Bounded: a wedged PATCH must not hold the composer open.
   assert.match(body, /Promise\.race\(/);
@@ -867,18 +802,14 @@ test("a queued settings patch is sent before a run reads it", () => {
 });
 
 test("a patch already handed to the server is waited for too", () => {
-  // Between the debounce firing and the response, pendingPatch and pendingTimer
-  // are both empty while the value the backend reads is still the old one, so
-  // the fast path above cannot be decided from those two alone.
+  // Mid-flush, pendingPatch and pendingTimer are empty while the backend still has the old value.
   const enqueue = storeSource.slice(
     storeSource.indexOf("function enqueueSettingsFlush("),
   );
   const body = enqueue.slice(0, enqueue.indexOf("\n}\n") + 2);
   assert.match(body, /unsettledFlushes \+= 1;/);
   assert.match(body, /\.finally\(\(\) => \{\s*unsettledFlushes -= 1;/);
-  // Chained onto the same queue, so two flushes cannot overlap.
   assert.match(body, /inflightFlush = inflightFlush/);
-  // The debounce goes through it rather than posting its own chain.
   const schedule = storeSource.slice(
     storeSource.indexOf("function scheduleSettingsFlush("),
   );
@@ -894,10 +825,8 @@ test("the run flushes those settings after it hydrates and before it sends", () 
   const hydrate = adapterSource.indexOf(
     "await useChatRuntimeStore.getState().hydratePersistedSettings();",
   );
-  // After, not before: a setting changed while the initial GET was still out is
-  // held back and only reaches the debounce when hydration replays it.
+  // After hydration: settings changed during the initial GET are replayed by hydrate.
   assert.ok(hydrate > 0 && hydrate < start, "the flush must follow the hydrate");
-  // Awaited, not fired and forgotten, or the run races the patch it just sent.
   assert.match(
     adapterSource.slice(start - 6, start + 34),
     /await flushPendingChatSettings\(\);/,
@@ -910,16 +839,13 @@ test("the automatic lookup reads this run's approval level, not the open chat's"
     adapterSource.indexOf("const subjects = missingListSubjects("),
   );
   assert.ok(gate.length > 0, "the automatic-lookup gate moved");
-  // confirmToolCalls and permissionMode are per-chat, and a background run can
-  // finish after the user has opened a chat on "auto": reading the store here
-  // would look images up for an answer whose own chat asked to be consulted.
+  // These are per-chat and a background run can outlive a chat switch, so use captured values.
   assert.match(
     gate,
     /const toolCallsNeedApproval = confirmToolCalls && permissionMode === "ask";/,
   );
   assert.doesNotMatch(gate, /getState\(\)\.confirmToolCalls/);
   assert.doesNotMatch(gate, /getState\(\)\.permissionMode/);
-  // Both come out of the runtime the run captured before it started.
   const captured = adapterSource.slice(
     adapterSource.indexOf("let runtime = useChatRuntimeStore.getState();"),
     adapterSource.indexOf("const toolCallsNeedApproval ="),
@@ -929,9 +855,7 @@ test("the automatic lookup reads this run's approval level, not the open chat's"
 });
 
 test("every export path strips the tokens, not just the clipboard", () => {
-  // The tokens are renderer markup. A per-message export, a reply saved as a
-  // project source and a whole chat saved as one all reach disk (or back into
-  // model context) by a different route than the copy button.
+  // Tokens are renderer markup and must not reach exports or saved sources.
   const threadSource = readSrc("components/assistant-ui/thread.tsx");
   const exporter = threadSource.slice(
     threadSource.indexOf("async function exportMessageMarkdown("),
@@ -962,16 +886,13 @@ test("every export path strips the tokens, not just the clipboard", () => {
 });
 
 test("the web search card survives a query that is not a string", () => {
-  // Local models emit `"query": 42` and `"query": {}` routinely, and .trim() on
-  // one threw straight through the renderer.
+  // Local models emit non-string query values, and .trim() on them threw.
   const cardSource = readSrc("components/assistant-ui/tool-ui-web-search.tsx");
   const args = cardSource.slice(
     cardSource.indexOf("const query ="),
     cardSource.indexOf("const isUrlFetch ="),
   );
   assert.ok(args.length > 0, "the args derivation moved");
-  // Passed in because the derivation now calls it: one coercion shared by every
-  // card (see tool-card-arg-coercion.test.ts).
   const derived = new Function(
     "args",
     "toolArgText",
@@ -987,8 +908,7 @@ test("the web search card survives a query that is not a string", () => {
 });
 
 test("a thumbnail response that lands after the id changed is ignored", () => {
-  // Render falls through to idle for a state written under the previous id, and
-  // the effect has no reason to run again: a skeleton that never resolves.
+  // Otherwise state written under the previous id leaves a skeleton that never resolves.
   const effect = SEARCH_IMAGE.slice(
     SEARCH_IMAGE.indexOf("authFetch(searchImagePath(id)"),
     SEARCH_IMAGE.indexOf("function useNearViewport"),
@@ -1003,10 +923,7 @@ test("a thumbnail response that lands after the id changed is ignored", () => {
 });
 
 
-// A voice note or a clip is the user's own content in the sense the text-attachment rule
-// already covers, and the answer's subjects go to external image engines. Both arrive
-// with no text part beside them: AudioAttachmentAdapter.send emits exactly
-// [{ type: "audio", ... }], so nothing else in the predicate could have caught them.
+// Audio/video parts arrive with no text part, and subjects go to external image engines.
 test("an audio or video input blocks automatic image lookup", () => {
   assert.equal(
     messagesUsePrivateContent([
@@ -1053,8 +970,7 @@ test("an audio or video input blocks automatic image lookup", () => {
     true,
     "video reaches the model the same way and leaks the same way",
   );
-  // Matched on the type, not on a payload that parses: a clip whose base64 is malformed
-  // is still a clip, and failing open on it is the wrong way round.
+  // Matched on type: failing open on a malformed clip is the wrong way round.
   assert.equal(
     messagesUsePrivateContent([
       { role: "user", content: [{ type: "audio", audio: { data: "", format: "wav" } }] },
@@ -1062,7 +978,6 @@ test("an audio or video input blocks automatic image lookup", () => {
     true,
     "an audio part with an unusable payload is still private",
   );
-  // The complement: a plain typed question is what the lookup exists for.
   assert.equal(
     messagesUsePrivateContent([
       { role: "user", content: [{ type: "text", text: "name three dog breeds" }] },
@@ -1070,8 +985,6 @@ test("an audio or video input blocks automatic image lookup", () => {
     false,
     "an ordinary text turn must still be eligible",
   );
-  // A non-video file part is not media this rule speaks for; the attachment rule below
-  // it already decides those on their text.
   assert.equal(
     messagesUsePrivateContent([
       { role: "user", content: [{ type: "file", data: "eA==", mimeType: "application/pdf" }] },

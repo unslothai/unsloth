@@ -5,8 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-// Execute the shipped status patch and rollback payload, like resident-status-baselines.test.ts.
-// The browser store graph is not needed to exercise the request/effective round trip.
 const applier = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
 const start = applier.indexOf("    // Rollback needs the request,");
 const end = applier.indexOf("    // AFTER that clear,", start);

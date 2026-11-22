@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Both floating panels dragged through React state and through left/top, which
-// is the layout path: the card carries a wide blurred shadow and the monitor is
-// backdrop-blurred, so every frame re-laid-out and repainted them. A trackpad
-// also reports moves faster than the display refreshes, so much of that work
-// was never shown. These pin the cheap path, since the cost is invisible to a
-// unit test and only shows up under the hand.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -36,13 +29,9 @@ test("the card paints a drag frame through a transform", () => {
   const hook = readSrc("features/loaded-models/use-drag-position.ts");
   assert.match(hook, /panel\.style\.transform = `translate3d\(/);
   assert.match(hook, /frameRef\.current = requestAnimationFrame\(paint\)/);
-  // The old path: one setPosition per pointermove, so one render per event.
   assert.doesNotMatch(hook, /setPosition\(\s*clampToViewport\(/);
 });
 
-// This one is the sharpest: the effect was keyed on `position`, so every frame
-// disconnected the observer and built a new one, and observing re-measures,
-// which forces a synchronous layout.
 test("the card's reclamp observer outlives a drag frame", () => {
   const hook = readSrc("features/loaded-models/use-drag-position.ts");
   assert.match(hook, /\}, \[panelEl, reclamp\]\);/);
@@ -63,10 +52,10 @@ test("the card hands the offset back to left/top on release", () => {
 test("the monitor paints a drag frame through a transform", () => {
   const panel = readSrc("hooks/use-floating-panel-layout.ts");
   assert.match(panel, /monitor\.style\.transform = `translate3d\(/);
-  assert.match(
-    panel,
-    /dragFrameRef\.current = requestAnimationFrame\(paintDrag\)/,
-  );
+  // Painted in the pointer handler: a rAF deferral left the card trailing a fast pointer by 30-45 px.
+  const update = panel.slice(panel.indexOf("function updateDrag("), panel.indexOf("function finishDrag("));
+  assert.match(update, /paintDrag\(\);/);
+  assert.doesNotMatch(update, /requestAnimationFrame|set[A-Z]\w*\(/);
 });
 
 test("the monitor commits its position once, on release", () => {
@@ -76,8 +65,6 @@ test("the monitor commits its position once, on release", () => {
   assert.match(finish, /setLayout\(\(current\) =>/);
 });
 
-// The measured box carries the drag's transform, so committing it mid-drag
-// would move the panel twice as far as the pointer went.
 test("a resize mid-drag does not commit the transformed box", () => {
   const panel = readSrc("hooks/use-floating-panel-layout.ts");
   assert.match(panel, /const held = session && current \? current : null;/);
@@ -85,8 +72,6 @@ test("a resize mid-drag does not commit the transformed box", () => {
   assert.match(panel, /maxWidth: constraintsBox\.width - restLeft,/);
 });
 
-// Every frame published the monitor's box to a shared store, and each write
-// re-rendered every overlay subscribed to it, the loaded models card included.
 test("dragging the monitor does not republish its frame per frame", () => {
   const panel = readSrc("hooks/use-floating-panel-layout.ts");
   const update = panel.slice(
@@ -95,4 +80,27 @@ test("dragging the monitor does not republish its frame per frame", () => {
   );
   assert.doesNotMatch(update, /setFrame/);
   assert.doesNotMatch(update, /getBoundingClientRect/);
+});
+
+test("a drag measures from the grab point, so an edge clamp never slides the grip off the pointer", () => {
+  const panel = readSrc("hooks/use-floating-panel-layout.ts");
+  const update = panel.slice(
+    panel.indexOf("function updateDrag"),
+    panel.indexOf("function finishDrag"),
+  );
+  assert.match(update, /session\.baseLeft \+ event\.clientX - session\.startX/);
+  assert.match(update, /session\.baseTop \+ event\.clientY - session\.startY/);
+  assert.doesNotMatch(update, /session\.startX = /);
+  assert.match(panel, /\? clamp\(session\.left, 0, maxLeft\)/);
+  assert.doesNotMatch(panel, /\? clamp\(monitorBox\.left - constraintsBox\.left/);
+});
+
+test("dragged panels opt out of reduce motion's transitions, so a drop never flashes at the start", () => {
+  for (const path of [
+    "components/floating-monitor.tsx",
+    "features/api-monitor/api-monitor-overlay.tsx",
+    "features/loaded-models/loaded-models-indicator.tsx",
+  ]) {
+    assert.match(readSrc(path), /"[^"]*\btransition-none\b[^"]*"/, path);
+  }
 });

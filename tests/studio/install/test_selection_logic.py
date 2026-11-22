@@ -1724,9 +1724,8 @@ class TestResolveInstallAttempts:
         assert approved.release_tag == "llama-prebuilt-latest"
 
     def test_windows_cuda_fork_never_falls_back_to_upstream_assets(self, monkeypatch):
-        # The fork's checksums once approved an upstream ggml-org Windows CUDA zip by name;
-        # prebuilts now come only from the fork, so a release without a covering published
-        # bundle raises (older release / source build) and never lists ggml-org's assets.
+        # Fork checksums must never approve an upstream ggml-org zip by name, so a release lacking a
+        # covering bundle raises and never lists ggml-org assets.
         host = make_host(system = "Windows", machine = "AMD64")
         host.driver_cuda_version = (12, 4)
         mock_windows_runtime(monkeypatch, ["cuda12"])
@@ -2392,9 +2391,8 @@ class TestWindowsCudaAttemptCoversBlackwell:
 
 
 class TestDirectUpstreamWindowsAmdTakesVulkan:
-    """The direct/upstream planner is reached when the caller pins --published-repo, so the
-    Windows Vulkan gate there has to match the published one. Left Intel-only, a Windows AMD
-    host with no usable ROCm took the CPU attempt even with win-vulkan in the release."""
+    """The direct/upstream planner runs when --published-repo is pinned, so its Windows Vulkan gate
+    must match the published one; Intel-only left Windows AMD hosts with no usable ROCm on CPU"""
 
     TAG = "b9365"
 
@@ -2838,8 +2836,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         return make_host(**base)
 
     def test_amd_without_rocm_gets_the_published_vulkan_bundle(self):
-        """Published attempts must prefer Vulkan in _linux_published_attempts for AMD without ROCm,
-        not CPU."""
+        """_linux_published_attempts must prefer the Vulkan bundle over CPU for AMD hosts without ROCm."""
         host = self._gpu_host(has_amd_gpu_without_rocm = True)
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
             host, self._vulkan_and_cpu_bundle()
@@ -2935,9 +2932,8 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
 
 
 class TestPublishedLegacyNamedArm64BundlesAreOrdered:
-    """The legacy-minor ordering synthesised -x64.zip names and called windows_cuda_attempts
-    without the arch, so an approved llama-<tag>-bin-win-cuda-13.1-arm64.zip produced no
-    runtime line and was skipped for the unchecksummed upstream fallback."""
+    """Legacy-minor ordering synthesised -x64.zip names and dropped the arch passed to
+    windows_cuda_attempts, so approved arm64 bundles fell back to unchecksummed upstream."""
 
     TAG = "b8508"
 
@@ -2986,9 +2982,8 @@ class TestPublishedLegacyNamedArm64BundlesAreOrdered:
         assert all(not a.name.endswith("13.3-arm64.zip") for a in result)
 
     def test_the_artifact_gate_reads_the_arm64_name(self, monkeypatch):
-        """Two legacy minors on one line, the higher one ranked first: the line survives on
-        the lower minor, and the per-artifact gate must parse the -arm64 name to drop the
-        higher one; an x64 spelling never matches, and the preferred 13.3 build slips through."""
+        """With two legacy minors on one line, the per-artifact gate must parse the -arm64 name to
+        drop the higher minor; an x64 spelling never matches."""
         mock_windows_runtime(monkeypatch, ["cuda13"])
         release = self._release([("13.3", "cuda13"), ("13.1", "cuda13")], ranks = {"13.3": 10})
         result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
@@ -5075,3 +5070,130 @@ class TestForkOnlyPrebuilts:
         )
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(_host, release)
         assert [a.name for a in attempts][:1] == [f"app-{self.TAG}-linux-arm64-vulkan.tar.gz"]
+
+
+class TestLinuxUncoveredRocmGpuTakesVulkan:
+    """Linux gfx1153 (no ROCm bundle): Vulkan without hipcc, the HIP source build with it."""
+
+    TAG = "b11798-mix-f8a7950"
+    ROCM = f"app-{TAG}-linux-x64-rocm-gfx110X.tar.gz"
+    VULKAN = f"app-{TAG}-linux-x64-vulkan.tar.gz"
+    CPU = f"app-{TAG}-linux-x64-cpu.tar.gz"
+
+    def _release(self):
+        return make_release(
+            [
+                make_cpu_artifact(
+                    self.ROCM,
+                    install_kind = "linux-rocm",
+                    rank = 1000,
+                    gfx_target = "gfx110X",
+                    mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+                ),
+                make_cpu_artifact(self.VULKAN, install_kind = "linux-vulkan", rank = 1000),
+                make_cpu_artifact(self.CPU, install_kind = "linux-cpu", rank = 1000),
+            ],
+            release_tag = self.TAG,
+            upstream_tag = "b11798",
+        )
+
+    def _host(self, gfx, **overrides):
+        defaults = dict(
+            machine = "x86_64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+            rocm_gfx_target = gfx,
+            rocm_gfx_targets = [gfx],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _resolve(
+        self,
+        gfx,
+        backend = None,
+        **host_overrides,
+    ):
+        route = INSTALL_LLAMA_PREBUILT.route_backend_request(
+            backend = backend,
+            published_repo = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO,
+            published_release_tag = self.TAG,
+            host = self._host(gfx, **host_overrides),
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(route.host, self._release())
+        if backend is not None:
+            attempts = INSTALL_LLAMA_PREBUILT._backend_only_attempts(attempts, backend)
+        if not attempts:
+            # What the installer raises for an empty Linux plan: setup.sh then source-builds.
+            raise PrebuiltFallback("no compatible Linux prebuilt asset was found")
+        return apply_approved_hashes(attempts, make_checksums([self.ROCM, self.VULKAN, self.CPU]))
+
+    @pytest.fixture(autouse = True)
+    def _clean(self, monkeypatch):
+        for var in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "GGML_VK_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "UNSLOTH_LLAMA_CPP_BACKEND",
+            "UNSLOTH_FORCE_VULKAN",
+        ):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setenv("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: False)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "_hipcc_available", lambda: False, raising = False
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: pytest.fail("listed an upstream release"),
+        )
+
+    @pytest.mark.parametrize("gfx", ["gfx1153", "gfx1152"])
+    def test_an_uncovered_gpu_without_hipcc_takes_the_vulkan_bundle(self, gfx):
+        assert [c.name for c in self._resolve(gfx)] == [self.VULKAN]
+
+    def test_with_hipcc_the_source_build_stays(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_hipcc_available", lambda: True)
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153")
+
+    def test_a_covered_gpu_keeps_its_rocm_bundle(self):
+        assert [c.name for c in self._resolve("gfx1100")] == [self.ROCM]
+
+    def test_an_explicit_hip_backend_is_not_rerouted(self):
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153", backend = "rocm")
+
+    @pytest.mark.parametrize(
+        "mask_env", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"]
+    )
+    def test_a_mask_keeps_the_source_build(self, monkeypatch, mask_env):
+        # Vulkan ignores the HIP masks, and a Vulkan mask's ordinals are unknowable here.
+        monkeypatch.setenv(mask_env, "0")
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153")
+
+    def test_rocm_torch_beside_an_nvidia_card_keeps_the_source_build(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: True)
+        with pytest.raises(PrebuiltFallback):
+            self._resolve(
+                "gfx1152",
+                nvidia_smi = "/usr/bin/nvidia-smi",
+                driver_cuda_version = (12, 8),
+                compute_caps = ["89"],
+                physical_compute_caps = ["89"],
+                has_physical_nvidia = True,
+                has_usable_nvidia = True,
+            )
+
+    def test_beside_an_nvidia_card_the_source_build_stays(self):
+        # Vulkan would reach the NVIDIA card too; the masked-NVIDIA rules stay as they are.
+        with pytest.raises(PrebuiltFallback):
+            self._resolve("gfx1153", has_physical_nvidia = True)

@@ -24,6 +24,11 @@ _APT = re.compile(r"\bapt-get\s+(?:update|install)\b|playwright\s+install\b[^\n]
 # `release_dpkg_lock()` waits up to 24 * 5s, then kills the holder and sleeps 5.
 LOCK_WAIT_SECONDS = 125
 
+# `prefer_fast_apt_mirror()` probes at most four mirrors for 5s each, once per job, and a
+# timed-out attempt costs a 2s pause to stop the orphaned apt-get.
+MIRROR_PROBE_SECONDS = 4 * 5
+ORPHAN_STOP_SECONDS = 2
+
 # Workflows whose apt calls cannot use the helper, each for a durable reason.
 EXEMPT_WORKFLOWS = {
     # Runs apt in bare containers and WSL with no checkout, and deliberately without `sudo`.
@@ -90,7 +95,8 @@ def _worst_case_seconds(step: dict, run: str) -> int:
     per_attempt = int(per_attempt) if per_attempt is not None else 480
 
     calls = run.count(HELPER)
-    return calls * (attempts * per_attempt + (attempts - 1) * LOCK_WAIT_SECONDS)
+    per_call = attempts * per_attempt + (attempts - 1) * (LOCK_WAIT_SECONDS + ORPHAN_STOP_SECONDS)
+    return MIRROR_PROBE_SECONDS + calls * per_call
 
 
 @pytest.mark.parametrize("path", _workflows(), ids = lambda p: p.name)
@@ -182,6 +188,8 @@ def test_helper_defaults_are_what_the_budgets_assume() -> None:
     assert 'ATTEMPT_TIMEOUT="${RETRY_ATTEMPT_TIMEOUT:-480}"' in source
     assert "seq 1 24" in source
     assert LOCK_WAIT_SECONDS == 24 * 5 + 5
+    assert 'MIRROR_PROBE_SECONDS="${APT_MIRROR_PROBE_SECONDS:-5}"' in source
+    assert "sleep 2" in source
 
 
 def test_the_helper_makes_apt_fail_fast() -> None:

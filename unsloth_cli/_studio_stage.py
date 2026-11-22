@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The passive half of the 805-807 background update contract.
-
-Those shells run the INSTALLED (old) CLI with `--stage`, which clones the venv, runs this
-package's setup inside the clone and on POSIX imports `finalize_for_activation` from the staged
-tree. This wheel stages nothing, but those names must stay: stdlib only, importable under -I.
-"""
+"""Stub for old CLI's --stage path: keep finalize_for_activation; stdlib only, importable under -I."""
 
 from __future__ import annotations
 
@@ -17,8 +12,8 @@ from pathlib import Path
 
 STAGE_DIR_NAME = ".update-stage"
 STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
-# Where a staged update parks the uv cache it used; the live marker is written only once the
-# stage is accepted, so an update that never activates cannot redirect the environment.
+# Where a staged update parks its uv cache; the live marker is written only once the stage is
+# accepted, so an update that never activates cannot redirect the environment.
 UV_CACHE_MARKER = "uv-cache-dir"
 SHELL_VERSION_ENV = "UNSLOTH_TAURI_SHELL_VERSION"
 VENV_NAME = "unsloth_studio"

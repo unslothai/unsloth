@@ -94,7 +94,7 @@ run_setup() {
     OUT=$(cd "$WORK/launch dir" && env "$@" "$_interp" "$WORK/pkg/setup.sh" --local "a b" 2>&1) || RC=$?
 }
 count() { printf '%s\n' "$OUT" | grep -cF -- "$1" || true; }
-HANDOFF="STEP setup: the update replaced this setup script; finishing with the new version"
+HANDOFF="STEP setup: the update changed setup or its Node pin; finishing with the new version"
 
 INTERPRETERS=(bash)
 if [ "$(uname -s)" = Darwin ] && [ -x /bin/bash ]; then

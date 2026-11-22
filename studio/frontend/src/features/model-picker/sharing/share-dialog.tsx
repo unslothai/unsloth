@@ -305,7 +305,7 @@ export function ShareRunConfigDialog({
               {destination !== "browser"
                 ? "The recipient needs Unsloth Desktop installed."
                 : remoteAddress
-                  ? "This link contains this Studio's network address. Anyone with it and your password can sign in and control this computer. Share it only with people who should use this Studio; otherwise share a Desktop link."
+                  ? "This link contains this Unsloth server's network address. Anyone with it and your password can sign in and control this computer. Share it only with people who should use this Unsloth server; otherwise share a Desktop link."
                   : "This link contains your Unsloth Web address. Recipients need access to that address. A localhost address opens Unsloth Web on their own computer."}
             </p>
           </div>
@@ -331,7 +331,7 @@ export function ShareRunConfigDialog({
                 />
               </label>
               <Button
-                className="shrink-0 px-4"
+                className="shrink-0"
                 disabled={!link || copying}
                 onClick={async () => {
                   setCopying(true);

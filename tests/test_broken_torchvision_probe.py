@@ -170,9 +170,8 @@ def test_the_skip_variable_still_skips_everything():
 
 
 def test_the_repair_names_the_wheel_for_this_torch_patch():
-    """`0.22.*` on a torch 2.7.0 host resolves torchvision 0.22.1, which requires
-    torch 2.7.1, and `--no-deps` then keeps the 2.7.0 that does not match it. The
-    advertised repair would rebuild the mismatch it is meant to fix."""
+    """A 0.22.* pin on torch 2.7.0 resolves torchvision 0.22.1, which needs torch 2.7.1, and
+    --no-deps keeps the mismatched torch, so the repair pins the exact patch."""
     from unsloth.import_fixes import _torchvision_repair_command
 
     assert '"torchvision==0.22.0"' in _torchvision_repair_command((0, 22, 0))

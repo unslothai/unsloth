@@ -3,12 +3,8 @@
 
 import { create } from "zustand";
 
-// Which thinking rounds are open, so the tool calls folded under one can follow it. Session only:
-// it tracks what is on screen now, and a reloaded thread starts from the collapse preference.
-// A round missing here counts as closed, so tools never flash on screen before the block that
-// owns them has published its state.
+// Session only. A round missing here counts as closed, so tools never flash before their block.
 export interface ReasoningRoundState {
-  /** Round key (see reasoningRoundKey) -> whether its thinking block is open. */
   open: Record<string, boolean>;
   setRoundOpen: (key: string, open: boolean) => void;
   clearRound: (key: string) => void;

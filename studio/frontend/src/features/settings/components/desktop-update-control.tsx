@@ -11,18 +11,6 @@ function formatDesktopVersion(version: string): string {
   return version.startsWith("v") ? version : `v${version}`;
 }
 
-export function DesktopUpdateNote(): ReactElement | null {
-  const t = useT();
-  const update = useTauriUpdateController();
-  if (!update) return null;
-  return (
-    <p className="pb-1 text-xs text-muted-foreground leading-relaxed">
-      {t("settings.about.update.desktopManaged")}
-    </p>
-  );
-}
-
-// Lives in General, under the version rows it acts on. Desktop-only: outside Tauri there is no controller.
 export function DesktopUpdateControl(): ReactElement | null {
   const t = useT();
   const update = useTauriUpdateController();
@@ -47,7 +35,9 @@ export function DesktopUpdateControl(): ReactElement | null {
       version: formatDesktopVersion(update.info.version),
     });
     description = update.isExternalServer
-      ? t("settings.about.update.desktopExternalServer")
+      ? t("settings.about.update.desktopExternalServer", {
+          port: update.externalServerPort ?? "",
+        })
       : update.updatePolicyMode === "manual_linux_package"
         ? t("settings.about.update.desktopManualInstall")
         : t("settings.about.update.desktopAvailableDescription");
@@ -81,7 +71,7 @@ export function DesktopUpdateControl(): ReactElement | null {
       {available && update.isExternalServer ? null : (
         <Button
           size="sm"
-          variant={available ? "default" : "outline"}
+          variant={available ? "dark" : "outline"}
           disabled={busy}
           aria-busy={busy}
           onClick={() => {

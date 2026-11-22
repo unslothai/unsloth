@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cursor: ``~/.cursor/projects/<slug>/agent-transcripts/<session>[/<session>].jsonl``.
-
-Cursor stores no tool results or per-line timestamps, so calls import without ``result``
-and times are file creation + 1 ms per message (as the frontend does).
-"""
+"""Cursor transcripts lack tool results and timestamps; times are file creation plus 1 ms per message."""
 
 from __future__ import annotations
 

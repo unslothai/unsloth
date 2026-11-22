@@ -93,7 +93,6 @@ function buildSamplerParams(
   if (config.sampler_type === "gaussian") {
     return {
       mean: parseNumber(config.mean),
-      // data_designer expects `stddev`
       stddev: parseNumber(config.std),
     };
   }
@@ -134,7 +133,7 @@ function buildSamplerParams(
     if (!raw) {
       return {};
     }
-    // UI historically used "uuid4" as a format; data_designer uuid is always uuid4.
+    // data_designer uuid is always uuid4; older UI saved it as a format.
     if (raw.toLowerCase() === "uuid4") {
       return {};
     }

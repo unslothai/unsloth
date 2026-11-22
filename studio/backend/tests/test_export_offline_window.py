@@ -53,10 +53,9 @@ def _run_worker(monkeypatch, commands, unreachable):
     monkeypatch.setattr(worker, "_setup_log_capture", lambda _: None)
     monkeypatch.setattr(worker, "_activate_transformers_version", lambda *args: None)
     monkeypatch.setattr(worker, "_handle_load", lambda *args: None)
-    # Worker-process globals; keep them from leaking into later tests.
     monkeypatch.setattr(worker, "_log_forward_gate", threading.Event())
     monkeypatch.setattr(log_config, "_BARS_RESTORED", log_config._BARS_RESTORED)
-    # Below the client's request hook, which is where huggingface_hub enforces offline mode.
+    # below the client's request hook, where huggingface_hub enforces offline mode
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle_request)
     monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", unreachable)
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
@@ -64,7 +63,6 @@ def _run_worker(monkeypatch, commands, unreachable):
     for command in [*commands, {"type": "shutdown"}]:
         cmd_queue.put(command)
     resp_queue = queue.Queue()
-    # The worker normally owns its process environment; isolate that mutation here.
     with patch.dict(os.environ):
         os.environ.pop("HF_HUB_OFFLINE", None)
         os.environ.pop("TRANSFORMERS_OFFLINE", None)
@@ -81,7 +79,6 @@ def _run_worker(monkeypatch, commands, unreachable):
 
 
 def test_local_export_rechecks_connectivity_and_restores_hub_state(monkeypatch):
-    # Activation and load online, first export disconnected, next export recovered.
     verdicts = [False, False, True, False]
     probes = []
 
@@ -124,8 +121,7 @@ def _isolated_offline_env(monkeypatch, **preset):
 
 @pytest.fixture(params = ["env", "force"])
 def window_branch(request, monkeypatch):
-    """Both ways the window goes offline: env vars only (huggingface_hub not yet usable) or the
-    loader's _force_hf_offline (post-import)."""
+    """Offline via env vars before huggingface_hub loads, or _force_hf_offline after import."""
     from utils.utils import force_hf_offline
 
     if request.param == "env":
@@ -138,8 +134,7 @@ def window_branch(request, monkeypatch):
 
 
 def _install_kernel_reaches_the_lock(monkeypatch):
-    """Whether ssm_runtime._install_kernel gets past its offline guard (to the kernel lock, which
-    is stubbed busy so nothing installs)."""
+    """Checks _install_kernel clears its offline guard; the kernel lock is stubbed busy."""
     from utils import kernel_install, ssm_runtime
 
     reached = []

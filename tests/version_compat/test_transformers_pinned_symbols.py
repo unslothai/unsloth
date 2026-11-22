@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""CPU-only checks against transformers GitHub source; anchors 4.57.6, 5.5.0 and 5.17.0."""
+"""CPU-only checks against transformers GitHub source; anchors 4.57.6, 5.5.0 and 5.18.0."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def _declared_floor() -> tuple[int, ...]:
 _FLOOR = _declared_floor()
 
 # 4.57.6 old floor, 5.5.0 the Apple Silicon cap, 5.16.0 the tokenizers>=0.23.1 break.
-_ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1")
+_ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1", "v5.18.0")
 
 # Exact pins notebooks use; one-tag-per-minor would evict them.
 
@@ -66,7 +66,7 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
 
 
 # PyPI version -> tag where upstream disagrees.
-_TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
+_TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release", "5.21.0": "v5.21"}
 
 # Outage fallback; must start at the declared floor.
 _TAGS_FALLBACK = (
@@ -95,6 +95,7 @@ _TAGS_FALLBACK = (
     "v5.15.1",
     "v5.16.1",
     "v5.17.0",
+    "v5.18.0",
 )
 
 

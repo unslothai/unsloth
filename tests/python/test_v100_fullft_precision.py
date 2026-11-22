@@ -77,7 +77,9 @@ def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_prec
         )
         raised = None
         try:
-            exec(CODE, {"torch": torch, "os": os}, {"args": args, "model": model})
+            # One namespace, as in the trainer's function scope: with separate locals, a
+            # generator or comprehension in the template cannot see `args` (NameError).
+            exec(CODE, {"torch": torch, "os": os, "args": args, "model": model})
         except TypeError:
             raised = "TypeError"
         return args.fp16, args.bf16, os.environ.get("ACCELERATE_MIXED_PRECISION"), raised

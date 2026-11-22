@@ -310,8 +310,7 @@ def run() -> dict:
             "click_after_close": clicks_after_close > clicks_after_approve,
         }
 
-        # 5. Detaching: a still-pending follow step used to reconcile isAtBottom back to true after a
-        # small upward flick.
+        # A pending follow step must not flip isAtBottom to true after a small upward flick.
         page.evaluate("window.__research.openPanel()")
         until(page, f"() => Boolean(document.querySelector('{SCROLLER}'))")
         frames(page)

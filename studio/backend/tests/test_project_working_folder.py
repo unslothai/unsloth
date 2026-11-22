@@ -7,6 +7,7 @@ The folder is only ever pointed at: the managed workspace stays where it was, a 
 removes that and nothing else, and a folder that moved or was replaced is never followed.
 """
 
+import asyncio
 import os
 import base64
 import hashlib
@@ -481,6 +482,47 @@ def test_agents_md_is_read_from_the_users_folder(env, monkeypatch):
     assert "Use tabs." not in agents_md.agents_md_text(studio_db.get_chat_project("p1"))
     _use_repo(env)
     assert "Use tabs." in agents_md.agents_md_text(studio_db.get_chat_project("p1"))
+
+
+def test_the_prompt_names_the_users_folder_exactly_when_the_tools_run_there(env, monkeypatch):
+    """The nudge says the cwd is the user's project, where a model otherwise answered "What
+    project/files?"; it must not say so for the managed folder, a replaced folder, another
+    account or a plain chat."""
+    runs_there = env.tools.session_runs_in_user_folder
+    assert not runs_there("project-p1")
+    assert not runs_there("thread-1")
+    assert not runs_there(None)
+
+    _use_repo(env)
+    assert runs_there("project-p1")
+    assert env.tools._get_workdir("project-p1") == os.path.realpath(env.repo)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(env.tools, "is_owner_context", lambda: False)
+        assert not runs_there("project-p1")
+
+    env.repo.rename(env.repo.with_name("repo-moved"))
+    env.repo.mkdir()
+    assert not runs_there("project-p1")
+
+
+def test_the_route_reads_the_folder_from_the_requests_session(env):
+    from models.inference import ChatCompletionRequest, ChatCountTokensRequest
+    from routes.inference import _tools_run_in_user_folder
+
+    _use_repo(env)
+    base = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "What files are in my project?"}],
+    }
+    code = [t for t in env.tools.ALL_TOOLS if t["function"]["name"] == "terminal"]
+    web = [t for t in env.tools.ALL_TOOLS if t["function"]["name"] == "web_search"]
+    for request_type in (ChatCompletionRequest, ChatCountTokensRequest):
+        project = request_type(**base, session_id = "project-p1")
+        assert asyncio.run(_tools_run_in_user_folder(project, code))
+        assert not asyncio.run(_tools_run_in_user_folder(request_type(**base), code))
+        # Nothing can look in the folder, so the project row is not read at all.
+        assert not asyncio.run(_tools_run_in_user_folder(project, web))
 
 
 def test_add_to_project_lands_where_the_tools_run(env, tmp_path):

@@ -3,8 +3,7 @@
 
 """Shared helpers for raw-text dataset preparation."""
 
-# `Dataset` is annotation-only: a module-scope `datasets` import drags torch in via
-# datasets.formatting.torch_formatter.
+# Annotation-only: importing datasets at module scope pulls in torch.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,16 +32,7 @@ class RawTextPreparationResult:
 
 
 def resolve_column_names(dataset) -> list[str]:
-    """Return the column names for *dataset*, guarding against None.
-
-    IterableDataset.column_names is None until HF datasets>=X materialises
-    it from the first batch; .map() also keeps it None.  Resolution order:
-      1. dataset.column_names if truthy (regular Dataset or HF>=4.4)
-      2. keys of dataset.features if available
-      3. bounded first-row probe, consumes one element, safe on IterableDataset
-         because HF re-iterates from the generator on the next pass
-      4. [] as a last resort so callers never see None
-    """
+    """IterableDataset.column_names can be None, so fall back to features, then a one-row probe, then []."""
     col_names = getattr(dataset, "column_names", None)
     if col_names:
         return list(col_names)
@@ -75,8 +65,7 @@ def _text_columns(dataset: Dataset, string_cols: list[str]) -> list[str]:
     return [col for col in string_cols if col not in typed] or string_cols
 
 
-# One unit per CJK / kana / Thai character (scripts written without spaces), else per word, with
-# unspaced runs cut every 16 characters: minified code counts by length, an id or hash stays short.
+# CJK/kana/Thai count per character, else per word; unspaced runs count per 16 chars.
 _UNSPACED = "\u0e00-\u0e7f\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff"
 _TEXT_UNIT = re.compile(f"[{_UNSPACED}]|[^\\s{_UNSPACED}]{{1,16}}")
 
@@ -104,16 +93,11 @@ def _drop_invalid_text_rows(
     split_scope: str,
     allow_empty: bool = False,
 ) -> tuple[Dataset, list[RawTextNotice]]:
-    # Lazy filter — drops rows whose 'text' is null/non-string/blank before they reach
-    # the tokenizer. Works on both Dataset and streaming IterableDataset.
-    filtered_dataset = dataset.filter(
-        lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip())
-    )
-
-    # Streaming datasets (IterableDataset) have no __len__, so we can't count the
-    # dropped rows or verify the result is non-empty without consuming the whole
-    # stream. Keep the filter, skip only the len()-based diagnostics.
+    # Drops rows whose 'text' is null, non-string or blank. Streaming has no __len__: filter per row, no counts.
     if not hasattr(dataset, "__len__"):
+        filtered_dataset = dataset.filter(
+            lambda ex: isinstance(ex["text"], str) and bool(ex["text"].strip())
+        )
         return filtered_dataset, [
             RawTextNotice(
                 message = (
@@ -124,6 +108,11 @@ def _drop_invalid_text_rows(
             )
         ]
 
+    filtered_dataset = dataset.filter(
+        lambda texts: [isinstance(text, str) and bool(text.strip()) for text in texts],
+        input_columns = "text",
+        batched = True,
+    )
     dropped_rows = len(dataset) - len(filtered_dataset)
     if not dropped_rows:
         return filtered_dataset, []
@@ -224,6 +213,13 @@ def prepare_raw_text_dataset(
                 text = ex["text"]
                 return {"text": text if text.endswith(_eos) else text + _eos}
 
-            dataset = dataset.map(_append_eos)
+            def _append_eos_batch(texts, _eos = eos_token):
+                return {"text": [text if text.endswith(_eos) else text + _eos for text in texts]}
+
+            # Map-style only: a batched streaming filter + map iterates ~10x slower.
+            if hasattr(dataset, "__len__"):
+                dataset = dataset.map(_append_eos_batch, input_columns = "text", batched = True)
+            else:
+                dataset = dataset.map(_append_eos)
 
     return RawTextPreparationResult(dataset = dataset, notices = notices, source_column = renamed_col)

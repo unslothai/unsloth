@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Developer mode: the installation-wide opt-in that lets video generation run on a CPU-only host.
-
-Off by default. When on, ``video_capability()`` reports video as supported (experimental) on a host
-whose only blocker is the missing accelerator (reason ``no_accelerator``); every other refusal
-(detection failure, broken or missing torch, Intel Mac, a GPU that is present but unusable) stays
-blocked, since running on the CPU would not be what the user asked for there.
-
-Precedence: ``UNSLOTH_VIDEO_ALLOW_CPU`` in the backend environment, when set to a recognised
-boolean, wins over the persisted owner setting in both directions (an admin can force it on for a
-headless install, or off for a shared one). Unset or unrecognised falls through to the setting.
-"""
+"""Developer opt-in (off by default): video runs on a CPU-only host, experimental, only when
+no_accelerator is the sole blocker; other refusals stay. UNSLOTH_VIDEO_ALLOW_CPU, if a recognised
+boolean, overrides the saved setting."""
 
 from __future__ import annotations
 
@@ -22,10 +14,9 @@ VIDEO_CPU_SETTING_KEY = "developer_mode_video_cpu"
 VIDEO_CPU_ENV = "UNSLOTH_VIDEO_ALLOW_CPU"
 DEFAULT_VIDEO_CPU_ENABLED = False
 
-# Host RAM below which the Settings dialog warns before enabling. Wan2.1-T2V-1.3B, the smallest
-# video family, peaked at 24.5 GiB of server RSS on CPU (float32 pipeline, 832x480, 5 frames,
-# 3 steps; measured end to end through /video/load + /video/generate); 32 GiB leaves room for the
-# OS and the browser. Every larger family needs far more.
+# Host RAM below which the Settings dialog warns before enabling; the smallest video family,
+# Wan2.1-T2V-1.3B, peaked at 24.5 GiB server RSS on CPU (float32, 832x480, 5 frames), so 32 GiB
+# leaves room for the OS.
 VIDEO_CPU_MIN_RAM_GB = 32
 
 _TRUE = {"1", "true", "yes", "on"}

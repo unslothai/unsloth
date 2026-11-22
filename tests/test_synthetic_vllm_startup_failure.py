@@ -288,13 +288,14 @@ def test_no_single_wait_outruns_the_callers_timeout():
 
 
 def test_a_short_timeout_returns_promptly():
-    """The wall clock, not just the arithmetic."""
+    """The wall clock, not just the arithmetic. An uncapped lap waits the whole
+    poll interval, so a long interval keeps the bound far from runner jitter."""
     kit = _kit(_FakeCapture(ready = False), _FakeCapture(), _FakeProcess())
     started = time.monotonic()
     with pytest.raises(RuntimeError):
-        kit._await_vllm_server(timeout = 0.05, poll_interval = 1.0)
+        kit._await_vllm_server(timeout = 0.05, poll_interval = 10.0)
     elapsed = time.monotonic() - started
-    assert elapsed < 0.5, f"took {elapsed:.2f}s to honour a 0.05s timeout"
+    assert elapsed < 5.0, f"took {elapsed:.2f}s to honour a 0.05s timeout"
 
 
 def test_the_whole_timeout_is_still_used_when_it_is_long():
@@ -317,7 +318,7 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
     calls = {"n": 0}
 
-    def stalled_check(port = 8000):
+    def stalled_check(port = 8000, host = "localhost"):
         calls["n"] += 1
         clock["now"] += 5.0
         return False
@@ -379,7 +380,7 @@ def test_the_metrics_wait_accepts_an_unbounded_timeout():
     """Same arithmetic, same fix, pinned so the helper is not left half done."""
     calls = {"n": 0}
 
-    def check(port = 8000):
+    def check(port = 8000, host = "localhost"):
         calls["n"] += 1
         return calls["n"] >= 3
 

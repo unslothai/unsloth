@@ -295,8 +295,7 @@ class TraceCapture:
         )
 
     def _drain(self, handle: str, compression: str) -> tuple[str, int]:
-        """Never read by offset (it counts pre-base64 bytes); append the final chunk before the EOF
-        check."""
+        """No offset reads (pre-base64 count); append the last chunk before the EOF check."""
         parts: list[str] = []
         binary = False
         chunks = 0
@@ -351,8 +350,7 @@ class OverheadLedger:
         return out
 
     def disqualified_levels(self, rung_order: Sequence[str]) -> dict[str, str]:
-        """rung_order must run smallest first; rungs lacking L0 or the level are skipped, narrowing
-        the claim."""
+        """rung_order must be smallest first; skipped rungs (no L0 or level) narrow the claim."""
         out: dict[str, str] = {}
         for level in (L1, L2, L3):
             series = [
@@ -413,8 +411,7 @@ def cross_check_with_metrics(
 
 
 class MetricsWindow:
-    """Take getMetrics strictly inside the trace window; a wider metrics window causes false
-    disagreement."""
+    """Read metrics inside the trace window only; a wider window causes false disagreement."""
 
     def __init__(self, cdp: Any) -> None:
         self.cdp = cdp
@@ -440,8 +437,7 @@ class MetricsWindow:
 
 
 def read_metrics(cdp: Any) -> dict[str, float]:
-    """getMetrics on a disabled Performance domain errors; swallowing that error silently skips the
-    check."""
+    """A disabled Performance domain makes getMetrics error; swallowing it skips the check."""
     res = cdp.send("Performance.getMetrics")
     return {m["name"]: m["value"] for m in res.get("metrics", [])}
 

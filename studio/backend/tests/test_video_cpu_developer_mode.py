@@ -73,6 +73,8 @@ def _host(
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: (chat_only_reason, None))
     monkeypatch.setattr(hw, "_torch_mps_available", lambda: torch if mps is None else mps)
     monkeypatch.setattr(hw.platform, "system", lambda: system)
+    # Independent of the interpreter running the suite (an x86_64 Python on Apple Silicon is Rosetta).
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: False)
 
 
 def _opt_in(store, value):

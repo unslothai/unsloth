@@ -4,13 +4,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fileNameFromUrl, resolveAddress, unwrapRedirect, withBaseUrl } from "../src/features/browser/address.ts";
+import { fileNameFromUrl, isLoopbackUrl, resolveAddress, unwrapRedirect, withBaseUrl } from "../src/features/browser/address.ts";
 
 test("the address bar takes URLs as typed and hosts as https", () => {
   assert.equal(resolveAddress("https://unsloth.ai/docs", "duckduckgo"), "https://unsloth.ai/docs");
   assert.equal(resolveAddress("  docs.unsloth.ai/get-started ", "duckduckgo"), "https://docs.unsloth.ai/get-started");
   assert.equal(resolveAddress("192.168.1.10:8080", "duckduckgo"), "https://192.168.1.10:8080");
   assert.equal(resolveAddress("localhost:8888", "duckduckgo"), "http://localhost:8888");
+  assert.equal(resolveAddress("127.0.0.1:7860/app", "duckduckgo"), "http://127.0.0.1:7860/app");
+  assert.equal(resolveAddress("[::1]:3000", "duckduckgo"), "http://[::1]:3000");
   assert.equal(resolveAddress("[2606:4700:4700::1111]", "duckduckgo"), "https://[2606:4700:4700::1111]");
   assert.equal(resolveAddress("example.xn--p1ai/a", "duckduckgo"), "https://example.xn--p1ai/a");
   assert.equal(resolveAddress("пример.рф", "duckduckgo"), "https://пример.рф");
@@ -23,7 +25,6 @@ test("anything else is a search on the chosen engine", () => {
     "https://html.duckduckgo.com/html/?q=unsloth%20fine-tuning",
   );
   assert.equal(resolveAddress("what is lora", "google"), "https://www.google.com/search?q=what%20is%20lora");
-  // A dotted word with spaces around it is a query, not a host.
   assert.match(resolveAddress("node.js tutorial", "bing") ?? "", /^https:\/\/www\.bing\.com\/search\?q=/);
 });
 
@@ -45,9 +46,12 @@ test("search engines' click-tracking hops are skipped, only to another web page"
     "https://unsloth.ai/docs",
   );
   assert.equal(unwrapRedirect("https://www.google.com/url?q=https://unsloth.ai/&sa=U"), "https://unsloth.ai/");
+  assert.equal(unwrapRedirect("https://www.google.co.uk/url?q=https://unsloth.ai/"), "https://unsloth.ai/");
+  assert.equal(unwrapRedirect("https://google.com.au/url?q=https://unsloth.ai/"), "https://unsloth.ai/");
   for (const hop of [
     "https://unsloth.ai/l/?uddg=x",
     "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Funsloth.ai%2F",
+    "https://google.com.evil.example/url?q=https://phish.example/",
     ...["javascript:alert(1)", "file:///etc/passwd"].map(
       (target) => `https://duckduckgo.com/l/?uddg=${encodeURIComponent(target)}`,
     ),
@@ -60,6 +64,7 @@ test("a document without a title is named by its path", () => {
   assert.equal(fileNameFromUrl("https://arxiv.org/pdf/1706.03762"), "1706.03762");
   assert.equal(fileNameFromUrl("https://example.com/files/My%20Report.pdf"), "My Report.pdf");
   assert.equal(fileNameFromUrl("https://example.com/"), "example.com");
+  assert.equal(fileNameFromUrl("https://cdn.example.com/files/report%zz.pdf"), "report%zz.pdf");
 });
 
 test("a saved page gets its base URL back", () => {
@@ -69,7 +74,6 @@ test("a saved page gets its base URL back", () => {
   );
   assert.equal(withBaseUrl("<!DOCTYPE html><p>x", "https://a.example/"), '<!DOCTYPE html><base href="https://a.example/"><p>x');
   assert.equal(withBaseUrl("<p>x", "https://a.example/"), '<base href="https://a.example/"><p>x');
-  // Unclosed tags were quadratic and froze the UI.
   const start = performance.now();
   withBaseUrl("<head<!doctype".repeat(10_000), "https://a.example/");
   assert.ok(performance.now() - start < 1000);
@@ -80,4 +84,13 @@ test("bare host matching stays linear on long input", () => {
   resolveAddress(`${"a.".repeat(50_000)}!`, "duckduckgo");
   resolveAddress(`${"a".repeat(100_000)}.`, "duckduckgo");
   assert.ok(performance.now() - start < 1000);
+});
+
+test("only this machine written as itself counts as a local address", () => {
+  for (const url of ["http://localhost:7860/", "https://LOCALHOST/", "http://127.0.0.1:3000", "http://127.1:3000/", "http://[::1]:5173/"]) {
+    assert.equal(isLoopbackUrl(url), true, url);
+  }
+  for (const url of ["http://localhost.:7860/", "http://app.localhost/", "http://localtest.me/", "http://192.168.1.10/", "http://[::ffff:127.0.0.1]/", "ws://localhost/", "file:///etc/hosts", "localhost:7860"]) {
+    assert.equal(isLoopbackUrl(url), false, url);
+  }
 });

@@ -45,7 +45,6 @@ def test_text_encoder_files_come_from_the_cached_index_only(tmp_path):
     folder = _fake_cache(tmp_path)
     files = video_ltx2._text_encoder_files("Lightricks/LTX-2", str(tmp_path))
     assert files == sorted(str(p) for p in folder.glob("model-*.safetensors"))
-    # A shard the index names but the cache lacks is left to the loader; an uncached repo yields nothing.
     (folder / "model-00002-of-00002.safetensors").unlink()
     assert video_ltx2._text_encoder_files("Lightricks/LTX-2", str(tmp_path)) == files[:1]
     assert video_ltx2._text_encoder_files("Lightricks/LTX-2.3", str(tmp_path)) == []
@@ -91,7 +90,6 @@ def test_prefetch_declines_a_warm_cache_or_a_small_host(tmp_path, monkeypatch):
     files = video_ltx2._text_encoder_files("Lightricks/LTX-2", str(tmp_path))
     monkeypatch.setattr(video_ltx2, "_uncached_bytes", lambda path: 0)
     assert video_ltx2.start_prefetch(files) is None
-    # 4 GiB to warm against 6 GiB available: it would push other pages out, so it is left to the loader.
     _pretend_cold(monkeypatch, available_mib = 6 << 10)
     assert video_ltx2.start_prefetch(files) is None
     _pretend_cold(monkeypatch, available_mib = None)

@@ -32,9 +32,7 @@ export interface ResearchActivity {
   state?: "running" | "complete" | "failed" | "cancelled" | "action";
   phase?: ResearchPhase;
   reasoning?: string;
-  /** Plan step titles published as the planner writes them, before the plan is parseable. */
   previewLabels?: string[];
-  /** True when a phase.started opened this row, so phase.ended is what closes it. */
   bracketed?: boolean;
   plan?: ResearchPlan;
   stepPosition?: number;
@@ -181,14 +179,10 @@ export function researchPhaseTitle(phase: ResearchPhase | undefined): string {
   }
 }
 
-/** Rows for one model call are keyed by its callId so the phase bracket and any streamed
- *  reasoning for that call land on the same activity. */
 function phaseActivityId(attempt: number, callId: string): string {
   return `reasoning-${attempt}-${callId}`;
 }
 
-/** What the run is doing right now, for the collapsed card: the live activity, qualified by the
- *  latest thing it has produced so a long call still shows movement. */
 export function runningResearchActivityTitle(
   activities: ResearchActivity[] | undefined,
 ): string | null {
@@ -207,13 +201,10 @@ export function stepResultDetail(sourceCount: number, action?: string): string {
   if (sourceCount > 0) {
     return `${sourceCount} ${sourceCount === 1 ? "source" : "sources"} found`;
   }
-  // A fetch records an excerpt of one page and never collects sources, so a count would read as a
-  // failure. A search that returns nothing is a real outcome, not a styled success.
+  // A fetch never collects sources, so a count would read as a failure.
   return action === "fetch" ? "Page read" : "No usable results";
 }
 
-/** Header summary. Counts are omitted until they exist, so a run that has not searched yet reads
- *  as the work it is doing rather than "0 sources, 0 actions". */
 export function researchProgressSummary(
   run: ResearchRun,
   elapsed: string,
@@ -232,8 +223,7 @@ export function researchProgressSummary(
   if (sourceCount > 0) {
     parts.push(`${sourceCount} ${sourceCount === 1 ? "source" : "sources"}`);
   }
-  // No fraction: run.steps only holds actions already started, and the agent stops when the
-  // evidence is enough rather than at the plan's length, so any denominator would be invented.
+  // No fraction: run.steps only holds started actions, so any denominator would be invented.
   if (activeStep) {
     parts.push(`step ${activeStep.position + 1}`);
   } else if (finishedSteps > 0) {
@@ -267,11 +257,9 @@ function reduceActivity(
 ): ResearchActivity[] {
   const next = [...activities];
   const attempt = event.data.attempt ?? 0;
-  // A retry deletes the old attempt's step rows while its events survive, and the stream attaches
-  // the live snapshot to replayed history, so run.steps only describes its own attempt.
+  // A retry deletes old step rows but keeps its events, so run.steps only describes its own attempt.
   const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);
 
-  // runs recorded before phase events carry no phase.ended, so close their rows as before.
   if (!event.event.startsWith("phase.") && event.event !== "reasoning.updated") {
     const unbracketed = findLastActivityIndex(
       next,
@@ -317,8 +305,7 @@ function reduceActivity(
       return next;
     }
     if (existingIndex >= 0) return next;
-    // phase.ended is best-effort (_note_phase swallows append failures), so a new phase also closes
-    // the previous one; otherwise a dropped end leaves that row spinning all run.
+    // phase.ended is best-effort, so a new phase also closes the previous one.
     const stale = findLastActivityIndex(
       next,
       (activity) =>
@@ -359,7 +346,6 @@ function reduceActivity(
         state: "running",
       };
     } else {
-      // a new unbracketed call ends the previous one; phase.ended closes bracketed rows.
       const stale = findLastActivityIndex(
         next,
         (activity) =>
@@ -502,7 +488,6 @@ function reduceActivity(
   }
 
   if (event.event === "report.updated") {
-    // a live synthesis row already says this; only pre-phase-event runs need their own.
     const synthesisIndex = findLastActivityIndex(
       next,
       (activity) =>
@@ -563,7 +548,6 @@ function reduceActivity(
   ) {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const activity = next[index];
-      // A worker killed mid-call never wrote its phase.ended; the resume closes that row.
       if (
         activity.kind === "reasoning" &&
         activity.attempt === attempt &&
@@ -640,8 +624,7 @@ export const useResearchRunStore = create<ResearchRunState>((set) => ({
         state.planReviewByRunId[run.id],
         run,
       );
-      // Claimed means spent: a finished run is the chat's one research. A run still going keeps the
-      // toggle lit and a stopped one can be re-pointed, so neither takes the toggle away.
+      // A finished run claims the chat's one research; running or stopped runs keep the toggle.
       const claimed = shouldBecomeLatest
         ? run.status === "completed" || run.status === "failed"
         : Boolean(state.claimedThreadIds[run.threadId]);
@@ -947,9 +930,7 @@ export function beginExternalResearchFollow(
   const stops = externalFollowerStops.get(run.id) ?? new Set();
   stops.add(stop);
   externalFollowerStops.set(run.id, stops);
-  // the store owns the stream, so a caller that stops reading cannot stall ingestion.
   ensureResearchRunFollowed(run.id, run);
-  // The caller handed us the run it just created, so there is no history to restore.
   useResearchRunStore.getState().setFollowing(run.id, true, "connected");
   return () => {
     const currentStops = externalFollowerStops.get(run.id);
@@ -958,21 +939,18 @@ export function beginExternalResearchFollow(
   };
 }
 
-/** Reopen a dismissed plan without changing an existing session or retrying its connection. */
 export function openResearchRun(run: ResearchRun): void {
   if (!useResearchRunStore.getState().sessions[run.id]) {
     ingestResearchUpdate(run);
   }
   const state = useResearchRunStore.getState();
   if (state.sessions[run.id]?.run.status === "awaiting_approval") {
-    // The review state exists only after the plan arrives; otherwise this is a no-op.
     state.setPlanReviewOpen(run.id, true);
   }
   state.openPanel(run.id);
 }
 
-/** Yield the run each time the store applies something to it, until it settles or *signal*
- *  aborts. Independent of the event stream, so a slow consumer cannot stall ingestion. */
+/** Yields the run on each store update until it settles or signal aborts. */
 export async function* watchResearchRun(
   runId: string,
   options: { signal?: AbortSignal } = {},
@@ -989,11 +967,9 @@ export async function* watchResearchRun(
   try {
     while (!signal?.aborted) {
       const session = useResearchRunStore.getState().sessions[runId];
-      // a follower that gave up never restarts, so surface it rather than park forever.
       if (session?.error && !ownedFollowers.has(runId)) {
         throw new Error(session.error);
       }
-      // Nothing to watch: returning beats spinning the microtask queue on an absent session.
       if (!session) return;
       if (dirty) {
         dirty = false;

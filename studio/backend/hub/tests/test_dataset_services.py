@@ -4,6 +4,7 @@
 import asyncio
 import os
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -226,8 +227,6 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
             "LICENSE",
             id = "raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot",
         ),
-        # Neither suffix is in `datasets`' extension map, and `datasets>=4` dropped
-        # `trust_remote_code`, which no load path here passes anyway.
         pytest.param(
             "README.md",
             "CITATION.cff",
@@ -235,7 +234,6 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
             "docs/usage.md",
             id = "raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script",
         ),
-        # `datasets` skips every dotted name when resolving data files, so none supply rows.
         pytest.param(
             "README.md",
             ".gitignore",
@@ -255,27 +253,21 @@ def test_raw_dataset_cache_has_data_rejects_payload_free_snapshots(
 @pytest.mark.parametrize(
     "file_a, file_b, expected",
     [
-        # Finder and Explorer drop `.DS_Store`/`Thumbs.db`, which must not read as payload.
         pytest.param(
             ".DS_Store", "Thumbs.db", False, id = "raw_dataset_cache_has_data_ignores_os_clutter"
         ),
-        # Image and audio repos match no known format, so the check asks whether anything
-        # beyond metadata is present.
         pytest.param(
             "data/train-00000-of-00001.parquet",
             "data/train/0001.png",
             True,
             id = "raw_dataset_cache_has_data_finds_nested_payload_of_any_format",
         ),
-        # A Mac zip adds `._name` sidecars and `__MACOSX`; `datasets` skips both, so counting
-        # them as payload offered a card-only snapshot On Device.
         pytest.param(
             "._README.md",
             "__MACOSX/._README.md",
             False,
             id = "raw_dataset_cache_has_data_ignores_appledouble_sidecars",
         ),
-        # The suffix rule is for files only: a script beside real data is still payload.
         pytest.param(
             "data.py",
             "data/train.parquet",
@@ -306,14 +298,11 @@ def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(
 
 
 def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monkeypatch, tmp_path):
-    """A link back inside the snapshot passes containment, so only the visited set stops the
-    descent. Linux `os.walk` declines a symlink on its own, which would make this pass either
-    way, so the walk here descends it the way Windows descends a junction."""
+    """A link back into the snapshot passes containment, so only the visited set stops the loop;
+    Linux os.walk skips symlinks, so the test descends them like Windows junctions"""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/notes.md"))
     data = next((repo_root / "snapshots").iterdir()) / "data"
     (data / "loop").symlink_to(data, target_is_directory = True)
-    # a junction resolves like a link while reporting is_symlink() False, and Linux cannot create one,
-    # so this is a symlink that answers the way a junction does
     real_is_symlink = Path.is_symlink
     monkeypatch.setattr(
         Path,
@@ -411,7 +400,6 @@ def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it
             dirnames = [name for name in names if (base / name).is_dir()]
             filenames = [name for name in names if name not in dirnames]
             yield str(base), dirnames, filenames
-            # POSIX: a symlinked directory is listed but not descended.
             stack.extend(base / name for name in dirnames if not (base / name).is_symlink())
 
     monkeypatch.setattr(cache_inventory.os, "walk", _walk_alias_first)
@@ -420,8 +408,7 @@ def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it
 
 
 def test_raw_dataset_cache_has_data_reads_the_suffix_chain_like_the_resolver(monkeypatch, tmp_path):
-    """`_data_suffix` drops a trailing compression suffix then walks the rest. Reading only the
-    last suffix got both directions backwards."""
+    """_data_suffix strips the compression suffix first; reading only the last one is wrong."""
     metadata_only = _dataset_snapshot(
         monkeypatch,
         tmp_path / "meta",
@@ -448,9 +435,8 @@ def test_raw_dataset_cache_has_data_ignores_payload_links_whose_blob_is_gone(mon
 
 
 def test_raw_dataset_cache_has_data_counts_a_linked_payload_directory(monkeypatch, tmp_path):
-    """A migrated or shared cache can keep its data behind a directory link. The walk must
-    not descend into one -- it can point anywhere -- but pruning it silently made the repo
-    read as metadata-only, and On Device drops every partial row."""
+    """Walk must not descend into a directory link (it can point anywhere), yet data behind one must
+    still count; pruning it made the repo read as metadata-only"""
     payload = tmp_path / "elsewhere"
     payload.mkdir()
     (payload / "train-00000-of-00001.parquet").write_bytes(b"PAR1")
@@ -461,12 +447,7 @@ def test_raw_dataset_cache_has_data_counts_a_linked_payload_directory(monkeypatc
 
 
 def test_raw_dataset_cache_has_data_ignores_payload_in_an_unpinned_revision(monkeypatch, tmp_path):
-    """A payload-bearing sibling revision does not make the row usable.
-
-    `training_dataset_cache_pin` resolves through `dataset_snapshot_from_cache_path`, which
-    prefers the revision `refs/main` names. Clearing `partial` because some other revision
-    holds data would offer a row whose pinned load path is the metadata-only revision, so the
-    run falls back to the network and fails outright offline."""
+    """A payload in an unpinned sibling revision does not clear partial; refs/main decides the load path."""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
     (repo_root / "refs").mkdir(parents = True, exist_ok = True)
     (repo_root / "refs" / "main").write_text("abc")
@@ -478,18 +459,11 @@ def test_raw_dataset_cache_has_data_ignores_payload_in_an_unpinned_revision(monk
 
 
 def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch, tmp_path):
-    """The prune is a containment test, not a link-type test.
-
-    `Path.is_symlink()` is false for a Windows junction and `Path.is_junction()` does not
-    exist before 3.12, which this package still supports, so a link-type test would let
-    `os.walk` descend a junction into an arbitrary external tree. A directory that resolves
-    outside the snapshot is left unvisited whatever kind of redirect it is."""
+    """Prune by containment: is_symlink misses Windows junctions, so never walk outside the snapshot."""
     outside = tmp_path / "outside"
     (outside / "deep").mkdir(parents = True)
     (outside / "deep" / "huge.parquet").write_bytes(b"PAR1")
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
-    # Named like clutter, so it is not payload evidence either, and the tree behind it is never entered,
-    # which is what stops a scan from stalling on someone else's disk.
     (repo_root / "snapshots" / "abc" / ".hidden_link").symlink_to(outside, target_is_directory = True)
 
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
@@ -521,8 +495,7 @@ def _metadata_only_raw_repo() -> SimpleNamespace:
 
 
 def test_dataset_cache_without_data_files_is_partial(monkeypatch):
-    """A snapshot holding only the dataset card passes every structural check but
-    cannot be loaded, so it must not be offered as usable On Device."""
+    """A snapshot with only the dataset card cannot load, so it must not be offered On Device."""
     _shared_setup_2(monkeypatch)
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(cache_inventory, "_scan_app_processed_dataset_caches", lambda: [])
@@ -563,8 +536,7 @@ def test_processed_cache_settles_a_partial_raw_row_without_losing_its_path(monke
 
 
 def test_app_processed_cache_never_settles_a_partial_raw_row(monkeypatch):
-    """App caches are written per snapshot commit but grouped without one, so a finished
-    cache proves nothing about the snapshot the loader will resolve."""
+    """App caches lack a commit, so a finished one proves nothing about the snapshot to load."""
     _shared_setup_2(monkeypatch)
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(
@@ -612,8 +584,7 @@ def test_app_processed_cache_without_raw_snapshot_is_partial(monkeypatch):
 
 
 def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_path):
-    """A dataset present in the active cache and a previously selected cache is
-    deleted only from the selected root, so the other cache's copy survives."""
+    """Delete is scoped to the selected root, so the other cache's copy of a dataset survives."""
     calls = []
     target_hub = tmp_path / "active" / "hub"
     other_hub = tmp_path / "previous" / "hub"
@@ -664,21 +635,17 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
 
     assert result == {"status": "deleted", "repo_id": "Org/Data"}
-    # Only the selected cache's revision is deleted; the other cache's copy stays.
     assert calls == ["active"]
     assert not (target_hub / "datasets--Org--Data").exists()
     assert (other_hub / "datasets--Org--Data").exists()
 
 
 def test_delete_processed_only_dataset_accepts_processed_cache_path(monkeypatch, tmp_path):
-    """A processed-only dataset row sends its Arrow cache path (<owner>___<repo>
-    under HF_DATASETS_CACHE), which is not a Hub datasets-- dir. The delete must
-    accept it and run the processed-cache delete instead of raising 400."""
+    """A processed-only row's Arrow path is not a datasets-- dir; delete must accept it, not raise 400."""
     datasets_root = tmp_path / "datasets"
     processed_dir = datasets_root / "Org___Data"
     processed_dir.mkdir(parents = True)
 
-    # No Hub-cache copy exists; only the processed Arrow cache holds this repo.
     monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
     monkeypatch.setattr(cache_inventory, "_hf_datasets_cache_roots", lambda: [datasets_root])
     processed_calls: list[str] = []
@@ -695,9 +662,7 @@ def test_delete_processed_only_dataset_accepts_processed_cache_path(monkeypatch,
 
 
 def test_delete_processed_dataset_scopes_to_selected_root(monkeypatch, tmp_path):
-    """A dataset processed under two HF_DATASETS_CACHE roots is deleted only from
-    the selected root; the copy under the other cache home survives (real delete,
-    not stubbed)."""
+    """A dataset processed under two HF_DATASETS_CACHE roots is deleted only from the selected one."""
     selected_root = tmp_path / "selected" / "datasets"
     other_root = tmp_path / "other" / "datasets"
     for root in (selected_root, other_root):
@@ -1255,6 +1220,123 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     assert stored_path.name.endswith("_train.jsonl")
     assert stored_path.read_bytes() == payload
     assert any(getattr(function, "__name__", "") == "write" for function in offloaded)
+
+
+@pytest.mark.parametrize(
+    "second_name,second_payload,reused",
+    [
+        ("train.jsonl", b'{"text":"a"}\n', True),
+        ("train.jsonl", b'{"text":"b"}\n', False),
+        ("other.jsonl", b'{"text":"a"}\n', False),
+    ],
+)
+def test_upload_reuses_only_identical_name_and_content(
+    monkeypatch, tmp_path, second_name, second_payload, reused
+):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+
+    first = asyncio.run(local.upload_dataset_response(_Upload("train.jsonl", b'{"text":"a"}\n')))
+    second = asyncio.run(local.upload_dataset_response(_Upload(second_name, second_payload)))
+
+    assert (first.stored_path == second.stored_path) is reused
+    assert Path(second.stored_path).read_bytes() == second_payload
+    assert len(list(tmp_path.iterdir())) == (1 if reused else 2)
+
+
+def test_native_upload_reuses_identical_file(monkeypatch, tmp_path):
+    import utils.native_path_leases as leases
+
+    source = tmp_path / "picked" / "train.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(b'{"text":"a"}\n')
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", uploads)
+    monkeypatch.setattr(
+        leases,
+        "verify_native_path_lease",
+        lambda *_a, **_k: SimpleNamespace(canonical_path = source, size_bytes = None),
+    )
+
+    first = local._native_upload_dataset_response("lease")
+    second = local._native_upload_dataset_response("lease")
+
+    assert first.stored_path == second.stored_path
+    assert [p.name for p in uploads.iterdir()] == [Path(first.stored_path).name]
+
+
+def test_upload_accepts_name_at_filename_limit(monkeypatch, tmp_path):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+    name = "a" * (255 - 33 - len(".jsonl")) + ".jsonl"
+
+    response = asyncio.run(local.upload_dataset_response(_Upload(name, b'{"text":"a"}\n')))
+
+    assert Path(response.stored_path).name.endswith(f"_{name}")
+    assert [p.name for p in tmp_path.iterdir()] == [Path(response.stored_path).name]
+
+
+def test_upload_leaves_no_staged_file_when_publish_fails(monkeypatch, tmp_path):
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_inline)
+    name = "a" * (256 - 33 - len(".jsonl")) + ".jsonl"
+
+    with pytest.raises(OSError):
+        asyncio.run(local.upload_dataset_response(_Upload(name, b'{"text":"a"}\n')))
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_delete_uploaded_dataset_removes_only_named_upload(monkeypatch, tmp_path):
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+    target = upload_root / "train.jsonl"
+    target.write_text('{"text":"a"}\n', encoding = "utf-8")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text('{"text":"b"}\n', encoding = "utf-8")
+    (upload_root / "link.jsonl").symlink_to(outside)
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", upload_root)
+
+    for bad_id, status in (
+        ("../outside.jsonl", 400),
+        ("notes.txt", 400),
+        ("missing.jsonl", 404),
+        ("link.jsonl", 404),
+    ):
+        with pytest.raises(HTTPException) as excinfo:
+            local.delete_uploaded_dataset_response(bad_id)
+        assert excinfo.value.status_code == status
+
+    assert local.delete_uploaded_dataset_response("train.jsonl")["id"] == "train.jsonl"
+    assert not target.exists()
+    assert outside.exists()
+
+
+def test_delete_uploaded_dataset_waits_for_publication(monkeypatch, tmp_path):
+    target = tmp_path / "train.jsonl"
+    target.write_text('{"text":"a"}\n', encoding = "utf-8")
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+
+    with local._REUSE_LOCK:
+        deleter = threading.Thread(
+            target = local.delete_uploaded_dataset_response, args = ("train.jsonl",)
+        )
+        deleter.start()
+        deleter.join(0.2)
+        assert target.exists()
+    deleter.join(5)
+
+    assert not target.exists()
 
 
 def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_path):

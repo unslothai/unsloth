@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -50,6 +51,164 @@ def _abandoned_reason(tauri_log: Path) -> str | None:
     stale = next((line for line in reversed(lines) if "Stale {" in line), None)
     detail = " | ".join(part for part in (disposition, stale) if part)
     return detail or "preflight abandoned the fixture backend; see tauri.log"
+
+
+# /proc/<pid>/comm keeps 15 bytes, so WebKit's helpers appear truncated.
+_WEBKIT_COMMS = {"unsloth-studio", "WebKitWebProces", "WebKitNetworkPr"}
+_MODE_LINE = re.compile(r"AppImage WebKitGTK runtime=(\w+)")
+_EXPECTED_MODES = ("host", "bundled")
+
+
+def _proc_tree(root_pid: int) -> list[int]:
+    """The launch's descendants plus its process group; the WebKit sandbox may call setsid."""
+    parents: dict[int, int] = {}
+    groups: dict[int, int] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding = "utf-8", errors = "replace")
+        except OSError:
+            continue
+        fields = stat.rsplit(")", 1)[-1].split()
+        if len(fields) < 3:
+            continue
+        parents[int(entry.name)] = int(fields[1])
+        groups[int(entry.name)] = int(fields[2])
+    found = {pid for pid, group in groups.items() if group == root_pid}
+    found.add(root_pid)
+    grew = True
+    while grew:
+        grew = False
+        for pid, parent in parents.items():
+            if parent in found and pid not in found:
+                found.add(pid)
+                grew = True
+    return sorted(found)
+
+
+def _read_proc(pid: int) -> dict[str, object] | None:
+    base = Path("/proc") / str(pid)
+    try:
+        comm = (base / "comm").read_text(encoding = "utf-8", errors = "replace").strip()
+    except OSError:
+        return None
+    if comm not in _WEBKIT_COMMS:
+        return None
+    # An unreadable process is reported, never silently skipped: it could hide a mixed stack.
+    try:
+        exe = os.readlink(base / "exe")
+        maps = (base / "maps").read_text(encoding = "utf-8", errors = "replace")
+    except OSError as error:
+        return {"pid": pid, "comm": comm, "error": str(error), "exe": "", "maps": []}
+    try:
+        environ = (base / "environ").read_bytes()
+    except OSError:
+        environ = b""
+    paths = sorted(
+        {
+            fields[5].removesuffix(" (deleted)")
+            for fields in (line.split(maxsplit = 5) for line in maps.splitlines())
+            if len(fields) == 6 and fields[5].startswith("/")
+        }
+    )
+    env = dict(
+        item.split("=", 1) for item in environ.decode(errors = "replace").split("\0") if "=" in item
+    )
+    return {
+        "pid": pid,
+        "comm": comm,
+        "exe": exe,
+        "appdir": env.get("APPDIR", ""),
+        "mode_env": env.get("UNSLOTH_APPIMAGE_WEBKIT_MODE"),
+        "maps": paths,
+    }
+
+
+def _assert_webkit_runtime(
+    expected: str, root_pid: int, app_log: Path, tauri_log: Path, art_dir: Path
+) -> None:
+    """Prove which WebKitGTK stack the session really loaded, from the processes themselves."""
+    text = app_log.read_text(encoding = "utf-8", errors = "replace")
+    modes = _MODE_LINE.findall(text)
+    if not modes:
+        raise RuntimeError("AppRun printed no 'AppImage WebKitGTK runtime=' line")
+    if set(modes) != {expected}:
+        raise RuntimeError(f"AppRun chose WebKitGTK runtime={modes}, expected {expected}")
+    logged = ""
+    if tauri_log.is_file():
+        logged = tauri_log.read_text(encoding = "utf-8", errors = "replace")
+    if f"AppImage WebKitGTK runtime: {expected}" not in logged:
+        raise RuntimeError(f"tauri.log does not record 'AppImage WebKitGTK runtime: {expected}'")
+
+    # The web process can trail the login request by a moment.
+    deadline = time.monotonic() + 10
+    while True:
+        processes = [info for pid in _proc_tree(root_pid) if (info := _read_proc(pid))]
+        if any(info["comm"] == "WebKitWebProces" for info in processes) or (
+            time.monotonic() >= deadline
+        ):
+            break
+        time.sleep(0.25)
+    (art_dir / "webkit-runtime.json").write_text(
+        json.dumps({"expected": expected, "mode_lines": modes, "processes": processes}, indent = 2),
+        encoding = "utf-8",
+    )
+
+    unreadable = [
+        f"{info['comm']}[{info['pid']}]: {info['error']}" for info in processes if "error" in info
+    ]
+    if unreadable:
+        raise RuntimeError("could not inspect session processes: " + ", ".join(unreadable))
+    apps = [info for info in processes if info["comm"] == "unsloth-studio"]
+    if not apps:
+        raise RuntimeError("no unsloth-studio process found in the launched session")
+    appdir = next((str(info["appdir"]) for info in apps if info["appdir"]), "")
+    if not appdir:
+        raise RuntimeError("unsloth-studio has no APPDIR in its environment")
+    # exe and maps report resolved paths.
+    appdir = os.path.realpath(appdir)
+    bundled_lib = appdir.rstrip("/") + "/usr/lib/"
+    for info in apps:
+        if info["mode_env"] != expected:
+            raise RuntimeError(
+                f"unsloth-studio {info['pid']} has "
+                f"UNSLOTH_APPIMAGE_WEBKIT_MODE={info['mode_env']!r}, expected {expected}"
+            )
+
+    if expected == "host":
+        host_exe = appdir.rstrip("/") + "/usr/bin/host/unsloth-studio"
+        wrong = [f"{info['pid']}: {info['exe']}" for info in apps if info["exe"] != host_exe]
+        if wrong:
+            raise RuntimeError(f"host mode did not exec {host_exe}: " + ", ".join(wrong))
+        if not any(info["comm"] == "WebKitWebProces" for info in processes):
+            raise RuntimeError("host mode session has no WebKitWebProcess to inspect")
+        mixed = [
+            f"{info['comm']}[{info['pid']}]: {path}"
+            for info in processes
+            for path in info["maps"]
+            if str(path).startswith(bundled_lib)
+        ]
+        if mixed:
+            raise RuntimeError(
+                "host mode mapped bundled libraries (mixed stack):\n" + "\n".join(mixed[:40])
+            )
+    else:
+        bundled_exe = appdir.rstrip("/") + "/usr/bin/unsloth-studio"
+        wrong = [f"{info['pid']}: {info['exe']}" for info in apps if info["exe"] != bundled_exe]
+        if wrong:
+            raise RuntimeError(f"bundled mode did not exec {bundled_exe}: " + ", ".join(wrong))
+        webkit = [
+            path for info in apps for path in info["maps"] if "libwebkit2gtk-4.1" in str(path)
+        ]
+        if not any(str(path).startswith(bundled_lib) for path in webkit):
+            raise RuntimeError(
+                f"bundled mode did not map libwebkit2gtk-4.1 from {bundled_lib}: {webkit}"
+            )
+    print(
+        f"PASS AppImage WebKitGTK runtime={expected} across "
+        + ", ".join(f"{info['comm']}[{info['pid']}]" for info in processes)
+    )
 
 
 def _write_fixture(art_dir: Path, home: Path, version: str) -> Path:
@@ -201,6 +360,9 @@ def main() -> None:
     display_tool = "weston" if display_backend == "wayland" else "xvfb-run"
     if not shutil.which(display_tool):
         raise SystemExit(f"{display_tool} is required for {display_backend} smoke")
+    expected_mode = os.environ.get("APPIMAGE_EXPECTED_WEBKIT_MODE", "")
+    if expected_mode and expected_mode not in _EXPECTED_MODES:
+        raise SystemExit(f"Unsupported APPIMAGE_EXPECTED_WEBKIT_MODE: {expected_mode}")
 
     art_dir = Path(os.environ.get("APPIMAGE_SMOKE_ART_DIR", "logs/appimage-portability")).resolve()
     if art_dir.exists():
@@ -297,6 +459,14 @@ def main() -> None:
                         art_dir / "app-stdout.log",
                         home / ".unsloth/studio/tauri.log",
                     )
+                    if expected_mode:
+                        _assert_webkit_runtime(
+                            expected_mode,
+                            process.pid,
+                            art_dir / "app-stdout.log",
+                            home / ".unsloth/studio/tauri.log",
+                            art_dir,
+                        )
                     print(
                         "PASS complete AppImage rendered startup and completed desktop auth "
                         f"on {display_backend}"

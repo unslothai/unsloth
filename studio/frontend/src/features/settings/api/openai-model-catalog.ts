@@ -3,9 +3,8 @@
 
 export type OpenAIModel = {
   id: string;
-  // Resident in memory now; the rest are downloaded and servable.
   loaded?: boolean;
-  // On-disk GGUF quant. Ids stay bare for OpenAI compat, so append `:quant` to pin it.
+  // Ids stay bare for OpenAI compat; append `:quant` to pin one.
   quant?: string;
 };
 

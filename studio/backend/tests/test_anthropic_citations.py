@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for Anthropic ``citations_delta`` handling in the streaming proxy.
-
-Verifies the proxy injects inline ``[N]`` markers after cited text, dedupes by
-type-specific anchor (char_location, page_location, content_block_location,
-search_result_location), forwards a synthetic ``document_citations`` tool_event
-at message_stop, and stays inert when no citations_delta events fire. See
-https://platform.claude.com/docs/en/build-with-claude/citations
-"""
+"""Inline [N] markers are deduped by anchor type; document_citations is emitted at message_stop."""
 
 import asyncio
 import json

@@ -39,7 +39,6 @@ test("a pinned quant row shows its size and vision mark", () => {
 });
 
 test("that repo's pinned row is its own sole-quant row", () => {
-  // Same load target, filename and selection state as the row it replaces.
   assert.match(
     pickers,
     /const renderPinnedQuantRow = [^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*const soleRow = pinnedSoleQuantRows\.get\(pinKey\(entry\.repoId, entry\.quant\)\);\n\s*if \(soleRow\) return renderSoleQuantGgufRow\(soleRow\.repo, soleRow\.sole\);/,

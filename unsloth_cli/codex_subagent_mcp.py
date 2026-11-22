@@ -134,8 +134,10 @@ def run_local_agent(
         "--ephemeral",
         "--json",
         "--skip-git-repo-check",
-        f"{_SUBAGENT_INSTRUCTIONS}\n\nTask: {task}",
+        # `-` reads the prompt from stdin: a non-npm .cmd shim runs argv through cmd.exe, where a quote and & in the task run a command.
+        "-",
     ]
+    prompt: str | None = f"{_SUBAGENT_INSTRUCTIONS}\n\nTask: {task}"
     local_env = {
         _CODEX_ENV_KEY: config["api_key"],
         "CODEX_HOME": config["codex_home"],
@@ -155,7 +157,7 @@ def run_local_agent(
     popen_kwargs: dict[str, Any] = {
         "cwd": os.getcwd(),
         "env": child_env,
-        "stdin": subprocess.DEVNULL,
+        "stdin": subprocess.PIPE,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
@@ -166,16 +168,17 @@ def run_local_agent(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    # cmd.exe splits CR/LF inside `%*` and the prompt always spans lines, so resolve npm shims rather
-    # than spawning the .cmd raw.
+    # Resolve npm shims rather than spawning the .cmd raw; cmd.exe also splits CR/LF inside `%*`.
     launch_command = _resolved_launch_command(executable, command[1:], child_env)
     process = subprocess.Popen(launch_command, **popen_kwargs)
     try:
         while True:
             try:
-                stdout, stderr = process.communicate(timeout = _CANCEL_POLL_SECONDS)
+                stdout, stderr = process.communicate(input = prompt, timeout = _CANCEL_POLL_SECONDS)
                 break
             except subprocess.TimeoutExpired:
+                # communicate() refuses input once started; the first call keeps writing it.
+                prompt = None
                 if cancel_event.is_set():
                     _stop_child(process)
                     raise RuntimeError("The local Codex agent was cancelled.")

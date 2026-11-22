@@ -11,11 +11,12 @@ export type TranscriptView = "text" | "segments";
 
 interface AudioTranscribeState {
   source: AudioSourceSelection | null;
-  /** Empty means Auto. */
   language: string;
+  speakerAccent: string;
   timestamps: boolean;
   speakers: boolean;
   view: TranscriptView;
+  connectionModel: string | null;
 }
 
 export const useAudioTranscribeStore = create<AudioTranscribeState>()(
@@ -23,9 +24,11 @@ export const useAudioTranscribeStore = create<AudioTranscribeState>()(
     (): AudioTranscribeState => ({
       source: null,
       language: "",
+      speakerAccent: "",
       timestamps: false,
       speakers: true,
       view: "text",
+      connectionModel: null,
     }),
     { name: AUDIO_TRANSCRIBE_STORAGE_KEY, version: 1 },
   ),

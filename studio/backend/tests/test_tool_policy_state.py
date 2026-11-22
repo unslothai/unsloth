@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Tests for the process-level server-side tool policy used by `unsloth run`.
-
-The policy has three states:
-  None  -> no CLI override (default; honor per-request enable_tools)
-  True  -> CLI forced tools on
-  False -> CLI forced tools off
-"""
+"""Process tool policy: None defers to the request, True forces tools on, False forces them off."""
 
 import os
 import sys

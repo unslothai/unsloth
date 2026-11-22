@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Trusted-org checks for the ``trust_remote_code`` auto-enable paths.
-
-A bare ``name.startswith("unsloth/")`` is spoofable by a local path like
-``./unsloth/evil``. ``is_trusted_org_repo`` rejects local paths, requires an
-``org/repo`` under a trusted org, and (online) confirms via the Hub. Fails CLOSED
-on any uncertainty and never raises; a False just means "do not auto-enable".
-"""
+"""Trusted-org check for remote-code auto-enable; rejects local paths, fails closed on any
+uncertainty, never raises; a bare name prefix is spoofable."""
 
 from __future__ import annotations
 
@@ -23,9 +18,7 @@ logger = get_logger(__name__)
 # Orgs we auto-enable remote code for.
 TRUSTED_ORGS: frozenset[str] = frozenset({"unsloth", "nvidia"})
 
-# Keyed on (name, verify_remote, token) so an unauthenticated failure cannot poison a later
-# authenticated lookup; the token is hashed, never stored raw. And on the endpoint, which
-# decides who owns the name.
+# Keyed on (name, verify_remote, token hash, endpoint) so an unauthenticated failure cannot poison a later authenticated lookup.
 _verdict_cache: dict[tuple[str, bool, str, str], bool] = {}
 
 
@@ -48,10 +41,7 @@ def is_trusted_org_repo(
     *,
     verify_remote: bool = True,
 ) -> bool:
-    """True only if *name* is a genuine HF repo under a trusted org. Fails closed
-    (local paths, malformed names, untrusted namespaces, Hub errors); never raises.
-    Offline trusts the namespace shape, since the Hub is unreachable by design.
-    """
+    """Fails closed on any error; offline it trusts the namespace shape, as the Hub is unreachable."""
     if not name or not isinstance(name, str):
         return False
     from utils.hub_settings import MODELSCOPE, active_source

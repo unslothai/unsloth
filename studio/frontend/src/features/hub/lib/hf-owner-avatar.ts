@@ -12,31 +12,23 @@ type AvatarCacheEntry =
   | { kind: "miss-permanent" }
   | { kind: "miss-transient"; until: number; failures: number };
 
-// Avatars rarely change; after this TTL the cached URL is still shown, then
-// refreshed in the background and swapped if changed (stale-while-revalidate).
+// Stale-while-revalidate after this TTL.
 const URL_TTL_MS = 24 * 60 * 60 * 1000;
 
-// Transient (429/5xx) avatar failures are negative-cached so they auto-recover.
-// Each consecutive failure doubles the retry delay up to a cap (success resets);
-// the backoff lives in the cache entry to survive virtualized-list remount churn.
+// Transient misses back off exponentially; the count lives in the entry to survive remounts.
 const TRANSIENT_MISS_BASE_TTL_MS = 60_000;
 const TRANSIENT_MISS_MAX_TTL_MS = 30 * 60_000;
 
-// Bound each fetch so a stalled connection can't hold a concurrency permit open
-// forever (which would eventually hang every queued lookup); timeout is treated
-// as a transient miss so it auto-recovers.
+// Bound each fetch so a stalled connection cannot hold a concurrency permit forever.
 const AVATAR_FETCH_TIMEOUT_MS = 10_000;
 
-// Defer the first network lookup so rows scrolled past in under this window
-// cancel before they ever touch HF, instead of a fast scroll firing hundreds of
-// requests that swamp the gate. Cached avatars (url / miss) still resolve sync.
+// Debounced so rows scrolled past quickly never hit HF.
 const AVATAR_FETCH_DEBOUNCE_MS = 200;
 
 const cache = new LruMap<string, AvatarCacheEntry>(256);
 const inflight = new Map<string, Promise<string | null>>();
 
-// Cap concurrent avatar lookups so a fast scroll doesn't burst past the rate
-// limit, mirroring the modelInfo limiter in hf-cache.ts.
+// Mirrors the modelInfo limiter in hf-cache.ts.
 const MAX_AVATAR_CONCURRENT = 6;
 let activeFetches = 0;
 const waiting: Array<() => void> = [];
@@ -59,13 +51,12 @@ function release(): void {
   waiting.shift()?.();
 }
 
-// Keyed by endpoint too: a hit is held 24 hours and a 404 permanently, so a default-host entry would outlive a late mirror.
+// Keyed by endpoint too: hits and 404s are held long enough to outlive a late mirror switch.
 function avatarKey(name: string): string {
   return `${getHfEndpoint()}::${name}`;
 }
 
-// Expired transient misses report "no entry" so the caller refetches, but the
-// entry is kept so its failure count can escalate the next backoff.
+// Expired transient misses are kept so the failure count can escalate the next backoff.
 function readCache(name: string): AvatarCacheEntry | null {
   const entry = cache.get(avatarKey(name));
   if (!entry) return null;
@@ -172,9 +163,7 @@ export function useHfOwnerAvatar(
   const url = state.key === key ? state.url : readCachedUrl(key);
 
   useEffect(() => {
-    // When disabled (virtualized list rows), never hit the network: show a
-    // cached avatar if one exists, else the colored-initial tile. Keeps the
-    // "All publishers" feed from firing a per-row lookup storm.
+    // Disabled (virtualized rows): never hit the network, to avoid a per-row lookup storm.
     if (!key || !online || !enabled) return;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -220,8 +209,6 @@ export function useHfOwnerAvatar(
         scheduleRetry(cached.until);
         return;
       }
-      // Uncached: defer the network lookup so rows scrolled past in under
-      // AVATAR_FETCH_DEBOUNCE_MS cancel before they ever hit HF.
       fetchTimer = setTimeout(runFetch, AVATAR_FETCH_DEBOUNCE_MS);
     };
 

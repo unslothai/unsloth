@@ -18,6 +18,7 @@ from .storage_roots import (
     account_path,
     workspace_root,
     assets_root,
+    EVAL_SPLITS,
     dataset_files_in_dir,
     datasets_root,
     dataset_uploads_root,
@@ -57,8 +58,7 @@ from .storage_roots import (
     resolve_dataset_path,
 )
 
-# Re-export shim: mark project-path helpers as used so the import-hoist
-# safety net does not flag them as unused.
+# Re-export shim: mark helpers used for the import-hoist safety net.
 _REEXPORTED = (documents_root, project_workspaces_root, resolve_export_write_dir)
 
 __all__ = [
@@ -74,6 +74,7 @@ __all__ = [
     "account_path",
     "workspace_root",
     "assets_root",
+    "EVAL_SPLITS",
     "dataset_files_in_dir",
     "datasets_root",
     "dataset_uploads_root",

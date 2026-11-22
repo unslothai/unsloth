@@ -72,7 +72,6 @@ test("the old Music description shows only for a loaded music model without stud
         musicNeedsDescription: false,
       }),
     );
-  // Nothing loaded: the studio preview has its own description field.
   assert.equal(described(null), false);
   assert.equal(described({ audio_type: "audiocpp_tts" }), false);
   assert.equal(described({ audio_type: "minimax_music3" }), true);

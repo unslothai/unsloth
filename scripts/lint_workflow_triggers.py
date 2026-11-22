@@ -34,7 +34,6 @@ except ImportError:
     sys.exit(2)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# Kept in one place because every reader below opens files the same way.
 ENC = "utf-8"
 
 DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -43,7 +42,6 @@ BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
 PUBLISH_WORKFLOW_STEMS: tuple[str, ...] = ("release-desktop",)
 
-# The host must run on every PR and be able to fail.
 LINT_SCRIPT_NAME = "lint_workflow_triggers.py"
 
 
@@ -162,17 +160,9 @@ def _call_sites(path: Path, target: str) -> list[dict]:
             ref = value.strip()
             if not ref.startswith("./"):
                 continue
-            # Compared as the FULL local reference when one is given, because two actions
-            # may share a directory name: `./.github/actions/a/cache` and
-            # `./.github/actions/b/cache` both end in `cache`, so matching on the last
-            # component pooled their call sites and invented one action's value for the
-            # other. A bare name is still accepted, which is what the predicate self-tests
-            # and the shell-head narrowing pass.
+            # Compare the full local ref: two actions may share a directory name (a/cache, b/cache).
             full = ref[2:].rstrip("/") if ref.startswith("./") else ref.rstrip("/")
-            # `./repo/.github/actions/cache` names the same action as
-            # `./.github/actions/cache`; reachability already strips that runtime prefix and
-            # this comparison did not, so literal inputs passed through the prefixed form
-            # were never recovered and the key stayed undecidable.
+            # `./repo/.github/actions/x` names the same action as `./.github/actions/x`.
             segments = full.split("/")
             if ".github" in segments[1:]:
                 full = "/".join(segments[segments.index(".github") :])
@@ -184,11 +174,7 @@ def _call_sites(path: Path, target: str) -> list[dict]:
                 if stem != target and PurePosixPath(stem).stem != PurePosixPath(target).stem:
                     continue
             with_ = mapping.get("with")
-            # The CALLER's scope travels with the call site, because a value it delegates
-            # names a step of the caller's job, not of the target. Resolving
-            # `${{ steps.pip-cache.outputs.key }}` in the target's scope looked for a step
-            # the target does not have, so this repository's own pip-cache-save read as
-            # unresolvable and failed the live tree.
+            # Keep the caller's scope: a delegated value names a step of the caller's job.
             sites.append(
                 (
                     with_ if isinstance(with_, dict) else {},
@@ -200,7 +186,6 @@ def _call_sites(path: Path, target: str) -> list[dict]:
 
 _STEP_OUTPUT = re.compile(r"\$\{\{\s*steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)\s*\}\}")
 
-# Which outputs an `actions/cache` step publishes from the `key:` it was given.
 _CACHE_STEP_OUTPUTS = frozenset({"cache-primary-key", "cache-matched-key", "key"})
 
 
@@ -217,10 +202,7 @@ def _recovered_outputs(text: str) -> set:
     which is neither, so that output stays unrecovered and the key that uses it stays
     undecided.
     """
-    # Shell variables assigned a value with a literal head, so an output built from one
-    # is still recoverable. `prefix="pip-v2-${name}-..."` followed by
-    # `echo "key=${prefix}${hash}"` is how this repository's own producer works, and
-    # reading the output line alone saw only `${prefix}` and recovered nothing.
+    # Track shell vars with a literal head so `echo "key=${prefix}${hash}"` is still recoverable.
     assigned: dict = {}
     for line in text.splitlines():
         stripped = line.split("#", 1)[0].strip()
@@ -246,8 +228,7 @@ def _recovered_outputs(text: str) -> set:
         for name, value in re.findall(r"\b([A-Za-z_][\w-]*)=([^\s'\"]*)", stripped):
             if not value or "%" in value:
                 continue
-            # Literal, or beginning with a literal head once known shell variables are
-            # substituted. `printf 'key=%s\n'` gives the value `%s`, which is neither.
+            # `printf 'key=%s\n'` gives the value `%s`, which has no literal head.
             if _head(value):
                 found.add(name)
     return found
@@ -296,10 +277,7 @@ def _scoped_cache_keys(path: Path) -> list:
             for mapping in _cache_withs(job):
                 key = mapping.get("key")
                 if key is not None and not isinstance(key, (dict, list)):
-                    # Stringified, as `_extract_cache_keys` already does. Accepting only
-                    # `str` dropped an unquoted scalar such as `key: 123`, which YAML
-                    # parses as an int, so two workflows sharing that key were reported
-                    # as collision-free.
+                    # Stringified: YAML parses an unquoted `key: 123` as an int.
                     out.append((str(job_id), str(key)))
         return out
     for mapping in _cache_withs(doc):
@@ -332,7 +310,6 @@ def _producer_steps(path: Path) -> dict:
     if isinstance(jobs, dict):
         scopes = [(str(jid), job) for jid, job in jobs.items()]
     else:
-        # An action definition has no jobs; its steps share one scope.
         scopes = [("", doc)]
     for job_id, scope in scopes:
         for mapping in _mappings(scope):
@@ -340,10 +317,7 @@ def _producer_steps(path: Path) -> dict:
             if not isinstance(step_id, str):
                 continue
             ident = (path.as_posix(), job_id, step_id)
-            # A step that declares its own `key:` publishes it as an output
-            # (`cache-primary-key`), so the namespace is right there in the YAML. This is
-            # how `actions/cache/restore` steps hand a key onward, and reading only `run:`
-            # bodies and local composites declared them unreadable.
+            # A step with its own `key:` publishes it as cache-primary-key (actions/cache/restore).
             with_ = mapping.get("with")
             uses_value = str(mapping.get("uses") or "")
             if (
@@ -351,28 +325,19 @@ def _producer_steps(path: Path) -> dict:
                 and with_.get("key") is not None
                 and uses_value.strip().split("@")[0].casefold().startswith("actions/cache")
             ):
-                # Only for an action whose published key output IS this input. Marking every
-                # id-bearing step with a `with.key` readable was too generous: a local action
-                # may take an unrelated `key` input while emitting its own `outputs.key` from
-                # a command this check cannot read, and the delegated key was then dismissed
-                # with nothing recovered.
+                # Only for actions whose published key output is this input;
+                # a local action may emit its own key.
                 out[ident] = set(_CACHE_STEP_OUTPUTS)
                 continue
             body = mapping.get("run")
             if isinstance(body, str):
                 out[ident] = _recovered_outputs(body)
                 continue
-            # A step may produce its output by CALLING a local action rather than by running
-            # a shell body -- which is how this repository's own pip-cache-restore works, and
-            # reading `run:` steps alone declared that producer unreadable and failed the
-            # live tree. The action's own shell is what has to be readable.
+            # A step may produce its output by calling a local action, whose shell must be readable.
             uses = mapping.get("uses")
             if not isinstance(uses, str) or not uses.strip().startswith("./"):
                 continue
-            # The repository root, found by walking up to `.github` rather than counting
-            # levels. A workflow sits at `.github/workflows/x.yml` and an action at
-            # `.github/actions/<name>/action.yml`, one level deeper, so a fixed three-up
-            # landed inside `.github` for every action.
+            # Walk up to .github, not a fixed count: actions sit one level deeper than workflows.
             root = path.parent
             for parent in path.parents:
                 if parent.name == ".github":
@@ -385,11 +350,7 @@ def _producer_steps(path: Path) -> dict:
                 if not candidate.is_file():
                     continue
                 text = candidate.read_text(ENC)
-                # YAML-declared keys count as recovered too, and are in fact the usual case:
-                # this repository's frontend-dist-restore hands out
-                # `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the
-                # action declares. Requiring a SHELL-built key declared that producer
-                # unreadable and failed the live tree on a correct configuration.
+                # YAML-declared keys count as recovered too; they are the usual case.
                 out[ident] = _local_action_outputs(candidate, text)
                 break
     return out
@@ -415,8 +376,6 @@ def _local_action_outputs(action: Path, text: str) -> set:
             value = spec.get("value") if isinstance(spec, dict) else None
             match = _STEP_OUTPUT.search(str(value or ""))
             if match is None:
-                # Not delegated to a step: the value is literal or an expression this
-                # check reads no further into, so the shell is the evidence.
                 if _recovered_outputs(text) or _extract_cache_keys(action):
                     recovered.add(str(name))
                 continue
@@ -446,9 +405,7 @@ def _delegation_is_read(
     step_id, output = match.group(1), match.group(2)
     if scope is not None:
         return output in producers.get((scope[0], scope[1], step_id), set())
-    # Without a scope, EVERY step of that id must have recovered that output. A single
-    # namesake that did not is enough to make the answer no, which is the conservative
-    # reading and the one that stops a readable namesake vouching for it.
+    # Without a scope, every step of that id must have recovered the output (conservative).
     seen = [names for ident, names in producers.items() if ident[2] == step_id]
     return bool(seen) and all(output in names for names in seen)
 
@@ -486,15 +443,9 @@ def _resolved_inputs(
         sites.extend(_call_sites(pth, target))
     if not sites:
         return {}
-    # Every input named anywhere, collected BEFORE counting omissions. Doing both in one
-    # pass made the answer depend on call-site order: a site that omitted an input had no
-    # bucket yet, so the omission went unrecorded, and a later site supplying a literal
-    # made the input look fully resolved. Verified before fixing -- a composite called
-    # first with no `name` and then with `name: safe` reported ({'safe'}, True), so the
-    # namespace narrowed to `safe` and the real default namespace was left undefended.
+    # Collect every input name before counting omissions so the result is call-site-order independent.
     names = {str(name) for site, _scope in sites for name in site}
-    # {input name: {(wrapper's own input, wrapper scope)}} -- values a wrapper forwards
-    # from its own inputs, resolvable against that wrapper's call sites.
+    # {input: {(wrapper input, wrapper scope)}}: values a wrapper forwards from its own inputs.
     forwarded_inputs: dict = {}
     for name in names:
         literals: set = set()
@@ -503,44 +454,26 @@ def _resolved_inputs(
         dynamic = 0
         for site, site_scope in sites:
             if name not in site:
-                # Omitted, so the action's default applies. A declared default settles
-                # THIS, and only this.
+                # Omitted, so the action default applies; a declared default settles only this case.
                 omitted += 1
                 continue
             literal = str(site[name]).strip().strip("'\"")
             if re.fullmatch(r"[A-Za-z0-9][\w.-]*", literal):
                 literals.add(literal)
             elif _DELEGATED_KEY.fullmatch(literal):
-                # Kept, not discarded. Which producer supplies the value decides
-                # whether the delegation settles anything, and that is only knowable
-                # from the expression the call site wrote.
+                # Kept: which producer supplies the value decides whether delegation settles it.
                 delegated.add((literal, site_scope))
             else:
                 forwarded = _INPUT_KEY.fullmatch(literal)
                 if forwarded is not None and site_scope is not None:
-                    # A WRAPPER forwarding its own input: `with: {name: ${{ inputs.name }}}`
-                    # inside another composite. The value is whatever that wrapper's own
-                    # callers pass, so it is resolvable one level up rather than unknown,
-                    # and counting it as dynamic left a nested composite undecidable and
-                    # rejected an unrelated publish key -- a false failure on a valid
-                    # arrangement.
-                    #
-                    # Recorded for the caller to resolve rather than followed here, which
-                    # would mean recursing while already inside the resolution it needs.
+                    # A wrapper forwarding its own input is resolvable one level up;
+                    # recorded for the caller to resolve rather than recursing here.
                     forwarded_inputs.setdefault(name, set()).add((forwarded.group(1), site_scope))
                     continue
-                # An explicit value this check cannot expand, such as
-                # `${{ matrix.cache_key }}`. No default can settle it, because the caller
-                # overrode the default with something unknown.
+                # An explicit value this check cannot expand; no default can settle it.
                 dynamic += 1
         for wrapper_input, wrapper_scope in forwarded_inputs.get(name, ()):
-            # Resolved against the WRAPPER'S OWN callers, which is the whole point: the
-            # forwarded value is whatever they pass it. Resolving the wrapper file
-            # against itself looked for call sites inside the wrapper and found none.
-            #
-            # One level up, and one level only. A wrapper forwarding a wrapper is rare
-            # enough that the extra depth is not worth the recursion, and `_depth` makes
-            # the fallback the conservative one -- the value stays unresolved.
+            # Resolve against the wrapper's own callers, one level only; deeper stays unresolved.
             outer = (
                 {}
                 if _depth
@@ -571,19 +504,13 @@ def _literal_prefix(key: str) -> str:
     return re.split(r"\$\{\{", key, maxsplit = 1)[0].strip().strip("'\"")
 
 
-# `runner.os` is the only expression that routinely LEADS a cache key, and it takes
-# exactly three values, so expanding it turns the common undecidable case into three
-# decidable ones. Confirmed against GitHub's docs: the values are Linux, Windows and
-# macOS, exact and case-sensitive.
+# runner.os often leads a cache key and has exactly three values (Linux, Windows, macOS).
 _RUNNER_OS_VALUES = ("Linux", "Windows", "macOS")
 _RUNNER_OS_EXPR = re.compile(r"\$\{\{\s*runner\.os\s*\}\}")
 
-# A key that is nothing but one expression referring to a step output or an action input
-# delegates its namespace rather than declaring one.
 _DELEGATED_KEY = re.compile(r"\$\{\{\s*(steps|needs)\.[^}]*\}\}")
 
-# `inputs.X` is NOT delegation: the value arrives from the caller, so it has to be
-# resolved against the call sites rather than dismissed.
+# inputs.X is not delegation: resolve it against the call sites.
 _INPUT_KEY = re.compile(r"\$\{\{\s*inputs\.([A-Za-z_][\w-]*)\s*\}\}")
 
 
@@ -658,10 +585,7 @@ def _shell_output_keys(text: str) -> list:
     """
     out = []
     for line in text.splitlines():
-        # A commented-out line executes nothing, and reading one as a recovered output
-        # let an otherwise unreadable producer certify itself: a `# echo 'key=safe-key'`
-        # above a real `printf 'key=%s\n' "shared-$GITHUB_SHA"` marked the step readable,
-        # its delegated key was dismissed, and a publish `restore-keys: shared-` passed.
+        # Ignore commented-out lines, or a `# echo key=...` could certify an unreadable producer.
         stripped = line.split("#", 1)[0]
         if "GITHUB_OUTPUT" not in stripped:
             continue
@@ -693,20 +617,8 @@ def _shell_built_key_prefixes(
     false rejection of a publish prefix.
     """
     heads: list[str] = []
-    # A shell value only becomes a cache key by leaving the step, and `$GITHUB_OUTPUT` is
-    # how it leaves. Every assignment named `key` or `prefix` was being treated as a cache
-    # namespace regardless, so an unrelated `key="shared-${RANDOM}"` in a workflow that
-    # caches nothing made a publish `restore-keys: shared-` fail the hard gate.
-    #
-    # Requiring the output channel rather than a cache step in the same file is
-    # deliberate: the composite that BUILDS the key and the workflow that CACHES with it
-    # are routinely different documents, which is the whole arrangement this function
-    # exists to read.
-    #
-    # Residual, stated rather than implied: a document that writes an unrelated `key=`
-    # value AND uses $GITHUB_OUTPUT elsewhere still over-collects. That direction is a
-    # false rejection rather than a bypass, and narrowing it further would mean tracing
-    # shell dataflow, which is past what this check should attempt.
+    # A shell value only becomes a cache key via $GITHUB_OUTPUT, so require it. Known residual:
+    # an unrelated `key=` in such a document still over-collects (false rejection, not a bypass).
     if "GITHUB_OUTPUT" not in text:
         return []
     pattern = re.compile(
@@ -716,18 +628,11 @@ def _shell_built_key_prefixes(
     )
     for m in pattern.finditer(text):
         heads.append(m.group(1))
-    # `echo "key=pip-v2-${hash}" >> "$GITHUB_OUTPUT"` is the same thing written inline.
     for m in re.finditer(
         r"""echo\s+["']?(?:key|prefix)=([A-Za-z0-9][A-Za-z0-9._-]*?-)(?=\$|\{)""", text
     ):
         heads.append(m.group(1))
-    # A prefix whose literal head does not come FIRST yields nothing above, because the
-    # pattern requires the head to begin with an alphanumeric, and
-    # `prefix="${name}-pip-..."` puts its literal part after the variable. Substituting
-    # the values callers actually pass makes it readable. Without this the composite
-    # contributed no head at all, while the `steps.*` key reading its output was
-    # dismissed as delegation, so a publish `restore-keys: shared-pip-` had nothing to be
-    # compared against.
+    # A prefix whose literal head is not first (`${name}-pip-`) is read by substituting caller values.
     for value in sorted(inputs or ()):
         substituted = re.sub(r"\$\{\s*[\w-]+\s*\}|\$\{\{\s*inputs\.[\w-]+\s*\}\}", value, text)
         for found in pattern.findall(substituted) + re.findall(
@@ -737,13 +642,10 @@ def _shell_built_key_prefixes(
             if found not in heads:
                 heads.append(found)
     if inputs and all_literal:
-        # Narrowed heads, plus any head that already CARRIES a caller value because it
-        # was recovered by substitution above and needs no further narrowing.
         return [f"{h}{v}-" for h in heads for v in sorted(inputs)] + [
             h for h in heads if any(h.startswith(v) for v in inputs)
         ]
-    # An unresolved call site means the broad head still has to be carried, or narrowing
-    # would silently drop the namespace that caller writes.
+    # An unresolved call site keeps the broad head, or narrowing would drop that caller's namespace.
     return heads + [f"{h}{v}-" for h in heads for v in sorted(inputs or ())]
 
 
@@ -778,11 +680,7 @@ def _namespaces_by_target(callers: list, targets: list) -> dict:
     out: dict = {}
     for target in targets:
         resolved = _resolved_inputs(callers, _target_name(target))
-        # A declared default is a value the target really can be called with, so it
-        # belongs in the namespace even when no call site mentions the input, and
-        # recording it settles the OMISSION that made the input unresolved. It settles
-        # nothing else: a caller that explicitly passes `${{ matrix.cache_key }}` has
-        # overridden the default with a value this check cannot expand.
+        # A declared default settles only the omission, not a caller passing an unexpandable value.
         for field, value in _declared_defaults(target).items():
             entry = resolved.get(field, (set(), True, 0, 0, set()))
             vals, _ok, _omitted, dynamic, delegated = entry
@@ -810,9 +708,7 @@ def _expand_key(
     """
     out = {key.strip()}
     complete = True
-    # Inputs whose every call site DELEGATES: the value is assembled elsewhere and its
-    # namespace is recorded by `_shell_built_key_prefixes`, so the expression left
-    # standing for one of these is not an unanswered question.
+    # Inputs whose every call site delegates; their namespace comes from _shell_built_key_prefixes.
     delegated_inputs: set = set()
     for _ in range(6):
         nxt: set = set()
@@ -827,11 +723,8 @@ def _expand_key(
             delegated = entry[2] if len(entry) > 2 else set()
             if not values:
                 nxt.add(k)
-                # Resolved with NO literals means every call site delegates. Only
-                # resolved-false is genuine doubt. Treating the two alike reported this
-                # repository's own pip-cache-save, whose every caller passes
-                # `${{ steps.pip-cache.outputs.key }}`, against every publish key in the
-                # tree -- a false failure on a correct configuration.
+                # Resolved with no literals means every call site delegates;
+                # only resolved-false is doubt.
                 readable = bool(delegated) and all(
                     _delegation_is_read(expr, producers or {}, expr_scope)
                     for expr, expr_scope in delegated
@@ -839,17 +732,12 @@ def _expand_key(
                 if resolved and readable:
                     delegated_inputs.add(match.group(1))
                 else:
-                    # Delegation only settles the key when the producer's namespace was
-                    # actually recovered. `_shell_built_key_prefixes` reads two narrow
-                    # spellings; a workflow that emits its key with `printf 'key=%s\n'`
-                    # matches neither, so nothing was recorded and dismissing the key as
-                    # "delegated" turned an unread producer into a clean bill of health.
+                    # Delegation settles the key only if the producer's namespace was actually recovered.
                     complete = False
                 continue
             changed = True
             if not resolved:
-                # An unresolved call site keeps the raw expression alongside the
-                # literals, or the caller this check cannot expand is silently dropped.
+                # Keep the raw expression too, or the unexpandable caller is silently dropped.
                 complete = False
                 nxt.add(k)
             for value in sorted(values):
@@ -863,9 +751,7 @@ def _expand_key(
             expanded.update(_RUNNER_OS_EXPR.sub(v, k) for v in _RUNNER_OS_VALUES)
         else:
             expanded.add(k)
-    # Residue that a delegated input accounts for does not make the key undecided; any
-    # other surviving expression does. Checked after the delegated ones are removed, so a
-    # key mixing the two is still reported.
+    # Remove delegated residue first so a key mixing both kinds is still reported.
     for k in expanded:
         residue = k
         for name in delegated_inputs:
@@ -887,15 +773,8 @@ def _input_namespaces(callers: list, targets: list) -> dict:
     merged: dict = {}
     for target in targets:
         resolved = _resolved_inputs(callers, _target_name(target))
-        # A declared default is a value the target really can be called with, so it
-        # belongs in the namespace even when no call site mentions the input, and
-        # recording it settles the OMISSION that made the input unresolved.
-        #
-        # It settles nothing else. A caller that explicitly passes
-        # `${{ matrix.cache_key }}` has overridden the default with a value this check
-        # cannot expand, so the namespace stays undecided however many defaults exist.
-        # Treating a default as blanket resolution dropped that caller's namespace
-        # entirely, which turned the fix for one false failure into a silent bypass.
+        # A declared default settles only the omission; an explicit unexpandable caller value keeps
+        # the namespace undecided.
         defaults = _declared_defaults(target)
         for field, value in defaults.items():
             entry = resolved.get(field, (set(), True, 0, 0, set()))
@@ -923,10 +802,7 @@ def _expand_input_key(key: str, namespaces: dict) -> list[str]:
     values, resolved = namespaces.get(match.group(1), (set(), False))
     if not values:
         return [key]
-    # An unresolved call site keeps the raw expression alongside the literals. Returning
-    # the literals alone dropped that caller: with one site passing `cache_key: safe-key`
-    # and another `${{ matrix.cache_key }}`, the matrix value could be anything, and
-    # discarding it meant neither comparison saw the namespace it writes.
+    # Keep the raw expression for an unresolved call site, or that caller's namespace is lost.
     return sorted(values) if resolved else sorted(values) + [key]
 
 
@@ -1003,9 +879,7 @@ def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
         seen.add(pth)
         for ref in _local_uses(pth):
             for cand in _local_ref_candidates(ref, root.parent):
-                # A local reusable workflow reference names the .yml file itself rather
-                # than a directory containing an action.yml, so it has to be followed on
-                # its own.
+                # A local reusable workflow ref names the .yml itself, not a directory with action.yml.
                 if cand.is_file() and cand.suffix in (".yml", ".yaml"):
                     dirs.add(cand)
                     queue.append(cand)
@@ -1035,10 +909,8 @@ def _trigger_set(yaml_doc) -> set[str]:
 
 # Accept only a plain invocation of this script; fail closed on wrappers.
 _PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
-# Allow only flags that preserve script execution.
 _SAFE_OPTS = ("-u", "-E", "-s", "-S", "-B", "-O", "-OO", "-q")
 LINT_SCRIPT_PATH = f"scripts/{LINT_SCRIPT_NAME}"
-# These options consume the next token.
 _OPTS_WITH_VALUE = ("-X", "-W", "--check-hash-based-pycs")
 _SHELL_OPERATORS = ("|", "&", ";", ">", "<", "`", "$(")
 
@@ -1050,7 +922,7 @@ def _is_trusted_python(token: str) -> bool:
     add an executable of that name.
     """
     if any(op in token for op in _SHELL_OPERATORS):
-        return False  # a substitution runs before the path is used
+        return False
     path = PurePosixPath(token)
     if not _PYTHON_BASENAME.fullmatch(path.name):
         return False
@@ -1064,14 +936,14 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
     except ValueError:
         return False, None
     if not tokens or not _is_trusted_python(tokens[0]):
-        return False, None  # `echo <script>`, a decoy interpreter, or not python
+        return False, None
 
     args, i = tokens[1:], 0
     while i < len(args) and args[i].startswith("-"):
         if args[i] in _OPTS_WITH_VALUE:
             value = args[i + 1] if i + 1 < len(args) else ""
             if any(op in value for op in _SHELL_OPERATORS):
-                return False, None  # a substitution runs before python
+                return False, None
             i += 2
         elif args[i] in _SAFE_OPTS:
             i += 1
@@ -1079,7 +951,6 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
             return False, None
 
     rest = args[i:]
-    # Require the repository-relative path, not a suffix match.
     if not rest or rest[0] not in (LINT_SCRIPT_PATH, f"./{LINT_SCRIPT_PATH}"):
         return False, None
     if len(rest) == 1:
@@ -1118,7 +989,6 @@ def _lint_step_report(run: str) -> tuple[bool, list[str]]:
 # Shell templates can wrap the command and hide its status.
 SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
 
-# These variables can redirect execution before the script runs.
 UNSAFE_ENV_KEYS: tuple[str, ...] = (
     "BASH_ENV",
     "ENV",
@@ -1351,31 +1221,20 @@ def main() -> int:
             "Restore the workflow-trigger-lint workflow."
         )
 
-    # A PR-triggered workflow usually delegates its key to a composite action, so the
-    # literal key lives in .github/actions/*/action.yml and the workflow only carries
-    # `${{ steps.x.outputs.key }}`. Those count as PR-reachable: the workflow that uses
-    # them runs on pull requests. Without this the prefix rule below would compare
-    # against opaque expressions and match nothing.
+    # PR workflows usually delegate keys to composite actions; those count as PR-reachable.
     pr_workflow_paths = [pth for pth, _ in pr_triggered]
     pr_reachable = sorted(_pr_reachable_action_dirs(workflows_dir, pr_workflow_paths))
-    # Call sites come from every reachable document, workflows and composites alike, so a
-    # cache action reached through a wrapper action is narrowed by what the WRAPPER passes
-    # and not only by what a workflow passes directly.
+    # Call sites come from workflows and composites, so wrapper-passed values narrow too.
     pr_callers = pr_workflow_paths + pr_reachable
     composite_keys: list[str] = []
     shell_built: set = set()
-    # A workflow can build its key in one of its OWN `run:` steps and consume it as
-    # `${{ steps.probe.outputs.key }}`, with no composite involved at all. Only actions
-    # were read for shell-built heads, so that key hit the delegation branch with nothing
-    # recovered and a publish `restore-keys: shared-` had nothing to compare against.
+    # A workflow may build its key in its own run: step, so read workflows for shell heads too.
     shell_literals: set = set()
     for pth in pr_workflow_paths:
         text = pth.read_text(ENC)
         built = _shell_built_key_prefixes(text)
         composite_keys.extend(built)
         shell_built.update(built)
-        # Literal keys the producer writes outright. Exact keys, so they belong in the
-        # comparison, and evidence the step was understood.
         shell_literals.update(_shell_output_keys(text))
     for action_path in pr_reachable:
         composite_keys.extend(_extract_cache_keys(action_path))
@@ -1384,44 +1243,24 @@ def main() -> int:
         built = _shell_built_key_prefixes(action_path.read_text(ENC), names, all_literal)
         composite_keys.extend(built)
         shell_literals.update(_shell_output_keys(action_path.read_text(ENC)))
-        # A shell-built value is the literal HEAD of a key whose remainder is assembled
-        # at runtime, so it is truncated by construction even though no `${{` survives
-        # in the recorded string. Without this the reverse-direction rule below stopped
-        # comparing them, and a publish prefix longer than the head -- which is the usual
-        # shape, `pip-v2-shared-` against the head `pip-v2-` -- went unexamined.
+        # A shell-built value is a truncated head even with no `${{` left in it.
         shell_built.update(built)
 
-    # The publish side delegates to local actions exactly as the pull-request side does,
-    # and reading only the top-level workflow file left that half unexamined. A publish
-    # workflow whose composite holds the `actions/cache/restore` declares its keys and
-    # its `restore-keys` in the action, so a PR writing `shared-*` against a publish-only
-    # composite restoring `shared-` passed: the prefix was never collected, and a
-    # comparison that collects nothing on one side reports success.
+    # Publish workflows delegate to local actions too, so read their composites' keys and restore-keys.
     for action_path in sorted(
         _pr_reachable_action_dirs(workflows_dir, [pth for pth, _ in publish_triggered])
     ):
         publish_triggered.append((action_path, _extract_cache_keys(action_path)))
         publish_restore_prefixes.append((action_path, _extract_restore_key_prefixes(action_path)))
 
-    # Composite keys belong in the exact comparison as well, not only the prefix one. A
-    # PR-reachable action declaring `key: shared-key`, against a publish workflow using
-    # that same key and no restore-keys at all, is the original cache-poisoning shape,
-    # and it was invisible while this set held workflow-declared keys only.
-    # Inputs each side's targets are called with, so an input-backed key resolves to the
-    # namespace its callers actually produce before either comparison runs.
+    # Composite keys belong in the exact comparison too (the original cache-poisoning shape).
     input_namespaces = _input_namespaces(pr_callers, pr_reachable)
     publish_callers = [pth for pth, _ in publish_triggered]
     publish_reachable = sorted(_pr_reachable_action_dirs(workflows_dir, publish_callers))
     publish_namespaces = _input_namespaces(publish_callers, publish_reachable)
-    # The publish side builds keys in shell too, and its heads were never collected:
-    # `_shell_built_key_prefixes` ran over PR-reachable documents only. A publish
-    # workflow that emits `key=shared-key` and restores `${{ steps.probe.outputs.key }}`
-    # therefore had that key dismissed as delegated with nothing recovered to compare,
-    # while a pull request writing the literal `shared-key` passed.
+    # Collect publish-side shell-built heads too, or a delegated publish key is dismissed unread.
     publish_shell: set = set()
-    # (path, key) is not unique: two jobs may declare the same raw expression, and
-    # `setdefault` kept only the first one's scope for both, so a second job whose
-    # producer could not be read was judged against the first job's readable one.
+    # (path, key) is not unique across jobs, so keep every scope.
     pub_scope_list: dict = {}
     for pth in publish_callers + publish_reachable:
         for jid, key in _scoped_cache_keys(pth):
@@ -1432,24 +1271,16 @@ def main() -> int:
     publish_producers: dict = {}
     for pth in publish_callers + publish_reachable:
         publish_producers.update(_producer_steps(pth))
-    # Each definition keeps its OWN inputs. See `_namespaces_by_target`.
     pr_by_target = _namespaces_by_target(pr_callers, pr_reachable)
     publish_by_target = _namespaces_by_target(publish_callers, publish_reachable)
 
-    # (namespace, key) rather than a bare key, so every key is expanded against the
-    # inputs of the definition that declares it and no other.
-    # (namespace, key, scope) -- the scope is the document and job whose step ids a
-    # delegated key refers to.
+    # (namespace, key, scope): each key expands only against its declaring definition's inputs.
     pr_sites = [
         ({}, k, (pth.as_posix(), jid))
         for pth, _keys in pr_triggered
         for jid, k in _scoped_cache_keys(pth)
     ]
-    # Shell-built heads only. Re-adding every composite's YAML keys here gave each one a
-    # SECOND entry carrying an empty namespace: it expanded to nothing, counted as
-    # unresolved, and a composite whose callers all pass literals then rejected an
-    # unrelated publish key on the strength of its own duplicate. The target loop below
-    # is where those keys belong, with the inputs that decide them.
+    # Shell-built heads only; composite YAML keys are handled by the target loop below.
     pr_sites += [({}, k, None) for k in sorted(shell_built | shell_literals)]
     for target, namespace in pr_by_target.items():
         pr_sites += [
@@ -1457,23 +1288,15 @@ def main() -> int:
         ]
 
     pr_keys: set = set()
-    # PR keys whose value this check could not settle, with the literal head they are
-    # known to start with. Only these can collide with a publish key unseen.
     pr_undecided: list = []
-    # Per producing STEP, not per side. One readable producer is not a warrant for an
-    # unreadable one, and a side-wide flag let an ordinary `echo key=...` vouch for a
-    # `printf` producer whose namespace was never recovered.
+    # Per producing step: one readable producer does not vouch for another.
     pr_producers: dict = {}
     for pth in pr_workflow_paths + list(pr_reachable):
         pr_producers.update(_producer_steps(pth))
     for namespace, key, scope in pr_sites:
         literals, complete = _expand_key(key, namespace, pr_producers, scope)
         pr_keys.update(k for k in literals if "${{" not in k)
-        # Delegation is not indecision. A key that is nothing but
-        # `${{ steps.probe.outputs.key }}` names a value assembled in a shell step, and
-        # `_shell_built_key_prefixes` recovers its head and records that namespace
-        # separately; counting it here as well reported every publish key in the tree
-        # against it, which failed the live tree on a correct configuration.
+        # Delegation is not indecision; its head is recovered separately.
         if not complete and not (
             _DELEGATED_KEY.fullmatch(key.strip())
             and _delegation_is_read(key.strip(), pr_producers, scope)
@@ -1482,21 +1305,11 @@ def main() -> int:
     pr_raw_unresolved = {raw.strip() for raw, _heads in pr_undecided}
 
     for pub_path, pub_keys in publish_triggered:
-        # This target's own inputs, not the merged view. Two publish-reachable actions
-        # sharing an input name had every key expanded with both their values, so a cache
-        # composite given `publish-key` was also expanded to an unrelated action's
-        # `safe-key` and reported as colliding with a PR cache of that name.
-        # A top-level workflow is not a target, and its `${{ inputs.X }}` is a
-        # workflow_dispatch input chosen by whoever dispatches it. Falling back to the
-        # merged CHILD namespace expanded that user-controlled value using an unrelated
-        # action's literal and then called it settled, so dispatching with
-        # `cache_key=shared-key` restored a pull request's cache with the lint green.
-        # An empty namespace leaves it undecidable, which is what it is.
+        # Use this target's own inputs, not the merged view. A top-level workflow's inputs.X is a
+        # user-chosen dispatch input, so an empty namespace leaves it undecidable.
         pub_ns = publish_by_target.get(pub_path, {})
         for raw in pub_keys:
-            # Every job that declares this key, not just the first. A key is only
-            # settled when EVERY scope declaring it could be read; one unreadable
-            # producer is enough to leave it undecided.
+            # Settled only when every scope declaring this key could be read.
             scopes = pub_scope_list.get((pub_path.as_posix(), raw)) or [None]
             pub_scope = next(
                 (
@@ -1510,16 +1323,10 @@ def main() -> int:
             )
             literals, complete = _expand_key(raw, pub_ns, publish_producers, pub_scope)
             if _DELEGATED_KEY.fullmatch(raw.strip()):
-                # Compared as the heads its own shell produced, rather than skipped.
                 read = _delegation_is_read(raw.strip(), publish_producers, pub_scope)
                 literals = sorted(publish_shell) if read else [raw.strip()]
                 complete = read
-            # Identical spellings first. Two keys written the same way around an
-            # expression this check cannot expand -- `shared-${{ hashFiles('lock') }}`
-            # on both sides -- resolve identically at run time, so a PR that leaves the
-            # lockfile alone writes the very entry the publish run restores. Both sides
-            # were being dropped for still containing `${{`, which made the most direct
-            # collision of all invisible.
+            # Identical spellings around an unexpandable expression collide at run time.
             if not complete and raw.strip() in pr_raw_unresolved:
                 findings.append(
                     f"{pub_path.name}: cache key {raw.strip()!r} is spelled identically "
@@ -1543,17 +1350,9 @@ def main() -> int:
                     if _DELEGATED_KEY.fullmatch(k.strip()) and _delegation_is_read(
                         k.strip(), publish_producers, pub_scope
                     ):
-                        # Delegated AND read. See the PR side above.
                         continue
-                    # An unresolved PUBLISH key, which needs the same treatment as an
-                    # unresolved PR key and was simply skipped. A publish composite
-                    # called with `cache_key: ${{ matrix.cache_key }}` may well produce a
-                    # literal a pull request also writes, and failing closed only on the
-                    # PR side left exactly half of this check's own rule unenforced.
-                    # No literal head at all means the key is expression-led and
-                    # could be ANY value, so it is not narrowable and every PR key is a
-                    # candidate. Requiring a head silently exempted exactly the least
-                    # decidable keys, which is the wrong way round.
+                    # Unresolved publish keys fail closed too;
+                    # a key with no literal head could be any value.
                     heads = [h for h in _prefix_candidates(k) if h]
                     reported = False
                     for literal in sorted(pr_keys):
@@ -1569,13 +1368,8 @@ def main() -> int:
                             break
                     if reported:
                         continue
-                    # BOTH sides unresolved, and spelled differently. The identical-text
-                    # rule above does not reach `shared-${{ matrix.pr_part }}` against
-                    # `shared-${{ matrix.pub_part }}`, and comparing an unresolved
-                    # publish key only against RESOLVED pr keys skipped the pairing
-                    # entirely -- so two keys that can both become `shared-x` passed.
-                    # Compatible when either head could lead to the other, which for two
-                    # truncated keys is the prefix test in both directions.
+                    # Both sides unresolved and spelled differently:
+                    # compatible if either head prefixes the other.
                     for raw_pr, pr_heads in pr_undecided:
                         fixed = [h for h in pr_heads if h]
                         if (
@@ -1592,15 +1386,8 @@ def main() -> int:
                             )
                             break
                     continue
-                # Fail closed. An unsettled PR key can equal this publish key at run
-                # time, and reporting it only from the restore-prefix pass meant a
-                # publish workflow with no `restore-keys` at all -- the plainest shape
-                # there is -- never had the question asked. Narrowed to PR keys whose
-                # fixed head this publish key actually begins with, because a PR key
-                # headed `pip-v2-` cannot become `wheels-x` however its tail resolves.
+                # Fail closed on unsettled PR keys whose fixed head this publish key begins with.
                 for raw_pr, heads in pr_undecided:
-                    # Same rule in the other direction: a PR key with no literal head is
-                    # unnarrowable rather than harmless.
                     fixed = [h for h in heads if h]
                     if not fixed or any(k.startswith(h) for h in fixed):
                         findings.append(
@@ -1611,13 +1398,9 @@ def main() -> int:
                         )
                         break
 
-    # Same trust boundary, reached by prefix instead of by an equal key. `restore-keys`
-    # restores the newest entry whose key merely STARTS WITH the prefix, so a publish
-    # workflow can adopt an entry a pull request wrote without the two keys ever being
-    # equal, which is the only thing the check above compares.
+    # restore-keys matches by prefix, so a publish run can adopt a PR entry without equal keys.
     pr_heads: set = set()
-    # Heads whose key continued into an unexpandable expression. Only these may be
-    # reached by a publish prefix LONGER than the head itself.
+    # Only truncated heads can be reached by a publish prefix longer than the head.
     truncated_heads: set = set()
     undecidable_pr_keys: list[str] = []
     for k in list(pr_keys) + composite_keys:
@@ -1627,11 +1410,7 @@ def main() -> int:
             if _is_truncated(k) or k in shell_built:
                 truncated_heads.update(cands)
         elif _INPUT_KEY.fullmatch(k.strip()):
-            # `key: ${{ inputs.cache_key }}` in a reusable workflow or composite names no
-            # namespace here, but unlike a `steps.*` reference it is not delegation
-            # either: the value comes from the CALLER, and a pull request caller passing
-            # `cache_key: shared-abc` writes the `shared-` namespace. Treating it as
-            # delegation dropped it silently and a publish `shared-` fallback passed.
+            # inputs.X is caller-supplied, not delegation: a PR caller can write that namespace.
             field = _INPUT_KEY.fullmatch(k.strip()).group(1)
             vals, resolved = input_namespaces.get(field, (set(), False))
             heads = [h for v in sorted(vals) for h in _prefix_candidates(v)]
@@ -1640,29 +1419,19 @@ def main() -> int:
                 h for v in sorted(vals) if _is_truncated(v) for h in _prefix_candidates(v)
             )
             if not resolved:
-                # Some call site passes a value this check cannot expand, such as
-                # `${{ matrix.cache_name }}`, or omits the input so the action default
-                # applies. Say so rather than assuming it is harmless. Resolved with no
-                # literals is the DELEGATION case and is fine: every live caller of
-                # pip-cache-save passes `key: ${{ steps.pip-cache.outputs.key }}`, whose
-                # real namespace was collected from the restoring action's shell.
+                # An unexpandable or omitted value is undecidable;
+                # resolved with no literals is delegation and fine.
                 undecidable_pr_keys.append(k)
         elif _DELEGATED_KEY.fullmatch(k.strip()):
-            # `key: ${{ steps.pip-cache.outputs.key }}` names no namespace of its own; it
-            # hands the decision to a composite action, whose real prefix was collected
-            # above from that action's own YAML and shell. Reporting it as undecidable
-            # would flag every workflow that factors its cache out into an action.
+            # A steps.* key delegates to a composite whose prefix was collected above.
             continue
         else:
             undecidable_pr_keys.append(k)
 
     for pub_path, prefixes in publish_restore_prefixes:
         for prefix in prefixes:
-            # Expanded with the declaring target's own inputs first, exactly as its
-            # exact keys are. Reducing `prefix-${{ inputs.name }}-` without them gave
-            # the broad head `prefix-`, which collides with everything under it, so a
-            # composite called with `name: publish` was reported against unrelated PR
-            # keys whose runtime fallback it could never reach.
+            # Expand with the declaring target's own inputs first,
+            # or the broad head collides with everything.
             prefix_ns = publish_by_target.get(pub_path, {})
             expanded_prefixes, _ok = _expand_key(prefix, prefix_ns)
             pub_heads = [
@@ -1695,8 +1464,6 @@ def main() -> int:
                     )
                     break
             else:
-                # Only reachable when nothing matched: an undecidable PR key could still
-                # expand into this prefix, so say so rather than passing silently.
                 for k in undecidable_pr_keys:
                     findings.append(
                         f"{pub_path.name}: restore-keys prefix {prefix!r} cannot be "

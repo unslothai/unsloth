@@ -41,8 +41,7 @@ def _is_remote_code_module(module):
 
 
 def _constructor_kwargs(module):
-    """Arguments to rebuild ``module`` from its own attributes, or None when a required
-    one cannot be recovered."""
+    """Kwargs to rebuild module from its attributes; None if a required one is unrecoverable."""
     try:
         signature = inspect.signature(type(module).__init__)
     except (TypeError, ValueError):
@@ -173,16 +172,13 @@ def _fresh_non_persistent_buffers(
 
 
 def restore_remote_code_non_persistent_buffers(model):
-    """Recompute the non-persistent buffers of remote-code modules that transformers 5
-    left uninitialised. Returns the number of buffers restored; a no-op on 4.x, where
-    the model is built with real buffers."""
+    """Recomputes non-persistent buffers that transformers 5 leaves uninitialised; a no-op on 4.x."""
     if model is None or not _transformers_builds_on_meta():
         return 0
     dtype = getattr(model, "dtype", None)
     cache = {}
     restored = 0
-    # transformers 5 runs the nearest PreTrainedModel's `_init_weights` on every module after
-    # building on meta; a buffer it writes already holds the right value.
+    # transformers 5 runs `_init_weights` after meta build; buffers it writes are already set.
     for module, init_weights in _modules_with_init_weights(model):
         own = getattr(module, "_non_persistent_buffers_set", None)
         if not own or not _is_remote_code_module(module):

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""cuDNN attention is only pinned when the torch/cuDNN build has a kernel for every DiT head_dim.
-
-Ideogram 4 (head_dim 256) under any speed profile raised "No available kernel" on torch 2.11-2.13, whose cuDNN
-serves head_dim <= 128, while torch 2.14 runs it. Probe stubbed except the last test."""
+"""Pin cuDNN only if it has a kernel for every head_dim; head_dim 256 fails on torch 2.11-2.13."""
 
 from __future__ import annotations
 
@@ -178,3 +175,27 @@ def test_kill_switch_pins_cudnn_without_asking(monkeypatch):
         types.SimpleNamespace(transformer = t), "_native_cudnn", target = _target()
     ) == ("_native_cudnn")
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    "kernels, expected",
+    [
+        (("cudnn", "mem_efficient", "math"), "_native_cudnn"),
+        (("mem_efficient", "math"), None),
+        (("math",), None),
+        (("flash", "cudnn", "math"), "_native_flash"),
+    ],
+)
+def test_exclusive_flash_needs_a_flash_kernel_and_falls_back_to_cudnn_only_where_it_runs(
+    monkeypatch, kernels, expected
+):
+    # #16294: a torch build without flash SDPA must not pin FLASH_ATTENTION, nor fall back to a cuDNN it lacks.
+    _stub_probe(monkeypatch, served = (64, 128))
+    monkeypatch.setattr(att, "available_sdpa_kernels", lambda target: kernels)
+    monkeypatch.setattr(att, "_native_dispatches_cudnn", lambda *a, **k: False)
+    t = _Transformer(config = {"attention_head_dim": 128})
+    engaged = apply_attention_backend(
+        types.SimpleNamespace(transformer = t), "_native_flash", target = _target()
+    )
+    assert engaged == expected
+    assert ("_native_flash" in t.calls) == (expected == "_native_flash")

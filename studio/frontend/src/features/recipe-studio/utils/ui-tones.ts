@@ -34,13 +34,13 @@ export const RECIPE_STUDIO_REFERENCE_BADGE_TONES = {
 } as const;
 
 export const RECIPE_STUDIO_WARNING_BADGE_TONE =
-  "border-amber-500/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-300";
+  "bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-300";
 
 export const RECIPE_STUDIO_WARNING_ICON_TONE =
   "text-amber-600 dark:text-amber-400";
 
 export const RECIPE_STUDIO_ONBOARDING_SURFACE_TONE =
-  "border-primary/20 bg-primary/[0.045]";
+  "border-wash-20 bg-wash-5";
 
 export const RECIPE_STUDIO_ONBOARDING_ICON_TONE =
   "bg-primary/10 text-primary";

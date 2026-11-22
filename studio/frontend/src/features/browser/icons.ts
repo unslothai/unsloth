@@ -28,14 +28,12 @@ export const PadlockIcon: IconSvgElement = [
   ["circle", { cx: "12", cy: "15.5", r: "1.25", fill: "currentColor", key: "2" }],
 ];
 
-/** The padlock open, for a connection that isn't secure. */
 export const PadlockOpenIcon: IconSvgElement = [
   ["path", { d: "M8 10V7C8 4.79086 9.79086 3 12 3C13.8638 3 15.4299 4.27477 15.874 6", ...stroke, key: "0" }],
   ["rect", { x: "4.75", y: "10", width: "14.5", height: "11", rx: "2.5", ...stroke, key: "1" }],
   ["circle", { cx: "12", cy: "15.5", r: "1.25", fill: "currentColor", key: "2" }],
 ];
 
-// A certificate as Firefox shows it: a card with a heavier top edge and a check on it.
 export const CertificateIcon: IconSvgElement = [
   ["rect", { x: "3.5", y: "5.5", width: "17", height: "13", rx: "1.5", ...stroke, key: "0" }],
   ["path", { d: "M3.5 8.25H20.5", ...stroke, key: "1" }],

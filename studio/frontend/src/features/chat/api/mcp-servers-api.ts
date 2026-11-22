@@ -39,8 +39,10 @@ export interface McpServerProbeResult {
   error: string | null;
 }
 
+export type EditorMcpId = "unity" | "unreal" | "godot" | "figma" | "roblox";
+
 export interface McpBuiltinConfig {
-  builtin_id: "blender";
+  builtin_id: "blender" | EditorMcpId;
   display_name: string;
   server_id: string | null;
   is_enabled: boolean;
@@ -48,7 +50,9 @@ export interface McpBuiltinConfig {
   unavailable_reason: string | null;
   port: number;
   blender_path: string;
-  min_blender_version: string;
+  min_blender_version: string | null;
+  project_path?: string;
+  installed?: boolean | null;
 }
 
 export interface BlenderMcpSettings {
@@ -56,10 +60,13 @@ export interface BlenderMcpSettings {
   blender_path: string;
 }
 
+// detect: the one app to look up (a disk read); the rest report installed: null.
 export function listMcpBuiltins(
   waitForPendingMutations = true,
+  detect?: string,
 ): Promise<McpBuiltinConfig[]> {
-  const read = () => mcpRequest<McpBuiltinConfig[]>("/builtins");
+  const path = detect === undefined ? "/builtins" : `/builtins?detect=${encodeURIComponent(detect)}`;
+  const read = () => mcpRequest<McpBuiltinConfig[]>(path);
   return waitForPendingMutations
     ? readAfterPendingMcpServerMutations(read)
     : readMcpServerMutationSnapshot(read);
@@ -78,12 +85,49 @@ export function testBlenderMcp(
 ): Promise<
   McpServerProbeResult & {
     blender_ready?: boolean;
+    blender_path?: string | null;
     blender_error?: string | null;
   }
 > {
   return mcpRequest("/builtins/blender/test", {
     method: "POST",
     body: payload,
+  });
+}
+
+export interface EditorMcpSettings {
+  port: number | null;
+  project_path: string;
+}
+
+export function updateEditorMcp(
+  id: EditorMcpId,
+  payload: EditorMcpSettings & { is_enabled: boolean; consent: boolean },
+): Promise<McpBuiltinConfig> {
+  return trackMcpServerMutation(
+    mcpRequest(`/builtins/${id}`, { method: "PUT", body: payload }),
+  );
+}
+
+export function testEditorMcp(
+  id: EditorMcpId,
+  payload: EditorMcpSettings & { consent: boolean },
+): Promise<
+  McpServerProbeResult & {
+    editor_ready?: boolean | null;
+    editor_error?: string | null;
+  }
+> {
+  return mcpRequest(`/builtins/${id}/test`, { method: "POST", body: payload });
+}
+
+/** Copies Unsloth's level-save toolset into an Unreal project; loads on the next editor start. */
+export function installUnrealTools(
+  projectPath: string,
+): Promise<{ files: string[]; restart_required: boolean }> {
+  return mcpRequest("/builtins/unreal/install-tools", {
+    method: "POST",
+    body: { project_path: projectPath },
   });
 }
 
@@ -308,8 +352,7 @@ export function encodeMcpStdioCommand(payload: McpStdioCommand): Promise<{
   });
 }
 
-// Bulk-import servers from a standard mcpServers JSON config (Claude Desktop, Cursor, Cline, VS
-// Code). The backend skips duplicates and reports per-entry errors instead of failing the batch.
+// Backend skips duplicates and reports per-entry errors instead of failing the batch.
 export function importMcpServers(
   config: unknown,
 ): Promise<McpServerImportResult> {

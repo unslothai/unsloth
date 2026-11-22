@@ -22,7 +22,7 @@ _PATCH_MODULE = Path(patches.__file__)
 
 _REMOVED = "cannot import name 'LinearActivationQuantizedTensor' from 'torchao.quantization'"
 
-# The Studio copy differs from unsloth's only in who the warning says is speaking.
+# the Studio copy differs from unsloth's only in the warning's speaker
 _WORDING = (("Unsloth Studio: ", "Unsloth: "), ("Studio now runs", "Unsloth now runs"))
 
 
@@ -123,12 +123,11 @@ def test_a_plain_linear_gets_no_torchao_layer_instead_of_an_import_error(fake_pe
         original(types.SimpleNamespace(weight = object()), "default", None)
 
     assert patches._patch_peft_torchao_dispatchers() is True
-    # Both bindings point at one wrapper, so the list peft actually walks is the patched one.
+    # both bindings share one wrapper, so the list peft walks is patched
     assert lora_model.dispatch_torchao is lora_torchao.dispatch_torchao is not original
     assert (
         lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None) is None
     )
-    # Idempotent: a second pass finds nothing left to wrap.
     assert patches._patch_peft_torchao_dispatchers() is False
 
 
@@ -155,20 +154,17 @@ def test_an_unrelated_import_error_still_surfaces(monkeypatch, fake_peft):
 
 
 def test_a_torchao_without_the_dtypes_package_gets_a_plain_lora_layer(monkeypatch, fake_peft):
-    """torchao main (after 0.18) deleted the whole ``torchao.dtypes`` package, so peft <= 0.18's
-    first import inside ``dispatch_torchao`` is a ModuleNotFoundError naming the package, not the
-    class. That is the same removal, and every LoRA target must still fall through to peft's
-    ordinary layer instead of failing the load."""
+    """A removed torchao.dtypes package must fall back to peft's plain LoRA layer, not fail the load."""
     lora_torchao, lora_model = fake_peft
     monkeypatch.delitem(
         sys.modules, "torchao.dtypes"
-    )  # the fake torchao has no __path__: the import fails
+    )  # fake torchao has no __path__, so the import fails
     monkeypatch.delattr(sys.modules["torchao"], "dtypes")
     monkeypatch.setattr(
         sys.modules["torchao"], "__spec__", importlib.machinery.ModuleSpec("torchao", None)
     )
 
-    # peft <= 0.18's first torchao import, defined in the fake peft module so the guard reads its globals.
+    # peft <= 0.18 torchao import, defined in the fake peft so the guard reads its globals
     namespace = dict(lora_torchao.__dict__)
     exec(
         "def dispatch_torchao(target, adapter_name, lora_config, **kwargs):\n"
@@ -221,7 +217,7 @@ def test_the_guard_waits_for_peft_instead_of_importing_it(monkeypatch):
     assert patches._PEFT_LORA_DISPATCH_MODULE not in sys.modules
     finders = [f for f in sys.meta_path if getattr(f, patches._PEFT_TORCHAO_GUARD_SENTINEL, False)]
     assert len(finders) == 1 and sys.meta_path[0] is finders[0]
-    assert patches.install_peft_torchao_dispatch_guard() is False  # no second finder
+    assert patches.install_peft_torchao_dispatch_guard() is False
 
 
 def test_every_diffusion_entry_point_installs_the_guard(monkeypatch):
@@ -243,3 +239,64 @@ def test_real_peft_lora_injection_survives_the_installed_torchao():
     net = torch.nn.Sequential(torch.nn.Linear(8, 8))
     peft.inject_adapter_in_model(peft.LoraConfig(r = 2, target_modules = ["0"]), net)
     assert hasattr(net[0], "lora_A")
+
+
+def _fake_torchao_layer(monkeypatch, init):
+    module = types.ModuleType(patches._PEFT_TORCHAO_LAYER_MODULE)
+    module.TorchaoLoraLinear = type("TorchaoLoraLinear", (), {"__init__": init})
+    monkeypatch.setitem(sys.modules, patches._PEFT_TORCHAO_LAYER_MODULE, module)
+    monkeypatch.delenv(patches._PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV, raising = False)
+    return module.TorchaoLoraLinear
+
+
+def test_peft_019s_required_merge_callback_gets_peft_020s_default(monkeypatch):
+    seen = []
+
+    def init(self, *args, get_apply_tensor_subclass, **kwargs):  # peft 0.19.x
+        seen.append(get_apply_tensor_subclass)
+
+    layer = _fake_torchao_layer(monkeypatch, init)
+    with pytest.raises(TypeError, match = "get_apply_tensor_subclass"):
+        layer()
+    assert patches._make_peft_torchao_merge_callback_optional() is True
+    assert patches._make_peft_torchao_merge_callback_optional() is False
+    layer()
+    callback = object()
+    layer(get_apply_tensor_subclass = callback)  # a transformers hf_quantizer's callback still wins
+    assert seen == [None, callback]
+    assert layer.__init__.__wrapped__ is init
+
+
+@pytest.mark.parametrize(
+    "signature",
+    ["optional", "absent"],  # peft >= 0.20 / a layer without the keyword: left alone
+)
+def test_other_peft_layers_are_left_alone(monkeypatch, signature):
+    if signature == "optional":
+
+        def init(
+            self,
+            *args,
+            get_apply_tensor_subclass = None,
+            **kwargs,
+        ):
+            pass
+
+    else:
+
+        def init(self, *args, **kwargs):
+            pass
+
+    layer = _fake_torchao_layer(monkeypatch, init)
+    assert patches._make_peft_torchao_merge_callback_optional() is False
+    assert layer.__init__ is init
+
+
+def test_the_merge_callback_switch_keeps_the_required_keyword(monkeypatch):
+    def init(self, *args, get_apply_tensor_subclass, **kwargs):
+        pass
+
+    layer = _fake_torchao_layer(monkeypatch, init)
+    monkeypatch.setenv(patches._PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV, "0")
+    assert patches._make_peft_torchao_merge_callback_optional() is False
+    assert layer.__init__ is init

@@ -32,7 +32,6 @@ def test_a_failed_restore_is_reported_with_the_stranded_path(matrix, monkeypatch
         @staticmethod
         def rename(source, destination):
             calls.append((str(source), str(destination)))
-            # The last move aside fails, then the first rename back fails as well.
             if len(calls) in (3, 4):
                 raise PermissionError("locked directory")
             os.rename(source, destination)

@@ -110,9 +110,10 @@ def _under(path, directory):
 def test_the_devices_really_are_hidden_and_the_variable_is_what_opens_the_import():
     """Without the variable the import must still refuse, and refuse with the
     documented message. If this ever passes, the host has a visible GPU and every
-    other case in this file is vacuous."""
+    other case in this file is vacuous. A driverless host now gets the CPU training backend, so
+    opt out of it to reach the refusal."""
     _needs_the_cuda_branch()
-    out = _run("import unsloth")
+    out = _run("import unsloth", UNSLOTH_DISABLE_CPU_FALLBACK = "1")
     assert out.returncode != 0, "a device is visible; this file proves nothing here"
     assert "You need a GPU" in out.stderr, out.stderr[-3000:]
 
@@ -133,9 +134,8 @@ def test_no_unsloth_module_probes_a_device_that_is_not_there(_import_attempt_res
 
 
 def test_the_import_succeeds_on_a_driverless_host(_import_attempt_result):
-    """End to end. The chain runs through unsloth_zoo as well
-    (`compiler.py`, `loss_utils.py`), so an unsloth_zoo without those guards
-    leaves this unprovable rather than failed."""
+    """End to end; the chain also runs through unsloth_zoo (compiler.py, loss_utils.py), so an
+    unsloth_zoo without those guards leaves this unprovable rather than failed."""
     out = _import_attempt_result
     if out.returncode != 0 and _asked_a_missing_device(out.stderr):
         import unsloth_zoo

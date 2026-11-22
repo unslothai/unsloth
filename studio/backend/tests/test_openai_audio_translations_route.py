@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FastAPI round-trip tests for the OpenAI-compatible POST /v1/audio/translations.
-
-The sidecar call (_transcribe_audio_result) is faked, so these cover multipart wiring,
-model checks, response formats and error propagation without whisper or a GPU."""
+"""Round-trip tests for POST /v1/audio/translations with _transcribe_audio_result faked; no GPU."""
 
 from __future__ import annotations
 

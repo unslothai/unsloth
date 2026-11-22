@@ -40,7 +40,7 @@ import {
 } from "./runtime-registry";
 
 const PERSIST_KEY = "unsloth.studio.downloads";
-// Below version 2 an absent measuredTransfer marker is not evidence of anything, so the migration decides.
+// Below version 2 an absent measuredTransfer is not evidence, so the migration decides.
 const PERSIST_VERSION = 2;
 const MEASURED_TRANSFER_VERSION = 2;
 const PERSIST_THROTTLE_MS = 1_000;
@@ -86,11 +86,7 @@ function presentationOfPersisted(value: Record<string, unknown>) {
   };
 }
 
-/**
- * Inventory kind of a persisted job. Records written before the field carry `scopedFiles`, the same evidence
- * `startJob` classifies a fresh scoped request from: without it a scoped GGUF download comes back as a model
- * download, so its row changes format until backend adoption repairs it.
- */
+/** Legacy records lack the kind; `scopedFiles` classifies scoped GGUF downloads, as startJob does. */
 function inventoryKindOfPersisted(
   value: Record<string, unknown>,
   variant: string | null,
@@ -155,8 +151,8 @@ function sanitizePersistedJob(
       ? { checkpoint: value.checkpoint }
       : {}),
     ...inventoryKindOfPersisted(value, variant),
-    // A held reading must survive the reload: dropping the flag restores the stale downloadedBytes reading as measured, the "0 B left" the guard exists to stop.
-    // Absent means "never polled" only since the field existed, so a legacy record already carrying counters is read as held.
+    // A held reading must survive reload or the stale bytes read as measured ("0 B left").
+    // A legacy record already carrying counters is read as held.
     ...(typeof value.measuredTransfer === "boolean"
       ? { measuredTransfer: value.measuredTransfer }
       : legacy && nonNegativeNumber(value.downloadedBytes) > 0
@@ -170,6 +166,9 @@ function sanitizePersistedJob(
       : {}),
     ...(typeof value.downloadDir === "string" || value.downloadDir === null
       ? { downloadDir: value.downloadDir }
+      : {}),
+    ...(typeof value.engramPrecision === "string" && value.engramPrecision
+      ? { engramPrecision: value.engramPrecision }
       : {}),
   };
 }
@@ -225,15 +224,16 @@ function toPersistedJob(
       ? { measuredTransfer: job.measuredTransfer }
       : {}),
     ...(job.transport !== undefined ? { transport: job.transport } : {}),
-    // Alongside the transport, never instead of it: a fallback run reads as plain HTTP and the reloaded card offers Pause for a restart-only stop.
+    // Alongside the transport: a fallback run would otherwise reload offering Pause for a restart-only stop.
     ...(job.cancelTransport !== undefined
       ? { cancelTransport: job.cancelTransport }
       : {}),
     ...(job.downloadDir !== undefined ? { downloadDir: job.downloadDir } : {}),
+    ...(job.engramPrecision ? { engramPrecision: job.engramPrecision } : {}),
   };
 }
 
-// Mirrors the backend's normalize_repo_key (strip().lower()) for keys only; `repoId` keeps its casing for display and API calls.
+// Mirrors the backend's normalize_repo_key (strip().lower()); `repoId` keeps its casing for display.
 function normalizeRepoIdentity(repoId: string): string {
   return repoId.trim().toLowerCase();
 }
@@ -279,7 +279,7 @@ function collectCompletedInventoryHints(
 ): InventoryHint[] {
   return Object.values(jobs).flatMap((job) => {
     if (job.state !== "complete") return [];
-    // A dictation download is not a chat model arriving: a custom Whisper repo stays visible in chat for the hint's whole TTL until the backend scans its config.
+    // A dictation download is not a chat model arriving.
     if (job.external) return [];
     const kind = downloadInventoryHintKind(
       job.kind,
@@ -357,7 +357,7 @@ export const getState = useDownloadManagerStore.getState;
 export function hasActiveDownloadJob(
   jobs: Record<string, ManagedDownload>,
 ): boolean {
-  // External jobs count too, unlike in `partialize`: their STT sidecars go through the backend, so a quit kills those transfers.
+  // External jobs count too, unlike in `partialize`: quitting kills their backend STT transfers.
   return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state));
 }
 
@@ -616,6 +616,20 @@ export function scheduleRemoval(key: string, delayMs: number): void {
   runtimeRegistry.removalTimers.set(key, timer);
 }
 
+export function scheduleRetention(key: string, delayMs: number): void {
+  const existing = runtimeRegistry.removalTimers.get(key);
+  if (existing != null) clearRuntimeTimer(existing);
+  const startedAt = getState().jobs[key]?.startedAt;
+  const timer = window.setTimeout(() => {
+    runtimeRegistry.removalTimers.delete(key);
+    const job = getState().jobs[key];
+    if (job?.startedAt === startedAt && job.state === "error") {
+      patchJob(key, { retained: true });
+    }
+  }, delayMs);
+  runtimeRegistry.removalTimers.set(key, timer);
+}
+
 export function selectActiveJob(
   state: DownloadManagerState,
   kind: DownloadKind,
@@ -668,7 +682,7 @@ export function discardDeletedModelInventoryHints(
     return;
   }
   const job = getState().jobs[jobKeyOf(DOWNLOAD_KIND.MODEL, repoId, variant)];
-  // Every other hint site classifies a scoped `@variant` as a model download; hardcoding "gguf" leaves a scoped model download's hint behind, so the deleted row returns until it expires.
+  // Use the shared classifier: hardcoding "gguf" leaves a scoped model download's hint behind.
   const kind = downloadInventoryHintKind(
     DOWNLOAD_KIND.MODEL,
     variant,
@@ -716,7 +730,7 @@ export function setExpectedBytesForJob(
       job.expectedBytes,
       bytes,
     ),
-    // Measured against the old, smaller total, so wrong the moment the total grows.
+    // Measured against the old, smaller total.
     etaSeconds: 0,
     fraction:
       job.fraction > 0

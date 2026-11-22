@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 import threading
 import time
 import types
@@ -16,6 +17,14 @@ import types
 import pytest
 
 from core.inference import diffusion_segment as seg
+
+
+@pytest.fixture(autouse = True)
+def _bf16_weights(monkeypatch):
+    """Load and download the bf16 model.safetensors whatever card the test host has: the variant and lifecycle tests
+    here count its bytes and files. The pre-quantized choice is covered in test_diffusion_segment_quant.py."""
+    monkeypatch.setenv("UNSLOTH_SAM3_PRECISION", "bf16")
+    monkeypatch.delenv("UNSLOTH_SAM3_INT8_CONVROT", raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -29,9 +38,8 @@ def _no_other_gpu_owner(monkeypatch):
     """
     from core.inference import gpu_arbiter
 
-    # Every correlated global together: acquire_for() in later tests moves the account and epoch
-    # fields with the owner, so restoring only some of them would pair one claim's owner with
-    # another's account in the next test on this worker.
+    # Restore every correlated global together: acquire_for() moves owner, account and epoch as one,
+    # or later tests pair mismatched fields.
     for name, empty in (
         ("_owner", None),
         ("_owner_account", None),
@@ -304,13 +312,314 @@ def test_tiny_model_segments_at_source_size(tiny_sam3):
     assert mask.mode == "L" and mask.size == (64, 40)
     body = result.to_json()
     assert body["mask"].startswith("data:image/png;base64,")
-    assert set(body) == {"mask", "width", "height", "instances", "prompts", "device", "elapsed_ms"}
+    assert set(body) == {
+        "mask",
+        "width",
+        "height",
+        "instances",
+        "prompts",
+        "device",
+        "precision",
+        "elapsed_ms",
+    }
+    assert body["precision"] == "bf16"
     # No keep-alive: the weights left with the call.
     assert not segmenter.loaded
     # An unreachable threshold keeps nothing: an all-black mask, still at the source size.
     result = segmenter.segment(image, "sofa", threshold = 1.0, allow_gpu = False, path = tiny_sam3)
     assert result.instances == [] and Image.open(io.BytesIO(result.mask_png)).getbbox() is None
     assert torch.is_grad_enabled()
+
+
+def test_instance_masks_are_the_union_split_per_detection(tiny_sam3):
+    """The Detailer's per-detection masks: one plane per instance in ``instances`` order, whose OR at the source
+    size is exactly the union mask; a plain Find keeps none."""
+    import numpy as np
+    from PIL import Image
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    image = Image.new("RGB", (64, 40), (120, 80, 40))
+    plain = segmenter.segment(
+        image, "sofa, pillow:3", threshold = 0.0, allow_gpu = False, path = tiny_sam3
+    )
+    assert plain.instance_logits == []
+    result = segmenter.segment(
+        image,
+        "sofa, pillow:3",
+        threshold = 0.0,
+        allow_gpu = False,
+        path = tiny_sam3,
+        instance_masks = True,
+    )
+    assert len(result.instance_logits) == len(result.instances) == 4
+    assert all(p.device.type == "cpu" and p.ndim == 2 for p in result.instance_logits)
+    import torch
+
+    union = seg.union_mask(torch.stack(result.instance_logits), 40, 64).numpy()
+    png = np.array(Image.open(io.BytesIO(result.mask_png))) > 0
+    assert (union == png).all()
+    assert "instance_logits" not in result.to_json()
+
+
+def test_detailer_budget_moves_only_the_planes_it_keeps(tiny_sam3, monkeypatch):
+    """Detailer call (plane_filter + max_planes) keeps the instance-mask planes bit-identical,
+    filters before capping, and moves at most max_planes off-device."""
+    import torch
+    from PIL import Image
+
+    from core.inference import diffusion_detailer as det
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    image = Image.new("RGB", (64, 40), (120, 80, 40))
+    # A repeat with a larger cap after a smaller one: its extra planes are only picked on the second occurrence.
+    prompt = "pillow:1, sofa:2, pillow:4"
+    full = segmenter.segment(
+        image, prompt, threshold = 0.0, allow_gpu = False, path = tiny_sam3, instance_masks = True
+    )
+    assert len(full.instances) == 7
+    dropped = {full.instances[1].box, full.instances[4].box}
+
+    def keep(box):
+        return box not in dropped
+
+    # What the Detailer kept before: every plane moved, then filtered, then capped.
+    cap = 3
+    before = [p for p in zip(full.instances, full.instance_logits) if keep(p[0].box)][:cap]
+
+    def _no_union(*a, **k):
+        raise AssertionError("the Detailer's call built the union mask")
+
+    monkeypatch.setattr(seg, "union_mask", _no_union)
+    monkeypatch.setattr(seg, "mask_to_png", _no_union)
+    plane_shape = full.instance_logits[0].shape
+    real_float = torch.Tensor.float
+    moved = []
+
+    def _counting_float(self, *a, **k):
+        out = real_float(self, *a, **k)
+        if self.shape == plane_shape:  # a mask plane, not the (N, 4) boxes
+            moved.append(out)
+        return out
+
+    monkeypatch.setattr(torch.Tensor, "float", _counting_float)
+    budgeted = segmenter.segment(
+        image,
+        prompt,
+        threshold = 0.0,
+        allow_gpu = False,
+        path = tiny_sam3,
+        instance_masks = True,
+        plane_filter = keep,
+        max_planes = cap,
+    )
+    monkeypatch.setattr(torch.Tensor, "float", real_float)
+    assert budgeted.mask_png == b""
+    assert budgeted.instances == full.instances and budgeted.concepts == full.concepts
+    assert len(budgeted.instance_logits) == len(budgeted.instances)
+    after = [p for p in zip(budgeted.instances, budgeted.instance_logits) if p[1] is not None]
+    assert len(after) == cap and len(moved) <= cap
+    assert [i for i, _ in after] == [i for i, _ in before]
+    assert all(torch.equal(a, b) for (_, a), (_, b) in zip(after, before))
+    sized = [p for p in zip(budgeted.instances, budgeted.instance_logits) if keep(p[0].box)]
+    assert all(plane is not None for _, plane in sized[:cap])
+    assert det.MAX_DETECTIONS >= cap
+
+
+def _small_model():
+    """Stands in for a loaded Sam3Model: real parameters and a buffer, one of them tied (shared storage)."""
+    import torch
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.LayerNorm(8))
+    model.register_buffer("table", torch.arange(16.0))
+    model.register_buffer("tied", model.table)
+    return model
+
+
+def _gpu_loaded(
+    monkeypatch,
+    segmenter,
+    model,
+    path = "/sam3",
+):
+    """``segmenter`` as if ``model`` were loaded on cuda:0 (its tensors stay on the CPU), with the weights plan, the
+    cache release and the device sync faked, and the host buffer pageable (no CUDA on the test host)."""
+    import torch
+
+    plan = seg.WeightsPlan("int8", path, "/sam3/w.safetensors", None, "test")
+    monkeypatch.setattr(seg, "plan_weights", lambda *a, **k: plan)
+    monkeypatch.setattr(seg, "_free_device_cache", lambda device: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    monkeypatch.setenv(seg.ENV_PARK_PIN, "0")
+    segmenter._model, segmenter._tokenizer = model, "tok"
+    segmenter._path, segmenter.device, segmenter._dtype = path, "cuda:0", torch.bfloat16
+    segmenter._weights_key = (plan.model_dir, plan.weights, plan.dequantize)
+    segmenter.precision, segmenter.weights_file = "int8", "w.safetensors"
+    return plan
+
+
+def _weights(model):
+    return {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+
+@pytest.mark.parametrize(
+    "env,pin,fast",
+    [
+        (None, False, True),
+        ("", False, True),
+        ("0", False, False),
+        ("off", False, False),
+        ("1", True, False),
+    ],
+)
+def test_park_pins_with_registered_memory_by_default(monkeypatch, env, pin, fast):
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    if env is None:
+        monkeypatch.delenv(seg.ENV_PARK_PIN, raising = False)
+    else:
+        monkeypatch.setenv(seg.ENV_PARK_PIN, env)
+    monkeypatch.setattr(
+        "core.inference.host_pinning.host_pinning_allowed", lambda device = None: True
+    )
+    made = []
+
+    class _Recorder(seg._HostWeights):
+        def __init__(
+            self,
+            pin,
+            fast = False,
+        ):
+            made.append((pin, fast))
+            super().__init__(False)
+
+    monkeypatch.setattr(seg, "_HostWeights", _Recorder)
+    monkeypatch.setattr(segmenter, "_load_weights", lambda *a, **k: None)
+    assert segmenter.release("image generation", wait = True, park = True) is True
+    assert made == [(pin, fast)]
+
+
+def test_fast_park_pin_falls_back_to_pageable_not_the_torch_allocator(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "registered_pinned_empty", lambda nbytes: None)
+    allocs = []
+    real_empty = torch.empty
+
+    def _empty(*a, **k):
+        allocs.append(k.get("pin_memory", False))
+        return real_empty(*a, **{key: v for key, v in k.items() if key != "pin_memory"})
+
+    monkeypatch.setattr(torch, "empty", _empty)
+    host = seg._HostWeights(False, fast = True)
+    host.park(_small_model())
+    assert host.pin is False and allocs[0] is False
+
+
+def test_park_keeps_the_model_in_host_ram_and_the_next_load_reuses_it(monkeypatch):
+    """The render (or the Detailer) parks SAM 3 instead of dropping it: its weight storages are emptied, and the next
+    call on the same card gives the same module its exact bytes back with no second load."""
+    import torch
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    model = _small_model()
+    before = _weights(model)
+    _gpu_loaded(monkeypatch, segmenter, model)
+    loads = []
+    monkeypatch.setattr(segmenter, "_load_weights", lambda *a, **k: loads.append(1))
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained",
+        lambda *a, **k: loads.append("tok"),
+        raising = False,
+    )
+    assert segmenter.release("image generation", wait = True, park = True) is True
+    assert segmenter.parked and not segmenter.loaded and not segmenter.holds_vram()
+    # Every weight storage gave its bytes up (the tied buffer once); the host buffer holds them.
+    assert all(t.untyped_storage().nbytes() == 0 for t in model.state_dict().values())
+    host = segmenter._parked["host"]
+    # One device storage behind every weight, emptied; one host buffer holds them (each slot 256-byte aligned).
+    assert host.storage.nbytes() == 0
+    assert host.total >= sum(v.numel() * v.element_size() for k, v in before.items() if k != "tied")
+    # A render's release while only the parked copy exists keeps it.
+    assert segmenter.release("image generation", wait = True, park = True) is False
+    assert segmenter.parked
+    segmenter._load("/sam3", "cuda:0", torch.bfloat16)
+    assert loads == []
+    assert segmenter._model is model and segmenter.device == "cuda:0" and not segmenter.parked
+    assert (segmenter.precision, segmenter.weights_file) == ("int8", "w.safetensors")
+    after = _weights(model)
+    assert all(torch.equal(before[k], after[k]) for k in before)
+    assert model.tied.data_ptr() == model.table.data_ptr()
+    # The second park reuses the same host buffer (no new allocation) and round-trips the bytes again.
+    buffer = host.buffer
+    segmenter.release("detailer", wait = True, park = True)
+    assert segmenter._parked["host"] is host and host.buffer is buffer
+    assert all(t.untyped_storage().nbytes() == 0 for t in model.state_dict().values())
+    segmenter._load("/sam3", "cuda:0", torch.bfloat16)
+    assert all(torch.equal(before[k], v) for k, v in _weights(model).items())
+    segmenter._cancel_park_timer()
+
+
+def test_a_full_release_or_another_load_drops_the_parked_copy(monkeypatch):
+    import torch
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    segmenter.release("detailer", wait = True, park = True)
+    # Training start / a GPU handover: everything goes, the host copy too.
+    assert segmenter.release("training start", wait = True) is True
+    assert not segmenter.parked and not segmenter.loaded and segmenter._host is None
+
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    segmenter.release("detailer", wait = True, park = True)
+    fresh = []
+    monkeypatch.setattr(
+        segmenter,
+        "_load_weights",
+        lambda plan, path, device, dtype: (fresh.append(device) or _small_model(), plan),
+    )
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained", lambda *a, **k: "tok", raising = False
+    )
+    # The CPU fallback (fp32) is a different load: the parked GPU copy is dropped and the files are read.
+    segmenter._load("/sam3", "cpu", torch.float32)
+    assert fresh == ["cpu"] and not segmenter.parked
+
+
+def test_park_expires_and_a_cpu_model_is_never_parked(monkeypatch):
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    segmenter.park_seconds = 0.05
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    segmenter.release("detailer", wait = True, park = True)
+    deadline = time.time() + 5
+    while segmenter.parked and time.time() < deadline:
+        time.sleep(0.02)
+    assert not segmenter.parked
+
+    model = _small_model()
+    _gpu_loaded(monkeypatch, segmenter, model)
+    segmenter.device = "cpu"
+    assert segmenter.release("detailer", wait = True, park = True) is True
+    assert not segmenter.parked and not segmenter.loaded
+    assert model[0].weight.untyped_storage().nbytes() > 0
+
+
+def test_a_model_that_cannot_park_is_unloaded(monkeypatch):
+    import torch
+
+    class _Opaque(torch.Tensor):
+        """A tensor subclass with no __tensor_flatten__: nothing knows its storages."""
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    model = _small_model()
+    model.register_buffer("odd", torch.zeros(2).as_subclass(_Opaque))
+    _gpu_loaded(monkeypatch, segmenter, model)
+    assert segmenter.release("detailer", wait = True, park = True) is True
+    assert not segmenter.parked and not segmenter.loaded
+    # Nothing was emptied before the refusal.
+    assert model[0].weight.untyped_storage().nbytes() > 0
 
 
 def test_mask_planes_do_not_outlive_their_text(tiny_sam3, monkeypatch):
@@ -507,6 +816,41 @@ def test_choose_device_needs_room_on_the_card(monkeypatch):
     if getattr(torch.backends, "mps", None) is not None:
         monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
     assert seg.choose_device(True) == ("cpu", torch.float32)
+
+
+def test_choose_device_credits_the_allocator_cache_parking_leaves(monkeypatch):
+    # Reusable CUDA cache counts as free, so the next detection must not fall back to the CPU.
+    import contextlib
+
+    import torch
+
+    from core.inference import diffusion_block_graph as bg
+    from core.inference import diffusion_cuda_graph as cg
+
+    gib = 1024**3
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda ordinal: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda ordinal: (2 * gib, 24 * gib))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 12 * gib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 4 * gib)
+    monkeypatch.setattr(bg, "pool_bytes", lambda device = None: 0)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    monkeypatch.setattr(seg, "_resident_cuda_ordinal", lambda: 1)
+    monkeypatch.setattr(seg, "_other_owner_on", lambda ordinal: None)
+    if getattr(torch.backends, "mps", None) is not None:
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert seg._cuda_free_mib(1) == (10 * 1024, 24 * 1024)
+    assert seg.choose_device(True) == ("cuda:1", torch.bfloat16)
+    # A live CUDA graph pool is reserved but not reusable: without it the card really is short.
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 7 * gib)
+    assert seg._cuda_free_mib(1) == (3 * 1024, 24 * 1024)
+    assert seg.choose_device(True) == ("cpu", torch.float32)
+    # The credit never claims more than the card.
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 90 * gib)
+    assert seg._cuda_free_mib(1) == (24 * 1024, 24 * 1024)
 
 
 def test_choose_device_never_shares_a_card_another_owner_holds(monkeypatch):
@@ -790,69 +1134,251 @@ def test_sharded_override_needs_every_shard(tmp_path, monkeypatch):
 
 def test_status_shape(monkeypatch):
     monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.delenv(seg.ENV_VARIANT, raising = False)
     monkeypatch.setattr(seg, "_cached_snapshot", lambda *a, **k: None)
     body = seg.status()
-    assert body["repo"] == "facebook/sam3" and body["gated"] is True
+    assert body["variant"] == seg.DEFAULT_VARIANT == "sam3.1" and body["label"] == "SAM 3.1"
+    assert body["repo"] == seg.SAM31_REPO and body["gated"] is False
     assert body["downloaded"] is False and body["loaded"] is False
-    assert body["license_url"].startswith("https://huggingface.co/facebook/sam3")
-    assert body["size_bytes"] > 3_000_000_000
+    assert body["license_url"].startswith(f"https://huggingface.co/{seg.SAM31_REPO}")
+    assert 1_600_000_000 < body["size_bytes"] < 1_800_000_000
     assert {"downloading", "error", "bytes_total", "bytes_done"} <= set(body["download"])
 
 
-def test_the_download_names_only_what_sam3model_reads():
-    assert seg.SEGMENTER_SPEC.files == seg.SEGMENTER_FILES
-    assert "model.safetensors" in seg.SEGMENTER_FILES and "sam3.pt" not in seg.SEGMENTER_FILES
+# ── variants ────────────────────────────────────────────────────────────────────────────────────────────────────────
+_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def test_variant_table():
+    assert list(seg.SEGMENTER_VARIANTS) == ["sam3.1", "sam3"] and seg.DEFAULT_VARIANT == "sam3.1"
+    sam31, sam3 = seg.SEGMENTER_VARIANTS["sam3.1"], seg.SEGMENTER_VARIANTS["sam3"]
+    assert sam31.repo == seg.SAM31_REPO and re.fullmatch(r"[\w.-]+/[\w.-]+", sam31.repo)
+    assert sam31.gated is False and sam3.gated is True
+    assert (
+        sam3.repo == "facebook/sam3" and sam3.license_url == "https://huggingface.co/facebook/sam3"
+    )
+    # bf16 SAM 3.1 is half of the fp32 facebook/sam3 download.
+    assert 1_600_000_000 < sam31.size_bytes < 1_800_000_000 < 3_400_000_000 < sam3.size_bytes
+    for variant in seg.SEGMENTER_VARIANTS.values():
+        assert variant.id in seg.SEGMENTER_SPECS
+        spec = seg.SEGMENTER_SPECS[variant.id]
+        assert (spec.repo, spec.files, spec.revision) == (
+            variant.repo,
+            variant.files,
+            variant.revision,
+        )
+        assert "model.safetensors" in variant.files and "sam3.pt" not in variant.files
+        assert not any(name.endswith(".pt") for name in variant.files)
+        assert variant.license_url.startswith(f"https://huggingface.co/{variant.repo}")
+
+
+def test_pinned_revision_constants():
+    """facebook/sam3 and unsloth/sam3.1 (bf16 and pre-quantized files) are pinned to full commit shas, never a
+    short or partial one."""
+    assert _SHA.fullmatch(seg.SAM3_REVISION)
+    assert _SHA.fullmatch(seg.SAM31_REVISION)
+    assert _SHA.fullmatch(seg.SAM31_PREQUANT_REVISION)
+    for variant in seg.SEGMENTER_VARIANTS.values():
+        assert variant.revision == "main" or _SHA.fullmatch(variant.revision)
+        assert seg.pinned_revision(variant) == (
+            None if variant.revision == "main" else variant.revision
+        )
+    assert seg.pinned_revision(seg.SEGMENTER_VARIANTS["sam3"]) == seg.SAM3_REVISION
+
+
+def test_variant_env_choice(monkeypatch):
+    for value, expected in (
+        ("sam3", "sam3"),
+        (" SAM3.1 ", "sam3.1"),
+        ("facebook/sam3", "sam3"),
+        (seg.SAM31_REPO.upper(), "sam3.1"),
+        ("sam2", None),
+        ("", None),
+    ):
+        monkeypatch.setenv(seg.ENV_VARIANT, value)
+        assert seg.requested_variant_id() == expected, value
+
+
+def _cached(*ids):
+    return (
+        lambda model_id = seg.DEFAULT_VARIANT, **_k: f"/cache/{model_id}" if model_id in ids else None
+    )
+
+
+def test_active_variant_prefers_the_default_and_keeps_an_existing_sam3(monkeypatch):
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.delenv(seg.ENV_VARIANT, raising = False)
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached())
+    assert seg.active_variant().id == "sam3.1" and seg.model_dir() is None
+    # An install that already fetched facebook/sam3 keeps using it rather than downloading again.
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3"))
+    assert seg.active_variant().id == "sam3" and seg.model_dir() == "/cache/sam3"
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3", "sam3.1"))
+    assert seg.active_variant().id == "sam3.1" and seg.model_dir() == "/cache/sam3.1"
+    # The env choice wins even when only the other variant is on disk.
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3.1"))
+    assert seg.active_variant().id == "sam3" and seg.model_dir() is None
+
+
+def test_status_reports_gated_and_ungated_variants(monkeypatch):
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached())
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
+    body = seg.status()
+    assert (body["variant"], body["label"], body["repo"], body["gated"]) == (
+        "sam3",
+        "SAM 3",
+        "facebook/sam3",
+        True,
+    )
+    assert body["revision"] == seg.SAM3_REVISION and body["size_bytes"] == seg.SAM3_SIZE_BYTES
+    assert body["downloaded"] is False
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3.1")
+    body = seg.status()
+    assert (body["variant"], body["label"], body["repo"], body["gated"]) == (
+        "sam3.1",
+        "SAM 3.1",
+        seg.SAM31_REPO,
+        False,
+    )
+    assert body["size_bytes"] == seg.SAM31_SIZE_BYTES
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3.1"))
+    assert seg.status()["downloaded"] is True
+    # Unsupported installs still name the variant they would use, without touching the cache.
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: False)
+    monkeypatch.setattr(seg, "_cached_snapshot", lambda *a, **k: pytest.fail("cache read"))
+    body = seg.status()
+    assert body["variant"] == "sam3.1" and body["downloaded"] is False
+
+
+def test_override_still_wins_over_the_variant(tmp_path, monkeypatch):
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3", "sam3.1"))
+    for name in ("config.json", "model.safetensors", "tokenizer.json"):
+        (tmp_path / name).write_bytes(b"{}")
+    assert seg.model_dir() == str(tmp_path)
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    body = seg.status()
+    assert body["override"] is True and body["downloaded"] is True and body["variant"] == "sam3"
+    # With the override the cache is not consulted: a cached facebook/sam3 never relabels the override as SAM 3.
+    monkeypatch.delenv(seg.ENV_VARIANT)
+    monkeypatch.setattr(seg, "_cached_snapshot", lambda *a, **k: pytest.fail("cache read"))
+    body = seg.status()
+    assert (
+        body["variant"] == seg.DEFAULT_VARIANT
+        and body["gated"] is False
+        and body["downloaded"] is True
+    )
+    assert seg.active_variant().id == seg.DEFAULT_VARIANT
+
+
+def test_cached_snapshot_reads_the_variant_repo_at_its_pin(tmp_path, monkeypatch):
+    from core.inference import stt_sidecar
+
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    variant = seg.SEGMENTER_VARIANTS["sam3"]
+    snapshot = tmp_path / "models--facebook--sam3" / "snapshots" / variant.revision
+    snapshot.mkdir(parents = True)
+    for name in variant.files[:-1]:
+        (snapshot / name).write_text("{}")
+    assert seg._cached_snapshot("sam3", hub_cache = tmp_path) is None  # no weights yet
+    (snapshot / seg.SEGMENTER_WEIGHTS_FILE).write_bytes(b"")
+    assert seg._cached_snapshot("sam3", hub_cache = tmp_path) == str(snapshot)
+    # facebook/sam3's files are not unsloth/sam3.1's.
+    assert seg._cached_snapshot("sam3.1", hub_cache = tmp_path) is None
 
 
 def test_gated_download_error_names_the_license():
     class GatedRepoError(Exception):
         pass
 
+    sam3 = seg.SEGMENTER_VARIANTS["sam3"]
     message = seg.describe_download_error("sam3", GatedRepoError("403 Client Error"))
-    assert "license" in message and seg.SEGMENTER_LICENSE_URL in message
+    assert "license" in message and sam3.license_url in message and sam3.repo in message
     assert seg.describe_download_error("sam3", RuntimeError("disk full")) is None
+    # An ungated variant needs no token or license: a refusal there keeps the generic message.
+    assert seg.describe_download_error("sam3.1", GatedRepoError("401 Client Error")) is None
 
 
-def test_shared_download_state_uses_the_spec_file_list(monkeypatch, tmp_path):
-    """The pinned downloader fetches a spec's ``files`` when it has them (the dictation specs keep their pair)."""
+@pytest.mark.parametrize("variant_id", ["sam3.1", "sam3"])
+def test_download_fetches_the_variant_files_at_its_revision(monkeypatch, tmp_path, variant_id):
+    """The pinned downloader asks for exactly the variant's files, at its pinned commit (or main, recorded)."""
+    from huggingface_hub import hf_hub_url
+
     from core.inference import stt_mtmd_sidecar as mtmd
 
+    variant = seg.SEGMENTER_VARIANTS[variant_id]
+    resolved = seg.pinned_revision(variant) or "b" * 40
     seen = []
 
     class _Meta:
-        commit_hash = "a" * 40
+        commit_hash = resolved
         size = 10
         etag = "e"
 
     def _meta(url, token = None):
         seen.append(url)
-        raise RuntimeError("stop after the first lookup")
+        return _Meta()
+
+    def _stop(repo):
+        seen.append(("claim", repo))
+        raise RuntimeError("stop before the transfer")
 
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _meta)
+    monkeypatch.setattr(mtmd, "_claim_stt_repository", _stop)
     state = mtmd._MtmdDownloadState(
-        specs = {seg.SEGMENTER_ID: seg.SEGMENTER_SPEC},
+        specs = seg.SEGMENTER_SPECS,
         cached_paths = lambda *a, **k: None,
         resolve = seg._resolve_segmenter_id,
-        label = "SAM 3 segmenter",
-        describe_error = lambda model_id, error: "described",
+        label = "Mask segmenter",
+        describe_error = lambda model_id, error: f"described {model_id}",
     )
-    state._run(seg.SEGMENTER_ID, None, hub_cache = tmp_path)
-    assert seen and seen[0].endswith(seg.SEGMENTER_FILES[0])
-    assert state.status()["error"] == "described"
+    state._run(variant_id, None, hub_cache = tmp_path)
+    # The first lookup resolves the revision (the pin, else main), the rest are asked at that commit.
+    expected = [hf_hub_url(variant.repo, variant.files[0], revision = seg.pinned_revision(variant))]
+    expected += [hf_hub_url(variant.repo, name, revision = resolved) for name in variant.files[1:]]
+    if variant.revision == "main":
+        assert "/resolve/main/" in expected[0]
+    else:
+        assert all(f"/resolve/{variant.revision}/" in url for url in expected)
+    assert seen[:-1] == expected and seen[-1] == ("claim", variant.repo)
+    assert state.status()["error"] == f"described {variant_id}"
+
+
+def test_start_download_uses_the_active_variant(monkeypatch):
+    started = []
+
+    class _State:
+        def start(self, model_id, token):
+            started.append((model_id, token))
+            return "dl"
+
+    monkeypatch.setattr(seg, "_get_download_state", lambda: _State())
+    monkeypatch.setattr(seg, "active_variant", lambda: seg.SEGMENTER_VARIANTS["sam3"])
+    assert seg.start_download("hf_x") == "dl" and started[-1] == ("sam3", "hf_x")
+    assert seg.start_download(None, "sam3.1") == "dl" and started[-1] == ("sam3.1", None)
+    with pytest.raises(ValueError):
+        seg.start_download(None, "sam2")
 
 
 # ── GPU arbiter hooks ───────────────────────────────────────────────────────────────────────────────────────────────
 class _Recorder:
     def __init__(self):
         self.calls = []
+        self.parks = []
 
     def release_segmenter(
         self,
         reason,
         wait = False,
         handover = False,
+        park = False,
     ):
         self.calls.append((reason, wait))
+        self.parks.append(park)
         return True
 
 
@@ -924,8 +1450,7 @@ def test_a_release_timing_out_as_the_call_settles_still_unloads(monkeypatch):
     )
     worker.start()
     assert settled.wait(10)
-    # Timed out on a call that will not see the flag: the handover waits out the tail and unloads, never letting the
-    # next owner in beside the resident weights.
+    # Handover waits out the tail and unloads, so no new owner loads beside resident weights.
     assert segmenter.release("handover", wait = True, timeout = 0.05, handover = True) is True
     worker.join(10)
     assert not segmenter.loaded and segmenter._timer is None and segmenter._release_pending is False
@@ -1040,8 +1565,7 @@ def test_a_call_queued_across_a_handover_stays_off_the_card(tiny_sam3, monkeypat
         while not segmenter._run_lock.locked() and time.monotonic() < deadline:
             time.sleep(0.01)
         time.sleep(0.1)  # the queued call is now blocked on _run_lock
-        # The handover's release waits on the call in flight; it ends, the release takes and drops the lock, and the
-        # new owner goes on to register.
+        # Release waits on the in-flight call, then takes and drops the lock for the new owner.
         releaser = threading.Thread(
             target = lambda: segmenter.release("handover", wait = True, handover = handover)
         )
@@ -1201,7 +1725,7 @@ def test_no_find_starts_while_a_render_is_on_its_way(monkeypatch):
     )
     seen = []
 
-    async def _run(request):
+    async def _run(request, pinned_load = None):
         # The render released SAM 3 and has not taken the slot yet: a Find is refused, and frees the slot it took.
         with pytest.raises(seg.SegmenterBusyError, match = "generating"):
             seg.segment_image(_png_b64(), "sofa")
@@ -1223,6 +1747,8 @@ def test_a_render_releases_the_segmenter_first(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_segment", recorder)
     inference_routes._release_mask_segmenter_for_render()
     assert recorder.calls == [("image generation", True)]
+    # Parked in host RAM for the next Find or Detailer pass, not dropped.
+    assert recorder.parks == [True]
     # Never loaded: nothing is imported.
     monkeypatch.delitem(sys.modules, "core.inference.diffusion_segment")
     inference_routes._release_mask_segmenter_for_render()
@@ -1230,7 +1756,7 @@ def test_a_render_releases_the_segmenter_first(monkeypatch):
     source = inspect.getsource(inference_routes._generate_diffusion_image_run)
     release = source.index("_release_mask_segmenter_for_render")
     assert (
-        source.index("_enhance_generate_prompts(backend, request)")
+        source.index("_enhance_generate_prompts(backend, request")
         < release
         < source.index("for attempt in range(2)")
     )
@@ -1370,13 +1896,25 @@ def test_status_download_cancel_release_routes(client, monkeypatch):
     )
     assert http.get("/api/inference/images/segment/status").json()["downloaded"] is False
     monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.setattr(seg, "active_variant", lambda: seg.SEGMENTER_VARIANTS["sam3.1"])
     started = {}
     monkeypatch.setattr(
-        seg, "start_download", lambda token: started.setdefault("token", token) and "dl-1"
+        seg,
+        "start_download",
+        lambda token, variant: started.update(token = token, variant = variant) or "dl-1",
     )
     monkeypatch.setattr(seg, "download_status", lambda: {"downloading": True})
     r = http.post("/api/inference/images/segment/download", json = {"hf_token": "hf_x"})
-    assert r.status_code == 200 and r.json()["download_id"] == "dl-1" and started["token"] == "hf_x"
+    assert r.status_code == 200 and r.json()["download_id"] == "dl-1"
+    assert started == {"token": "hf_x", "variant": "sam3.1"}
+    body = r.json()
+    assert (body["variant"], body["repo"], body["gated"]) == ("sam3.1", seg.SAM31_REPO, False)
+    assert body["size_bytes"] == seg.SAM31_SIZE_BYTES and body["downloading"] is True
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, "/somewhere")
+    r = http.post("/api/inference/images/segment/download")
+    assert r.status_code == 409 and seg.SAM31_REPO in r.json()["detail"]
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE)
     monkeypatch.setattr(seg, "cancel_download", lambda: True)
     r = http.post("/api/inference/images/segment/cancel")
     assert r.status_code == 200 and r.json()["cancelled"] is True

@@ -45,10 +45,7 @@ def _locate(path: Path) -> tuple[Path, int]:
 
 
 def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
-    """The HF hub cache's volume, or None when it is the system disk or unreadable.
-
-    realpath first: a not-yet-created cache behind a symlink climbs the target's parents.
-    """
+    """Resolve symlinks first: a missing cache behind a symlink would climb the target's parents."""
     cache = _hub_cache() if cache is None else cache
     if cache is None:
         return None

@@ -18,9 +18,8 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
-import { FileAttachmentIcon, ViewIcon } from "@hugeicons/core-free-icons";
+import { FileAttachmentIcon, TextSelectionIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { TextSelectIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatUpdatedDate } from "./dataset-panel-helpers";
@@ -211,7 +210,7 @@ function SelectedDatasetCard({
   return (
     <div className="flex flex-col items-stretch gap-3 rounded-lg border bg-muted/40 px-3.5 py-3 @md/train-section:flex-row @md/train-section:items-center">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="shrink-0 rounded-md bg-indigo-500/10 p-1.5">
+        <div className="shrink-0 rounded-sm bg-indigo-500/10 p-1.5">
           <HugeiconsIcon
             icon={FileAttachmentIcon}
             className="size-4 text-indigo-500"
@@ -263,7 +262,7 @@ function SelectedDatasetCard({
             disabled={settings.isCheckingDataset}
             onClick={() => setTokenPreviewOpen(true)}
           >
-            <TextSelectIcon className="size-3.5" />
+            <HugeiconsIcon icon={TextSelectionIcon} className="size-3.5" />
             {t("studio.dataset.previewTokens")}
           </Button>
         ) : null}

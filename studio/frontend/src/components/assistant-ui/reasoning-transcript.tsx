@@ -361,6 +361,7 @@ function CodeGroup({
           disabled={streaming}
           language={code.language}
           source={() => code.source}
+          wrappable={false}
         />
       )}
       {first.first && (
@@ -394,8 +395,6 @@ const Fragment = memo(function Fragment({
 }: Omit<Props, "documents" | "indexKey"> & { fragment: ReasoningFragment }) {
   const root = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    // Continuation containers preserve indentation/numbering but must not paint
-    // another bullet for the same item. Later, real siblings retain their markers.
     const items: HTMLElement[] = [];
     let container: Element | null | undefined = root.current?.firstElementChild;
     for (
@@ -1125,7 +1124,20 @@ export function ReasoningTranscript({
             { root: scroll, rootMargin: "100% 0px" },
           );
     proximity?.observe(element);
+    // A capped Thinking box scrolls on its own, which the thread viewport never hears: mount what it reaches.
+    const tail = element.closest<HTMLElement>('[data-slot="reasoning-tail"]');
+    let tailFrame = 0;
+    const onTailScroll = () => {
+      if (tailFrame !== 0) return;
+      tailFrame = requestAnimationFrame(() => {
+        tailFrame = 0;
+        demandNow.current();
+      });
+    };
+    tail?.addEventListener("scroll", onTailScroll, { passive: true });
     return () => {
+      tail?.removeEventListener("scroll", onTailScroll);
+      if (tailFrame !== 0) cancelAnimationFrame(tailFrame);
       commitEdge.current = { before: () => {}, after: () => {} };
       observer.disconnect();
       proximity?.disconnect();

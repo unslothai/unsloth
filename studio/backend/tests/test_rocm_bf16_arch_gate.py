@@ -65,20 +65,20 @@ def _install(monkeypatch, torch, *, is_rocm):
 
 
 AMD_CASES = [
-    ("gfx1030", FP16),  # RX 6800/6900, RDNA2
-    ("gfx1031", FP16),  # RX 6700, RDNA2
-    ("gfx1010", FP16),  # RX 5700, RDNA1
-    ("gfx906:sramecc+:xnack-", FP16),  # MI50 / Radeon VII, suffix stripped
-    ("gfx900:xnack-", FP16),  # Vega 10
-    ("gfx803", FP16),  # Polaris
-    ("gfx908:sramecc+:xnack-", BF16),  # MI100, bf16 MFMA
-    ("gfx90a:sramecc+:xnack-", BF16),  # MI200
-    ("gfx942:sramecc+:xnack-", BF16),  # MI300
-    ("gfx950", BF16),  # MI350
-    ("gfx1100", BF16),  # RDNA3
-    ("gfx1151", BF16),  # Strix Halo
-    ("gfx1201", BF16),  # RDNA4
-    ("", BF16),  # no arch reported: torch's answer stands (previous behaviour)
+    ("gfx1030", FP16),
+    ("gfx1031", FP16),
+    ("gfx1010", FP16),
+    ("gfx906:sramecc+:xnack-", FP16),
+    ("gfx900:xnack-", FP16),
+    ("gfx803", FP16),
+    ("gfx908:sramecc+:xnack-", BF16),
+    ("gfx90a:sramecc+:xnack-", BF16),
+    ("gfx942:sramecc+:xnack-", BF16),
+    ("gfx950", BF16),
+    ("gfx1100", BF16),
+    ("gfx1151", BF16),
+    ("gfx1201", BF16),
+    ("", BF16),  # no arch reported: torch's answer stands
 ]
 
 
@@ -107,7 +107,6 @@ def test_training_native_bf16_by_arch(monkeypatch, arch, expected):
 
 @pytest.mark.parametrize("capability,expected", [((7, 5), FP16), ((8, 0), BF16), ((9, 0), BF16)])
 def test_nvidia_unchanged(monkeypatch, capability, expected):
-    # A stray gcnArchName must not matter: the arch gate is ROCm-only.
     torch = _fake_torch(hip = None, arch = "gfx1030", capability = capability)
     _install(monkeypatch, torch, is_rocm = False)
     assert dd.resolve_diffusion_device_target().dtype == expected
@@ -127,7 +126,6 @@ def test_env_override(monkeypatch):
 
 
 def test_selected_ordinal_arch_is_read(monkeypatch):
-    # Mixed box: card 0 is gfx1100, the selected card 1 is gfx1030 -> fp16 for card 1.
     from core.inference.rocm_bf16 import rocm_bf16_supported
 
     torch = _fake_torch(hip = "6.4")

@@ -1,16 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Precision folders of one Hub repo (``2-bit/``, ``6-bit/``, ``8bit/``), each a whole MLX
-checkpoint, offered and loaded as variants of that repo the way GGUF quants are."""
+"""MLX precision folders (2-bit/, 6-bit/, 8bit/) of one repo, offered as variants like GGUF quants."""
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
 from hub.utils.snapshot_filters import PRECISION_FOLDER_RE
+
+
+def looks_like_mlx_repo(model_id: str) -> bool:
+    """``mlx-community/`` or a whole ``MLX`` name segment; mirrored by the frontend's isMlxId."""
+    if model_id.lower().startswith("mlx-community/"):
+        return True
+    tail = model_id.split("/")[-1]
+    return "MLX" in re.split(r"[-_.]", tail.upper())
 
 
 def is_precision_folder(variant: Optional[str]) -> bool:

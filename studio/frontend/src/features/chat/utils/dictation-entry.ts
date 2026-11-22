@@ -43,13 +43,13 @@ export function currentDictationEntryMode(): DictationEntryMode {
 
 export function insecureDictationGuidance(mode: DictationEntryMode): string {
   return mode === "recording-file"
-    ? "Press Dictate to choose a recording on this connection, or open this Studio server through HTTPS to dictate live."
+    ? "Press Dictate to choose a recording on this connection, or open this Unsloth server through HTTPS to dictate live."
     : "Open Unsloth at http://127.0.0.1 (localhost) or over HTTPS to dictate.";
 }
 
 export type RecordingPickerPlatform = "android" | "ios" | "other";
 
-/** Presentation only; touch check because iPadOS can identify as Macintosh. */
+/** Touch check because iPadOS can identify as Macintosh. */
 export function recordingPickerPlatform({
   userAgent,
   platform = "",

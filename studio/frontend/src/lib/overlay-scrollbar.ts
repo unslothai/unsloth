@@ -1,26 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Publishes the pointer-active strip of an overlay scrollbar for right-edge
- * controls. Classic scrollbars take layout space, so their gutter stays unset.
- */
+/** Classic scrollbars take layout space, so their gutter stays unset. */
 
 export const OVERLAY_SCROLLBAR_GUTTER_VAR = "--overlay-scrollbar-gutter";
+/** For a padding-reserved gutter; unset for overlay scrollbars. */
+export const CLASSIC_SCROLLBAR_WIDTH_VAR = "--classic-scrollbar-width";
 
-/** Ignore widths too large to be a scrollbar. */
 const MAX_GUTTER_PX = 48;
 
 /** Re-measuring forces layout, so resize bursts are coalesced. */
 const RESIZE_SETTLE_MS = 200;
 
-/** `reliable` is false when the sweep could not read the DOM at all. */
-type Measurement = { gutter: number; reliable: boolean };
+type Measurement = { gutter: number; classic: number; reliable: boolean };
 
 function measure(doc: Document): Measurement {
   const body = doc.body;
   if (!body) {
-    return { gutter: 0, reliable: false };
+    return { gutter: 0, classic: 0, reliable: false };
   }
 
   const probe = doc.createElement("div");
@@ -33,8 +30,9 @@ function measure(doc: Document): Measurement {
   body.appendChild(probe);
 
   try {
-    if (probe.offsetWidth - probe.clientWidth > 0) {
-      return { gutter: 0, reliable: true };
+    const classic = probe.offsetWidth - probe.clientWidth;
+    if (classic > 0) {
+      return { gutter: 0, classic, reliable: true };
     }
 
     // Reveal scrollbars configured to appear only while scrolling.
@@ -47,25 +45,22 @@ function measure(doc: Document): Measurement {
     let gutter = 0;
     for (let offset = 1; offset <= MAX_GUTTER_PX; offset++) {
       if (doc.elementFromPoint(right - offset, y) === content) {
-        return { gutter, reliable: true };
+        return { gutter, classic: 0, reliable: true };
       }
       gutter = offset;
     }
-    // Hit testing unusable here: a width is indistinguishable from no scrollbar.
-    return { gutter: 0, reliable: false };
+    return { gutter: 0, classic: 0, reliable: false };
   } finally {
     body.removeChild(probe);
   }
 }
 
-/** Pointer-active scrollbar width, or 0 when nothing reliable was read. */
 export function measureOverlayScrollbarGutter(doc: Document): number {
   return measure(doc).gutter;
 }
 
-/** Publishes a positive gutter on the root element. */
 export function applyOverlayScrollbarGutter(doc: Document): number {
-  const { gutter, reliable } = measure(doc);
+  const { gutter, classic, reliable } = measure(doc);
   const root = doc.documentElement;
   if (!reliable) {
     // Keep the last good gutter: one unreadable sweep must not shift rows.
@@ -80,10 +75,14 @@ export function applyOverlayScrollbarGutter(doc: Document): number {
   } else {
     root.style.removeProperty(OVERLAY_SCROLLBAR_GUTTER_VAR);
   }
+  if (classic > 0) {
+    root.style.setProperty(CLASSIC_SCROLLBAR_WIDTH_VAR, `${classic}px`);
+  } else {
+    root.style.removeProperty(CLASSIC_SCROLLBAR_WIDTH_VAR);
+  }
   return gutter;
 }
 
-/** Re-measures after resizing, refocusing, or returning to the page. */
 export function watchOverlayScrollbarGutter(win: Window): () => void {
   const doc = win.document;
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;

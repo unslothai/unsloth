@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Qwen3-14B-Base
-# Based on Qwen3_(14B)-Alpaca.ipynb
 # Also applies to: unsloth/Qwen3-14B-Base, Qwen/Qwen3-14B-Base, unsloth/Qwen3-14B-Base-bnb-4bit
-# added inference parameters from Ollama
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

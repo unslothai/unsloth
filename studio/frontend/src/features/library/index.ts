@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
+export { createLibraryComposerAttachment } from "./composer-attachment";
+export { LibraryAttachmentTargetContext } from "./composer-attachment-target";
 export { LIBRARY_CHATS_PREFS_STORAGE_KEY } from "./chats/prefs-store";
 export { useLibraryFavorite, useLibraryFavorites, useLibraryFavoritesStore } from "./favorites-store";
 export { ConfirmDeleteDialog } from "./components/library-dialogs";
@@ -28,6 +30,9 @@ export {
   type LibraryLocation,
   addLibraryItemToProject,
   errorMessage,
+  getLibrary,
+  libraryItemFile,
+  LibraryFileTooLarge,
   getLibraryLocations,
   moveLibraryLocation,
   revealLibraryLocation,

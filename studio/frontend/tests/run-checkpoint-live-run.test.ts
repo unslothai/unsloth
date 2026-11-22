@@ -43,7 +43,7 @@ test("checkpoints are skipped only while this tab streams the thread's durable r
   const provider = readSrc("features/chat/runtime-provider.tsx");
   assert.match(
     provider,
-    /\(threadId\) =>\s*threadHasLiveGenerationRun\(threadId\)\s*\?\s*Promise\.resolve\(\)\s*:\s*queueSaveRef\.current\(threadId\),/,
+    /\(threadId\) =>\s*threadHasLiveGenerationRun\(threadId\)\s*\?\s*Promise\.resolve\(\)\s*:\s*queueSaveRef\.current\(threadId, true\),/,
   );
   assert.match(
     provider,

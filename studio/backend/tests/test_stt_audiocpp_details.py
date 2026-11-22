@@ -4,8 +4,10 @@
 """The audio.cpp STT sidecar against a fake ``audiocpp_server`` that records requests."""
 
 import json
+import math
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -261,6 +263,24 @@ def test_other_families_keep_the_bare_code(fake, side, source):
     assert [body["language"] for body in fake.bodies] == ["ja", "en", "en"]
 
 
+@pytest.mark.parametrize("duration, timeout", [(2.0, 600.0), (300.0, 600.0), (7200.0, 14400.0)])
+def test_the_transcribe_timeout_grows_with_long_audio(
+    fake, side, source, monkeypatch, duration, timeout
+):
+    seen = []
+    real = srv.AudioCppServer.post_json
+
+    def post_json(self, path, payload, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return real(self, path, payload, **kwargs)
+
+    monkeypatch.setattr(srv.AudioCppServer, "post_json", post_json)
+    monkeypatch.setattr(stt, "_wav_rate_and_duration", lambda _path: (16000, duration))
+    side.transcribe_path(source, QWEN3, None)
+    assert stt._transcribe_timeout(duration) == timeout
+    assert seen == [timeout]
+
+
 def test_parakeet_switches_to_bounded_windows_on_long_audio(fake, side, source):
     side.transcribe_path(source, PARAKEET, None)
     (start,) = fake.starts
@@ -278,16 +298,50 @@ def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side,
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
     (body,) = fake.bodies
     assert body["audio"] == str(source) and "options" not in body
-    assert source.exists()  # the caller's file is not ours to remove
+    assert source.exists()
     assert result["text"] == "Hello there. General Kenobi." and result["duration"] == 2.0
     assert result["speakers"] == ["S01", "S02"]
     assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [
         (0.12, 1.0, "S01"),
         (1.1, 2.0, "S02"),
     ]
-    # MOSS loads without the aligner whatever the request asked.
     assert ALIGNER_KEY not in json.dumps(fake.starts[0]["entry"])
     assert side.transcribe(wav_bytes(), MOSS, None)["text"] == "Hello there. General Kenobi."
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        (60.0, None),
+        (420.0, None),
+        (900.0, 10800),
+        (960.0, 11520),
+        (7200.0, 131_072 - 97_200 - 512),
+        (9700.0, None),  # the audio alone fills the context
+    ],
+)
+def test_moss_max_tokens_follow_the_clip_and_stay_inside_the_context(
+    fake, side, source, monkeypatch, duration, expected
+):
+    monkeypatch.setattr(stt, "_wav_rate_and_duration", lambda _path: (16000, duration))
+    side.transcribe_path(source, MOSS, None, timestamps = True)
+    body = fake.bodies[-1]
+    if expected is None:
+        assert "options" not in body
+    else:
+        assert body["options"] == {"max_tokens": expected}
+        prompt = math.ceil(duration * 12.5) + duration // 5 * 5
+        assert prompt + expected <= 131_072
+
+
+def test_moss_budget_is_left_out_when_a_strict_spec_has_no_max_tokens(fake):
+    entry = stt.resolve_audio_cpp_stt_model(MOSS)
+    assert stt._request_options(entry, False, 900.0) == {"max_tokens": 10800}
+    strict = replace(entry, request_keys = frozenset({"instruct"}))
+    assert stt._request_options(strict, False, 900.0) == {}
+    qwen3 = stt.resolve_audio_cpp_stt_model(QWEN3)
+    assert stt._request_options(qwen3, False, 900.0) == {}
+    assert stt._request_options(qwen3, True, 900.0) == stt._TIMESTAMP_OPTIONS
 
 
 def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hub, monkeypatch):
@@ -302,7 +356,6 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         network = True,
     ):
         if network:
-            # Stands in for the Hub listing: the files arrive with the download below.
             _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
         return real_resolve(model, companion, hf_token, network = False)
 
@@ -582,3 +635,18 @@ def test_training_moves_the_server_only_when_its_placement_changes(
         training[0] = active
         side.transcribe(wav_bytes(), QWEN3, "en")
     assert len(fake.starts) == (3 if gpu_visible else 1)
+
+
+def test_a_device_less_load_follows_the_saved_voice_setting(fake, side, monkeypatch, tmp_path):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+    monkeypatch.delenv("UNSLOTH_AUDIO_DEVICE", raising = False)
+    studio_db.upsert_app_settings({"stt_device": "cpu"}, read_back = False)
+    side.transcribe(wav_bytes(), QWEN3, "en")
+    assert side.device == "cpu"
+    # None keeps the running server: saving Auto later does not restart it under a caller.
+    studio_db.upsert_app_settings({"stt_device": "auto"}, read_back = False)
+    side.transcribe(wav_bytes(), QWEN3, "en")
+    assert side.device == "cpu" and len(fake.starts) == 1

@@ -3,7 +3,7 @@
 
 """Pydantic schemas for the Authentication API."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -98,8 +98,20 @@ class CreateApiKeyRequest(BaseModel):
 
     name: str = Field(..., description = "Human-readable label for this key")
     expires_in_days: Optional[int] = Field(
-        None, description = "Number of days until the key expires (None = never)"
+        None,
+        ge = 1,
+        le = 36500,
+        description = "Number of days until the key expires (None = never)",
     )
+    access: Literal["full", "inference"] = Field(
+        "full",
+        description = "inference: only the chat, completions, embeddings and model list endpoints; "
+        "no model loads, downloads or settings",
+    )
+
+
+class UpdateApiKeyRequest(BaseModel):
+    access: Literal["full", "inference"]
 
 
 class ApiKeyResponse(BaseModel):
@@ -112,6 +124,9 @@ class ApiKeyResponse(BaseModel):
     last_used_at: Optional[str] = None
     expires_at: Optional[str] = None
     is_active: bool
+    # Read-only: set by the server at mint ("unsloth_start" for the desktop `unsloth start` key).
+    purpose: Optional[str] = None
+    access: Literal["full", "inference"] = "full"
 
 
 class CreateApiKeyResponse(BaseModel):
@@ -160,6 +175,15 @@ class AccountResponse(BaseModel):
     created_at: str
     setup_code_pending: bool
     model_allowlist: Optional[list[str]] = None
+    login_alias: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class OwnerLoginAliasRequest(BaseModel):
+    login_alias: Optional[str] = Field(
+        None, description = 'Owner sign-in name; null, empty or "unsloth" clears it'
+    )
 
 
 class AccountListResponse(BaseModel):

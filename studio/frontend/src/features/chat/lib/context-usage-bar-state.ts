@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// its own plain module so the node suite can drive it: the component is JSX the runner cannot import
+// Plain module so the node suite can import it.
 
 export const formatTokenCount = (n: number): string => {
+  if (n >= 999_950) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 };
@@ -12,36 +13,89 @@ export const formatTokenCountFull = (n: number): string => {
   return n.toLocaleString();
 };
 
+export function getSeverityColor(percent: number): {
+  bar: string;
+  stroke: string;
+  text: string;
+} {
+  if (percent > 85) {
+    return { bar: "bg-red-500", stroke: "stroke-red-500", text: "text-red-500" };
+  }
+  if (percent > 65) {
+    return { bar: "bg-amber-500", stroke: "stroke-amber-500", text: "text-amber-500" };
+  }
+  return {
+    bar: "bg-control-accent",
+    stroke: "stroke-control-accent",
+    text: "text-control-accent",
+  };
+}
+
 export type ContextUsageBarInput = {
-  // null when nothing has been counted yet
   used?: number | null;
-  // null on external providers, whose context window is unknown
   total?: number | null;
   cached?: number;
-  // anthropic-only (billed at the write premium)
   cacheWrites?: number;
   compactionCount?: number;
   promptTokens?: number;
   completionTokens?: number;
-  // MLX keeps generating past the window instead of stopping there, so it needs the
-  // opposite advice from llama.cpp once a conversation outgrows the limit.
+  // MLX keeps generating past the window, so it needs different advice than llama.cpp.
   isMlx?: boolean;
   contextUnboundedWhenBatched?: boolean;
   parallelSlots?: number | null;
-  /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
   estimated?: boolean;
+  /** A cloud model: the window is the provider's, so the local limit advice does not apply. */
+  cloud?: boolean;
+  /** Tokens at which this chat auto-compacts; marked on the ring and named in the tooltip. */
+  compactAt?: number | null;
 };
 
+export type ContextUsageRows = Pick<
+  ContextUsageBarInput,
+  "promptTokens" | "completionTokens" | "cached" | "cacheWrites"
+>;
+
+export function contextUsageRows(
+  usage:
+    | {
+        promptTokens: number;
+        completionTokens: number;
+        contextTokens?: number;
+        cachedTokens?: number;
+        cacheWriteTokens?: number;
+      }
+    | null
+    | undefined,
+  summedPrompt: boolean,
+): ContextUsageRows {
+  if (!usage) return {};
+  const context = usage.contextTokens;
+  if (context === undefined) {
+    return {
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      cached: usage.cachedTokens,
+      cacheWrites: usage.cacheWriteTokens,
+    };
+  }
+  const describesContext = summedPrompt
+    ? context === usage.promptTokens + usage.completionTokens
+    : context >= usage.promptTokens;
+  if (!describesContext) return {};
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: context - usage.promptTokens,
+    cached: usage.cachedTokens,
+    cacheWrites: usage.cacheWriteTokens,
+  };
+}
+
 /**
- * Which limit warning the tooltip carries, if any.
- *
- * llama.cpp stops generating at the window, so its advice is to raise the limit before
- * hitting it. MLX generates straight past instead, so the same wording would promise a
- * stop that never comes -- and once a conversation is over the window there is something
- * different to say about it. Read from the unclamped ratio: the reported percent caps at
- * 100%, which is exactly the state being reported on.
+ * Which limit warning the tooltip carries: llama.cpp stops at the window, so its advice is to raise
+ * the limit first; MLX runs past it, so no stop is promised, and an over-window conversation gets
+ * other wording; read the unclamped ratio, since the reported percent caps at 100%.
  */
 export type ContextLimitAdvice =
   | "none"
@@ -63,10 +117,7 @@ function contextLimitAdvice(
   if ((used / total) * 100 <= 85) return "none";
   // Budget wins over contextEnforced: the cache is unbounded but requests are refused.
   if (budget) return "mlx-refuses-past-limit";
-  // A window the backend confirmed does not bound the cache is not a limit at all:
-  // nothing rotates and nothing stops, so neither of the other two is true of it. An
-  // unjudged MLX window says the same thing operationally: the probe could not build a
-  // cache, so none was bounded and it grows exactly as a confirmed false one does.
+  // An unbounded (or unjudged MLX) cache is not a limit: nothing rotates or stops.
   if (
     enforced === false ||
     (isMlx && enforced == null) ||
@@ -80,19 +131,28 @@ function contextLimitAdvice(
 
 export type ContextUsageBarState = {
   face: string;
-  // shown instead of the ring when the header is too narrow for the face; null shows the ring
   compactFace: string | null;
   label: string;
   totalRowName: string;
   totalRowValue: string;
-  // null whenever no ratio can be stated, which also withholds the fill and the 85% warning
   percent: number | null;
-  // whether any per-turn row renders, so the tooltip rule never floats above nothing
   hasUsageDetails: boolean;
   advice: ContextLimitAdvice;
+  /** Where on the ring compaction happens, as a share of the window; null when not drawn. */
+  compactMarkPercent: number | null;
 };
 
-// a counted zero and an uncounted chat differ: an unmeasured prompt must not read as 0% of the window
+/** The compaction point as a share of the window, when both are known and it falls inside. */
+export function compactMarkPercent(
+  compactAt: number | null | undefined,
+  total: number | null | undefined,
+): number | null {
+  if (typeof compactAt !== "number" || !(compactAt > 0)) return null;
+  if (typeof total !== "number" || !(total > 0) || compactAt >= total) return null;
+  return (compactAt / total) * 100;
+}
+
+// An unmeasured prompt must not read as 0% of the window.
 export function deriveContextUsageBar({
   used,
   total,
@@ -106,12 +166,50 @@ export function deriveContextUsageBar({
   parallelSlots,
   contextBudget,
   estimated,
+  cloud,
+  compactAt,
 }: ContextUsageBarInput): ContextUsageBarState | null {
+  const state = deriveUsageFace({
+    used,
+    total,
+    cached,
+    cacheWrites,
+    promptTokens,
+    completionTokens,
+    isMlx,
+    contextEnforced,
+    contextUnboundedWhenBatched,
+    parallelSlots,
+    contextBudget,
+    estimated,
+  });
+  if (!state) return null;
+  return {
+    ...state,
+    // A provider's window is not a local setting: nothing here stops at it or can raise it.
+    advice: cloud ? "none" : state.advice,
+    compactMarkPercent: compactMarkPercent(compactAt, total),
+  };
+}
+
+function deriveUsageFace({
+  used,
+  total,
+  cached,
+  cacheWrites,
+  promptTokens,
+  completionTokens,
+  isMlx,
+  contextEnforced,
+  contextUnboundedWhenBatched,
+  parallelSlots,
+  contextBudget,
+  estimated,
+}: ContextUsageBarInput): Omit<ContextUsageBarState, "compactMarkPercent"> | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
-    typeof used === "number" && Number.isFinite(used) ? used : null;
+    typeof used === "number" && Number.isFinite(used) && used >= 0 ? used : null;
 
-  // no per-turn rows and no limit advice: neither is known from a guess
   if (estimated && usedTokens !== null && usedTokens > 0) {
     const approx = `~${formatTokenCount(usedTokens)}`;
     const approxFull = `~${formatTokenCountFull(usedTokens)}`;
@@ -145,7 +243,6 @@ export function deriveContextUsageBar({
     (cacheWrites !== undefined && cacheWrites > 0);
 
   if (limit === null) {
-    // nothing to show: no window to name, and no counted usage to report against one
     if (usedTokens === null) return null;
     if (usedTokens <= 0 && !hasUsageDetails) return null;
     return {

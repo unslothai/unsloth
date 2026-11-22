@@ -2,7 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import ast
+import builtins
 import contextlib
+import dis
 import gc
 import json
 import os
@@ -120,6 +122,10 @@ def saving(monkeypatch, tmp_path):
         def create_repo(self, **kwargs):
             records["repos"].append(kwargs)
 
+        def repo_info(self, **kwargs):
+            # Visibility of an already existing repo; None means it is not known to be public.
+            return SimpleNamespace(private = records.get("existing_repo_private"))
+
         def create_branch(self, **kwargs):
             records["branches"].append(kwargs)
             records["revisions"].add(kwargs["branch"])
@@ -146,6 +152,7 @@ def saving(monkeypatch, tmp_path):
 
     env = dict(
         os = os,
+        json = json,
         sys = sys,
         gc = gc,
         Path = Path,
@@ -175,6 +182,7 @@ def saving(monkeypatch, tmp_path):
         _mtp_head_tensor_names = lambda model: [],
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
+        _unmerge_flags_on_error = lambda streamed: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
         logger = SimpleNamespace(warning_once = lambda *args: None),
         # save_method="lora" hands off to the adapter save; record the handover.
@@ -195,6 +203,14 @@ def saving(monkeypatch, tmp_path):
         "_refuse_unsaveable_text_core",
         "_cast_state_dict_16bit",
         "_requests_float32",
+        "_collect_garbage",
+        # Real code: a non-LFM3-Audio save leaves config.json alone and pushes nothing extra.
+        "_base_config_dicts",
+        "_restore_lfm3_audio_release_config",
+        "_release_layout_for_merged_save",
+        "_push_lfm3_audio_release_config",
+        # Real code: a private push into an existing public repo is refused before any upload.
+        "_refuse_private_push_to_public_repo",
     }
     nodes = []
     for node in tree.body:
@@ -213,8 +229,52 @@ def saving(monkeypatch, tmp_path):
         ],
         type_ignores = [],
     )
-    exec(compile(ast.fix_missing_locations(module), str(source), "exec"), env)
+    code = compile(ast.fix_missing_locations(module), str(source), "exec")
+    exec(code, env)
+    # A save.py helper these functions start calling would otherwise fail as a bare NameError deep in
+    # some test. Names only reached on branches the tests never take stay unstubbed on purpose.
+    for name in _loaded_globals(code):
+        if name not in env and not hasattr(builtins, name):
+            env[name] = _NotExtracted(name)
     return env, records, artifacts
+
+
+class _NotExtracted:
+    def __init__(self, name):
+        self._name = name
+
+    def _fail(self, *args, **kwargs):
+        raise AssertionError(
+            f"save.py reached {self._name!r}, which the saving fixture neither extracts nor stubs; "
+            "add it to the fixture's `names` (real code) or to `env` (a stub)."
+        )
+
+    __call__ = _fail
+    __enter__ = _fail
+
+    def __getattr__(self, attribute):
+        self._fail()
+
+
+def _loaded_globals(code):
+    """Every global name the code object, or any function nested in it, reads."""
+    names = {
+        i.argval for i in dis.get_instructions(code) if i.opname in ("LOAD_GLOBAL", "LOAD_NAME")
+    }
+    for const in code.co_consts:
+        if hasattr(const, "co_code"):
+            names |= _loaded_globals(const)
+    return names
+
+
+def test_a_private_merged_push_into_an_existing_public_repo_uploads_nothing(saving):
+    env, records, _ = saving
+    records["existing_repo_private"] = False
+    with pytest.raises(RuntimeError, match = "already exists and is public"):
+        env["unsloth_generic_push_to_hub_merged"](
+            PeftModel(), "owner/model", token = "explicit-fixture", private = True, revision = "rc"
+        )
+    assert records["uploads"] == []
 
 
 @pytest.mark.parametrize(
@@ -284,6 +344,19 @@ def test_default_push_keeps_streaming_merger(saving):
     assert records["repos"] == []
 
 
+def test_a_merged_push_of_another_model_resolves_no_extra_repo_id(saving):
+    env, records, _ = saving
+
+    def no_whoami(*args):
+        raise AssertionError("a non LFM3-Audio merged push resolved the repo id again")
+
+    env["_determine_username"] = no_whoami
+    env["unsloth_generic_save"](
+        PeftModel(), None, "model", push_to_hub = True, save_method = "merged_16bit"
+    )
+    assert records["merges"][0]["push_to_hub"] is True
+
+
 def test_non_main_rank_does_not_create_or_upload(saving):
     env, records, _ = saving
     env["unsloth_generic_save"](
@@ -342,6 +415,19 @@ def test_unforced_4bit_rejection_does_not_create_hub_resources(saving, options):
     with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
         env["unsloth_generic_push_to_hub_merged"](
             PeftModel(), "owner/new-model", save_method = "merged_4bit", **options
+        )
+    assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
+
+
+@pytest.mark.parametrize("options", [{"revision": "candidate"}, {"create_pr": True}, {}])
+def test_in_memory_reap_rejection_does_not_create_hub_resources(saving, options):
+    # A raw-PEFT wrap of a model REAP pruned without save_directory: the base on disk is unpruned.
+    env, records, _ = saving
+    model = PeftModel()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    with pytest.raises(RuntimeError, match = "pruned in memory only"):
+        env["unsloth_generic_push_to_hub_merged"](
+            model, "owner/new-model", save_method = "merged_16bit", **options
         )
     assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
 
@@ -716,3 +802,69 @@ def test_merged_dtype_refuses_an_older_zoo(saving):
         )
     # Refused before the base model is downloaded into the Hub cache.
     assert records["merges"] == [] and prewarmed == []
+
+
+def test_adapter_push_against_a_local_reap_base_uploads_nothing(saving, tmp_path):
+    # reap_prune(..., save_directory) then LoRA: the adapter's base is a folder only this machine has.
+    env, records, _ = saving
+    model = PeftModel()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    model._unsloth_reap_saved = str(tmp_path)
+    with pytest.raises(RuntimeError, match = "local folder"):
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/adapter", save_method = "lora")
+    assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
+
+
+def test_adapter_push_against_a_moved_local_reap_base_uploads_nothing(saving, tmp_path):
+    # The pruned base folder was moved or deleted after LoRA setup: the adapter still names it.
+    env, records, _ = saving
+    model = PeftModel()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    model._unsloth_reap_saved = str(tmp_path / "moved_away")
+    with pytest.raises(RuntimeError, match = "local folder"):
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/adapter", save_method = "lora")
+    assert records["repos"] == records["branches"] == records["merges"] == records["uploads"] == []
+
+
+def test_adapter_push_after_reloading_a_local_reap_checkpoint_uploads_nothing(saving, tmp_path):
+    # reap_prune(..., save_directory) then a fresh process loads that folder: no in-process marker,
+    # but the provenance file reap_prune wrote there marks the adapter's base as a local REAP model.
+    env, records, _ = saving
+    (tmp_path / "unsloth_reap.json").write_text('{"kept_experts": {}}')
+    model = PeftModel()
+    model.peft_config = {"default": SimpleNamespace(base_model_name_or_path = str(tmp_path))}
+    with pytest.raises(RuntimeError, match = "REAP pruned model saved to a local folder"):
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/adapter", save_method = "lora")
+    assert (
+        records["repos"]
+        == records["branches"]
+        == records["uploads"]
+        == records["adapter_saves"]
+        == []
+    )
+
+
+def test_adapter_push_on_an_ordinary_local_base_is_not_refused(saving, tmp_path):
+    env, records, _ = saving
+    model = PeftModel()
+    model.peft_config = {"default": SimpleNamespace(base_model_name_or_path = str(tmp_path))}
+    env["unsloth_generic_push_to_hub_merged"](model, "owner/adapter", save_method = "lora")
+    assert len(records["adapter_saves"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["compressed", "torchao"])
+def test_in_memory_reap_is_refused_before_quantized_export_dispatch(saving, kind):
+    # Those export helpers install their runtime and create the Hub repo before any nested save runs.
+    env, records, _ = saving
+    called = []
+    if kind == "compressed":
+        env["_normalize_compressed_method"] = lambda method: ("FP8_DYNAMIC", False, "FP8")
+        env["_unsloth_save_compressed_tensors"] = lambda **kwargs: called.append(kwargs)
+    else:
+        env["_normalize_torchao_method"] = lambda method: ("int8", "INT8")
+        env["_unsloth_save_torchao"] = lambda **kwargs: called.append(kwargs)
+    model = PeftModel()
+    model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    with pytest.raises(RuntimeError, match = "pruned in memory only"):
+        env["unsloth_generic_push_to_hub_merged"](model, "owner/new-model", save_method = "fp8")
+    assert called == [] and records["repos"] == []

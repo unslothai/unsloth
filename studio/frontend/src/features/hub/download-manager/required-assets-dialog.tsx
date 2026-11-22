@@ -13,6 +13,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Spinner } from "@/components/ui/spinner";
 import {
   additionalAssetDownloads,
   assetLabel,
@@ -34,7 +35,6 @@ export function RequiredAssetsDownloadDialog({
   onCancel: () => void;
   modelLabel?: string;
 }) {
-  // Keep one portal/content mounted through the metadata check.
   return (
     <AlertDialog
       open={checking || entries !== null}
@@ -98,7 +98,7 @@ function DownloadChoice({
             role="status"
             className="absolute inset-0 flex items-center justify-center gap-3 text-muted-foreground"
           >
-            <span className="size-4 animate-spin rounded-full border-2 border-current border-r-transparent" />
+            <Spinner />
             Checking required files…
           </div>
         )}
@@ -174,6 +174,7 @@ function DownloadChoice({
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
         <AlertDialogAction
+          variant="dark"
           disabled={checking}
           className="w-full sm:w-32"
           onClick={(e) => {

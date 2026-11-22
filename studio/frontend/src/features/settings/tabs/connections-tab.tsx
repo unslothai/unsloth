@@ -8,7 +8,6 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 export function ConnectionsTab() {
   const providers = useExternalProvidersStore((s) => s.providers);
   const setProviders = useExternalProvidersStore((s) => s.setProviders);
-  // Set when the picker's Connected group gear asked for one connection by name.
   const connectionRequested = useSettingsDialogStore(
     (s) => s.connectionRequested,
   );

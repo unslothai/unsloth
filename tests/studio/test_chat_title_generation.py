@@ -103,7 +103,7 @@ def test_auto_title_disabled_uses_deterministic_user_text_fallback():
 def test_reply_stamps_the_checkpoint_its_request_captured():
     source = " ".join(CHAT_ADAPTER_TS.read_text(encoding = "utf-8").split())
 
-    assert source.count("modelId: params.checkpoint,") == 2
+    assert source.count("modelId: params.checkpoint,") == 3
     assert "modelId: useChatRuntimeStore.getState().params" not in source
     assert "const externalRouting = resolveExternalRouting(params.checkpoint);" in source
     assert (

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Accept an sk-unsloth key in ``x-api-key``, the header Anthropic clients send (SDKs, the Microsoft 365
-add-ins). Rewritten to a Bearer before anything runs, so every ``Authorization`` reader (auth dependency,
-keyless classifier, keep-warm, MCP) sees one credential instead of learning a second scheme."""
+"""Rewrites an sk-unsloth key from x-api-key into a Bearer Authorization header before auth runs."""
 
 from __future__ import annotations
 

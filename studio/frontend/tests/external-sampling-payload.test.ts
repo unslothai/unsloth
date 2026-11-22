@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The external body never spread min_p / repetition_penalty, so the sliders did nothing.
-// Its function is too large to call here, so the gated spreads are extracted and evaluated.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -68,7 +65,7 @@ const gatedSpreads = externalBodyLiteral()
   .map((property) => property.expression.getText())
   .filter((text) => text.includes("externalCapabilities"));
 
-// Without this, an extraction that matched nothing would pass every assertion vacuously.
+// Guards against an extraction that matched nothing passing vacuously.
 assert.ok(
   gatedSpreads.length >= 4,
   `only ${gatedSpreads.length} gated spreads`,
@@ -185,7 +182,6 @@ test("a hosted provider's body is unchanged by the new rows", () => {
 });
 
 test("an unknown provider stays on the OpenAI-compatible shape", () => {
-  // A connection saved by a newer build lands here, and a strict endpoint 400s on extensions.
   const body = bodyFor("some-provider-this-build-never-heard-of");
   assert.ok(!("min_p" in body));
   assert.ok(!("repetition_penalty" in body));
@@ -194,7 +190,6 @@ test("an unknown provider stays on the OpenAI-compatible shape", () => {
 
 test("the panel and the request read the same capability flags", () => {
   const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
-  // Gating the body on anything but these flags is how panel and request drifted apart.
   assert.match(sheet, /Boolean\(providerCapabilities\?\.minP\)/);
   assert.match(sheet, /Boolean\(providerCapabilities\?\.repetitionPenalty\)/);
   assert.ok(
@@ -207,7 +202,6 @@ test("the panel and the request read the same capability flags", () => {
   );
 });
 
-// The proxy drops the usage chunk for a caller that did not opt in, which hid the usage bar.
 test("the external body opts into the stream usage chunk", () => {
   const optIn = externalBodyLiteral().properties.find(
     (property) =>
@@ -228,7 +222,6 @@ const {
   supportsProviderPromptCaching,
 } = await import("../src/features/chat/external-providers.ts");
 
-// Evaluated from the top-level literal so a thread_id reachable only through the tool loop fails.
 const buildCacheFields = new Function(
   "externalProvider",
   "resolvedThreadId",

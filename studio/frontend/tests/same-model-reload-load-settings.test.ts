@@ -62,6 +62,8 @@ function mlxStatus(over: Record<string, unknown>) {
     mlx_kv_quant_note: null,
     chat_template_override_reason: null,
     mlx_int8_prefill_requested: false,
+    mlx_ane_prefill_requested: false,
+    mlx_fast_verify_requested: false,
     ...over,
   };
 }
@@ -98,13 +100,19 @@ test("a same-model GGUF reload elsewhere moves every clean control and baseline"
 
 test("a same-model MLX reload elsewhere moves the KV width, int8 prefill and verdict", () => {
   useChatRuntimeStore.setState({ activeGgufVariant: null });
-  hydrate(mlxStatus({}), MLX);
+  hydrate(mlxStatus({ mlx_ane_prefill_requested: true }), MLX);
   reload(
     mlxStatus({
       mlx_kv_quant_requested: "8",
       mlx_kv_quant_reason: "Quantized KV cache to 8 bits",
       mlx_kv_quant_note: "from token 256",
       mlx_int8_prefill_requested: true,
+      mlx_ane_prefill_requested: false,
+      mlx_offload: {
+        ple: { applied: 0.5, requested: "auto", reason: null },
+        experts: { applied: null, requested: 0.25, reason: "no_quantized_experts" },
+        disk_bytes: 1024,
+      },
     }),
     MLX,
   );
@@ -115,6 +123,12 @@ test("a same-model MLX reload elsewhere moves the KV width, int8 prefill and ver
   assert.equal(s.mlxKvQuantNote, "from token 256");
   assert.equal(s.mlxInt8Prefill, true);
   assert.equal(s.loadedMlxInt8PrefillRequested, true);
+  assert.equal(s.mlxAnePrefill, false);
+  assert.equal(s.loadedMlxAnePrefillRequested, false);
+  assert.deepEqual(
+    [s.mlxPleOffload, s.loadedMlxPleOffload, s.mlxExpertOffload, s.loadedMlxExpertOffload, s.mlxExpertOffloadReason],
+    [null, 0.5, 0.25, null, "no_quantized_experts"],
+  );
 });
 
 test("a same-model MLX reload elsewhere moves a width that was already seeded", () => {
@@ -149,13 +163,56 @@ test("a same-model MLX reload keeps a value this tab staged but advances the bas
   assert.equal(s.loadedMlxKvQuantRequested, null);
 });
 
-test("a steady MLX poll leaves a staged value alone", () => {
+test("a same-model MLX reload moves a clean Fast Verify both ways, and a poll leaves a staged one alone", () => {
   useChatRuntimeStore.setState({ activeGgufVariant: null });
-  hydrate(mlxStatus({ mlx_kv_quant_requested: "8" }), MLX);
-  useChatRuntimeStore.setState({ mlxKvQuant: "4", mlxInt8Prefill: true });
-  reload(mlxStatus({ mlx_kv_quant_requested: "8" }), MLX);
-  const s = useChatRuntimeStore.getState();
-  assert.equal(s.mlxKvQuant, "4");
-  assert.equal(s.mlxInt8Prefill, true);
-  assert.equal(s.loadedMlxKvQuantRequested, "8");
+  hydrate(mlxStatus({}), MLX);
+  const pair = ({ mlxFastVerify: on, loadedMlxFastVerifyRequested: loaded } = useChatRuntimeStore.getState()) => [on, loaded];
+  reload(mlxStatus({ mlx_fast_verify_requested: true }), MLX);
+  assert.deepEqual(pair(), [true, true]);
+  reload(mlxStatus({ mlx_fast_verify_requested: false }), MLX);
+  assert.deepEqual(pair(), [false, false]);
+  useChatRuntimeStore.setState({ mlxFastVerify: true });
+  reload(mlxStatus({ mlx_fast_verify_requested: false }), MLX);
+  assert.deepEqual(pair(), [true, false]);
 });
+
+test("a same-model GGUF reload moves a clean Engram table both ways, and a poll leaves a staged one alone", () => {
+  useChatRuntimeStore.setState({ activeGgufVariant: "Q8_0" });
+  hydrate(ggufStatus({ engram_precision: null }), GGUF);
+  const pair = ({ engramPrecision: on, loadedEngramPrecision: loaded } = useChatRuntimeStore.getState()) => [on, loaded];
+  assert.deepEqual(pair(), [null, null]);
+  reload(ggufStatus({ engram_precision: "MXFP8" }), GGUF);
+  assert.deepEqual(pair(), ["MXFP8", "MXFP8"]);
+  reload(ggufStatus({ engram_precision: null }), GGUF);
+  assert.deepEqual(pair(), [null, null]);
+  useChatRuntimeStore.setState({ engramPrecision: "BF16" });
+  reload(ggufStatus({ engram_precision: null }), GGUF);
+  assert.deepEqual(pair(), ["BF16", null]);
+});
+
+test("an MLX or diffusion status never seeds an Engram table", () => {
+  useChatRuntimeStore.setState({ activeGgufVariant: null });
+  hydrate(mlxStatus({ engram_precision: "Q8_0" }), MLX);
+  assert.equal(useChatRuntimeStore.getState().engramPrecision, null);
+  useChatRuntimeStore.setState({ activeGgufVariant: "Q8_0" });
+  hydrate(ggufStatus({ is_diffusion: true, engram_precision: "Q8_0" }), GGUF);
+  assert.equal(useChatRuntimeStore.getState().loadedEngramPrecision, null);
+});
+
+for (const staged of ["int8", "ane"] as const) {
+  test(`a steady MLX poll leaves a staged ${staged} value alone while the other follows the server`, () => {
+    useChatRuntimeStore.setState({ activeGgufVariant: null });
+    hydrate(mlxStatus({ mlx_kv_quant_requested: "8" }), MLX);
+    useChatRuntimeStore.setState({ mlxKvQuant: "4", [staged === "int8" ? "mlxInt8Prefill" : "mlxAnePrefill"]: true });
+    const other = staged === "int8" ? "mlx_ane_prefill_requested" : "mlx_int8_prefill_requested";
+    reload(mlxStatus({ mlx_kv_quant_requested: "8", [other]: true }), MLX);
+    const s = useChatRuntimeStore.getState();
+    assert.equal(s.mlxKvQuant, "4");
+    assert.deepEqual([s.mlxInt8Prefill, s.mlxAnePrefill], [true, true]);
+    assert.deepEqual(
+      [s.loadedMlxInt8PrefillRequested, s.loadedMlxAnePrefillRequested],
+      staged === "int8" ? [false, true] : [true, false],
+    );
+    assert.equal(s.loadedMlxKvQuantRequested, "8");
+  });
+}

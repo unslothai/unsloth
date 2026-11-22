@@ -46,12 +46,10 @@ def _record_install(monkeypatch):
 @pytest.mark.parametrize(
     "offload_active, denoiser_offloaded, onload, expected",
     [
-        # moved denoiser with a known onload device: installed against it
         (True, True, "cuda:1", {"offload_active": False, "device": "cuda:1"}),
         (True, None, "cuda", {"offload_active": False, "device": "cuda"}),
-        # no onload device (video backend, ROCm, CPU): the old refusal
+        # no onload device (video backend, ROCm, CPU): still refused
         (True, True, None, {"offload_active": True, "device": None}),
-        # a resident denoiser never needs the device
         (True, False, "cuda", {"offload_active": False, "device": None}),
         (False, None, "cuda", {"offload_active": False, "device": None}),
     ],
@@ -75,7 +73,7 @@ def test_moved_denoiser_installs_against_the_onload_device(
     [
         (types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda:1"), "cuda:1"),
         (types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda"), "cuda"),
-        (types.SimpleNamespace(device = "cuda", backend = "cuda"), "cuda"),  # video's namespace target
+        (types.SimpleNamespace(device = "cuda", backend = "cuda"), "cuda"),
         (types.SimpleNamespace(device = "cuda", backend = "rocm", torch_device = "cuda"), None),
         (types.SimpleNamespace(device = "cpu", backend = "cpu", torch_device = "cpu"), None),
         (types.SimpleNamespace(device = "mps", backend = "mps", torch_device = "mps"), None),
@@ -96,8 +94,7 @@ def _speed_calls(path: pathlib.Path) -> list:
 
 
 def test_image_backend_asks_for_the_streamed_install():
-    """Both image-backend speed passes (load, and the deferred compile on the 3rd image) ask for it; the video
-    backend keeps its own H3-only streamed install."""
+    """Image speed passes request the streamed install; video keeps its own H3-only one."""
     calls = _speed_calls(_INFERENCE / "diffusion.py")
     assert len(calls) == 2
     for call in calls:
@@ -200,9 +197,8 @@ def _blocks(n, k, version):
 @needs_cuda
 @pytest.mark.parametrize("version", [None, 2])
 def test_prefetched_weights_run_the_fused_gemm_bit_identically(forced, version):
-    """Studio's block streaming (diffusers group offload driven by the event-fenced prefetch, two groups ahead): the
-    weights reach each block through the copy stream, every int8 Linear still takes the fused GEMM, and the output
-    equals stock torchao on resident weights, forward after forward."""
+    """Block streaming via event-fenced prefetch two groups ahead: every int8 Linear still takes the
+    fused GEMM and matches stock torchao, forward after forward."""
     pytest.importorskip("diffusers.hooks")
     from core.inference import diffusion_memory as dm
     from core.inference.diffusion_offload_prefetch import module_prefetcher

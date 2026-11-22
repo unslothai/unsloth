@@ -58,6 +58,9 @@ class FakeVideoBackend:
     def generate_progress(self):
         return {"active": False, "phase": "completed", "step": 5, "total": 5, "video": CLIP}
 
+    def loading_repo_ids(self):
+        return ()
+
     def cancel_generate(self, *args, **kwargs):
         from utils.account_context import current_account
         self.cancelled.append(current_account().username)
@@ -115,12 +118,7 @@ def _client(account):
 
 
 def _assert_reveals_no_clip(body):
-    """A foreign poller gets the declared idle progress shape and nothing of the job.
-
-    Spelled out rather than compared to a literal dict: the route answers the
-    generate-progress shape here, so a poller can still read ``active`` off it, and
-    what this test is actually about is that none of the clip comes back.
-    """
+    """A foreign poller must see no clip: assert the idle fields one by one, not a literal dict."""
     assert body["yours"] is False, body
     assert body["active"] is False and body["phase"] is None, body
     assert body.get("video") is None, body

@@ -2,51 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /*
- * NO DESCENDANT-ARGUMENT `:has()` ON AN ANCESTOR OF THE THREAD.
- *
- * A `:has()` whose argument is a descendant selector has to be re-checked whenever anything is
- * inserted or removed anywhere inside the subject, and answering it means WALKING the subject's
- * subtree. On an ancestor of the chat thread that walk is the whole thread, and it happens for
- * every message that mounts, every token that streams and every deferred code fence that
- * upgrades.
- *
- * It is a traversal, not a restyle. Blink's `UpdateLayoutTree.elementCount` for one inserted span
- * is 1 with both rules in their child form, 2 with one still in descendant form and 3 with both:
- * only the subjects are restyled. That is why no amount of `contain:` helps, and why
- * `content-visibility: auto` on the message roots does not either (measured at -7%): the argument
- * re-check walks skipped content too. The only lever is the combinator.
- *
- * CHROMIUM ONLY. On a synthetic thread with the same ancestor chain and the built Unsloth
- * stylesheet, at 300,464 elements, one inserted span costs 1.20 / 1.29 / 5.63 / 10.30 ms for
- * plain / child / one descendant rule / both in Chromium, against 4.33 / 4.58 / 4.58 / 4.33 ms in
- * WebKitGTK and 4.65 / 4.72 / 4.45 / 5.10 ms in Firefox. The other two engines are flat, so this
- * is free where it does not help. This test still guards the shape in every engine, because the
- * regression it prevents is a Chromium one and Unsloth runs in a browser too.
- *
- * Measured at the 500K rung, corpus 23cd2464, on a 357,843-element thread, as the cost of
- * appending ONE EMPTY span inside a message, in two concurrent arms:
- *
- *   every rule in place                                        17.5 / 18.6 ms
- *   sidebar wrapper's rule alone deleted                        8.7 /  9.0 ms
- *   chat wrapper's rule alone deleted                           9.8 /  9.3 ms
- *   both deleted                                               0.10 / 0.10 ms
- *   the other eleven `:has()` rules the bisect kept, deleted   17.2 / 19.2 ms
- *   all 142 `:has()` rules in the bundle deleted               0.10 / 0.10 ms
- *   the same span appended to <body> instead                   0.10 / 0.10 ms
- *
- * So those two rules were the whole cost and no other rule contributed. This test is what stops
- * a third one being added, because the symptom is a frame rate on a long thread and nothing
- * about writing `has-[[data-x]]` looks expensive.
- *
- * IT IS A SOURCE TEST AND THAT IS A REAL LIMIT. It reads the two elements it knows about. A
- * `:has()` utility introduced on some other ancestor of the thread would not be caught here, and
- * the honest guard for that is the perf ladder, not this file.
+ * No descendant-argument :has() on an ancestor of the thread (Chromium re-walks the whole thread
+ * per insertion); child has-[>...] is cheap; other ancestors are guarded by the perf ladder.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import ts from "@typescript/typescript6";
+import postcss from "postcss";
+import selectorParser from "postcss-selector-parser";
 
 import { openingTag } from "./helpers/tsx-ast.ts";
 
@@ -55,7 +20,6 @@ import { readText } from "./helpers/kit.ts";
 const parse = (rel: string): ts.SourceFile =>
   ts.createSourceFile(rel, readText(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
-/** Every string literal in the file, so a className built by `cn(...)` is covered too. */
 const stringLiterals = (source: ts.SourceFile): string[] => {
   const out: string[] = [];
   const walk = (node: ts.Node): void => {
@@ -69,18 +33,8 @@ const stringLiterals = (source: ts.SourceFile): string[] => {
 };
 
 /*
- * Tailwind's `has-*` variants, and which of them carry a DESCENDANT argument.
- *
- *   has-[>[data-x]]        child      cheap: only a change to the subject's own child list can
- *                                     change the answer, so a mutation deep in the thread is
- *                                     skipped outright
- *   has-[[data-x]]         descendant expensive: any insertion or removal in the subtree
- *   has-data-[variant=v]   descendant expensive: shorthand for has-[[data-variant=v]]
- *   has-aria-invalid       descendant expensive
- *   group-has-[...]        descendant expensive, on whichever element carries the `group`
- *
- * Matching is done on the class token so that `has-[>...]` is not read as a descendant form by a
- * looser substring test, which is the one way this check could pass while the defect is present.
+ * has-[>[x]] is child (cheap); has-[[x]], has-data-*, has-aria-*, group-has-* are descendant.
+ * Match on the class token so `has-[>...]` is not misread by a substring test.
  */
 const descendantHasUtilities = (className: string): string[] =>
   className
@@ -106,8 +60,7 @@ test("the sidebar wrapper, an ancestor of the whole app, has no descendant-argum
     [],
     `sidebar-wrapper className carries a descendant-argument :has(): ${wrappers[0]}`,
   );
-  // The rule is still THERE, in its child form. Dropping it entirely would also pass the
-  // assertion above and would silently change what an inset sidebar looks like.
+  // The rule must remain in child form; dropping it would change the inset sidebar.
   assert.ok(
     wrappers[0].includes("has-[>[data-variant=inset]]:bg-sidebar"),
     `sidebar-wrapper lost the inset background rule: ${wrappers[0]}`,
@@ -145,4 +98,109 @@ test("index.css has no descendant-argument :has() on the panels that hold the th
   const offenders =
     css.match(/(?:#chat-thread|\.chat-artifact-split|\.chat-thread-pane)[^{},]*:has\((?!\s*>)/g) ?? [];
   assert.deepEqual(offenders, [], `descendant-argument :has() on a thread ancestor: ${offenders.join(" | ")}`);
+});
+
+// Elements that hold the whole thread: a descendant :has() on any of them re-walks every message.
+const THREAD_ANCESTORS = [
+  ["attribute", "data-wallpaper-workspace"],
+  ["attribute", "data-chat-content-root"],
+  // Same element as the workspace on Windows non-chat pages, where the chat stays mounted.
+  ["attribute", "data-windows-wallpaper-page"],
+  ["class", "aui-thread-viewport"],
+] as const;
+
+type Node = selectorParser.Node;
+
+// The compound (run of simple selectors between combinators) that `node` sits in.
+const compoundOf = (node: Node): Node[] => {
+  const parts = node.parent?.nodes ?? [];
+  const at = parts.indexOf(node as never);
+  let from = at;
+  while (from > 0 && parts[from - 1].type !== "combinator") from--;
+  let to = at;
+  while (to < parts.length - 1 && parts[to + 1].type !== "combinator") to++;
+  return parts.slice(from, to + 1) as Node[];
+};
+
+// :has() nested in :not()/:is()/:where() still anchors on the outer compound.
+const anchorCompound = (pseudo: selectorParser.Pseudo): Node[] => {
+  let node: Node = pseudo;
+  for (;;) {
+    const outer: Node | undefined = node.parent?.parent as Node | undefined;
+    if (!outer || !selectorParser.isPseudo(outer) || outer.value === ":has") break;
+    node = outer;
+  }
+  return compoundOf(node);
+};
+
+const isThreadAncestor = (compound: Node[]): boolean => {
+  const hits = (node: Node): boolean =>
+    THREAD_ANCESTORS.some(([type, value]) =>
+      node.type === type
+      && (type === "attribute" ? (node as selectorParser.Attribute).attribute : node.value) === value)
+    || (node.type === "pseudo" && node.value === ":is" && node.nodes.some((sel) => sel.nodes.some(hits)));
+  return compound.some(hits);
+};
+
+const childOnly = (path: selectorParser.Selector): boolean => {
+  if (path.first?.type !== "combinator" || path.first.value !== ">") return false;
+  let ok = true;
+  path.each((node) => {
+    if (node.type === "combinator" && node.value !== ">") ok = false;
+  });
+  return ok;
+};
+
+const descendantHasOnThreadAncestors = (cssText: string): string[] => {
+  const offenders: string[] = [];
+  postcss.parse(cssText).walkRules((rule) => {
+    if (!rule.selector.includes(":has(")) return;
+    selectorParser().astSync(rule.selector).walkPseudos((pseudo) => {
+      if (pseudo.value !== ":has" || !isThreadAncestor(anchorCompound(pseudo))) return;
+      for (const path of pseudo.nodes) {
+        if (!childOnly(path)) offenders.push(`${String(pseudo)} in ${rule.selector}`);
+      }
+    });
+  });
+  return offenders;
+};
+
+test("no descendant-argument :has() anchored on an element that holds the thread", () => {
+  const offenders = descendantHasOnThreadAncestors(readText("../src/index.css"));
+  assert.deepEqual(offenders, [], offenders.join("\n"));
+});
+
+test("the thread-ancestor :has() guard catches the shapes that regressed typing", () => {
+  const workspace = ":is([data-wallpaper-workspace], [data-chat-content-root])";
+  const bad = [
+    `${workspace}:has(> .chat-wallpaper[data-ready] .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {}`,
+    `${workspace}:has(> .chat-wallpaper[data-ready]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper {}`,
+    `${workspace}:has([data-tour="chat-compare-view"]) > .chat-wallpaper {}`,
+    `${workspace} .aui-thread-viewport:has(.aui-thread-welcome-center) {}`,
+    `html:not(.dark)[data-glass] ${workspace}:has(.aui-thread-welcome-center) .chat-wallpaper-frame {}`,
+    "[data-windows-wallpaper-page]:has([data-windows-glass-frame]) > [data-slot=\"page-wallpaper-blur\"] {}",
+  ];
+  for (const css of bad) assert.equal(descendantHasOnThreadAncestors(css).length, 1, css);
+  const good = [
+    `${workspace}:has(> .chat-wallpaper[data-ready] > .chat-wallpaper-frame > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {}`,
+    `html:not([data-chat-welcome]) ${workspace}:has(> .chat-wallpaper[data-ready]) > .chat-wallpaper {}`,
+    `${workspace} .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {}`,
+    ".composer-pill-btn:has(.composer-pill-caret) {}",
+  ];
+  for (const css of good) assert.deepEqual(descendantHasOnThreadAncestors(css), [], css);
+});
+
+test("the welcome and compare views stamp the root flags the wallpaper CSS reads", () => {
+  const welcome = readText("../src/features/chat-background/welcome.ts");
+  assert.match(welcome, /ROOT_WELCOME = "data-chat-welcome"/);
+  assert.match(welcome, /ROOT_COMPARE = "data-chat-compare"/);
+  const thread = readText("../src/components/assistant-ui/thread.tsx");
+  const welcomeBody = thread.slice(thread.indexOf("const ThreadWelcome"));
+  assert.ok(welcomeBody.includes("useMarkChatWelcome();"), "ThreadWelcome must mark the welcome flag");
+  // The child-only viewport rule depends on this exact nesting.
+  assert.match(welcomeBody, /className="aui-thread-welcome-root[^"]*"[\s\S]{0,200}"aui-thread-welcome-center/);
+  const page = readText("../src/features/chat/chat-page.tsx");
+  const shell = page.slice(page.indexOf("function CompareShell"), page.indexOf("function CompareShell") + 800);
+  assert.ok(shell.includes("useMarkChatCompare();"), "CompareShell must mark the compare flag");
+  assert.ok(shell.includes('data-tour="chat-compare-view"'));
 });

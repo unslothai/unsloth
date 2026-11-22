@@ -6,7 +6,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Every load path must surface the offload warning, not a plain success toast.
 const LOAD_PATHS = [
   "../src/features/chat/hooks/use-chat-model-runtime.ts",
   "../src/features/chat/api/chat-adapter.ts",

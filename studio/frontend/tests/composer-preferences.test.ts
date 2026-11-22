@@ -8,9 +8,12 @@ import {
   effectiveSendShortcut,
   followUpSubmitIntent,
   normalizeComposerPreferences,
+  parkedSendSteer,
   type ComposerKeyEvent,
 } from "../src/features/chat/utils/composer-preferences.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
+
+const preferenceStorage = installLocalStorageFake();
 
 const enter: ComposerKeyEvent = {
   key: "Enter",
@@ -76,18 +79,15 @@ for (const blocked of [
 for (const key of ["metaKey", "ctrlKey"] as const) {
   test(`${key}: mod-enter-multiline is Enter for one line and mod-enter once the draft has a line break`, () => {
     const mod = { ...enter, [key]: true };
-    // One line: Enter sends, Shift+Enter breaks the line.
     assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "hi"), "default");
     assert.equal(composerSubmitIntent({ ...enter, shiftKey: true }, "mod-enter-multiline", "hi"), null);
     assert.equal(composerSubmitIntent(enter, "mod-enter-multiline"), "default");
-    // Several lines: Enter adds another, the modifier sends.
     assert.equal(composerSubmitIntent(enter, "mod-enter-multiline", "a\nb"), null);
     assert.equal(composerSubmitIntent(mod, "mod-enter-multiline", "a\nb"), "default");
     assert.equal(
       composerSubmitIntent({ ...mod, shiftKey: true }, "mod-enter-multiline", "a\nb"),
       "opposite",
     );
-    // The other two ignore the draft.
     assert.equal(composerSubmitIntent(enter, "enter", "a\nb"), "default");
     assert.equal(composerSubmitIntent(enter, "mod-enter", "hi"), null);
     assert.equal(effectiveSendShortcut("mod-enter-multiline", "a\nb"), "mod-enter");
@@ -128,9 +128,6 @@ test("one-message override flips both preferences without changing the default",
     opposite: "Ctrl+Shift+Enter",
   });
 });
-// The queue and steer chords name a behavior, where ⌘⏎ only flips the one in
-// settings. Both preferences have to reach both behaviors, or a user set to
-// steer would find the queue chord steering.
 test("the queue and steer chords land on their behavior from either preference", () => {
   for (const preference of ["queue", "steer"] as const) {
     for (const behavior of ["queue", "steer"] as const) {
@@ -145,8 +142,6 @@ test("the queue and steer chords land on their behavior from either preference",
     }
   }
 });
-// The chords submit the form, and handleSubmit is what reads the intent, so
-// the ref has to be set before requestSubmit and cleared after it returns.
 test("the queue and steer chords set the intent around the submit", async () => {
   const source = await readFile(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
@@ -186,7 +181,7 @@ test("legacy and malformed saved settings retain usable defaults", () => {
   }
 });
 test("the real preference store persists all controls and restores them on reload", async () => {
-  const { store } = installLocalStorageFake();
+  const { store } = preferenceStorage;
   const { useChatPreferencesStore: prefs } = await import(
     "../src/features/chat/stores/chat-preferences-store.ts"
   );
@@ -210,4 +205,46 @@ test("the real preference store persists all controls and restores them on reloa
   await prefs.persist.rehydrate();
   assert.deepEqual(normalizeComposerPreferences(prefs.getState()), expected);
   assert.equal(typeof prefs.getState().setFollowUpBehavior, "function");
+});
+
+test("draft sharing is opt-in for existing preferences and survives an explicit choice", async () => {
+  const { store } = preferenceStorage;
+  const { useChatPreferencesStore: prefs } = await import(
+    "../src/features/chat/stores/chat-preferences-store.ts"
+  );
+  for (const shareComposerDraft of [undefined, false, "true", 1]) {
+    store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft } }));
+    await prefs.persist.rehydrate();
+    assert.equal(prefs.getState().shareComposerDraft, false);
+  }
+  prefs.getState().setShareComposerDraft(true);
+  const saved = store.get("unsloth_chat_preferences")!;
+  prefs.getState().setShareComposerDraft(false);
+  store.set("unsloth_chat_preferences", saved);
+  await prefs.persist.rehydrate();
+  assert.equal(prefs.getState().shareComposerDraft, true);
+});
+
+test("sharing switched on by another window's rehydrate still adopts this tab's draft", async () => {
+  const { store } = preferenceStorage;
+  const { useChatPreferencesStore: prefs } = await import(
+    "../src/features/chat/stores/chat-preferences-store.ts"
+  );
+  const drafts = await import("../src/features/chat/utils/composer-draft.ts");
+  store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: false } }));
+  await prefs.persist.rehydrate();
+  drafts.stageComposerDraft(drafts.composerDraftKey("rehydrated-chat"), "typed here");
+  store.set("unsloth_chat_preferences", JSON.stringify({ version: 1, state: { shareComposerDraft: true } }));
+  await prefs.persist.rehydrate();
+  assert.equal(prefs.getState().shareComposerDraft, true);
+  assert.equal(drafts.latestDraft(drafts.composerDraftKey("", true)), "typed here");
+});
+
+test("steering a parked attachment stops the response only when nothing else holds it", () => {
+  const parked = { behavior: "steer" as const, parkedBehindResponse: true, otherHoldActive: false, promptQueueActive: false, researchActive: false, threadRunning: true };
+  assert.deepEqual(parkedSendSteer(parked), { cancelRun: true });
+  assert.deepEqual(parkedSendSteer({ ...parked, threadRunning: false }), { cancelRun: false });
+  for (const hold of [{ behavior: "queue" as const }, { promptQueueActive: true }, { researchActive: true }, { parkedBehindResponse: false }, { otherHoldActive: true }]) {
+    assert.equal(parkedSendSteer({ ...parked, ...hold }), null);
+  }
 });

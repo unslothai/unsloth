@@ -63,7 +63,6 @@ function event(
   };
 }
 
-// Clears the coalescing timers too, so one case's pending delta cannot land in the next.
 function reset(): void {
   resetResearchRunState();
 }
@@ -131,7 +130,6 @@ test("plan titles stream onto the planning row while the plan is still being wri
     run(),
     event(3, "phase.progress", { phase: "planning", callId: "p", label: "Check adoption" }),
   );
-  // A replayed duplicate must not double the list.
   ingest(
     run(),
     event(4, "phase.progress", { phase: "planning", callId: "p", label: "Check adoption" }),
@@ -170,7 +168,6 @@ test("phase.ended closes only its own call", () => {
   );
 });
 
-// The old reducer closed the live reasoning row on any non-reasoning event.
 test("an unrelated event does not close a live phase row", async () => {
   reset();
   ingest(run());
@@ -181,12 +178,10 @@ test("an unrelated event does not close a live phase row", async () => {
   const rows = activities().filter((a) => a.kind === "reasoning");
   assert.equal(rows.length, 1);
   assert.equal(rows[0].state, "running");
-  // No duplicate "Writing the report" row alongside the synthesis phase row.
   assert.equal(activities().filter((a) => a.kind === "report").length, 0);
 });
 
-// Both rows are titled "Writing the report", so a closed synthesis row must still absorb the
-// report deltas rather than let a second row appear beside it.
+// Both rows are titled "Writing the report", so a closed synthesis row must absorb deltas.
 test("a legacy synthesis row absorbs the report instead of doubling", async () => {
   reset();
   ingest(run({ status: "running" }));
@@ -222,7 +217,6 @@ test("a run recorded before phase events still gets a report row", async () => {
   assert.equal(rows[0].title, "Writing the report");
 });
 
-// Without the legacy close rule, a pre-phase-event run marked succeeded work failed.
 test("a legacy run's reasoning rows still close without phase brackets", async () => {
   reset();
   ingest(run());
@@ -341,7 +335,6 @@ test("the header summary never reads 0 sources or 0 actions", () => {
     }),
     "12s · 1 source · step 2",
   );
-  // Document-only evidence still counts, and a failed step counts as finished.
   assert.equal(
     summary({
       status: "running",
@@ -356,12 +349,10 @@ test("an empty search reads as no results rather than a count of zero", () => {
   assert.equal(stepResultDetail(0), "No usable results");
   assert.equal(stepResultDetail(1), "1 source found");
   assert.equal(stepResultDetail(4), "4 sources found");
-  // A fetch reads one page and never collects sources, so a zero count is not a bad outcome.
   assert.equal(stepResultDetail(0, "fetch"), "Page read");
   assert.equal(stepResultDetail(0, "search"), "No usable results");
 });
 
-// Ingestion used to run off this generator, so a stalled consumer froze the card.
 test("a stalled watcher does not stop events reaching the store", async () => {
   reset();
   ingest(run());
@@ -421,7 +412,7 @@ test("a follower that gave up surfaces instead of parking the watcher", async ()
   const consume = (async () => {
     try {
       for await (const snapshot of watchResearchRun(RUN_ID)) {
-        void snapshot; // the chat adapter's loop
+        void snapshot;
       }
     } catch (error) {
       threw = error;
@@ -502,7 +493,6 @@ test("a dropped phase.ended does not leave the previous row spinning", () => {
 });
 
 test("a completed fetch step is not labelled as having found nothing", () => {
-  // A fetch records an excerpt and never collects sources, so its sourceCount is always 0.
   reset();
   ingest(run());
   ingest(

@@ -82,7 +82,6 @@ def test_a_deferred_pin_renders_identically_and_ends_with_every_group_pinned():
     assert torch.equal(out, ref) and torch.equal(again, ref)
     groups, pinned = _groups_pinned(net)
     assert pinned
-    # the host copies were replaced, not duplicated: every offloaded parameter now IS its pinned chunk view
     for g in groups:
         for t, host in g.cpu_param_dict.items():
             if isinstance(t, torch.nn.Parameter):
@@ -99,7 +98,6 @@ def test_an_onload_before_the_pinner_starts_waits_for_its_group():
     ref = _reference(x)
     pipe, net = _Pipe(), _offload(_net(), pinned = False)
     mem._defer_pinning(pipe, net, torch.device("cuda"), None)
-    # never started by the caller: the first onload starts it and waits for its own group
     with torch.no_grad():
         out = net(x)
     torch.cuda.synchronize()

@@ -1,11 +1,7 @@
-# Model defaults for unsloth/gemma-3n-E4B
-# Based on Gemma3N_(4B)-Vision.ipynb
 # Also applies to: unsloth/gemma-3n-E4B-unsloth-bnb-4bit, google/gemma-3n-E4B
-# added inference parameters from unsloth guides
 
 training:
   max_seq_length: 2048
-  # num_epochs: 2
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 1

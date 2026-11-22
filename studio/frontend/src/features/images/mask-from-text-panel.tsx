@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Cancel01Icon, Download04Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Search01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -22,6 +22,7 @@ import {
   MASK_FROM_TEXT_PLACEHOLDER,
   parseMaskPrompt,
   segmenterDownloadFraction,
+  segmenterDownloadNotice,
   segmenterNeedsDownload,
   segmenterReady,
   segmentSummary,
@@ -81,12 +82,14 @@ function SegmenterDownloadNotice({
   const { download } = status;
   const fraction = segmenterDownloadFraction(download);
   const size = status.size_bytes ? formatBytes(status.size_bytes) : null;
+  const label = status.label;
+  const notice = segmenterDownloadNotice(status, size);
   const start = async () => {
     setBusy(true);
     try {
       await startSegmenterDownload(hfApiToken(getHfToken()));
     } catch (err) {
-      toast.error("Could not download SAM 3", {
+      toast.error(`Could not download ${label}`, {
         description: err instanceof Error ? err.message : undefined,
       });
     } finally {
@@ -106,15 +109,15 @@ function SegmenterDownloadNotice({
   return (
     <div
       data-testid="mask-segmenter-download"
-      className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
+      className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
     >
       {download.downloading ? (
         <>
           <div className="flex items-center justify-between gap-2">
             <span className="text-muted-foreground">
               {download.bytes_total
-                ? `Downloading SAM 3: ${formatBytes(download.bytes_done ?? 0)} of ${formatBytes(download.bytes_total)}`
-                : "Downloading SAM 3..."}
+                ? `Downloading ${label}: ${formatBytes(download.bytes_done ?? 0)} of ${formatBytes(download.bytes_total)}`
+                : `Downloading ${label}...`}
             </span>
             <Button
               type="button"
@@ -136,8 +139,8 @@ function SegmenterDownloadNotice({
       ) : (
         <>
           <span className="text-muted-foreground">
-            {`Mask from text uses SAM 3${size ? ` (${size})` : ""}, which is not downloaded yet.`}
-            {status.gated ? (
+            {notice.text}
+            {notice.needsLicense ? (
               <>
                 {" Its license must be accepted on Hugging Face first"}
                 {status.license_url ? (
@@ -165,11 +168,11 @@ function SegmenterDownloadNotice({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 gap-1.5 self-start text-xs"
+              className="gap-1.5 self-start text-xs"
               disabled={busy}
               onClick={() => void start()}
             >
-              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download04Icon} className="size-3.5" />}
+              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download01Icon} className="size-3.5" />}
               {size ? `Download (${size})` : "Download"}
             </Button>
           ) : (
@@ -289,7 +292,7 @@ export function MaskFromTextPanel({
           type="button"
           size="sm"
           variant="secondary"
-          className="h-8 gap-1.5 text-xs"
+          className="gap-1.5 text-xs"
           disabled={!canRun}
           onClick={() => void run()}
         >

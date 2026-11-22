@@ -13,6 +13,7 @@ import {
   settleLegacyChatImport,
 } from "../utils/chat-history-storage";
 import { isChatThreadDeleted } from "../utils/chat-thread-tombstones";
+import { watchRemoteHistory } from "../utils/remote-history-watch";
 import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
 import { type RowPageResult, RowPager } from "../utils/sidebar-row-pager";
 import {
@@ -43,6 +44,7 @@ function toSidebarItem(row: SidebarRowRecord): SidebarItem | null {
     ...(row.modifiedAt ? { modifiedAt: row.modifiedAt } : {}),
     ...(row.modelIds?.length ? { modelIds: row.modelIds } : {}),
     ...(row.type === "single" ? { isFork: Boolean(row.isFork) } : {}),
+    ...(row.isScheduled ? { isScheduled: true } : {}),
     projectId: row.projectId ?? null,
   };
 }
@@ -187,9 +189,12 @@ function onHistoryUpdated() {
   }, SIDEBAR_REFRESH_DEBOUNCE_MS);
 }
 
+let unwatchRemoteHistory: (() => void) | null = null;
+
 function registerPager(pager: SidebarPager) {
   if (livePagers.size === 0 && typeof window !== "undefined") {
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    unwatchRemoteHistory = watchRemoteHistory({});
   }
   livePagers.add(pager);
 }
@@ -198,6 +203,8 @@ function unregisterPager(pager: SidebarPager) {
   livePagers.delete(pager);
   if (livePagers.size === 0 && typeof window !== "undefined") {
     window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    unwatchRemoteHistory?.();
+    unwatchRemoteHistory = null;
     if (refreshTimer !== null) clearTimeout(refreshTimer);
     refreshTimer = null;
   }

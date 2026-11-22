@@ -1,35 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The amd-smi VRAM branch must not answer for a host where HIP cannot open a device.
-
-amd-smi and HIP do not read the same thing. amd-smi reports the driver's inventory
-over sysfs and libdrm's ``/dev/dri/renderD*``; HIP needs ``/dev/kfd`` and a matching
-HSA runtime. The two come apart on real hosts: a container started with
-``--device=/dev/dri`` but no ``--device=/dev/kfd`` (AMD's own container docs require
-BOTH), and a torch wheel built against a ROCm the installed runtime does not match.
-There amd-smi lists the card and ``hipGetDeviceCount`` returns 0, so
-``torch.cuda.is_available()`` is False while ``_torch_is_rocm()`` stays True.
-
-The llama-server child is a HIP process too, so it dies exactly where torch did.
-Before this branch existed the torch fallback returned ``[]`` for such a host and the
-load went to CPU, which is the right answer; the amd-smi branch returns first and
-hands placement a device nothing can open.
-
-Neither existing guard catches it, because both are themselves torch readers that
-fail open: ``_rocm_unified_memory_gpu_ids`` returns ``set()`` and
-``_rocm_arch_by_physical_id`` returns ``{}`` the moment ``is_available()`` is False.
-So an APU on such a host is not even recognised as one, and amd-smi's dedicated
-carve-out is accepted as the whole pool.
-
-Gating costs nothing this path was not already paying: ``_rocm_unified_memory_gpu_ids``
-calls ``is_available()`` and ``get_device_properties()`` further down the same
-function. Neither creates a primary context (measured: no compute-apps entry, against
-612 MiB for ``mem_get_info``), because ``is_available()`` is ``hipGetDeviceCount``
-and not ``_lazy_init``.
-
-torch, ROCm detection and amd-smi are all mocked; this repository has no AMD GPU.
-"""
+"""amd-smi VRAM must not answer where HIP cannot open a device, e.g. /dev/dri without /dev/kfd."""
 
 from __future__ import annotations
 
@@ -59,12 +31,7 @@ def _payload(*gpus: tuple[int, int, int]):
 
 @pytest.fixture
 def rocm(monkeypatch):
-    """A ROCm host with one card, no mask, and an amd-smi that answers.
-
-    The three mask vars are cleared from the environment as well as patched: the
-    probe asks whether a mask is SET before asking what it resolves to, so the
-    shell's own CUDA_VISIBLE_DEVICES would otherwise read as a mask that resolves to
-    nothing (#8662 for the same trap in the APU tests)."""
+    """Mask variables are cleared too: the probe checks whether a mask is set before what it resolves to."""
     monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: True))
     for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(_var, raising = False)

@@ -263,8 +263,88 @@ def seed_unstructured_upload(account) -> dict[str, str]:
     return {"block_id": BLOCK_ID, "file_id": FILE_ID}
 
 
+OPENAI_RUN_ID = "training-matrix-openai-run"
+OPENAI_UPLOAD_ID = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+
+@seeder("training-openai-job")
+def seed_openai_job(account) -> dict[str, str]:
+    """A finished run in this account, which the OpenAI fine-tuning routes read as a job."""
+    import json
+
+    from storage import studio_db
+    from utils.account_context import run_as
+
+    def install() -> None:
+        studio_db.create_run(
+            id = OPENAI_RUN_ID,
+            model_name = "local/model",
+            dataset_name = "local/dataset",
+            config_json = json.dumps({"model_name": "local/model", "project_name": SENTINEL}),
+            started_at = "2026-01-01T00:00:00+00:00",
+            total_steps = 1,
+        )
+        studio_db.finish_run(
+            id = OPENAI_RUN_ID,
+            status = "completed",
+            ended_at = "2026-01-01T00:01:00+00:00",
+            final_step = 1,
+            final_loss = 1.0,
+            duration_seconds = 60.0,
+        )
+
+    run_as(account, install)
+    return {"job_id": OPENAI_RUN_ID}
+
+
+@seeder("training-openai-file")
+def seed_openai_file(account) -> dict[str, str]:
+    from utils.account_context import run_as
+    from utils.paths.storage_roots import dataset_uploads_root
+
+    def install() -> None:
+        root = dataset_uploads_root()
+        root.mkdir(parents = True, exist_ok = True)
+        (root / f"{OPENAI_UPLOAD_ID}_matrix.jsonl").write_text(
+            '{"messages": []}\n', encoding = "utf-8"
+        )
+
+    run_as(account, install)
+    return {"file_id": f"file-{OPENAI_UPLOAD_ID}"}
+
+
 FACTORIES = {
     "routes.training_history:DELETE:/runs/{run_id}": Factory("training", fragment = "deleted"),
+    "routes.openai_fine_tuning:GET:/files/{file_id}": Factory(
+        "training-openai-file", fragment = "matrix.jsonl"
+    ),
+    "routes.openai_fine_tuning:GET:/fine_tuning/jobs/{job_id}": Factory(
+        "training-openai-job", fragment = SENTINEL
+    ),
+    "routes.openai_fine_tuning:GET:/fine_tuning/jobs/{job_id}/events": Factory(
+        "training-openai-job", fragment = "successfully completed"
+    ),
+    "routes.openai_fine_tuning:GET:/fine_tuning/jobs/{job_id}/checkpoints": Factory(
+        "training-openai-job", fragment = "list"
+    ),
+    # A finished job cannot be cancelled: its own account gets 400, every other account 404.
+    "routes.openai_fine_tuning:POST:/fine_tuning/jobs/{job_id}/cancel": Factory(
+        "training-openai-job", success = 400
+    ),
+    "routes.openai_fine_tuning:POST:/fine_tuning/jobs/{job_id}/pause": Factory(
+        "training-openai-job",
+        success = 400,
+        owner = (400,),
+        wrong = (400,),
+        reason = "unsupported for every job: refused before any lookup, so nothing is revealed",
+    ),
+    "routes.openai_fine_tuning:POST:/fine_tuning/jobs/{job_id}/resume": Factory(
+        "training-openai-job",
+        success = 400,
+        owner = (400,),
+        wrong = (400,),
+        reason = "unsupported for every job: refused before any lookup, so nothing is revealed",
+    ),
     "routes.training:GET:/start-requests/{start_request_id}": Factory(
         "training-start-request", fragment = SENTINEL
     ),

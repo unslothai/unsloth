@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Optimizer-state-only CPU offload (UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1).
-
-State lives in pinned host memory between steps and visits the GPU only inside optimizer.step,
-so peak memory is max(activations, optimizer state) instead of their sum. The step runs in chunks
-of UNSLOTH_OFFLOAD_OPTIMIZER_STATE_CHUNK_MB (default 1024) of state, so the step itself never holds
-all of it on device either (parameter-local optimizers only, see _CHUNK_SAFE_MODULES).
-"""
+"""UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1: state on host, chunked to GPU in step; parameter-local only."""
 
 import copy
 import os
@@ -166,8 +160,7 @@ class _StateOffloader:
         params = None,
         device_of = None,
     ):
-        # device_of(param, key, tensor) names the device of state that is already on the host
-        # (a checkpoint just loaded there), None to leave it host-only.
+        # device_of returns the device for host-resident state, or None to leave it host-only.
         devices = set()
         for param, state in self._states(params):
             for key, value in list(state.items()):
@@ -294,17 +287,28 @@ class _StateOffloader:
         closure = rest[0] if rest else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
         if closure is not None or not _chunk_safe(optimizer):
-            params = None
-            if closure is None and _grad_only_step(optimizer):
-                # Unchunked weight_quant Q-GaLore still skips parameters without a gradient.
-                params = [
-                    p
-                    for group in optimizer.param_groups
-                    for p in group["params"]
-                    if p.grad is not None
-                ]
-            self.restore(params)
-            return
+            if closure is not None or not _grad_only_step(optimizer):
+                self.restore()
+                return
+
+            # Unchunked weight_quant Q-GaLore still skips parameters without a gradient. Select
+            # them from the step's closure, after later pre hooks that may create gradients.
+            def _restore_active():
+                self.restore(
+                    [
+                        p
+                        for group in optimizer.param_groups
+                        for p in group["params"]
+                        if p.grad is not None
+                    ]
+                )
+                return None
+
+            if rest:
+                rest = (_restore_active,) + tuple(rest[1:])
+            else:
+                kwargs = dict(kwargs, closure = _restore_active)
+            return ((optimizer,) + tuple(rest) if has_self else tuple(rest)), kwargs
 
         # Chunk-safe steps call a closure first, before any update, so the chunked updates run
         # after every step pre hook (registered later ones too), as a plain step would.
@@ -378,8 +382,7 @@ def offload_optimizer_state(
     optimizer = _innermost(optimizer)
     if not isinstance(optimizer, torch.optim.Optimizer):
         return None
-    # transformers' LayerWiseDummyOptimizer (galore/apollo *_layerwise): the real per-parameter
-    # optimizers live in optimizer_dict and step from gradient hooks.
+    # LayerWiseDummyOptimizer keeps real optimizers in optimizer_dict, stepped by grad hooks.
     layerwise = getattr(optimizer, "optimizer_dict", None)
     if isinstance(layerwise, dict):
         unique = {id(o): o for o in layerwise.values()}.values()
@@ -396,8 +399,7 @@ def offload_optimizer_state(
         return None
 
     offloader = _StateOffloader(optimizer, pin_memory = pin_memory, chunk_bytes = chunk_bytes)
-    # Hooks, not an optimizer.step override: accelerate swaps the instance's step attribute on
-    # every fp16 step, and hooks run whichever bound step a caller kept.
+    # Step hooks, not a step override: accelerate swaps the instance's step on each fp16 step.
     optimizer.register_step_pre_hook(offloader._pre_step)
     optimizer.register_step_post_hook(offloader._post_step)
 

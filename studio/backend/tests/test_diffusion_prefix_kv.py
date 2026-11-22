@@ -16,6 +16,8 @@ torch = pytest.importorskip("torch")
 from core.inference.diffusion_prefix_kv import (  # noqa: E402
     compact_prefix_kv_cache,
     install_prefix_kv_compaction,
+    release_prefix_kv,
+    track_prefix_kv,
 )
 
 
@@ -233,3 +235,98 @@ def test_a_regional_compile_installs_the_hook(monkeypatch):
     pipe.transformer(torch.zeros(1), kv_cache = cache, kv_cache_mode = "extract")
     k = cache.layer_caches[0].k
     assert k.untyped_storage().nbytes() == k.numel() * k.element_size()
+
+
+def test_tracked_caches_are_emptied_on_release_and_only_once():
+    module = _PrefixKVDenoiser()
+    assert track_prefix_kv(module) is True
+    assert track_prefix_kv(module) is False
+    cond, neg = _Cache(2), _Cache(2)
+    x = torch.zeros(1)
+    for cache in (cond, neg):
+        module(x, kv_cache = cache, kv_cache_mode = "extract")
+    module(x, kv_cache = cond, kv_cache_mode = "cached")
+
+    released = release_prefix_kv(module)
+
+    assert released == 2 * 2 * 2 * 64 * 4 * 8 * 4
+    for cache in (cond, neg):
+        assert all(layer.k is None and layer.v is None for layer in cache.layer_caches)
+    assert release_prefix_kv(module) == 0
+
+
+def test_release_frees_the_cache_storage_and_does_not_keep_dead_caches_alive():
+    import gc
+    import weakref
+
+    module = _PrefixKVDenoiser()
+    track_prefix_kv(module)
+    cache = _Cache(1)
+    module(torch.zeros(1), kv_cache = cache, kv_cache_mode = "extract")
+    k = weakref.ref(cache.layer_caches[0].k)
+    release_prefix_kv(module)
+    gc.collect()
+    assert k() is None
+
+    other = _Cache(1)
+    module(torch.zeros(1), kv_cache = other, kv_cache_mode = "extract")
+    ref = weakref.ref(other)
+    del other
+    gc.collect()
+    assert ref() is None
+    assert release_prefix_kv(module) == 0
+
+
+def test_tracking_skips_denoisers_without_a_prefix_cache():
+    class _Plain(torch.nn.Module):
+        def forward(self, hidden_states):
+            return hidden_states
+
+    assert track_prefix_kv(_Plain()) is False
+    assert track_prefix_kv(None) is False
+    assert release_prefix_kv(None) == 0
+
+
+def test_the_real_qwen_image_21_cache_is_released():
+    tq = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21")
+
+    class _Q21Like(torch.nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            kv_cache = None,
+            kv_cache_mode = None,
+        ):
+            if kv_cache_mode == "extract":
+                for index in range(2):
+                    kv_cache.get_layer(index).store(
+                        torch.randn(1, 3, 4, 8), torch.randn(1, 3, 4, 8)
+                    )
+            return hidden_states
+
+    module = _Q21Like()
+    track_prefix_kv(module)
+    cache = tq.QwenImage21KVCache(2)
+    module(torch.zeros(1), kv_cache = cache, kv_cache_mode = "extract")
+    assert release_prefix_kv(module) == 2 * 2 * 3 * 4 * 8 * 4
+    assert all(layer.k is None and layer.v is None for layer in cache.layer_caches)
+
+
+def test_the_render_helper_also_drops_a_cfg_parallel_replica_copy(monkeypatch):
+    from core.inference import diffusion as diffusion_mod
+    from core.inference import diffusion_multigpu as mg
+
+    pipe = type("P", (), {})()
+    pipe.transformer = _PrefixKVDenoiser()
+    track_prefix_kv(pipe.transformer)
+    cache = _Cache(1)
+    pipe.transformer(torch.zeros(1), kv_cache = cache, kv_cache_mode = "extract")
+    router = types.SimpleNamespace(
+        kv_mirrors = {id(cache): (cache, [], None)}, kv_declined = {1: (cache, [])}
+    )
+    monkeypatch.setattr(mg, "_CFG_ROUTERS", {pipe: router})
+
+    diffusion_mod._release_prefix_kv(pipe)
+
+    assert cache.layer_caches[0].k is None
+    assert router.kv_mirrors == {} and router.kv_declined == {}

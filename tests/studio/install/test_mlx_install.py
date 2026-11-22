@@ -57,6 +57,12 @@ def _run_to_extras(
         "_ensure_cpu_torch": None,
         "_ensure_xpu_triton": None,
         "run": None,
+        # No-torch updates resolve the unsloth / unsloth-zoo pair against the package index;
+        # keep these install-ordering cases offline (the resolver has its own tests).
+        "_no_torch_pair": ("2026.11.1", "2026.11.1", 0),
+        # The runner's own certifi / pip versions would otherwise decide whether a real install runs
+        # (no uv on PATH: FileNotFoundError); the floor has its own tests in test_ca_trust_floor.py.
+        "_trust_floor_specs": [],
         # Off macOS the floor would skip every case; it has its own tests.
         "_mlx_pins_are_installable": mlx_installable,
     }.items():
@@ -110,6 +116,7 @@ def _repair_specs():
 
 # The MLX grammar engine slot (11d) runs after the harness stops; it shares the Apple Silicon gate.
 _GRAMMAR_ENGINE_SLOT = 1
+_HNSW_SLOT = 1
 
 
 def _progress_calls(nodes) -> int:
@@ -202,6 +209,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
             + 2 * int(enabled)
             + int(no_torch and not skip_base)
             + _GRAMMAR_ENGINE_SLOT * int(platform == "macos_arm")
+            + _HNSW_SLOT
         )
     if enabled:
         # --upgrade-package takes a bare NAME, not a pin: skip its argument.
@@ -316,7 +324,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
     assert _repair_specs() == {
         "mlx": "==0.32.4",
         "mlx-lm": ">=0.31.3,<=0.32.2",
-        "mlx-vlm": ">=0.4.4,<=0.7.8",
+        "mlx-vlm": ">=0.6.4,<=0.8.0",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
@@ -341,7 +349,8 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
     # Skipped steps still spend their slots, including the re-resolve, 11c and 11d slots.
     assert (
-        stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1 + 2 + _GRAMMAR_ENGINE_SLOT
+        stack._TOTAL
+        == (12 if skip_base and not shared_base else 13) + 1 + 2 + _GRAMMAR_ENGINE_SLOT + _HNSW_SLOT
     )
 
 
@@ -446,9 +455,8 @@ def _zoo_spec_sequence(monkeypatch, specs):
 
 
 def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
-    """The MLX step runs before the core phase, so it honours the OLD zoo's range. Without the
-    re-resolve an update that moves the zoo leaves the machine on the narrower mlx-vlm for good:
-    the startup self-heal will not correct it, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
+    """The MLX step runs before the core phase and honours the old zoo's range; without a re-resolve
+    the narrower mlx-vlm stays for good, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
     narrow = f"{stack._MLX_VLM_SPEC},<0.7.0"
     # Twice for the install step, then the widened answer after the core phase.
     _zoo_spec_sequence(monkeypatch, [narrow, narrow, stack._MLX_VLM_SPEC])
@@ -488,7 +496,7 @@ def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
     assert stack._MLX_PINS == ("mlx==0.32.4", "mlx-metal==0.32.4")
     names = {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_PINS}
     names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
-    assert names == {"mflux", "piexif", "platformdirs", "toml"}
+    assert names == {"mflux", "pillow", "piexif", "platformdirs", "toml"}
     # The heavy declared deps of mflux stay out: --no-deps plus this list is the whole install.
     assert not names & {
         "opencv-python",

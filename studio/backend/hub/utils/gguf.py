@@ -5,14 +5,19 @@
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 from hub.utils.hf_tokens import call_with_anonymous_retry
 from loggers import get_logger
+from utils import gguf_names as _gguf_names
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
     file_contents_available_locally,
@@ -74,59 +79,25 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
-_GGUF_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
+_GGUF_QUANT_RE = _gguf_names.GGUF_QUANT_RE
 
 
 def is_mmproj_filename(filename: str) -> bool:
-    return "mmproj" in filename.lower()
+    return _gguf_names.is_mmproj_filename(filename)
 
 
-# Anchored at an END of the stem, never a substring, for the reason is_mtp_drafter_path documents: a name that merely contains the word (Qwen3-Imatrix-Tuned-Q4_K_M.gguf) is a real model, while every published imatrix leads or closes with it.
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 def is_imatrix_filename(path: str) -> bool:
-    """True for a calibration imatrix: ``imatrix.gguf``, ``imatrix_unsloth.gguf``, ``imatrix_unsloth.dat``, ``<model>-imatrix.gguf``, ``<model>.imatrix``. It holds activation statistics for llama-quantize, not a model, and llama-server never opens one, so it is neither a selectable variant nor a companion to fetch: unlike mmproj and the MTP drafter it is excluded outright, everywhere they are. Most repos spell it .dat or .gguf_file, which no GGUF listing sees; the ones that publish imatrix_unsloth.gguf (unsloth/Qwen3.8-27B-GGUF) put a valid GGUF container carrying no model in front of the variant menu, download and loader. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_imatrix_path`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports)."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    stem = name.rsplit(".", 1)[0] if "." in name else name
-    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
-
-
-# dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships in and the architecture it reports.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
-
-# Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
-
-# <model>-dspark-<quant>.gguf drafters (prism-ml Bonsai, third-party DSpark GGUFs); a name going on past the quant (DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16.gguf) is the model.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+    return _gguf_names.is_imatrix_filename(path)
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss) and the ``lilicorr-*.gguf`` drafters (NVIDIA Nemotron 3.5). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, by an exact parent dir for ``_DRAFTER_DIR_KINDS``, or by ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return False
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    return (
-        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
-        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
-        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
-    )
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 def is_reclaimable_drafter_path(path: str) -> bool:
@@ -371,10 +342,8 @@ def default_gguf_scope(
     *repo_ids: object,
     key = None,
 ) -> list:
-    """The *items* a bare repo id may default to: the default subdirectory's rows, else root rows, else all.
-
-    Every resolver of a bare id uses this one rule so one id names one checkpoint everywhere.
-    """
+    """Bare repo id defaults: default subdirectory rows, else root rows, else all; every resolver
+    shares this rule so one id names one checkpoint"""
     rows = list(items)
     key_of = key or (lambda item: item)
     subdir = default_gguf_subdir(*repo_ids)
@@ -982,13 +951,34 @@ def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
     return f"{parents}/{stem}" if with_stem else parents
 
 
-def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: object) -> None:
+_NAME_SEPARATORS = "-_. /"
+
+
+def _distinct_name_tails(variants: list[GgufVariantInfo]) -> dict[int, str]:
+    """Each name past the shared prefix (``HIGH`` in ``Model-HIGH.gguf``); empty when none is shared."""
+    stems = [variant.filename.replace("\\", "/").rsplit(".", 1)[0] for variant in variants]
+    shared = os.path.commonprefix(stems)
+    cut = max(shared.rfind(sep) for sep in _NAME_SEPARATORS) + 1
+    if cut <= 0:
+        return {}
+    tails = {id(variant): stem[cut:] for variant, stem in zip(variants, stems)}
+    if not all(tails.values()) or len(set(tails.values())) != len(tails):
+        return {}
+    return tails
+
+
+def _apply_gguf_display_labels(
+    variants: list[GgufVariantInfo],
+    *repo_ids: object,
+    name_tails: bool = False,
+) -> None:
     """Fill ``display_label`` where the key alone does not say which checkpoint a row is."""
     root_label = gguf_root_label(*repo_ids) if repo_ids else None
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
+    unknown_tails = _distinct_name_tails(unknown_variants) if ambiguous and name_tails else {}
 
     # The bpw modifier reads perfectly well on its own, so a key that is only the token plus its bpw suffix is NOT path-qualified and needs no scope label.
     def _plain_key(variant) -> Optional[str]:
@@ -1017,7 +1007,11 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: objec
             variant.display_label = f"{task} · {token or 'GGUF'} · {build}"
             continue
         if token is None:
-            variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+            variant.display_label = (
+                f"GGUF · {unknown_tails.get(id(variant), variant.filename)}"
+                if ambiguous
+                else "GGUF"
+            )
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (
@@ -1371,16 +1365,49 @@ def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, 
     return whole or variants, has_vision, None
 
 
-def list_gguf_variants(
-    repo_id: str, hf_token: Optional[str] = None
-) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
+# A caller's list here receives the model_info list_gguf_variants fetched, for reuse in the same request.
+HUB_MODEL_INFO_SINK: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "gguf_hub_model_info_sink", default = None
+)
+
+
+# Every picker open re-lists each Discover GGUF repo; one listing per repo and credential per window
+# keeps anonymous users under the Hub's API rate limit. A 429 is not re-asked until its window ends.
+_HUB_LISTING_TTL_S = 120.0
+_HUB_RATE_LIMIT_S = 60.0
+_HUB_LISTING_MAX = 256
+_hub_listings: dict[tuple, tuple[float, object]] = {}
+_hub_rate_limited: dict[tuple, tuple[float, BaseException]] = {}
+_hub_listing_lock = threading.Lock()
+
+
+def _hub_listing_key(repo_id: str, hf_token) -> tuple:
+    token = hashlib.sha256(repr(hf_token).encode()).hexdigest()[:16]
+    return (repo_id.lower(), token, os.environ.get("HF_ENDPOINT", ""))
+
+
+def _retry_after_s(exc: BaseException) -> Optional[float]:
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 429:
+        return None
+    try:
+        return max(1.0, min(float(response.headers.get("Retry-After")), 600.0))
+    except (TypeError, ValueError, AttributeError):
+        return _HUB_RATE_LIMIT_S
+
+
+def _hub_model_info(repo_id: str, hf_token):
     from huggingface_hub import HfApi
 
-    if _env_offline():
-        cached = list_gguf_variants_from_hf_cache(repo_id)
-        if cached is not None:
-            return _ready_cached_variants(cached)
-
+    key = _hub_listing_key(repo_id, hf_token)
+    now = time.monotonic()
+    with _hub_listing_lock:
+        hit = _hub_listings.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        limited = _hub_rate_limited.get(key)
+        if limited is not None and limited[0] > now:
+            raise limited[1].with_traceback(None)
     try:
         # A refused credential retries once anonymously: a public listing still answers.
         info = call_with_anonymous_retry(
@@ -1391,6 +1418,35 @@ def list_gguf_variants(
             ),
             hf_token,
         )
+    except Exception as exc:
+        wait = _retry_after_s(exc)
+        if wait is not None:
+            with _hub_listing_lock:
+                now = time.monotonic()
+                for stale in [k for k, (until, _) in _hub_rate_limited.items() if until <= now]:
+                    del _hub_rate_limited[stale]
+                _hub_rate_limited[key] = (now + wait, exc)
+                while len(_hub_rate_limited) > _HUB_LISTING_MAX:
+                    _hub_rate_limited.pop(next(iter(_hub_rate_limited)))
+        raise
+    with _hub_listing_lock:
+        _hub_rate_limited.pop(key, None)
+        _hub_listings[key] = (time.monotonic() + _HUB_LISTING_TTL_S, info)
+        while len(_hub_listings) > _HUB_LISTING_MAX:
+            _hub_listings.pop(next(iter(_hub_listings)))
+    return info
+
+
+def list_gguf_variants(
+    repo_id: str, hf_token: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:
+    if _env_offline():
+        cached = list_gguf_variants_from_hf_cache(repo_id)
+        if cached is not None:
+            return _ready_cached_variants(cached)
+
+    try:
+        info = _hub_model_info(repo_id, hf_token)
     except Exception as exc:
         if type(exc).__name__ in (
             "RepositoryNotFoundError",
@@ -1409,6 +1465,9 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
         raise
 
+    sink = HUB_MODEL_INFO_SINK.get()
+    if sink is not None:
+        sink.append(info)
     has_vision = False
     main_files: list[tuple[str, int]] = []
 
@@ -1541,7 +1600,7 @@ def list_local_gguf_variants(
         for quant, (filename, size) in group_gguf_variant_files(main_files, keys).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
-    _apply_gguf_display_labels(variants, directory, model_root)
+    _apply_gguf_display_labels(variants, directory, model_root, name_tails = keys is not None)
     if keys:
         _label_split_builds(variants, keys)
     return variants, has_vision

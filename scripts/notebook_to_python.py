@@ -21,7 +21,6 @@ import urllib.parse
 from pathlib import Path
 
 
-# Allowlist of hosts for raw notebook fetches; anything else rejected before urlopen.
 _ALLOWED_NOTEBOOK_HOSTS = {
     "raw.githubusercontent.com",
     "gist.githubusercontent.com",
@@ -40,7 +39,7 @@ def needs_fstring(cmd: str) -> bool:
 
 def github_blob_to_raw(url: str) -> str:
     """Convert GitHub blob URL to raw URL."""
-    # github.com/user/repo/blob/branch/path -> raw.githubusercontent.com/user/repo/branch/path. Exact host match, not substring, so attacker.example.com/github.com/blob/... is not rewritten.
+    # Exact host match, not substring, so attacker.example.com/github.com/blob/... is not rewritten.
     parsed = urllib.parse.urlparse(url)
     if parsed.netloc != "github.com" or "/blob/" not in parsed.path:
         return url
@@ -57,7 +56,6 @@ def download_notebook(url: str) -> tuple[str, str]:
     parsed = urllib.parse.urlparse(raw_url)
     filename = os.path.basename(urllib.parse.unquote(parsed.path))
 
-    # Host allowlist: refuse to fetch from anything we don't recognise.
     host = parsed.hostname
     if host not in _ALLOWED_NOTEBOOK_HOSTS:
         raise ValueError(
@@ -181,7 +179,7 @@ def convert_notebook(
     allow_shell: bool = True,
 ) -> str:
     """Convert notebook JSON content to Python script."""
-    # Local, so the string helpers below import without nbformat: the CPU test job does not install it, and a module-level import failed collection there.
+    # Local import: the CPU test job does not install nbformat.
     import nbformat
 
     if isinstance(notebook_content, str):
@@ -227,7 +225,6 @@ def convert_notebook(
                 lines.append(f"# {line}")
             lines.append("")
 
-    # Add package restoration at the end
     lines.extend(
         [
             "",
@@ -320,7 +317,6 @@ Examples:
 
     os.makedirs(args.output_dir, exist_ok = True)
 
-    # Track per-notebook failures; continue the loop and exit 1 if any failed.
     failures: list[tuple[str, str]] = []
     ok = 0
     total = len(args.notebooks)

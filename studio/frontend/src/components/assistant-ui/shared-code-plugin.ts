@@ -3,6 +3,5 @@
 
 import { createCodePlugin } from "./code-plugin";
 
-// Replaces the `code` export of @streamdown/code, whose token cache never evicts. One instance so
-// these surfaces share a single set of Shiki highlighters, as they did with that export.
+// Replaces @streamdown/code's export, whose token cache never evicts; one shared Shiki instance.
 export const codePlugin = createCodePlugin();

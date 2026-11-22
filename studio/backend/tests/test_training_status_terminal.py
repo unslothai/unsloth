@@ -1,19 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two surfaces that hung at 100% when a finished worker would not exit (#7897).
-
-/api/train/status and the progress SSE keyed off liveness-based is_training_active(), so a
-worker wedged in post-save teardown kept reporting "training" forever; they now consult
-is_run_finished() too. A live run must be unaffected, and /api/train/stop must be
-terminal-aware too: a late Stop must not latch _should_stop over the finished banner.
-"""
+"""Status and SSE also consult is_run_finished, so a worker wedged after save is not training."""
 
 from __future__ import annotations
 
 import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -167,7 +162,7 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
         task = asyncio.create_task(pump())
         await asyncio.sleep(1.5)
         assert "complete" not in names, names
-        b._handle_event(dict(_DONE))  # run ends; worker still lingers
+        b._handle_event(dict(_DONE))
         for _ in range(100):
             if "complete" in names:
                 break
@@ -179,13 +174,7 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
 
 
 def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
-    """Stop clicked in the poll window after the run already finished.
-
-    The button greys out only once /api/train/status reports is_training_running=False (3s
-    poll), so a click can still land on a run that has saved. /stop is terminal-aware, so it
-    reports idle instead of latching _should_stop and overwriting the finished banner with a
-    "Stopping..." message no later path clears.
-    """
+    """A Stop landing after the run finished must report idle, not latch _should_stop over the banner."""
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
 
@@ -197,7 +186,6 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
 
-    # ... and it survives the watchdog reaping the wedged worker.
     b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_1")
     st = asyncio.run(rt.get_training_status(current_subject = "t"))
     assert st.phase == "completed"
@@ -205,12 +193,7 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
 
 
 def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monkeypatch):
-    """The same late Stop, except the run finishes *after* the route's terminal check.
-
-    The pump publishes terminal state under the backend lock, so the re-test has to sit
-    inside stop_training() next to the mutation it guards. Without it, /status derives
-    "stopped" for a run the DB finalized as completed.
-    """
+    """The re-check must sit inside stop_training under the lock, or a completed run reads stopped."""
     b = _running(monkeypatch)
     b._db_run_created = True
     real_stop, fired = b.stop_training, []
@@ -218,7 +201,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
     def stop_after_complete(save = True, expected_job_id = None):
         if not fired:
             fired.append(True)
-            b._handle_event(dict(_DONE))  # the pump wins the gap
+            b._handle_event(dict(_DONE))
         return real_stop(save = save, expected_job_id = expected_job_id)
 
     b.stop_training = stop_after_complete
@@ -277,6 +260,106 @@ def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):
     st = asyncio.run(rt.get_training_status(current_subject = "t"))
     assert st.is_training_running is False
     assert rt._run_finished(_Minimal()) is False
+
+
+class _ExitingProc(_WedgedProc):
+    def join(self, timeout = None):
+        self._alive = False
+
+
+class _NeverJoinedProc(_WedgedProc):
+    def join(self, timeout = None):
+        raise AssertionError("a run that is still training must not be waited on")
+
+
+def _start_next_run(monkeypatch, b):
+    started: list[dict] = []
+    b.start_training = lambda **kwargs: started.append(kwargs) or True
+    monkeypatch.setattr(rt, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(rt, "_preflight_hf_dataset_request", lambda *a, **kw: None)
+    monkeypatch.setattr(rt, "_remote_untrainable_model_format", lambda *a, **kw: None)
+    monkeypatch.setattr(rt, "load_model_defaults", lambda *a, **kw: {})
+    request = rt.TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/dataset",
+    )
+    with (
+        patch("utils.transformers_version.latest_tier_active_for", return_value = False),
+        patch(
+            "core.inference.get_inference_backend",
+            return_value = type("InferenceBackend", (), {"active_model_name": None})(),
+        ),
+        patch(
+            "core.export.get_export_backend",
+            return_value = type("ExportBackend", (), {"current_checkpoint": None})(),
+        ),
+    ):
+        response = asyncio.run(rt.start_training(request, current_subject = "t"))
+    return response, started
+
+
+@pytest.mark.parametrize(
+    "terminal_event",
+    [dict(_DONE), {"type": "error", "error": "CUDA OOM", "stack": ""}],
+    ids = ["completed", "error"],
+)
+def test_start_right_after_a_finished_run_waits_for_the_worker_to_exit(monkeypatch, terminal_event):
+    b = _running(monkeypatch)
+    b._proc = _ExitingProc()
+    b._handle_event(terminal_event)
+    status = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert status.is_training_running is False
+    response, started = _start_next_run(monkeypatch, b)
+    assert response.status == "queued"
+    assert response.job_id != "job_1"
+    assert len(started) == 1
+
+
+def test_start_is_still_refused_while_a_finished_worker_will_not_exit(monkeypatch):
+    b = _running(monkeypatch)
+    b._handle_event(dict(_DONE))
+    response, started = _start_next_run(monkeypatch, b)
+    assert response.error == "Training already active"
+    assert started == []
+
+
+def test_start_mid_run_is_refused_without_waiting(monkeypatch):
+    b = _running(monkeypatch)
+    b._proc = _NeverJoinedProc()
+    response, started = _start_next_run(monkeypatch, b)
+    assert response.error == "Training already active"
+    assert started == []
+
+
+class _PastTheLlmGuard(Exception):
+    pass
+
+
+def _start_diffusion(monkeypatch):
+    def reached(raw):
+        raise _PastTheLlmGuard
+
+    monkeypatch.setattr(rt, "_resolve_diffusion_data_dir", reached)
+    body = rt.DiffusionTrainingStartRequest(base_model = "org/sdxl", data_dir = "d", output_dir = "run")
+    return asyncio.run(rt.start_diffusion_training(body, current_subject = "t", via_api_key = False))
+
+
+def test_diffusion_start_right_after_a_finished_llm_run_waits_for_the_worker_to_exit(monkeypatch):
+    b = _running(monkeypatch)
+    b._proc = _ExitingProc()
+    b._handle_event(dict(_DONE))
+    with pytest.raises(_PastTheLlmGuard):
+        _start_diffusion(monkeypatch)
+
+
+def test_diffusion_start_mid_llm_run_is_refused_without_waiting(monkeypatch):
+    b = _running(monkeypatch)
+    b._proc = _NeverJoinedProc()
+    with pytest.raises(rt.HTTPException) as exc:
+        _start_diffusion(monkeypatch)
+    assert exc.value.status_code == 409
 
 
 def test_status_retains_resolved_repo_through_preparation_and_clears_on_next_load(monkeypatch):

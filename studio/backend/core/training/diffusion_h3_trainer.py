@@ -49,7 +49,9 @@ from core.training.diffusion_h3_clips import (
     H3_AUDIO_CHANNELS,
     H3_AUDIO_LATENT_CHANNELS,
     H3_AUDIO_TAG,
+    H3_AUDIO_SAMPLING_RATE,
     H3_CANVAS_MULTIPLE,
+    H3_FPS,
     H3_FRAMES_PER_CHUNK,
     H3_LATENTS_PER_CHUNK,
     H3_PIXEL_MEAN,
@@ -67,6 +69,11 @@ from core.training.diffusion_h3_clips import (
     h3_train_canvas,
     h3_video_latent_frames,
 )
+from core.training.diffusion_gc_budget import (
+    OUT_OF_MEMORY,
+    BudgetedSteps,
+    enable_budgeted_checkpointing,
+)
 from core.training.diffusion_train_common import (
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
@@ -78,6 +85,8 @@ from core.training.diffusion_train_common import (
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
+    _publish_to_lora_catalog,
+    training_fetch_repo,
     _latent_cache_forced,
     _latent_cache_over_budget,
     _restore_perf_flags,
@@ -91,17 +100,15 @@ from core.training.diffusion_train_common import (
     resolve_train_steps,
     train_recipe_overrides,
 )
-from core.training.diffusion_train_extras import LoRAEMA, save_ema_adapter
+from core.training.diffusion_train_extras import (
+    LoRAEMA,
+    accumulate_loss,
+    loss_value,
+    save_ema_adapter,
+)
 
-# H3 has ONE set of block weights serving all three modalities, so this is the whole adapter
-# surface; the exclusions below are deliberate. adaln_proj.linear is 40% of the checkpoint's
-# parameters but its input is a (num_timesteps, 2688) tensor with two or three rows, so a rank-r
-# adapter there learns noise. proj_in / audio_proj_in / proj_out / audio_proj_out /
-# context_embedder are the patch and text projections, kept in fp32 by the checkpoint's own
-# _keep_in_fp32_modules; adapting them mixes precisions for no benefit. The token_refiner blocks
-# carry attn and ff under the SAME leaf names (token_refiner.refiner_blocks.0.attn.to_q), which is
-# why the targets are a REGEX and not a list: PEFT suffix-matches a list, so it would adapt the
-# text refiner as well as the denoiser stack.
+# adaln_proj inputs have 2-3 rows, so an adapter there learns noise; the projections stay fp32.
+# A REGEX, not a list: PEFT suffix-matches lists and would also adapt token_refiner.
 _H3_TARGET_LEAVES = (
     "attn.to_q",
     "attn.to_k",
@@ -116,11 +123,7 @@ _H3_TARGETS = (
     + ")"
 )
 
-# The transformer reads a DTYPE off these weights to align an activation
-# (x.to(self.linear.weight.dtype)), and a bitsandbytes Params4bit reports uint8, so quantizing one
-# casts the activation to Byte and the next norm dies with "rms_norm" not implemented for 'Byte'.
-# Costs the nf4 saving on adaln_proj (36.6 GB instead of ~17 GB); torchao int8 is unaffected,
-# since its subclass reports bfloat16, so base_precision="int8" quantizes everything.
+# Params4bit reports uint8 and the model casts activations to weight.dtype, breaking rms_norm.
 _H3_NF4_SKIP_MODULES = ("context_embedder", "adaln_proj", "norm_out")
 
 # The exponential sigma shifts of the two schedules, from the released scheduler configs.
@@ -132,8 +135,7 @@ _H3_TEXT_ENCODER_LAYER = 50
 
 # Naming the components is what keeps the 66 GB transformer off the device while the 63 GiB conditioner is on it.
 _H3_TEXT_COMPONENTS = ("text_encoder", "tokenizer", "processor")
-# The VAEs load in fp32: both carry modules diffusers refuses to cast, so a bf16 load followed by
-# .to(float32) warns and leaves the cast half-applied.
+# fp32: both carry modules diffusers refuses to cast, so a later .to(float32) is partial.
 _H3_VAE_COMPONENTS = ("vae", "audio_vae")
 _H3_CONDITIONING_COMPONENTS = _H3_TEXT_COMPONENTS + _H3_VAE_COMPONENTS
 
@@ -144,11 +146,7 @@ def _shifted_sigma(u: float, shift: float) -> float:
 
 
 def _assert_component_grid(pipe: Any) -> None:
-    """Check the constants in ``diffusion_h3_clips`` against the loaded components.
-
-    Those constants drive the packed layout, and a wrong one produces a silently misaligned
-    sequence rather than an exception, so they are asserted against the checkpoint that is
-    actually loaded instead of trusted."""
+    """A wrong layout constant misaligns the sequence silently, so check it against the loaded VAEs."""
     vae = getattr(pipe, "vae", None)
     audio_vae = getattr(pipe, "audio_vae", None)
     actual = {}
@@ -172,53 +170,41 @@ def _assert_component_grid(pipe: Any) -> None:
 
 
 def _load_conditioners(cfg, device):
-    """Build the modular pipeline and load ONLY the conditioning components.
-
-    ``ModularPipeline.from_pretrained`` without ``workflow=`` keeps the whole block graph (a
-    ``workflow=`` prunes it statically and cannot be undone), and ``load_components(names=...)``
-    then fetches exactly the components named -- so the transformer is never even downloaded at
-    this phase, let alone resident."""
+    """Loads only the named conditioning components, not the transformer; omit workflow=, which prunes the block graph statically and cannot be undone."""
     import torch
     from diffusers import ModularPipeline
 
     from core.inference.diffusion import hub_cache_dir
 
-    # Pin the cache dir: diffusers resolves an unset one through huggingface_hub's import-time
-    # constant and this subprocess is spawned without the cache-environment wrapper, so components in
-    # the selected root were missed and ~145 GB re-downloaded into the old one.
+    # Pin the cache dir: diffusers falls back to an import-time hub default, and this subprocess lacks the cache wrapper, so components get re-downloaded.
     cache_dir = hub_cache_dir()
     pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir)
-    # load_components runs a separate from_pretrained per component and swallows a failure as a
-    # warning, so without the token an anonymous 401 leaves the attribute unset and the first use dies
-    # on None instead of naming the gate.
+    from core.inference.diffusion_component_fetch import load_components_strict
+
+    # load_components swallows per-component failures (a missing token, a full disk); the strict call raises them.
     auth = {"token": cfg.hf_token} if cfg.hf_token else {}
-    pipe.load_components(
+    load_components_strict(
+        pipe,
         names = list(_H3_TEXT_COMPONENTS),
         torch_dtype = torch.bfloat16,
         cache_dir = cache_dir,
         **auth,
     )
-    pipe.load_components(
+    load_components_strict(
+        pipe,
         names = list(_H3_VAE_COMPONENTS),
         torch_dtype = torch.float32,
         cache_dir = cache_dir,
         **auth,
     )
     _assert_component_grid(pipe)
-    # ``load_components`` builds every component on the CPU, so place them explicitly.
+    # Only the conditioner moves here; the VAEs move after it is freed (_train_h3).
     pipe.text_encoder.to(device)
-    pipe.vae.to(device)
-    pipe.audio_vae.to(device)
     return pipe
 
 
 def _encode_prompt(pipe, caption: str, device) -> Any:
-    """One caption -> the ``(1, num_tokens, 5120)`` hidden state H3 conditions on.
-
-    The presentation is the prompt verbatim: no chat template, no special tokens. The stack is
-    called through ``text_encoder.model`` because H3 reads ``hidden_states[50]`` and never uses
-    the language-model head, whose vocabulary-wide projection is all the top-level forward would
-    add."""
+    """Calls text_encoder.model directly: H3 reads hidden_states[50] and never needs the LM head."""
     import torch
 
     token_ids = pipe.tokenizer(caption, add_special_tokens = False)["input_ids"]
@@ -238,27 +224,54 @@ def _encode_prompt(pipe, caption: str, device) -> Any:
             f"conditioner, which needs more than {_H3_TEXT_ENCODER_LAYER} decoder layers; this "
             f"one has {num_layers}."
         )
+    kwargs = dict(
+        input_ids = input_ids,
+        attention_mask = torch.ones_like(input_ids),
+        mm_token_type_ids = mm_token_type_ids,
+        use_cache = False,
+    )
     with torch.no_grad():
-        out = encoder.model(
-            input_ids = input_ids,
-            attention_mask = torch.ones_like(input_ids),
-            mm_token_type_ids = mm_token_type_ids,
-            use_cache = False,
-            output_hidden_states = True,
-        )
-    return out.hidden_states[_H3_TEXT_ENCODER_LAYER].to("cpu", torch.float32)
+        hidden = _early_exit_hidden_state(encoder, _H3_TEXT_ENCODER_LAYER, kwargs)
+        if hidden is None:
+            out = encoder.model(**kwargs, output_hidden_states = True)
+            hidden = out.hidden_states[_H3_TEXT_ENCODER_LAYER]
+    return hidden.to("cpu", torch.float32)
+
+
+class _HiddenStateReached(Exception):
+    """Raised by the capture hook to stop the encoder once the read layer has run."""
+
+
+def _early_exit_hidden_state(encoder, layer: int, kwargs: dict) -> Any:
+    """hidden_states[layer] is the raw output of decoder layer ``layer - 1`` (index 0 is the embeddings), so capture
+    it there and stop: layers past it and the final norm never run, and the other 64 states are never kept. Text-only
+    input, so no deepstack visual rows are added between layers. None (run the full encoder) on any surprise."""
+    import torch
+
+    text_model = getattr(getattr(encoder, "model", None), "language_model", None)
+    layers = getattr(text_model, "layers", None)
+    if not isinstance(layers, torch.nn.ModuleList) or not 0 < layer < len(layers):
+        return None
+    captured: list = []
+
+    def _capture(_module, _args, output):
+        captured.append(output[0] if isinstance(output, (tuple, list)) else output)
+        raise _HiddenStateReached
+
+    handle = layers[layer - 1].register_forward_hook(_capture)
+    try:
+        encoder.model(**kwargs, output_hidden_states = False)
+    except _HiddenStateReached:
+        pass
+    finally:
+        handle.remove()
+    if len(captured) != 1 or not isinstance(captured[0], torch.Tensor):
+        return None
+    return captured[0]
 
 
 def _encode_video_stats(vae, frames, device) -> tuple[Any, Any]:
-    """Encode one clip's frames to the normalised posterior's affine ``(A, B)`` pair.
-
-    ``frames`` is the uint8 ``(F, H, W, 3)`` array ``decode_clip`` returns. The recipe is the
-    released model's: ImageNet-normalise the pixels, encode, and normalise the latent by the
-    VAE's ``latents_mean`` / ``latents_std``. Caching ``(A, B)`` rather than a sample keeps a
-    fresh posterior draw available at every step without the VAE resident, exactly as the DiT
-    trainer's latent cache does. The reference's float16 rounding of the SAMPLE is not applied:
-    it is a conditioning-anchor reproducibility device (it makes a keyframe encode
-    bit-identical), and rounding a training target only removes signal."""
+    """Caches the affine (A, B) pair, not a sample, so each step draws fresh noise; no float16 rounding, which would only drop signal."""
     import torch
 
     pixels = torch.from_numpy(frames).to(device)
@@ -278,12 +291,7 @@ def _encode_video_stats(vae, frames, device) -> tuple[Any, Any]:
 
 
 def _encode_audio_latents(audio_vae, waveform, device) -> Any:
-    """Encode one clip's stereo soundtrack to normalised audio latents ``(2, 32, n)``.
-
-    The audio VAE is mono, so the two stereo channels go through as two batch items -- the same
-    boundary the decoder crosses in reverse. MiniMax-H3 consumes the posterior MEAN and never
-    evaluates the ``logs_proj`` head, so the audio target is deterministic and no affine pair is
-    cached for it."""
+    """Audio VAE is mono, so stereo channels go as two batch items; H3 uses the posterior mean, so the target is deterministic and no affine pair is cached."""
     import torch
 
     samples = torch.from_numpy(waveform).to(device).unsqueeze(1)
@@ -302,8 +310,7 @@ def _load_transformer(cfg, device, base_precision):
 
     from core.inference.diffusion import hub_cache_dir
 
-    # Same pin as the conditioners: the denoiser is the 145 GB half, so an unpinned load here is the
-    # expensive one to get wrong.
+    # Pin like the conditioners: the 145 GB denoiser is the costly half to load unpinned.
     cache_dir = hub_cache_dir()
     if base_precision == "nf4":
         from diffusers import BitsAndBytesConfig as DiffusersBnb
@@ -323,13 +330,15 @@ def _load_transformer(cfg, device, base_precision):
             token = cfg.hf_token,
             cache_dir = cache_dir,
         )
-    return MiniMaxH3Transformer3DModel.from_pretrained(
+    transformer = MiniMaxH3Transformer3DModel.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
         cache_dir = cache_dir,
-    ).to(device)
+    )
+    # int8 stays on the host: _int8_quantize_base streams it onto the device one Linear at a time.
+    return transformer if base_precision == "int8" else transformer.to(device)
 
 
 def _patchify(latents, patch: tuple[int, int, int]):
@@ -347,11 +356,7 @@ def _build_layout(
     patch: tuple[int, int, int],
     device,
 ):
-    """The packed ``[text | audio | video]`` layout for one training sample.
-
-    Built by the pipeline's own ``@staticmethod`` so the trainer and the sampler cannot drift:
-    the rotary grid, the row order and the modality tags are a checkpoint contract, and a
-    reimplementation that agreed today would not stay agreeing."""
+    """Uses the pipeline's own staticmethod, since row order and rotary grid are a checkpoint contract."""
     import torch
     from diffusers.modular_pipelines.minimax_h3.before_denoise import MiniMaxH3PrepareLayoutStep
 
@@ -388,10 +393,7 @@ def _build_layout(
 
 
 def _row_timesteps(layout, num_text_tokens: int, t_video: float, t_audio: float, device):
-    """The transformer's ``(timestep, timestep_indices)`` pair for one step.
-
-    Also the pipeline's own ``@staticmethod``: one forward serves rows at different noise
-    levels, and which row is at which level is the layout's business, not the loop's."""
+    """Uses the pipeline's own staticmethod, since one forward serves rows at different noise levels."""
     from diffusers.modular_pipelines.minimax_h3.before_denoise import MiniMaxH3SetTimestepsStep
 
     timestep, timestep_indices = MiniMaxH3SetTimestepsStep.build_row_timesteps(
@@ -402,8 +404,7 @@ def _row_timesteps(layout, num_text_tokens: int, t_video: float, t_audio: float,
         num_text_tokens,
         t_video,
         t_audio,
-        # No conditioning rows exist in this layout, so pass the generated timesteps and keep a phantom
-        # value out of torch.unique.
+        # No conditioning rows in this layout; keep a phantom value out of torch.unique.
         t_video,
         t_audio,
     )
@@ -415,22 +416,7 @@ def _save_lora(
     layers: dict,
     adapter_config: Optional[dict] = None,
 ) -> None:
-    """Write the adapter as ``pytorch_lora_weights.safetensors``.
-
-    Diffusers ships no ``MiniMaxH3LoraLoaderMixin``, so there is no
-    ``MiniMaxH3Pipeline.save_lora_weights`` to route through and no
-    ``pipe.load_lora_weights`` to read it back. The file this writes is nonetheless the
-    ordinary diffusers single-file layout with the ``transformer.`` prefix every mixin uses, so
-    it loads with ``transformer.load_lora_adapter(path, prefix="transformer")`` today and will
-    load with ``load_lora_weights`` unchanged the day that mixin lands.
-
-    ``adapter_config`` is the PEFT config, written as safetensors metadata in the layout
-    ``_save_lora_weights`` uses: the JSON under ``lora_adapter_metadata``, every key packed with
-    the same ``transformer.`` prefix, because ``load_lora_adapter`` strips the prefix off the
-    metadata exactly as it does off the tensors. Without it the loader falls through to
-    ``get_peft_kwargs``, which reads the rank off the B matrices and then sets
-    ``lora_alpha = r`` -- so an adapter trained at rank 16 / alpha 32 came back at half the
-    strength it was trained with, silently."""
+    """adapter_config goes in the metadata, else the loader sets lora_alpha = r, changing its scale."""
     import json
 
     from safetensors.torch import save_file
@@ -457,14 +443,11 @@ def run_h3_lora_training(
     cfg = config.normalized()
     if cfg.resolved_family != "minimax-h3":
         raise ValueError(f"This trainer is for minimax-h3, not {cfg.resolved_family!r}.")
-    # Every config-only refusal also lives in the shared preflight the START ROUTE calls before
-    # evicting resident GPU models; raised again here so a direct trainer call is refused too.
+    # Also checked in the preflight of the start route, which runs before GPU models are evicted; repeated so a direct call is refused too.
     reason = h3_train_unsupported_reason(cfg)
     if reason:
         raise ValueError(reason)
-    # The augmentation and snr_gamma defaults do not match what the clip loop does (one centre
-    # cover-crop, no flips, plain unweighted MSE), so they are normalised rather than refused, which
-    # would 422 every default request. Read off the shared table the SERVICE also applies.
+    # Normalised, not refused: the defaults do not match the clip loop and would 422 every request.
     cfg = replace(cfg, **train_recipe_overrides(cfg))
 
     import torch
@@ -498,9 +481,7 @@ def run_h3_lora_training(
         )
     weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32
 
-    # allow_modular: this loop loads through ModularPipeline.from_pretrained, and a local MiniMax-H3
-    # pipeline carries modular_model_index.json and no model_index.json, so the conventional shape
-    # check refused the only local layout the family has.
+    # A local MiniMax-H3 pipeline carries modular_model_index.json, not model_index.json.
     _assert_trusted_base_model(
         cfg.base_model,
         allow_modular = (cfg.resolved_family or "").strip().lower() in MODULAR_BASE_FAMILIES,
@@ -509,7 +490,9 @@ def run_h3_lora_training(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
     cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
-    _emit(on_event, "model_load_started", num_images = len(pairs))
+    _emit(
+        on_event, "model_load_started", num_images = len(pairs), fetch_repo = training_fetch_repo(cfg)
+    )
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
         _emit(
@@ -524,6 +507,229 @@ def run_h3_lora_training(
         )
     finally:
         _restore_perf_flags(perf_snap)
+
+
+# Bump when what a clip entry holds (or how it is encoded) changes.
+_H3_CLIP_CACHE_VERSION = "1"
+
+
+def _open_h3_cache(cfg, on_event):
+    """The persistent conditioning cache for this run, or None (switched off, or unusable: never fatal)."""
+    from core.training.diffusion_train_extras import (
+        PersistentConditioningCache,
+        compact_cache_namespace,
+        effective_cond_cache_dir,
+        source_revision,
+    )
+
+    root = effective_cond_cache_dir(getattr(cfg, "cond_cache_dir", None))
+    if not root:
+        return None
+    try:
+        # The conditioner, both VAEs and the tokenizer all come from the base pipeline, so its revision covers them.
+        namespace = compact_cache_namespace(
+            cfg.resolved_family, cfg.base_model, source_revision(cfg.base_model)
+        )
+        return PersistentConditioningCache(
+            root,
+            namespace,
+            cfg.resolution,
+            text_encoder = f"qwen3vl-hs{_H3_TEXT_ENCODER_LAYER}",
+        )
+    except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
+        _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
+        return None
+
+
+def _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents) -> Optional[str]:
+    """Everything that changes a clip's (video mean, video std, audio) entry: canvas, frame count, fps, the audio
+    layout, and the clip's own bytes. None (uncached) when there is no cache or the clip cannot be read."""
+    if pcache is None:
+        return None
+    try:
+        return pcache.entry_key(
+            "h3clip",
+            _H3_CLIP_CACHE_VERSION,
+            str(path),
+            f"{width}x{height}",
+            f"f{num_frames}",
+            f"fps{H3_FPS}",
+            f"sr{H3_AUDIO_SAMPLING_RATE}",
+            f"ch{H3_AUDIO_CHANNELS}",
+            f"a{num_audio_latents}",
+        )
+    except OSError:
+        # decode_clip raises the real error for an unreadable clip.
+        return None
+
+
+def _cache_get(pcache, key):
+    if pcache is None or key is None:
+        return None
+    try:
+        return pcache.get(key)
+    except Exception:  # noqa: BLE001 -- an unreadable entry is a miss
+        return None
+
+
+def _cache_put(pcache, key, tensors) -> None:
+    if pcache is None or key is None:
+        return
+    try:
+        pcache.put(key, tensors)
+    except Exception:  # noqa: BLE001 -- disk-full etc.: the run still trains
+        pass
+
+
+def _check_h3_cache_budget(entry, n_clips: int, width: int, height: int) -> None:
+    """Both VAEs are freed before the transformer loads, so an over-budget cache cannot fall back."""
+    if _latent_cache_forced():
+        return
+    from core.training import diffusion_train_common as _train_common
+
+    per_clip = int(sum(t.numel() * t.element_size() for t in entry))
+    if _latent_cache_over_budget(per_clip, n_clips):
+        budget = _train_common._LATENT_CACHE_BUDGET_BYTES
+        raise ValueError(
+            f"{n_clips} clips at {width}x{height} need about "
+            f"{per_clip * n_clips / 1024**3:.1f} GiB of host memory for the "
+            f"MiniMax-H3 latent cache, over the {budget / 1024**3:.0f} GiB budget. Train "
+            f"on fewer clips or at a lower resolution, or set "
+            f"UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE=1 to cache them anyway."
+        )
+
+
+def _prepare_h3_conditioning(
+    cfg,
+    clip_paths,
+    captions,
+    device,
+    on_event,
+    _check_stop,
+    *,
+    width: int,
+    height: int,
+    num_frames: int,
+    num_audio_latents: int,
+):
+    """(caption_embeds, per-clip (video_a, video_b, audio)), or None on a stop request. A warm persistent cache
+    serves both without loading the conditioner or the VAEs; otherwise the misses are encoded and written back.
+
+    The loads and encodes run RNG-isolated, so a warm run and a cold run hand the same training streams on."""
+    import torch
+
+    from core.training.diffusion_samples import isolated_sampling
+
+    to_encode = sorted(set(captions))
+    pcache = _open_h3_cache(cfg, on_event)
+    caption_embeds: dict = {}
+    clip_entries: dict = {}
+    if pcache is not None:
+        for cap in to_encode:
+            hit = _cache_get(pcache, pcache.text_key(cap))
+            if hit is not None:
+                caption_embeds[cap] = hit[0]
+        for i, path in enumerate(clip_paths):
+            key = _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents)
+            hit = _cache_get(pcache, key)
+            if hit is not None:
+                if not clip_entries:
+                    # Every clip shares one canvas, so the first hit sizes the cache: refuse before holding the rest.
+                    _check_h3_cache_budget(hit, len(clip_paths), width, height)
+                clip_entries[i] = tuple(hit)
+    warm = len(caption_embeds) == len(to_encode) and len(clip_entries) == len(clip_paths)
+
+    if warm:
+        _emit(
+            on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode)
+        )
+        cache = [clip_entries[i] for i in range(len(clip_paths))]
+        _check_h3_cache_budget(cache[0], len(clip_paths), width, height)
+        _emit(
+            on_event,
+            "preparing",
+            stage = "cache_latents",
+            done = len(clip_paths),
+            total = len(clip_paths),
+        )
+        return caption_embeds, cache
+
+    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner is resident here and nowhere else.
+    with isolated_sampling(device, False):
+        pipe = _load_conditioners(cfg, device)
+        # The load can move the revision (a first run read "unresolved", or the fetch pulled a newer snapshot):
+        # what was served under the old namespace is dropped and everything is read and written under the new one.
+        if pcache is not None:
+            fresh = _open_h3_cache(cfg, on_event)
+            if fresh is not None and fresh.family != pcache.family:
+                pcache = fresh
+                caption_embeds.clear()
+                clip_entries.clear()
+                for cap in to_encode:
+                    hit = _cache_get(pcache, pcache.text_key(cap))
+                    if hit is not None:
+                        caption_embeds[cap] = hit[0]
+        for cap in to_encode:
+            if cap not in caption_embeds:
+                caption_embeds[cap] = _encode_prompt(pipe, cap, device)
+                if pcache is not None:
+                    _cache_put(pcache, pcache.text_key(cap), (caption_embeds[cap],))
+    caption_embeds = {cap: caption_embeds[cap] for cap in to_encode}
+    _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
+    pipe.text_encoder = None
+    if getattr(pipe, "processor", None) is not None:
+        pipe.processor = None
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
+    for attr in _H3_VAE_COMPONENTS:
+        module = getattr(pipe, attr, None)
+        if module is not None:
+            module.to(device)
+
+    # Phase 2: clip latents.
+    cache: list[tuple[Any, Any, Any]] = []
+    for i, path in enumerate(clip_paths):
+        key = _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents)
+        entry = clip_entries.get(i)
+        if entry is None:
+            # A namespace the load moved to may already hold this clip.
+            hit = _cache_get(pcache, key)
+            entry = tuple(hit) if hit is not None else None
+        if entry is None:
+            frames, waveform = decode_clip(
+                path,
+                num_frames = num_frames,
+                width = width,
+                height = height,
+                # Latents are cached from the opening window, so longer sources train only their first seconds.
+                on_note = lambda message: _emit(on_event, "warning", message = message),
+            )
+            with isolated_sampling(device, False):
+                video_a, video_b = _encode_video_stats(pipe.vae, frames, device)
+                audio = _encode_audio_latents(pipe.audio_vae, waveform, device)
+            if audio.shape[-1] != num_audio_latents:
+                raise ValueError(
+                    f"{Path(path).name} encoded to {audio.shape[-1]} audio latents, but the packed "
+                    f"layout reserves {num_audio_latents} rows per channel."
+                )
+            entry = (video_a, video_b, audio)
+            _cache_put(pcache, key, entry)
+        if i == 0:
+            _check_h3_cache_budget(entry, len(clip_paths), width, height)
+        cache.append(entry)
+        _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(clip_paths))
+        if _check_stop():
+            return None
+    del pipe
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
+    return caption_embeds, cache
 
 
 def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _save_on_stop):
@@ -549,76 +755,33 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     latent_frames = h3_video_latent_frames(num_frames)
     num_audio_latents = h3_audio_latent_count(num_frames)
 
-    to_encode = sorted(set(captions))
-
-    # Phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident here and nowhere else.
-    pipe = _load_conditioners(cfg, device)
-    caption_embeds = {cap: _encode_prompt(pipe, cap, device) for cap in to_encode}
-    _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
-    pipe.text_encoder = None
-    if getattr(pipe, "processor", None) is not None:
-        pipe.processor = None
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
-    elif device == "xpu":
-        torch.xpu.empty_cache()
-
-    # Phase 2: the clip cache. One canvas for the run, from the FIRST clip's aspect ratio: every other clip is
-    # cover-cropped onto it, so a mixed-aspect dataset trains on one geometry.
+    # Phases 1 and 2: caption embeddings and clip latents, served from the persistent cache when warm.
+    # One canvas from the FIRST clip's aspect ratio; other clips are cover-cropped onto it.
     width, height = _dataset_canvas(clip_paths[0], cfg.resolution)
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
-    cache: list[tuple[Any, Any, Any]] = []
-    for i, path in enumerate(clip_paths):
-        frames, waveform = decode_clip(
-            path,
-            num_frames = num_frames,
-            width = width,
-            height = height,
-            # The window is the clip's opening and the latents are cached once, so a longer source trains only
-            # its first seconds while its caption describes the whole thing.
-            on_note = lambda message: _emit(on_event, "warning", message = message),
+    prepared = _prepare_h3_conditioning(
+        cfg,
+        clip_paths,
+        captions,
+        device,
+        on_event,
+        _check_stop,
+        width = width,
+        height = height,
+        num_frames = num_frames,
+        num_audio_latents = num_audio_latents,
+    )
+    if prepared is None:
+        _emit(
+            on_event,
+            "complete",
+            output_dir = str(out_dir),
+            lora_path = None,
+            stopped = True,
+            steps_run = 0,
         )
-        video_a, video_b = _encode_video_stats(pipe.vae, frames, device)
-        audio = _encode_audio_latents(pipe.audio_vae, waveform, device)
-        if audio.shape[-1] != num_audio_latents:
-            raise ValueError(
-                f"{Path(path).name} encoded to {audio.shape[-1]} audio latents, but the packed "
-                f"layout reserves {num_audio_latents} rows per channel."
-            )
-        entry = (video_a, video_b, audio)
-        if i == 0 and not _latent_cache_forced():
-            # H3 cannot answer an over-budget estimate by encoding per step, because both VAEs are freed to
-            # make room for the 66 GB transformer, so say so now with the numbers instead of being OOM-killed.
-            from core.training import diffusion_train_common as _train_common
-            per_clip = int(sum(t.numel() * t.element_size() for t in entry))
-            if _latent_cache_over_budget(per_clip, len(clip_paths)):
-                budget = _train_common._LATENT_CACHE_BUDGET_BYTES
-                raise ValueError(
-                    f"{len(clip_paths)} clips at {width}x{height} need about "
-                    f"{per_clip * len(clip_paths) / 1024**3:.1f} GiB of host memory for the "
-                    f"MiniMax-H3 latent cache, over the {budget / 1024**3:.0f} GiB budget. Train "
-                    f"on fewer clips or at a lower resolution, or set "
-                    f"UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE=1 to cache them anyway."
-                )
-        cache.append(entry)
-        _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(clip_paths))
-        if _check_stop():
-            _emit(
-                on_event,
-                "complete",
-                output_dir = str(out_dir),
-                lora_path = None,
-                stopped = True,
-                steps_run = 0,
-            )
-            return str(out_dir)
-    del pipe
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
-    elif device == "xpu":
-        torch.xpu.empty_cache()
+        return str(out_dir)
+    caption_embeds, cache = prepared
 
     # Phase 3: the denoiser.
     base_precision = cfg.base_precision if cfg.base_precision != "auto" else "nf4"
@@ -628,10 +791,10 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             "through one set of linears, so the activation range is not the per-family range "
             "the fp8 filter was measured against. Use nf4, int8 or bf16."
         )
+    _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
     transformer = _load_transformer(cfg, device, base_precision)
     transformer.requires_grad_(False)
-    # normalized() fills lora_target_modules with the generic DEFAULT_LORA_TARGETS when unset, so that
-    # value means "unset" and the family's own regex wins.
+    # DEFAULT_LORA_TARGETS here means "unset", so the family's own regex wins.
     targets: Any = (
         _H3_TARGETS
         if tuple(cfg.lora_target_modules) == DEFAULT_LORA_TARGETS
@@ -646,8 +809,12 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             target_modules = targets,
         )
     )
+    gc_budget = None
     if cfg.gradient_checkpointing:
-        enable_diffusion_gradient_checkpointing(transformer)
+        # Keeps as many blocks' activations as the card has room for after step 1; None = every block checkpointed.
+        gc_budget = enable_budgeted_checkpointing(transformer, device)
+        if gc_budget is None:
+            enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if not lora_params:
@@ -656,11 +823,9 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             f"would train nothing."
         )
     if base_precision == "int8":
-        # WITH the family: H3's adaln_proj is Linear(2688 -> 96768), so it clears the 512-feature floor
-        # and gets quantized, then runs at M = 1 and raises "self.size(0) needs to be greater than 16"
-        # after the 66.3 GB base has loaded. The family also carries the pad list (context_embedder,
-        # token_refiner) the helper applies.
-        _int8_quantize_base(transformer, cfg.resolved_family)
+        # WITH the family: it excludes adaln_proj (runs at M = 1) and supplies the pad list.
+        _int8_quantize_base(transformer, cfg.resolved_family, device = device)
+        lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
     # dynamic=True keeps one graph per block across caption lengths; int8 stays eager like the DiT families.
@@ -689,6 +854,20 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     transformer.train()
     patch = tuple(transformer.config.patch_size)
+    from core.inference.host_pinning import host_pinning_allowed
+
+    if device == "cuda" and host_pinning_allowed():
+
+        def _pin_or_keep(t):
+            try:
+                return t.contiguous().pin_memory()
+            except RuntimeError:
+                return t
+
+        cache = [tuple(_pin_or_keep(t) for t in entry) for entry in cache]
+        caption_embeds = {cap: _pin_or_keep(t) for cap, t in caption_embeds.items()}
+    # Packed layout depends only on caption length (fixed canvas).
+    layouts: dict[int, tuple[dict, dict]] = {}
     index_sampler = PermutationBatchSampler(len(clip_paths), rng)
     autocast = (
         torch.autocast(device_type = device, dtype = torch.bfloat16)
@@ -702,20 +881,53 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     t_steady = None
     done = 0
     reset_training_peak_memory(device)
+    budget_steps = BudgetedSteps(
+        gc_budget,
+        device,
+        optimizer,
+        warn = lambda message: _emit(on_event, "warning", message = message),
+    )
+
+    def _forward_backward(
+        video_rows, audio_rows, embeds, timestep, timestep_indices, num_text, targets
+    ):
+        # The layout is looked up, not recorded: its device tensors are shared by every step.
+        layout = layouts[num_text][1]
+        target_video, target_audio = targets
+        with autocast:
+            pred_video, pred_audio = transformer(
+                hidden_states = video_rows[None],
+                audio_hidden_states = audio_rows[None],
+                encoder_hidden_states = embeds,
+                timestep = timestep,
+                timestep_indices = timestep_indices,
+                token_tags = layout["token_tags"],
+                position_ids = layout["position_ids"],
+                video_indices = layout["video_indices"],
+                audio_indices = layout["audio_indices"],
+                text_indices = layout["text_indices"],
+                return_dict = False,
+            )
+            loss_video = F.mse_loss(pred_video[0].float(), target_video.float())
+            loss_audio = F.mse_loss(pred_audio[0].float(), target_audio.float())
+            # Unweighted: both streams share every adapted matrix.
+            loss = loss_video + loss_audio
+        (loss / cfg.gradient_accumulation_steps).backward()
+        return loss, loss_video, loss_audio
+
     compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
-        step_loss = 0.0
-        step_video = 0.0
-        step_audio = 0.0
+        step_acc = video_acc = audio_acc = None
+        budget_steps.start_step()
         for _ in range(cfg.gradient_accumulation_steps):
             index = index_sampler.next_batch(1)[0]
             video_a, video_b, audio_latents = cache[index]
-            video_a = video_a.to(device)
-            video_b = video_b.to(device)
+            video_a = video_a.to(device, non_blocking = True)
+            video_b = video_b.to(device, non_blocking = True)
             # A fresh posterior draw per step, exactly like encoding in the loop would give.
             clean_video = video_a + video_b * torch.randn_like(video_a)
-            clean_audio = audio_latents.to(device)
+            clean_audio = audio_latents.to(device, non_blocking = True)
 
             # ONE base u through BOTH shifts: the (video, audio) sigma pair the sampler visits.
             u = rng.random()
@@ -735,43 +947,69 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
                 (clean_audio - noise_audio).permute(0, 2, 1).reshape(-1, H3_AUDIO_LATENT_CHANNELS)
             )
 
-            embeds = caption_embeds[captions[index]].to(device, weight_dtype)
+            embeds = caption_embeds[captions[index]].to(device, non_blocking = True).to(weight_dtype)
             num_text_tokens = embeds.shape[1]
-            layout = _build_layout(
-                num_text_tokens, latent_frames, latent_h, latent_w, num_audio_latents, patch, device
-            )
-            timestep, timestep_indices = _row_timesteps(
-                layout, num_text_tokens, 1.0 - sigma_video, 1.0 - sigma_audio, device
-            )
-            with autocast:
-                pred_video, pred_audio = transformer(
-                    hidden_states = video_rows[None],
-                    audio_hidden_states = audio_rows[None],
-                    encoder_hidden_states = embeds,
-                    timestep = timestep,
-                    timestep_indices = timestep_indices,
-                    token_tags = layout["token_tags"],
-                    position_ids = layout["position_ids"],
-                    video_indices = layout["video_indices"],
-                    audio_indices = layout["audio_indices"],
-                    text_indices = layout["text_indices"],
-                    return_dict = False,
+            if num_text_tokens not in layouts:
+                host_layout = _build_layout(
+                    num_text_tokens,
+                    latent_frames,
+                    latent_h,
+                    latent_w,
+                    num_audio_latents,
+                    patch,
+                    "cpu",
                 )
-                loss_video = F.mse_loss(pred_video[0].float(), target_video.float())
-                loss_audio = F.mse_loss(pred_audio[0].float(), target_audio.float())
-                # Unweighted sum, the model's own objective: both streams share every matrix the adapter touches, so
-                # down-weighting audio would only stop the loss reporting that it had drifted.
-                loss = loss_video + loss_audio
-            (loss / cfg.gradient_accumulation_steps).backward()
-            step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
-            step_video += float(loss_video.detach()) / cfg.gradient_accumulation_steps
-            step_audio += float(loss_audio.detach()) / cfg.gradient_accumulation_steps
+                layouts[num_text_tokens] = (
+                    host_layout,
+                    {
+                        k: v.to(device) if isinstance(v, torch.Tensor) else v
+                        for k, v in host_layout.items()
+                    },
+                )
+            host_layout, layout = layouts[num_text_tokens]
+            timestep, timestep_indices = _row_timesteps(
+                host_layout, num_text_tokens, 1.0 - sigma_video, 1.0 - sigma_audio, "cpu"
+            )
+            timestep = timestep.to(device, non_blocking = True)
+            timestep_indices = timestep_indices.to(device, non_blocking = True)
+            ga = cfg.gradient_accumulation_steps
+            out = budget_steps.forward_backward(
+                _forward_backward,
+                (
+                    video_rows,
+                    audio_rows,
+                    embeds,
+                    timestep,
+                    timestep_indices,
+                    num_text_tokens,
+                    (target_video, target_audio),
+                ),
+            )
+            if out is OUT_OF_MEMORY:
+                # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
+                out = video_rows = audio_rows = embeds = timestep = timestep_indices = None
+                target_video = target_audio = clean_video = clean_audio = None
+                noise_video = noise_audio = noisy_video = noisy_audio = video_a = video_b = None
+                step_acc = video_acc = audio_acc = None
+                outs = budget_steps.rerun(_forward_backward)
+            else:
+                outs = [out]
+            for loss, loss_video, loss_audio in outs:
+                step_acc = accumulate_loss(step_acc, loss, ga)
+                video_acc = accumulate_loss(video_acc, loss_video, ga)
+                audio_acc = accumulate_loss(audio_acc, loss_audio, ga)
+            outs = out = None
 
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
+        step_loss = loss_value(step_acc)
+        step_video = loss_value(video_acc)
+        step_audio = loss_value(audio_acc)
+        budget_steps.before_update()
         optimizer.step()
         lr_sched.step()
+        budget_steps.after_update()
         if ema is not None:
             ema.update(transformer)
 
@@ -812,13 +1050,15 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     lora_path: Optional[str] = None
     ema_path: Optional[str] = None
+    catalog_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
         layers = get_peft_model_state_dict(transformer)
-        # The trained config, so the alpha survives the round trip rather than being re-derived as the
-        # rank. "default" is the adapter name add_adapter used.
+        # Save the trained config so alpha survives the round trip; 'default' is the add_adapter name.
         adapter_config = dict(transformer.peft_config["default"].to_dict())
         _save_lora(str(out_dir), layers, adapter_config)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
+        # The Video load's ``loras`` resolve through this catalog, family-gated by the sidecar written here.
+        catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
         if ema is not None and ema.updates > 0:
             try:
                 ema_dir = save_ema_adapter(
@@ -836,7 +1076,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         output_dir = str(out_dir),
         lora_path = lora_path,
         ema_path = ema_path,
-        catalog_path = None,
+        catalog_path = catalog_path,
         family = cfg.resolved_family,
         base_model = cfg.base_model,
         stopped = stopped,
@@ -854,9 +1094,7 @@ def _dataset_canvas(clip_path: str, short_edge: int) -> tuple[int, int]:
         stream = container.streams.video[0]
         source_w = int(stream.codec_context.width)
         source_h = int(stream.codec_context.height)
-        # The coded size is not the displayed size for a rotated clip, so a portrait phone clip would get
-        # a landscape canvas and be cropped down to it; one frame is decoded because the matrix travels
-        # with the frame.
+        # A rotated clip's coded size differs from its displayed size; the matrix travels per frame.
         theta = 0
         try:
             frame = next(container.decode(video = 0), None)

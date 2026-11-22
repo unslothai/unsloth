@@ -14,18 +14,7 @@ export const DEFAULT_LOCALE: Locale = "en";
 export const AUTO_LOCALE = "auto";
 export const LOCALE_STORAGE_KEY = "unsloth_locale";
 export const LOCALE_INITIALIZATION_TIMEOUT_MS = 2_000;
-/**
- * The bound a locale change gets when its caller names none.
- *
- * Startup and hydration pass their own, but the language menu, a storage event
- * and a `languagechange` refresh do not, and a request that is accepted and
- * then never completes rejects nothing: the pending marker would stay set for
- * the session, leaving the menu spinning on a language it will never reach and
- * handing every later pick of it the same dead promise, with reloading the app
- * the only way out. Longer than startup's, because this one is a deliberate
- * download rather than a render everything else is waiting on, and a late
- * catalog still commits over the fallback.
- */
+/** Without a bound, a request that never completes leaves the menu spinning for the session. */
 export const LOCALE_SELECTION_TIMEOUT_MS = 10_000;
 
 export type LocalePreference = Locale | typeof AUTO_LOCALE;
@@ -39,27 +28,10 @@ export type LocaleChangeResult =
 export type SetLocaleOptions = {
   loadMessages?: (locale: Locale) => Promise<void> | undefined;
   signal?: AbortSignal;
-  /**
-   * Adopt the preference even when its catalog never loads, rendering English.
-   *
-   * For a user picking a language this would be wrong: the choice failed, so it
-   * must not be persisted. Hydration is the opposite case. The preference it is
-   * applying is already the stored truth on the server, so refusing to adopt it
-   * leaves the local preference disagreeing with the server, and the next
-   * outbound save would push the stale local value back over it.
-   */
+  /** For hydration only: the server already holds this preference, so refusing it would let the
+   * next save push the stale local value back. */
   adoptOnFailure?: boolean;
-  /**
-   * Stop waiting on the catalog after this many ms and settle as a failure.
-   *
-   * A request that is accepted but never completes (a stalled CDN, proxy or
-   * service worker) rejects nothing, so without a bound the returned promise
-   * stays pending for the session and everything awaiting it waits with it.
-   * `initializeLocale` bounds startup for the same reason. A late arrival still
-   * commits, so a slow catalog is upgraded to rather than lost. Defaults to
-   * LOCALE_SELECTION_TIMEOUT_MS: every path here is bounded, including the
-   * language menu, which names none of its own.
-   */
+  /** A stalled request rejects nothing, so bound the wait; a late catalog still commits. */
   timeoutMs?: number;
 };
 
@@ -72,17 +44,8 @@ let currentLocale: Locale = DEFAULT_LOCALE;
 let pendingPreference: LocalePreference | null = null;
 let pendingPreferenceShouldPersist = false;
 let areListenersActive = false;
-/**
- * The catalog the current preference resolves to failed, so currentLocale is a
- * fallback rather than that preference's own language.
- *
- * Comparing the preference to the locale cannot stand in for this: `auto`
- * resolves through the browser, so a failed auto reads as `auto` with English
- * in effect, which is also what a successful auto looks like to an English
- * browser. The UI needs the difference, because a controlled Select never fires
- * onValueChange for the value it already shows: naming a preference whose
- * catalog failed is what makes it the one preference the user cannot re-pick.
- */
+/** Needed because a failed `auto` looks like a successful English one, and a controlled Select
+ * cannot re-pick the value it shows. */
 let currentCatalogFailed = false;
 
 export function isLocalePreference(value: unknown): value is LocalePreference {
@@ -96,16 +59,32 @@ function isTraditionalChinese(lowerTag: string): boolean {
   return parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
 }
 
+const LATIN_AMERICAN_REGIONS = new Set(
+  "419 mx ar co cl pe ve ec gt cu bo do hn py sv ni cr pr pa uy us".split(" "),
+);
+
+function regionalLocale(language: string, lowerTag: string): Locale | null {
+  if (language === "zh") {
+    return isTraditionalChinese(lowerTag) ? "zh-TW" : "zh-CN";
+  }
+  if (language === "es") {
+    const region = lowerTag
+      .split("-")
+      .slice(1)
+      .find((part) => /^([a-z]{2}|\d{3})$/.test(part));
+    return region && LATIN_AMERICAN_REGIONS.has(region) ? "es-419" : "es";
+  }
+  return null;
+}
+
 function matchLocale(tag: string): Locale | null {
   const locales = Object.keys(LOCALES) as Locale[];
   const lower = tag.toLowerCase();
   const exact = locales.find((locale) => locale.toLowerCase() === lower);
   if (exact) return exact;
   const language = lower.split("-")[0];
-  // We only ship Simplified Chinese. Don't hand it to Traditional Chinese
-  // (zh-Hant / zh-TW / zh-HK / zh-MO) users; let them fall through instead.
-  if (language === "zh" && isTraditionalChinese(lower)) return null;
   return (
+    regionalLocale(language, lower) ??
     locales.find((locale) => locale.toLowerCase().split("-")[0] === language) ??
     null
   );
@@ -118,15 +97,7 @@ function detectLocale(): Locale {
     : navigatorRef?.language
       ? [navigatorRef.language]
       : [];
-  let sawTraditionalChinese = false;
   for (const tag of tags) {
-    const lower = tag.toLowerCase();
-    if (lower.split("-")[0] === "zh" && isTraditionalChinese(lower)) {
-      sawTraditionalChinese = true;
-    } else if (sawTraditionalChinese && lower === "zh") {
-      // Bare zh after a Traditional tag is the browser's base-subtag fallback, not a Simplified request; skip it.
-      continue;
-    }
     const match = matchLocale(tag);
     if (match) return match;
   }
@@ -135,8 +106,7 @@ function detectLocale(): Locale {
 
 function normalizePreference(value: unknown): LocalePreference {
   if (value === AUTO_LOCALE) return AUTO_LOCALE;
-  // Return a value re-derived from our own locale table rather than the raw
-  // input, so only known language codes are ever persisted.
+  // Re-derived from our own table so only known codes are ever persisted.
   const locales = Object.keys(LOCALES) as Locale[];
   return (
     locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE
@@ -160,8 +130,7 @@ function writeStoredPreference(preference: LocalePreference): void {
   try {
     globalThis.localStorage?.setItem(LOCALE_STORAGE_KEY, preference);
   } catch {
-    // localStorage can be disabled; a failure only costs persistence, not
-    // the language of the current session.
+    // A storage failure only costs persistence.
   }
 }
 
@@ -193,7 +162,6 @@ function commitPreference(
   currentLocale = locale;
   pendingPreference = null;
   pendingPreferenceShouldPersist = false;
-  // This preference's catalog is loaded, so a retry has nothing left to fix.
   currentCatalogFailed = false;
   syncDocumentLang(locale);
   if (didChange) notifySubscribers();
@@ -214,7 +182,6 @@ function commitFallbackLocale(
   currentLocale = DEFAULT_LOCALE;
   pendingPreference = null;
   pendingPreferenceShouldPersist = false;
-  // Adopted, but on the fallback catalog rather than this preference's own.
   currentCatalogFailed = true;
   syncDocumentLang(currentLocale);
   if (didChange) notifySubscribers();
@@ -230,11 +197,8 @@ function failPreference(
   if (revision !== preferenceRevision || pendingPreference === null) return;
   pendingPreference = null;
   pendingPreferenceShouldPersist = false;
-  // A rejected pick leaves the standing preference untouched, so it is still serving its own
-  // catalog and stays re-pickable; the flag must not move. A refresh of the preference already in
-  // effect is the other case: a `languagechange` re-resolving `auto` onto a language whose catalog
-  // fails leaves that preference pointing at a locale the app is not showing, which is exactly the
-  // state the retry path needs to see.
+  // A rejected pick leaves the flag alone; a refresh of the preference in effect onto a failing
+  // catalog must set it.
   if (preference === currentPreference && locale !== currentLocale) {
     currentCatalogFailed = true;
   }
@@ -271,8 +235,7 @@ function applyPreference(
       commitFallbackLocale(preference, revision);
       return "failed";
     }
-    // This request never became the pending one, so failing it must not clear
-    // the marker an earlier request that is still in flight is relying on.
+    // Must not clear the marker an earlier in-flight request relies on.
     pendingPreference = previousPending;
     pendingPreferenceShouldPersist = previousPendingPersist;
     return "failed";
@@ -305,11 +268,7 @@ function applyPreference(
   const bounded = new Promise<LocaleChangeResult>((resolve) => {
     const timeout = globalThis.setTimeout(
       () => {
-        // Settle the way a rejection would. The load itself is left alone, so if it does arrive it
-        // still commits over this. Its place in the in-flight map is not: a load that never settles
-        // never clears its own entry, so leaving it there would hand every later pick of this
-        // language the same dead promise and time out again without ever asking for the catalog a
-        // second time.
+        // A late load still commits, but drop its map entry or every later pick reuses the dead promise.
         forgetLocaleLoad(locale, pending);
         if (signal?.aborted) {
           resolve("cancelled");
@@ -337,9 +296,7 @@ function applyPreference(
 function isLocaleStorageEvent(event: StorageEvent): boolean {
   if (event.key !== LOCALE_STORAGE_KEY && event.key !== null) return false;
   if (!event.storageArea || typeof window === "undefined") return true;
-  // Accessing window.localStorage can throw in privacy-restricted contexts
-  // where storage is blocked; mirror the try/catch in readStoredPreference/
-  // writeStoredPreference so storage-event handling is just as resilient.
+  // Storage access can throw in privacy-restricted contexts.
   try {
     return event.storageArea === window.localStorage;
   } catch {
@@ -353,12 +310,7 @@ function handleStorageEvent(event: StorageEvent): void {
     event.key === null
       ? DEFAULT_LOCALE_PREFERENCE
       : normalizePreference(event.newValue);
-  // Adopted on failure, like hydration and for the same reason: this value is already the stored
-  // truth, written by the tab that made the choice, so a catalog that will not load here must not
-  // leave this tab holding the preference the user replaced. It would disagree with storage until
-  // the next reload, and the next personalization save would push that stale language back over the
-  // choice. Nothing is written back: storage is where this came from, and a catalog that failed is
-  // not recorded as a choice that worked.
+  // Adopted on failure, like hydration: storage already holds this choice. Nothing is written back.
   void applyPreference(
     nextPreference,
     false,
@@ -369,8 +321,7 @@ function handleStorageEvent(event: StorageEvent): void {
 }
 
 function handleLanguageChange(): void {
-  // A pending choice is the effective preference. Browser changes may refresh
-  // a pending auto request, but must not supersede an explicit user choice.
+  // Browser changes may refresh a pending auto request but not supersede an explicit choice.
   const effectivePreference = pendingPreference ?? currentPreference;
   if (effectivePreference !== AUTO_LOCALE) return;
   void applyPreference(effectivePreference, pendingPreferenceShouldPersist);
@@ -468,12 +419,7 @@ export function initializeLocale({
     };
     const timeout = globalThis.setTimeout(
       () => {
-        // Same as the selection path: the load itself is left running, so a late catalog still
-        // commits over the fallback, but its place in the in-flight map goes. A load that never
-        // settles never clears its own entry, and the saved language is exactly the one the user
-        // reaches for next once English appears, so keeping it would hand that pick this same dead
-        // promise and spend the whole selection bound on it without ever asking for the catalog
-        // again.
+        // As in selection: a late catalog still commits, but drop the dead promise from the map.
         forgetLocaleLoad(locale, pending);
         commitFallbackLocale(preference, revision);
         finish();
@@ -522,10 +468,7 @@ export function setLocale(
   }: SetLocaleOptions = {},
 ): LocaleChangeResult | Promise<LocaleChangeResult> {
   const requestedPreference = normalizePreference(preference);
-  // persist stays true on both paths: a successful change is still written, and
-  // the adopt-on-failure path routes through commitFallbackLocale, which never
-  // writes storage, so a preference whose catalog failed is adopted for this
-  // session without being recorded as a choice that worked.
+  // persist stays true: commitFallbackLocale never writes storage, so a failed catalog is not recorded.
   return applyPreference(
     requestedPreference,
     true,

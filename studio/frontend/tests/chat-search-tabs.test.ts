@@ -71,7 +71,6 @@ test("Recents are the newest rows of every kind together", () => {
 });
 
 test("Recents ranks a kind that is not listed newest first", () => {
-  // Oldest first, as if listed by creation, with the oldest one used most recently.
   const chats = [40, 50, 60, 70, 80].map((t) => row("chats", `c${t}`, t));
   chats.push(row("chats", "created first, used today", 90));
   const recents = recentRows({ chats, projects: [], files: [], models: [] }, 1);
@@ -101,11 +100,9 @@ test("Models lists every complete download the Hub knows of, plus the Library's 
 });
 
 test("Enter never runs a stale action or row, and a focused tab only switches", () => {
-  // Actions follow the live query, not the deferred one.
   assert.ok(DIALOG.includes("haystackMatches(t(action.labelKey).toLowerCase(), queryTokens(query)),"));
-  // cmdk's root runs the highlighted row on Enter, so the tabs stop it, as the close button does.
+  // cmdk's root runs the highlighted row on Enter, so the tabs stop propagation.
   assert.match(DIALOG, /onClick=\{\(\) => switchTab\(entry\)\}[\s\S]{0,200}?if \(e\.key === "Enter"\) e\.stopPropagation\(\);/);
-  // A kept selection must still be on screen, and is cleared with the pin.
   assert.match(DIALOG, /value=\{moved && shownKeys\.has\(selected\) \? selected : firstKey\}/);
   assert.equal(DIALOG.match(/setMoved\(false\);\n\s*setSelected\(""\);/g)?.length, 3);
 });
@@ -118,7 +115,6 @@ test("empty states wait for their source, and chats rank by last activity", () =
 });
 
 test("an action that becomes unavailable leaves the selection keys too", () => {
-  // Rows and keys share one list, so a key never points at an unmounted row.
   assert.match(DIALOG, /available\[action\.id\] &&\s*haystackMatches\(/);
   assert.doesNotMatch(DIALOG.slice(DIALOG.indexOf("function ActionItem(")), /useShortcutAvailable|return null/);
 });

@@ -150,3 +150,40 @@ def test_a_stalled_managed_account_preflight_leaves_the_default_executor_free(mo
             listing.cancel()
 
     assert asyncio.run(body()) == "free"
+
+
+def test_an_offline_audio_preflight_does_not_queue_behind_stalled_hub_listings(monkeypatch):
+    from core.inference import audio_cpp_models
+
+    monkeypatch.setattr(gguf_variants, "_HUB_LISTING_POOL", ThreadPoolExecutor(max_workers = 1))
+    monkeypatch.setattr(gguf_variants.account_access, "managed_account", lambda: True)
+    seen = {}
+
+    def access(repo, **kwargs):
+        seen["access"] = (threading.current_thread().name, kwargs)
+
+    def resolve(text, _cache, _token, network):
+        seen["network"] = network
+        return None
+
+    monkeypatch.setattr(gguf_variants.account_access, "require_model_access", access)
+    monkeypatch.setattr(audio_cpp_models, "resolve", resolve)
+
+    async def body():
+        gate = threading.Event()
+        stalled = asyncio.ensure_future(
+            gguf_variants._shared_variants_scan(("hub",), lambda: gate.wait(30))
+        )
+        await asyncio.sleep(0.05)
+        try:
+            return await asyncio.wait_for(
+                gguf_variants._audio_cpp_variants_answer("audio-cpp/Some-Model", None, True), 10
+            )
+        finally:
+            gate.set()
+            await stalled
+
+    assert asyncio.run(body()) is None
+    assert seen["access"][0].startswith("gguf-disk-listing")
+    assert seen["access"][1] == {"offline": True}
+    assert seen["network"] is False

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""unsloth#12678: reading the login shell's environment must not touch its history.
-
-Real shells, throwaway HOME; each case first shows the old command damaging it.
-"""
+"""Reading the login shell's environment must never modify its history file."""
 
 from __future__ import annotations
 

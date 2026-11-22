@@ -127,8 +127,7 @@ def test_assets_of_another_release_never_decide_the_offer(managed):
 
 
 def test_a_tag_that_extends_the_offered_one_is_another_release(managed, monkeypatch):
-    # Upstream publishes v0.8.2 and later v0.8.2-audio8-perf-hotfix: the hotfix's assets start with
-    # "audio-v0.8.2-" too, yet say nothing about v0.8.2.
+    # Hotfix v0.8.2-audio8-perf-hotfix has audio-v0.8.2- assets, so prefix matching misfires.
     monkeypatch.setattr(aupd, "_target", lambda: ("0xShug0/audio.cpp", None))
     _write_record(
         managed.tree,
@@ -159,6 +158,30 @@ def test_the_size_adds_the_cuda_runtime_zip(managed, monkeypatch):
     del managed.state.assets[f"audio-{_LATEST}-cudart-windows-x64-cuda12.8.zip"]
     plan = aupd.chained_phase_plan()
     assert plan["status"]["update_size_bytes"] == 400_000_000 and plan["update_available"] is True
+
+
+@pytest.mark.parametrize("arch", ["arm64", "x64"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_update_size_uses_the_matching_architecture_runtime_in_a_mixed_release(
+    managed, monkeypatch, arch, reverse
+):
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: arch)
+    monkeypatch.setattr(aupd._installer(), "torch_provides_cuda_runtime", lambda _major: False)
+    _write_record(
+        managed.tree,
+        asset = f"audio-v0.9.0-unsloth.1-bin-windows-{arch}-cuda13.zip",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
+    )
+    assets = [
+        (f"audio-{_LATEST}-bin-windows-{arch}-cuda13.zip", 100_000_000),
+        (f"audio-{_LATEST}-cudart-windows-x64-cuda13.zip", 300_000_000),
+        (f"audio-{_LATEST}-cudart-windows-arm64-cuda13.zip", 200_000_000),
+    ]
+    managed.state.assets = dict(reversed(assets) if reverse else assets)
+    size = aupd.chained_phase_plan()["status"]["update_size_bytes"]
+    assert size == (300_000_000 if arch == "arm64" else 400_000_000)
 
 
 @pytest.mark.parametrize("torch_has_runtime", [False, True])

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deciding whether a cache on disk is usable must not touch the network.
-
-``590ac9f22`` taught the cached-snapshot resolvers about load subdirectories by routing
-them through ``security_load_subdirs``, which calls ``detect_audio_type``. That function
-only skips its remote tokenizer fetch when ``local_files_only`` is set, and the new
-callers did not set it -- so ``_resolve_model_snapshot`` and the two cache-pin sites, all
-previously pure filesystem work, gained a hub round trip with no timeout in front of
-them. On a slow or hung hub that turns "is this snapshot already here?" into a stall.
-
-The subdir layout is a property of the snapshot sitting on disk, so the local answer is
-also the correct one. ``security_load_subdirs`` keeps its network-capable default for the
-security scanner, which genuinely wants the remote answer.
-"""
+"""Cache-usability checks must not hit the hub: subdir layout is a fact of the on-disk snapshot."""
 
 import pytest
 
@@ -79,15 +67,7 @@ def test_the_security_scanner_keeps_its_network_capable_default(detector_spy):
 
 
 def test_a_detector_failure_still_degrades_to_root_only(monkeypatch):
-    """A raising detector is a soft failure, not a crash.
-
-    Note it degrades all the way to root-only rather than reaching the YAML fallback:
-    ``security_load_subdirs`` wraps both branches in one ``try``, so an exception in
-    ``detect_audio_type`` skips the ``load_model_defaults`` check that its own comment
-    says is there for exactly that case. That mismatch is byte-identical on
-    ``b41b819a4`` and is not this PR's to fix -- pinned here so it is a decision rather
-    than a surprise.
-    """
+    """A raising detector degrades to root-only and skips the YAML fallback, pinned as current behaviour."""
     import utils.models.model_config as model_config
 
     def boom(*args, **kwargs):
@@ -99,12 +79,7 @@ def test_a_detector_failure_still_degrades_to_root_only(monkeypatch):
 
 
 def test_going_offline_makes_the_yaml_fallback_more_reachable(monkeypatch):
-    """The upside of pinning the cache path offline.
-
-    A network failure used to raise straight past the YAML fallback. Asked with
-    ``local_files_only``, detection simply reports nothing for an uncached repo, so the
-    registry default gets its turn and a known bicodec repo is still identified.
-    """
+    """Offline detection reports nothing for an uncached repo, letting the YAML registry default answer."""
     import utils.models.model_config as model_config
 
     monkeypatch.setattr(

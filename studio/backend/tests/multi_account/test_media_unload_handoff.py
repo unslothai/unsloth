@@ -30,9 +30,7 @@ from utils.account_context import bind_account, current_account_id, reset_accoun
 from ..test_diffusion_backend import _FakePipeline
 from ..test_diffusion_backend import fake_runtime as _fake_runtime
 
-# Re-exported under its own name because pytest resolves a fixture by NAME, not by reference: the
-# tests below take `fake_runtime` as a parameter and never load the import, which reads to
-# scripts/verify_import_hoist.py as a hoisted import nothing uses.
+# Re-exported by name: pytest resolves fixtures by name, and verify_import_hoist.py would flag it.
 fake_runtime = _fake_runtime
 
 
@@ -294,7 +292,6 @@ def test_unload_does_not_cancel_foreign_generation_started_after_route_check(
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", accounts[unloader].account_id)
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
-    # Replace only the model-dependent surface; reservation, cancellation and teardown are real.
     monkeypatch.setattr(
         backend,
         "status",

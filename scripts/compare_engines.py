@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Head-to-head: PyTorch (diffusers GGUF) vs native stable-diffusion.cpp.
-
-Same Z-Image GGUF transformer, same VAE + text encoder, same resolution / steps /
-seed, both resident (no CPU offload) on the same GPU. Reports per-engine compute
-latency (model already loaded) so the denoise + VAE + TE work is compared fairly;
-for sd.cpp it also reports the one-shot wall time (compute + the per-call model
-reload, which a persistent sd-server would remove).
-
-PyTorch runs first (load / warmup / median), is unloaded, then sd.cpp runs.
-"""
+"""PyTorch vs sd.cpp on the same resident Z-Image GGUF; sd.cpp wall time adds a per-call model reload."""
 
 from __future__ import annotations
 
@@ -40,7 +31,7 @@ def bench_pytorch(repo, gguf, resolutions, steps, seed, iters):
     backend = DiffusionBackend()
     for speed in ("off", "default"):
         backend.begin_load(repo, gguf_filename = gguf, speed_mode = speed)
-        deadline = time.time() + 1800  # 30 min: never hang on a stuck download/load
+        deadline = time.time() + 1800
         while backend.load_progress().get("phase") != "ready":
             prog = backend.load_progress()
             if prog.get("phase") == "error":
@@ -65,7 +56,7 @@ def bench_pytorch(repo, gguf, resolutions, steps, seed, iters):
                 torch.cuda.synchronize()
                 return time.time() - t0
 
-            gen()  # warmup (compiles for `default`)
+            gen()
             med = _median([gen() for _ in range(iters)])
             rows.append(("pytorch", speed, res, med, None))
             print(f"  pytorch  speed={speed:7s} {res}px  compute={med:.3f}s", flush = True)
@@ -85,7 +76,7 @@ def bench_sdcpp(binary, gguf, vae, llm, resolutions, steps, seed, iters):
     rows = []
     out_dir = Path("outputs/compare_engines")
     out_dir.mkdir(parents = True, exist_ok = True)
-    for native in (None, "default"):  # resident-no-fa vs resident+--diffusion-fa
+    for native in (None, "default"):
         for res in resolutions:
             params = SdCppGenParams(
                 prompt = PROMPT, width = res, height = res, steps = steps, cfg_scale = 1.0, seed = seed

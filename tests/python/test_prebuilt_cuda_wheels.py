@@ -92,15 +92,12 @@ class TestWorkflowAndResolverAgree:
         assert checked == 6
 
     def test_every_url_the_resolver_can_emit_is_a_published_cell(self):
-        """Whatever the probe reports, a URL names a cell the publish matrix builds and the release
-        carries: (platform, torch, interpreter, package). Anything else is a 404 in front of the
+        """Every URL the resolver emits must be a published cell, or it is a 404 in front of the
         fallback."""
         published = set()
         for platform in prebuilt_wheels.PLATFORMS:
-            packages = prebuilt_wheels._platform(platform, "packages") or tuple(
-                prebuilt_wheels.SPECS
-            )
             for torch_version in prebuilt_wheels._platform_torches(platform):
+                packages = prebuilt_wheels._platform_packages(platform, torch_version)
                 torch_mm = prebuilt_wheels.torch_minor(torch_version)
                 extra = wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS.get((platform, torch_mm))
                 pythons = (
@@ -189,21 +186,28 @@ class TestWorkflowAndResolverAgree:
             )
             is None
         )
-        # torch 2.12 keeps its upstream (2.10 reuse) URL.
-        assert wheel_utils.direct_wheel_url(
+        # torch 2.12: cu12 keeps its upstream (2.10 reuse) URL, cu13 takes ours.
+        url = wheel_utils.direct_wheel_url(
             filename_prefix = "mamba_ssm",
             package_version = "2.3.1",
             release_tag = "v2.3.1",
             release_base_url = "https://github.com/state-spaces/mamba/releases/download",
             env = env(torch_mm = "2.12", cuda_major = cuda_major, python_tag = "cp312"),
-        ).endswith("torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl")
+        )
+        if cuda_major == "13":
+            assert url == (
+                f"{OUR_BASE}mamba_ssm-2.3.2.post1+cu13torch2.12cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+            )
+        else:
+            assert url.endswith("torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl")
 
     def test_the_versions_published_are_the_versions_resolved(self):
         for package, spec in prebuilt_wheels.SPECS.items():
             assert wheel_utils._UNSLOTH_PREBUILT_VERSIONS[spec["dist"]] == spec["version"], package
 
     def test_every_extra_cell_the_workflow_builds_is_what_the_resolver_asks_for(self):
-        """win_amd64 torch 2.10 to 2.12: outside TORCH_VERSIONS, so the class above does not see them."""
+        """torch 2.10 to 2.12 (every package on win_amd64, causal-conv1d and mamba-ssm on Linux):
+        outside TORCH_VERSIONS, so the class above does not see them."""
         checked = 0
         for (platform, torch_mm), pythons in wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS.items():
             built_torches = prebuilt_wheels._platform_torches(platform)
@@ -220,15 +224,17 @@ class TestWorkflowAndResolverAgree:
                             platform_tag = platform,
                         ),
                     )
-                    if tag not in pythons:
-                        assert url is None
+                    built_here = prebuilt_wheels._platform_packages(platform, torch_version)
+                    if tag not in pythons or package not in built_here:
+                        assert url is None, (platform, torch_mm, tag, package)
                         continue
                     built = prebuilt_wheels.wheel_name(
                         package, torch_version, python_version, platform
                     )
                     assert url == f"{OUR_BASE}{built}"
                     checked += 1
-        assert checked == 27
+        # win_amd64: 3 torches x 3 interpreters x 3 packages; Linux x86_64 and aarch64: 3 x 3 x 2.
+        assert checked == 27 + 36
         extra = {
             (platform, prebuilt_wheels.torch_minor(v))
             for platform in prebuilt_wheels.PLATFORMS
@@ -238,6 +244,36 @@ class TestWorkflowAndResolverAgree:
         # The resolver only asks for cells the workflow builds. A new cell is built and published
         # before the resolver asks for it, so users never get a 404 in between.
         assert set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS) <= extra
+
+    def test_linux_older_torches_keep_upstream_flash_attn(self):
+        """Upstream flash-attn 2.8.1 for torch 2.10 (125 MB, no PTX) is smaller than ours there."""
+        for platform in ("linux_x86_64", "linux_aarch64"):
+            for torch_mm in ("2.10", "2.11", "2.12"):
+                probe = env(torch_mm = torch_mm, python_tag = "cp312", platform_tag = platform)
+                assert (
+                    wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = probe)
+                    is None
+                )
+                for prefix in ("causal_conv1d", "mamba_ssm"):
+                    url = wheel_utils.unsloth_prebuilt_wheel_url(filename_prefix = prefix, env = probe)
+                    assert url is not None and url.startswith(OUR_BASE)
+                    assert url.endswith(f"torch{torch_mm}cxx11abiTRUE-cp312-cp312-{platform}.whl")
+                # cu12 torch and unpublished interpreters keep upstream's wheels.
+                for other in (
+                    env(
+                        torch_mm = torch_mm,
+                        python_tag = "cp312",
+                        platform_tag = platform,
+                        cuda_major = "12",
+                    ),
+                    env(torch_mm = torch_mm, python_tag = "cp310", platform_tag = platform),
+                ):
+                    assert (
+                        wheel_utils.unsloth_prebuilt_wheel_url(
+                            filename_prefix = "mamba_ssm", env = other
+                        )
+                        is None
+                    )
 
     def test_the_two_torch_tables_are_the_same_set(self):
         built = {prebuilt_wheels.torch_minor(version) for version in prebuilt_wheels.TORCH_VERSIONS}
@@ -273,8 +309,7 @@ class TestOverrideScope:
             is None
         )
 
-    # win_amd64, win_arm64 and linux_aarch64 are published too, for fewer cells; the windows and arm
-    # resolver tests own them.
+    # win_amd64, win_arm64 and linux_aarch64 are published too; their own tests cover them.
     @pytest.mark.parametrize("platform_tag", ["macosx_11_0_arm64", "linux_armv7l"])
     def test_no_wheel_for_an_unbuilt_platform(self, platform_tag):
         assert (
@@ -342,7 +377,22 @@ class TestBackwardsCompatible:
         assert "Dao-AILab/flash-attention/releases/download/v2.8.3/" in url
         assert "torch2.9" in url
 
-    def test_upstream_causal_conv1d_url_is_unchanged_on_212(self):
+    def test_upstream_causal_conv1d_url_is_unchanged_on_212_cu12_and_cp310(self):
+        for cuda_major, python_tag in (("12", "cp313"), ("13", "cp310")):
+            url = wheel_utils.direct_wheel_url(
+                filename_prefix = "causal_conv1d",
+                package_version = "1.6.1",
+                release_tag = "v1.6.1.post4",
+                release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
+                env = env(torch_mm = "2.12", cuda_major = cuda_major, python_tag = python_tag),
+            )
+            assert url == (
+                "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/"
+                f"causal_conv1d-1.6.1+cu{cuda_major}torch2.10cxx11abiTRUE-{python_tag}-{python_tag}"
+                "-linux_x86_64.whl"
+            )
+
+    def test_212_cu13_takes_our_causal_conv1d(self):
         url = wheel_utils.direct_wheel_url(
             filename_prefix = "causal_conv1d",
             package_version = "1.6.1",
@@ -350,9 +400,9 @@ class TestBackwardsCompatible:
             release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
             env = env(torch_mm = "2.12"),
         )
-        assert url == (
-            "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/"
-            "causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        assert (
+            url
+            == f"{OUR_BASE}causal_conv1d-1.7.0+cu13torch2.12cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
         )
 
     def test_213_takes_over_the_same_call(self):
@@ -628,13 +678,11 @@ def workflow():
 
 class TestWorkflow:
     def test_dispatch_only(self, workflow):
-        """It signs binaries and writes a release under our identity. A pull_request or push
-        trigger would put both behind whatever a fork can propose."""
+        """Signs and releases as us, so pull_request or push triggers would let forks reach it."""
         assert set(triggers(workflow)) == {"workflow_dispatch"}
 
     def test_publishing_is_opt_in(self, workflow):
-        """A run that only builds, smoke tests and signs is the default, so the expensive and
-        irreversible half has to be asked for."""
+        """Publishing is opt-in, since the expensive, irreversible half must be asked for."""
         inputs = triggers(workflow)["workflow_dispatch"]["inputs"]
         assert inputs["publish"]["default"] is False
         assert inputs["gpu_smoke"]["default"] is False
@@ -669,8 +717,7 @@ class TestWorkflow:
         assert "pip install" not in body
 
     def test_it_never_becomes_the_latest_release(self, workflow):
-        """The repository's latest release is what the installers and the README resolve to.
-        A wheelhouse tag must not take it."""
+        """Installers resolve the latest release, which a wheelhouse tag must not take."""
         body = json.dumps(workflow["jobs"]["publish"]["steps"])
         assert body.count("--latest=false") == 3
         assert "gh release create" in body
@@ -690,8 +737,7 @@ class TestWorkflow:
         assert any(u.startswith("actions/attest-build-provenance@") for u in uses)
 
     def test_the_signature_is_verified_in_the_same_job(self, workflow):
-        """A bundle nobody checked is a bundle nobody can rely on, and it must verify against
-        the identity the release notes tell people to use."""
+        """The bundle must verify against the identity the release notes tell people to use."""
         step = next(
             step
             for step in workflow["jobs"]["sign"]["steps"]
@@ -754,8 +800,7 @@ class TestWorkflow:
         assert tuple(workflow["jobs"]["gpu-smoke"]["runs-on"]) in existing
 
     def test_the_build_cannot_outlive_githubs_job_limit(self, workflow):
-        """A job that hits the 6 h cap is reported as cancelled with no logs. Both the step's
-        own timeout and the job's have to sit below it."""
+        """A job at the 6 h cap is reported cancelled with no logs, so keep timeouts below it."""
         assert workflow["jobs"]["build"]["timeout-minutes"] < 360
         for spec in prebuilt_wheels.SPECS.values():
             minutes = int(spec["build_timeout"].removesuffix("m"))
@@ -1046,5 +1091,13 @@ def test_every_upstream_url_the_resolver_can_emit_is_published():
                             assert url.startswith(f"{base}/{tag}/"), url
                             emitted.add(url.rsplit("/", 1)[1])
     assert emitted <= published, sorted(emitted - published)
-    # And nothing published is lost (torch 2.11 / 2.12 reuse the 2.10 wheels).
-    assert emitted == published
+    # And nothing published is lost (torch 2.11 / 2.12 reuse the 2.10 wheels), except the cu13
+    # torch 2.10 to 2.12 cells on cp311-cp313, which resolve to our own wheels instead.
+    ours = {
+        name
+        for name in published
+        if "+cu13torch2.10cxx11abiTRUE-" in name
+        and any(f"-{py}-{py}-" in name for py in ("cp311", "cp312", "cp313"))
+    }
+    assert ours
+    assert emitted == published - ours

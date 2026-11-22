@@ -1,18 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Refuse Hub dataset cards that point at host files.
-
-datasets joins a card's relative ``data_files`` and ``data_dir`` to the repo (``hf://datasets/<repo>@<rev>``)
-but keeps an absolute path, a ``file://`` / ``local://`` URL or an absolute ``data_dir`` as given, so a Hub
-repo whose README lists ``/home/owner/private.csv`` makes ``load_dataset("org/repo")`` read that host file.
-No real card does that, and it would let anyone who can name a Hub dataset to Studio read host files
-through a preview or a load. A Hub card may name relative paths and hf / http(s) URLs only, and for a managed
-account hf only: an http(s) URL makes the server dial wherever the card says (a redirect included), which would let
-a managed account read loopback, LAN or cloud metadata services the rest of Studio keeps from it.
-
-``install()`` patches ``datasets`` once it is imported, without importing it at startup; it is idempotent.
-"""
+"""Refuses Hub cards whose data_files or data_dir point at host paths or file:// URLs; managed
+accounts hf:// only; install() patches datasets lazily, never at startup, idempotent."""
 
 import functools
 import importlib.abc

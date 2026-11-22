@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
-import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
@@ -16,6 +16,7 @@ import {
   AudioHistoryProvider,
   AudioSourceInput,
 } from "../components/audio-source-input";
+import { FieldLabel, FieldTag } from "../components/field";
 import { TranscriptDiffEditor } from "../components/transcript-diff-editor";
 import { EDIT_COPY } from "../edit-policy";
 import {
@@ -26,6 +27,7 @@ import {
 } from "../hooks/use-edit-generation";
 import { useAudioEditStore } from "../stores/audio-edit-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
 type RailProps = Omit<
@@ -38,7 +40,6 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-/** Selects ②'s last word so typing replaces it. */
 function selectLastWord(field: HTMLTextAreaElement | null) {
   if (!field) return;
   const match = /([\p{L}\p{N}'’-]+)[^\p{L}\p{N}]*$/u.exec(field.value);
@@ -85,28 +86,24 @@ function EditInputs({
         />
       </div>
 
-      <div className="grid gap-1.5" data-tour="audio-edit-transcript">
+      <div className="grid gap-2" data-tour="audio-edit-transcript">
         <div className="flex items-center justify-between gap-2">
-          <label
+          <FieldLabel
             htmlFor={EDIT_TRANSCRIPT_FIELD_ID}
             className="text-ui-13 font-medium text-foreground"
           >
             {EDIT_COPY.transcriptLabel}
-            {mode === "delivery" ? (
-              <span className="ml-1.5 font-normal text-muted-foreground">
-                Optional
-              </span>
-            ) : null}
-          </label>
+            {mode === "delivery" ? <FieldTag>Optional</FieldTag> : null}
+          </FieldLabel>
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-auto px-2 py-1 text-ui-11p5"
+            className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
             disabled={!sourceUsable || transcriber.transcribing || disabled}
             onClick={() => void transcriber.transcribe(source)}
           >
-            <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+            <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
             {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
           </Button>
         </div>
@@ -141,7 +138,7 @@ function EditInputs({
             </Button>
           </p>
         ) : (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.transcriptHint}
           </p>
         )}
@@ -217,13 +214,13 @@ function EditInputs({
             onChange={(pitchSteps) => setDelivery({ pitchSteps })}
             commitWhileDragging
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-12 leading-normal text-muted-foreground">
             {EDIT_COPY.pitchHint}
           </p>
         </div>
       ) : null}
       {adapter?.family === "vevo2" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           {EDIT_COPY.vevo2SwitchNote}
         </p>
       ) : null}
@@ -358,7 +355,6 @@ export function EditOutput({
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
   return (
     <TtsOutput
       {...props}
@@ -369,29 +365,15 @@ export function EditOutput({
         ) : null
       }
       emptyActions={
-        picks.length > 0 ? (
-          <div
-            className="flex flex-wrap justify-center gap-2"
-            aria-label="Recommended models"
-          >
-            {picks.map((model) => (
-              <Button
-                key={model.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onPickModel?.(model.id)}
-              >
-                Use {model.name}
-              </Button>
-            ))}
-          </div>
-        ) : null
+        modelReady ? null : (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        )
       }
+      emptyTitle="Edited speech will appear here"
       emptyText={
         modelReady
           ? EDIT_COPY.emptyText
-          : "Edited speech lands here. Load a model that can edit speech, add a recording, and press Generate."
+          : "Load a model that can edit speech, add a recording, and press Generate."
       }
     />
   );

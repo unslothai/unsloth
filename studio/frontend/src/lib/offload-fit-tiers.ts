@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** One backend-reported offload fit tier in the picker's units: total VRAM of the load device in
- *  GiB and AVAILABLE system RAM in GiB. Same shape as the catalog's `OffloadFitTier`. */
+/** Total load-device VRAM and AVAILABLE system RAM, in GiB. */
 export interface ReportedOffloadFitTier {
   gpuGb: number;
   systemRamGb: number;
   requiresQuantisedStreaming?: boolean;
 }
 
-/** `/api/system.diffusers_offload_tiers` as lower-cased repo id -> tiers. Anything malformed is
- *  dropped, never coerced: a tier the picker cannot read must not admit a load. A tier missing
- *  `requires_quantised_streaming` is treated as requiring it, the conservative reading. */
+/** Malformed tiers are dropped, never coerced; missing streaming flag means required. */
 export function normalizeReportedOffloadFitTiers(
   raw: unknown,
 ): Record<string, ReportedOffloadFitTier[]> {

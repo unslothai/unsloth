@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A request the audio runtime refuses reaches the client with the runtime's reason, sanitized.
-
-CosyVoice3 without a reference clip answered "CosyVoice3 requires reference audio", and the
-Audio page showed "An internal error occurred": the reason crossed the worker as a bare
-RuntimeError and ``safe_error_detail`` flattened it. Paths and credentials in that text must
-still never reach the client.
-"""
+"""Runtime refusal reasons reach the client, but paths and credentials in them are still stripped."""
 
 from __future__ import annotations
 
@@ -288,7 +282,6 @@ def test_runtime_tail_redacts_before_the_cut():
     out = sanitize_runtime_tail(text)
     assert len(out) <= 280
     assert "someone" not in out and "private" not in out
-    # Cutting the raw text first left the path without its leading "/".
     raw = text[-280:]
     assert "private" in raw
 

@@ -35,7 +35,7 @@ function iframeAttributes(): Map<string, string | null> {
     const value = attribute.initializer;
     attributes.set(
       attribute.name.getText(),
-      value && ts.isStringLiteral(value) ? value.text : null,
+      value ? (ts.isStringLiteral(value) ? value.text : value.getText()) : null,
     );
   }
   return attributes;
@@ -46,5 +46,8 @@ test("the panel's page frame may go fullscreen without leaving its sandbox", () 
   assert.ok(attributes.has("allowFullScreen"));
   assert.equal(attributes.get("allowFullScreen"), null);
   assert.equal(attributes.get("sandbox"), "allow-scripts allow-forms");
-  assert.ok(!attributes.has("allow"));
+});
+
+test("pages in the panel may copy to the clipboard but not read it", () => {
+  assert.equal(iframeAttributes().get("allow"), "clipboard-write");
 });

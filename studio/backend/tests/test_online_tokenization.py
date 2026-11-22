@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which configurations may tokenize online, and what the lazy view produces.
-
-No GPU and no model: the gate is a pure function of the run's shape, and the
-transform runs against a real tokenizer on a real ``datasets.Dataset``. Every
-"degrades to the old path" claim is a test here, since a wrong answer is either a
-crash (VLM, pre-tokenized) or a run that trains on different rows.
-"""
+"""A wrong online-tokenization gate either crashes (VLM, pre-tokenized) or trains on different rows."""
 
 import sys
 from types import SimpleNamespace
@@ -39,6 +33,8 @@ datasets = pytest.importorskip("datasets")
 
 
 ROWS = MIN_ROWS_FOR_ONLINE + 5
+
+GIB = 1024**3
 
 
 def _text_dataset(n = ROWS, extra_columns = None):
@@ -93,19 +89,19 @@ def _base_kwargs(**overrides):
 @pytest.fixture(autouse = True)
 def _no_env_override(monkeypatch):
     monkeypatch.delenv(ENV_FLAG, raising = False)
-    # The gate refuses on spawn platforms; these tests describe Linux behaviour
-    # and simulate the other platforms explicitly where that is the point.
+    # The gate refuses on spawn platforms; other platforms are simulated explicitly.
     monkeypatch.setattr(sys, "platform", "linux")
-    # Same for the TRL hook: the CPU test job installs no TRL, so leaving it
-    # ambient makes every gate below report "no skip_prepare_dataset hook".
-    # The detector itself is covered separately below.
+    # Pin the TRL hook: the CPU job has no TRL. The detector is covered separately.
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
     )
-
-
-# ---------------------------------------------------------------- the happy path
+    # Pin host memory: the gate reads this process's RSS against the runner's free RAM.
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.host_memory_snapshot",
+        lambda: (GIB, 64 * GIB),
+        raising = False,
+    )
 
 
 def test_plain_text_single_epoch_run_goes_online():
@@ -119,16 +115,11 @@ def test_online_config_args_are_the_four_keys_the_mechanism_needs():
     decision = decide_online_tokenization(**_base_kwargs())
     args = online_config_args(decision)
     assert args["dataset_kwargs"] == {"skip_prepare_dataset": True}
-    # `Trainer._remove_unused_columns` reads `column_names`, which a transformed
-    # split answers from its BACKING table -- it would strip the text column the
-    # transform reads.
+    # _remove_unused_columns reads the backing table and would strip the transform's text column.
     assert args["remove_unused_columns"] is False
     assert args["dataloader_num_workers"] == 4
     assert args["dataloader_prefetch_factor"] > 0
     assert args["dataloader_persistent_workers"] is True
-
-
-# ------------------------------------------------------- degradation, one per gate
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
@@ -215,9 +206,7 @@ def test_missing_text_column_is_refused():
 
 
 def test_a_null_text_row_is_refused():
-    """The reproduction that motivated this gate: the eager map dies on one None
-    inside the constructor, while the lazy view trained past step 20 and would
-    have died hours in, at whatever step drew row 137."""
+    """One None text row crashes the eager map at construction; the lazy view dies hours in."""
     texts = [f"row {i}" for i in range(ROWS)]
     texts[137] = None
     dataset = datasets.Dataset.from_dict({"text": texts})
@@ -252,9 +241,7 @@ def test_a_null_text_row_in_the_eval_split_is_refused():
 
 
 def test_the_text_column_check_reads_metadata_and_never_a_row():
-    """Both halves come off the schema and Arrow's per-chunk null count, so the
-    gate must reach its answer on a split whose rows refuse to be read at all --
-    otherwise it is the eager pass it exists to avoid, in miniature."""
+    """The gate uses schema and Arrow null counts, never a row; reading rows is the eager pass."""
 
     class _Unreadable(type(_text_dataset(16))):
         def __getitem__(self, key):
@@ -333,9 +320,7 @@ def test_a_small_dataset_keeps_the_eager_path():
 
 
 def test_multi_epoch_runs_keep_the_eager_path():
-    """The lazy view re-tokenizes on every pass; the eager one reads Arrow.
-    Measured at +2.9% of steady-state training time over 2.4 epochs, against a
-    saving that is paid once, so anything past a single pass stays eager."""
+    """The lazy view re-tokenizes every pass, so anything past a single pass stays eager."""
     decision = decide_online_tokenization(**_base_kwargs(num_train_epochs = 3))
     assert not decision.enabled
     assert "one pass" in decision.reason
@@ -348,15 +333,11 @@ def test_a_step_capped_run_of_unknown_length_keeps_the_eager_path():
 
 
 def test_a_resolved_sub_epoch_step_cap_may_go_online():
-    """`max_steps` alone says nothing about passes, but a caller that has
-    resolved it to a fraction of an epoch has answered the question."""
+    """max_steps alone says nothing about passes; a resolved sub-epoch fraction answers it."""
     decision = decide_online_tokenization(
         **_base_kwargs(max_steps = 60, resolved_max_steps_epochs = 0.02)
     )
     assert decision.enabled, decision.reason
-
-
-# ---------------------------------------------------------------- the eval split
 
 
 def test_a_raw_eval_split_is_transformed_alongside_the_train_split():
@@ -380,9 +361,6 @@ def test_an_already_tokenized_eval_split_disables_the_feature():
     assert "eval" in decision.reason
 
 
-# ------------------------------------------------------------------ escape hatch
-
-
 def test_env_flag_zero_forces_the_eager_path(monkeypatch):
     monkeypatch.setenv(ENV_FLAG, "0")
     assert env_override() is False
@@ -397,17 +375,62 @@ def test_env_flag_one_overrides_the_cost_gates_only(monkeypatch):
         **_base_kwargs(dataset = _text_dataset(10), num_train_epochs = 5)
     )
     assert forced.enabled, forced.reason
-    # ...but never a correctness gate: a VLM stays eager however hard it is asked.
     assert not decide_online_tokenization(**_base_kwargs(is_vlm = True)).enabled
+
+
+@pytest.mark.parametrize("offload_layers", [28, "auto"])
+def test_block_swap_keeps_the_eager_path(offload_layers):
+    """Forked workers share pages copy-on-write; offloaded host-RAM layers OOM-killed a 122 GiB trainer."""
+    decision = decide_online_tokenization(**_base_kwargs(offload_layers = offload_layers))
+    assert not decision.enabled
+    assert decision.as_log_line().startswith("Online tokenization: off (Block Swap")
+
+
+def test_a_trainer_holding_more_host_ram_than_is_left_keeps_the_eager_path():
+    decision = decide_online_tokenization(**_base_kwargs(host_memory = (122 * GIB, 49 * GIB)))
+    assert not decision.enabled
+    assert "122.0 GiB of host RAM with 49.0 GiB available" in decision.as_log_line()
+
+
+def test_host_memory_is_read_when_the_caller_does_not_pass_it(monkeypatch):
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.host_memory_snapshot",
+        lambda: (40 * GIB, 8 * GIB),
+    )
+    assert "host RAM" in decide_online_tokenization(**_base_kwargs()).reason
+
+
+def test_a_trainer_with_headroom_still_goes_online():
+    decision = decide_online_tokenization(**_base_kwargs(host_memory = (8 * GIB, 64 * GIB)))
+    assert decision.enabled, decision.reason
+
+
+def test_unreadable_host_memory_does_not_veto(monkeypatch):
+    monkeypatch.setattr("utils.datasets.online_tokenization.host_memory_snapshot", lambda: None)
+    assert decide_online_tokenization(**_base_kwargs()).enabled
+
+
+def test_the_shared_fork_veto_names_its_reason():
+    from utils.datasets.online_tokenization import host_memory_fork_veto
+
+    assert host_memory_fork_veto(0, (8 * GIB, 64 * GIB)) is None
+    assert host_memory_fork_veto(0, None) is None
+    assert "Block Swap" in host_memory_fork_veto(32, (8 * GIB, 64 * GIB))
+    assert "133.0 GiB of host RAM" in host_memory_fork_veto(0, (133 * GIB, 39 * GIB))
+
+
+def test_env_flag_one_overrides_the_host_memory_gates(monkeypatch):
+    monkeypatch.setenv(ENV_FLAG, "1")
+    decision = decide_online_tokenization(
+        **_base_kwargs(offload_layers = 28, host_memory = (122 * GIB, 49 * GIB))
+    )
+    assert decision.enabled, decision.reason
 
 
 def test_an_unrecognised_env_value_is_not_an_override(monkeypatch):
     monkeypatch.setenv(ENV_FLAG, "maybe")
     assert env_override() is None
     assert decide_online_tokenization(**_base_kwargs()).enabled
-
-
-# ------------------------------------------------------------------- the transform
 
 
 def test_the_transform_returns_input_ids_for_the_whole_batch():
@@ -464,8 +487,7 @@ def test_the_view_yields_the_same_row_count_and_order():
 
 
 def test_the_view_attests_its_truncation_width():
-    """unsloth's `max_length` enforcement reads this instead of scanning every
-    row -- and scanning a lazy split is the eager tokenize pass all over again."""
+    """max_length enforcement reads this, since scanning a lazy split re-tokenizes every row."""
     view = attach_online_tokenization(
         _text_dataset(32),
         tokenizer = _Tokenizer(),
@@ -491,9 +513,6 @@ def test_the_transformed_view_still_reports_its_backing_columns():
     assert "input_ids" not in dataset_column_names(view)
 
 
-# ------------------------------------------------------- the double-BOS rule
-
-
 def test_add_special_tokens_is_off_when_the_template_emits_a_bos():
     tokenizer = SimpleNamespace(bos_token = "<s>", chat_template = "<s>{{ x }}")
     assert resolve_add_special_tokens(tokenizer, "hello") is False
@@ -512,9 +531,6 @@ def test_add_special_tokens_stays_on_otherwise():
 def test_no_bos_token_means_add_special_tokens_stays_on():
     tokenizer = SimpleNamespace(bos_token = None, chat_template = "")
     assert resolve_add_special_tokens(tokenizer, "hello") is True
-
-
-# ----------------------------------------------------------------- small helpers
 
 
 @pytest.mark.parametrize(
@@ -540,3 +556,37 @@ def test_a_disabled_decision_never_carries_worker_settings():
     assert decision.workers == 0
     assert decision.prewarm_batches == 0
     assert "off" in decision.as_log_line()
+
+
+# The autouse fixture pins host_memory_snapshot; these two exercise the real one.
+from utils.datasets.online_tokenization import host_memory_snapshot as _REAL_SNAPSHOT  # noqa: E402
+
+
+def _fake_psutil(monkeypatch, rss, available):
+    import sys, types
+    fake = types.SimpleNamespace(
+        Process = lambda: types.SimpleNamespace(memory_info = lambda: types.SimpleNamespace(rss = rss)),
+        virtual_memory = lambda: types.SimpleNamespace(available = available),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+
+def test_a_cgroup_limit_below_host_ram_vetoes_the_fork(monkeypatch):
+    """A container with 4 GiB of headroom on a 64 GiB host: the fork that psutil allows still OOMs."""
+    from utils import host_memory
+    from utils.datasets.online_tokenization import host_memory_fork_veto
+
+    _fake_psutil(monkeypatch, 8 * GIB, 64 * GIB)
+    monkeypatch.setattr(host_memory, "cgroup_headroom_mib", lambda: 4 * 1024)
+    assert _REAL_SNAPSHOT() == (8 * GIB, 4 * GIB)
+    assert "4.0 GiB available" in host_memory_fork_veto(0, _REAL_SNAPSHOT())
+
+
+def test_without_a_cgroup_limit_host_ram_decides(monkeypatch):
+    from utils import host_memory
+    from utils.datasets.online_tokenization import host_memory_fork_veto
+
+    _fake_psutil(monkeypatch, 8 * GIB, 64 * GIB)
+    monkeypatch.setattr(host_memory, "cgroup_headroom_mib", lambda: None)
+    assert _REAL_SNAPSHOT() == (8 * GIB, 64 * GIB)
+    assert host_memory_fork_veto(0, _REAL_SNAPSHOT()) is None

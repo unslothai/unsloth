@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Qwen-Image-2.1 editing on the Images page: the size the form shows is the size the backend
-// renders, the request keeps image order and drops nothing silently, and a restored edit reopens
-// Edit with its inputs requested again instead of replaying as text-to-image.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -14,9 +10,12 @@ import {
   conditionedRequestFields,
   maxAdditionalImages,
   presetsWithin,
+  raiseToEditResolution,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "../src/features/images/edit-conditioning.ts";
@@ -45,7 +44,7 @@ const QWEN21: DiffusionConditioning = {
 const LIMITS = sizeLimitsFrom(QWEN21);
 
 test("match-source sizes agree with the backend's match_source_size", () => {
-  // Same pairs the backend tests pin, so the form never shows a size the engine does not render.
+  // Same pairs the backend tests pin.
   assert.deepEqual(matchSourceSize(300, 200, 1024, LIMITS), {
     width: 1248,
     height: 832,
@@ -96,7 +95,6 @@ test("the grid and bounds follow the loaded model, and default to the historical
   const fitted = fitSize(2752, 2752, LIMITS);
   assert.ok(fitted.width * fitted.height <= LIMITS.maxPixels);
   assert.equal(fitted.width, fitted.height);
-  // A 2K recipe restores whole on this model and scaled on another.
   assert.deepEqual(restorableSize(2752, 1536, "txt2img", LIMITS), {
     width: 2752,
     height: 1536,
@@ -147,6 +145,33 @@ test("reference detail seeds from the build tier and never picks 2048 on its own
   assert.equal(seedReferenceResolution([512, 1024, 2048], 1024), 1024);
   assert.equal(seedReferenceResolution([512, 1024, 2048], 768), 1024);
   assert.equal(seedReferenceResolution([], 1024), null);
+});
+
+test("an edit's Match Image 1 size seeds from the family's edit resolution, not the build tier", () => {
+  assert.equal(seedMatchResolution(1024, 2048, 2752), 2048);
+  assert.equal(seedMatchResolution(512, 2048, 2752), 2048);
+  assert.equal(seedMatchResolution(1024, 2048, 1536), 1536);
+  assert.equal(seedMatchResolution(1024, null, 2048), 1024);
+  assert.equal(seedMatchResolution(512, undefined, 2048), 512);
+});
+
+test("Reference raises a size below the family's edit resolution once, keeping the aspect", () => {
+  const limits = { multiple: 32, maxSide: 2752, maxPixels: 2400 * 1792 };
+  assert.deepEqual(raiseToEditResolution(1024, 1024, 2048, limits), { width: 2048, height: 2048 });
+  const wide = raiseToEditResolution(1024, 768, 2048, limits);
+  assert.ok(wide && wide.width > wide.height && wide.width * wide.height <= limits.maxPixels);
+  assert.equal(raiseToEditResolution(2048, 2048, 2048, limits), null);
+  assert.equal(raiseToEditResolution(2400, 1792, 2048, limits), null);
+  assert.equal(raiseToEditResolution(1024, 1024, null, limits), null);
+});
+
+test("leaving Reference puts back the Create size the raise replaced, unless it was changed", () => {
+  const from = { width: 1024, height: 1024, aspect: "1:1", portrait: false };
+  const raise = { key: "k", raised: { width: 2048, height: 2048 }, from };
+  assert.deepEqual(sizeAfterReference(2048, 2048, raise), from);
+  assert.equal(sizeAfterReference(1536, 1536, raise), null);
+  assert.equal(sizeAfterReference(2048, 2048, { key: "k" }), null);
+  assert.equal(sizeAfterReference(1024, 1024, null), null);
 });
 
 test("the request keeps order, drops empty slots and only sends what the model takes", () => {
@@ -231,8 +256,7 @@ test("a restored edit names every input it needs again", () => {
 });
 
 test("restoreSettings reopens Edit and Reference instead of Create", () => {
-  // Structural: the page component is not renderable under node:test. The workflow decision and
-  // the cleared uploads are what keep a restored edit from generating as text-to-image.
+  // Structural: the page component is not renderable under node:test.
   const src = readSrc("features/images/images-page.tsx");
   const body = src.slice(src.indexOf("const restoreSettings = useCallback"));
   assert.match(
@@ -241,7 +265,18 @@ test("restoreSettings reopens Edit and Reference instead of Create", () => {
   );
   assert.match(body, /setInitImage\(null\)/);
   assert.match(body, /setReferenceImages\(/);
-  // Generation stays blocked until the source and every restored slot are supplied again.
   assert.match(src, /usesInit && !initImage/);
   assert.match(src, /is empty\. Add it, or remove that slot\./);
+});
+
+test("the Reference raise starts from the size fitted to the loaded model's limits", () => {
+  const limits = { multiple: 32, maxSide: 4096, maxPixels: 4096 * 4096 };
+  const fitted = fitSize(1040, 768, limits);
+  const raised = raiseToEditResolution(fitted.width, fitted.height, 2048, limits);
+  assert.ok(raised && raised.width > raised.height, "landscape stays landscape");
+  assert.ok(raised.width * raised.height >= 0.9 * 2048 * 2048);
+  const src = readSrc("features/images/images-page.tsx");
+  const fit = src.indexOf("setFittedLimits(limitsKey)");
+  const raise = src.indexOf("raiseToEditResolution(\n      fittedWidth,");
+  assert.ok(fit > 0 && raise > fit, "fit runs before the raise and the raise reads the fitted size");
 });

@@ -8,8 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-// constants.ts only: transport-preference.ts reaches lib/toast, a .tsx barrel node's type
-// stripping cannot load. Its decision logic is pinned in download-transport-setting.test.ts.
+// constants.ts only: transport-preference.ts reaches lib/toast, a .tsx barrel Node cannot load.
 const {
   DEFAULT_TRANSPORT_MODE,
   RESOLVED_TRANSPORTS,
@@ -20,9 +19,7 @@ const {
 } = await import("../src/features/hub/download-manager/constants.ts");
 
 test("auto is the default transport preference", () => {
-  // The backend picks per machine (RAM, hf_xet build, recent Xet failures), which is what a
-  // user who never touches this control most needs. A floor now that the install has a setting,
-  // but an untouched install still runs on what it always did.
+  // The backend picks per machine (RAM, hf_xet build, recent Xet failures).
   assert.equal(DEFAULT_TRANSPORT_MODE, TRANSPORT.AUTO);
 });
 
@@ -36,8 +33,7 @@ test("auto is a preference, not a transport a download can run on", () => {
 });
 
 test("every previously stored preference is still valid", () => {
-  // A transport pinned before this change is kept: only an unset value falls through to the
-  // install setting.
+  // A pinned transport is kept; only an unset value falls through to the install setting.
   assert.ok(isTransportMode("http"));
   assert.ok(isTransportMode("xet"));
   assert.ok(isTransportMode("auto"));

@@ -31,8 +31,6 @@ type ConversationMarkdownExportDependencies<
   readonly notifyNoContent: () => void;
 };
 
-/** The markdown for one thread: null when it could not be loaded, empty when it holds nothing
- *  exportable. Shared by the download and the copy shortcut. */
 export function createConversationMarkdownBuilder<
   Message extends StoredConversationMessage,
 >({
@@ -50,8 +48,7 @@ export function createConversationMarkdownBuilder<
     const normalizedMessages: ConversationMarkdownMessage[] = messages.map(
       (message) => ({
         role: String(message.role ?? ""),
-        // Renderer markup, never prose: an exported answer must not carry raw tokens. Here rather than in
-        // the exporter, so the copy chord strips them too.
+        // Strip renderer tokens here, not in the exporter, so the copy chord strips them too.
         content: stripSearchImageTokens(renderMessage(message)),
       }),
     );
@@ -111,9 +108,7 @@ function headingText(title: string): string {
   return title.replace(/\s+/g, " ").trim();
 }
 
-/** One document from several threads, each under its own heading. A compare row is two models
- *  answering the same prompt, and the transcripts carry only role headings, so unnamed halves
- *  cannot be told apart. A lone thread is left exactly as the download writes it. */
+/** Named headings so the two halves of a compare row can be told apart. */
 export async function buildNamedConversationsMarkdown(
   conversations: readonly { readonly id: string; readonly title: string }[],
   build: (threadId: string) => Promise<string | null>,
@@ -148,7 +143,6 @@ export function createConversationMarkdownExporter<
   });
   return async (threadId) => {
     const markdown = await build(threadId);
-    // null already reported itself.
     if (markdown === null) return;
     if (!markdown) {
       notifyNoContent();

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Edge cases around the over-cap tool-call notice.
-
-The notice is text the model reads, so the load-bearing property is that a turn which
-does NOT overflow the cap reads exactly as it did before. These cover that, plus the
-per-turn reset, the retry actually executing, the dedup boundary, and
-``disable_parallel_tool_use``.
-"""
+"""A turn under the cap must read exactly as before, since the notice is text the model reads."""
 
 import copy
 import json
@@ -138,8 +132,6 @@ class TestNoticeIsPerTurn:
             max_tool_iterations = 6,
         )
 
-        # Turn 2 is told about the 2 skipped calls; turn 3 inherits that one message from
-        # history and gains no new one.
         assert len(_notices(seen[1])) == 1
         assert len(_notices(seen[2])) == 1
 
@@ -152,8 +144,6 @@ class TestNoticeIsPerTurn:
             max_tool_iterations = 6,
         )
 
-        # Nothing about the first turn marks the skipped calls as already done, so the
-        # retry the notice asks for is actually honoured.
         assert [a["query"] for _name, a in exec_fn.calls] == over
         assert len(exec_fn.calls) == n
 
@@ -178,8 +168,7 @@ class TestDisableParallelToolUse:
         )
 
         assert len(calls) == 1
-        # The 9 dropped calls here are dropped by the caller's own setting, not by the
-        # per-turn cap, so a cap notice would misattribute them.
+        # Dropped by the caller's setting, not the cap, so no cap notice.
         assert _notices(payloads[1]["messages"]) == []
 
 
@@ -207,8 +196,6 @@ class TestSkippedCallsLeaveNoOrphanUi:
         starts = [e for e in events if e.get("type") == "tool_start"]
         ends = [e for e in events if e.get("type") == "tool_end"]
         assert len(starts) == _MAX_TOOL_CALLS_PER_TURN
-        # Every card that opened also closed: a skipped call never leaves a running tool
-        # in the UI.
         assert {e.get("tool_call_id") for e in starts} == {e.get("tool_call_id") for e in ends}
 
 

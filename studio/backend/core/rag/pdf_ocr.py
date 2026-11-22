@@ -9,6 +9,7 @@ import logging
 import os
 
 from . import config
+from .parsers import mupdf_serialized
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,14 @@ def unreadable_pages_error(page_numbers) -> PDFOCRError:
     )
 
 
-def ocr_pages(path: str, page_numbers) -> dict[int, str]:
-    """Transcribe only requested pages using PyMuPDF's integrated Tesseract.
-
-    No downloads or model loading. Tesseract language data must already be installed.
-    The caller owns the page budget and decides how to report unresolved pages.
-    """
+@mupdf_serialized
+def ocr_pages(
+    path: str,
+    page_numbers,
+    *,
+    until = None,
+) -> dict[int, str]:
+    """OCR the requested pages; ``until(number, out)`` returning True stops before that page."""
     if not page_numbers:
         return {}
     import pymupdf
@@ -43,6 +46,8 @@ def ocr_pages(path: str, page_numbers) -> dict[int, str]:
     out: dict[int, str] = {}
     with pymupdf.open(path) as doc:
         for number in page_numbers:
+            if until is not None and until(number, out):
+                break
             try:
                 page = doc[number - 1]
                 textpage = page.get_textpage_ocr(
@@ -53,8 +58,7 @@ def ocr_pages(path: str, page_numbers) -> dict[int, str]:
                 )
                 text = page.get_text("text", textpage = textpage).strip()
             except Exception:
-                # A missing engine/language pack affects every page. Do not repeatedly
-                # try an unavailable OCR engine for an entire scanned document.
+                # A missing engine/language pack affects every page, so stop.
                 logger.warning("Local PDF OCR failed on page %s", number, exc_info = True)
                 break
             if text:

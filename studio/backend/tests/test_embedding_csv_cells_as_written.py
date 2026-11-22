@@ -100,7 +100,7 @@ def run_embedding(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(worker, "_model_load_security_error", lambda *a, **k: None)
     monkeypatch.setattr(worker, "_start_worker_stop_poller", lambda *a, **k: None)
-    monkeypatch.setattr(worker, "_emit_resource_provenance", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_emit_resource_provenance", lambda *a, **k: True)
 
     def run(
         csv_text,
@@ -186,6 +186,15 @@ def test_embedding_csv_slice_counts_rows_of_the_file(run_embedding):
 
     assert dataset.to_list() == [{"q": "q2", "a": "a2"}, {"q": "q3", "a": "a3"}]
     assert warnings == ["Dropped 1 of 3 rows because a text cell was empty."]
+
+
+def test_embedding_slice_start_past_the_last_row_is_refused(run_embedding):
+    run_embedding(
+        "q,a\nq0,a0\nq1,a1\n",
+        error = "Failed to load dataset: Train Split Start 5 is past the last row of this "
+        "dataset (2 rows).",
+        dataset_slice_start = 5,
+    )
 
 
 def test_embedding_csv_score_na_marker_outside_the_slice_still_trains(run_embedding):

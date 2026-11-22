@@ -499,7 +499,8 @@ def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
     )
     LlamaForCausalLM(config).save_pretrained(tmp_path)
     raw = json.loads((tmp_path / "config.json").read_text())
-    raw["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
+    # A ModelOpt algorithm neither loader takes (FP8 -> modelopt_fp8, NVFP4 -> modelopt_nvfp4 since #17848).
+    raw["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "W4A8_AWQ"}
     (tmp_path / "config.json").write_text(json.dumps(raw))
     code = f"""
 import os
@@ -532,7 +533,7 @@ from unsloth import FastLanguageModel
 from unsloth.models import llama
 from unsloth.models._utils import get_quant_type
 seen = []
-llama.verify_fp8_support_if_applicable = lambda config: seen.append(get_quant_type(config))
+llama.verify_fp8_support_if_applicable = lambda config, **kw: seen.append(get_quant_type(config))
 try:
     FastLanguageModel.from_pretrained({str(tmp_path)!r}, load_in_4bit = False, max_seq_length = 64)
 except Exception:
@@ -1011,12 +1012,16 @@ def test_standalone_hf_quant_config_is_rewritten(tmp_path):
     assert method == "fp8" and config.quantization_config["quant_method"] == "fp8"
     assert hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
-    for other in (nvfp4, plain):
-        config = AutoConfig.from_pretrained(str(other))
-        _, _, method = check_and_disable_bitsandbytes_loading(
-            config, load_in_4bit = False, verbose = False
-        )
-        assert method is None and getattr(config, "quantization_config", None) is None
+    config = AutoConfig.from_pretrained(str(plain))
+    _, _, method = check_and_disable_bitsandbytes_loading(config, load_in_4bit = False, verbose = False)
+    assert method is None and getattr(config, "quantization_config", None) is None
+
+    # NVFP4 takes the compressed-tensors NVFP4A16 rewrite (modelopt_nvfp4.py), never the fp8 one.
+    config = AutoConfig.from_pretrained(str(nvfp4))
+    _, _, method = check_and_disable_bitsandbytes_loading(config, load_in_4bit = False, verbose = False)
+    assert method == "compressed-tensors"
+    assert config.quantization_config["format"] == "nvfp4-pack-quantized"
+    assert not hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
     # vLLM reads ModelOpt itself, but load_in_4bit must still drop so bnb is not requested.
     config = AutoConfig.from_pretrained(str(fp8))

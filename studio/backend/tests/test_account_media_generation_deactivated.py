@@ -3,12 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deactivation does not cancel media generations, so the owner must stay scoped.
-
-Deactivating the last managed account drops the ACTIVE count back to one, but its
-in-flight image generation keeps running: ownership tracking has to follow
-``account_scope()`` (any managed account exists), not the active-count login mode.
-"""
+"""Media ownership follows account_scope(), as deactivation leaves in-flight generations running."""
 
 from __future__ import annotations
 
@@ -114,8 +109,7 @@ def _start_alice_generation(alice_resident):
 def test_owner_cannot_cancel_a_deactivated_accounts_image_generation(deactivatable, alice_resident):
     thread, result = _start_alice_generation(alice_resident)
     try:
-        # The owner deactivates alice mid-generation: the active count drops to one, but
-        # set_account_active() only cancels chat generations, so this image job runs on.
+        # set_account_active() only cancels chat generations, so this image job keeps running.
         deactivatable["value"] = False
         assert run_as(OWNER, access.generation_is_foreign, "diffusion") is True
         assert run_as(OWNER, access.tracked_generation_account) == OWNER.account_id
