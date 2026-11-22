@@ -51749,6 +51749,13 @@ async def load_diffusion_model_gated(
             fit_kwargs = await asyncio.to_thread(
                 media_fit_kwargs, DIFFUSION, request, gpu_ordinal, multi_model_mode
             )
+            from core.inference.ensure_model import chat_kept_refusal, media_load_spares_chat
+            from core.inference.gpu_arbiter import GpuOwnerBusyError
+
+            # A chat's own tools key loads beside the chat model, never in its place.
+            spare_chat = await asyncio.to_thread(
+                media_load_spares_chat, DIFFUSION, "image", request.model_path, multi_model_mode
+            )
 
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
@@ -51772,8 +51779,18 @@ async def load_diffusion_model_gated(
                                 DIFFUSION, multi_model_mode, media_names, _begin_load
                             ),
                             admit = _admit,
+                            **({"spare_chat": True} if spare_chat else {}),
                             **fit_kwargs,
                         )
+                except GpuOwnerBusyError as exc:
+                    if not spare_chat:
+                        raise
+                    raise chat_kept_refusal(
+                        "image",
+                        request.model_path,
+                        multi_model_mode,
+                        priced = fit_kwargs.get("need_mib") is not None,
+                    ) from exc
                 finally:
                     if admitted:
                         preflight.lock.release()
