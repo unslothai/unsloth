@@ -135,3 +135,21 @@ def test_queued_mcp_call_rechecks_the_project_before_dispatch(monkeypatch):
     monkeypatch.setattr(tools, "call_tool_sync", dispatch)
     tools.execute_mcp_tool(f"mcp__{server_id}__echo", {}, session_id = session)
     assert seen == [True, False]
+
+
+def test_mcp_app_dispatch_rechecks_the_project():
+    from routes import mcp_servers as routes
+
+    server_id = "0" * 16
+    mcp_servers_db.create_server(
+        id = server_id, display_name = server_id, url = "https://example.invalid/mcp", is_enabled = True
+    )
+    studio_db.upsert_chat_project({"id": "eps", "name": "eps", "createdAt": 1, "updatedAt": 2})
+    patch_project("eps", ChatProjectPatch(mcpServerIds = [server_id]), "owner")
+    session = tools.project_session_id("eps")
+    check = routes._ui_call_kwargs(server_id, mcp_servers_db.get_server(server_id), None, session)[
+        "config_check"
+    ]
+    assert check()
+    patch_project("eps", ChatProjectPatch(mcpServerIds = []), "owner")
+    assert not check()

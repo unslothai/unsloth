@@ -934,7 +934,7 @@ async def _warm_tool_cache(server: dict) -> None:
 
 
 def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict:
-    from core.inference.tools import mcp_session_scope
+    from core.inference.tools import mcp_project_excludes, mcp_session_scope
     return {
         "url": server["url"],
         "headers": parse_server_headers(server),
@@ -943,7 +943,10 @@ def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict
         **oauth_client_kwargs(server),
         # execute_tool's key, so a widget reaches the chat's own stdio subprocess.
         "scope": mcp_session_scope(session_id, thread_id),
-        "config_check": lambda: _row_still_matches(server_id, server),
+        "config_check": lambda: (
+            _row_still_matches(server_id, server)
+            and not mcp_project_excludes(server_id, session_id)
+        ),
     }
 
 
