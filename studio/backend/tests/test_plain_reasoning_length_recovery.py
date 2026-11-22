@@ -66,7 +66,6 @@ def test_a_thought_that_filled_the_window_is_answered_not_abandoned(monkeypatch)
     assert len(payloads) == 2
     final = _texts(events)[-1]
     assert final.endswith(_ANSWER)
-    # The thought stays in the turn, closed, ahead of the answer.
     assert final.startswith("<think>") and "</think>" in final
     assert _finishes(events) == ["stop"]
 
@@ -81,7 +80,7 @@ def test_the_retry_turns_thinking_off_and_asks_for_the_answer(monkeypatch):
     assert retry["chat_template_kwargs"]["enable_thinking"] is False
     *_, note, ask = retry["messages"]
     assert note["role"] == "assistant" and note["content"].startswith("Where I had got to:")
-    # A short note stands in for the thought; replaying it whole would fill the window again.
+    # Replaying the whole thought would fill the window again.
     assert len(note["content"]) < 1_000
     assert ask["role"] == "user" and "give your answer to my request now" in ask["content"]
     assert "call a tool" not in ask["content"]

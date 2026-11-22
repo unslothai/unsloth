@@ -39439,12 +39439,11 @@ class LlamaCppBackend:
                         "timings": _metadata_timings,
                         "finish_reason": _metadata_finish_reason,
                     }
-                    # The thought filled the window: answer once more with thinking off rather
-                    # than end the turn with no answer (the tool loop does the same).
+                    # A thought that filled the window gets one answer with thinking off, as in the tool loop.
                     _spent = (_metadata_usage or {}).get("completion_tokens") or 0
                     if (
                         _allow_length_recovery
-                        # Turning thinking off is the lever; without it the retry thinks again.
+                        # Without a thinking switch the retry would just think again.
                         and not getattr(self, "_reasoning_always_on", False)
                         and _metadata_finish_reason == "length"
                         and reasoning_text.strip()
@@ -39502,8 +39501,7 @@ class LlamaCppBackend:
             "with thinking off",
             len(reasoning_text),
         )
-        # The image is attached to the original user turn here, before a user turn is added. Copies,
-        # so the caller's messages (shared by every choice when n > 1) never see the retry turns.
+        # Image on the original question; copies, since n > 1 choices share the caller's list.
         recovery_messages = [
             dict(m) for m in self._build_openai_messages(retry_messages, retry_image_b64)
         ]
@@ -39542,8 +39540,7 @@ class LlamaCppBackend:
                 promote_reasoning_only = promote_reasoning_only,
                 perf_callback = perf_callback,
                 reasoning_provenance = reasoning_provenance,
-                # No eviction: the first prompt fit and the note adds little, while a fit would
-                # protect only the request just added and could drop the user's question.
+                # No eviction: a fit protects only the added request and could drop the question.
                 context_overflow = None,
                 thread_id = thread_id,
                 tools_withheld = tools_withheld,
