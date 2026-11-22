@@ -181,7 +181,9 @@ def lanczos_resize(
 
     ``crop=(top, left, h, w)`` crops the resized image; ``mean`` + ``std`` fuse normalisation (float32 out).
     """
-    if not image.is_cuda or torch.version.hip is not None:
+    from .rocm_bf16 import is_rocm_torch
+
+    if not image.is_cuda or is_rocm_torch(torch):
         raise ValueError("Lanczos RGB preprocessing requires a CUDA tensor")
     if image.dtype != torch.uint8 or image.ndim not in (3, 4) or image.shape[-1] != 3:
         raise ValueError("Lanczos RGB input must be uint8 with shape [H, W, 3] or [N, H, W, 3]")

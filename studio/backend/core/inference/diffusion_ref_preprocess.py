@@ -29,7 +29,10 @@ def enabled() -> bool:
 def _cuda_ok() -> bool:
     try:
         import torch
-        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return False
         import triton  # noqa: F401
     except Exception:  # noqa: BLE001 - no torch / triton: stock path

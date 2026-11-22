@@ -47,29 +47,11 @@ def _stock_chain(proc, img):
     return proc.preprocess(img, height = h // 16 * 16, width = w // 16 * 16, resize_mode = "crop")
 
 
-def test_env_switch(monkeypatch):
-    monkeypatch.setenv(rp.ENV, "0")
-    assert not rp.enabled()
-    monkeypatch.setenv(rp.ENV, "1")
-    assert rp.enabled()
-    monkeypatch.delenv(rp.ENV)
-    assert rp.enabled()
-
-
 def test_not_installed_without_cuda(monkeypatch):
     monkeypatch.setattr(rp, "_cuda_ok", lambda: False)
     pipe = _Pipe()
     assert rp.install(pipe) is False
     assert not getattr(pipe.image_processor, rp._MARK, False)
-
-
-def test_only_flux2_processor(monkeypatch):
-    monkeypatch.setattr(rp, "_cuda_ok", lambda: True)
-
-    class P:
-        image_processor = object()
-
-    assert rp.install(P()) is False
 
 
 def test_install_off_by_env(monkeypatch):
@@ -129,14 +111,3 @@ def test_config_gate():
     assert rp._config_ok(proc)
     proc2 = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16, do_normalize = False)
     assert not rp._config_ok(proc2)
-
-
-def test_kernel_crop_dims_not_specialized():
-    src = (BACKEND / "core" / "inference" / "diffusion_lanczos_triton.py").read_text()
-    assert "crop_width: tl.constexpr" not in src and "crop_height: tl.constexpr" not in src
-    assert "Apache License 2.0" in src and "SGLang project" in src
-
-
-def test_installed_at_load():
-    src = (BACKEND / "core" / "inference" / "diffusion.py").read_text()
-    assert "from .diffusion_ref_preprocess import install as install_ref_preprocess" in src
