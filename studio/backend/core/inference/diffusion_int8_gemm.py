@@ -887,6 +887,10 @@ _RACE_SOURCES = {
         "time_sustained_us",
         "time_us",
         "race",
+        # how a race picks among its near-tied winners
+        "_FILL_TIE",
+        "last_tile_fill",
+        "pick",
         "_NATIVE_LARGE_M",
         "native_prepare",
         # which tiles the race times: a probe that admits more tiles must re-race
@@ -986,6 +990,8 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 f"sustained={cut.sustained_mode()}",
                 # force keeps the fastest tile even when it loses to today's path
                 f"cutlass={cut.mode()}",
+                # near-ties broken by the last row tile's fill (FILL_TIE_ENV=0: the fastest winner)
+                f"fill_ties={cut.fill_ties_enabled()}",
                 _today_tiles(index),
                 digest,
             )
