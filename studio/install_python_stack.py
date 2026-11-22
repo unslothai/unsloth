@@ -10225,9 +10225,13 @@ _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PIN
     "mlx-vlm",
 )
 # mflux is --no-deps so its torch and transformers floors cannot move the MLX pins; best-effort, and
-# a failure must never mark the MLX stack broken; Pillow is capped below 13 since 13.0.0 breaks
-# mflux on CPython 3.11-3.14.
-_MLX_DIFFUSION_PINS: tuple[str, ...] = ("mflux==0.22.0",)
+# a failure must never mark the MLX stack broken. Pillow < 13: 13.0.0 breaks mflux 0.22; 0.24 runs on 12.
+# 0.24 needs Python 3.11, so 3.10 venvs keep 0.22.
+_MFLUX_PIN = "mflux==0.24.0"
+_MFLUX_PY310_PIN = "mflux==0.22.0"
+_MLX_DIFFUSION_PINS: tuple[str, ...] = (
+    _MFLUX_PIN if sys.version_info >= (3, 11) else _MFLUX_PY310_PIN,
+)
 _MLX_DIFFUSION_DEPS: tuple[str, ...] = (
     "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
