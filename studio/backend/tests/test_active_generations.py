@@ -1739,7 +1739,7 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
 
     src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
     assert src.index("async def _stream()") < src.index("_tracker.__enter__()")
-    # message_start is now sent inside the teardown try, whose finally releases the tracker.
+    # message_start is sent inside the teardown try, whose finally releases the tracker.
     assert src.index("_tracker.__enter__()") < src.index("_release_admission(tracker = _tracker)")
 
 

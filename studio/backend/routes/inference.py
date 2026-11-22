@@ -48592,7 +48592,7 @@ async def _anthropic_passthrough_stream(
                 if failed:
                     return
         except Exception as e:
-            # A failure before dispatch still follows message_start, as when it was sent first.
+            # A failure before dispatch still follows message_start.
             if not _started:
                 for line in await _message_start_lines():
                     yield line
