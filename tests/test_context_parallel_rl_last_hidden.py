@@ -363,6 +363,30 @@ def test_passthrough_audit():
     assert cp._decoder_output_passthrough(_DroppingLM.forward, attrs)
     assert not cp._decoder_output_passthrough(_ConsumingLM.forward, attrs)
     assert not cp._decoder_output_passthrough(_MappingLM.forward, attrs)
+
+    class _TupleLM:
+        def forward(
+            self,
+            input_ids = None,
+            **kwargs,
+        ):
+            outputs = self.model(input_ids = input_ids, **kwargs)
+            self.probe = outputs.to_tuple()[1][0]
+            return outputs[0]
+
+    class _ValuesLM:
+        def forward(
+            self,
+            input_ids = None,
+            **kwargs,
+        ):
+            outputs = self.model(input_ids = input_ids, **kwargs)
+            states = list(outputs.values)
+            return states[0]
+
+    # Output methods hand the hidden-state tuple on indirectly: never audited as a passthrough.
+    assert not cp._decoder_output_passthrough(_TupleLM.forward, attrs)
+    assert not cp._decoder_output_passthrough(_ValuesLM.forward, attrs)
     from transformers.models.llama.modeling_llama import LlamaForCausalLM
     from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 

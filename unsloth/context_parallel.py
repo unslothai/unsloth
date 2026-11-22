@@ -2290,9 +2290,26 @@ _PASSTHROUGH_MARKER = "_unsloth_cp_hidden_states_passthrough"
 _PASSTHROUGH_AUDIT = {}  # code object -> {decoder attribute names: verdict}
 
 
+_OUTPUT_METHODS = frozenset(
+    (
+        "to_tuple",
+        "values",
+        "items",
+        "keys",
+        "get",
+        "setdefault",
+        "pop",
+        "update",
+        "__getitem__",
+        "__iter__",
+    )
+)
+
+
 def _decoder_output_passthrough(function, attrs) -> bool:
     """Static check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned to a plain
-    name, and that name is read only as ``.attr`` (``.hidden_states`` only as a ``hidden_states =``
+    name, and that name is read only as a ``.attr`` field (never a method such as ``.to_tuple()``;
+    ``.hidden_states`` only as a ``hidden_states =``
     keyword), ``[0]`` or ``[1:]``. Nothing reads ``hidden_states`` by string. Anything else: False."""
     import ast
     import inspect
@@ -2363,6 +2380,11 @@ def _decoder_output_passthrough(function, attrs) -> bool:
             continue
         use = parents.get(node)
         if isinstance(use, ast.Attribute) and use.value is node:
+            # Field reads only: an output method (to_tuple, values, items, get, ...) hands the
+            # hidden-state tuple on indirectly, so its use cannot be verified here.
+            caller = parents.get(use)
+            if (isinstance(caller, ast.Call) and caller.func is use) or use.attr in _OUTPUT_METHODS:
+                return False
             continue
         if isinstance(use, ast.Subscript) and use.value is node:
             index = use.slice
