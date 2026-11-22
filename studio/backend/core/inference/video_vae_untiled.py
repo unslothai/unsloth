@@ -478,7 +478,7 @@ def install_untiled_decode(
             out = _paired(z, args, kwargs)
             if out is not _OOM:
                 return out
-            # two frames per call ran out of memory: never again at this size; the one-frame untiled decode next
+            # pair OOM: never again at this size; retry one frame per call
             oom_pair[:] = [min([need, *oom_pair])]
             from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
 

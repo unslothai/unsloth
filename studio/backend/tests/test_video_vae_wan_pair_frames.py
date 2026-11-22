@@ -50,7 +50,6 @@ def test_paired_matches_one_frame_loop(kind, latent_frames):
             got = wan_paired_decode(vae, z, frames_per_call = step).sample
             assert got.shape == ref.shape and got.dtype == ref.dtype
             assert (got - ref).abs().max().item() <= 1e-5
-        # the cache is cleared as stock: a second decode is independent of the first
         assert torch.equal(wan_paired_decode(vae, z).sample, wan_paired_decode(vae, z).sample)
     assert all(c is None for c in vae._feat_map)
 
@@ -96,7 +95,7 @@ def test_gate_takes_pairs_when_they_fit(monkeypatch):
 
 def test_gate_keeps_one_frame_when_only_untiled_fits(monkeypatch):
     vae, family = _gated(monkeypatch, 1000)
-    big = (1, 4, 5, 60, 104)  # plan on a 480p latent's numbers, decode a tiny one
+    big = (1, 4, 5, 60, 104)
     need = U.untiled_decode_bytes(family, big, 4)
     extra = U.pair_frames_extra_bytes(family, big, 4)
     assert extra and extra > 0
@@ -161,7 +160,7 @@ def test_layer_is_installed_once_and_inert_when_tiled(monkeypatch):
     assert U.install_untiled_decode(pipe, family)
     layers = [l for l in vae.__dict__.get(decode_layers.LAYERS_ATTR, []) if l.name == U._PAIR_LAYER]
     assert len(layers) == 1
-    vae.__dict__[U._PAIR_ATTR] = True  # a stale flag never pairs a tiled decode
+    vae.__dict__[U._PAIR_ATTR] = True
     vae.use_tiling = True
     called = []
     monkeypatch.setattr(

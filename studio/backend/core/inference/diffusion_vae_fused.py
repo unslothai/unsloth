@@ -2078,7 +2078,6 @@ def wan_paired_decode(
         )
         n = end - start
         if buf is None and parts and start == 1 and out.shape[2] % n == 0:
-            # the second call fixes the output frames per latent frame: one buffer for the whole video
             first = parts[0]
             rate = out.shape[2] // n
             shape = list(first.shape)
@@ -2120,7 +2119,7 @@ def wan_paired_decode(
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    dec.clamp_(min = -1.0, max = 1.0)  # dec is this decode's own buffer: in place, one copy less
+    dec.clamp_(min = -1.0, max = 1.0)
     vae.clear_cache()
     if not return_dict:
         return (dec,)

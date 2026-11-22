@@ -236,5 +236,5 @@ def test_pair_frames_oom_retries_one_frame_untiled(monkeypatch):
     with torch.inference_mode():
         want = ref.decode(Z, return_dict = False)[0]
     assert torch.equal(out, want)
-    _render(pipe, Z)  # never paired again at this size
+    _render(pipe, Z)
     assert stats["paired"] == 0 and stats["untiled"] == 2
