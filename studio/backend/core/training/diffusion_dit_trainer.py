@@ -1467,7 +1467,8 @@ def _krea2_encode_prompts(pipe, captions, device):
     out = []
     with torch.no_grad():
         for cap in captions:
-            # encode_prompt pads to max_sequence_length, so embeds keep static shapes and the mask is [1, 512].
+            # encode_prompt pads to max_sequence_length ([1, 512] mask). Kept padded: the persistent text cache is
+            # shared with older builds, whose collate concatenates fixed 512-row entries; _krea2_collate trims.
             pe, mask = pipe.encode_prompt(
                 prompt = cap,
                 device = device,
@@ -1476,6 +1477,22 @@ def _krea2_encode_prompts(pipe, captions, device):
             )
             out.append((pe.cpu(), mask.cpu()))
     return out
+
+
+def _krea2_text_rows(pe, mask):
+    """The valid text rows of one Krea 2 prompt, as (pe [1, L, layers, D], all-true mask [1, L]). Exact: every text
+    token sits at the rotary origin and the text fusion has no positions, so a padded row is only ever a masked key
+    whose own output is sliced away; dropping it (wherever the template put it) leaves every kept row unchanged.
+    It cut the joint sequence by 512 - L rows per step (a third of it at 512 px)."""
+    import torch
+
+    if mask is None:
+        return pe, torch.ones(pe.shape[:2], dtype = torch.bool)
+    keep = mask[0].to(device = pe.device, dtype = torch.bool)
+    if bool(keep.all()) or not bool(keep.any()):
+        return pe, mask.to(torch.bool)
+    pe = pe[:, keep]
+    return pe, torch.ones(pe.shape[:2], dtype = torch.bool, device = pe.device)
 
 
 # Krea 2 uses the Qwen-Image VAE normalisation (latents_mean/latents_std), so encoding is shared.
@@ -1489,10 +1506,28 @@ def _krea2_collate(
     weight_dtype,
     pad_to = None,
 ):
-    # Fixed-length embeds, so collation is a plain concat with the mask riding along; ``pad_to`` is moot.
-    pe_b = _to_device_cat([e[0] for e in entries], device).to(dtype = weight_dtype)
-    mask_b = _to_device_cat([e[1] for e in entries], device)
-    return (pe_b, mask_b)
+    import torch
+    import torch.nn.functional as F
+
+    # Valid rows only (older caches still hold the 512-row padded form), padded back to the batch's longest prompt
+    # or the compile pin ``pad_to``; no padding at all means no mask, so attention runs unmasked.
+    rows = [_krea2_text_rows(pe, mask) for pe, mask in entries]
+    target = max(pad_to or 0, max(pe.shape[1] for pe, _ in rows))
+    # Decided on the host (the rows come from host-pinned embeds): a device .all() would sync every step.
+    padded = any(pe.shape[1] < target or not bool(mask.all()) for pe, mask in rows)
+    pes, masks = [], []
+    for pe, mask in rows:
+        n = pe.shape[1]
+        pe = pe.to(device, non_blocking = True)
+        mask = mask.to(device = device, dtype = torch.bool, non_blocking = True)
+        if n < target:
+            pe = F.pad(pe, (0, 0, 0, 0, 0, target - n))
+            mask = F.pad(mask, (0, target - n), value = False)
+        pes.append(pe)
+        masks.append(mask)
+    pe_b = (pes[0] if len(pes) == 1 else torch.cat(pes)).to(dtype = weight_dtype)
+    mask_b = masks[0] if len(masks) == 1 else torch.cat(masks)
+    return (pe_b, mask_b if padded else None)
 
 
 def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
@@ -4150,10 +4185,12 @@ def _train_dit(
             block_swap = swapping,
         )
     )
-    # Compiled Qwen graphs need one fixed text length across steps.
+    # Compiled Qwen / Krea 2 graphs need one fixed text length across steps (Krea 2: its longest valid prompt).
     qwen_pad_to = None
     if compiled and spec.family == "qwen-image":
         qwen_pad_to = max(e[0].shape[1] for e in caption_embeds.values())
+    elif compiled and spec.family == "krea-2":
+        qwen_pad_to = max(_krea2_text_rows(*e)[0].shape[1] for e in caption_embeds.values())
 
     optimizer = _make_optimizer(
         lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
