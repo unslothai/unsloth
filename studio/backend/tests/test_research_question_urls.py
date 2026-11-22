@@ -129,7 +129,14 @@ def test_a_linked_page_that_fails_to_load_is_not_cited(research_home, monkeypatc
 
 @pytest.mark.parametrize(
     "question",
-    [f'Research "{LINKED}" and compare it', f"Research `{LINKED}` and compare it"],
+    [
+        f'Research "{LINKED}" and compare it',
+        f"Research `{LINKED}` and compare it",
+        f"Research '{LINKED}' and compare it",
+        f"Research **{LINKED}** and compare it",
+        f"Research [{LINKED}] and compare it",
+        f"研究{LINKED}，并比较",
+    ],
 )
 def test_a_quoted_link_is_read_without_its_delimiter(research_home, monkeypatch, question):
     _, calls, _ = _run(monkeypatch, question = question)

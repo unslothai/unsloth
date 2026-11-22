@@ -99,7 +99,10 @@ _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL = re.compile(
     r"o\d+(?:[-.]|$)|codex-mini(?:[-.]|$))"
 )
 _OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
-_QUESTION_URL = re.compile(r"https?://[^\s<>\"`\x00]+", re.IGNORECASE)
+# RFC 3986 bars unencoded []{}|\^; CJK full-width punctuation ends a URL in prose.
+_QUESTION_URL = re.compile(
+    r"https?://[^\s<>\"`\x00\[\]{}|\\^\u3000-\u303f\uff00-\uffef]+", re.IGNORECASE
+)
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
@@ -1038,6 +1041,15 @@ def _mcp_evidence(sources: list[dict]) -> str:
         for source in sources
     )
     return f"\n\nMCP tools:\n{text}"
+
+
+def _question_url(raw: str) -> str:
+    """GFM autolink tail trim plus quotes, so 'url' and **url** fetch the bare URL."""
+    while True:
+        trimmed = _trim_url_tail(raw.rstrip("*_~'"))
+        if trimmed == raw:
+            return raw
+        raw = trimmed
 
 
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
@@ -2444,7 +2456,7 @@ class ResearchSupervisor:
         question_urls = [
             url
             for url in dict.fromkeys(
-                _trim_url_tail(match.group(0)) for match in _QUESTION_URL.finditer(question)
+                _question_url(match.group(0)) for match in _QUESTION_URL.finditer(question)
             )
             if check_url_access(url, website_policy)[0]
         ]
