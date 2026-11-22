@@ -263,6 +263,16 @@ def _names_args(text, **kw):
         ('<|tool_call_start|>[__import__("os").system("x")]<|tool_call_end|>', []),
         ("<|tool_call_start|>[web_search('positional')]<|tool_call_end|>", []),
         ("LFM wraps calls in <|tool_call_start|> and <|tool_call_end|> tokens.", []),
+        (
+            '<|tool_call_start|>[ {"name": "web_search", "arguments": {"query": "x"}}]<|tool_call_end|>',
+            [("web_search", {"query": "x"})],
+        ),
+        ("<|tool_call_start|>[web_search(query={1, 2})]<|tool_call_end|>", []),
+        ("<|tool_call_start|>[web_search(query=b'x')]<|tool_call_end|>", []),
+        (
+            '<tool_call>{"name": "web_search", "arguments": {"query": "' + CALL + '"}}</tool_call>',
+            [("web_search", {"query": CALL})],
+        ),
     ],
 )
 def test_lfm_calls_parse_as_literals(text, expected):

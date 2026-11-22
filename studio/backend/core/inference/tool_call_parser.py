@@ -1922,6 +1922,8 @@ _EMBEDDED_MARKER_RE = re.compile(
     + re.escape(_KIMI_CALL_BEGIN)
     + "|"
     + re.escape(_MINIMAX_BLOCK_OPEN)
+    + "|"
+    + re.escape(_LFM_CALL_START)
 )
 # The lookahead mirrors the ``_TOOL_ALL_PATS`` python_tag arm so a prose mention is not one.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(
@@ -4292,7 +4294,7 @@ def _lfm_literal(node: ast.AST) -> Any:
 def _lfm_body_calls(body: str) -> list[tuple[str, dict]]:
     """Parsed as literals only, never evaluated; any positional or non-literal argument rejects the body."""
     body = body.strip()
-    if body.startswith("[{") or body.startswith("{"):
+    if re.match(r"\[\s*\{|\{", body):
         try:
             items = json.loads(body)
         except ValueError:
@@ -4329,6 +4331,11 @@ def _lfm_body_calls(body: str) -> list[tuple[str, dict]]:
         if not re.fullmatch(r"[A-Za-z_][\w.\-]*", name) or len(args) != len(elt.keywords):
             return []
         calls.append((name, args))
+    try:
+        # Sets, bytes, complex and Ellipsis are literals but not JSON arguments.
+        json.dumps([args for _, args in calls], allow_nan = False)
+    except (TypeError, ValueError):
+        return []
     return calls
 
 
