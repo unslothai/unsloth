@@ -1234,12 +1234,20 @@ function resolveDeepInfraReasoningCapabilities(
     });
   }
 
-  // Qwen3-family reasoning models (Qwen/Qwen3, Qwen/Qwen3-Max etc.) take enable_thinking only;
-  // no effort ladder. Treat the family as a toggle when the id names it.
-  if (rest.startsWith("qwen3")) {
-    return withEnableThinkingStyle({
+  // Qwen3 and Nemotron family reasoning models
+  if (rest.startsWith("qwen3") || rest.startsWith("nvidia-nemotron-3-")) {
+    return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
+      reasoningEffortLevels: [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ] as const,
     });
   }
 
