@@ -12072,7 +12072,6 @@ class VideoBackend:
                 from .video_vae_untiled import install_untiled_decode
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
-            # Wan's causal convs pad into a zero buffer on Metal (MPS F.pad holds driver memory per call before 2.15).
             install_frame_pad_fix(pipe, target, logger = logger)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_vae_sync(pipe, target, logger = logger)

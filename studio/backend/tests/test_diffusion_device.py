@@ -522,7 +522,7 @@ def test_wan_causal_conv_pads_into_a_zero_buffer_bit_exactly(kernel, padding, ca
         )
         got = conv(x, cache)
     assert torch.equal(got, expected)
-    assert pads == []  # no F.pad left for the MPS graph op
+    assert pads == []
 
 
 def test_wan_causal_conv_keeps_its_stock_forward_off_metal_and_under_another_wrapper():
@@ -530,7 +530,7 @@ def test_wan_causal_conv_keeps_its_stock_forward_off_metal_and_under_another_wra
     assert dd.install_frame_pad_fix(pipe, _cuda_target()) == 0
     assert "forward" not in conv.__dict__
     hooked = conv.forward
-    conv.forward = hooked  # an offload hook owns forward
+    conv.forward = hooked
     assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
     assert conv.forward is hooked
 
@@ -541,7 +541,7 @@ def test_wan_causal_conv_falls_back_to_stock_for_a_mismatched_cache():
     x = torch.randn(1, 4, 2, 5, 5)
     cache = torch.randn(1, 4, 2, 5, 5, dtype = torch.float64)
     with pytest.raises(RuntimeError):
-        type(conv).forward(conv, x, cache)  # stock refuses the mixed dtypes too
+        type(conv).forward(conv, x, cache)
     with pytest.raises(RuntimeError):
         conv(x, cache)
 

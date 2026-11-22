@@ -89,7 +89,6 @@ def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
     return (torch.cat([zeros, x], dim = 2), *args[1:])
 
 
-# Causal convs that F.pad their input before every Conv3d: a few hundred pads per decode tile.
 _CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d"})
 
 
@@ -98,10 +97,8 @@ def _zero_buffer_causal_conv(
     x: Any,
     cache_x: Any = None,
 ) -> Any:
-    """``WanCausalConv3d.forward`` with ``F.pad(cat([cache_x, x]))`` written into one zero buffer (the same values).
-
-    Before torch 2.15, MPS constant pad is an MPSGraph op that keeps driver memory outside the allocator on every
-    call (pytorch#195368: 270 GiB of driver memory over one Wan 2.2 decode)."""
+    """``WanCausalConv3d.forward`` padding into a zero buffer: MPS F.pad leaks driver memory per call before torch
+    2.15 (pytorch#195368: 270 GiB over one Wan 2.2 decode)."""
     import torch
 
     padding = list(module._padding)
@@ -135,8 +132,7 @@ def install_frame_pad_fix(
     *,
     logger: Any = None,
 ) -> int:
-    """MPS F.pad returns wrong data for large 5-D frame-axis pads, so shortcuts concatenate zero frames; and it
-    leaks driver memory per call (torch < 2.15), so Wan's causal convs pad into a zero buffer."""
+    """MPS F.pad returns wrong data for large 5-D frame-axis pads, so shortcuts concatenate zero frames."""
     if target.device != "mps":
         return 0
     patched = 0
@@ -153,7 +149,6 @@ def install_frame_pad_fix(
             elif (
                 name in _CAUSAL_PAD_CLASSES
                 and len(getattr(module, "_padding", ())) == 6
-                # Another wrapper (an offload hook, a fused kernel) already owns forward.
                 and "forward" not in module.__dict__
             ):
                 module.forward = types.MethodType(_zero_buffer_causal_conv, module)
