@@ -281,6 +281,72 @@ def test_memory_report_skips_current_device_without_context(monkeypatch):
     assert rr._devices() == [1]
 
 
+def test_cpu_memory_report_lines(monkeypatch, capsys):
+    """The CPU backend reports host RAM (RSS, peak, available); the GPU path's output is unchanged."""
+    monkeypatch.setenv("UNSLOTH_MEMORY_REPORT", "1")
+    rss, peak, available, total = rr.cpu_memory_snapshot()
+    assert peak is not None and peak > 0
+    if rss is not None:
+        assert rss <= peak and total is not None and available is not None and available <= total
+
+    class Owner:
+        pass
+
+    owner = Owner()
+    lines = rr.report_memory("load", owner, cpu = True)
+    assert len(lines) == 1 and "memory at load on cpu: process RSS" in lines[0]
+    assert "on cpu" in capsys.readouterr().out
+    assert rr.report_memory("load", owner, cpu = True) is None  # once per (stage, owner)
+    # Without cpu = True nothing about the host is printed (no CUDA device in use here).
+    if not torch.cuda.is_available():
+        assert rr.report_memory("first forward", Owner()) == []
+
+
+def test_cpu_memory_report_wired_on_cpu_route():
+    """_cpu_init loads run_report by file (unsloth.utils imports the GPU stack) at load and trainer init."""
+    source = (ROOT / "unsloth" / "_cpu_init.py").read_text()
+    tree = ast.parse(source)
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    names = {getattr(node.func, "attr", getattr(node.func, "id", None)) for node in calls}
+    assert {"_report_cpu_memory", "install_memory_report", "report_memory"} <= names
+    assert "from .utils.run_report" not in source and "from .utils import" not in source
+
+
+def test_cpu_available_ram_capped_by_cgroup_headroom(monkeypatch, tmp_path):
+    """An 8 GiB cgroup with 6 GiB used on a host with 48 GiB available reports 2 GiB available of 8 GiB; an
+    ancestor's tighter allowance wins, and an unlimited tree keeps the host numbers."""
+    if not pathlib.Path("/proc/self/status").exists():
+        pytest.skip("Linux /proc only")
+    GiB = 1024**3
+    proc = tmp_path / "cgroup"
+    proc.write_text("0::/job/worker\n")
+    leaf = tmp_path / "job" / "worker"
+    leaf.mkdir(parents = True)
+    (leaf / "memory.max").write_text(f"{8 * GiB}\n")
+    (leaf / "memory.current").write_text(f"{6 * GiB}\n")
+    (tmp_path / "job" / "memory.max").write_text("max\n")
+    real = rr._cgroup_memory
+    monkeypatch.setattr(rr, "_cgroup_memory", lambda: real(str(proc), str(tmp_path)))
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal: {64 * GiB // 1024} kB\nMemAvailable: {48 * GiB // 1024} kB\n")
+    real_read = rr._read_kib
+    monkeypatch.setattr(
+        rr,
+        "_read_kib",
+        lambda path, key: real_read(str(meminfo) if path == "/proc/meminfo" else path, key),
+    )
+    _, _, available, total = rr.cpu_memory_snapshot()
+    assert (available, total) == (2 * GiB, 8 * GiB)
+    (tmp_path / "job" / "memory.max").write_text(f"{7 * GiB}\n")
+    (tmp_path / "job" / "memory.current").write_text(f"{6 * GiB + GiB // 2}\n")
+    _, _, available, total = rr.cpu_memory_snapshot()
+    assert (available, total) == (GiB // 2, 7 * GiB)
+    for name in ("job/memory.max", "job/worker/memory.max"):
+        (tmp_path / name).write_text("max\n")
+    _, _, available, total = rr.cpu_memory_snapshot()
+    assert (available, total) == (48 * GiB, 64 * GiB)
+
+
 def _fake_sync():
     import warnings
     warnings.warn(rr._SYNC_MESSAGE, UserWarning)
