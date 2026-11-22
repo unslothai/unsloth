@@ -1781,6 +1781,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                 "_unsloth_varlen_handshake_done",
                 False,
             )
+            # A call without grad has no backward to replay, so it hands the stash back afterwards: a pending
+            # gradient-checkpoint recompute of the packed forward (GRPO's per-row verify runs in between) still
+            # needs those boundaries, as with generate below.
+            saved = None if torch.is_grad_enabled() else [m._unsloth_varlen for m in hybrid_modules]
             for module in hybrid_modules:
                 module._unsloth_varlen = varlen
                 if first_pack:
@@ -1798,6 +1802,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                 out = forward_orig(*args, **kwargs)
             finally:
                 _PACKED[0] = outer
+                for module, stash in zip(hybrid_modules, saved or ()):
+                    module._unsloth_varlen = stash
             # Handshake: on the first packed forward every module must have hit its boundary kernels.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True

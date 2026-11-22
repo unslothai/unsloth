@@ -1952,21 +1952,32 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
     """Check packed document isolation once per model, including a separate reference policy."""
     try:
         unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
-        wrapped = getattr(unwrapped, "_unsloth_varlen_forward_wrapped", False)
-        if wrapped and getattr(unwrapped, "is_gradient_checkpointing", False):
-            # The per-row verification forward clears the mixer's boundaries before backward replays it.
-            unwrapped._unsloth_seq_packing_grad_ok = False
         if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
             return
         from unsloth.utils.packing import (
             _hybrid_varlen_dispatched,
             _iter_stateful_mixers,
             packing_boundary_blocker,
+            patch_hybrid_linear_attention_varlen,
         )
 
         config = getattr(unwrapped, "config", None)
         blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
         mixers = _iter_stateful_mixers(unwrapped) if blocker is None else ()
+        wrapped = getattr(unwrapped, "_unsloth_varlen_forward_wrapped", False)
+        packing_on = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if mixers and not wrapped and packing_on:
+            # The same boundary shim SFT packing installs (kernel checks, exactness probe, fail closed): a stateful
+            # mixer carries conv / recurrent state across a packed reset without it.
+            try:
+                wrapped = bool(patch_hybrid_linear_attention_varlen(unwrapped))
+            except Exception:
+                wrapped = False
         if mixers and not (
             wrapped and all(getattr(m, "_unsloth_varlen_wrapped", False) for m, _ in mixers)
         ):
