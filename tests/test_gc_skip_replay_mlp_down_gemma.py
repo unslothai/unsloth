@@ -9,6 +9,10 @@ input gradient are bitwise equal to the replay that runs the down projection, ea
 compile, for both GEGLU forms, with the skip counted once per layer. Gemma 2 is not covered: its post-MLP
 norm reads the projection. Cohere and Granite load through FastModel (no fused LoRA MLP) and Falcon-H1
 keeps PEFT's MLP, so none of them arms.
+
+The observer guards are shared with the Llama-style skip and run for both: no skip when an accelerate hook
+wraps the MLP or the decoder layer, or an MLP pre-hook can run the MLP itself; a compiled replay never
+reaches another thread's call; and the compile warm-up never authorises another call to skip.
 """
 
 from __future__ import annotations
@@ -66,6 +70,15 @@ def _family(name):
     """(config, model class, unsloth layer forward, fused MLP kernel)."""
     from transformers import GemmaConfig, GemmaForCausalLM
 
+    if name == "llama":  # the Llama-style SwiGLU skip shares every guard below
+        from transformers import LlamaConfig, LlamaForCausalLM
+        return (
+            LlamaConfig(),
+            LlamaForCausalLM,
+            llama.LlamaDecoderLayer_fast_forward,
+            fast_lora.apply_lora_mlp_swiglu,
+        )
+
     kernel = (
         fast_lora.apply_lora_mlp_geglu_approx
         if name == "gemma_approx"
@@ -76,6 +89,8 @@ def _family(name):
 
 
 FAMILIES = ["gemma_approx", "gemma_exact"]
+# Observer guards (accelerate hooks, pre-hooks, threads, warm-up) are shared with the Llama-style skip.
+GUARD_FAMILIES = FAMILIES + ["llama"]
 
 
 class _Attention(torch.nn.Module):
@@ -104,10 +119,18 @@ def _torch_kernels(monkeypatch):
     monkeypatch.setattr(fast_lora, "geglu_exact_backward_kernel", _geglu_backward("none"))
     monkeypatch.setattr(fast_lora, "_SKIPPED_FILL", float("nan"))
     monkeypatch.setattr(fast_lora, "_SKIP_DOWN_ENABLED", True)
+    from unsloth.kernels.swiglu import _DWf_DW_dfg_traced
+
+    monkeypatch.setattr(
+        fast_lora,
+        "swiglu_fg_kernel",
+        lambda e, g: torch.nn.functional.silu(e.float()).to(e.dtype) * g,
+    )
+    monkeypatch.setattr(fast_lora, "swiglu_DWf_DW_dfg_kernel", _DWf_DW_dfg_traced)
     monkeypatch.setattr(gemma, "fast_rms_layernorm", lambda norm, X, **kwargs: norm(X))
+    monkeypatch.setattr(llama, "fast_rms_layernorm", lambda norm, X, **kwargs: norm(X))
     fast_lora.MLP_DOWN_SKIP_STATS.clear()
     yield
-    fast_lora.set_block_skip_down(False)
     fast_lora.MLP_DOWN_SKIP_STATS.clear()
 
 
@@ -308,3 +331,170 @@ def test_post_norm_and_unfused_layers_stay_off():
         granite.GraniteDecoderLayer_fast_forward,
     ):
         assert not getattr(fn, "_unsloth_mlp_output_unread", False), fn.__name__
+
+
+def _accelerate_observer(target, kind):
+    """An observer outside the layer body: an accelerate hook whose post_forward reads the output (as a
+    placement or offload hook may), or an MLP forward pre-hook that runs the MLP's forward itself."""
+    hooks = pytest.importorskip("accelerate.hooks")
+
+    if kind == "mlp_pre_hook":
+        handle = target.register_forward_pre_hook(
+            lambda module, args: (args[0] + module.forward(args[0]).tanh(),)
+        )
+        return handle.remove
+
+    class _Square(hooks.ModelHook):
+        def post_forward(self, module, output):
+            if isinstance(output, tuple):
+                return (output[0].square(), *output[1:])
+            return output.square()
+
+    hooks.add_hook_to_module(target, _Square())
+    return lambda: hooks.remove_hook_from_module(target)
+
+
+OBSERVERS = ["mlp_accelerate", "decoder_accelerate", "mlp_pre_hook"]
+
+
+def _observed(inner, kind):
+    layer = inner.layers[1]
+    return _accelerate_observer(layer if kind == "decoder_accelerate" else layer.mlp, kind)
+
+
+@pytest.mark.parametrize("observer", OBSERVERS)
+@pytest.mark.parametrize("family", GUARD_FAMILIES)
+def test_observed_mlp_output_keeps_down_projection(family, observer, monkeypatch):
+    """An accelerate-wrapped MLP or decoder, or an MLP pre-hook, can read the MLP output: no skip there."""
+    model, inner, _ = _model(family, monkeypatch)
+    remove = _observed(inner, observer)
+    try:
+        base = _step(model, inner, skip = False)
+        head = _step(model, inner, skip = True)
+    finally:
+        remove()
+    assert fast_lora.MLP_DOWN_SKIP_STATS["skipped"] == N_LAYERS - 1
+    _assert_bitwise(base, head)
+
+
+@pytest.mark.skipif(
+    not fast_lora.TRACE_LORA_FUNCTIONS,
+    reason = "block compile traces the fused LoRA MLP on torch >= 2.11",
+)
+@pytest.mark.parametrize("observer", OBSERVERS)
+@pytest.mark.parametrize("family", GUARD_FAMILIES)
+def test_observed_mlp_output_is_not_compiled_eligible(family, observer, monkeypatch):
+    model, inner, layer_cls = _model(family, monkeypatch)
+    layer = inner.layers[1]
+    assert fast_lora.block_skip_down_eligible(layer, layer_cls.forward)
+    remove = _observed(inner, observer)
+    try:
+        assert not fast_lora.block_skip_down_eligible(layer, layer_cls.forward)
+    finally:
+        remove()
+    assert fast_lora.block_skip_down_eligible(layer, layer_cls.forward)
+
+
+def _in_thread(fn):
+    import threading
+
+    box = {}
+
+    def target():
+        try:
+            box["out"] = fn()
+        except BaseException as e:  # re-raised in the caller
+            box["error"] = e
+
+    thread = threading.Thread(target = target)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box["out"]
+
+
+def _compiled_block(layer_cls, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(torch, "compile", _aot_eager_compile)
+        _block_compile._wrap(layer_cls, dict(_block_compile._COMPILE_OPTIONS))
+    torch._dynamo.reset()
+
+
+@pytest.mark.skipif(
+    not fast_lora.TRACE_LORA_FUNCTIONS,
+    reason = "block compile traces the fused LoRA MLP on torch >= 2.11",
+)
+@pytest.mark.parametrize("family", GUARD_FAMILIES)
+def test_compiled_replay_never_reaches_another_threads_call(family, monkeypatch):
+    """While one thread runs a compiled block replay that skips, another thread's ordinary compiled MLP
+    call still runs its down projection: the skip is an argument of the replay call, not process state."""
+    model, inner, layer_cls = _model(family, monkeypatch)
+    _compiled_block(layer_cls, monkeypatch)
+    mlp = inner.layers[2].mlp
+    torch.manual_seed(5)
+    x = torch.randn(2, SEQ, H)
+    expected = mlp(x).detach()
+    other = torch.compile(lambda t: mlp(t), backend = "aot_eager", fullgraph = True)
+    seen = []
+    real = _block_compile._no_ddp_graph_split
+
+    def overlapping():
+        if (
+            not seen
+            and torch.is_grad_enabled()
+            and zoo_gc.gradient_checkpoint_replay_module() is not None
+        ):
+            seen.append(_in_thread(lambda: other(x).detach()))
+        return real()
+
+    monkeypatch.setattr(_block_compile, "_no_ddp_graph_split", overlapping)
+    try:
+        replays = []
+        _step(model, inner, skip = True, replay_outputs = replays)
+    finally:
+        torch._dynamo.reset()
+    assert fast_lora.MLP_DOWN_SKIP_STATS["skipped"] == N_LAYERS  # the replays still skipped
+    assert all(torch.isnan(r).all() for r in replays)
+    assert len(seen) == 1
+    assert torch.isfinite(seen[0]).all()
+    torch.testing.assert_close(seen[0], expected, rtol = 1e-5, atol = 1e-6)
+
+
+@pytest.mark.skipif(
+    not fast_lora.TRACE_LORA_FUNCTIONS,
+    reason = "block compile traces the fused LoRA MLP on torch >= 2.11",
+)
+@pytest.mark.parametrize("family", GUARD_FAMILIES)
+def test_compile_warm_up_never_authorises_another_call(family, monkeypatch):
+    """The grad-mode trial before a block's first no-grad call may compile the skip graph, but a grad-mode
+    call of another layer from another thread while it runs is not a replay and keeps the projection."""
+    model, inner, layer_cls = _model(family, monkeypatch)
+    _compiled_block(layer_cls, monkeypatch)
+    torch.manual_seed(5)
+    x = torch.randn(2, SEQ, H)
+    pe = inner.rotary_emb(x, torch.arange(SEQ).unsqueeze(0).expand(2, -1))
+    expected = inner.layers[1](x, position_embeddings = pe)[0].detach()
+    for layer in inner.layers:
+        layer.__dict__.pop("_unsloth_block_checked", None)
+    torch._dynamo.reset()
+    seen = []
+    real = _block_compile._skip_down_eligible
+
+    def during_trial(layer, original):
+        if not seen and layer is inner.layers[0] and torch.is_grad_enabled():
+            seen.append(None)  # inside layer 0's trial: run layer 1 from another thread
+            seen[0] = _in_thread(lambda: inner.layers[1](x, position_embeddings = pe)[0].detach())
+        return real(layer, original)
+
+    monkeypatch.setattr(_block_compile, "_skip_down_eligible", during_trial)
+    try:
+        with torch.no_grad():
+            first = inner.layers[0](x, position_embeddings = pe)[0]
+    finally:
+        torch._dynamo.reset()
+    assert torch.isfinite(first).all()
+    assert len(seen) == 1
+    assert torch.isfinite(seen[0]).all()
+    torch.testing.assert_close(seen[0], expected, rtol = 1e-5, atol = 1e-6)
+    assert fast_lora.MLP_DOWN_SKIP_STATS["skipped"] == 0

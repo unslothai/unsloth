@@ -85,6 +85,7 @@ def GemmaDecoderLayer_fast_forward(
     use_cache: Optional[bool] = False,
     padding_mask: Optional[torch.LongTensor] = None,
     *args,
+    _unsloth_skip_down = False,
     **kwargs,
 ):
     if use_cache and hasattr(self, "_flag_for_generation"):
@@ -141,10 +142,16 @@ def GemmaDecoderLayer_fast_forward(
         )
         # residual + mlp(x) is this layer's output (no post-MLP norm, unlike Gemma 2), so a checkpoint
         # replay of it can skip the down projection.
-        armed = arm_mlp_output_unread(self, self.mlp)
-        hidden_states = self.mlp(hidden_states)
-        if armed:
-            disarm_mlp_output_unread()
+        # A compiled block replay of exactly this layer passes _unsloth_skip_down (block_skip_down_eligible).
+        if _unsloth_skip_down:
+            hidden_states = self.mlp(hidden_states, _unsloth_skip_down = True)
+        else:
+            armed = arm_mlp_output_unread(self, self.mlp)
+            try:
+                hidden_states = self.mlp(hidden_states)
+            finally:
+                if armed:
+                    disarm_mlp_output_unread()
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)

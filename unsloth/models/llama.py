@@ -1220,6 +1220,7 @@ def LlamaDecoderLayer_fast_forward(
     padding_mask: Optional[torch.LongTensor] = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args,
+    _unsloth_skip_down = False,
     **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     """
@@ -1280,10 +1281,16 @@ def LlamaDecoderLayer_fast_forward(
             self.post_attention_layernorm, hidden_states, save_output = True, reuse_grad = True
         )
         # residual + mlp(x) is this layer's output, so a checkpoint replay of it can skip the down projection.
-        armed = arm_mlp_output_unread(self, self.mlp)
-        hidden_states = self.mlp(hidden_states)
-        if armed:
-            disarm_mlp_output_unread()
+        # A compiled block replay of exactly this layer passes _unsloth_skip_down (block_skip_down_eligible).
+        if _unsloth_skip_down:
+            hidden_states = self.mlp(hidden_states, _unsloth_skip_down = True)
+        else:
+            armed = arm_mlp_output_unread(self, self.mlp)
+            try:
+                hidden_states = self.mlp(hidden_states)
+            finally:
+                if armed:
+                    disarm_mlp_output_unread()
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)

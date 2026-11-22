@@ -4,8 +4,8 @@
 """Under block compile (torch >= 2.11, the default) a gradient checkpoint replay of a Llama-style decoder
 layer still skips the fused LoRA MLP's down projection.
 
-The compiled layer cannot read the eager thread-local token, so the block's wrapper sets a guarded global
-around the replay and the traced LoRA_MLP drops the down GEMM in that graph. The checkpointed forward's
+The compiled layer cannot read the eager thread-local token, so the block's wrapper passes a call-scoped
+argument into the replay call and the traced LoRA_MLP drops the down GEMM in that graph. The checkpointed forward's
 no-grad call trials the same skip graph, so a step still compiles two graphs per layer kind (no grad, grad)
 and later steps compile nothing. The skipped output is NaN-filled: the replay output is NaN, while every
 LoRA gradient and the input gradient are bitwise equal to the same compiled run with the skip off.
@@ -88,7 +88,6 @@ def block(monkeypatch):
     torch._dynamo.utils.counters.clear()
     fast_lora.MLP_DOWN_SKIP_STATS.clear()
     yield
-    fast_lora.set_block_skip_down(False)
     fast_lora.MLP_DOWN_SKIP_STATS.clear()
     torch._dynamo.reset()
 
@@ -255,7 +254,7 @@ def test_compiled_calls_outside_a_replay_never_skip(block):
     out = inner.layers[0](x, position_embeddings = pe)[0]
     assert torch.isfinite(out).all()
     assert fast_lora.MLP_DOWN_SKIP_STATS["skipped"] == 0
-    assert fast_lora._BLOCK_SKIP_DOWN is False
+    assert getattr(fast_lora._SKIP_DOWN_TLS, "armed", None) is None
 
 
 def test_only_the_tagged_forward_is_eligible():
