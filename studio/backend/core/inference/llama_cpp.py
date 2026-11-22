@@ -19221,6 +19221,139 @@ class LlamaCppBackend:
                 widest = max(widest, heads)
         return (widest or n_kv or 1) * (key_len + val_len)
 
+    def _inkling2_banded_terms(
+        self,
+        n_ctx: int,
+        ub: int,
+        cache_type_kv: Optional[str],
+        *,
+        flash_attn: bool = True,
+        split_extra: int = 0,
+    ) -> Optional[tuple[int, int, int]]:
+        """Inkling 2 banded scratch as (load-time reserve, post-prompt regrowth, fixed part);
+        None off the banded path."""
+        n_head = self._inkling2_bias_heads()
+        head_dim = getattr(self, "_kv_key_length", None) or 128
+        kv_type = (cache_type_kv or "f16").strip().lower()
+        build = self._inkling2_banded()
+        quantized = _kv_bytes_per_elem(kv_type) < 2.0
+        if quantized:
+            type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
+        else:
+            type_ok = kv_type in ("f16", "bf16", "f32")
+        banded = (
+            flash_attn
+            and type_ok
+            # Metal, Vulkan and SYCL have no banded kernel; unknown keeps the CUDA pricing.
+            and (build.backend is None or build.backend in _INKLING2_BANDED_BACKENDS)
+            and head_dim in (64, 128)
+            and ub >= self._INKLING2_BANDED_MIN_UBATCH
+        )
+        if not banded:
+            return None
+        block = 4 * n_head * ub * ub
+        if not build.quant_kv:
+            reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx
+            regrown = (
+                self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra
+            ) * n_ctx + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
+            return reserve, regrown, block
+        copy = 0
+        if quantized and not (build.tile_kv and kv_type in self._INKLING2_BANDED_TILE_TYPES):
+            copy = self._attention_dequant_width() * 2
+        reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx
+        regrown = (
+            self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
+        ) * n_ctx + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
+        return reserve, regrown, copy * n_ctx + block
+
+    # Lower bound of llama.cpp's load-time compute reserve for Inkling 2, fitted under every
+    # Inkling-2-Mini CUDA reading (ub 512-2048, 32K-1M cells), in units of Mini's activation
+    # estimate: #399 holds the larger of a floor and the 4 B/cell shared mask; older builds
+    # the activations plus 16 B/cell.
+    _INKLING2_FIT_ACT_MIB_PER_UB = 0.362
+    _INKLING2_FIT_RESERVE_ACT_FLOOR = 1.3
+    _INKLING2_FIT_RESERVE_ACT_BASE = 0.2
+    _INKLING2_FIT_RESERVE_MASK_BYTES = 4
+    _INKLING2_FIT_LEGACY_RESERVE_ACT = 1.2
+    _INKLING2_FIT_LEGACY_RESERVE_BYTES = 16
+    # Runtime floor for the margin only: the banded estimate reads under the measured runtime
+    # past ~262K cells at ub 2048 (524K: 5572 vs 5836 MiB).
+    _INKLING2_FIT_RUNTIME_ACT = 4.4
+    _INKLING2_FIT_RUNTIME_MASK_BYTES = 2.6
+
+    def _inkling2_fit_regrowth_mib(
+        self,
+        n_ctx: int,
+        n_ubatch: Optional[int],
+        cache_type_kv: Optional[str],
+        *,
+        flash_attn: bool = True,
+        n_parallel: int = 1,
+        n_ctx_max: Optional[int] = None,
+    ) -> int:
+        """Compute buffer growth past the load-time reserve after the first prompt: the runtime
+        estimate less a lower bound of the reserve. llama.cpp's fitter only measures the reserve,
+        so a --fit on launch keeps this free in --fit-target. With ``n_ctx_max`` the context is
+        not fixed yet: the largest growth over ``n_ctx``..``n_ctx_max``."""
+        if getattr(self, "_architecture", None) not in _INKLING2_ARCHS or n_ctx <= 0:
+            return 0
+        if not (self._embedding_length or 0) > 0:
+            return 0
+        ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
+        if self._inkling2_banded_terms(n_ctx, ub, cache_type_kv, flash_attn = flash_attn) is None:
+            return 0
+        # Mini's activation estimate as a fixed scale, so the growth tracks ub and context
+        # like #18919's runtime term instead of a larger model's own activations.
+        act = self._INKLING2_FIT_ACT_MIB_PER_UB * ub * 1024 * 1024
+        legacy = not self._inkling2_banded().quant_kv
+        ctxs = {n_ctx}
+        if n_ctx_max and n_ctx_max > n_ctx:
+            ctxs.add(n_ctx_max)
+            ctxs.update(1 << k for k in range(10, 25) if n_ctx < (1 << k) < n_ctx_max)
+            if not legacy:
+                # Growth peaks where the shared mask overtakes the activation floor.
+                knee = int(
+                    (self._INKLING2_FIT_RESERVE_ACT_FLOOR - self._INKLING2_FIT_RESERVE_ACT_BASE)
+                    * act
+                    / (self._INKLING2_FIT_RESERVE_MASK_BYTES * ub)
+                )
+                if n_ctx < knee < n_ctx_max:
+                    ctxs.add(knee)
+
+        def growth(ctx: int) -> int:
+            if legacy:
+                # Older builds: #18919's 18 B/cell reserve is a planner bound that overtakes the
+                # 15 B/cell runtime rate at long contexts, as the measured reserve does (growth
+                # 270 -> 140 MiB from 32K to 128K), so only the runtime term can grow past it.
+                _, regrown, fixed = self._inkling2_banded_terms(
+                    ctx, ub, cache_type_kv, flash_attn = flash_attn
+                )
+                scratch = regrown + fixed
+            else:
+                scratch = self._compute_buffer_ctx_bytes(
+                    ctx, ub, cache_type_kv, flash_attn = flash_attn, n_parallel = n_parallel
+                )
+            runtime = max(
+                act + scratch,
+                self._INKLING2_FIT_RUNTIME_ACT * act
+                + self._INKLING2_FIT_RUNTIME_MASK_BYTES * ub * ctx,
+            )
+            if legacy:
+                reserve = (
+                    self._INKLING2_FIT_LEGACY_RESERVE_ACT * act
+                    + self._INKLING2_FIT_LEGACY_RESERVE_BYTES * ub * ctx
+                )
+            else:
+                reserve = max(
+                    self._INKLING2_FIT_RESERVE_ACT_FLOOR * act,
+                    self._INKLING2_FIT_RESERVE_ACT_BASE * act
+                    + self._INKLING2_FIT_RESERVE_MASK_BYTES * ub * ctx,
+                )
+            return math.ceil(max(0.0, runtime - reserve) / (1024 * 1024))
+
+        return max(growth(c) for c in ctxs)
+
     def _compute_buffer_ctx_bytes(
         self,
         n_ctx: int,
@@ -19282,42 +19415,12 @@ class LlamaCppBackend:
         if getattr(self, "_architecture", None) in _INKLING2_ARCHS:
             # Sliding layers' smaller bias reuses this allocation.
             n_head = self._inkling2_bias_heads()
-            head_dim = getattr(self, "_kv_key_length", None) or 128
-            kv_type = (cache_type_kv or "f16").strip().lower()
-            build = self._inkling2_banded()
-            quantized = _kv_bytes_per_elem(kv_type) < 2.0
-            if quantized:
-                type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
-            else:
-                type_ok = kv_type in ("f16", "bf16", "f32")
-            banded = (
-                flash_attn
-                and type_ok
-                # Metal, Vulkan and SYCL have no banded kernel; unknown keeps the CUDA pricing.
-                and (build.backend is None or build.backend in _INKLING2_BANDED_BACKENDS)
-                and head_dim in (64, 128)
-                and ub >= self._INKLING2_BANDED_MIN_UBATCH
+            banded = self._inkling2_banded_terms(
+                n_ctx, ub, cache_type_kv, flash_attn = flash_attn, split_extra = split_extra
             )
-            if banded:
-                block = 4 * n_head * ub * ub
-                if not build.quant_kv:
-                    reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx + block
-                    regrown = (
-                        (self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra) * n_ctx
-                        + block
-                        + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
-                    )
-                    return int(max(reserve, regrown))
-                copy = 0
-                if quantized and not (
-                    build.tile_kv and kv_type in self._INKLING2_BANDED_TILE_TYPES
-                ):
-                    copy = self._attention_dequant_width() * 2
-                reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx
-                regrown = (
-                    self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
-                ) * n_ctx + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
-                return int(max(reserve, regrown) + copy * n_ctx + block)
+            if banded is not None:
+                reserve, regrown, fixed = banded
+                return int(max(reserve, regrown) + fixed)
             per_tok = (
                 mask_rate
                 + split_extra
@@ -30832,6 +30935,37 @@ class LlamaCppBackend:
                     except OSError:
                         self._slot_save_dir = None
                         self._slot_save_binary = None
+                # llama.cpp's fitter sizes only the load-time compute reserve; Inkling 2's banded
+                # buffer regrows past it after the first prompt, so keep that growth free too.
+                if _placed_by_fitter and self._architecture in _INKLING2_ARCHS:
+                    _regrowth_mib = self._inkling2_fit_regrowth_mib(
+                        # No -c: the fitter picks the context, from the --fit-ctx floor up.
+                        effective_ctx if effective_ctx > 0 else 8192,
+                        _ubatch_for_slots(n_parallel),
+                        _scratch_cache_type_kv,
+                        flash_attn = planned_flash_attn,
+                        n_parallel = n_parallel,
+                        n_ctx_max = None if effective_ctx > 0 else self._context_length,
+                    )
+                    if _regrowth_mib:
+                        # On top of the margin the emitter would spell, not the raw delta: a
+                        # budget delta below the 512 MiB floor must not eat the growth.
+                        _min_delta = _VRAM_FLOOR_RESERVE_MIB - (
+                            _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
+                        )
+                        _fit_target_delta_mib = (
+                            max(_min_delta, _fit_target_delta_mib) + _regrowth_mib
+                        )
+                        if _fit_target_delta_by_idx:
+                            _fit_target_delta_by_idx = {
+                                _idx: max(_min_delta, _delta) + _regrowth_mib
+                                for _idx, _delta in _fit_target_delta_by_idx.items()
+                            }
+                        logger.info(
+                            "Inkling 2 --fit on: keeping %d MiB more free per device for the "
+                            "compute buffer's post-prompt growth.",
+                            _regrowth_mib,
+                        )
                 _integrity_args = (
                     n_parallel,
                     use_fit,
