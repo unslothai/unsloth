@@ -75,8 +75,16 @@ def _new_cudagraph_state():
 
 # Auto mode: phase "probe" (graphs off, watching), "on" or "off" (final). first: the layer whose
 # call starts a forward pass; passes: forward passes seen, all with batch shape `shape` on `device`.
+# round: numbers the decision (one per patched model, the same sequence on every rank); agree: the
+# store every DDP rank publishes its verdict to (None on one process).
+_AUTO_ROUND = [0]
+
+
 def _new_auto_state():
+    _AUTO_ROUND[0] += 1
     return {
+        "round": _AUTO_ROUND[0],
+        "agree": None,
         "phase": "probe",
         "first": None,
         "shape": None,
@@ -579,7 +587,79 @@ def _auto_off(auto, why):
     auto["phase"] = "off"
     auto["why"] = why
     auto["first"] = None
+    _auto_publish(auto, f"off:{why}")
     _auto_note(f"Unsloth: block CUDA graphs stay off ({why}).")
+
+
+# DDP: every rank decides from its own probe and publishes the verdict to the process group's store
+# (no collective, so a rank that went off early or never probes cannot hang the others). A rank
+# turns graphs on only once every rank published "on"; any "off", or no full set within the timeout,
+# keeps them off everywhere. Graphs on some ranks only would still be correct, just not faster.
+try:
+    _AUTO_AGREE_TIMEOUT_S = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AGREE_TIMEOUT", "120"))
+except ValueError:
+    _AUTO_AGREE_TIMEOUT_S = 120.0
+
+
+def _auto_join(auto):
+    """Under an initialized process group with world > 1: the store, rank and world, else None."""
+    try:
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized()):
+            return None
+        world = dist.get_world_size()
+        if world <= 1:
+            return None
+        from torch.distributed import distributed_c10d
+
+        store = distributed_c10d._get_default_store()
+        agree = {
+            "store": store,
+            "rank": dist.get_rank(),
+            "world": world,
+            "prefix": f"unsloth_block_cudagraphs/{auto['round']}",
+            "published": None,
+            "deadline": None,
+        }
+    except Exception:
+        auto["agree"] = False
+        return False
+    auto["agree"] = agree
+    return agree
+
+
+def _auto_publish(auto, verdict):
+    agree = auto.get("agree")
+    if not agree or (agree["published"] or "").startswith("off"):
+        return
+    try:
+        agree["store"].set(f"{agree['prefix']}/{agree['rank']}", verdict)
+        agree["published"] = verdict
+    except Exception:
+        pass
+
+
+def _auto_agreed(auto):
+    """ "on" once every rank published "on", None while some rank has not published, else why off."""
+    agree = auto.get("agree")
+    if not agree:
+        return "on"
+    keys = [f"{agree['prefix']}/{rank}" for rank in range(agree["world"])]
+    try:
+        if not agree["store"].check(keys):
+            if agree["deadline"] is None:
+                agree["deadline"] = time.monotonic() + _AUTO_AGREE_TIMEOUT_S
+            if time.monotonic() > agree["deadline"]:
+                return "ranks did not agree in time"
+            return None
+        verdicts = [agree["store"].get(key).decode() for key in keys]
+    except Exception:
+        return "rank verdicts unreadable"
+    for rank, verdict in enumerate(verdicts):
+        if verdict != "on":
+            return f"rank {rank}: {verdict[4:] if verdict.startswith('off:') else verdict}"
+    return "on"
 
 
 def _auto_platform_reason():
@@ -600,12 +680,9 @@ def _auto_static_reason(layer, hidden_states):
     why = _auto_platform_reason()
     if why is not None:
         return why
-    try:
-        import torch.distributed as dist
-        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
-            return "distributed"
-    except Exception:
-        return "distributed"
+    why = _auto_distributed_reason(layer)
+    if why is not None:
+        return why
     total = trainable = 0
     for p in layer.parameters():
         total += p.numel()
@@ -614,6 +691,41 @@ def _auto_static_reason(layer, hidden_states):
     if total and trainable * 2 > total:
         # Measured only for LoRA / QLoRA: full finetuning copies every block weight grad per step.
         return "full finetuning"
+    return None
+
+
+def _auto_distributed_reason(layer):
+    """None on one process or under plain DDP over every rank (block weights replicated, no
+    collective inside a block); any other multi-process layout keeps graphs off: native FSDP2 / tensor
+    parallel (DTensor weights), DDP over a sub-group (pipeline / tensor x data), context parallel
+    (collectives inside attention), or no DDP forward around the block."""
+    try:
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized()):
+            return None
+        world = dist.get_world_size()
+        if world <= 1:
+            return None
+        ddp = _DDP._get_active_ddp_module() if _DDP is not None else None
+        if ddp is None:
+            return "distributed, not DDP"
+        group = getattr(ddp, "process_group", None)
+        if group is None or group.size() != world:
+            return "DDP over part of the ranks"
+        cp = sys.modules.get("unsloth.context_parallel")
+        if cp is not None and getattr(cp, "get_cp_manager", lambda: None)() is not None:
+            return "context parallel"
+        try:
+            from torch.distributed.tensor import DTensor
+        except Exception:
+            from torch.distributed._tensor import DTensor
+        if any(isinstance(p, DTensor) for p in layer.parameters()):
+            return "DTensor weights (FSDP2 / tensor parallel)"
+        if not any(m is layer for m in ddp.module.modules()):
+            return "block outside the DDP module"
+    except Exception:
+        return "distributed"
     return None
 
 
@@ -647,7 +759,11 @@ def _auto_observe(layer, hidden_states, args, kwargs):
     if auto["first"] is None:
         if outside:
             return "plain"  # the trial / a recompute before any forward pass was seen
+        if auto["agree"] is None:
+            _auto_join(auto)
         why = _auto_static_reason(layer, hidden_states)
+        if why is None and auto["agree"] is False:
+            why = "no process group store"
         if why is not None:
             _auto_off(auto, why)
             return "plain"
@@ -667,8 +783,16 @@ def _auto_observe(layer, hidden_states, args, kwargs):
         return "plain"
     if auto["first"]() is layer:  # a new forward pass
         if auto["decision"] == "on":
+            agreed = _auto_agreed(auto)
+            if agreed is None:
+                return "plain"  # another rank has not decided yet: ask again next pass
+            if agreed != "on":
+                _auto_off(auto, agreed)
+                return "plain"
             auto["phase"] = "on"
             auto["first"] = None
+            if auto["agree"]:
+                _rank0_note("auto", auto["note"] + " (every rank agreed)")
             return "graphs"
         auto["passes"] += 1
     if auto["passes"] > _AUTO_WARMUP_PASSES and len(auto["host"]) < _AUTO_MEASURE_CALLS:
@@ -694,11 +818,14 @@ def _auto_decide(auto, device):
         _auto_off(auto, f"{free / 2**30:.1f} GiB free")
         return
     auto["decision"] = "on"
-    _rank0_note(
-        "auto",
+    auto["note"] = (
         f"Unsloth: block CUDA graphs on (one batch shape, {detail}). "
-        "UNSLOTH_BLOCK_CUDAGRAPHS=0 keeps them off.",
+        "UNSLOTH_BLOCK_CUDAGRAPHS=0 keeps them off."
     )
+    if auto["agree"]:
+        _auto_publish(auto, "on")  # the note waits for every rank's verdict
+    else:
+        _rank0_note("auto", auto["note"])
 
 
 def _auto_time(call, device):
