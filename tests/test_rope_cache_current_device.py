@@ -834,3 +834,32 @@ def test_gemma_rotary_applies_config_linear_scaling(family, key):
         for g, e, w in zip(got, exact, want):
             torch.testing.assert_close(g.squeeze(0), w, rtol = 0, atol = 1e-4)
             assert torch.equal(g, e)
+
+
+@pytest.mark.parametrize(
+    "scaling",
+    [
+        None,
+        {"rope_type": "default", "rope_theta": float(BASE)},
+        {"type": "dynamic", "factor": 4.0},
+        {"type": "linear", "factor": 4.0, "rope_theta": float(BASE)},
+        {"rope_type": "linear", "factor": 4.0, "rope_theta": float(BASE)},
+    ],
+    ids = ["none", "default", "dynamic", "linear_type", "linear_rope_type"],
+)
+def test_gemma_rotary_scaling_factor_marks_applied_linear_only(scaling):
+    # unsloth_zoo's merged export keys on this class name and on scaling_factor being present only
+    # when linear scaling was really applied: it then writes that scaling into the exported config.
+    from transformers import GemmaConfig
+
+    helpers = _load(LLAMA, list(_HELPERS) + ["_get_rope_theta", "_rope_scaling_as_dict"])
+    ns = _load(GEMMA, ["GemmaFixedRotaryEmbedding"], helpers)
+    config = GemmaConfig(head_dim = DIM, max_position_embeddings = 1024)
+    config.rope_scaling = scaling
+    rope = ns["GemmaFixedRotaryEmbedding"](config)
+    assert type(rope).__name__ == "GemmaFixedRotaryEmbedding"
+    linear = scaling is not None and "linear" in (scaling.get("rope_type"), scaling.get("type"))
+    if linear:
+        assert rope.scaling_factor == 4.0
+    else:
+        assert not hasattr(rope, "scaling_factor")
