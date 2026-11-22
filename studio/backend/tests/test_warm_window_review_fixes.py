@@ -50,6 +50,15 @@ if str(_BACKEND) not in sys.path:
 import utils.hardware.hardware as hw  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _torch_import_state(monkeypatch):
+    """_has_torch() caches a failed import per detection epoch (TORCH_IMPORT_ERROR + _TORCH_IMPORT_FAILED_EPOCH).
+    Restore both after every test and start each from "no failure cached", so a broken-torch test cannot leave
+    the epoch behind for the next one to short-circuit on (the tests below only ever restored the error)."""
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
+    monkeypatch.setattr(hw, "_TORCH_IMPORT_FAILED_EPOCH", None)
+
+
 class _NeverStarts:
     """Stand-in for threading.Thread that records the call and runs nothing."""
 
