@@ -581,7 +581,7 @@ def test_decoder_layers_accepts_a_hybrid_stack_of_mixed_block_classes():
 
 def test_counter_counts_opaque_custom_ops_once_at_their_boundary(monkeypatch):
     # Failing before: only torch.ops.aten targets were resolved, so a low-precision GEMM inside an opaque
-    # custom op (unsloth::nvfp4_qat_linear_v2, fbgemm::f8f8bf16_rowwise) counted zero.
+    # custom op (unsloth::nvfp4_qat_linear, fbgemm::f8f8bf16_rowwise) counted zero.
     from unsloth.precision import engage
 
     a = torch.ones(16, 16).to(torch.float8_e4m3fn)
@@ -619,7 +619,8 @@ def test_counter_counts_the_real_nvfp4_qat_linear_op():
     w = torch.empty(32, 64, device = "meta", dtype = torch.bfloat16)
     with P.count_lowp_gemms() as c:
         op(x, w, None, False, False, False, False, None)
-    assert c["unsloth::nvfp4_qat_linear_v2"] == 1
+    # The public key survives the op's versioned dispatch name.
+    assert c["unsloth::nvfp4_qat_linear"] == 1 and "unsloth::nvfp4_qat_linear_v2" not in c
 
 
 def test_counter_hears_eager_fp8_triton_launchers_and_not_the_fp16_gemv():

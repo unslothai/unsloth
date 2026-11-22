@@ -10407,15 +10407,21 @@ def _nvfp4_qat_linear_op():
         need_x,
         need_w,
     ):
-        if (
-            mm_dtype is not None
-        ):  # torchao's backward runs under the forward's autocast (custom_bwd)
-            grad = grad.to(mm_dtype)
-        # Unrequested grads (frozen LoRA base weight, first layer input) return empty and skip their GEMM.
-        grad_x = grad_w = None
+        # Unrequested grads (frozen LoRA base weight, first layer input) skip their dequant + GEMM. Requested
+        # operands dequantize activation first, then weight, then cast, then GEMM: the pre-skip order, so no
+        # GEMM output or dense weight is live while the activation dequantizes (full fine-tuning peak).
+        x_dq = w_dq = None
+        if need_w:
+            x_dq = NVFP4Tensor(
+                x_qdata,
+                x_scale,
+                16,
+                x_dtype,
+                per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
+            ).dequantize(x_dtype)
         if need_x:
             # Positional: the swizzle flag is `_is_swizzled_scales` in torchao 0.15, `is_swizzled_scales` later.
-            w_q = NVFP4Tensor(
+            w_dq = NVFP4Tensor(
                 w_qdata,
                 w_scale,
                 16,
@@ -10423,21 +10429,18 @@ def _nvfp4_qat_linear_op():
                 w_per_tensor_scale if w_per_tensor else None,
                 None,
                 w_swizzled,
-            )
-            w_dq = w_q.dequantize(w_dtype)
-            grad_x = torch.mm(grad, w_dq if mm_dtype is None else w_dq.to(mm_dtype))
-        if need_w:
-            x_q = NVFP4Tensor(
-                x_qdata,
-                x_scale,
-                16,
-                x_dtype,
-                per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
-            )
-            x_dq = x_q.dequantize(x_dtype)
-            grad_w = torch.mm(grad.t(), x_dq if mm_dtype is None else x_dq.to(mm_dtype))
-        empty = grad.new_empty(0) if grad_x is None or grad_w is None else None
-        return (empty if grad_x is None else grad_x), (empty if grad_w is None else grad_w)
+            ).dequantize(w_dtype)
+        if (
+            mm_dtype is not None
+        ):  # torchao's backward runs under the forward's autocast (custom_bwd)
+            grad = grad.to(mm_dtype)
+            x_dq = None if x_dq is None else x_dq.to(mm_dtype)
+            w_dq = None if w_dq is None else w_dq.to(mm_dtype)
+        # A fresh empty per omitted output: custom op outputs must not alias each other.
+        grad_x = grad.new_empty(0) if w_dq is None else torch.mm(grad, w_dq)
+        w_dq = None  # release the dense weight before the dW GEMM allocates
+        grad_w = grad.new_empty(0) if x_dq is None else torch.mm(grad.t(), x_dq)
+        return grad_x, grad_w
 
     @backward_op.register_fake
     def _(
@@ -10458,16 +10461,17 @@ def _nvfp4_qat_linear_op():
         need_w,
     ):
         dtype = grad.dtype if mm_dtype is None else mm_dtype
-        N, K = grad.shape[1], (w_qdata if need_x else x_qdata).shape[1] * 2
-        return (
-            grad.new_empty((grad.shape[0], K) if need_x else (0,), dtype = dtype),
-            grad.new_empty((N, K) if need_w else (0,), dtype = dtype),
-        )
+        # Read each payload only for its own requested grad: an omitted one is a rank-1 placeholder.
+        x_shape = (grad.shape[0], w_qdata.shape[1] * 2) if need_x else (0,)
+        w_shape = (grad.shape[1], x_qdata.shape[1] * 2) if need_w else (0,)
+        return grad.new_empty(x_shape, dtype = dtype), grad.new_empty(w_shape, dtype = dtype)
 
     def setup_context(ctx, inputs, output):
         x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, _, mm_dtype = inputs
         need_x, need_w = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
         ctx.mark_non_differentiable(*output[1:])
+        # The six payload outputs never get a grad: do not materialize zeros for them each backward.
+        ctx.set_materialize_grads(False)
         # dX needs only the weight payload, dW only the activation payload: save just what is used.
         saved = list(output[1:])
         if not (need_x and need_w):
@@ -10487,6 +10491,8 @@ def _nvfp4_qat_linear_op():
         )
 
     def backward(ctx, grad, *_):
+        if grad is None:  # set_materialize_grads(False): the output itself got no grad
+            return (None,) * 8
         need_x, need_w = ctx.args[-2:]
         grad_x, grad_w = (
             backward_op(grad, *ctx.saved_tensors, *ctx.args) if need_x or need_w else (None, None)

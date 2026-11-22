@@ -97,6 +97,10 @@ LOWP_GEMM_CUSTOM_OPS = (
     "fbgemm::f8f8bf16_cublas",
 )
 
+# Counter key of a dispatch name whose op was versioned (compile caches key on the op name): the public key
+# stays stable across schema bumps.
+_LOWP_GEMM_COUNTER_KEYS = {"unsloth::nvfp4_qat_linear_v2": "unsloth::nvfp4_qat_linear"}
+
 
 # Per thread, like torch's dispatch-mode stack: the counters open on this thread, and the ids of those already
 # inside a counted GEMM (a GEMM that delegates to another counted launcher or op, torchao block matmul ->
@@ -155,7 +159,7 @@ def release_lowp_gemm(entered):
 @contextlib.contextmanager
 def count_lowp_gemms():
     """Count low-precision GEMM dispatches: `with count_lowp_gemms() as c: ...; c['_scaled_mm']`, and
-    `c['unsloth::nvfp4_qat_linear_v2']` for opaque custom ops (LOWP_GEMM_CUSTOM_OPS). On torch < 2.9, compiled
+    `c['unsloth::nvfp4_qat_linear']` for opaque custom ops (LOWP_GEMM_CUSTOM_OPS). On torch < 2.9, compiled
     callables run eagerly inside the counter (warned once)."""
     import torch
     from torch.utils._python_dispatch import TorchDispatchMode
@@ -168,7 +172,7 @@ def count_lowp_gemms():
         if getattr(torch.ops.aten, name, None) is not None:
             names[f"aten::{name}"] = name
     for name in LOWP_GEMM_CUSTOM_OPS:
-        names[name] = name
+        names[name] = _LOWP_GEMM_COUNTER_KEYS.get(name, name)
     counts = {key: 0 for key in names.values()}
 
     class _Counter(TorchDispatchMode):

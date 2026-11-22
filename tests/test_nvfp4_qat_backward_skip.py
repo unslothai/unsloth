@@ -19,11 +19,15 @@ import unsloth.models._utils as qat_utils
 
 @pytest.fixture(scope = "module")
 def op():
+    # Skip only on the optional dependency; a broken op factory or kernel registration fails setup.
     try:
-        op = qat_utils._nvfp4_qat_linear_op()
-        from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
-    except Exception as e:
+        from torchao.prototype.mx_formats.nvfp4_tensor import (
+            NVFP4Tensor,
+            per_tensor_amax_to_scale,
+        )
+    except ImportError as e:
         pytest.skip(f"torchao NVFP4 internals unavailable: {e!r}")
+    op = qat_utils._nvfp4_qat_linear_op()
 
     # No FP4 GEMM on CPU: the forward runs the same quantizer with a dequantized matmul. The real op
     # only ever sees CUDA inputs, so this CPU kernel does not touch it.
@@ -31,7 +35,6 @@ def op():
         def q(t, per_tensor, swizzled):
             scale = None
             if per_tensor:
-                from torchao.prototype.mx_formats.nvfp4_tensor import per_tensor_amax_to_scale
                 scale = per_tensor_amax_to_scale(torch.max(torch.abs(t)))
             return NVFP4Tensor.to_nvfp4(t, per_tensor_scale = scale, is_swizzled_scales = swizzled)
 
@@ -39,14 +42,16 @@ def op():
         out = x_q.dequantize(torch.float32) @ w_q.dequantize(torch.float32).t()
         if bias is not None:
             out = out + bias.float()
-        one = x.new_ones((), dtype = torch.float32)
-        pt = lambda t: one if t.per_tensor_scale is None else t.per_tensor_scale.float()
+
+        # A fresh scalar per missing scale, as the real forward does: custom op outputs must not alias.
+        def pt(t):
+            if t.per_tensor_scale is None:
+                return x.new_ones((), dtype = torch.float32)
+            return t.per_tensor_scale.float()
+
         return (out.to(x.dtype), x_q.qdata, x_q.scale, pt(x_q), w_q.qdata, w_q.scale, pt(w_q))
 
-    try:
-        torch.library.register_kernel("unsloth::nvfp4_qat_linear_v2", "cpu", cpu_forward)
-    except Exception as e:
-        pytest.skip(f"cannot register a CPU kernel: {e!r}")
+    op.register_kernel("cpu", cpu_forward)  # bound to the op object, not a hard-coded name
     return op
 
 
@@ -57,6 +62,7 @@ def _run(
     bias_grad = False,
     compiled = False,
     calls = None,
+    per_tensor = True,
 ):
     g = torch.Generator().manual_seed(0)
     x = torch.randn(64, 128, generator = g, dtype = torch.bfloat16).requires_grad_(need_x)
@@ -69,7 +75,7 @@ def _run(
         return t
 
     def f(x, w, b):
-        return op(x, w, b, True, True, False, False, None)[0]
+        return op(x, w, b, per_tensor, per_tensor, False, False, None)[0]
 
     if compiled:
         torch._dynamo.reset()
@@ -78,6 +84,7 @@ def _run(
         out = f(x, w, b)
     if calls is not None:  # count the backward only
         calls.update(mm = 0, dequantize = 0)
+        calls["order"] = []
     out.float().square().mean().backward()
     return out.detach(), x.grad, w.grad, b.grad, sum(saved)
 
@@ -90,10 +97,12 @@ def _count(monkeypatch):
 
     def counting_mm(*a, **k):
         calls["mm"] += 1
+        calls.setdefault("order", []).append("mm")
         return mm(*a, **k)
 
     def counting_dequantize(self, *a, **k):
         calls["dequantize"] += 1
+        calls.setdefault("order", []).append("dequantize")
         return dequantize(self, *a, **k)
 
     monkeypatch.setattr(torch, "mm", counting_mm)
@@ -107,7 +116,7 @@ def test_backward_runs_only_requested_gemms(op, monkeypatch, need_x, need_w, bia
     full = _run(op, True, True, bias_grad)
     calls = _count(monkeypatch)
     out, gx, gw, gb, saved = _run(op, need_x, need_w, bias_grad, calls = calls)
-    assert calls == {"mm": need_x + need_w, "dequantize": need_x + need_w}
+    assert (calls["mm"], calls["dequantize"]) == (need_x + need_w, need_x + need_w)
     assert torch.equal(out, full[0])
     for got, want, need in ((gx, full[1], need_x), (gw, full[2], need_w), (gb, full[3], bias_grad)):
         assert (got is not None) == need
@@ -117,10 +126,87 @@ def test_backward_runs_only_requested_gemms(op, monkeypatch, need_x, need_w, bia
     assert (saved < full[4]) == (not (need_x and need_w))
 
 
-@pytest.mark.parametrize("need_x, need_w", [(True, False), (False, True), (True, True)])
-def test_backward_skip_under_compile(op, need_x, need_w):
-    eager = _run(op, need_x, need_w)
-    compiled = _run(op, need_x, need_w, compiled = True)
+def test_backward_skips_op_for_bias_only_grad(op, monkeypatch):
+    full = _run(op, True, True, bias_grad = True)
+    calls = _count(monkeypatch)
+    out, gx, gw, gb, saved = _run(op, False, False, bias_grad = True, calls = calls)
+    assert (calls["mm"], calls["dequantize"]) == (0, 0)
+    assert torch.equal(out, full[0])
+    assert gx is None and gw is None and torch.equal(gb, full[3])
+    assert saved == 0
+
+
+@pytest.mark.parametrize("need_x, need_w", [(True, False), (True, True)])
+def test_backward_without_per_tensor_scales(op, need_x, need_w):
+    # Both per-tensor scales absent: the forward returns two placeholder scalars, which must not alias.
+    full = _run(op, True, True, per_tensor = False)
+    _, gx, gw, _, _ = _run(op, need_x, need_w, per_tensor = False)
+    assert torch.equal(gx, full[1])
+    assert (gw is not None) == need_w and (not need_w or torch.equal(gw, full[2]))
+
+
+def test_backward_dequantizes_before_any_gemm(op, monkeypatch):
+    # Full fine-tuning: both operands dequantize before the first GEMM (the pre-skip order), so neither dX
+    # nor the dense weight is live while the activation dequantizes; failing before: dX ran first.
+    calls = _count(monkeypatch)
+    _run(op, True, True, calls = calls)
+    assert calls["order"] == ["dequantize", "dequantize", "mm", "mm"]
+
+
+def test_backward_materializes_no_payload_grads(op):
+    # The six payload outputs are non-differentiable: autograd must not build zero grads for them.
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    zeros = []
+
+    class Zeros(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            if func._schema.name in ("aten::zeros", "aten::zeros_like", "aten::new_zeros"):
+                zeros.append(func)
+            return func(*args, **(kwargs or {}))
+
+    x = torch.randn(64, 128, dtype = torch.bfloat16, requires_grad = True)
+    w = torch.randn(96, 128, dtype = torch.bfloat16)
+    out = op(x, w, None, True, True, False, False, None)[0]
+    with Zeros():
+        out.float().sum().backward()
+    assert zeros == [] and x.grad is not None
+
+
+def test_backward_eager_accepts_no_requested_grads(op):
+    # Direct dispatch with both grads omitted: two distinct empty outputs (aliased outputs raise).
+    backward = torch.ops.unsloth.nvfp4_qat_linear_v2_backward.default
+    grad = torch.empty(64, 96, dtype = torch.bfloat16)
+    args = (
+        grad,
+        *(grad.new_empty(0) for _ in range(6)),
+        grad.dtype,
+        grad.dtype,
+        True,
+        True,
+        False,
+        None,
+        False,
+        False,
+    )
+    torch.library.opcheck(backward, args, test_utils = ("test_schema",))
+    gx, gw = backward(*args)
+    assert gx.shape == gw.shape == (0,) and gx.dtype == gw.dtype == grad.dtype
+
+
+@pytest.mark.parametrize(
+    "need_x, need_w, bias_grad",
+    [(True, False, False), (False, True, False), (True, True, False), (False, False, True)],
+)
+def test_backward_skip_under_compile(op, need_x, need_w, bias_grad):
+    eager = _run(op, need_x, need_w, bias_grad = bias_grad)
+    compiled = _run(op, need_x, need_w, bias_grad = bias_grad, compiled = True)
     for a, b in zip(eager[:4], compiled[:4]):
         assert (a is None) == (b is None)
         if a is not None:
@@ -141,7 +227,7 @@ def test_backward_fake_matches_requested_grads(op):
             torch.empty(96, 8, dtype = torch.float8_e4m3fn),
         )
         one, empty = torch.ones(()), torch.empty(0)
-        for need_x, need_w in ((True, False), (False, True), (True, True)):
+        for need_x, need_w in ((True, False), (False, True), (True, True), (False, False)):
             xs = (*x_q, one) if need_w else (empty, empty, empty)
             ws = (*w_q, one) if need_x else (empty, empty, empty)
             dtypes = (torch.bfloat16, torch.bfloat16)
