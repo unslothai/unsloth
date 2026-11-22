@@ -145,7 +145,6 @@ async def _call(
         reset_caller(token)
 
 
-# Tools a chat follows to the end inside the call, with the get_job kind of their job.
 _FOLLOWED = {"generate_video": "video", "load_model": "load"}
 
 

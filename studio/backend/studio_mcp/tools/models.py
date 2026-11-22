@@ -326,7 +326,6 @@ def _catalog_lookup(caller: Caller, model: str) -> Any:
         found = await row()
         if not found:
             return None
-        # Keep a bare name's ":variant".
         _, colon, variant = model.partition(":")
         return f"{found[0]}:{variant}" if colon and variant else found[0]
 

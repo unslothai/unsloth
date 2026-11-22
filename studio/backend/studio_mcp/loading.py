@@ -376,7 +376,6 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
     return poll
 
 
-# The llm route's words for a model it cannot read.
 _NOT_LLM_MARKERS = ("autoconfig", "model_type", "unrecognized model")
 
 
