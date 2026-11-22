@@ -10915,10 +10915,21 @@ def _fp8_checkpoint_dequantizes_below_sm89():
 
 def verify_fp8_support_if_applicable(model_config, fast_inference = False):
     quant_method = get_quant_type(model_config)
-    if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE not in ("cuda", "xpu"):
-        # In case of block quantized, we allow L4 because we fall back to torchao kernels.
+    if quant_method == "fbgemm_fp8" and DEVICE_TYPE not in ("cuda", "xpu"):
         raise ValueError(
-            f"Unsloth: FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
+            f"Unsloth: FBGEMM FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
+        )
+    # ROCm: Unsloth's FP8 kernels pick the Triton fp8e4nv path, the gfx11 byte decoder or the torch dequant
+    # per device (unsloth/kernels/fp8.py), so a fine-grained FP8 checkpoint loads like on an Ada / Hopper GPU.
+    if quant_method == "fp8" and DEVICE_TYPE not in ("cuda", "xpu", "hip"):
+        raise ValueError(
+            f"Unsloth: FP8 quantization is only supported on CUDA, ROCm and XPU GPUs. You are using {DEVICE_TYPE}."
+        )
+    if quant_method == "fp8" and DEVICE_TYPE == "hip" and fast_inference:
+        # The vLLM handoff (weight export, FNUZ scales, MoE preflight) is CUDA-only for FP8 checkpoints today.
+        raise ValueError(
+            "Unsloth: FP8 checkpoints load on AMD ROCm GPUs with fast_inference = False; "
+            "fast_inference (vLLM) with FP8 weights is not supported on ROCm yet."
         )
 
     if DEVICE_TYPE == "cuda":
