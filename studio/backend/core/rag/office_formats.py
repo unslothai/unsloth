@@ -369,8 +369,7 @@ def _section_plan(tokens: list[tuple[str, str]]):
     first, last = marks[0], marks[-1]
     inserts: list[tuple[int, str]] = []
     if any(kind == "lit" for kind, _ in tokens[first:last]):
-        # Text between whole-number digits, as in 000-00-0000 or (000) 000-0000; fractions,
-        # decimals, grouping and exponents around such text stay unsupported.
+        # Only 000-00-0000 style: fractions, decimals, grouping and exponents stay unsupported.
         span = tokens[first : last + 1]
         if any(ch not in "0#" if kind == "ph" else kind != "lit" or "/" in ch for kind, ch in span):
             return None
@@ -382,7 +381,7 @@ def _section_plan(tokens: list[tuple[str, str]]):
                 inserts[-1] = (digits, text + inserts[-1][1])
             else:
                 inserts.append((digits, text))
-        inserts.reverse()  # leftmost first, each placed by the digits to its right
+        inserts.reverse()  # leftmost first, so right-counted offsets stay valid
         tokens = tokens[:first] + [token for token in span if token[0] == "ph"] + tokens[last + 1 :]
         last = first + digits - 1
     prefix = "".join(text for kind, text in tokens[:first] if kind == "lit")
