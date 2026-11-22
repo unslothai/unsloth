@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inkling 2 compute estimate follows what the bundled llama.cpp does with a quantized KV cache.
-
-Builds with unslothai/llama.cpp#399 run q8_0 / q4_0 K/V on the banded relative-bias path (CUDA
-dequantizes in the tile, HIP reads an f16 copy) and share one banded mask per graph; older builds,
-and Metal / Vulkan on any build, take the dense bias. The build is read from the kernel registration
-string in libggml-cuda / libggml-hip, so an old prebuilt keeps the dense estimate (#18833)."""
+"""Inkling 2 compute per llama.cpp build: #399 runs quantized K/V banded, older go dense (#18833)."""
 
 from __future__ import annotations
 
@@ -111,7 +106,6 @@ class TestBuildDecidesTheQuantizedPath:
     def test_new_cuda_build_puts_a_quantized_cache_below_f16(self, ctx, kv):
         b = _inkling2_mini(NEW_CUDA)
         assert _total(b, ctx, kv) < _total(b, ctx, "f16")
-        # Banded on CUDA: the same compute as f16, no f16 copy of K/V.
         assert _compute(b, ctx, kv) == _compute(b, ctx, "f16")
         assert _total(b, ctx, kv) < _total(_inkling2_mini(OLD_CUDA), ctx, kv)
 
@@ -158,10 +152,7 @@ class TestBuildDecidesTheQuantizedPath:
 
 
 class TestRuntimeComputeBuffer:
-    """CUDA0 compute buffer at exit (llama.cpp reallocates it above its load-time reserve), MiB.
-
-    Inkling-2-Mini UD-IQ1_S, -np 4 --kv-unified -fa on -b 2048, slot 0 filled to 0.9 n_ctx, B200.
-    Old = the shipped pins (b12602 + #378 e65c374cb / #386 242a5d8f9); new = #399 (b12628)."""
+    """CUDA0 MiB at exit, Inkling-2-Mini UD-IQ1_S, -np 4 --kv-unified, B200; old = b12602, new = #399."""
 
     _MEASURED = [
         # (support, ub, n_ctx, kv, reserve MiB, runtime MiB)

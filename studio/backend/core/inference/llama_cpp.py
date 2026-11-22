@@ -5287,11 +5287,7 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     return False
 
 
-# The banded relative-bias kernel instantiated for a q8_0 K/V tile (ggml_type 8). Only builds with
-# unslothai/llama.cpp#399 (#378 / #386 repinned) carry it, and the same change lets Inkling 2 run a
-# quantized cache on the banded path and shares one banded mask per graph. Builds before it name the
-# kernel without a type. Matched in the kernel registration string, which survives strip and is the
-# device (Itanium) name on every OS.
+# q8_0 banded kernel registration string (survives strip); only llama.cpp#399 builds have it.
 _INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E")
 _GGML_GPU_LIB_GLOBS = {
     "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
@@ -5329,17 +5325,13 @@ def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
 
 
 class _Inkling2BandedSupport(NamedTuple):
-    """What the llama.cpp build does with Inkling 2's relative bias.
-
-    backend: the ggml GPU backend ("cuda", "hip", "metal", "vulkan", "sycl", "cpu"), None if unknown.
-    quant_kv: the build runs a quantized K/V on the banded path and shares the banded mask.
-    """
+    """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask."""
 
     backend: Optional[str] = None
     quant_kv: bool = False
 
 
-# Unknown build: the estimate the shipped prebuilts before unslothai/llama.cpp#399 need.
+# Unknown build prices as pre-#399.
 _INKLING2_BANDED_LEGACY = _Inkling2BandedSupport()
 # Backends with a FLASH_ATTN_EXT_BANDED kernel; Metal, Vulkan and SYCL take the dense bias.
 _INKLING2_BANDED_BACKENDS = frozenset({"cuda", "hip", "cpu"})
@@ -9021,7 +9013,7 @@ class LlamaCppBackend:
         self._vocab_size: Optional[int] = None
         # Set from reserves_micro_batch_outputs() by the callers that know the binary.
         self._reserves_micro_batch_outputs: bool = False
-        # Set from inkling2_banded_support() at load; None resolves the installed build on first use.
+        # None resolves the installed build on first use.
         self._inkling2_banded_support: Optional[_Inkling2BandedSupport] = None
         self._resumes_thoughts: bool = True
         # Architecture-aware KV fields for 5-path estimation
@@ -10873,7 +10865,6 @@ class LlamaCppBackend:
 
     @classmethod
     def inkling2_banded_support(cls, binary: Optional[str] = None) -> "_Inkling2BandedSupport":
-        """The GPU backend and quantized banded K/V support of this llama.cpp build; unknown is legacy."""
         try:
             binary = binary or cls._find_llama_server_binary()
             if not binary:
@@ -10894,7 +10885,6 @@ class LlamaCppBackend:
             return _INKLING2_BANDED_LEGACY
 
     def _inkling2_banded(self) -> "_Inkling2BandedSupport":
-        """The build the estimate prices: set at load, else the installed one (__init__ leaves None)."""
         support = getattr(self, "_inkling2_banded_support", _INKLING2_BANDED_LEGACY)
         if support is None:
             support = self._inkling2_banded_support = self.inkling2_banded_support()
@@ -18923,18 +18913,10 @@ class LlamaCppBackend:
     _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
     _INKLING2_REL_INDEX_BYTES = 4
     _INKLING2_BANDED_MIN_UBATCH = 33
-    # unslothai/llama.cpp#399 (#378 / #386 repinned): one banded mask per graph, and q4_0, q4_1,
-    # q5_0, q5_1 and q8_0 K/V on the banded path (iq4_nl has no f16 converter). CUDA dequantizes
-    # q8_0 / q4_0 tiles in the kernel; HIP and the other types read an f16 copy of K/V.
+    # #399: iq4_nl has no f16 converter; CUDA dequantizes q8_0/q4_0 in-tile, others use an f16 copy.
     _INKLING2_BANDED_QUANT_TYPES = frozenset({"q8_0", "q4_0", "q4_1", "q5_0", "q5_1"})
     _INKLING2_BANDED_TILE_TYPES = frozenset({"q8_0", "q4_0"})
-    # The prompt's graphs reallocate the banded compute buffer above the load-time reserve. Measured
-    # at exit, Inkling-2-Mini, 4 slots, --kv-unified, B200, slot 0 filled to 0.9 n_ctx (MiB):
-    #   per-layer masks, ub 1024: 1117 -> 1722 at 32K, 2749 -> 3093 at 128K; ub 512: 541 -> 812 at
-    #     32K, 1497 at 128K, no growth at 162K (the reserve already holds it). Slope 14.3 * ub.
-    #   shared mask (#399), ub 1024: 513 -> 1594 at 32K, 717 -> 1768 at 128K, 2052 at 256K; ub 512:
-    #     258 -> 748 at 32K, 382 -> 837 at 128K, 885 at 150K. Slope 1.8 * ub, alike for f16 / q8_0 / q4_0.
-    # Flat bytes per ub token beyond the activation estimate, and the regrown per-cell rates.
+    # Prompt graphs regrow the banded buffer past the reserve; fit to B200 Inkling-2-Mini at exit.
     _INKLING2_BANDED_RUNTIME_BYTES = 15
     _INKLING2_RUNTIME_BYTES_PER_UB = 800 * 1024
     _INKLING2_BANDED_SHARED_BYTES = 2
@@ -19181,7 +19163,6 @@ class LlamaCppBackend:
             build = self._inkling2_banded()
             quantized = _kv_bytes_per_elem(kv_type) < 2.0
             if quantized:
-                # Older builds send every quantized cache to the dense bias.
                 type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
             else:
                 type_ok = kv_type in ("f16", "bf16", "f32")
@@ -19196,7 +19177,6 @@ class LlamaCppBackend:
             if banded:
                 block = 4 * n_head * ub * ub
                 if not build.quant_kv:
-                    # Per-layer masks: the reserve, or the regrown buffer when that is larger.
                     reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx + block
                     regrown = (
                         (self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra) * n_ctx
@@ -19208,7 +19188,6 @@ class LlamaCppBackend:
                 if quantized and not (
                     build.backend == "cuda" and kv_type in self._INKLING2_BANDED_TILE_TYPES
                 ):
-                    # HIP, and the types without an in-tile dequant, read K/V through an f16 copy.
                     per_tok += self._attention_dequant_width() * 2
                 return int(
                     per_tok * n_ctx + block + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
