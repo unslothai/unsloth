@@ -181,8 +181,7 @@ def selected_hidden_states(
         if set(states) != want or getattr(output, "hidden_states", None) is not None:
             # a recorder that did not fire, or a forward that still built the full tuple: refuse the result
             raise SelectionError("the selective encode did not record exactly the requested states")
-        # A multi-GPU boundary (install_boundary) wraps forward() and has already moved the output home; the
-        # recorded states were captured inside it, on the encoder's own card. Hand them over where the output is.
+        # install_boundary already moved the output home; the recorded states are still on the encoder's card
         home = _output_device(output)
         if home is not None:
             states = {

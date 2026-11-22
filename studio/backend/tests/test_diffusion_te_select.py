@@ -271,9 +271,8 @@ def test_flux3_prompt_helper_matches_bitwise():
 
 @pytest.mark.parametrize("indices, last_pre_norm", [((-1,), True), (FLUX3_LAYERS, False)])
 def test_recorded_states_follow_a_boundary_that_moved_the_output(indices, last_pre_norm):
-    """A text encoder on a second card sits behind a multi-GPU boundary that wraps forward() and moves the output
-    home before the module's forward hooks run. The recorded states must land where the output is (2x T4: the
-    Qwen-Image-2.1 / FLUX.3 layer split indexed a cuda:1 state with a cuda:0 mask). ``meta`` stands in for home."""
+    """Recorded states land where a multi-GPU boundary moved the output (2x T4: a cuda:1 state met a cuda:0 mask).
+    ``meta`` stands in for home."""
     encoder = _encoder()
     orig = encoder.forward
 
