@@ -2420,6 +2420,9 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
+_FINAL_ANSWER_RETRY_NUDGE = (
+    "Tools are no longer available. Write your answer now from the results above, in plain text."
+)
 # Below this a tool result carries only the cut notice; the floor catches a collapse to zero.
 _MIN_USEFUL_RESULT_TOKENS = 64
 # llama.cpp's default per-image embedding cap plus mtmd's delimiters, when the admission figure is out of reach.
@@ -43399,6 +43402,22 @@ class LlamaCppBackend:
                         logger.info("Final answer was only a tool call; retrying without tools")
                         stream_payload.pop("tools", None)
                         stream_payload.pop("tool_choice", None)
+                        # Dropping the tools alone left LFM2.5-24B calling again 2/4; with this turn 0/4.
+                        _retry_messages = list(stream_payload["messages"])
+                        if _retry_messages and _retry_messages[-1].get("role") == "user":
+                            # Ride the trailing user turn: two in a row break Gemma.
+                            _retry_messages[-1] = {
+                                **_retry_messages[-1],
+                                "content": with_appended_text(
+                                    _retry_messages[-1]["content"],
+                                    f"\n\n{_FINAL_ANSWER_RETRY_NUDGE}",
+                                ),
+                            }
+                        else:
+                            _retry_messages.append(
+                                {"role": "user", "content": _FINAL_ANSWER_RETRY_NUDGE}
+                            )
+                        stream_payload["messages"] = _retry_messages
                         # Admission and respawn refits must count the request actually sent.
                         _final_tools = None
                         _next_cap_t = _remaining_output_budget()

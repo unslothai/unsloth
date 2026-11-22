@@ -120,6 +120,8 @@ def test_a_call_in_the_final_answer_pass_never_reaches_the_client(monkeypatch):
     assert payloads[1].get("tool_choice") == "none" and payloads[1].get("tools")
     # The call-only final answer is re-asked once with no tools in the prompt.
     assert len(payloads) == 3 and "tools" not in payloads[2] and "tool_choice" not in payloads[2]
+    assert "Tools are no longer available" in json.dumps(payloads[2]["messages"][-1])
+    assert "Tools are no longer available" not in json.dumps(payloads[1]["messages"])
     assert calls == [("web_search", {"query": "LFM2.5-24B-A2B"})]
     shown = _route_shown(events)
     assert "tool_call_start" not in shown and "tool_call_end" not in shown, shown
