@@ -119,7 +119,25 @@ def load_hint(kind: str, tools: frozenset[str]) -> str:
         return "Load a chat model with load_model first; list_models shows the downloaded ones."
     load_kind = LOAD_KINDS.get(kind, kind)
     article = "an" if WHAT.get(kind, "model")[0] in "aeiou" else "a"
+    if _catalog_only():
+        listed = (
+            "list_models(source='catalog')"
+            if "list_models" in tools
+            else "the Unsloth Studio catalog"
+        )
+        return (
+            f"Load {article} {WHAT.get(kind, 'model')} with load_model(model=<its id in {listed}>) "
+            "first."
+        )
     return f"Load {article} {WHAT.get(kind, 'model')} with load_model(kind='{load_kind}') first."
+
+
+def _catalog_only() -> bool:
+    from studio_mcp.caller import current_caller
+    try:
+        return current_caller().profile.catalog_only
+    except RuntimeError:
+        return False
 
 
 def unload_hint(kind: Optional[str], tools: frozenset[str]) -> str:
