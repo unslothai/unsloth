@@ -35,6 +35,7 @@ import {
 import type { ProjectRecord } from "../types";
 import { listMcpServers, type McpServerConfig } from "../api/mcp-servers-api";
 import { updateStoredChatProject } from "../utils/chat-history-storage";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { projectFolderState } from "../utils/project-folder-state";
 import {
   imeOwnsInputKeydown,
@@ -236,6 +237,7 @@ export function EditProjectDialog({
       }
       if (mcpChanged) {
         await updateStoredChatProject(target.id, { mcpServerIds });
+        void refreshContextUsage({ invalidate: true });
       }
       onOpenChange(false);
     } catch (err) {
