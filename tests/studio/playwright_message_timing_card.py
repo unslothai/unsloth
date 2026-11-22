@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import shutil
 import socket
 import subprocess
@@ -21,12 +22,12 @@ CARD = "[data-radix-popper-content-wrapper] > *"
 TRIGGER = '[data-slot="message-timing-trigger"]'
 
 
-async def check(url):
+async def check(url, engine):
     async with async_playwright() as playwright:
         launch = {"headless": True}
-        if os.environ.get("PW_CHROMIUM_EXECUTABLE"):
+        if engine == "chromium" and os.environ.get("PW_CHROMIUM_EXECUTABLE"):
             launch["executable_path"] = os.environ["PW_CHROMIUM_EXECUTABLE"]
-        browser = await playwright.chromium.launch(**launch)
+        browser = await getattr(playwright, engine).launch(**launch)
         try:
             page = await browser.new_page(viewport = {"width": 900, "height": 1100})
             errors = []
@@ -65,8 +66,25 @@ async def check(url):
             assert (
                 await page.locator(f'[data-message-id="older"] {TRIGGER}').count() == 0
             ), "older reply's bar stayed mounted after the pointer left the card"
+            # Focus taken while on the card keeps the bar once the pointer leaves.
+            older = page.locator('[data-message-id="older"]')
+            box = await older.bounding_box()
+            await page.mouse.move(box["x"] + 20, box["y"] + 40, steps = 3)
+            t = await older.locator(TRIGGER).bounding_box()
+            x = t["x"] + t["width"] / 2
+            await page.mouse.move(x, t["y"] + t["height"] / 2, steps = 3)
+            card = page.locator(CARD)
+            await card.wait_for()
+            c = await card.bounding_box()
+            await page.mouse.move(x, c["y"] + c["height"] / 2, steps = 8)
+            await older.focus()
+            await page.mouse.move(890, 50, steps = 6)
+            await page.wait_for_timeout(300)
+            assert await older.locator(TRIGGER).count() == 1, "focused reply lost its bar"
             assert not errors, errors
-            print("PASS: both replies keep the stats card open and selectable", flush = True)
+            print(
+                f"PASS {engine}: both replies keep the stats card open and selectable", flush = True
+            )
         finally:
             await browser.close()
 
@@ -106,7 +124,8 @@ async def main():
                     await asyncio.sleep(0.2)
             else:
                 raise RuntimeError("Vite did not start")
-            await check(url)
+            for engine in sys.argv[1:] or ["chromium"]:
+                await check(url, engine)
         finally:
             server.terminate()
             try:

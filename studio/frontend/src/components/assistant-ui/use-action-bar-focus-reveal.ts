@@ -152,7 +152,8 @@ export function useActionBarFocusReveal() {
         const target = move.target as Element | null;
         if (target?.closest?.(TOOLTIP_CONTENT)) return;
         stopRelease();
-        if (!target || !el.contains(target)) aui.message().setIsHovering(false);
+        if (target && el.contains(target)) return;
+        if (!(focusWithinRef.current && isEngaged())) aui.message().setIsHovering(false);
       };
       document.addEventListener("pointermove", release, true);
     };
