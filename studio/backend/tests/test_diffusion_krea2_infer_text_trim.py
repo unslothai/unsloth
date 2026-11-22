@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 inference runs on its valid text rows: the same output as the 512 padded rows, fewer tokens per step.
-
-A tiny random Krea2Transformer2DModel on CPU, fed the pipeline's layout (``[prompt | PAD | suffix]`` masked in the
-middle, text rows at the rotary origin): the trimmed call matches the padded one, keeps a bucketed length, reads the
-mask once per prompt and leaves every other call alone."""
+"""Krea 2 inference runs on its valid text rows: the same output as the 512 padded rows, fewer tokens per step."""
 
 from __future__ import annotations
 
@@ -233,8 +229,7 @@ def test_bucket_lengths():
 
 @pytest.mark.parametrize("cond_valid, neg_valid", [(30, 1), (1, 30)])
 def test_a_cfg_pair_of_two_buckets_keeps_one_length(dit, cond_valid, neg_valid):
-    # The pipeline passes one position_ids to both branches: they keep the longer branch's rows, so the CFG router
-    # can stack them (one doubled call), and each stays exact.
+    # one shared position_ids: both branches keep the longer branch's rows so the CFG router can stack them
     cond, neg = _inputs((cond_valid,)), _inputs((neg_valid,))
     neg["position_ids"] = cond["position_ids"]
     trim.install_for_pipe(_Pipe(dit))
@@ -259,8 +254,7 @@ def test_a_cfg_pair_of_two_buckets_keeps_one_length(dit, cond_valid, neg_valid):
 
 @pytest.mark.parametrize("cond_valid, neg_valid", [(5, 1), (1, 5)])
 def test_a_cfg_pair_where_one_branch_fills_its_bucket_keeps_both_masks(dit, cond_valid, neg_valid):
-    # 5 prompt tokens + 3 suffix fill the 8-row bucket exactly (its mask could drop), the other branch needs its mask:
-    # both keep a mask so the CFG router sees the same keys in both branches.
+    # both branches keep a mask so the CFG router sees the same keys
     cond, neg = _inputs((cond_valid,)), _inputs((neg_valid,))
     neg["position_ids"] = cond["position_ids"]
     trim.install_for_pipe(_Pipe(dit))

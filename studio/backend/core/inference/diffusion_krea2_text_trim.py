@@ -51,7 +51,7 @@ def bucket_length(valid: int, total: int) -> int:
 
 
 def _version(t: Any) -> Any:
-    # Inference tensors have no version counter: keyed on identity alone.
+    # inference tensors have no version counter
     return "inference" if t.is_inference() else t._version
 
 
