@@ -116,7 +116,11 @@ def test_an_edit_priced_cut_or_a_decode_lend_keeps_the_flat_room():
 
     src = inspect.getsource(dm._refine_plan_from_loaded_weights)
     block = src[src.index("whole_beside = (") : src.index("if dit_room <= 0 and te_room <= 0")]
-    for guard in ("not reference_cut", "lend == 0", "dense_mib is None"):
+    for guard in (
+        "not reference_cut",
+        "unlend = lend > 0 and wide_te > te_room",
+        "dense_mib is None",
+    ):
         assert guard in block
 
 

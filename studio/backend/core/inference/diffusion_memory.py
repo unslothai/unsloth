@@ -5179,6 +5179,7 @@ def _refine_plan_from_loaded_weights(
         )
         lend = 0
         phase_headroom = None
+        flat_te_room = te_room
         if split is not None and not whole_dit and not wide_dit:
             phase_te_room = te_room
             if (
@@ -5202,6 +5203,7 @@ def _refine_plan_from_loaded_weights(
                     decode_lend_text_encoder_mib = lend,
                 )
         reference_cut = 0
+        reference = None
         if (
             policy == OFFLOAD_GROUP
             and stream_te
@@ -5245,12 +5247,41 @@ def _refine_plan_from_loaded_weights(
             whole_beside
             and te_room < encoders
             # torchao denoisers only (the slack was measured on that route); an encoder cut for an edit's denoise
-            # stays cut and a decode lend keeps its phase pricing: both are sized on the flat room above
+            # stays cut: it is sized on the flat room above
             and dense_mib is None
             and not reference_cut
-            and lend == 0
         ):
             wide_te = _resident_te_room_mib(memory, encoders, dit, headroom, priced_other)
+            # A decode lend sized from a learned phase split (the second load onward) yields to the wider room when
+            # that keeps more: it is priced on the whole-render peak plus the slack, so the decode needs no lend.
+            # Its edit price is redone on the whole-render basis, as without a lend; an edit it cannot cover keeps
+            # the lend.
+            unlend = lend > 0 and wide_te > te_room
+            ref_update: dict = {}
+            if unlend and reference is not None:
+                spare = max(0, int(room) - int(dit_room) - int(flat_te_room))
+                short = max(0, int(reference[1]) - int(headroom) - spare)
+                if short > int(flat_te_room):
+                    unlend = False
+                    wide_te = te_room
+                else:
+                    ref_update = {
+                        "measured_reference_reserve_mib": int(headroom) + spare,
+                        "measured_reference_te_cut_mib": 0,
+                    }
+            if unlend:
+                for key in (
+                    "measured_phase_headroom_mib",
+                    "measured_phase_all_resident",
+                    "measured_decode_peak_mib",
+                    "measured_decode_peak_pixels",
+                    "measured_decode_peak_quadratic",
+                    "decode_lend_text_encoder_mib",
+                ):
+                    estimates.pop(key, None)
+                estimates.update(ref_update)
+                estimates["lent_resident_text_encoder_mib"] = int(te_room)
+                lend, phase_headroom, te_room = 0, None, flat_te_room
             if wide_te > te_room:
                 estimates["flat_resident_text_encoder_mib"] = int(te_room)
                 estimates["resident_te_slack_mib"] = _resident_dit_slack_mib(memory)

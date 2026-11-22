@@ -684,3 +684,39 @@ def test_pre_workflow_store_peak_no_longer_sizes_txt2img(qwen_pipe, store):
     assert later.estimates["decode_lend_text_encoder_mib"] == 8917 - 4621
     data = json.loads(store.read_text(encoding = "utf-8"))
     assert data["version"] == mp._VERSION and set(data["entries"]) == {edit, other, base}
+
+
+def test_16gb_later_loads_keep_the_wider_encoder_room_over_a_decode_lend(qwen_pipe, monkeypatch):
+    """Colab L4 at a 16 GiB budget (16234 MiB free): the first load keeps what free memory leaves beside the whole
+    DiT; once a render recorded its phases (2392 MiB, decode-dominated) the lend path offered only about 2.1 GB. The
+    wider room, priced on the whole-render peak plus the slack, wins and needs no decode lend."""
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
+    free, total = 16234, 16376
+    plan = dm.plan_diffusion_memory(
+        target = types.SimpleNamespace(supports_model_cpu_offload = True),
+        device_memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", free, total),
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(
+            width = None, height = None, family = "qwen-image-2.1"
+        ),
+        requested_mode = None,
+        model_dense_mib = 6922 + 8917 + 254,
+        companion_dense_mib = 8917 + 254,
+        text_encoder_dense_mib = 8917,
+    )
+    if plan.offload_policy == dm.OFFLOAD_MODEL:
+        plan = dm.torchao_streaming_plan(plan)
+    pad = 619  # the denoiser's window only: the encoders' window now pads the encode phase
+    _record(1771 + pad, phases = _phases(900, 1771, pad = pad))
+    later = _refine(qwen_pipe, plan)
+    headroom = later.estimates["measured_runtime_headroom_mib"]
+    slack = later.estimates["resident_te_slack_mib"]
+    assert later.resident_text_encoder_mib == min(8917, free - slack - 254 - headroom - 6922)
+    assert later.resident_text_encoder_mib > later.estimates["lent_resident_text_encoder_mib"]
+    assert "decode_lend_text_encoder_mib" not in later.estimates
+    assert dm.decode_lend_from_plan(later) is None
+    assert 6922 + 254 + later.resident_text_encoder_mib + headroom + slack <= free
+    # kill switch: the lend path as before
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    old = _refine(qwen_pipe, plan)
+    assert old.estimates.get("decode_lend_text_encoder_mib", 0) > 0
+    assert old.resident_text_encoder_mib < later.resident_text_encoder_mib
