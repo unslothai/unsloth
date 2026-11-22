@@ -3303,10 +3303,17 @@ def _build_latent_cache(
     for i, path in enumerate(image_paths):
         variants = []
         resized = None
+        # One read of the file per image, not one per crop/flip variant.
+        digest = pcache.content_hash(path) if pcache is not None and plan[i] else None
         for u_left, u_top, flip in plan[i]:
             canvas = cfg.resolution if canvases is None else canvases[i]
             key = (
-                pcache.latent_key(path, (u_left, u_top, flip), None if canvases is None else canvas)
+                pcache.latent_key(
+                    path,
+                    (u_left, u_top, flip),
+                    None if canvases is None else canvas,
+                    content_hash = digest,
+                )
                 if pcache is not None
                 else None
             )
@@ -3443,9 +3450,15 @@ def _load_warm_conditioning(
     cache: list[list[tuple]] = []
     for i, path in enumerate(image_paths):
         variants = []
+        digest = pcache.content_hash(path) if plan[i] else None
         for variant in plan[i]:
             entry = pcache.get(
-                pcache.latent_key(path, variant, None if canvases is None else canvases[i])
+                pcache.latent_key(
+                    path,
+                    variant,
+                    None if canvases is None else canvases[i],
+                    content_hash = digest,
+                )
             )
             if entry is None:
                 return None, None
