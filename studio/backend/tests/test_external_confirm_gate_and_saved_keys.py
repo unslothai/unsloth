@@ -19,6 +19,9 @@ def _drive(coro):
 class FakeExternalClient:
     last: dict = {}
 
+    async def served_context_window(self, model):
+        return None
+
     def __init__(self, **kwargs):
         FakeExternalClient.last = {"ctor": kwargs, "passthrough": None}
         self.provider_type = kwargs.get("provider_type")

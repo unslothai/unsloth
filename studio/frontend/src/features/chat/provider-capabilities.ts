@@ -209,6 +209,18 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   { providerType: "kimi", prefixes: ["kimi-k3"], cap: 1048576 },
 ];
 
+// Max sends no limit: llama.cpp and vLLM stop at their window, and for the rest the backend
+// asks for the room the window leaves after the prompt (_WINDOW_ROOM_REPLY_PROVIDERS).
+const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set([
+  "llama_cpp",
+  "vllm",
+  "ollama",
+  "custom",
+  // Saved as custom on the backend.
+  "sglang",
+  "openrouter",
+]);
+
 /** A documented cap bounds the override rather than replacing it; output floor wins. */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
@@ -217,15 +229,20 @@ export function getExternalMaxOutputTokens(
 ): number {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
   const documented = _documentedMaxOutputTokens(providerType, modelId);
+  // No published output limit: where Max sends none, the model's window (the backend takes the
+  // prompt off it); hosted APIs may cap output below the window, so they keep the fallback.
+  const window =
+    providerType != null && SERVER_WINDOW_BOUNDED_PROVIDERS.has(providerType)
+      ? resolveModelCatalogEntry(providerType, modelId)?.contextLength
+      : undefined;
   const resolved =
     documented != null
       ? Math.min(documented, override ?? documented)
-      : (override ?? EXTERNAL_MAX_OUTPUT_TOKENS);
+      : (override ?? window ?? EXTERNAL_MAX_OUTPUT_TOKENS);
   return Math.max(resolved, getExternalMinOutputTokens(providerType));
 }
 
-// Unset, these stop at their window; Ollama context-shifts past it, a Custom gateway may default low.
-const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set(["llama_cpp", "vllm"]);
+
 
 /** Max Tokens at the top of its range sends no limit here, as "Max" does on a local model. */
 export function externalMaxTokensUnboundedAtMax(

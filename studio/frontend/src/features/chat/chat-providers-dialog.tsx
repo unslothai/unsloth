@@ -2481,8 +2481,8 @@ export function ChatProvidersSettings({
                       className="text-xs leading-snug text-muted-foreground"
                     >
                       {externalMaxTokensUnboundedAtMax(providerType, null)
-                        ? "Caps Max Tokens for this connection. Blank lets Max send no limit, so the server stops at its context window."
-                        : "Caps Max Tokens for this connection. Blank uses the model's limit, or 32,768 without one."}
+                        ? "Caps Max Tokens for this connection. Blank lets Max use whatever the model's context window leaves after the prompt."
+                        : "Caps Max Tokens for this connection. Blank uses the model's published output limit, or 32,768 when it has none."}
                     </p>
                   </div>
                   <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
@@ -2497,7 +2497,7 @@ export function ChatProvidersSettings({
                       onChange={(event) =>
                         setMaxOutputTokensDraft(event.target.value)
                       }
-                      placeholder="32768"
+                      placeholder="Model's limit"
                       aria-describedby="provider-max-output-tokens-help provider-max-output-tokens-warning"
                       className="h-9 text-sm"
                     />

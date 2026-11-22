@@ -29839,6 +29839,20 @@ _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
+# Without max_tokens Ollama context-shifts past num_ctx and a gateway applies its own default,
+# so Max asks for what the model's window leaves after the prompt (llama.cpp and vLLM stop there).
+_WINDOW_ROOM_REPLY_PROVIDERS = frozenset({"ollama", "custom", "openrouter"})
+_UNKNOWN_WINDOW_MAX_TOKENS = 32_768
+_MIN_WINDOW_ROOM_TOKENS = 256
+
+
+def _window_room_max_tokens(window: int, prompt_tokens: int, compaction_threshold) -> int:
+    # A fit will shrink the prompt to the threshold first, so leave room for that prompt, not this one.
+    if compaction_threshold:
+        prompt_tokens = min(prompt_tokens, compaction_threshold)
+    return max(_MIN_WINDOW_ROOM_TOKENS, window - prompt_tokens - window // 32)
+
+
 def _extends_turn(old: Any, new: Any) -> bool:
     """``new`` is ``old`` with text or parts appended, as the loop's ``_append_user_turn`` merges."""
     if isinstance(old, str) and isinstance(new, str):
@@ -31131,6 +31145,35 @@ async def _proxy_to_external_provider(
     async def _tool_result_window() -> Optional[int]:
         served = await client.served_context_window(model)
         return min(served, payload.context_window or served) if served else None
+
+    if (
+        managed is None
+        and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
+        and api_type != "responses"
+        and _effective_max_tokens(payload) is None
+    ):
+        from routes.providers import cached_catalog_model_context
+
+        # Ollama's loaded num_ctx is usually far below the catalogued window: the smaller wins.
+        _reply_window = min(
+            filter(None, (payload.context_window, await client.served_context_window(model))),
+            default = None,
+        ) or cached_catalog_model_context(provider_type, model)
+        if _reply_window:
+            payload = payload.model_copy(
+                update = {
+                    "max_tokens": _window_room_max_tokens(
+                        _reply_window,
+                        _external_token_counter(payload, _external_fit_tools)(chat_messages),
+                        payload.compaction_threshold
+                        if payload.context_overflow == "truncate_oldest"
+                        else None,
+                    )
+                }
+            )
+        elif _ui_stream_events_enabled(request):
+            # Studio's Max with no window to read; an API caller keeps the provider's default.
+            payload = payload.model_copy(update = {"max_tokens": _UNKNOWN_WINDOW_MAX_TOKENS})
 
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)

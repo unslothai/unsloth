@@ -955,3 +955,34 @@ def test_the_summary_request_keeps_embedded_instructions_out_of_the_summary():
     assert "never repeated" in system["content"]
     # Repeated at the end, where small models weigh it most.
     assert user["content"].rstrip().endswith("that it was not followed.")
+
+
+def test_max_asks_for_the_room_the_window_leaves_after_the_prompt():
+    assert ri._window_room_max_tokens(64_000, 10_000, None) == 64_000 - 10_000 - 2_000
+    # A fit shrinks a long prompt to the threshold first.
+    assert ri._window_room_max_tokens(64_000, 70_000, 6_000) == 64_000 - 6_000 - 2_000
+    assert ri._window_room_max_tokens(64_000, 63_000, None) == ri._MIN_WINDOW_ROOM_TOKENS
+
+
+@pytest.mark.parametrize("provider_type", ["custom", "openrouter"])
+def test_a_request_without_max_tokens_gets_the_windows_room(provider_type):
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy(provider_type, chat, max_tokens = None, context_window = 64_000)
+    assert 64_000 - 2_000 - 200 < sent["max_tokens"] < 64_000 - 2_000
+
+
+def test_studio_max_without_a_known_window_keeps_the_old_ceiling(monkeypatch):
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy("custom", chat, max_tokens = None)
+    assert "max_tokens" not in sent  # An API caller keeps the provider's own default.
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    _, sent = _proxy("custom", chat, max_tokens = None)
+    assert sent["max_tokens"] == ri._UNKNOWN_WINDOW_MAX_TOKENS
+
+
+def test_window_bounded_servers_and_explicit_limits_are_left_alone():
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy("llama_cpp", chat, max_tokens = None, context_window = 64_000)
+    assert "max_tokens" not in sent
+    _, sent = _proxy("custom", chat, max_tokens = 512, context_window = 64_000)
+    assert sent["max_tokens"] == 512
