@@ -278,3 +278,28 @@ def test_te_kill_switch_through_the_backend(tmp_path, card, monkeypatch):
     monkeypatch.setenv(GPU_TE_ENV, "0")
     flags = _flags(tmp_path)
     assert "--clip-on-cpu" in flags and "--vae-on-cpu" not in flags
+
+
+@pytest.mark.parametrize("free", [10**6, CARD_RESERVE_MIB + _need(512)])
+@pytest.mark.parametrize("cpu_tile", [768, None])
+def test_cpu_backend_restart_gets_the_cpu_vae_flags(tmp_path, card, monkeypatch, free, cpu_tile):
+    # A restart onto the CPU backend decodes in host RAM: it gets the flags the CPU VAE path sends, not the GPU
+    # VAE's VRAM-sized tile.
+    card(free)
+    monkeypatch.setattr(backend_mod, "_cpu_vae_tile_size", lambda files, binary: cpu_tile)
+    flags = _flags(tmp_path)
+    assert "--vae-on-cpu" not in flags
+    pinned = flags + device_backend_flags("CUDA0", flags)
+    want = offload_flags(OFFLOAD_MODEL, vae_tile_size = cpu_tile)
+    assert backend_mod._cpu_backend_offload(pinned, _files(tmp_path), "/bin/sd-server") == want
+
+
+def test_cpu_backend_restart_keeps_cpu_vae_flags(tmp_path, card):
+    card(None, None)
+    flags = _flags(tmp_path)
+    pinned = flags + device_backend_flags("CUDA0", flags)
+    assert backend_mod._cpu_backend_offload(pinned, _files(tmp_path), "/bin/sd-server") == flags
+    for policy in (OFFLOAD_NONE, OFFLOAD_GROUP):
+        assert backend_mod._cpu_backend_offload(offload_flags(policy), None, None) == offload_flags(
+            policy
+        )

@@ -3361,6 +3361,30 @@ def _offload_vae_flags(
     return offload_flags(policy, vae_tile_size = _cpu_vae_tile_size(files, binary))
 
 
+def _cpu_backend_offload(flags: Any, files: Any, binary: Optional[str]) -> list[str]:
+    """``flags`` without the device pin, for a restart onto the CPU backend. A GPU VAE's tile was sized from the
+    card's free VRAM, so the decode there gets the CPU VAE flags and RAM-sized tile it had before that gate."""
+    flags = without_device_backend_flags(flags)
+    if "--offload-to-cpu" not in flags or "--vae-on-cpu" in flags or "--vae-tile-size" not in flags:
+        return flags
+    out: list[str] = []
+    skip = False
+    for f in flags:
+        if skip:
+            skip = False
+        elif f == "--vae-tile-size":
+            skip = True
+        elif f == "--offload-to-cpu":
+            out += [f, "--clip-on-cpu", "--vae-on-cpu"]
+        elif f != "--clip-on-cpu":
+            out.append(f)
+            if f == "--vae-tiling":
+                size = _cpu_vae_tile_size(files, binary)
+                if size:
+                    out += ["--vae-tile-size", str(int(size))]
+    return out
+
+
 def _native_speed_for(speed_mode: Optional[str]) -> str:
     mode = (speed_mode or "off").strip().lower()
     return mode if mode in ("default", "max") else "off"
@@ -5803,7 +5827,7 @@ class SdCppDiffusionBackend:
             # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec instead of replacing,
             # and an explicit diffusion=CUDA0 outranks the bare `cpu` default, so leaving the pin on would restart
             # the server onto the very backend that just aborted.
-            offload = without_device_backend_flags(state.offload_flags),
+            offload = _cpu_backend_offload(state.offload_flags, state.files, server_binary),
             native_speed = state.native_speed,
             threads = state.threads,
             env = state.spawn_env(),
