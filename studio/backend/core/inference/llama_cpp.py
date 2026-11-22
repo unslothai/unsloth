@@ -18925,10 +18925,12 @@ class LlamaCppBackend:
         return window if not context or window < context else 0
 
     def _expand_loop_slots(self) -> None:
-        """Expands a looped GGUF's physical layers to llama.cpp's cache slots: the core [start, end)
-        runs count times, and each run after the first takes slots after the physical ones (slot
-        n_phys + k maps to start + k % (end - start)); weights count once, KV and state follow
-        the slots."""
+        """Expand a looped GGUF's physical layers to the cache slots llama.cpp allocates.
+
+        The file stores each physical layer once; the core [start, end) runs `count` times and every run after
+        the first gets its own slots after the physical ones (slot n_phys + k maps to start + k % (end - start)).
+        Weights stay counted once (the file size); KV and state follow the slots, as for the visit-indexed layout.
+        """
         start, end, count = self._loop_start, self._loop_end, self._loop_count
         n_phys = self._n_layers
         if not (

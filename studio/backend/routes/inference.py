@@ -9198,8 +9198,9 @@ def _canonical_model_identity(model_id: Optional[str]) -> str:
 
 
 def _as_ollama_mlx_request(request):
-    """Builds the Ollama MLX tag a request names under the load's lease, on its own executor, since
-    a lease held by a running load must not park a default-executor thread."""
+    """*request* advertised as the Ollama MLX tag whose checkpoint path it names. The build happens
+    under the load's lease, on its own executor: a lease held by a running load must not park a
+    default-executor thread here."""
     from hub.services.models.ollama import ollama_mlx_ref_for_path
 
     # A leased request is authorized only once its lease verifies.
@@ -53881,8 +53882,9 @@ def _image_load_tail_only() -> bool:
 
 
 async def _wait_image_load_tail(stopped = None) -> Optional[bool]:
-    """True once only the in-flight image load's tail is left; False (409) if a load or switch has
-    no published pipeline yet or the tail outlasts the cap; None if stopped() turns true."""
+    """True once the in-flight image load is over, when all that was left was its tail. False (refuse with 409, as
+    before) for a load or switch that has not published its pipeline yet, or a tail that outlasts the cap. None when
+    ``stopped()`` turns true (a Stop) during the wait."""
     deadline = time.monotonic() + IMAGE_LOAD_TAIL_WAIT_S
     while await asyncio.to_thread(_image_load_in_flight):
         if stopped is not None and stopped():
