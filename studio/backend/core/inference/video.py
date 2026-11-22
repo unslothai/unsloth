@@ -11777,6 +11777,11 @@ class VideoBackend:
             if effective_speed != SPEED_OFF
             else False
         )
+        # LTX-2.x: an all-ones text mask becomes None (same maths, flash instead of a materialised zero bias).
+        ltx2_mask_engaged = False
+        if effective_speed != SPEED_OFF:
+            from .video_ltx2 import install_ltx2_full_mask_drop
+            ltx2_mask_engaged = install_ltx2_full_mask_drop(pipe, logger = logger) > 0
         # Flag read when pipelines first build frequency tables; needed before generation, not placement.
         force_float32_rope(pipe, target, logger = logger)
         # HunyuanVideo-1.5 VAE only: same mask values, so bit-identical, but held off on SPEED_OFF like the trim above.
@@ -11837,6 +11842,8 @@ class VideoBackend:
                     speed_optims += ("hunyuan_attn_trim",)
                 if hv15_mask_engaged:
                     speed_optims += ("hv15_vae_vector_mask",)
+                if ltx2_mask_engaged:
+                    speed_optims += ("ltx2_full_mask_drop",)
                 if wan_fused_engaged:
                     speed_optims += ("wan_fused_adaln",)
         if "compiled" in speed_optims and getattr(target, "device", None) == "cuda":
