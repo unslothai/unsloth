@@ -48442,7 +48442,7 @@ async def _anthropic_passthrough_stream(
                         {input_tokens_task, watcher}, return_when = asyncio.FIRST_COMPLETED
                     )
                 finally:
-                    watcher.cancel()
+                    await _stop_local_disconnect_cancel_watcher(watcher)
             input_tokens = input_tokens_task.result() if input_tokens_task.done() else 0
             return list(emitter.start(message_id, model_name, input_tokens = input_tokens))
 
