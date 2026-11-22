@@ -1048,7 +1048,8 @@ def _mcp_evidence(sources: list[dict]) -> str:
 def _question_url(question: str, match: re.Match) -> str:
     """GFM tail trim, plus the closing half of a *_~' run that opens the URL ('url', **url**)."""
     opener = question[: match.start()]
-    url = match.group(0)
+    scheme, rest = match.group(0).split(":", 1)
+    url = f"{scheme.lower()}:{rest}"
     if opener.endswith("]("):
         # A Markdown link destination ends at its balancing ')', whatever follows it.
         depth = 0

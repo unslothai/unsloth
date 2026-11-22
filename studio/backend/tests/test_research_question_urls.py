@@ -139,6 +139,7 @@ def test_a_linked_page_that_fails_to_load_is_not_cited(research_home, monkeypatc
         f"研究{LINKED}，并比较",
         f"Research **[the release]({LINKED})** and compare it",
         f"Research “{LINKED}” and compare it",
+        f"Research {LINKED.replace('https', 'HTTPS')} and compare it",
     ],
 )
 def test_a_quoted_link_is_read_without_its_delimiter(research_home, monkeypatch, question):
