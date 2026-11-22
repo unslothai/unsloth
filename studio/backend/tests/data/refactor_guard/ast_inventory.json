@@ -2136,7 +2136,7 @@
       "continue_after_length_message": {
         "decorators": [],
         "kind": "def",
-        "signature": ""
+        "signature": "tools: bool=True"
       },
       "gemma_tail_may_hide_a_call": {
         "decorators": [],
