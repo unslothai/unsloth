@@ -891,7 +891,6 @@ def test_fallback_restore_joins_the_top_level_host_map():
     top = model._diffusers_hook.get_hook(go._GROUP_OFFLOADING).group
     host = {t: t.data for m in top.modules for t in list(m.parameters()) + list(m.buffers())}
     setattr(top, TOP_GROUP_HOST_ATTR, host)
-    # the stand-in held norm_out.linear when the map was built
     assert not any(t is model.norm_out.linear._unsloth_orig.weight for t in host)
     assert ap.uninstall(model, reason = "unsupported call: test")
     lin = model.norm_out.linear

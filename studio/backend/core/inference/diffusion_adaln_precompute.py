@@ -587,7 +587,6 @@ def _pre_hook(model: Any, args: tuple, kwargs: dict) -> None:
         hs = kwargs.get("hidden_states", args[0] if args else None)
         if hs is not None and hasattr(hs, "device"):
             device = hs.device
-        # logged: a silent fallback hides what the restore left behind
         uninstall(
             model,
             device = device,
@@ -891,7 +890,7 @@ def _rebuild_streamed(model: Any, restored: list) -> set:
                     go, t, bool(getattr(group, "low_cpu_mem_usage", False))
                 )
             if isinstance(top_host, dict) and t not in top_host:
-                # the install-time host copy (pinned when the arena could pin it) is what onload uploads
+                # onload uploads the install-time host copy
                 top_host[t] = t.data if t.data.device.type == "cpu" else t.data.cpu()
             if onloaded:
                 t.data = t.data.to(group.onload_device)
