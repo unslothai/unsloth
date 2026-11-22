@@ -304,7 +304,7 @@ def test_cpu_memory_report_lines(monkeypatch, capsys):
 
 def test_cpu_memory_report_wired_on_cpu_route():
     """_cpu_init loads run_report by file (unsloth.utils imports the GPU stack) at load and trainer init."""
-    source = (ROOT / "unsloth" / "_cpu_init.py").read_text()
+    source = (ROOT / "unsloth" / "_cpu_init.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     names = {getattr(node.func, "attr", getattr(node.func, "id", None)) for node in calls}
