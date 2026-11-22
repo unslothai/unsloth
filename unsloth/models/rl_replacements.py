@@ -5671,9 +5671,13 @@ def _unsloth_grpo_rollout_logps_as_old(
             )
         return False
 
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
     reason = None
     if sampling_per_token_logps is None:
         reason = "there are no rollout logprobs (needs use_vllm=True or a rollout_func)"
+    elif grpo_subclass_compute_loss(trainer) is not None:
+        reason = f"{type(trainer).__name__} overrides _compute_loss, which reads TRL's old_per_token_logps"
     elif getattr(trainer.args, "loss_type", None) == "vespo":
         reason = "loss_type='vespo' weights by the vLLM importance ratio itself"
     elif not hasattr(trainer.args, "loss_type"):
@@ -5711,6 +5715,11 @@ def _unsloth_grpo_old_logps_from_new(trainer):
     pi_old is then the policy the loss scores (TRL uses per_token_logps.detach() too). Not with a
     stochastic forward (dropout), where two passes score different policies."""
     import os
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+    if grpo_subclass_compute_loss(trainer) is not None:
+        # A subclass _compute_loss reads TRL's old_per_token_logps, not Unsloth's markers: let TRL score pi_old.
+        return False
 
     if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
         return False
@@ -5748,6 +5757,11 @@ def _unsloth_grpo_old_logps_store(trainer):
     """num_iterations > 1, generation aligned to an optimizer step: the first loss pass of each micro-batch
     scores the rollout policy (pi_old), so reuse it. Not with dropout or a zoo that cannot return logps."""
     import os
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+    if grpo_subclass_compute_loss(trainer) is not None:
+        # A subclass _compute_loss reads TRL's old_per_token_logps, not Unsloth's markers: let TRL score pi_old.
+        return False
 
     if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
         return False
@@ -6096,6 +6110,14 @@ def grpo_trainer_compute_loss(function_name, function):
     ):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
+        # A subclass objective (TRL's GMPOTrainer, a user loss) overriding _compute_loss replaces the fused GRPO loss.
+        # Body-local: this source is copied out without this module's imports.
+        from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+        _unsloth_subclass_loss = grpo_subclass_compute_loss(self)
+        if _unsloth_subclass_loss is not None:
+            from unsloth.models._grpo_subclass_loss import grpo_run_subclass_compute_loss
+            return grpo_run_subclass_compute_loss(self, _unsloth_subclass_loss, model, inputs)
 
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = (
