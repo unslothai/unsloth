@@ -494,6 +494,66 @@ def test_frame_pad_fix_is_metal_only():
     assert shortcut.padded == [1]
 
 
+def _wan_conv_pipe(kernel, padding):
+    torch = pytest.importorskip("torch")
+    wan = pytest.importorskip("diffusers.models.autoencoders.autoencoder_kl_wan")
+    torch.manual_seed(0)
+    conv = wan.WanCausalConv3d(4, 6, kernel, padding = padding)
+    return torch, conv, _Pipe(vae = torch.nn.Sequential(conv), scheduler = object())
+
+
+@pytest.mark.parametrize(
+    "kernel, padding",
+    [((3, 3, 3), 1), ((1, 1, 1), 0), ((3, 1, 1), (1, 0, 0)), ((3, 3, 3), (1, 0, 1))],
+)
+@pytest.mark.parametrize("cache_frames", [None, 1, 2])
+def test_wan_causal_conv_pads_into_a_zero_buffer_bit_exactly(kernel, padding, cache_frames):
+    torch, conv, pipe = _wan_conv_pipe(kernel, padding)
+    x = torch.randn(1, 4, 3, 9, 7)
+    cache = None if cache_frames is None else torch.randn(1, 4, cache_frames, 9, 7)
+    expected = conv(x, cache)
+    pads = []
+    real_pad = torch.nn.functional.pad
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 1
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            torch.nn.functional, "pad", lambda *a, **k: pads.append(a[1]) or real_pad(*a, **k)
+        )
+        got = conv(x, cache)
+    assert torch.equal(got, expected)
+    assert pads == []  # no F.pad left for the MPS graph op
+
+
+def test_wan_causal_conv_keeps_its_stock_forward_off_metal_and_under_another_wrapper():
+    torch, conv, pipe = _wan_conv_pipe((3, 3, 3), 1)
+    assert dd.install_frame_pad_fix(pipe, _cuda_target()) == 0
+    assert "forward" not in conv.__dict__
+    hooked = conv.forward
+    conv.forward = hooked  # an offload hook owns forward
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0
+    assert conv.forward is hooked
+
+
+def test_wan_causal_conv_falls_back_to_stock_for_a_mismatched_cache():
+    torch, conv, pipe = _wan_conv_pipe((3, 3, 3), 1)
+    dd.install_frame_pad_fix(pipe, _mps_target())
+    x = torch.randn(1, 4, 2, 5, 5)
+    cache = torch.randn(1, 4, 2, 5, 5, dtype = torch.float64)
+    with pytest.raises(RuntimeError):
+        type(conv).forward(conv, x, cache)  # stock refuses the mixed dtypes too
+    with pytest.raises(RuntimeError):
+        conv(x, cache)
+
+
+def test_the_video_loader_installs_the_frame_pad_fix():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "core/inference/video.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "install_frame_pad_fix(pipe, target, logger = logger)" in src
+
+
 def test_the_image_loader_installs_the_frame_pad_fix():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "core/inference/diffusion.py").read_text(
