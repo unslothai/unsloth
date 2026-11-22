@@ -304,3 +304,52 @@ def test_gpu_decode_linear_strided_out_and_fallbacks():
         Wg = W.clone().requires_grad_(True)
         assert S.skinny_decode_linear(X, Wg, None, None, None, None) is None
     assert S.skinny_decode_linear(X.float(), W.float(), None, None, None, None) is None
+
+
+class _Packed(torch.Tensor):
+    """A minimal traceable wrapper subclass: float dtype and a 2D logical shape over other storage (as NF4Tensor)."""
+
+    @staticmethod
+    def __new__(cls, inner):
+        return torch.Tensor._make_wrapper_subclass(
+            cls, inner.shape, dtype = inner.dtype, device = inner.device
+        )
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __tensor_flatten__(self):
+        return ["inner"], None
+
+    @staticmethod
+    def __tensor_unflatten__(tensors, meta, outer_size, outer_stride):
+        return _Packed(tensors["inner"])
+
+    @classmethod
+    def __torch_dispatch__(
+        cls,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
+        unwrap = lambda t: t.inner if isinstance(t, _Packed) else t  # noqa: E731
+        return func(*[unwrap(a) for a in args], **{k: unwrap(v) for k, v in (kwargs or {}).items()})
+
+
+def test_wrapper_subclass_weights_keep_their_own_matmul(monkeypatch):
+    # Past every device / shape gate, a plain weight reaches the kernel and a wrapper-subclass weight does not.
+    mod = _load()
+    ran = []
+    monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
+    monkeypatch.setattr(mod, "routed", lambda n, k: True)
+    monkeypatch.setattr(mod, "skinny_linear", lambda *a, **k: ran.append(1))
+    if mod.triton is None:
+        monkeypatch.setattr(mod, "triton", object())
+    X = torch.randn(2, 1, 8, dtype = torch.bfloat16)
+    W = torch.randn(6, 8, dtype = torch.bfloat16)
+    with torch.no_grad():
+        assert mod.skinny_decode_linear(X, W, None, None, None, None) is not None
+        assert ran == [1]
+        assert mod.skinny_decode_linear(X, _Packed(W), None, None, None, None) is None
+    assert ran == [1]

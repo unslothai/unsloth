@@ -12,6 +12,7 @@
 import os
 
 import torch
+from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 __all__ = [
     "skinny_linear",
@@ -285,6 +286,10 @@ def skinny_decode_linear(X, W, A, B, scale, out):
         return None
     dtype = X.dtype
     if dtype not in (torch.bfloat16, torch.float16) or W.dtype != dtype or W.dim() != 2:
+        return None
+    # A wrapper subclass (TorchAO NF4Tensor, ...) reports a float dtype and a 2D shape over packed storage and
+    # only dequantizes through its own matmul dispatch: keep it on that path.
+    if type(W) not in (torch.Tensor, torch.nn.Parameter) or is_traceable_wrapper_subclass(W):
         return None
     if not routed(W.shape[0], W.shape[1]):
         return None
