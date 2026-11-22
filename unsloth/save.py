@@ -6999,9 +6999,9 @@ class _CastShardsOnWrite:
         # A blocking device-to-host .to(device, dtype) copies the source dtype over the bus and casts on the host.
         # Narrowing (an fp32 master saved as 16-bit) is cast on the device first: half the bytes cross the bus and
         # the conversion runs there, for one narrowed tensor of device memory at a time. Widening stays on the host,
-        # as the float32 export wants.
+        # as the float32 export wants. Only "cuda" devices (ROCm included); XPU / MPS keep the host cast.
         if (
-            v.device.type not in ("cpu", "meta")
+            v.device.type == "cuda"
             and torch.empty((), dtype = dtype).element_size() < v.element_size()
         ):
             try:
