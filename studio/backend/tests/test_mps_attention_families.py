@@ -223,3 +223,28 @@ def test_past_the_upstream_threshold_on_the_prefill_kernel():
             f"torch {torch.__version__} has no MPS prefill kernel: the full matrix would be > 8 GB"
         )
     assert _large_cell("qwen-image-2.1", int(1.1 * UPSTREAM_WRONG_FROM)) >= TOL[torch.bfloat16]
+
+
+@mps
+@pytest.mark.skipif(
+    not LARGE, reason = "UNSLOTH_MPS_LARGE_ATTENTION=1 or CI (GBs of scores on torch < 2.13)"
+)
+@pytest.mark.parametrize("family", ("z-image", "flux2-klein-4b", "qwen-image-2.1", "sd3.5-large"))
+def test_the_guard_fixes_the_studio_measured_threshold(family, monkeypatch):
+    """The same cells with Studio's MPS large-attention guard installed: right on every torch."""
+    from core import _mps_sdpa_guard as guard
+
+    monkeypatch.setattr(
+        torch.nn.functional,
+        "scaled_dot_product_attention",
+        torch.nn.functional.scaled_dot_product_attention,
+    )
+    monkeypatch.setitem(guard.stats, "chunked_calls", 0)
+    assert guard.install_mps_large_attention_guard() is True
+    assert _large_cell(family, int(1.15 * STUDIO_WRONG_FROM)) >= TOL[torch.bfloat16]
+    prefill = attention._version_tuple(torch.__version__)[:2] >= (2, 13)
+    print(
+        f"MPS-GUARD torch={torch.__version__} family={family} chunked_calls={guard.stats['chunked_calls']}"
+    )
+    # torch 2.13+ takes the prefill kernel, so nothing is split; below it the call must have been split.
+    assert (guard.stats["chunked_calls"] == 0) == prefill
