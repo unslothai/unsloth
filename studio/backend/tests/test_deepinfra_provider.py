@@ -197,3 +197,24 @@ def test_deepinfra_check_and_model_list_read_the_live_models_route():
     assert check.success is True, check.message
     assert model_ids == ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen2.5-72B-Instruct"]
     assert [path for path, _ in seen] == ["/v1/openai/models", "/v1/openai/models"]
+
+
+def test_deepinfra_models_endpoint_caches_and_filters_anthropic():
+    import routes.providers as providers_route
+
+    providers_route._cached_deepinfra_models = [
+        {"model_name": "meta-llama/Llama-3.3-70B-Instruct", "type": "text-generation"},
+        {"model_name": "anthropic/claude-3-haiku", "type": "text-generation"},
+    ]
+    providers_route._cached_deepinfra_models_at = 1e12
+
+    loop = asyncio.new_event_loop()
+    try:
+        models = loop.run_until_complete(
+            providers_route.get_deepinfra_models(_current_subject = "unsloth")
+        )
+        assert len(models) == 2
+    finally:
+        loop.close()
+        providers_route._cached_deepinfra_models = None
+        providers_route._cached_deepinfra_models_at = 0.0
