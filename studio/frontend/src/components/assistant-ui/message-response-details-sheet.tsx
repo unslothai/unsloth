@@ -315,7 +315,9 @@ function useResponseModelDisplay() {
     serverTimings,
     modelLabel,
     providerLabel,
-    recordedModelId,
+    // The picker's id (external::... for connections), which customizations are keyed on.
+    selectedModelId:
+      responseDetails?.modelId ?? usage?.modelId ?? recordedModelId,
     providerType: responseDetails?.providerType ?? provider?.providerType,
   };
 }
@@ -329,9 +331,9 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
   const showHeader = useChatPreferencesStore(
     (state) => state.showResponseModelHeader,
   );
-  const { modelLabel, providerLabel, recordedModelId } =
+  const { modelLabel, providerLabel, selectedModelId } =
     useResponseModelDisplay();
-  const customName = useModelCustomization(recordedModelId)?.name;
+  const customName = useModelCustomization(selectedModelId)?.name;
 
   if (!showResponseModel || showHeader || modelLabel === "Not recorded") {
     return null;
@@ -364,17 +366,17 @@ export const MessageResponseModelHeader: FC = () => {
 const ResponseModelHeader: FC = () => {
   const liveCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const models = useChatRuntimeStore((s) => s.models);
-  const { message, modelLabel, recordedModelId, providerType } =
+  const { message, modelLabel, selectedModelId, providerType } =
     useResponseModelDisplay();
   // Details are recorded when the reply finishes; until then it is the selected model's.
   const modelId =
-    recordedModelId ??
+    selectedModelId ??
     (message.status?.type === "running" ? liveCheckpoint : undefined);
   const customName = useModelCustomization(modelId)?.name;
   if (!modelId) return null;
   const label =
     customName ??
-    (recordedModelId
+    (selectedModelId
       ? modelLabel
       : (models.find((model) => model.id === modelId)?.name ??
         parseExternalModelId(modelId)?.modelId ??
