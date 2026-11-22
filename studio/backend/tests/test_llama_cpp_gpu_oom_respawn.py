@@ -164,6 +164,10 @@ def test_mixed_cards_keep_their_own_margins_plus_the_headroom(tmp_path, monkeypa
     monkeypatch.setattr(llama_cpp, "_active_vram_fraction", lambda: 0.8)
     # Discrete cards, answered without a CUDA device query.
     monkeypatch.setattr(B, "_cuda_device_info", staticmethod(lambda: []))
+    # Run alone, hardware detection would name the cards through torch.cuda too.
+    from utils.hardware import nvidia
+
+    monkeypatch.setattr(nvidia, "cuda_device_info_or_torch", lambda *_a, **_k: [], raising = False)
     memory = ((0, 80_000, 80_000), (1, 8_000, 8_000))
     backend, gguf = h.cards(tmp_path, memory = memory)
     intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
