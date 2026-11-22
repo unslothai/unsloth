@@ -4,6 +4,7 @@
 """UNSLOTH_MEMORY_REPORT / UNSLOTH_BATCH_REPORT (unsloth/utils/run_report.py): counts, wiring, off by default."""
 
 import ast
+from collections import Counter
 import importlib.util
 import pathlib
 
@@ -344,3 +345,199 @@ def test_cpu_available_ram_capped_by_cgroup_headroom(monkeypatch, tmp_path):
         (tmp_path / name).write_text("max\n")
     _, _, available, total = rr.cpu_memory_snapshot()
     assert (available, total) == (48 * GiB, 64 * GiB)
+
+
+def _fake_sync():
+    import warnings
+    warnings.warn(rr._SYNC_MESSAGE, UserWarning)
+
+
+def _site_a():
+    _fake_sync()
+
+
+def _site_b():
+    _fake_sync()
+
+
+def test_sync_counter_buckets_by_step_and_site():
+    import warnings
+
+    counter = rr.SyncCounter()
+    before = list(warnings.filters)
+    assert counter.start(use_cuda = False)
+    counter.step = 1
+    for _ in range(5):
+        _site_a()
+    counter.step = 2
+    for _ in range(3):
+        _site_a()
+    for _ in range(1):
+        _site_b()
+    counter.step = 3
+    for _ in range(2):
+        _site_a()
+    with warnings.catch_warnings(record = True) as other:
+        warnings.simplefilter("always")
+        warnings.warn("unrelated", UserWarning)
+    counter.stop()
+    assert len(other) == 1
+    assert list(warnings.filters) == before
+    totals, sites, measured = counter.summary()
+    assert totals == {1: 5, 2: 4, 3: 2} and measured == 2
+    by_caller = Counter()
+    for site, count in sites.items():
+        by_caller["_site_a" if "_site_a" in site else "_site_b" if "_site_b" in site else site] += (
+            count
+        )
+    assert by_caller == {"_site_a": 5, "_site_b": 1}
+    # The site starts at the innermost frame outside torch: the function that issued the sync.
+    assert all(site.split(" <- ")[0].endswith("_fake_sync") for site in sites)
+    lines = rr.format_sync_report(counter)
+    assert "3.0 on average over 2 step(s)" in lines[0] and "first step" in lines[0]
+    assert any("/ step" in line and "_site_a" in line for line in lines[1:])
+
+
+def test_sync_counter_stops_counting_after_stop():
+    counter = rr.SyncCounter()
+    counter.start(use_cuda = False)
+    _site_a()
+    counter.stop()
+    import warnings
+
+    with warnings.catch_warnings(record = True):
+        warnings.simplefilter("always")
+        _site_a()
+    assert sum(counter.summary()[0].values()) == 1
+
+
+def test_sync_report_off_by_default(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SYNC_REPORT", raising = False)
+    assert rr.sync_report_steps() == 0
+    trainer = type("T", (), {})()
+    assert rr.install_sync_report(trainer) is False
+    assert not hasattr(trainer, "_unsloth_sync_report")
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "1")
+    assert rr.sync_report_steps() == 16
+
+
+def test_sync_report_trainer_end_to_end(monkeypatch, tmp_path, capsys):
+    # CPU has no sync debug mode: start the counter without CUDA and issue fake syncs per step.
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "2")
+    original_start = rr.SyncCounter.start
+    monkeypatch.setattr(
+        rr.SyncCounter, "start", lambda self, use_cuda = True: original_start(self, False)
+    )
+    trainer = _tiny_trainer(tmp_path)
+    assert rr.install_sync_report(trainer)
+    original_step = trainer.training_step
+
+    def training_step(*args, **kwargs):
+        _site_a()
+        return original_step(*args, **kwargs)
+
+    trainer.training_step = training_step
+    trainer.train()
+    out = capsys.readouterr().out
+    counter = trainer._unsloth_sync_report
+    assert not counter.active
+    # max_steps 3 but only the first 2 are counted.
+    assert counter.summary()[0] == {1: 1, 2: 1}
+    assert "host-device syncs per optimizer step: 1.0 on average over 1 step(s)" in out
+
+
+def test_sync_counter_counts_steps_without_syncs():
+    counter = rr.SyncCounter()
+    counter.start(use_cuda = False)
+    counter.enter(1)
+    for _ in range(5):
+        _site_a()
+    counter.enter(2)
+    for _ in range(4):
+        _site_a()
+    counter.enter(3)
+    counter.enter(4)
+    counter.stop()
+    totals, sites, measured = counter.summary()
+    assert totals == {1: 5, 2: 4, 3: 0, 4: 0} and measured == 3
+    assert "1.3 on average over 3 step(s)" in rr.format_sync_report(counter)[0]
+
+
+def test_sync_report_window_starts_at_the_resumed_step(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "2")
+    original_start = rr.SyncCounter.start
+    monkeypatch.setattr(
+        rr.SyncCounter, "start", lambda self, use_cuda = True: original_start(self, False)
+    )
+    trainer = _tiny_trainer(tmp_path)
+    assert rr.install_sync_report(trainer)
+    callback = [c for c in trainer.callback_handler.callbacks if "SyncReport" in type(c).__name__][
+        0
+    ]
+    state = type("S", (), {"global_step": 100})()
+    for _ in range(2):  # a second train() on the same trainer measures its own window
+        state.global_step = 100
+        callback.on_train_begin(None, state, None)
+        callback.on_step_begin(None, state, None)
+        _site_a()
+        state.global_step = 101
+        callback.on_step_end(None, state, None)
+        # Resumed at 100: one new step done, the window of 2 is still open.
+        assert trainer._unsloth_sync_report.active
+        callback.on_step_begin(None, state, None)
+        _site_a()
+        state.global_step = 102
+        callback.on_step_end(None, state, None)
+        assert not trainer._unsloth_sync_report.active
+        assert trainer._unsloth_sync_report.summary()[0] == {101: 1, 102: 1}
+
+
+def test_sync_report_ignores_a_step_that_never_ran(monkeypatch, tmp_path, capsys):
+    # Training ends inside the window: no bucket for a step that did not begin.
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "16")
+    original_start = rr.SyncCounter.start
+    monkeypatch.setattr(
+        rr.SyncCounter, "start", lambda self, use_cuda = True: original_start(self, False)
+    )
+    trainer = _tiny_trainer(tmp_path)
+    assert rr.install_sync_report(trainer)
+    original_step = trainer.training_step
+
+    def training_step(*args, **kwargs):
+        _site_a()
+        return original_step(*args, **kwargs)
+
+    trainer.training_step = training_step
+    trainer.train()
+    totals = trainer._unsloth_sync_report.summary()[0]
+    assert len(totals) == trainer.state.global_step and all(v == 1 for v in totals.values()), totals
+
+
+def test_sync_report_restores_hooks_when_train_raises(monkeypatch, tmp_path):
+    # on_train_end never runs on an exception: the train() wrapper must still restore the warning hooks.
+    import warnings
+
+    monkeypatch.setenv("UNSLOTH_SYNC_REPORT", "16")
+    original_start = rr.SyncCounter.start
+    monkeypatch.setattr(
+        rr.SyncCounter, "start", lambda self, use_cuda = True: original_start(self, False)
+    )
+    trainer = _tiny_trainer(tmp_path)
+    show_before = warnings.showwarning
+    assert rr.install_sync_report(trainer)
+
+    def training_step(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    trainer.training_step = training_step
+    with pytest.raises(KeyboardInterrupt):
+        trainer.train()
+    assert not trainer._unsloth_sync_report.active
+    assert warnings.showwarning is show_before
+    assert not any(rr._is_sync_filter(f) for f in warnings.filters)
+
+
+def test_sync_report_wiring():
+    assert "install_sync_report" in _calls_in(
+        ROOT / "unsloth" / "trainer.py", "_backwards_compatible_trainer"
+    )

@@ -288,6 +288,8 @@ class VideoFamily:
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # (base_repo, scheme, repo_id) keyed on lowercased base id: a prequant only loads on its own base.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Lowercased base ids no hosted family prequant may stand in for (a distilled student of the family's base).
+    prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
     # Overrides the derived name; keep that fallback so old installs still resolve; task rows get none.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
@@ -771,11 +773,15 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             auto_static_skip = (
                 ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
             ),
+            # FastVideo's dense-attention DMD student (video_dmd) loads from its own Diffusers repo.
+            trusted_repos = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         ),
         comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        # The FastWan DMD student shares the architecture, not the weights: it quantizes at load.
+        prequant_excluded_bases = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         # fp8 / int8: Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4: .safetensors only. Sizes from Hub (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
@@ -785,7 +791,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
-        aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
+        # "fastwan2.2-ti2v-5b-fullattn": FastVideo's dense-attention DMD student of this model (video_dmd).
+        aliases = (
+            "wan2.2-5b",
+            "wan-ti2v",
+            "wan2.2-ti2v",
+            "wan-ti2v-5b",
+            "fastwan2.2-ti2v-5b-fullattn",
+        ),
         has_audio = False,
         default_steps = 20,
         default_guidance = 5.0,
@@ -887,12 +900,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
         name = "wan2.1-t2v-1.3b",
-        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
+        # FastVideo's DMD student of this model (video_dmd) loads from its own Diffusers repo.
+        profile = FamilyProfile(
+            untiled_vae = _WAN21_VAE_UNTILED,
+            trusted_repos = ("fastvideo/fastwan2.1-t2v-1.3b-diffusers",),
+        ),
         comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
-        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b"),
+        # "fastwan2.1-t2v-1.3b": FastVideo's DMD student of this model, sampled dense (video_dmd).
+        aliases = ("wan2.1-1.3b", "wan21-t2v-1.3b", "wan21-1.3b", "fastwan2.1-t2v-1.3b"),
         has_audio = False,
         default_steps = 30,
         default_guidance = 6.0,
@@ -1146,11 +1164,15 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         _H3_IMAGE_NOT_VIDEO,
     ),
     (
-        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
-        "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
-        "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
-        "ship), so Unsloth cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
-        "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
+        # The dense-attention DMD students (FastWan2.2-TI2V-5B-FullAttn, FastWan2.1-T2V-1.3B) run as Diffusers repos
+        # through video_dmd; the sparse-attention releases and any GGUF / single-file copy stay refused.
+        r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))"
+        r"(?!(?![^/\\]*(?:gguf|safetensors))[^/\\]*(?<![a-z0-9])"
+        r"fastwan-?2-(?:2-ti2v-5b-fullattn|1-t2v-1-3b)(?![a-z0-9]))[^/\\]*[/\\]*$",
+        "This is a FastVideo FastWan checkpoint Unsloth cannot run faithfully: the sparse-attention releases need "
+        "FastVideo's own attention kernels, and the dense-attention DMD students load only as their Diffusers "
+        "repos. Load FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers or FastVideo/FastWan2.1-T2V-1.3B-Diffusers "
+        "(3-step students) or Wan-AI/Wan2.1-T2V-1.3B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
@@ -1876,6 +1898,9 @@ def validate_video_reference_conditioning(
 
 # (steps, guidance) per variant, matched by substring, most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    # FastWan DMD students: their trained 3 timesteps, no CFG (video_dmd enforces both). Before every Wan key.
+    ("fastwan2.2-ti2v-5b-fullattn", 3, 1.0),
+    ("fastwan2.1-t2v-1.3b", 3, 1.0),
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
     # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
@@ -1902,7 +1927,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
     k
     for k, _s, _g in _VIDEO_GENERATION_DEFAULTS
-    if k.startswith(("wan", "fusionx", "pdd", "cosmos3"))
+    if k.startswith(("wan", "fastwan", "fusionx", "pdd", "cosmos3"))
 )
 # A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
 _FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}

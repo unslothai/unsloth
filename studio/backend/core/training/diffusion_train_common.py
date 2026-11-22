@@ -1285,6 +1285,9 @@ class DiffusionLoraConfig:
     # bf16 only: "auto" (as few blocks as fit) or N repeated blocks kept in host RAM and streamed per step; "off" or
     # 0 none. "" (the default) takes UNSLOTH_DIT_BLOCK_SWAP, so an explicit "off" overrides the server's env.
     block_swap: str = ""
+    # DiT families on CUDA: data-parallel over this many identical visible GPUs, one process each (diffusion_ddp);
+    # train_batch_size is per GPU. 1 (the default) is the single-device run.
+    num_gpus: int = 1
     # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample chance of using an empty prompt instead of the caption (CFG dropout); 0.0 disables.
@@ -1319,6 +1322,12 @@ class DiffusionLoraConfig:
             raise ValueError("train_batch_size must be >= 1")
         if self.gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be >= 1")
+        try:
+            num_gpus = int(self.num_gpus if self.num_gpus is not None else 1)
+        except (TypeError, ValueError):
+            raise ValueError("num_gpus must be a whole number >= 1") from None
+        if not 1 <= num_gpus <= 64:
+            raise ValueError("num_gpus must be between 1 and 64")
         if self.lora_rank < 1:
             raise ValueError("lora_rank must be >= 1")
         if self.lora_alpha is not None and self.lora_alpha < 1:
@@ -1524,6 +1533,7 @@ class DiffusionLoraConfig:
             caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            num_gpus = num_gpus,
             bucketing = bucketing,
             save_steps = save_steps,
             save_total_limit = save_total_limit,

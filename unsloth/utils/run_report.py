@@ -7,6 +7,9 @@ UNSLOTH_MEMORY_REPORT=1: per-device memory outside torch's allocator (CUDA conte
 processes) at load, vLLM init, first forward and first optimizer step; explains OOMs max_memory_reserved cannot.
 On the CPU backend the same stages report the process RSS, its peak and the RAM still available.
 UNSLOTH_BATCH_REPORT=N (1 / true = 16): real-token and supervised-token share over the first N micro-batches.
+UNSLOTH_SYNC_REPORT=N (1 / true = 16): host-device syncs per optimizer step over the first N steps, by
+call site, from torch.cuda.set_sync_debug_mode("warn"); every .item(), nonzero, bool(tensor), D2H copy
+and stream synchronize stalls the CPU until the GPU drains, so the top sites are what to remove first.
 """
 
 __all__ = [
@@ -17,14 +20,24 @@ __all__ = [
     "batch_report_size",
     "batch_token_counts",
     "install_batch_report",
+    "sync_report_steps",
+    "SyncCounter",
+    "install_sync_report",
 ]
 
+import functools
 import os
+import traceback
+import warnings
+from collections import Counter
 
 import torch
 
 _MEMORY_ENV = "UNSLOTH_MEMORY_REPORT"
 _BATCH_ENV = "UNSLOTH_BATCH_REPORT"
+_SYNC_ENV = "UNSLOTH_SYNC_REPORT"
+_SYNC_MESSAGE = "called a synchronizing CUDA operation"
+_TOP_SITES = 8
 _DEFAULT_BATCHES = 16
 _GB = 1024**3
 
@@ -230,8 +243,8 @@ def install_memory_report(trainer, cpu = False):
     return True
 
 
-def batch_report_size():
-    value = os.environ.get(_BATCH_ENV, "").strip().lower()
+def _env_count(name):
+    value = os.environ.get(name, "").strip().lower()
     if value in ("", "0", "false", "no", "off"):
         return 0
     if value in ("1", "true", "yes", "on"):
@@ -240,6 +253,10 @@ def batch_report_size():
         return max(int(value), 0)
     except ValueError:
         return 0
+
+
+def batch_report_size():
+    return _env_count(_BATCH_ENV)
 
 
 def batch_token_counts(inputs):
@@ -355,3 +372,199 @@ def _print_batch_report(trainer, state):
     if is_main is None or is_main():
         state["line"] = format_batch_report(state["totals"], state["seen"], _batch_mode(trainer))
         print(state["line"])
+
+
+def sync_report_steps():
+    return _env_count(_SYNC_ENV)
+
+
+_SKIP_PARTS = (
+    os.sep + "torch" + os.sep,
+    os.sep + "warnings.py",
+    os.sep + "contextlib.py",
+)
+
+
+def _short_path(filename):
+    for marker in ("site-packages" + os.sep, "dist-packages" + os.sep):
+        if marker in filename:
+            return filename.split(marker, 1)[1]
+    parts = filename.replace(os.sep, "/").split("/")
+    return "/".join(parts[-3:])
+
+
+def _sync_site(stack = None, depth = 2):
+    """`file:line fn` of the innermost frame outside torch, plus up to `depth` outer callers."""
+    frames = traceback.extract_stack()[:-1] if stack is None else stack
+    outside = [
+        f
+        for f in frames
+        if f.filename != __file__ and not any(part in f.filename for part in _SKIP_PARTS)
+    ]
+    if not outside:
+        frame = frames[-1] if frames else None
+        return (
+            "unknown"
+            if frame is None
+            else f"{_short_path(frame.filename)}:{frame.lineno} {frame.name}"
+        )
+    chain = outside[-1 - depth :][::-1]
+    return " <- ".join(f"{_short_path(f.filename)}:{f.lineno} {f.name}" for f in chain)
+
+
+def _is_sync_filter(entry):
+    return entry[0] == "always" and getattr(entry[1], "pattern", None) == _SYNC_MESSAGE
+
+
+class SyncCounter:
+    """Counts CUDA sync-debug warnings by call site while active; one bucket per `step` value.
+
+    Only those warnings are swallowed; every other warning goes to the previous showwarning."""
+
+    def __init__(self):
+        self.steps = {}
+        self.step = 0
+        self.start_step = 0
+        self.active = False
+        self._previous_mode = None
+        self._previous_show = None
+
+    def _show(
+        self,
+        message,
+        category,
+        filename,
+        lineno,
+        file = None,
+        line = None,
+    ):
+        if self.active and _SYNC_MESSAGE in str(message):
+            self.steps.setdefault(self.step, Counter())[_sync_site()] += 1
+            return
+        return self._previous_show(message, category, filename, lineno, file, line)
+
+    def enter(self, step):
+        # Every observed step gets a bucket, so a step with no syncs still counts in the average.
+        self.step = step
+        self.steps.setdefault(step, Counter())
+
+    def start(self, use_cuda = True):
+        if self.active:
+            return True
+        if use_cuda:
+            try:
+                if not torch.cuda.is_available():
+                    return False
+                self._previous_mode = torch.cuda.get_sync_debug_mode()
+                torch.cuda.set_sync_debug_mode("warn")
+            except Exception:
+                return False
+        # The C++ warning carries the op's own location, so the default filter would print it once.
+        warnings.filterwarnings("always", message = _SYNC_MESSAGE)
+        self._previous_show = warnings.showwarning
+        warnings.showwarning = self._show
+        self.active = True
+        return True
+
+    def stop(self):
+        if not self.active:
+            return
+        self.active = False
+        if self._previous_mode is not None:
+            try:
+                torch.cuda.set_sync_debug_mode(self._previous_mode)
+            except Exception:
+                pass
+            self._previous_mode = None
+        if warnings.showwarning == self._show:
+            warnings.showwarning = self._previous_show
+        warnings.filters[:] = [f for f in warnings.filters if not _is_sync_filter(f)]
+
+    def summary(self, skip_first = True):
+        """(per-step totals, sites Counter over the measured steps, measured step count)."""
+        totals = {step: sum(counter.values()) for step, counter in sorted(self.steps.items())}
+        measured = [step for step in totals if not (skip_first and step == min(totals))]
+        if not measured:
+            measured = list(totals)
+        sites = Counter()
+        for step in measured:
+            sites.update(self.steps[step])
+        return totals, sites, len(measured)
+
+
+def format_sync_report(counter, top = _TOP_SITES):
+    totals, sites, measured = counter.summary()
+    if not any(totals.values()):
+        return ["Unsloth: no host-device syncs seen during training."]
+    first = min(totals)
+    average = sum(sites.values()) / max(measured, 1)
+    lines = [
+        f"Unsloth: host-device syncs per optimizer step: {average:.1f} on average over {measured} "
+        f"step(s) (first step, with compilation and warmup: {totals[first]}). Top call sites:"
+    ]
+    for site, count in sites.most_common(top):
+        lines.append(f"  {count / max(measured, 1):8.1f} / step  {site}")
+    return lines
+
+
+def install_sync_report(trainer):
+    """Counts syncs from train begin through the first N optimizer steps, then switches off."""
+    steps = sync_report_steps()
+    if steps <= 0 or getattr(trainer, "_unsloth_sync_report_installed", False):
+        return False
+    trainer._unsloth_sync_report_installed = True
+    counter = SyncCounter()
+    trainer._unsloth_sync_report = counter
+
+    from transformers import TrainerCallback
+
+    def finish():
+        if counter.active or (counter.steps and not getattr(counter, "lines", None)):
+            counter.stop()
+            counter.lines = format_sync_report(counter)
+            is_main = getattr(trainer, "is_world_process_zero", None)
+            if is_main is None or is_main():
+                for line in counter.lines:
+                    print(line)
+
+    class _UnslothSyncReportCallback(TrainerCallback):
+        def on_train_begin(self, args, state, control, **kwargs):
+            # A new train() call measures its own window; resumed runs start past step 0.
+            counter.steps, counter.lines = {}, None
+            counter.start_step = int(state.global_step)
+            counter.step = counter.start_step + 1
+            if not counter.start():
+                print("Unsloth: UNSLOTH_SYNC_REPORT needs a CUDA device; skipped.")
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            # The bucket is registered when the step runs, so a step with no syncs still counts and a step that never
+            # runs (training ending inside the window) does not.
+            if counter.active:
+                counter.enter(int(state.global_step) + 1)
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if not counter.active:
+                return
+            # The Trainer's logging after this step stays in this step's bucket.
+            if int(state.global_step) - counter.start_step >= steps:
+                finish()
+
+        def on_train_end(self, args, state, control, **kwargs):
+            finish()
+
+    trainer.add_callback(_UnslothSyncReportCallback())
+
+    # on_train_end never runs when train() raises or is interrupted: restore the sync-debug mode and warning hooks
+    # there too, so a notebook does not keep counting into an abandoned report.
+    original_train = getattr(trainer, "train", None)
+    if callable(original_train):
+
+        @functools.wraps(original_train)
+        def train(*args, **kwargs):
+            try:
+                return original_train(*args, **kwargs)
+            finally:
+                counter.stop()
+
+        trainer.train = train
+    return True

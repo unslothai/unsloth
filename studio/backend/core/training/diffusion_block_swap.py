@@ -17,7 +17,9 @@ from typing import Any, Optional, Union
 
 BLOCK_SWAP_ENV = "UNSLOTH_DIT_BLOCK_SWAP"
 _OFF = ("", "0", "off", "none", "false", "no")
-# Fixed headroom kept free besides the activation estimate: CUDA context, cuBLAS / compile workspaces, fragmentation.
+# Headroom kept free besides the activation estimate: CUDA context, cuBLAS / compile workspaces, fragmentation. The
+# fraction is of the VRAM this run can use (free at install), not of the card: another process's share of a 96 GB
+# card is not this run's fragmentation, and reserving 12% of it swapped 32 of 34 Z-Image blocks with 16 GB free.
 _RESERVE_MIN_BYTES = 3 << 30
 _RESERVE_FRACTION = 0.12
 # Bytes per (token x hidden) element kept per block under full checkpointing, plus the one block being recomputed.
@@ -161,7 +163,8 @@ def activation_reserve_bytes(
     n_blocks: int,
     batch: int = 1,
 ) -> int:
-    """VRAM kept free for one fully checkpointed step: saved block inputs, one block's recompute, fixed headroom."""
+    """VRAM kept free for one fully checkpointed step: saved block inputs, one block's recompute, fixed headroom.
+    ``total_vram`` is the VRAM the run can use (install passes min(free, total))."""
     elems = max(1, tokens) * max(1, hidden) * max(1, batch)
     act = elems * (_SAVED_PER_BLOCK * max(1, n_blocks) + 2 * _RECOMPUTE_FACTOR)
     return int(max(_RESERVE_MIN_BYTES, _RESERVE_FRACTION * total_vram) + act)
@@ -275,7 +278,9 @@ def install_dit_block_swap(
     model_bytes = sum(p.numel() * p.element_size() for p in transformer.parameters()) + sum(
         b.numel() * b.element_size() for b in transformer.buffers()
     )
-    reserve = activation_reserve_bytes(total_bytes, tokens, hidden, n_blocks, batch)
+    reserve = activation_reserve_bytes(
+        min(total_bytes, free_bytes), tokens, hidden, n_blocks, batch
+    )
     need = model_bytes + trainable + reserve - free_bytes
     depth_plan = 2 if prefetch_depth == "auto" else int(prefetch_depth)
     plan = plan_swap(block_bytes, request, need, depth_plan)

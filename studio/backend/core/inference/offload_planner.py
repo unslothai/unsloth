@@ -418,18 +418,20 @@ def _per_device_usage(
     if len(vram_bytes_per_device) <= 1:
         return None, [], []
     # Recurrent, partial-attention or SWA layouts matter only for an even split; no vector means abstain.
+    # A looped GGUF has more cache slots than layer rows; each slot's cache follows its physical layer.
+    n_cache = layout.n_cache_slots
     uneven_cache = (
-        layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
+        layout.recurrent_bytes > 0 or layout.n_attention_layers != n_cache or layout.has_swa
     )
     weights = [max(0, int(w)) for w in kv_layer_weights]
-    if len(weights) != layout.n_layers or not any(weights):
+    if len(weights) != n_cache or not any(weights):
         weights = []
     if uneven_cache and not weights:
         if layout.recurrent_bytes > 0:
             return "the recurrent state's per-layer split is not visible in the layout", [], []
-        if layout.n_attention_layers != layout.n_layers:
+        if layout.n_attention_layers != n_cache:
             return (
-                f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
+                f"only {layout.n_attention_layers} of {n_cache} layers hold a cache "
                 "and the layout does not say which",
                 [],
                 [],
@@ -456,8 +458,14 @@ def _per_device_usage(
     if weights and total_weight > 0:
         kv_by_layer = [(cache * w + total_weight - 1) // total_weight for w in weights]
     else:
-        per = (cache + layout.n_layers - 1) // layout.n_layers if layout.n_layers else 0
-        kv_by_layer = [per] * layout.n_layers
+        per = (cache + n_cache - 1) // n_cache if n_cache else 0
+        kv_by_layer = [per] * n_cache
+    if layout.cache_slot_rows:
+        by_row = [0] * layout.n_layers
+        for slot, row in enumerate(layout.cache_slot_rows):
+            if slot < len(kv_by_layer) and row < len(by_row):
+                by_row[row] += kv_by_layer[slot]
+        kv_by_layer = by_row
     by_index = {b.index: b for b in layout.blocks}
     output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
 
