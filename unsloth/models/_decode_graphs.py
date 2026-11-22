@@ -125,8 +125,11 @@ def _rocm_default_ok():
 
     if rocm_skinny_linear.triton is None:
         return False
-    arch = torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName.split(":")[0]
-    return arch in rocm_skinny_linear._ARCHS
+    # Process-wide (decode may run on any visible GPU, not the one current at import): every device must be
+    # a measured arch, so a gfx1151 beside another GPU keeps the eager default.
+    count = torch.cuda.device_count()
+    archs = [torch.cuda.get_device_properties(i).gcnArchName.split(":")[0] for i in range(count)]
+    return count > 0 and all(arch in rocm_skinny_linear._ARCHS for arch in archs)
 
 
 _DEFAULT_OK = _default_ok()

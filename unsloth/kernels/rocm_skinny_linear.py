@@ -2,11 +2,12 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 # Decode linears on RDNA3.5 (gfx1151) ROCm: out[M, N] = X @ W.T + s * (X @ A.T) @ B.T for
-# M <= 16 rows of a 16-bit W, in one Triton launch. rocBLAS runs these skinny GEMMs with a 128x128
+# M <= 16 rows of a 16-bit W, in one Triton pass over W. rocBLAS runs these skinny GEMMs with a 128x128
 # macro tile on gfx1151, so the base GEMM, X @ A.T and the LoRA addmm each cost a full tile pass;
 # here W is streamed once and the rank-r term is accumulated in fp32 beside it (one rounding to
-# W's dtype at the end instead of three). Deterministic: split-K partials are summed in a fixed
-# order. On by default only where measured (gfx1151, Radeon 8060S / Strix Halo); UNSLOTH_ROCM_SKINNY_LINEAR=all
+# W's dtype at the end instead of three). When K is split (SPLIT_K > 1, the default for K >= 384), the
+# fp32 partials go to a [SPLIT_K, 16, N] scratch buffer and a second small launch sums them in a fixed
+# order, so the result is deterministic. On by default only where measured (gfx1151, Radeon 8060S / Strix Halo); UNSLOTH_ROCM_SKINNY_LINEAR=all
 # enables it on every gfx11 part, =0 disables it.
 
 import os
@@ -149,12 +150,24 @@ if triton is not None:
         )
 
 
+def _pow2(value, low, high):
+    return low <= value <= high and value & (value - 1) == 0
+
+
 def _parse_config(text):
+    """BLOCK_N,BLOCK_K,num_warps,SPLIT_K[,num_stages]; anything the kernel cannot launch is ignored."""
     try:
         values = tuple(int(x) for x in text.split(","))
-        return values if len(values) in (4, 5) else None
     except Exception:
         return None
+    if len(values) not in (4, 5):
+        return None
+    block_n, block_k, warps, split = values[:4]
+    if not (_pow2(block_n, 16, 256) and _pow2(block_k, 16, 256) and _pow2(warps, 1, 16)):
+        return None
+    if not 1 <= split <= 64 or (len(values) == 5 and not 1 <= values[4] <= 8):
+        return None
+    return values
 
 
 _FORCED = _parse_config(_CONFIG_ENV) if _CONFIG_ENV else None
@@ -208,9 +221,20 @@ def skinny_linear(
     out = None,
     config = None,
 ):
-    """X [M, K] @ W[N, K].T (+ scale * (X @ A[R, K].T) @ B[N, R].T) into out [M, N] (strided ok)."""
+    """X [M, K] @ W[N, K].T (+ scale * (X @ A[R, K].T) @ B[N, R].T) into out [M, N] (strided ok).
+    Raw pointers: plain dense tensors on one device only (skinny_decode_linear checks the rest)."""
     M, K = X.shape
     N = W.shape[0]
+    if not (1 <= M <= MAX_ROWS) or K < 1 or N < 1 or W.shape[1] != K:
+        raise ValueError(
+            f"skinny_linear: X {tuple(X.shape)} @ W {tuple(W.shape)}.T needs 1 <= M <= 16"
+        )
+    if A is not None and (
+        B is None or A.shape[1] != K or B.shape[0] != N or B.shape[1] != A.shape[0]
+    ):
+        raise ValueError("skinny_linear: A must be [R, K] and B [N, R]")
+    if out is not None and tuple(out.shape) != (M, N):
+        raise ValueError(f"skinny_linear: out must be [{M}, {N}]")
     if out is None:
         out = torch.empty((M, N), dtype = X.dtype, device = X.device)
     config = config or pick_config(N, K)
@@ -276,60 +300,141 @@ def skinny_linear(
     return out
 
 
+_INT32 = 2**31
+_BROKEN = []
+_is_functorch_wrapped = getattr(
+    getattr(torch._C, "_functorch", None), "is_functorch_wrapped_tensor", None
+)
+_functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
+
+
+def _forward_ad_active():
+    return getattr(torch.autograd.forward_ad, "_current_level", -1) >= 0
+
+
+def _raw(t):
+    """A dense strided tensor the kernel can read through its pointer. A wrapper subclass (TorchAO NF4Tensor, ...)
+    reports a float dtype and a 2D shape over packed storage and only dequantizes through its own dispatch; sparse
+    and functorch-wrapped (vmap / jvp) tensors have no plain storage."""
+    return (
+        type(t) in (torch.Tensor, torch.nn.Parameter)
+        and t.layout == torch.strided
+        and not is_traceable_wrapper_subclass(t)
+        and not (_is_functorch_wrapped is not None and _is_functorch_wrapped(t))
+    )
+
+
+def _span(t):
+    # Elements from the first to one past the last addressed element (strides are never negative).
+    return 1 + sum((size - 1) * stride for size, stride in zip(t.shape, t.stride()))
+
+
+def _self_overlap(out):
+    # The [M, N] view writes some element twice (expanded / as_strided): exact for 2D, no "too hard" case.
+    (m, n), (a, b) = out.shape, out.stride()
+    if (m > 1 and a == 0) or (n > 1 and b == 0):
+        return True
+    return m > 1 and n > 1 and a < n * b and b < m * a
+
+
+def _overlaps(out, *tensors):
+    # Byte ranges, conservative for interleaved views: the kernel reads X / W / A / B while it writes out.
+    start = out.data_ptr()
+    end = start + _span(out) * out.element_size()
+    for t in tensors:
+        if t is not None:
+            t_start = t.data_ptr()
+            if t_start < end and start < t_start + _span(t) * t.element_size():
+                return True
+    return False
+
+
+def _autocast_changes(dtype):
+    # The rocBLAS path's matmul / mm follow a different autocast dtype; this kernel would not.
+    try:
+        return torch.is_autocast_enabled("cuda") and torch.get_autocast_dtype("cuda") != dtype
+    except Exception:
+        return torch.is_autocast_enabled()
+
+
 def skinny_decode_linear(X, W, A, B, scale, out):
     """fast_linear_forward's 16-bit decode step (X [bsz, 1, K]) through skinny_linear, or None when
-    it does not apply: the caller then runs the rocBLAS path."""
-    if triton is None:
+    it does not apply: the caller then runs the rocBLAS path. Never raises for a rejected call."""
+    if triton is None or _BROKEN:
         return None
-    bsz = X.shape[0]
-    if not (1 <= bsz <= MAX_ROWS) or X.dim() != 3 or X.shape[1] != 1:
+    if type(X) is not torch.Tensor or X.dim() != 3 or X.shape[1] != 1:
+        return None
+    bsz, _, K = X.shape
+    if not (1 <= bsz <= MAX_ROWS):
         return None
     dtype = X.dtype
     if dtype not in (torch.bfloat16, torch.float16) or W.dtype != dtype or W.dim() != 2:
         return None
-    # A wrapper subclass (TorchAO NF4Tensor, ...) reports a float dtype and a 2D shape over packed storage and
-    # only dequantizes through its own matmul dispatch: keep it on that path.
-    if type(W) not in (torch.Tensor, torch.nn.Parameter) or is_traceable_wrapper_subclass(W):
+    N = W.shape[0]
+    if K < 1 or N < 1 or W.shape[1] != K or N * MAX_ROWS * 64 >= _INT32:
         return None
-    if not routed(W.shape[0], W.shape[1]):
+    if not _raw(X) or not _raw(W):
+        return None
+    if not routed(N, K):
         return None
     if W.device != X.device or not skinny_linear_supported(X.device):
         return None
     if X.device.index is not None and X.device.index != torch.cuda.current_device():
         return None
-    if torch.is_grad_enabled() and (X.requires_grad or W.requires_grad):
+    grad = torch.is_grad_enabled()
+    if grad and (X.requires_grad or W.requires_grad):
+        return None
+    # Forward-mode AD and torch.func transforms need the dispatched ops (tangents, batching rules).
+    if _forward_ad_active() or _functorch_active() or _autocast_changes(dtype):
         return None
     if A is None:
         # No active LoRA (a base layer, or an adapter folded for this generate()): lora_S is None.
         B, scale = None, 1.0
     else:
         if (
-            A.dtype != dtype
+            B is None
+            or type(scale) not in (int, float)
+            or not _raw(A)
+            or not _raw(B)
+            or A.dtype != dtype
             or B.dtype != dtype
             or A.device != X.device
             or B.device != X.device
             or A.dim() != 2
             or B.dim() != 2
-            or A.shape[1] != W.shape[1]
-            or B.shape[0] != W.shape[0]
+            or A.shape[1] != K
+            or B.shape[0] != N
             or B.shape[1] != A.shape[0]
-            or A.shape[0] > 128
+            or not 1 <= A.shape[0] <= 128
         ):
             return None
-        if torch.is_grad_enabled() and (A.requires_grad or B.requires_grad):
+        if grad and (A.requires_grad or B.requires_grad):
             return None
-    N = W.shape[0]
     if out is None:
         out = torch.empty((bsz, 1, N), dtype = dtype, device = X.device)
     elif (
-        out.shape != (bsz, 1, N)
+        type(out) is not torch.Tensor
+        or out.layout != torch.strided
+        or out.shape != (bsz, 1, N)
         or out.dtype != dtype
         or out.device != X.device
-        or type(out) is not torch.Tensor
+        or (grad and out.requires_grad)
+        or (out.is_inference() and not torch.is_inference_mode_enabled())
+        or _self_overlap(out[:, 0, :])
+        or _overlaps(out, X, W, A, B)
     ):
         return None
-    if type(X) is not torch.Tensor:
+    if any(_span(t) >= _INT32 for t in (X, W, A, B, out) if t is not None):
+        # The kernel's pointer offsets are int32.
         return None
-    skinny_linear(X[:, 0, :], W, A, B, scale, out[:, 0, :])
+    try:
+        skinny_linear(X[:, 0, :], W, A, B, scale, out[:, 0, :])
+    except torch.cuda.OutOfMemoryError:
+        return None
+    except Exception:
+        # A launch that cannot compile (an unusual UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG, a Triton change) fails
+        # before it writes out: the rocBLAS path takes this and every later call.
+        _BROKEN.append(1)
+        return None
     STATS["calls"] += 1
     return out

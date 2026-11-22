@@ -69,9 +69,11 @@ def test_rl_default_rocm_only_gfx1151_with_skinny_linear(runtime):
 
     from unsloth.kernels import rocm_skinny_linear as S
 
+    runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR", raising = False)
     runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
     runtime.setattr(torch.cuda, "is_available", lambda: True)
     runtime.setattr(torch.cuda, "current_device", lambda: 0)
+    runtime.setattr(torch.cuda, "device_count", lambda: 1)
     runtime.setattr(S, "triton", types.SimpleNamespace())
     for arch, want in (
         ("gfx1151", True),
@@ -95,6 +97,32 @@ def test_rl_default_rocm_only_gfx1151_with_skinny_linear(runtime):
     assert G._default_ok() is False
     runtime.setattr(torch.version, "hip", None, raising = False)
     assert G._default_ok() is True
+
+
+def test_rl_default_rocm_needs_every_visible_gpu_measured(runtime):
+    """Decode can run on any visible GPU, not only the one current at import: a gfx1151 beside another arch (either
+    order) keeps the ROCm default off, two gfx1151 keep it on."""
+    import types
+
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR", raising = False)
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    runtime.setattr(torch.cuda, "is_available", lambda: True)
+    runtime.setattr(torch.cuda, "current_device", lambda: 0)
+    runtime.setattr(torch.cuda, "device_count", lambda: 2)
+    runtime.setattr(S, "triton", types.SimpleNamespace())
+    for archs, want in (
+        (("gfx1151", "gfx1151"), True),
+        (("gfx1151", "gfx1100"), False),
+        (("gfx1100", "gfx1151"), False),
+    ):
+        runtime.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda i, a = archs: types.SimpleNamespace(gcnArchName = a[i] + ":xnack-"),
+        )
+        assert G._default_ok() is want, archs
 
 
 def test_rl_scope_is_per_thread(runtime):

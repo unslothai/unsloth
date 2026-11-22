@@ -725,8 +725,11 @@ _is_compiling = torch.compiler.is_compiling
 _ROCM_SKINNY_LINEAR = False
 if torch.version.hip is not None and os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0":
     try:
-        from .rocm_skinny_linear import skinny_decode_linear as _rocm_skinny_decode_linear
-        _ROCM_SKINNY_LINEAR = True
+        from . import rocm_skinny_linear as _rocm_skinny
+        if _rocm_skinny.triton is not None:
+            _rocm_skinny_decode_linear = _rocm_skinny.skinny_decode_linear
+            _rocm_skinny_supported = _rocm_skinny.skinny_linear_supported
+            _ROCM_SKINNY_LINEAR = True
     except Exception:
         pass
 _current_device = torch.cuda.current_device
@@ -1864,12 +1867,18 @@ def fast_linear_forward(
         )
 
     if W_quant is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
-        # gfx11 ROCm: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs are slow there).
-        if lora_A is not None:
-            A, B = _fast_lora_weights(lora_A, lora_B, X.dtype)
-        else:
-            A = B = None
-        fused = _rocm_skinny_decode_linear(X, W, A, B, lora_S, out)
+        # gfx11 ROCm: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs are slow there). Decided before the
+        # LoRA cast: other devices cast once below, and trainable adapters under grad keep the path below
+        # (the cached cast is detached).
+        A = B = None
+        take = _rocm_skinny_supported(X.device)
+        if take and lora_A is not None:
+            take = lora_B is not None and not (
+                torch.is_grad_enabled() and (lora_A.requires_grad or lora_B.requires_grad)
+            )
+            if take:
+                A, B = _fast_lora_weights(lora_A, lora_B, X.dtype)
+        fused = _rocm_skinny_decode_linear(X, W, A, B, lora_S, out) if take else None
         if fused is not None:
             if bias is not None:
                 fused += bias

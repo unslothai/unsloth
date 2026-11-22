@@ -25,9 +25,15 @@ UTILS = ROOT / "unsloth" / "kernels" / "utils.py"
 
 def _load(hip = "7.0", env = None):
     """The kernel module on its own (no unsloth import), as if on a ROCm build."""
+    # The feature flags are set explicitly: an ambient UNSLOTH_ROCM_SKINNY_LINEAR=0 must not change the tests.
+    env = {
+        "UNSLOTH_ROCM_SKINNY_LINEAR": "1",
+        "UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG": "",
+        **(env or {}),
+    }
     old_hip = torch.version.hip
-    old_env = {k: os.environ.get(k) for k in (env or {})}
-    os.environ.update(env or {})
+    old_env = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
     torch.version.hip = hip
     try:
         spec = importlib.util.spec_from_file_location("_rsl_under_test", KERNEL)
@@ -213,6 +219,16 @@ _INTERP = textwrap.dedent(
             assert (big[:, :3] == 0).all() and (big[:, 3 + N:] == 0).all(), "wrote outside out"
         err = ((y.double() - ref).abs() / (ref.abs() + 1e-2)).max().item()
         assert err < 5e-3, (M, N, K, R, cfg, err)
+    # The decode wrapper past the device gate runs the same kernel into a caller's buffer (one call counted).
+    m.skinny_linear_supported = lambda device: True
+    X3 = torch.randn(4, 1, 160).to(dt)
+    W, A, B = (torch.randn(96, 160) * 0.05).to(dt), (torch.randn(8, 160) * 0.05).to(dt), (torch.randn(96, 8) * 0.05).to(dt)
+    buf = torch.zeros(2, 4, 1, 96, dtype = dt)
+    out = buf[1]
+    with torch.no_grad():
+        y = m.skinny_decode_linear(X3, W, A, B, 2.0, out)
+    assert y is out and m.STATS["calls"] == 1 and (buf[0] == 0).all()
+    assert torch.equal(y[:, 0], m.skinny_linear(X3[:, 0], W, A, B, 2.0))
     print("INTERP_OK")
     """
 )
@@ -258,7 +274,8 @@ gpu = pytest.mark.skipif(not _gfx1151(), reason = "needs a gfx1151 ROCm GPU")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("M", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize(
-    "shape", [(2048, 1024, 32), (1024, 3072, 16), (3072, 1024, 64), (1000, 1000, 0)]
+    "shape",
+    [(2048, 1024, 32), (1024, 3072, 16), (3072, 1024, 64), (1024, 1024, 128), (1000, 1000, 0)],
 )
 def test_gpu_accuracy_vs_rocblas_sequence(dtype, M, shape):
     from unsloth.kernels import rocm_skinny_linear as S
@@ -353,3 +370,217 @@ def test_wrapper_subclass_weights_keep_their_own_matmul(monkeypatch):
         assert ran == [1]
         assert mod.skinny_decode_linear(X, _Packed(W), None, None, None, None) is None
     assert ran == [1]
+
+
+def _gated(monkeypatch):
+    """The kernel module past every device / shape gate on CPU, skinny_linear replaced by a recorder."""
+    mod = _load()
+    ran = []
+    monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
+    monkeypatch.setattr(mod, "skinny_linear", lambda *a, **k: ran.append(a))
+    if mod.triton is None:
+        monkeypatch.setattr(mod, "triton", object())
+    return mod, ran
+
+
+def _operands(
+    M = 2,
+    N = 6,
+    K = 8,
+    R = 4,
+):
+    bf = torch.bfloat16
+    return (
+        torch.randn(M, 1, K, dtype = bf),
+        torch.randn(N, K, dtype = bf),
+        torch.randn(R, K, dtype = bf),
+        torch.randn(N, R, dtype = bf),
+    )
+
+
+def test_lora_operands_get_the_raw_storage_checks_of_W(monkeypatch):
+    # A / B are read through raw pointers like W: wrapper subclasses, sparse and missing operands keep the
+    # dispatched path, and so does a non-scalar scale.
+    mod, ran = _gated(monkeypatch)
+    X, W, A, B = _operands()
+    with torch.no_grad():
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is not None
+        assert len(ran) == 1
+        for a, b, s in (
+            (_Packed(A), B, 2.0),
+            (A, _Packed(B), 2.0),
+            (A.to_sparse(), B, 2.0),
+            (A, B.to_sparse(), 2.0),
+            (A, None, 2.0),
+            (A, B, torch.tensor(2.0)),
+            (A, B, None),
+        ):
+            assert mod.skinny_decode_linear(X, W, a, b, s, None) is None
+        assert mod.skinny_decode_linear(X, W.to_sparse(), None, None, None, None) is None
+    assert len(ran) == 1
+
+
+def test_inner_and_empty_dimensions_fall_back(monkeypatch):
+    # X's width must be W's K (else the kernel reads past W), and N, K, R must be >= 1.
+    mod, ran = _gated(monkeypatch)
+    X, W, A, B = _operands()
+    bf = torch.bfloat16
+    with torch.no_grad():
+        assert (
+            mod.skinny_decode_linear(torch.randn(2, 1, 16, dtype = bf), W, None, None, None, None)
+            is None
+        )
+        assert (
+            mod.skinny_decode_linear(
+                torch.randn(2, 1, 0, dtype = bf), W[:, :0], None, None, None, None
+            )
+            is None
+        )
+        assert mod.skinny_decode_linear(X, W[:0], None, None, None, None) is None
+        assert mod.skinny_decode_linear(X, W, A[:0], B[:, :0], 2.0, None) is None
+        assert (
+            mod.skinny_decode_linear(torch.randn(2, 8, dtype = bf), W, None, None, None, None) is None
+        )
+        assert mod.skinny_decode_linear(torch.randn(()).to(bf), W, None, None, None, None) is None
+    assert ran == []
+
+
+def test_unsafe_out_buffers_fall_back(monkeypatch):
+    # The kernel writes out while it reads X / W / A / B: aliased, self-overlapping, inference-only (outside
+    # inference mode) and grad-tracked buffers keep the PyTorch path, which raises or handles them itself.
+    mod, ran = _gated(monkeypatch)
+    bf = torch.bfloat16
+    X, W, A, B = _operands(N = 8, K = 8)
+    buf = torch.zeros(2, 2, 1, 16, dtype = bf)
+    flat = torch.zeros(32, dtype = bf)
+    with torch.no_grad():
+        # Disjoint views of one buffer are fine (temp_mlp[0] -> down_proj -> temp_mlp[1][..., :hd]).
+        out = buf[1, :, :, :8]
+        assert mod.skinny_decode_linear(buf[0, :, :, :8], W, None, None, None, out) is out
+        assert len(ran) == 1
+        bad_cases = (
+            (X, X, None),  # out is X
+            (flat[:16].view(2, 1, 8), flat[8:24].view(2, 1, 8), None),  # out overlaps X
+            (X, torch.zeros(1, 1, 8, dtype = bf).expand(2, 1, 8), None),  # rows alias each other
+            (X, W[:2].view(2, 1, 8), None),  # out is W
+            (X, A[:2].view(2, 1, 8), (A, B, 2.0)),  # out is the LoRA A
+        )
+        for x, bad, lora in bad_cases:
+            assert mod.skinny_decode_linear(x, W, *(lora or (None, None, None)), bad) is None
+        with torch.inference_mode():
+            frozen = torch.zeros(2, 1, 8, dtype = bf)
+        assert mod.skinny_decode_linear(X, W, None, None, None, frozen) is None
+        with torch.inference_mode():
+            assert mod.skinny_decode_linear(X, W, None, None, None, frozen) is frozen
+    with torch.enable_grad():
+        tracked = torch.zeros(2, 1, 8, dtype = bf, requires_grad = True)
+        assert mod.skinny_decode_linear(X, W, None, None, None, tracked) is None
+    assert len(ran) == 2
+
+
+def test_forward_ad_functorch_and_autocast_fall_back(monkeypatch):
+    # Tangents, vmap batching and a different autocast dtype exist only on the dispatched ops.
+    import torch.autograd.forward_ad as fwAD
+
+    mod, ran = _gated(monkeypatch)
+    X, W, A, B = _operands()
+    with torch.no_grad():
+        with fwAD.dual_level():
+            dual = fwAD.make_dual(X, torch.ones_like(X))
+            assert mod.skinny_decode_linear(dual, W, A, B, 2.0, None) is None
+        got = []
+        torch.func.vmap(
+            lambda x: got.append(mod.skinny_decode_linear(x, W, A, B, 2.0, None)) or x.sum()
+        )(X[None].expand(3, -1, -1, -1).contiguous())
+        assert got == [None]
+        monkeypatch.setattr(torch, "is_autocast_enabled", lambda *a: True)
+        monkeypatch.setattr(torch, "get_autocast_dtype", lambda *a: torch.float16)
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None
+        monkeypatch.setattr(torch, "get_autocast_dtype", lambda *a: torch.bfloat16)
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is not None
+    assert len(ran) == 1
+
+
+def test_launch_failure_falls_back_and_stays_off(monkeypatch):
+    # A launch that cannot compile is reported as "not taken", never raised mid-decode, and not retried.
+    mod = _load()
+    monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
+    if mod.triton is None:
+        monkeypatch.setattr(mod, "triton", object())
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise RuntimeError("PassManager::run failed")
+
+    monkeypatch.setattr(mod, "skinny_linear", boom)
+    X, W, A, B = _operands()
+    with torch.no_grad():
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None
+        assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["64,64,2,0", "64,64,3,4", "48,64,2,2", "0,64,2,2", "64,64,0,2", "64,64,2,2,0", "64,512,2,2"],
+)
+def test_unlaunchable_forced_config_is_ignored(text):
+    mod = _load(env = {"UNSLOTH_ROCM_SKINNY_LINEAR_CONFIG": text})
+    assert mod.pick_config(1024, 1024) == (64, 64, 2, 4, 2)
+
+
+@pytest.mark.skipif(not _have_triton(), reason = "triton not installed")
+def test_skinny_linear_rejects_shapes_it_cannot_write():
+    # Direct callers: rows past 16 would be left unwritten and a short W read out of bounds.
+    mod = _load()
+    W = torch.randn(6, 8, dtype = torch.float16)
+    for X, w in (
+        (torch.randn(17, 8, dtype = torch.float16), W),
+        (torch.randn(2, 16, dtype = torch.float16), W),
+    ):
+        with pytest.raises(ValueError, match = "needs 1 <= M <= 16"):
+            mod.skinny_linear(X, w)
+
+
+def test_hook_skips_the_cast_and_kernel_for_trainable_adapters_and_other_devices(monkeypatch):
+    """fast_linear_forward decides before the LoRA cast: under grad, trainable adapters keep the PyTorch path even
+    when a no_grad decode cached a detached cast; an unsupported device casts once (on the path below)."""
+    U = pytest.importorskip("unsloth.kernels.utils")
+    seen = []
+    casts = []
+    real_cast = U._fast_lora_weights
+
+    def cast(a, b, dtype):
+        casts.append(1)
+        return real_cast(a, b, dtype)
+
+    lin = torch.nn.Linear(8, 6, bias = False).to(torch.bfloat16)
+    lin.weight.requires_grad_(False)
+    lora_A = torch.nn.Parameter(torch.randn(4, 8))
+    lora_B = torch.nn.Parameter(torch.randn(6, 4))
+    monkeypatch.setattr(
+        U, "get_lora_parameters_bias", lambda p: (lin.weight, None, lora_A, lora_B, 2.0, None)
+    )
+    monkeypatch.setattr(U, "_ROCM_SKINNY_LINEAR", True)
+    monkeypatch.setattr(U, "_rocm_skinny_supported", lambda device: True, raising = False)
+    monkeypatch.setattr(U, "_fast_lora_weights", cast)
+
+    def fake(X, W, A, B, s, out):
+        seen.append((A.requires_grad, B.requires_grad))
+        return torch.zeros(X.shape[0], 1, W.shape[0], dtype = X.dtype)
+
+    monkeypatch.setattr(U, "_rocm_skinny_decode_linear", fake, raising = False)
+    X = torch.randn(2, 1, 8, dtype = torch.bfloat16)
+    with torch.no_grad():
+        U.fast_linear_forward(lin, X)
+    assert seen == [(False, False)]
+    with torch.enable_grad():
+        y = U.fast_linear_forward(lin, X)
+    assert seen == [(False, False)], "trainable adapters under grad reached the kernel"
+    assert y.shape == (2, 1, 6)
+    monkeypatch.setattr(U, "_rocm_skinny_supported", lambda device: False)
+    casts.clear()
+    with torch.no_grad():
+        U.fast_linear_forward(lin, X)
+    assert casts == [1] and len(seen) == 1
