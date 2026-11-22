@@ -27,7 +27,7 @@ LOADER = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "l
 
 
 def _helper():
-    tree = ast.parse(LOADER.read_text())
+    tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
     fn = next(
         n
         for n in tree.body
@@ -88,7 +88,7 @@ def test_hub_adapter_with_hub_base_and_local_adapter_are_unchanged(windows, tmp_
 
 
 def test_both_loaders_check_before_the_base_is_used():
-    source = LOADER.read_text()
+    source = LOADER.read_text(encoding = "utf-8")
     calls = [
         i
         for i in range(len(source))

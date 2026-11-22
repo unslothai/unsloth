@@ -364,7 +364,7 @@ def test_merged_exports_refuse_inkling2(loop):
         SimpleNamespace(config = SimpleNamespace(model_type = "llama")), "merged_16bit"
     )
     # Each export entry point runs it right after the Mistral-format guard.
-    source = (_ROOT / "unsloth" / "save.py").read_text()
+    source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
     sites = re.findall(
         r"raise_if_merging_mistral_format_view\((\w+), ([^)]+)\)[^\n]*\n\s*raise_if_merging_inkling2\(\1, \2\)",
         source,
