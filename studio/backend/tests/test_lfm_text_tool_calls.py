@@ -105,6 +105,7 @@ def test_a_call_in_the_final_answer_pass_never_reaches_the_client(monkeypatch):
             _done(),
         ],
         [_sse({"content": token}) for token in tokens] + [_done()],
+        [_sse({"content": "LFM2.5-24B-A2B is a sparse MoE model."}), _done()],
     ]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
     calls = _record_tool_calls(monkeypatch, "result")
@@ -115,7 +116,9 @@ def test_a_call_in_the_final_answer_pass_never_reaches_the_client(monkeypatch):
         [{"type": "function", "function": {"name": "web_search"}}],
     )
 
-    assert payloads[-1].get("tool_choice") == "none"
+    assert payloads[1].get("tool_choice") == "none" and payloads[1].get("tools")
+    # The call-only final answer is re-asked once with no tools in the prompt.
+    assert len(payloads) == 3 and "tools" not in payloads[2] and "tool_choice" not in payloads[2]
     assert calls == [("web_search", {"query": "LFM2.5-24B-A2B"})]
     strip = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
     shown, prev = "", ""
@@ -130,3 +133,28 @@ def test_a_call_in_the_final_answer_pass_never_reaches_the_client(monkeypatch):
             prev = clean
     assert "tool_call_start" not in shown and "tool_call_end" not in shown, shown
     assert "web_search(" not in shown, shown
+    assert shown.strip() == "LFM2.5-24B-A2B is a sparse MoE model.", shown
+
+
+def test_call_only_final_answer_is_retried_once(monkeypatch):
+    first = _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({"query": "q"})},
+                }
+            ]
+        }
+    )
+    call_only = [_sse({"content": CALL}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [[first, _done()], call_only, call_only])
+    _record_tool_calls(monkeypatch, "result")
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 3 and "tools" not in payloads[2]
