@@ -11,18 +11,20 @@ from unsloth.chat_templates import (
     get_chat_template,
 )
 
-TOOLS = [{
-    "type": "function",
-    "function": {
-        "name": "get_weather",
-        "description": "Weather",
-        "parameters": {
-            "type": "object",
-            "properties": {"city": {"type": "string"}},
-            "required": ["city"],
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
         },
-    },
-}]
+    }
+]
 TRAINED_CALL = 'call:get_weather{city:<|"|>Paris<|"|>}'
 
 
@@ -43,11 +45,13 @@ def _messages(arguments):
         {
             "role": "assistant",
             "content": None,
-            "tool_calls": [{
-                "id": "call_1",
-                "type": "function",
-                "function": {"name": "get_weather", "arguments": arguments},
-            }],
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": arguments},
+                }
+            ],
         },
         {"role": "tool", "tool_call_id": "call_1", "content": "sunny"},
         {"role": "assistant", "content": "It is sunny."},
@@ -64,7 +68,9 @@ def _render(template_name, arguments):
     )
 
 
-@pytest.mark.parametrize("template_name", ["gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking"])
+@pytest.mark.parametrize(
+    "template_name", ["gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking"]
+)
 def test_json_string_arguments_match_the_trained_dict_form(template_name):
     string_render = _render(template_name, '{"city": "Paris"}')
     dict_render = _render(template_name, {"city": "Paris"})
@@ -96,8 +102,8 @@ def test_empty_thought_template_uses_the_same_argument_form():
         '{"a": "\\uZZZZ"}',
         '{"a": "Par\nis"}',
         '{"ci\ty": "Paris"}',
-        "\u00a0{\"a\": 1}",
-        "{\"a\": 1}\x0b",
+        '\u00a0{"a": 1}',
+        '{"a": 1}\x0b',
     ],
 )
 def test_invalid_json_arguments_fail_instead_of_being_pasted(arguments):
