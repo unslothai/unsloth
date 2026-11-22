@@ -2611,7 +2611,9 @@ def _generate_request_bytes(model, args, kwargs):
     generation, its growth steps and graph BUCKET rounding, plus one growth increment of headroom; this
     also covers HF generate's prompt + max_new_tokens cache) and the per-layer attention score buffer
     for batch x beams x return sequences, one decoder layer's prefill activations and the last-token
-    logits, times 1.25. None when the request's shape or the model's dimensions are unknown."""
+    logits (plus any scores / logits generate returns per token), times 1.25. A supplied past_key_values
+    counts toward the cache length. None when the request's shape, the cache length, the retained outputs or
+    the model's dimensions are unknown."""
     try:
         ids = kwargs.get("input_ids")
         if ids is None:
@@ -2629,12 +2631,30 @@ def _generate_request_bytes(model, args, kwargs):
             value = kwargs.get(name)
             return value if value is not None else getattr(gen, name, None)
 
+        # A supplied cache holds history the suffix-only ids do not show; the decode allocator sizes its
+        # new paged cache from the whole length, so count it (or decline when it cannot be read).
+        cached = 0
+        past = kwargs.get("past_key_values")
+        if past is not None:
+            if hasattr(past, "get_seq_length"):
+                cached = int(past.get_seq_length())
+            elif isinstance(past, (tuple, list)) and past and isinstance(past[0][0], torch.Tensor):
+                cached = int(past[0][0].shape[-2])
+            else:
+                return None
         new = pick("max_new_tokens")
         if new is None:
             max_length = pick("max_length")
             if max_length is None:
                 return None
-            new = max(0, int(max_length) - prompt)
+            new = max(0, int(max_length) - prompt - cached)
+        # Outputs generate keeps for the whole call: scores / logits are one fp32 batch x vocab tensor per
+        # generated token; attentions and hidden states per step cannot be sized here, so decline.
+        retained_per_token = 0
+        if pick("return_dict_in_generate"):
+            if pick("output_attentions") or pick("output_hidden_states"):
+                return None
+            retained_per_token = int(bool(pick("output_scores"))) + int(bool(pick("output_logits")))
         batch *= max(1, int(pick("num_beams") or 1)) * max(
             1, int(pick("num_return_sequences") or 1)
         )
@@ -2654,12 +2674,12 @@ def _generate_request_bytes(model, args, kwargs):
         width = dtype.itemsize if isinstance(dtype, torch.dtype) else 4
         from ._decode_graphs import decode_cache_rows
 
-        rows = decode_cache_rows(prompt, int(new))
+        rows = decode_cache_rows(cached + prompt, int(new))
         # Per layer: the paged K / V cache [rows, 2, batch, kv_heads, head_dim] and the scores
         # [batch, heads, 1, rows] alloc_decode_buffers allocates next to it.
         kv = layers * batch * rows * (2 * kv_heads * head_dim + heads) * width
         act = batch * prompt * (4 * hidden + 3 * inter) * width
-        logits = 2 * batch * vocab * 4
+        logits = (2 + retained_per_token * int(new)) * batch * vocab * 4
         return int(1.25 * (kv + act + logits))
     except Exception:
         return None

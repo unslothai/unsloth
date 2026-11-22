@@ -202,6 +202,56 @@ def test_request_estimate_reads_the_generate_call():
     assert F._generate_request_bytes(model, (ids,), {}) is None
 
 
+def test_request_estimate_counts_retained_outputs_and_cached_history():
+    """Scores / logits kept per generated token and a supplied cache's history both grow what generate
+    holds; outputs that cannot be sized (attentions, hidden states) and unreadable caches give None."""
+    config = types.SimpleNamespace(
+        num_hidden_layers = 2, hidden_size = 64, num_attention_heads = 4, num_key_value_heads = 2,
+        head_dim = 16, intermediate_size = 128, vocab_size = 50000, torch_dtype = torch.bfloat16,
+    )  # fmt: skip
+    model = types.SimpleNamespace(config = config, generation_config = None)
+    ids = torch.zeros(2, 8, dtype = torch.long)
+    base = F._generate_request_bytes(model, (ids,), {"max_new_tokens": 1000})
+    kept = F._generate_request_bytes(
+        model, (ids,), {"max_new_tokens": 1000, "return_dict_in_generate": True,
+                        "output_scores": True, "output_logits": True},
+    )  # fmt: skip
+    # Two fp32 [batch, vocab] tensors per generated token, times the 1.25 margin.
+    assert abs(kept - base - 1.25 * 2 * 1000 * 2 * 50000 * 4) <= 1
+    # Without return_dict_in_generate nothing is retained.
+    assert (
+        F._generate_request_bytes(model, (ids,), {"max_new_tokens": 1000, "output_scores": True})
+        == base
+    )
+    for name in ("output_attentions", "output_hidden_states"):
+        assert (
+            F._generate_request_bytes(
+                model, (ids,), {"max_new_tokens": 1000, "return_dict_in_generate": True, name: True}
+            )
+            is None
+        )
+
+    class Cache:
+        def get_seq_length(self):
+            return 5000
+
+    history = F._generate_request_bytes(
+        model, (ids,), {"max_new_tokens": 10, "past_key_values": Cache()}
+    )
+    assert history > F._generate_request_bytes(model, (ids,), {"max_new_tokens": 10})
+    legacy = ((torch.zeros(2, 2, 5000, 16), torch.zeros(2, 2, 5000, 16)),)
+    assert (
+        F._generate_request_bytes(model, (ids,), {"max_new_tokens": 10, "past_key_values": legacy})
+        == history
+    )
+    assert (
+        F._generate_request_bytes(
+            model, (ids,), {"max_new_tokens": 10, "past_key_values": object()}
+        )
+        is None
+    )
+
+
 def _decode_allocated_bytes(config, batch, prompt, new_tokens):
     """Bytes alloc_decode_buffers (eager) + resize_decode_buffers really hold on CPU for one call."""
     from unsloth.models import _decode_graphs as G
