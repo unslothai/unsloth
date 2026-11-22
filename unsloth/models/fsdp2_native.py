@@ -1910,11 +1910,22 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         layout.replicate_frozen = False
         layout.root_only = False
         layout.reasons.append("replicate_frozen=False (fully_shard has no ignored_params)")
-    layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch = _agree_over_ranks(
-        dist,
-        device,
-        [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch],
-        config.mesh,
+    from .fsdp2_reduce import half_transport_enabled
+
+    # The opt-in 16-bit reduce transport changes which collective runs, so its switch rides this agreement.
+    layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch, half_transport = (
+        _agree_over_ranks(
+            dist,
+            device,
+            [
+                layout.fits,
+                layout.replicate_frozen,
+                layout.root_only,
+                layout.prefetch,
+                half_transport_enabled(),
+            ],
+            config.mesh,
+        )
     )
     # reshard_after_forward is derived from `fits` (when not set by config / env): derive it again from
     # the agreed value, or a rank that fit alone keeps its blocks gathered while the others reshard, and
@@ -2132,9 +2143,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     _post_shard(model, units, device, root_only = layout.root_only)
     from .fsdp2_reduce import install_half_transport_reduce
 
-    # 16-bit gradients cross the wire as 16-bit and add in float32 (the float32 reduce's sum, half the bytes).
+    # Opt-in: 16-bit gradients cross the wire as 16-bit and add in float32 (the float32 reduce's sum, half
+    # the bytes). Off (the default) installs nothing.
     model._unsloth_fsdp2_half_transport = install_half_transport_reduce(
-        [*wrapped, *model._unsloth_fsdp2_extra_units, model]
+        [*wrapped, *model._unsloth_fsdp2_extra_units, model], enabled = half_transport
     )
     from .fsdp2_vision import install_vision_dummy
 

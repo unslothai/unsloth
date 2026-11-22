@@ -94,7 +94,7 @@ def _case_cpu_mesh(native):
     native._agree_over_ranks = record
     cfg = native.FSDP2Config(param_dtype = torch.float32, device = "cpu", mesh = mesh)
     model = native.shard_model(model, cfg)
-    fits, replicate_frozen, root_only, prefetch = agreed["flags"]
+    fits, replicate_frozen, root_only, prefetch = agreed["flags"][:4]
     return {
         "fits": fits,
         "replicate_frozen": replicate_frozen,

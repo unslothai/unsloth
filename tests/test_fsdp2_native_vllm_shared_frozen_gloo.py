@@ -56,7 +56,7 @@ def _case(native, case):
         model = native.shard_model(model, cfg)
     finally:
         native._agree_over_ranks = original
-    fits, replicate_frozen, _, _ = agreed["flags"]
+    fits, replicate_frozen, _, _ = agreed["flags"][:4]
     params = dict(model.named_parameters())
     return {
         "fits": fits,
