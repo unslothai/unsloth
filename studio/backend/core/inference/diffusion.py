@@ -716,6 +716,21 @@ def _pipe_takes_kwarg(pipe: Any, name: str) -> bool:
     return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
+def _gguf_pick_runs_native(fam: Any, kind: Optional[str], gguf_filename: Optional[str]) -> bool:
+    """Whether a GGUF load of ``fam`` would select the native sd.cpp engine on this host (``predict_engine``, no side
+    effect). Any other kind, a refusal or an unreadable prediction answers False: the caller keeps its diffusers check."""
+    if kind != "gguf":
+        return False
+    try:
+        from . import diffusion_engine_router as router
+        return (
+            router.predict_engine(fam, model_kind = "gguf", gguf_filename = gguf_filename)
+            == router.ENGINE_SD_CPP
+        )
+    except Exception:  # noqa: BLE001 - unknown: the diffusers class check stands
+        return False
+
+
 def _flux2_klein_distilled(pipe: Any) -> bool:
     """Flux2KleinPipeline reads ``is_distilled`` from its config; Flux2KleinKVPipeline (klein 9B KV, step-distilled)
     takes no guidance at all and does not register the flag."""
@@ -5732,9 +5747,15 @@ class DiffusionBackend:
             )
         pick_pipeline_class = family_pipeline_class(fam, base_repo, repo_id, gguf_filename)
         if pick_pipeline_class and pick_pipeline_class != fam.pipeline_class:
-            # A checkpoint with its own pipeline (klein 9B KV) runs only on diffusers, and only on one that ships that
-            # class: the family's buildability answers for the default class, so check this one before eviction.
-            assert_pipeline_class_available(pick_pipeline_class, fam.name)
+            # A checkpoint with its own pipeline (klein 9B KV) needs that class on a diffusers load: the family's
+            # buildability answers for the default class, so check this one before eviction. A GGUF the router sends to
+            # the native sd.cpp engine imports no pipeline class (text to image there; it refuses the KV reference
+            # edits), so an older diffusers (the Python 3.9 pin) keeps loading it as before.
+            try:
+                assert_pipeline_class_available(pick_pipeline_class, fam.name)
+            except ValueError:
+                if not _gguf_pick_runs_native(fam, kind, gguf_filename):
+                    raise
         elif not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
             assert_pipeline_class_available(pick_pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).

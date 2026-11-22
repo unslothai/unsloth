@@ -378,6 +378,10 @@ def test_preflight_refuses_a_kv_pick_on_a_diffusers_without_the_kv_pipeline(monk
     old.__version__ = "0.37.1"
     old.Flux2KleinPipeline = type("Flux2KleinPipeline", (), {})
     monkeypatch.setitem(sys.modules, "diffusers", old)
+    # a diffusers load (a GPU host): the KV class is what it would import
+    from core.inference import diffusion_engine_router as router
+
+    monkeypatch.setattr(router, "predict_engine", lambda *a, **k: router.ENGINE_DIFFUSERS)
     be = d.DiffusionBackend()
     with pytest.raises(ValueError, match = r"0\.38\.0"):
         be.validate_load_request(
@@ -390,3 +394,134 @@ def test_preflight_refuses_a_kv_pick_on_a_diffusers_without_the_kv_pipeline(monk
         "unsloth/FLUX.2-klein-9B-GGUF", gguf_filename = "flux-2-klein-9b-Q8_0.gguf", model_kind = "gguf"
     )
     assert fam.name == "flux.2-klein"
+
+
+def test_preflight_lets_a_kv_gguf_the_native_engine_runs_load_on_an_old_diffusers(monkeypatch):
+    """Python 3.9 hosts pin diffusers 0.36.0 (no Flux2KleinPipeline, no Flux2KleinKVPipeline). A KV GGUF the router
+    sends to sd.cpp imports neither, so it loads there as on main (text to image); a diffusers load is still refused."""
+    import sys
+
+    from core.inference import diffusion as d
+    from core.inference import diffusion_engine_router as router
+
+    old = types.ModuleType("diffusers")
+    old.__version__ = "0.36.0"
+    monkeypatch.setitem(sys.modules, "diffusers", old)
+    monkeypatch.setattr(router, "predict_engine", lambda *a, **k: router.ENGINE_SD_CPP)
+    be = d.DiffusionBackend()
+    fam = be.validate_load_request(
+        "QuantStack/FLUX.2-Klein-9B-KV-GGUF",
+        gguf_filename = "Flux-2-Klein-9B-KV-Q8_0.gguf",
+        model_kind = "gguf",
+    )
+    assert fam.name == "flux.2-klein"
+    monkeypatch.setattr(router, "predict_engine", lambda *a, **k: router.ENGINE_DIFFUSERS)
+    with pytest.raises(ValueError, match = r"0\.38\.0"):
+        be.validate_load_request(
+            "QuantStack/FLUX.2-Klein-9B-KV-GGUF",
+            gguf_filename = "Flux-2-Klein-9B-KV-Q8_0.gguf",
+            model_kind = "gguf",
+        )
+
+    def _refused(*a, **k):
+        raise ValueError("refused pick")
+
+    # an unreadable prediction keeps the diffusers check
+    monkeypatch.setattr(router, "predict_engine", _refused)
+    with pytest.raises(ValueError, match = r"0\.38\.0"):
+        be.validate_load_request(
+            "QuantStack/FLUX.2-Klein-9B-KV-GGUF",
+            gguf_filename = "Flux-2-Klein-9B-KV-Q8_0.gguf",
+            model_kind = "gguf",
+        )
+
+
+def _klein_native_state(repo_id, gguf_filename):
+    import core.inference.sd_cpp_backend as bk
+    from core.inference.sd_cpp_engine import SdCppModelFiles
+
+    fam = _klein()
+    files = SdCppModelFiles(
+        diffusion_model = f"/m/{gguf_filename}", vae = "/m/vae.safetensors", llm = "/m/te.gguf"
+    )
+    return bk._SdState(
+        repo_id = repo_id,
+        base_repo = "black-forest-labs/FLUX.2-klein-9B",
+        family = fam,
+        device = "cpu",
+        files = files,
+        sampling_method = getattr(fam, "sd_cpp_sampling_method", None),
+        mode = "oneshot",
+        server = None,
+        gguf_filename = gguf_filename,
+    )
+
+
+def _png():
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (10, 20, 30)).save(buf, format = "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.mark.parametrize(
+    "repo_id, gguf",
+    [
+        ("QuantStack/FLUX.2-Klein-9B-KV-GGUF", "Flux-2-Klein-9B-KV-Q8_0.gguf"),
+        ("someone/klein-quants", "flux-2-klein-9b-kv-Q4_K_M.gguf"),
+    ],
+)
+def test_native_engine_refuses_kv_reference_edits_and_keeps_text_to_image(
+    monkeypatch, repo_id, gguf
+):
+    """sd.cpp has no reference K/V cache (leejet/stable-diffusion.cpp#1341): a KV file's reference edit there would run
+    the stock bidirectional model, so it is refused by name; text to image is the same math and still renders."""
+    from PIL import Image
+
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    from .test_sd_cpp_backend import _FakeEngine
+
+    engine = _FakeEngine()
+    b = SdCppDiffusionBackend(engine = engine)
+    b._state = _klein_native_state(repo_id, gguf)
+    assert b.status()["workflows"] == ["txt2img"]
+    with pytest.raises(ValueError, match = r"stable-diffusion\.cpp#1341") as info:
+        b.generate(
+            prompt = "p", steps = 2, workflow = "reference", width = 512, height = 512, init_image = _png()
+        )
+    assert "Text to image works here" in str(info.value)
+    assert "Flux2KleinKVPipeline" in str(info.value)
+    calls = []
+
+    def _capture(files, params, output_path, **kw):
+        calls.append(params)
+        Image.new("RGB", (1, 1)).save(output_path)
+
+    monkeypatch.setattr(engine, "generate", _capture)
+    out = b.generate(prompt = "p", steps = 2, width = 512, height = 512)
+    assert calls and out["images"]
+
+
+def test_native_stock_klein_reference_keeps_its_own_message():
+    """The stock 9B GGUF takes no KV path: its native reference call keeps the message it had."""
+    from core.inference.sd_cpp_backend import (
+        SdCppDiffusionBackend,
+        native_variant_reference_refusal,
+    )
+
+    from .test_sd_cpp_backend import _FakeEngine
+
+    state = _klein_native_state("unsloth/FLUX.2-klein-9B-GGUF", "flux-2-klein-9b-Q8_0.gguf")
+    assert native_variant_reference_refusal(state) is None
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._state = state
+    with pytest.raises(ValueError) as info:
+        b.generate(
+            prompt = "p", steps = 2, workflow = "reference", width = 512, height = 512, init_image = _png()
+        )
+    assert "1341" not in str(info.value)

@@ -60,6 +60,7 @@ from core.inference.diffusion_families import (
     DiffusionModelReplacedError,
     require_pinned_checkpoint,
     family_for_checkpoint,
+    family_pipeline_class,
     LoadIdentity,
     detect_family_for_pick,
     load_identity,
@@ -2995,6 +2996,34 @@ def ensure_sd_server_binary(
         return installed or fallback
 
 
+def native_variant_reference_refusal(state: Any) -> Optional[str]:
+    """Why the native engine refuses a reference / edit call on this load, for a checkpoint that needs its own
+    diffusers pipeline (``pipeline_class_variants``: FLUX.2 klein 9B KV), else None. sd.cpp runs such a file through
+    the family's stock graph: the same math without input images, another model with them (the KV checkpoint's
+    reference tokens attend only to themselves at a fixed timestep; sd.cpp has no reference K/V cache,
+    leejet/stable-diffusion.cpp#1341)."""
+    fam = getattr(state, "family", None)
+    if fam is None or not getattr(fam, "pipeline_class_variants", ()):
+        return None
+    try:
+        variant = family_pipeline_class(
+            fam,
+            getattr(state, "repo_id", None),
+            getattr(state, "gguf_filename", None),
+            getattr(state, "display_repo_id", None),
+        )
+    except Exception:  # noqa: BLE001 - unreadable: the family's own native gates decide
+        return None
+    if not variant or variant == getattr(fam, "pipeline_class", None):
+        return None
+    return (
+        f"This checkpoint runs reference edits only through diffusers' {variant}: the native sd.cpp engine has no "
+        "support for its reference image cache (leejet/stable-diffusion.cpp#1341) and would run it as a different "
+        "model. Text to image works here. For reference edits, load it with the diffusers engine on a CUDA, ROCm or "
+        "XPU GPU, or use the stock FLUX.2 klein 9B."
+    )
+
+
 @dataclass(frozen = True)
 class _SdState:
     """The loaded native checkpoint: resolved asset paths + run settings. ``server`` is the resident
@@ -5003,6 +5032,10 @@ class SdCppDiffusionBackend:
                         f"The reference workflow is not supported for the '{state.family.name}' "
                         "model family."
                     )
+                if conditioned or reference_images:
+                    variant_refusal = native_variant_reference_refusal(state)
+                    if variant_refusal:
+                        raise ValueError(variant_refusal)
                 from core.inference.diffusion_conditioning import edit_takes_extra_images
 
                 # sd.cpp's Qwen-Image-Edit conditioner reads every ref image as "Picture N", so a multi-image edit runs
