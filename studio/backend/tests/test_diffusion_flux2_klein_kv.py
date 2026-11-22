@@ -571,3 +571,38 @@ def test_kv_checkpoint_refuses_a_stock_workflow_pipe(monkeypatch, workflow):
     stock = _kv_load_state("unsloth/FLUX.2-klein-9B-GGUF", "flux-2-klein-9b-Q8_0.gguf")
     assert be._workflow_pipe(stock, "Flux2KleinInpaintPipeline", workflow) is not None
     assert len(built) == 1
+
+
+def test_a_generic_file_named_kv_only_by_its_base_repo_keeps_the_kv_identity():
+    """A local GGUF with a generic name and ``base_repo`` = the KV repo: the companion remap hands the load the stock
+    9B base, so the caller's base_repo is the only KV name left (Codex P2). Pipeline pick, the dense-substitution
+    guard and the advertised workflows all keep reading it."""
+    from core.inference import diffusion as d
+
+    fam = _klein()
+    stock_base = "black-forest-labs/FLUX.2-klein-9B"
+    generic = ("model-Q8_0.gguf", None, "/models/klein")
+    assert df.family_pipeline_class(fam, stock_base, *generic) == fam.pipeline_class
+    assert df.family_pipeline_class(fam, stock_base, KV_REPO, *generic) == "Flux2KleinKVPipeline"
+    assert not df.transformer_variant_differs_from_base(fam, stock_base, *generic)
+    assert df.transformer_variant_differs_from_base(fam, stock_base, *generic, KV_REPO)
+    state = _kv_load_state("/models/klein", "model-Q8_0.gguf")
+    assert "inpaint" in d._state_workflows(state)
+    state.checkpoint_base = KV_REPO
+    assert d._state_workflows(state) == ["txt2img", "reference"]
+
+
+def test_load_state_carries_the_callers_base_repo():
+    from core.inference import diffusion as d
+    assert d._LoadState.__dataclass_fields__["checkpoint_base"].default is None
+
+
+def test_native_engine_refuses_a_generic_file_whose_base_repo_is_the_kv_repo():
+    import dataclasses
+
+    from core.inference.sd_cpp_backend import native_variant_reference_refusal
+
+    state = _klein_native_state("/models/klein", "model-Q8_0.gguf")
+    assert native_variant_reference_refusal(state) is None
+    kv = dataclasses.replace(state, base_repo = KV_REPO)
+    assert "Flux2KleinKVPipeline" in (native_variant_reference_refusal(kv) or "")

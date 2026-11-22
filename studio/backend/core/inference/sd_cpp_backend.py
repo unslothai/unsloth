@@ -3011,6 +3011,8 @@ def native_variant_reference_refusal(state: Any) -> Optional[str]:
             getattr(state, "repo_id", None),
             getattr(state, "gguf_filename", None),
             getattr(state, "display_repo_id", None),
+            # a generic file named KV only by its caller-supplied base
+            getattr(state, "base_repo", None),
         )
     except Exception:  # noqa: BLE001 - unreadable: the family's own native gates decide
         return None

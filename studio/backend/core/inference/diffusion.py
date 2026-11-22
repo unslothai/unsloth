@@ -1901,6 +1901,8 @@ class _LoadState:
     display_repo_id: Optional[str] = None
     # Defaulted so older positional constructions keep working.
     offload_policy: str = OFFLOAD_NONE
+    # The caller's base_repo before the companion remap: the only name a generic KV file's weights go by.
+    checkpoint_base: Optional[str] = None
     vae_tiling: bool = False
     memory_mode: str = "auto"
     # Resolved load kind ("gguf"|"single_file"|"pipeline"); lets the UI gate GGUF-only controls.
@@ -9132,7 +9134,7 @@ class DiffusionBackend:
                 transformer_cls = _family_model_class(diffusers, fam.transformer_class)
                 # A checkpoint of the family that runs another pipeline (klein 9B KV) names it; else the family's.
                 pipeline_cls = _family_model_class(
-                    diffusers, family_pipeline_class(fam, base, repo_id, gguf_filename)
+                    diffusers, family_pipeline_class(fam, base, base_repo, repo_id, gguf_filename)
                 )
 
                 # Decide placement up front (weights still on CPU). Budgets the GGUF; dense is preflighted below.
@@ -9419,6 +9421,7 @@ class DiffusionBackend:
                         content_variant_hint(repo_id, gguf_filename),
                         repo_id,
                         display_repo_id,
+                        base_repo,
                     )
                 ):
                     dense_declined = True
@@ -12333,6 +12336,7 @@ class DiffusionBackend:
                         repo_id = repo_id,
                         display_repo_id = display_repo_id,
                         base_repo = base,
+                        checkpoint_base = base_repo,
                         device = device,
                         gpu_ordinal = target.ordinal,
                         placed_ordinal = placed_cuda_ordinal(target),
@@ -17463,6 +17467,7 @@ def _checkpoint_variant_pipeline(state: Any) -> Optional[str]:
             getattr(state, "repo_id", None),
             getattr(state, "gguf_filename", None),
             getattr(state, "display_repo_id", None),
+            getattr(state, "checkpoint_base", None),
         )
     except Exception:  # noqa: BLE001 - unreadable: the family's own workflows stand
         return None
