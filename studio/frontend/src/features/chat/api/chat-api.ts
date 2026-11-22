@@ -1689,10 +1689,19 @@ export async function saveChatMessage(
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
+  options: {
+    pruneMissing?: boolean;
+    deletedMessageIds?: string[];
+    echo?: boolean;
+  } = {},
 ): Promise<MessageRecord[]> {
+  // echo: false skips the server's re-read of the thread and resolves to the sent records; deletes always echo.
+  const skipEcho =
+    options.echo === false &&
+    options.pruneMissing !== true &&
+    (options.deletedMessageIds?.length ?? 0) === 0;
   const response = await threadWriteFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages${skipEcho ? "?echoMessages=false" : ""}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1707,7 +1716,8 @@ export async function syncChatMessages(
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   // Pruning deletes messages, which other tabs must see immediately, so it does not coalesce.
   notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
-  return data.messages;
+  // An older backend ignores the flag and echoes as before; either answer resolves the same.
+  return skipEcho ? messages : data.messages;
 }
 
 export async function countBackendChats(): Promise<number> {

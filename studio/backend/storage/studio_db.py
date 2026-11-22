@@ -4629,7 +4629,9 @@ def sync_chat_messages(
     allow_research_update: bool = False,
     deleted_message_ids: Iterable[str] = (),
     external_import_mark: Optional[ExternalImportMark] = None,
-) -> list[dict]:
+    return_rows: bool = True,
+) -> Optional[list[dict]]:
+    """The thread's rows after the write, or None with return_rows=False (skips re-reading them)."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4792,7 +4794,7 @@ def sync_chat_messages(
             _record_external_import_mark(conn, external_import_mark)
         _probe_chat_revisions(conn, thread_id, end = True)
         conn.commit()
-        return list_chat_messages(thread_id)
+        return list_chat_messages(thread_id) if return_rows else None
     except (ChatMessageConflictError, ChatMessageProtectedError):
         conn.rollback()
         raise
