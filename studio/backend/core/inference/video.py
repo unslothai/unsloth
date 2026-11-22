@@ -10643,7 +10643,6 @@ class VideoBackend:
             )
             if denoiser_seed_scheme is None
             and modelopt_scan is None
-            and comfy_scan is None
             and not baked_loras
             and components is not None
             else None
