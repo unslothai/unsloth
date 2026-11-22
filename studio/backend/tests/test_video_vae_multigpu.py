@@ -167,9 +167,10 @@ def test_a_copy_holding_tensors_on_another_card_is_detected():
     assert vm._stray_tensors(m, torch.device("cuda", 1)) == []
 
 
-def test_a_failing_load_card_still_releases_the_copy(monkeypatch):
-    # The load card raising (an OOM, say) must still clear the copy the partner built, or the frame kept alive by the
-    # traceback holds it while the stock decode retries.
+@pytest.mark.parametrize("failing", ["load", "partner"])
+def test_a_failing_card_still_releases_the_copy(monkeypatch, failing):
+    # Either card raising (an OOM, say) must still free the copy the partner built, or the frames kept alive by the
+    # traceback hold it while the stock decode retries.
     import gc
     import weakref
 
@@ -179,18 +180,21 @@ def test_a_failing_load_card_still_releases_the_copy(monkeypatch):
     z = _latents(vae)
     built = []
 
+    class Boom(torch.nn.Module):
+        def forward(self, x):
+            raise RuntimeError("card out of memory")
+
     def fake_build(src, device):
         copy = _vae()
+        if failing == "partner":
+            copy.post_quant_conv = Boom()
         built.append(weakref.ref(copy))
         return copy
 
-    class Boom(torch.nn.Module):
-        def forward(self, x):
-            raise RuntimeError("load card out of memory")
-
     monkeypatch.setattr(dm, "build_replica", fake_build)
-    vae.post_quant_conv = Boom()
-    with torch.no_grad(), pytest.raises(RuntimeError, match = "load card out of memory") as info:
+    if failing == "load":
+        vae.post_quant_conv = Boom()
+    with torch.no_grad(), pytest.raises(RuntimeError, match = "card out of memory") as info:
         vm.split_tiled_decode(vae, z, torch.device("cpu"))
     gc.collect()
     assert info.tb is not None  # the failed decode's frames are still alive here

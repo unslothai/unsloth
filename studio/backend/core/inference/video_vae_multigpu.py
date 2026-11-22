@@ -19,6 +19,7 @@ import inspect
 import os
 import textwrap
 import threading
+import traceback
 import types
 from typing import Any, Optional
 
@@ -383,6 +384,9 @@ def split_tiled_decode(
             run(vae, z, coords[0::2])
         finally:
             worker.join()
+            for exc in errors:
+                # the worker's finished frames (the copy, its tiles) would stay reachable from the re-raised traceback
+                traceback.clear_frames(exc.__traceback__)
         if errors:
             raise errors[0]
         if on_cuda:
