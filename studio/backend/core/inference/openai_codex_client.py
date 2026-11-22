@@ -13,6 +13,7 @@ import json
 import secrets
 import threading
 import time
+import unicodedata
 from typing import Any, AsyncGenerator, Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -185,6 +186,17 @@ def _chunk(
     if usage is not None:
         body["usage"] = usage
     return "data: " + json.dumps(body, separators = (",", ":"))
+
+
+def _needs_join_space(prev: str, nxt: str) -> bool:
+    """A cut at a token boundary drops the next word's leading space; CJK and openers take none."""
+    return (
+        nxt.isalnum()
+        and not prev.isspace()
+        and prev not in "([{<\"'`/\\-_@#$"
+        and unicodedata.east_asian_width(prev) not in "WF"
+        and unicodedata.east_asian_width(nxt) not in "WF"
+    )
 
 
 def _estimated_tokens(text: str) -> float:
@@ -798,11 +810,10 @@ class OpenAICodexClient:
         cancel_event: threading.Event | None = None,
         continue_final_message: bool = False,
     ) -> AsyncGenerator[str, None]:
-        join_space = False
+        partial_tail = ""
         if continue_final_message and messages and messages[-1].get("role") == "assistant":
             # The Responses endpoint has no assistant prefill, so a resumed reply would start over.
-            partial = content_to_text(messages[-1].get("content"))
-            join_space = bool(partial) and not partial[-1].isspace()
+            partial_tail = content_to_text(messages[-1].get("content"))[-1:]
             messages = [*messages, {"role": "user", "content": _CONTINUE_PROMPT}]
         instructions, input_items = _responses_input(messages)
         conversation_id = thread_id or secrets.token_urlsafe(24)
@@ -927,11 +938,10 @@ class OpenAICodexClient:
                             delta = event.get("delta")
                             if not isinstance(delta, str):
                                 raise CodexTransportError("ChatGPT returned a malformed stream.")
-                            if join_space and delta:
-                                # The cut dropped the next token's leading space.
-                                if delta[0].isalnum():
+                            if partial_tail and delta:
+                                if _needs_join_space(partial_tail, delta[0]):
                                     delta = " " + delta
-                                join_space = False
+                                partial_tail = ""
                             yield _chunk(completion_id, model, {"content": delta})
                             output_tokens += _estimated_tokens(delta)
                         elif kind in (

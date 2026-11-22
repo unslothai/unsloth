@@ -451,7 +451,10 @@ def test_codex_tool_loop_turn_stops_at_max_tokens():
     assert 0 < len(text) // 4 <= 70
 
 
-@pytest.mark.parametrize(("partial", "joined"), [("A famous", " word0"), ("A famous ", "word0")])
+@pytest.mark.parametrize(
+    ("partial", "joined"),
+    [("A famous", " word0"), ("A famous ", "word0"), ("我喜欢", "word0"), ("(", "word0")],
+)
 def test_codex_resumed_reply_continues_the_partial(partial, joined):
     captured = []
 
