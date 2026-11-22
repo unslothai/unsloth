@@ -10,7 +10,8 @@ the race by ``_MARGIN``. ``UNSLOTH_DIFFUSION_INT8_CUTLASS=0`` disables, ``=1`` s
 16384-row race on sustained timings (the 4096-row race on short ones, as before).
 Large calls (1024 to 8191 rows) take the winner of a race at their own row bucket once an earlier load recorded it
 (``row_bucket``: a 1024^2 FLUX.3 joint call has 4176 rows, where the 4096-row winner's 256-row tile leaves a 17th row
-tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call."""
+tile 31% full); ``UNSLOTH_DIFFUSION_INT8_CUTLASS_ROW_RACE=0`` keeps the 4096-row race for every large call. A bucket
+no earlier load recorded is raced at its first call (``UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE=0``: next load only)."""
 
 from __future__ import annotations
 
@@ -72,6 +73,15 @@ _MAX_ROW_RACES = 2
 def row_race_enabled() -> bool:
     raw = (os.environ.get(ROW_RACE_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
+
+
+LIVE_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE"
+
+
+def live_race_enabled() -> bool:
+    """A large call's unrecorded row bucket is raced in this load, at its first call (``diffusion_int8_gemm``)."""
+    raw = (os.environ.get(LIVE_RACE_ENV) or "").strip().lower()
+    return row_race_enabled() and raw not in ("0", "off", "false", "no")
 
 
 def row_bucket(m: int) -> int:

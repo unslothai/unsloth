@@ -598,6 +598,8 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     index = a.device.index
+    if _CUT_PLAN.get(index):
+        _live_row_race(index, a, w, xs, ws, bias)
     tile = _cutlass_tile(index, a, w, xs, ws, bias)
     if tile is not None:
         import torch
@@ -725,6 +727,78 @@ def _note_rows(index: int, key: tuple, m: int) -> None:
         table.pop(rkey, None)
         table[rkey] = stored
         _cut_cache_write(table)
+
+
+# index -> {(shape key, row bucket)} raced live this process (or found unsafe to race): each is tried once
+_CUT_LIVE: dict = {}
+# index -> whether the load's plan raced today's Triton path (True) or cuBLAS / the stock epilogue
+_CUT_TRITON_ON: dict = {}
+
+
+def _live_row_race(index: Any, a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> None:
+    """Race a large call's row bucket the first time this load sees it, before it runs, so the first launch already
+    takes the tile its real row count wants (``row_bucket``; a 4176-row FLUX.3 call on the 4096-row winner's 256-row
+    tile leaves a 17th row tile 31% full). Same race and verdict as a later load's plan at that bucket (``cut.race``),
+    stored in the same cache entry, so that load races nothing. Only outside capture / compile, with room for the
+    race's operands; anything else leaves the call on the 4096-row winner, as before. The real weight is timed (a
+    random draw of it would cost a weight-sized allocation). ``UNSLOTH_DIFFUSION_INT8_CUTLASS_LIVE_RACE=0`` keeps the
+    next-load race only."""
+    from . import diffusion_int8_cutlass as cut
+
+    m = int(a.shape[0])
+    if not (cut._LARGE_M <= m < cut._HUGE_M):
+        return
+    key = _cut_key(w.shape[0], w.shape[1], xs.dtype, ws.dtype, bias is not None)
+    entry = (_CUT_PLAN.get(index) or {}).get(key)
+    b = cut.row_bucket(m)
+    if not entry or b in entry or not cut.live_race_enabled():
+        return
+    tried = _CUT_LIVE.setdefault(index, set())
+    if (key, b) in tried or sum(1 for k_, _b in tried if k_ == key) >= cut._MAX_ROW_RACES:
+        return
+    import torch
+
+    try:
+        if torch.compiler.is_compiling() or torch.cuda.is_current_stream_capturing():
+            return
+    except Exception:  # noqa: BLE001 - no CUDA runtime: nothing to race
+        return
+    from .diffusion_cuda_graph import hold_off_capture
+
+    with hold_off_capture() as safe:
+        if not safe:
+            return  # another thread records a graph: a later call races
+        tried.add((key, b))
+        dev = a.device
+        n, k = int(w.shape[0]), int(w.shape[1])
+        if not _huge_race_fits(dev, b, n, k):
+            return
+        if _CUT_TRITON_ON.get(index):
+            today = lambda a_, w_, x_, s_, b_: _launch_or_ref(index, a_, w_, x_, s_, b_)  # noqa: E731
+        else:
+            today = None  # cuBLAS lower bound, as the plan's large-M race
+        try:
+            r = cut.race(index, w, ws, bias, xs.dtype, today, b)
+        except Exception:  # noqa: BLE001 - a failed race keeps the call on the plan's slot
+            return
+        if cut.mode() == "force" and r.get("us"):
+            best = min((t for t in r["us"] if t.isdigit()), key = lambda t: r["us"][t], default = None)
+            r["tile"] = int(best) if best is not None else None
+        r["live"] = True
+        entry[b] = r["tile"]
+        skey = repr(key)
+        _CUT_RACES.setdefault(index, {}).setdefault(skey, {})[b] = r
+        _note_rows(index, key, m)
+        ckey = _CUT_CKEY.get(index)
+        if ckey:
+            table = _cut_cache_read()
+            cached = table.get(ckey) if isinstance(table.get(ckey), dict) else {}
+            hit = cached.get(skey) if isinstance(cached.get(skey), dict) else {}
+            hit[str(b)] = r["tile"]
+            cached[skey] = hit
+            table.pop(ckey, None)
+            table[ckey] = cached
+            _cut_cache_write(table)
 
 
 def _cutlass_fused(index: Any, n: int, k: int, xs_dtype: Any, ws_dtype: Any, bias: bool) -> bool:
@@ -2773,6 +2847,7 @@ def _swap_on(
         recs = [(m, r) for m, r in recs if r[0] != "v1"]
     # bf16 cards: the Triton path takes any bias dtype; only the prebuilt kernel needs bf16 bias
     cut_recs = [(m, r) for m, r in recs if f16_card or _card_dtypes_ok(m, r, False)]
+    _CUT_TRITON_ON[index] = bool(triton_gemm)
     plan = _cutlass_plan(index, cut_recs, triton_gemm, logger) if cut_recs else {}
     cut_fused: dict = {}
     if plan:
