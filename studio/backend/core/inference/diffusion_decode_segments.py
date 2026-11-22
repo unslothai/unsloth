@@ -9,8 +9,9 @@ Denoise-phase-sized streamed placements use expandable segments for the whole lo
 segments cached ~1.9 GiB of churn (FLUX.3 Klein int8, L4 6 GiB), evicting resident blocks every render.
 UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE=0 turns it off.
 
-Video loads hold the same engagement (owner ``"video"``) for every CUDA placement: the Wan 5B denoise cached
-1.7 GiB of fixed-segment churn (L4, 1280x704x49). UNSLOTH_VIDEO_DENOISE_EXPANDABLE=0 turns that off alone."""
+Video loads hold the same engagement (owner ``"video"``) for every CUDA placement: fixed segments added 1.0 to
+1.6 GiB of denoise reservation on Wan2.2-TI2V-5B (L4, 1280x704 at 49 / 121 frames).
+UNSLOTH_VIDEO_DENOISE_EXPANDABLE=0 turns that off alone."""
 
 from __future__ import annotations
 

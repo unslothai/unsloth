@@ -1849,7 +1849,7 @@ VIDEO_EXPANDABLE_ENV = "UNSLOTH_VIDEO_DENOISE_EXPANDABLE"
 
 def _engage_video_expandable(target: Any) -> bool:
     """Weights placed: run the denoise and decode in expandable allocator segments (diffusion_decode_segments).
-    Fixed segments cached ~1.7 GiB of churn on the Wan 5B denoise (L4, 1280x704x49) and forced an allocator retry."""
+    Wan2.2-TI2V-5B on an L4, 1280x704x121: denoise peak reserved 20.05 -> 18.41 GiB, same output, same s/step."""
     if os.environ.get(VIDEO_EXPANDABLE_ENV, "").strip().lower() in ("0", "false", "no", "off"):
         return False
     if not getattr(target, "is_cuda_torch_device", False):
