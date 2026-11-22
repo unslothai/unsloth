@@ -19167,6 +19167,73 @@ class LlamaCppBackend:
                 widest = max(widest, heads)
         return (widest or n_kv or 1) * (key_len + val_len)
 
+    def _inkling2_banded_terms(
+        self,
+        n_ctx: int,
+        ub: int,
+        cache_type_kv: Optional[str],
+        *,
+        flash_attn: bool = True,
+        split_extra: int = 0,
+    ) -> Optional[tuple[int, int, int]]:
+        """Inkling 2 banded scratch as (load-time reserve, post-prompt regrowth, fixed part);
+        None off the banded path."""
+        n_head = self._inkling2_bias_heads()
+        head_dim = getattr(self, "_kv_key_length", None) or 128
+        kv_type = (cache_type_kv or "f16").strip().lower()
+        build = self._inkling2_banded()
+        quantized = _kv_bytes_per_elem(kv_type) < 2.0
+        if quantized:
+            type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
+        else:
+            type_ok = kv_type in ("f16", "bf16", "f32")
+        banded = (
+            flash_attn
+            and type_ok
+            # Metal, Vulkan and SYCL have no banded kernel; unknown keeps the CUDA pricing.
+            and (build.backend is None or build.backend in _INKLING2_BANDED_BACKENDS)
+            and head_dim in (64, 128)
+            and ub >= self._INKLING2_BANDED_MIN_UBATCH
+        )
+        if not banded:
+            return None
+        block = 4 * n_head * ub * ub
+        if not build.quant_kv:
+            reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx
+            regrown = (
+                self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra
+            ) * n_ctx + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
+            return reserve, regrown, block
+        copy = 0
+        if quantized and not (build.tile_kv and kv_type in self._INKLING2_BANDED_TILE_TYPES):
+            copy = self._attention_dequant_width() * 2
+        reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx
+        regrown = (
+            self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
+        ) * n_ctx + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
+        return reserve, regrown, copy * n_ctx + block
+
+    def _inkling2_fit_regrowth_mib(
+        self,
+        n_ctx: int,
+        n_ubatch: Optional[int],
+        cache_type_kv: Optional[str],
+        *,
+        flash_attn: bool = True,
+    ) -> int:
+        """Compute buffer growth past the load-time reserve after the first prompt. llama.cpp's
+        fitter only measures the reserve, so a --fit on launch keeps this free in --fit-target."""
+        if getattr(self, "_architecture", None) not in _INKLING2_ARCHS or n_ctx <= 0:
+            return 0
+        if not (self._embedding_length or 0) > 0:
+            return 0
+        ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
+        banded = self._inkling2_banded_terms(n_ctx, ub, cache_type_kv, flash_attn = flash_attn)
+        if banded is None:
+            return 0
+        reserve, regrown, _fixed = banded
+        return math.ceil(max(0, regrown - reserve) / (1024 * 1024))
+
     def _compute_buffer_ctx_bytes(
         self,
         n_ctx: int,
@@ -19228,42 +19295,12 @@ class LlamaCppBackend:
         if getattr(self, "_architecture", None) in _INKLING2_ARCHS:
             # Sliding layers' smaller bias reuses this allocation.
             n_head = self._inkling2_bias_heads()
-            head_dim = getattr(self, "_kv_key_length", None) or 128
-            kv_type = (cache_type_kv or "f16").strip().lower()
-            build = self._inkling2_banded()
-            quantized = _kv_bytes_per_elem(kv_type) < 2.0
-            if quantized:
-                type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
-            else:
-                type_ok = kv_type in ("f16", "bf16", "f32")
-            banded = (
-                flash_attn
-                and type_ok
-                # Metal, Vulkan and SYCL have no banded kernel; unknown keeps the CUDA pricing.
-                and (build.backend is None or build.backend in _INKLING2_BANDED_BACKENDS)
-                and head_dim in (64, 128)
-                and ub >= self._INKLING2_BANDED_MIN_UBATCH
+            banded = self._inkling2_banded_terms(
+                n_ctx, ub, cache_type_kv, flash_attn = flash_attn, split_extra = split_extra
             )
-            if banded:
-                block = 4 * n_head * ub * ub
-                if not build.quant_kv:
-                    reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx + block
-                    regrown = (
-                        (self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra) * n_ctx
-                        + block
-                        + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
-                    )
-                    return int(max(reserve, regrown))
-                copy = 0
-                if quantized and not (
-                    build.tile_kv and kv_type in self._INKLING2_BANDED_TILE_TYPES
-                ):
-                    copy = self._attention_dequant_width() * 2
-                reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx
-                regrown = (
-                    self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
-                ) * n_ctx + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
-                return int(max(reserve, regrown) + copy * n_ctx + block)
+            if banded is not None:
+                reserve, regrown, fixed = banded
+                return int(max(reserve, regrown) + fixed)
             per_tok = (
                 mask_rate
                 + split_extra
@@ -30776,6 +30813,28 @@ class LlamaCppBackend:
                     except OSError:
                         self._slot_save_dir = None
                         self._slot_save_binary = None
+                # llama.cpp's fitter sizes only the load-time compute reserve; Inkling 2's banded
+                # buffer regrows past it after the first prompt, so keep that growth free too.
+                if _placed_by_fitter and self._architecture in _INKLING2_ARCHS:
+                    _regrowth_mib = self._inkling2_fit_regrowth_mib(
+                        # No -c: the fitter may cut to the --fit-ctx floor, where growth is largest.
+                        effective_ctx if effective_ctx > 0 else 8192,
+                        _ubatch_for_slots(n_parallel),
+                        _scratch_cache_type_kv,
+                        flash_attn = planned_flash_attn,
+                    )
+                    if _regrowth_mib:
+                        _fit_target_delta_mib += _regrowth_mib
+                        if _fit_target_delta_by_idx:
+                            _fit_target_delta_by_idx = {
+                                _idx: _delta + _regrowth_mib
+                                for _idx, _delta in _fit_target_delta_by_idx.items()
+                            }
+                        logger.info(
+                            "Inkling 2 --fit on: keeping %d MiB more free per device for the "
+                            "compute buffer's post-prompt growth.",
+                            _regrowth_mib,
+                        )
                 _integrity_args = (
                     n_parallel,
                     use_fit,
