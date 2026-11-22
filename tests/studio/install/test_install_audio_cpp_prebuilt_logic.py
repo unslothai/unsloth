@@ -1104,6 +1104,12 @@ def test_an_unknown_accelerator_env_falls_back_to_auto(monkeypatch, tmp_path, ca
     assert "ignoring UNSLOTH_AUDIO_CPP_ACCELERATOR" in capsys.readouterr().err
 
 
+def test_an_unknown_accelerator_env_keeps_the_installed_request(monkeypatch, tmp_path):
+    (tmp_path / M.INSTALL_RECORD).write_text(json.dumps({"accelerator_request": "cpu"}))
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_ACCELERATOR", "rocm")
+    assert M._accelerator_from_env(tmp_path) == "cpu"
+
+
 # G11: which release, from which repo
 
 

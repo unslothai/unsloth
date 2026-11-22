@@ -180,20 +180,20 @@ def _glibc_below(min_os: Optional[str]) -> Optional[str]:
 
 
 def _accelerator_from_env(install_dir: Path) -> str:
-    """``UNSLOTH_AUDIO_CPP_ACCELERATOR`` (auto|cpu|cuda|vulkan|metal), for hosts whose GPU is not visible
-    at install time (a Docker build). Set, it is an explicit request and never downgraded."""
+    """``UNSLOTH_AUDIO_CPP_ACCELERATOR`` (auto|cpu|cuda|vulkan|metal), an explicit request never
+    downgraded (a Docker build whose GPU is not visible); unset or invalid, the request the install in
+    ``install_dir`` was made with, so an update keeps it."""
     raw = (os.environ.get("UNSLOTH_AUDIO_CPP_ACCELERATOR") or "").strip().lower()
-    if not raw:
-        recorded = read_install_record(install_dir).get("accelerator_request")
-        return recorded if recorded in ACCELERATORS else "auto"
-    if raw not in ACCELERATORS:
+    if raw in ACCELERATORS:
+        return raw
+    if raw:
         print(
             f"audio.cpp: ignoring UNSLOTH_AUDIO_CPP_ACCELERATOR={raw!r} (expected one of {', '.join(ACCELERATORS)})",
             file = sys.stderr,
             flush = True,
         )
-        return "auto"
-    return raw
+    recorded = read_install_record(install_dir).get("accelerator_request")
+    return recorded if recorded in ACCELERATORS else "auto"
 
 
 def _expected_sha256(release: dict, asset: dict) -> Optional[str]:
