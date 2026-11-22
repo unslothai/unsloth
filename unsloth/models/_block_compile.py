@@ -521,7 +521,11 @@ def _in_nonreentrant_checkpoint():
         hooks = torch._C._autograd._top_saved_tensors_default_hooks(False)
     except Exception:
         return False
-    return bool(hooks) and getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+    # The trial's own pair is only pushed inside a non-reentrant checkpoint (see _wrap).
+    return bool(hooks) and (
+        getattr(hooks[0], "__module__", None) == "torch.utils.checkpoint"
+        or (hooks[0] is _detached and hooks[1] is _same)
+    )
 
 
 def _graphs_unsafe_moe(layer, note = True):
@@ -2243,12 +2247,14 @@ def _wrap(
         )
         if (bit == 1 or nonreentrant) and not checked & trial_bit:
             # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
-            # this call. Non-reentrant: our own saved-tensor hooks keep the trial graph out of the
-            # checkpoint frame (detaching pack, see _detached)
+            # this call. Inside a non-reentrant checkpoint (also a no-grad call: a reentrant layer in a
+            # non-reentrant parent) our own saved-tensor hooks keep the trial graph out of the
+            # checkpoint frame, whose recompute would otherwise save fewer tensors (detaching pack,
+            # see _detached)
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             hooks = (
                 torch.autograd.graph.saved_tensors_hooks(_detached, _same)
-                if nonreentrant
+                if nonreentrant or (bit == 1 and _in_nonreentrant_checkpoint())
                 else contextlib.nullcontext()
             )
             with (
