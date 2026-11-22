@@ -43387,6 +43387,8 @@ class LlamaCppBackend:
                         auto_heal_tool_calls
                         and not _final_call_retried
                         and stream_payload.get("tools")
+                        # A continuation prefill would ask the retry to finish the call.
+                        and not stream_payload.get("continue_final_message")
                         and _metadata_finish_reason != "length"
                         and answer_text.strip()
                         and not _strip_tool_markup(answer_text, final = True).strip()
@@ -43413,20 +43415,15 @@ class LlamaCppBackend:
                         _metadata_finish_reason = None
                         _metadata_usage = None
                         _metadata_timings = None
-                        # Restart from what the client shows: a call prefix already emitted would otherwise swallow the retry's text.
-                        _visible_t = _strip_tool_markup(cumulative, final = True)
-                        if _last_emitted.startswith(_visible_t):
-                            # Keep the whitespace the client already counted; the final strip trims it.
-                            _cut_t = len(_visible_t)
-                            while _cut_t < len(_last_emitted) and _last_emitted[_cut_t].isspace():
-                                _cut_t += 1
-                            _last_emitted = _last_emitted[:_cut_t]
-                        cumulative = _last_emitted
-                        answer_text = ""
-                        has_content_tokens = False
+                        # A fresh pass, as after a tool round: rewinding the shown text in place desyncs the route cursor.
+                        cumulative = _last_emitted = _attempt_started_at = ""
+                        answer_text = reasoning_text = ""
+                        in_thinking = has_content_tokens = False
+                        _prov_entry = _lead_wrap = _final_reasoning_started_at = None
+                        _final_reasoning_summary_emitted = False
                         _final_answer_stripper.reset()
-                        _attempt_started_at = _last_emitted
                         _continue_final = True
+                        yield {"type": "status", "text": ""}
                     else:
                         _cut = _quote_cut_event(
                             reasoning_text,

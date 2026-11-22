@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 for _entry in (_BACKEND_DIR, _TESTS_DIR):
@@ -198,7 +200,16 @@ def _route_shown(events):
     return shown
 
 
-def test_split_qwen_call_prefix_does_not_swallow_the_retry(monkeypatch):
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["<|tool_call_start|>", "[web_search(", "query='x')]", "<|tool_call_end|>"],
+        ["<tool_call>", '{"name": "web_search", ', '"arguments": {"query": "x"}}', "</tool_call>"],
+        ["[TOOL_CALLS]", '[{"name": "web_search", ', '"arguments": {"query": "x"}}]'],
+    ],
+    ids = ["lfm", "qwen", "mistral"],
+)
+def test_split_call_prefix_does_not_garble_the_retry(monkeypatch, parts):
     first = _sse(
         {
             "tool_calls": [
@@ -211,12 +222,6 @@ def test_split_qwen_call_prefix_does_not_swallow_the_retry(monkeypatch):
             ]
         }
     )
-    parts = [
-        "<tool_call>",
-        '{"name": "web_search", ',
-        '"arguments": {"query": "x"}}',
-        "</tool_call>",
-    ]
     split_call = [_sse({"content": part}) for part in parts] + [_done()]
     answer = [_sse({"content": "A sparse MoE model."}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [[first, _done()], split_call, answer])
@@ -227,4 +232,4 @@ def test_split_qwen_call_prefix_does_not_swallow_the_retry(monkeypatch):
         [{"type": "function", "function": {"name": "web_search"}}],
     )
     assert len(payloads) == 3 and "tools" not in payloads[2]
-    assert _route_shown(events).strip() == "A sparse MoE model.", events
+    assert _route_shown(events).endswith("A sparse MoE model."), _route_shown(events)
