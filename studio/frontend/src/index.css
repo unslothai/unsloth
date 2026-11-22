@@ -3051,11 +3051,11 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* Elevated cards and dialogs sink the shared track; their buttons lift above it. */
-	html.dark :is(.api-monitor-page .elevated-card, .section-box, [data-slot="dialog-content"]) .btn-fill {
+	/* Surfaces that sink the shared track (hub.css) lift their buttons above it. */
+	html.dark :is(.api-monitor-page .elevated-card, .section-box, .menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}
-	html.dark :is(.api-monitor-page .elevated-card, .section-box, [data-slot="dialog-content"]) .btn-fill:hover {
+	html.dark :is(.api-monitor-page .elevated-card, .section-box, .menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .btn-fill:hover {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
