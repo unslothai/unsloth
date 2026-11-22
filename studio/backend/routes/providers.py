@@ -1348,6 +1348,46 @@ async def get_model_catalog(_current_subject: str = Depends(get_current_subject)
     return fresh
 
 
+_DEEPINFRA_MODELS_URL = "https://api.deepinfra.com/models/list"
+_cached_deepinfra_models: list[dict] | None = None
+_cached_deepinfra_models_at: float = 0.0
+_DEEPINFRA_CACHE_TTL_SECONDS = 3600.0
+
+
+@router.get("/deepinfra-models")
+async def get_deepinfra_models(_current_subject: str = Depends(get_current_subject)):
+    global _cached_deepinfra_models, _cached_deepinfra_models_at
+    now = time.time()
+    if (
+        _cached_deepinfra_models is not None
+        and (now - _cached_deepinfra_models_at) < _DEEPINFRA_CACHE_TTL_SECONDS
+    ):
+        return _cached_deepinfra_models
+    try:
+        async with httpx.AsyncClient(timeout = 10.0) as client:
+            resp = await client.get(
+                _DEEPINFRA_MODELS_URL,
+                headers = {"Accept": "application/json", "User-Agent": "unsloth-studio"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    filtered = [
+                        m
+                        for m in data
+                        if isinstance(m, dict)
+                        and not (m.get("model_name") or "").lower().startswith("anthropic/")
+                    ]
+                    _cached_deepinfra_models = filtered
+                    _cached_deepinfra_models_at = now
+                    return filtered
+    except Exception as exc:
+        logger.info("providers.deepinfra_models_fetch_failed", error = repr(exc))
+    if _cached_deepinfra_models is not None:
+        return _cached_deepinfra_models
+    raise HTTPException(status_code = 502, detail = "Failed to fetch models from DeepInfra.")
+
+
 @router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])
 async def list_provider_model_capabilities(
     payload: ProviderModelsRequest,
