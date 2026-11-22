@@ -1010,6 +1010,30 @@ def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
     return "error" in line_lower or "fail" in line_lower or "warn" in line_lower
 
 
+def _log_shows_load_stages(argv, environ) -> bool:
+    """True when llama-server logs at trace verbosity or above, the only levels that mark the load stages."""
+    verbosity = None
+    args = [str(a) for a in argv] if isinstance(argv, (list, tuple)) else []
+    for i, arg in enumerate(args):
+        flag, (_name, eq, value) = _flag_name(arg), arg.partition("=")
+        if flag == "--log-disable":
+            return False
+        if flag in ("-v", "--verbose", "--log-verbose"):
+            verbosity = sys.maxsize
+        elif flag in ("-lv", "--verbosity", "--log-verbosity"):
+            value = value if eq else (args[i + 1] if i + 1 < len(args) else "")
+            try:
+                verbosity = int(value)
+            except ValueError:
+                pass
+    if verbosity is None:
+        try:
+            verbosity = int((environ or {}).get("LLAMA_ARG_LOG_VERBOSITY", ""))
+        except (TypeError, ValueError):
+            return False
+    return verbosity >= _LOAD_STAGE_MIN_VERBOSITY
+
+
 def _trace_verbosity_args(caps: dict, extra_args: Optional[Iterable[str]], environ) -> list[str]:
     """``--verbosity 4`` when the build hides load lines at its default and the user chose none."""
     if not caps.get("supports_trace_verbosity"):
@@ -1055,6 +1079,18 @@ _FIT_DEVICE_RE = re.compile(
     r"common_params_fit_impl:\s+-\s+(?P<device>[A-Za-z]+\d+)\s+\(.*?\):\s+(?P<layers>\d+)\s+layers?"
     r"\s*(?:\(\s*(?P<overflow>\d+)\s+overflowing\s*\))?\s*,\s*\d+\s+MiB used"
 )
+# The first weight read; from verbosity 5 each --fit probe (no_alloc, nothing read) prints it too.
+_LOAD_TENSORS_MARK = "load_tensors: loading model tensors"
+# Start of the --fit search; b8864 and older prefix its lines llama_params_fit_impl.
+_FIT_START_MARKS = (
+    "fitting params to device memory",
+    "common_params_fit_impl:",
+    "llama_params_fit_impl:",
+)
+# Every way the search ends prints one: success at trace (4), failure and error as warning and error.
+_FIT_END_MARKS = ("common_fit_params:", "llama_params_fit:")
+# llama.cpp defaults to info (3), which hides both ends of the search and the weight-load line.
+_LOAD_STAGE_MIN_VERBOSITY = 4
 # The MoE-only fill: printed for a model with experts, whose GPU layers then hold only their dense weights.
 _FIT_DENSE_ONLY_MARK = "filling dense-only layers back-to-front"
 # From here the per-device lines carry an explicit "(N overflowing)" count.
@@ -8832,7 +8868,9 @@ class LlamaCppBackend:
         self._gguf_split_index: Optional[int] = None
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
-        self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
+        self._load_rss_hwm = (None, 0)  # ((pid, stage), peak bytes) for load_progress
+        # (pid, "fit" | "placed" | "weights", read baseline, RSS baseline), set by _drain_stdout.
+        self._load_stage = None
         self._stats_logger = None  # vLLM-style engine-stats poller, set on load
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
@@ -9605,11 +9643,13 @@ class LlamaCppBackend:
 
         ``bytes_loaded`` is the larger of the bytes read and Linux file-backed RSS; never a working set,
         which counts buffers allocated before any read. The total includes projector, drafter and adapters.
+        At trace verbosity (Studio's default) both counters start at the first weight read, and a --fit
+        search before it reports phase "fit" with no bytes: its probes only re-read the GGUF header.
 
         Shape::
 
             {
-                "phase": "mmap" | "ready",
+                "phase": "fit" | "mmap" | "ready",
                 "bytes_loaded": int,   # as above, never decreasing
                 "bytes_total":  int,   # weight files the server loads
                 "fraction": float,     # bytes_loaded / bytes_total, 0..1
@@ -9630,16 +9670,23 @@ class LlamaCppBackend:
             launched[1] if launched is not None and launched[0] is proc else None,
         )
 
+        stage = getattr(self, "_load_stage", None)
+        if stage is None or stage[0] != pid:
+            stage = (pid, None, 0, 0)
+        if stage[1] in ("fit", "placed") and not self._healthy:
+            return {"phase": "fit", "bytes_loaded": 0, "bytes_total": bytes_total, "fraction": 0.0}
+
         rss = LlamaCppBackend._read_rss_bytes(pid)
         read = LlamaCppBackend._read_load_bytes(pid)
         if rss is None and read is None:
             return None
-        bytes_loaded = max(rss or 0, read or 0)
+        bytes_loaded = max((rss or 0) - stage[3], (read or 0) - stage[2], 0)
 
         # RSS drops once -ngl offloads to VRAM; keep a high-water mark so progress never regresses.
-        hwm_pid, hwm = getattr(self, "_load_rss_hwm", (None, 0))
-        hwm = bytes_loaded if hwm_pid != pid else max(hwm, bytes_loaded)
-        self._load_rss_hwm = (pid, hwm)
+        # Per stage too: a raw figure from before the baseline must not hold the bar up after it.
+        hwm_key, hwm = getattr(self, "_load_rss_hwm", (None, 0))
+        hwm = bytes_loaded if hwm_key != stage[:2] else max(hwm, bytes_loaded)
+        self._load_rss_hwm = (stage[:2], hwm)
         bytes_loaded = hwm
 
         phase = "ready" if self._healthy else "mmap"
@@ -19527,6 +19574,30 @@ class LlamaCppBackend:
 
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
+    def _note_load_stage(self, pid: int, line: str) -> bool:
+        """Tracks "fit", "placed", then "weights" with both byte counters as the baseline; a weight-load
+        line inside the search is a probe's. True once weights are being read."""
+        stage = getattr(self, "_load_stage", None)
+        name = stage[1] if stage is not None and stage[0] == pid else None
+        if any(mark in line for mark in _FIT_START_MARKS):
+            # A second search (a drafter placed beside its target) starts after the first ended.
+            if name in (None, "placed"):
+                self._load_stage = (pid, "fit", 0, 0)
+            return False
+        if name == "fit":
+            if any(mark in line for mark in _FIT_END_MARKS):
+                self._load_stage = (pid, "placed", 0, 0)
+            return False
+        if _LOAD_TENSORS_MARK in line:
+            self._load_stage = (
+                pid,
+                "weights",
+                LlamaCppBackend._read_load_bytes(pid) or 0,
+                LlamaCppBackend._read_rss_bytes(pid) or 0,
+            )
+            return True
+        return False
+
     def _drain_stdout(self):
         """Drains llama-server stdout in a background thread so a full ~4 KB Windows pipe cannot block it; tees each line to _llama_log_fh when set."""
         startup_len: Optional[int] = None
@@ -19535,6 +19606,12 @@ class LlamaCppBackend:
         proc = self._process
         device_lost_seen = False
         metal_poison = {"draft": False}
+        stage_pid = getattr(proc, "pid", None)
+        launched = getattr(self, "_process_env", None)
+        weights_seen = stage_pid is None or not _log_shows_load_stages(
+            getattr(proc, "args", None),
+            launched[1] if launched is not None and launched[0] is proc else os.environ,
+        )
         try:
             for line in proc.stdout:
                 line = line.rstrip()
@@ -19546,6 +19623,8 @@ class LlamaCppBackend:
                         head = _STDOUT_HEAD_MAX if startup_len is None else startup_len
                         head = min(head, _STDOUT_HEAD_MAX, len(lines))
                         del lines[head : len(lines) - _STDOUT_TAIL_KEEP]
+                    if not weights_seen and startup_len is None:
+                        weights_seen = self._note_load_stage(stage_pid, line)
                     # Only readiness lines wake the probe; waking per tensor-load line spins startup.
                     line_lower = line.lower()
                     ready = "server is listening" in line_lower or "model loaded" in line_lower
