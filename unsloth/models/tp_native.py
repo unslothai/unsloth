@@ -60,6 +60,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+def _resume_torch_load(path, **kwargs):
+    """Refused on torch < 2.6 like Trainer's check_torch_load_is_safe (CVE-2025-32434)."""
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
+    return torch.load(path, weights_only = True, **kwargs)
+
+
 __all__ = [
     "TPConfig",
     "TPPlan",
@@ -5021,7 +5030,7 @@ def _tp_resume_payload(self, checkpoint):
             "have (it was not written by a tensor parallel Trainer, or with save_only_model = True, which saves "
             "no optimizer state to resume from)." + _env_hint()
         )
-    payload = torch.load(path, map_location = "cpu", weights_only = True)
+    payload = _resume_torch_load(path, map_location = "cpu")
     want, got = _tp_layout(self), payload["layout"]
     if want != got:
         diff = {
@@ -5067,7 +5076,7 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
 
     path = os.path.join(checkpoint, SCHEDULER_NAME)
     if getattr(self, "lr_scheduler", None) is not None and os.path.isfile(path):
-        self.lr_scheduler.load_state_dict(torch.load(path, weights_only = True))
+        self.lr_scheduler.load_state_dict(_resume_torch_load(path))
     self.__dict__.pop("_unsloth_tp_resume", None)
     return None
 
