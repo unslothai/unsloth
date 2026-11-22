@@ -460,3 +460,20 @@ def test_an_lfm_call_quoted_in_an_unclosed_rehearsal_stays_data(allow_incomplete
         )
     ]
     assert "terminal" not in names
+
+
+@pytest.mark.parametrize("allow_incomplete", [True, False])
+def test_an_lfm_call_quoted_in_a_tml_call_stays_data(allow_incomplete):
+    quoted = "<|tool_call_start|>[terminal(command='echo hi')]<|tool_call_end|>"
+    text = (
+        "<|content_invoke_tool_json|>"
+        + json.dumps({"name": "web_search", "args": {"query": quoted}})
+        + "<|end_message|>"
+    )
+    names = [
+        n
+        for n, _ in _names_args(
+            text, enabled_tool_names = {"web_search", "terminal"}, allow_incomplete = allow_incomplete
+        )
+    ]
+    assert names == ["web_search"]

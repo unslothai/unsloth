@@ -1879,6 +1879,11 @@
         "kind": "def",
         "signature": "node: ast.AST"
       },
+      "_lfm_marker_is_quoted": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int, enabled_tool_names: Optional[set]"
+      },
       "_lfm_mask_call_names": {
         "decorators": [],
         "kind": "def",

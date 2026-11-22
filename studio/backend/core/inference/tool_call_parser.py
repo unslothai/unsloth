@@ -2227,6 +2227,14 @@ def _inside_any_markerless_body(
         cursor = m.end() if end is None or end < m.end() else end
 
 
+def _lfm_marker_is_quoted(content: str, pos: int, enabled_tool_names: Optional[set]) -> bool:
+    """Inside another call's arguments (a markerless body or any wrapper span), an LFM call is that call's data."""
+    if _inside_any_markerless_body(content, pos, enabled_tool_names):
+        return True
+    spans = _tool_healing._tool_call_markup_spans(content) + _inference_wrapper_spans(content)
+    return any(start < pos < end for start, end in spans)
+
+
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
@@ -2351,8 +2359,7 @@ def parse_tool_calls_from_text(
             (_km_pos, _parse_kimi_tool_calls),
             (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
         ]
-        # Quoted in a leading promotable ``name[ARGS]{...}`` call, an LFM call is that call's data.
-        if _lfm_pos >= 0 and not _inside_any_markerless_body(content, _lfm_pos, enabled_tool_names):
+        if _lfm_pos >= 0 and not _lfm_marker_is_quoted(content, _lfm_pos, enabled_tool_names):
             pre_pass.append((_lfm_pos, _parse_lfm_tool_calls))
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
