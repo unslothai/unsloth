@@ -352,3 +352,12 @@ def test_an_lfm_call_quoted_in_a_rehearsal_is_its_data():
     assert [n for n, _ in _names_args(text, enabled_tool_names = {"web_search", "terminal"})] == [
         "web_search"
     ]
+
+
+def test_an_lfm_call_quoted_in_a_later_rehearsal_is_its_data():
+    text = (
+        'web_search[ARGS]{"query": "one"} web_search[ARGS]{"query": '
+        "\"<|tool_call_start|>[terminal(command='echo hi')]<|tool_call_end|>\"}"
+    )
+    names = [n for n, _ in _names_args(text, enabled_tool_names = {"web_search", "terminal"})]
+    assert names == ["web_search", "web_search"]

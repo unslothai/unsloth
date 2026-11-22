@@ -1836,6 +1836,11 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "_inside_any_markerless_body": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, signal: int, enabled_tool_names: Optional[set]"
+      },
       "_inside_leading_markerless_body": {
         "decorators": [],
         "kind": "def",

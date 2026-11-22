@@ -2202,6 +2202,30 @@ def _inside_leading_markerless_body(
         return end is not None and body < signal <= end
 
 
+def _inside_any_markerless_body(
+    content: str, signal: int, enabled_tool_names: Optional[set]
+) -> bool:
+    """Like ``_inside_leading_markerless_body`` but past closed calls too: a later call's quoted marker is still data."""
+    cursor = 0
+    while True:
+        gem = _GEMMA_BARE_TC_RE.search(content, cursor)
+        reh = _tool_healing._REHEARSAL_RE.search(content, cursor)
+        m = min((x for x in (gem, reh) if x is not None), key = lambda x: x.start(), default = None)
+        if m is None or m.start() > signal:
+            return False
+        if m is gem:
+            body, end = m.end() - 1, _gemma_body_brace_end(content, m.end() - 1)
+        else:
+            body, end = m.end(), _tool_healing._balanced_json_span(content, m.end())
+        if (
+            _markerless_promotable(m.group(1), enabled_tool_names)
+            and end is not None
+            and body < signal <= end
+        ):
+            return True
+        cursor = m.end() if end is None or end < m.end() else end
+
+
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
@@ -2327,9 +2351,7 @@ def parse_tool_calls_from_text(
             (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
         ]
         # Quoted in a leading promotable ``name[ARGS]{...}`` call, an LFM call is that call's data.
-        if _lfm_pos >= 0 and not _inside_leading_markerless_body(
-            content, _lfm_pos, enabled_tool_names
-        ):
+        if _lfm_pos >= 0 and not _inside_any_markerless_body(content, _lfm_pos, enabled_tool_names):
             pre_pass.append((_lfm_pos, _parse_lfm_tool_calls))
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
