@@ -3312,8 +3312,7 @@ def _flux3_guard_denoise_mib(
     height: Any,
     batch: int,
 ) -> Optional[int]:
-    """Token-priced denoise of a FLUX.3 edit for the request guard (``flux3_conditioned_denoise_mib``), or None: not
-    FLUX.3, no input image, a denoiser other than bf16 / fp16 / int8 / fp8, or no CUDA capability reading."""
+    """FLUX.3 edit denoise MiB for the request guard, or None when token pricing does not apply."""
     if not is_flux3_family(fam) or not has_source or getattr(state, "kind", None) == "gguf":
         return None
     quant = str(getattr(state, "transformer_quant", None) or "").lower()

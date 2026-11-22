@@ -1755,15 +1755,12 @@ def reference_kv_cache_mib(
 
 
 FLUX3_TOKEN_PRICED_ENV = "UNSLOTH_DIFFUSION_FLUX3_TOKEN_PRICED"
-# FLUX.3 Klein / Klein base conditioned denoise on CUDA compute capability 8.x (Ampere, Ada): MiB of allocated peak
-# above the pre-render baseline per 1024 sequence tokens (the output canvas, 256 px per token, plus 4096 per reference,
-# which the pipeline resizes to 1 MP), worst over the off / default speed tiers and over L4 and A100-40, 2048x2048 with
-# 0 / 4 / 6 / 10 references. ``dense``: a bf16 / fp16 denoiser (speed "off" loads one), measured 105.6-115.7 on both
-# cards, the same per token with or without references; ``quantized``: int8 compiled (Studio's default tier, the only
-# one measured quantized), 62.9-75.6. B200's 1024x1024 eager figures read about 220 per 1k tokens: not covered here.
+# FLUX.3 Klein conditioned denoise on CUDA 8.x: MiB of allocated peak above baseline per 1024 sequence tokens, worst
+# over speed off/default, L4 + A100-40, 2048x2048 with 0/4/6/10 refs. dense (bf16/fp16): 105.6-115.7; quantized (int8
+# compiled, the only quantized tier measured): 62.9-75.6. B200 eager reads ~220 per 1k tokens: not covered.
 _FLUX3_SM8X_DENOISE_MIB_PER_KTOKEN = {"dense": 116.0, "quantized": 76.0}
 _FLUX3_TOKEN_MARGIN = 1.25
-# Prompt window the estimate always charges beside the image tokens (the L4 runs used 80; the encoder caps at 512).
+# Always charged (L4 runs used 80; the encoder caps at 512).
 _FLUX3_TEXT_TOKENS = 512
 _FLUX3_PATCH_PIXELS = 16
 _FLUX3_REFERENCE_TOKENS = (1024 // _FLUX3_PATCH_PIXELS) ** 2
@@ -1779,10 +1776,8 @@ def flux3_conditioned_denoise_mib(
     capability: Optional[tuple],
     rocm: bool = False,
 ) -> Optional[int]:
-    """MiB a FLUX.3 Klein edit's denoise holds above the resident weights, priced by its token count from the measured
-    per-token rate, margin included. None (the flat estimate stands) without references, off CUDA capability 8.x,
-    on ROCm, or under ``UNSLOTH_DIFFUSION_FLUX3_TOKEN_PRICED=0``: the rate was measured on L4 and A100-40 only, and
-    B200's own 1024x1024 figures (``_MEASURED_IMAGE_ACTIVATION_MIB``) run about twice as high per token."""
+    """Token-priced FLUX.3 edit denoise MiB, margin included. None (flat estimate stands) without references, off CUDA
+    8.x, on ROCm, or with ``UNSLOTH_DIFFUSION_FLUX3_TOKEN_PRICED=0``: the rate was measured on L4 / A100-40 only."""
     try:
         refs = int(references or 0)
         if refs <= 0 or rocm or _env_off(FLUX3_TOKEN_PRICED_ENV):
