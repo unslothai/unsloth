@@ -41,6 +41,7 @@ from core.training.diffusion_block_swap import (
     block_swap_error,
     block_swap_explicit_off,
     block_swap_request,
+    swap_lowp_mode,
     compile_swapped_blocks,
     install_dit_block_swap,
     reset_block_swaps,
@@ -644,6 +645,44 @@ def _probe_lowp(
         torch.cuda.synchronize(device)
     if not (torch.isfinite(y).all() and torch.isfinite(x.grad).all()):
         raise RuntimeError("probe GEMM returned non-finite values")
+
+
+def _lowp_swap_spec(
+    transformer, mode: Optional[str], family: Optional[str], device
+) -> Optional[dict]:
+    """install_dit_block_swap's ``lowp`` for a frozen fp8 / W8A8 base, after the GEMM probe the resident path runs.
+    No fallback: the run asked for this base and block swap together, so a probe failure refuses the run."""
+    if mode is None:
+        return None
+    import torch
+
+    if mode == "fp8":
+        from core.training.diffusion_fp8_prequant import dequantize_placeholders
+        from core.training.diffusion_frozen_fp8 import convert_frozen_fp8 as convert
+
+        probe = lambda: _probe_lowp(_convert_fp8, None, device)  # noqa: E731
+        finish = dequantize_placeholders
+    else:
+        from core.training.diffusion_frozen_int8 import convert_frozen_int8 as convert
+        def probe():
+            a = torch.ones((32, 32), dtype = torch.int8, device = device)
+            torch._int_mm(a, a.t())
+
+        finish = None
+    try:
+        probe()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"block_swap with base_precision={'fp8' if mode == 'fp8' else 'int8'}: this GPU's {mode} GEMM probe "
+            f"failed ({exc}). Use base_precision='bf16' with block_swap."
+        ) from exc
+    targets = {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+
+    def _convert(model, names, dev):
+        done, failed = convert(model, names, device = dev)
+        return done, failed
+
+    return {"mode": mode, "targets": targets, "convert": _convert, "finish": finish}
 
 
 class Fp8FallbackDoesNotFit(RuntimeError):
@@ -4088,10 +4127,15 @@ def _train_dit(
         cfg.gradient_checkpointing,
         integrated = bool(swap_request) and _device_is_integrated(device),
     )
+    if swap_request and fp16_amp:
+        swap_error = "block_swap needs a GPU with bf16: this one trains the fp16 fallback. Turn block_swap off."
     if swap_error:
         raise ValueError(swap_error)
+    # A swapped fp8 / W8A8 base converts inside install_dit_block_swap (resident Linears streamed onto the card,
+    # swapped ones back to host RAM), so the conversions after the adapter below are skipped.
+    lowp_swap = swap_lowp_mode(base_precision) if swap_request else None
     with report_model_load_progress(on_event):
-        # A swapped bf16 base loads on the host: install_dit_block_swap places everything but the swapped blocks.
+        # A swapped base loads on the host: install_dit_block_swap places everything but the swapped blocks.
         transformer = spec.load_transformer(
             fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
         )
@@ -4130,6 +4174,7 @@ def _train_dit(
                 swap_request,
                 tokens = _block_swap_tokens(spec, cfg),
                 batch = cfg.train_batch_size,
+                lowp = _lowp_swap_spec(transformer, lowp_swap, cfg.resolved_family, device),
             )
         except ValueError as exc:
             if not auto_swap:
@@ -4168,7 +4213,7 @@ def _train_dit(
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
-    w8a8_on = (
+    w8a8_on = lowp_swap == "int8_w8a8" or (
         base_precision == "int8"
         and _int8_w8a8()
         and _apply_int8_w8a8(transformer, on_event, cfg.resolved_family, device = device)
@@ -4184,7 +4229,7 @@ def _train_dit(
     if base_precision == "int8":
         # Re-collect: the move to device must not leave the optimizer holding host tensors.
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
-    if base_precision == "fp8":
+    if base_precision == "fp8" and lowp_swap != "fp8":
         reload_nf4 = None
         try:
             if not _apply_fp8_training(transformer, on_event, cfg.resolved_family, device = device):
