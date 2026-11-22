@@ -10,6 +10,7 @@ GQA shapes, and the router engaging on a Gemma-4 style call.
 
 import importlib.util
 import os
+import sys
 
 import pytest
 import torch
@@ -892,6 +893,50 @@ def test_router_compiled_takes_a_block_verified_causal_mask(monkeypatch):
     out, _ = router(_Module(), q, kv, kv, mask, scaling = 1.0)
     torch.testing.assert_close(out, want, rtol = 0, atol = 0)
     assert len(calls) == 2
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on CUDA sm80+ only")
+def test_compiled_right_padded_global_attention_matches_sdpa_gradients(monkeypatch):
+    dtype = _cuda_dtype()
+    device = torch.device("cuda", torch.cuda.current_device())
+    assert LH._self_check(device, dtype)
+
+    class Gemma4TextAttention(_Module):
+        head_dim, is_sliding = 512, False
+
+    module = Gemma4TextAttention()
+    layer = torch.nn.Module()
+    layer.self_attn = module
+    path = os.path.join(os.path.dirname(_PATH), "..", "models", "_block_compile.py")
+    spec = importlib.util.spec_from_file_location("_padded_global_block", path)
+    block = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(block)
+    monkeypatch.setitem(sys.modules, block._LH_MODULE, LH)
+
+    def unexpected_fallback(*args, **kwargs):
+        raise AssertionError("verified intervals should reach the tiled kernel")
+
+    router = LH._make_router(unexpected_fallback)
+    compiled = torch.compile(lambda q, k, v, mask: router(module, q, k, v, mask)[0], fullgraph = True)
+    length = 40
+    inputs = [
+        torch.randn(2, heads, length, 512, device = device, dtype = dtype).requires_grad_()
+        for heads in (4, 1, 1)
+    ]
+    for end in (31, 25):
+        mask = _causal(length).to(device).expand(2, 1, -1, -1).clone()
+        mask[1, :, :, end:] = False
+        setattr(mask, block._PLAIN_CAUSAL_ATTR, False)
+        hidden = inputs[0][:, 0]
+        prepared = block._global_interval_mask(layer, hidden, {"attention_mask": mask})
+        got = compiled(*inputs, prepared["attention_mask"])
+        refs = [value.detach().float().requires_grad_() for value in inputs]
+        want = _reference(*refs, mask)
+        grad = torch.randn_like(got)
+        actual = torch.autograd.grad(got, inputs, grad)
+        expected = torch.autograd.grad(want, refs, grad.float())
+        for result, reference in zip((got, *actual), (want, *expected)):
+            torch.testing.assert_close(result.float(), reference, rtol = 0.04, atol = 0.04)
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
