@@ -1142,24 +1142,37 @@ def _as_bytes(tensor):
     return tensor.detach().contiguous().reshape(-1).view(torch.uint8)
 
 
-def _same_packed_bytes(live, loaded, broadcast_dist):
+def _same_packed_bytes(live, loaded, dist, broadcast):
     """Whether the packed 4-bit bytes being loaded equal the live (possibly sharded) weight's. Every
-    rank gathers the live weight (a collective); with `broadcast_dist` only rank 0 holds `loaded`,
-    decides, and sends the verdict, so all ranks agree."""
+    rank gathers the live weight (a collective); only a rank holding the loaded data (rank 0 with
+    `broadcast`, every rank otherwise) compares, on the gathered weight's device, so a peer never
+    copies or reads its placeholder (an empty or meta state dict). One collective then agrees the
+    verdict, so every rank raises or keeps loading together: rank 0's broadcast, or a sum of
+    mismatches over the weight's mesh."""
     DTensor = _dtensor_class()
+    mesh = None
     if DTensor is not None and isinstance(live, DTensor):
+        mesh = live.device_mesh
         live = _gather_full(live, DTensor)
-    if DTensor is not None and isinstance(loaded, DTensor):
-        loaded = loaded.full_tensor()
     same = False
-    if isinstance(loaded, torch.Tensor):
-        a, b = _as_bytes(live), _as_bytes(loaded)
-        same = a.numel() == b.numel() and torch.equal(a.cpu(), b.cpu())
-    if broadcast_dist is not None:
+    if not broadcast or dist.get_rank() == 0:
+        if DTensor is not None and isinstance(loaded, DTensor):
+            loaded = loaded.full_tensor()
+        if isinstance(loaded, torch.Tensor) and "meta" not in (
+            live.device.type,
+            loaded.device.type,
+        ):
+            a, b = _as_bytes(live), _as_bytes(loaded)
+            same = a.numel() == b.numel() and torch.equal(a, b.to(a.device))
+    if broadcast:
         verdict = [same]
-        broadcast_dist.broadcast_object_list(verdict, src = 0)
+        dist.broadcast_object_list(verdict, src = 0)
         same = bool(verdict[0])
-    return same
+    elif dist is not None and mesh is not None:
+        differs = torch.tensor([0 if same else 1], dtype = torch.int32, device = live.device)
+        mesh_all_reduce(differs, mesh, dist)
+        same = int(differs.item()) == 0
+    return bool(same)
 
 
 def _restore_quant_state(model, state_dict, options):
@@ -1192,6 +1205,7 @@ def _restore_quant_state(model, state_dict, options):
     from bitsandbytes.functional import QuantState
 
     strict = bool(getattr(options, "strict", True)) if options is not None else True
+    owns = not broadcast or dist.get_rank() == 0
     orphans = []
     for prefix, module in entries:
         live = module.weight.quant_state
@@ -1203,7 +1217,11 @@ def _restore_quant_state(model, state_dict, options):
         }
         loads_weight = head[:-1] in state_dict
         if broadcast:
-            payload = [(loads_weight, {k: v.detach().cpu() for k, v in saved.items()})]
+            # Only rank 0 holds the entries: a peer's own dict is a placeholder (empty, or meta
+            # tensors) it must not copy to the host, as broadcast_object_list replaces it anyway.
+            payload = [None]
+            if owns:
+                payload = [(loads_weight, {k: v.detach().cpu() for k, v in saved.items()})]
             dist.broadcast_object_list(payload, src = 0)
             loads_weight, saved = payload[0]
         if not saved:
@@ -1211,7 +1229,7 @@ def _restore_quant_state(model, state_dict, options):
                 # Pre-QuantState checkpoints: live scales apply only when the saved packed bytes
                 # match the live ones.
                 same = _same_packed_bytes(
-                    module.weight, state_dict.get(head[:-1]), dist if broadcast else None
+                    module.weight, state_dict.get(head[:-1]) if owns else None, dist, broadcast
                 )
                 if not same:
                     raise ValueError(
@@ -1280,7 +1298,7 @@ def _restore_quant_state(model, state_dict, options):
         with torch.no_grad():
             for _, a, b in pairs:
                 b.copy_(a.to(b.device))
-    if orphans and (not broadcast or dist.get_rank() == 0):
+    if orphans and owns:
         import warnings
         warnings.warn(
             f"Unsloth: skipped the 4-bit quantization state of {', '.join(orphans)}: the state dict "
