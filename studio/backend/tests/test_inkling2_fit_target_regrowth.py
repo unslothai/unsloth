@@ -94,38 +94,93 @@ def _ub(cmd):
     return int(v) if v else None
 
 
+# Inkling-2-Mini UD-IQ1_S, CUDA, -np 4 --kv-unified, slot filled to 90%: compute buffer at load
+# and after the prompt (MiB). #399 = llama.cpp #399 build b12628, old = shipped b12602.
+MEASURED = [
+    ("new", "f16", 512, 32768, 258, 747),
+    ("new", "q8_0", 512, 32768, 258, 747),
+    ("new", "f16", 512, 131072, 382, 837),
+    ("new", "q8_0", 512, 131072, 541, 837),
+    ("new", "f16", 512, 524288, 1078, 1077),
+    ("new", "f16", 512, 1048576, 2102, 2101),
+    ("new", "f16", 1024, 32768, 514, 1594),
+    ("new", "f16", 1024, 1048576, 4206, 4205),
+    ("new", "f16", 2048, 32768, 1035, 3582),
+    ("new", "q8_0", 2048, 32768, 1035, 3582),
+    ("new", "f16", 2048, 131072, 1443, 3925),
+    ("new", "q8_0", 2048, 131072, 1443, 3925),
+    ("new", "f16", 2048, 262144, 2275, 4492),
+    ("new", "f16", 2048, 524288, 4323, 5836),
+    ("old", "f16", 512, 32768, 541, 811),
+    ("old", "f16", 512, 131072, 1357, 1497),
+]
+PAD_MIB = 100
+
+
+@pytest.mark.parametrize("build, kv, ub, ctx, load, runtime", MEASURED)
+def test_margin_covers_every_measured_growth(build, kv, ub, ctx, load, runtime):
+    b = ink._inkling2_mini(ink.NEW_CUDA if build == "new" else ink.OLD_CUDA)
+    assert b._inkling2_fit_regrowth_mib(ctx, ub, kv, n_parallel = 4) >= runtime - load + PAD_MIB
+
+
+@pytest.mark.parametrize("build, kv, ub, ctx, load, runtime", MEASURED)
+def test_reserve_bound_stays_under_every_measured_reserve(build, kv, ub, ctx, load, runtime):
+    b = ink._inkling2_mini(ink.NEW_CUDA if build == "new" else ink.OLD_CUDA)
+    act = b._INKLING2_FIT_ACT_MIB_PER_UB * ub * 1024 * 1024
+    if build == "new":
+        bound = max(
+            b._INKLING2_FIT_RESERVE_ACT_FLOOR * act,
+            b._INKLING2_FIT_RESERVE_ACT_BASE * act + b._INKLING2_FIT_RESERVE_MASK_BYTES * ub * ctx,
+        )
+    else:
+        bound = (
+            b._INKLING2_FIT_LEGACY_RESERVE_ACT * act
+            + b._INKLING2_FIT_LEGACY_RESERVE_BYTES * ub * ctx
+        )
+    assert bound / (1024 * 1024) <= load
+
+
+def test_runtime_estimate_is_left_as_it_is():
+    # #18919's estimate is unchanged; the margin's runtime floor only engages past ~262K cells.
+    b = ink._inkling2_mini(ink.NEW_CUDA)
+    assert round(ink._compute(b, 131072, "f16", ub = 2048, slots = 4) / (1024 * 1024)) == 4036
+    assert round(ink._compute(b, 524288, "f16", ub = 2048, slots = 4) / (1024 * 1024)) == 5572
+
+
+def test_fixed_scale_matches_the_mini_activation_estimate():
+    b = ink._inkling2_mini(ink.NEW_CUDA)
+    for ub in (512, 1024, 2048):
+        act = b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = 4) / (1024 * 1024)
+        assert act == pytest.approx(b._INKLING2_FIT_ACT_MIB_PER_UB * ub, rel = 0.01)
+
+
+def test_growth_does_not_scale_with_a_larger_model():
+    small, mini = ink._inkling2_mini(ink.NEW_CUDA), ink._inkling2_mini(ink.NEW_CUDA)
+    small._embedding_length *= 2
+    small._expert_feed_forward_length *= 2
+    assert small._inkling2_fit_regrowth_mib(131072, 2048, "f16") == pytest.approx(
+        mini._inkling2_fit_regrowth_mib(131072, 2048, "f16"), abs = 1
+    )
+
+
+def test_unknown_context_takes_the_largest_growth():
+    b = ink._inkling2_mini(ink.NEW_CUDA)
+    fixed = [b._inkling2_fit_regrowth_mib(c, 2048, "f16") for c in (8192, 65536, 131072, 1048576)]
+    assert b._inkling2_fit_regrowth_mib(8192, 2048, "f16", n_ctx_max = 1048576) >= max(fixed)
+
+
 @pytest.mark.parametrize(
-    "support, kv, ub, ctx, want",
+    "support, kv",
     [
-        # #399: 1200 KiB per ub token less the 2 B/cell the reserve leads by (measured +1081 at ub 1024).
-        (ink.NEW_CUDA, "f16", 1024, 32768, 1136),
-        (ink.NEW_CUDA, "q8_0", 1024, 32768, 1136),
-        (ink.NEW_CUDA, "f16", 2048, 32768, 2272),
-        (ink.NEW_CUDA, "f16", 512, 131072, 472),
-        # The reserve has overtaken the regrowth at 1M (measured: no growth).
-        (ink.NEW_CUDA, "f16", 1024, 1048576, 0),
-        # Pre-#399 f16: 800 KiB per ub token less 3 B/cell.
-        (ink.OLD_CUDA, "f16", 512, 32768, 352),
         # Pre-#399 q8_0 runs dense, and Metal has no banded kernel: nothing modelled.
-        (ink.OLD_CUDA, "q8_0", 2048, 32768, 0),
-        (lc._Inkling2BandedSupport("metal", False), "f16", 2048, 32768, 0),
+        (ink.OLD_CUDA, "q8_0"),
+        (lc._Inkling2BandedSupport("metal", False), "f16"),
     ],
 )
-def test_regrowth_is_the_runtime_minus_the_reserve(support, kv, ub, ctx, want):
+def test_no_banded_path_no_growth(support, kv):
     b = ink._inkling2_mini(support)
-    assert b._inkling2_fit_regrowth_mib(ctx, ub, kv) == want
-
-
-def test_regrowth_matches_the_estimate_it_comes_from():
-    # Same terms as _compute_buffer_ctx_bytes: estimate - reserve-only estimate == regrowth.
-    b = ink._inkling2_mini(ink.NEW_CUDA)
-    ctx, ub = 32768, 2048
-    total = b._compute_buffer_ctx_bytes(ctx, ub, "f16")
-    reserve, regrown, fixed = b._inkling2_banded_terms(ctx, ub, "f16")
-    assert total == max(reserve, regrown) + fixed
-    assert (
-        0 <= b._inkling2_fit_regrowth_mib(ctx, ub, "f16") - (regrown - reserve) / (1024 * 1024) < 1
-    )
+    assert b._inkling2_fit_regrowth_mib(32768, 2048, kv) == 0
+    assert b._inkling2_fit_regrowth_mib(32768, 2048, kv, flash_attn = False) == 0
 
 
 def test_regrowth_is_zero_off_inkling2():
@@ -138,11 +193,11 @@ def test_regrowth_is_zero_off_inkling2():
 
 @pytest.mark.parametrize("kv", ["f16", "q8_0"])
 def test_fit_on_ub_2048_launch_spells_the_margin(tmp_path, monkeypatch, kv):
-    # Experts in RAM raise -ub to 2048: 1024 default + 2272 MiB regrowth (main: unspelled 1024).
+    # Experts in RAM raise -ub to 2048: 1024 default + 2690 MiB growth (measured 2547; #18919: unspelled).
     _b, cmd = _launch(
         tmp_path, monkeypatch, [(0, 48000, 49140)], ink.NEW_CUDA, n_ctx = 32768, cache_type_kv = kv
     )
-    assert (_flag(cmd, "--fit"), _ub(cmd), _flag(cmd, "--fit-target")) == ("on", 2048, "3296")
+    assert (_flag(cmd, "--fit"), _ub(cmd), _flag(cmd, "--fit-target")) == ("on", 2048, "3714")
 
 
 @pytest.mark.parametrize("kv", ["f16", "q8_0"])
