@@ -177,7 +177,6 @@ def test_mixed_cards_keep_their_own_margins_plus_the_headroom(tmp_path, monkeypa
 
 
 def _planned_ctx_backend(tmp_path):
-    # A Studio-planned load (--fit off): 24 GiB card, a 1 KiB/token KV, a 1M native context.
     backend, gguf = h.cuda_backend(tmp_path, memory = ((0, 23_857, 24_122),))
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **kw: n_ctx * 32 * 1024
@@ -191,8 +190,7 @@ def _ctx(cmd):
 
 
 def test_respawn_of_a_studio_planned_context_shrinks_it_by_the_headroom(tmp_path):
-    # #18757: Auto context with --fit off never passes --fit-target, so the headroom has to
-    # come out of Studio's own budget or the respawn reruns the plan that ran out of memory.
+    # #18757: --fit off respawn must shrink Studio's own context plan.
     backend, gguf = _planned_ctx_backend(tmp_path)
     intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 0)
     first = _spawn_cmd(backend, intent)

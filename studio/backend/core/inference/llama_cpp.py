@@ -26254,8 +26254,7 @@ class LlamaCppBackend:
                         # Callers pass the ACTIVE fraction so the ranking matches the
                         # budget the fit then tests, else mixed totals mis-order.
                         idx, free = g
-                        # The OOM headroom also shrinks Studio's own plan: a --fit off load
-                        # never passes --fit-target, so the respawn would rerun the same plan.
+                        # --fit off never passes --fit-target, so the headroom must shrink our plan.
                         return (
                             _vram_usable_mib(
                                 free,
