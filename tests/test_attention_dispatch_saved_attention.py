@@ -337,6 +337,10 @@ def test_rocm_explicit_setting_binds_from_configuration(monkeypatch):
 def test_rocm_explicit_routing_without_a_frame_compiles_fullgraph(monkeypatch, checkpointing):
     """No frame (no Unsloth checkpoint, or a device whose SDPA keeps nothing): the call stays in the
     caller's graph, so fullgraph=True training compiles; inside a checkpoint the replay still reuses."""
+    if not hasattr(SA, "save_attention_requested"):
+        pytest.skip(
+            "unsloth_zoo without per-device ROCm eligibility keeps ROCm saved attention off"
+        )
     monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
     monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
