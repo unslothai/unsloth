@@ -201,9 +201,22 @@ def _seed(planner, **kw):
     return D.DiffusionBackend._rocm_hosted_int8_seed(planner, _fam(), GPU_BF16, **args)
 
 
+def _flux3_source():
+    from core.inference.diffusion_prequant import PrequantSource
+    return PrequantSource(
+        kind = "repo",
+        location = "unsloth/flux-3-image-klein-FP8",
+        filename = "flux-3-image-klein-INT8-ConvRot.safetensors",
+        fallback_filenames = ("flux-3-image-klein-INT8.safetensors",),
+    )
+
+
 @pytest.fixture
 def planner_host(eligible, monkeypatch):
-    source = types.SimpleNamespace(kind = "repo", location = "unsloth/flux-3-image-klein-FP8")
+    from core.inference import diffusion_prequant as pq
+
+    source = _flux3_source()
+    monkeypatch.setattr(pq, "hosted_prequant_refusal", lambda *a, **k: None)
     monkeypatch.setattr(D, "denoiser_prequant_source", lambda *a, **k: source)
     monkeypatch.setattr(
         D,
@@ -233,7 +246,13 @@ def test_planner_never_seeds_a_local_override(planner_host, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "name", ["flux-3-image-klein-INT8.safetensors", "Z-Image-Turbo-INT8.pt", "x-INT8-ConvRot.pt"]
+    "name",
+    [
+        "flux-3-image-klein-INT8.safetensors",
+        "Z-Image-Turbo-INT8.pt",
+        "x-INT8-ConvRot.pt",
+        "x-INT8-ConvRot-ComfyUI.safetensors",
+    ],
 )
 def test_reader_takes_only_a_convrot_safetensors_build(monkeypatch, tmp_path, name):
     from core.inference import diffusion_prequant as pq
@@ -243,8 +262,7 @@ def test_reader_takes_only_a_convrot_safetensors_build(monkeypatch, tmp_path, na
     monkeypatch.setattr(pq, "_resolve_checkpoint_path", lambda *a, **k: str(path))
     called = []
     monkeypatch.setattr(NH, "load_native_from_hosted", lambda *a, **k: called.append(1))
-    source = types.SimpleNamespace(kind = "repo", location = "unsloth/flux-3-image-klein-FP8")
-    assert RH.load_rocm_hosted_transformer(_fam(), object, FLUX3[0], source) is None
+    assert RH.load_rocm_hosted_transformer(_fam(), object, FLUX3[0], _flux3_source()) is None
     assert called == []
 
 
@@ -262,8 +280,7 @@ def test_reader_opts_into_the_keep_fp32_rule(monkeypatch, tmp_path):
         return module
 
     monkeypatch.setattr(NH, "load_native_from_hosted", reader)
-    source = types.SimpleNamespace(kind = "repo", location = "unsloth/flux-3-image-klein-FP8")
-    assert RH.load_rocm_hosted_transformer(_fam(), object, FLUX3[0], source) is module
+    assert RH.load_rocm_hosted_transformer(_fam(), object, FLUX3[0], _flux3_source()) is module
     assert seen["keep_fp32"] is True and seen["spec"]["act_int8"] is True
     assert seen["tag"] == "diffusion.rocm_hosted_int8"
     assert module._unsloth_prequant_path == str(path)
@@ -380,3 +397,56 @@ def test_hosted_reader_logs_under_the_callers_tag(tmp_path):
         str(path), object, "unused", spec = {"scheme": "int8"}, family = None, logger = _Log()
     )
     assert seen and seen[0].startswith("video.native_hosted: ")
+
+
+def test_planner_and_loader_share_one_convrot_candidate_list(planner_host, monkeypatch, tmp_path):
+    # A mirror holding only the plain INT8 file: the plan probes the ConvRot file, so the load must resolve it too.
+    from core.inference import diffusion_prequant as pq
+
+    fam = _fam(QWEN21)
+    repo = "unsloth/Qwen-Image-2.1-FP8"
+    mirror = tmp_path / "mirror"
+    (mirror / repo).mkdir(parents = True)
+    (mirror / repo / "Qwen-Image-2.1-INT8.safetensors").write_bytes(b"")
+    monkeypatch.setenv(pq.PREQUANT_MIRROR_ENV, str(mirror))
+    source = pq.resolve_prequant_source(fam, "int8", base_repo = QWEN21[0])
+    assert source is not None and "Qwen-Image-2.1-INT8.safetensors" in source.candidate_filenames
+    probed = []
+    monkeypatch.setattr(
+        pq, "hosted_prequant_refusal", lambda src, *a, **k: probed.append(src.candidate_filenames)
+    )
+    monkeypatch.setattr(D, "denoiser_prequant_source", lambda *a, **k: source)
+    planner = _Planner(types.SimpleNamespace(offload_policy = OFFLOAD_NONE))
+    kw = dict(base = QWEN21[0], repo_id = QWEN21[0], fetch_base = QWEN21[0])
+    assert (
+        D.DiffusionBackend._rocm_hosted_int8_seed(
+            planner,
+            fam,
+            GPU_BF16,
+            raw = "int8",
+            kind = "pipeline",
+            speed_mode = None,
+            memory_mode = None,
+            cpu_offload = False,
+            transformer_prequant_path = None,
+            local_files_only = False,
+            text_encoder_quant = None,
+            **kw,
+        )
+        == tq.TQ_INT8
+    )
+    assert probed == [("Qwen-Image-2.1-INT8-ConvRot.safetensors",)]
+    fetched = []
+    staged = tmp_path / "Qwen-Image-2.1-INT8-ConvRot.safetensors"
+
+    def download(src, name, *a, **k):
+        fetched.append(name)
+        return str(staged)
+
+    monkeypatch.setattr(pq, "_download_checkpoint_name", download)
+    read = []
+    monkeypatch.setattr(
+        NH, "load_native_from_hosted", lambda path, *a, **k: read.append(path) or object()
+    )
+    assert RH.load_rocm_hosted_transformer(fam, object, QWEN21[0], source) is not None
+    assert fetched == list(probed[0]) and read == [str(staged)]

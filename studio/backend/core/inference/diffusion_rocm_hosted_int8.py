@@ -39,6 +39,35 @@ def _hosted_convrot_file(fam: Any) -> Optional[str]:
     return str(spec.filename)
 
 
+def _is_convrot_safetensors(name: Any) -> bool:
+    # The torchao-layout ConvRot build only: not a plain / pickled int8 file, nor its alternate-layout twin.
+    return str(name or "").lower().endswith("-convrot.safetensors")
+
+
+def rocm_convrot_source(source: Any) -> Any:
+    """``source`` narrowed to its int8 ConvRot safetensors names, or None. The planner's header probe and the
+    loader's resolver both use it, so a mirror or cache holding only the plain int8 file cannot make the plan pick
+    the ConvRot file while the load resolves (and refuses) the plain one. Never raises."""
+    try:
+        if getattr(source, "kind", None) != "repo":
+            return None
+        from .diffusion_prequant import PrequantSource, candidate_filenames_of
+
+        names = [n for n in candidate_filenames_of(source) if _is_convrot_safetensors(n)]
+        if not names:
+            return None
+        declared = tuple(n for n in (getattr(source, "declared_filenames", ()) or ()) if n in names)
+        return PrequantSource(
+            kind = "repo",
+            location = str(source.location),
+            filename = names[0],
+            fallback_filenames = tuple(names[1:]),
+            declared_filenames = declared,
+        )
+    except Exception:  # noqa: BLE001 - unanswerable keeps the dense shards
+        return None
+
+
 def rocm_image_hosted_int8_reason(fam: Any, requested: Optional[str], target: Any) -> Optional[str]:
     """Why an EXPLICIT int8 image request on this ROCm RDNA card reads the hosted int8 ConvRot DiT as native W8A8,
     else None (the dense shards are quantised at load, as before). Host-level only: the caller still requires a
@@ -99,8 +128,16 @@ def load_rocm_hosted_transformer(
         from .diffusion_prequant import _resolve_checkpoint_path
         from .diffusion_transformer_quant import TQ_INT8
 
+        convrot = rocm_convrot_source(source)
+        if convrot is None:
+            if logger is not None:
+                logger.info(
+                    "diffusion.rocm_hosted_int8: %s offers no int8 ConvRot safetensors build",
+                    getattr(source, "location", None),
+                )
+            return None
         path = _resolve_checkpoint_path(
-            source,
+            convrot,
             hf_token,
             cache_dir,
             local_files_only = local_files_only,
@@ -109,7 +146,7 @@ def load_rocm_hosted_transformer(
         )
         # The ConvRot safetensors build only: a plain or pickled int8 file is not the native W8A8 build.
         base_name = os.path.basename(str(path or "")).lower()
-        if not base_name.endswith(".safetensors") or "convrot" not in base_name:
+        if not _is_convrot_safetensors(base_name):
             if path is not None and logger is not None:
                 logger.info(
                     "diffusion.rocm_hosted_int8: %s is not an int8 ConvRot safetensors build",
