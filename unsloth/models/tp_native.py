@@ -3483,20 +3483,53 @@ def check_tp_dp_composition(model, dp_mesh):
 _SQUARE_SUM_CHUNK = 1 << 24
 
 
+def _grad_slices(tensor, chunk):
+    """Views of tensor with at most chunk elements each, covering every element once, never a copy.
+    A contiguous tensor splits its flat view; a strided one narrows its largest dim (recursively)."""
+    if tensor.numel() <= chunk:
+        yield tensor
+        return
+    if tensor.is_contiguous():
+        yield from tensor.view(-1).split(chunk)
+        return
+    dim = max(range(tensor.ndim), key = tensor.size)
+    length = tensor.size(dim)
+    width = max(1, chunk // (tensor.numel() // length))
+    for start in range(0, length, width):
+        yield from _grad_slices(tensor.narrow(dim, start, min(width, length - start)), chunk)
+
+
+def _disjoint_strides(tensor):
+    """No two indices of tensor address the same element, so its slices can be written separately."""
+    span = 1
+    for stride, size in sorted(zip(tensor.stride(), tensor.shape)):
+        if size > 1:
+            if stride < span:
+                return False
+            span += (size - 1) * stride
+    return True
+
+
 def _square_sum(tensor, dtype = torch.float32):
     """sum(tensor.to(dtype) ** 2) with a transient of at most _SQUARE_SUM_CHUNK elements of dtype.
-    A tensor of at most that many elements is reduced in one call exactly as before (bitwise unchanged);
-    a larger one adds its slices' square sums in dtype, in order (deterministic, within dtype rounding)."""
+    A tensor of at most that many elements is reduced in one call, with the same values as before (bitwise);
+    a larger one adds its slices' square sums in dtype, in order (deterministic, within dtype rounding).
+    Detached: a gradient that requires grad does not make autograd keep every slice alive."""
+    tensor = tensor.detach()
     chunk = _SQUARE_SUM_CHUNK
-    if tensor.numel() <= chunk:
+    if tensor.layout != torch.strided:
+        # Sparse: as before; its stored values, not numel, bound the transient.
         return tensor.to(dtype).square().sum()
+    if tensor.numel() <= chunk:
+        part = tensor.to(dtype)
+        part = part.square() if part is tensor else part.square_()
+        return part.sum()
     total = None
-    for part in tensor.reshape(-1).split(chunk):
-        part = part.to(dtype)
-        # A cast is a fresh tensor and can be squared in place; an uncast slice is the gradient itself.
-        part = part.square_() if part.dtype != tensor.dtype else part.square()
-        sq = part.sum()
-        del part
+    for part in _grad_slices(tensor, chunk):
+        cast = part.to(dtype)
+        cast = cast.square() if cast is part else cast.square_()
+        sq = cast.sum()
+        del cast
         total = sq if total is None else total + sq
     return total
 
@@ -3560,8 +3593,12 @@ def _scale_grads_(params, total, max_norm, eps):
             if local.dtype in (torch.float16, torch.bfloat16):
                 # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
                 # Elementwise, so slicing a contiguous gradient keeps every value and bounds the fp32 copy.
+                # A strided gradient slices along its layout when no two indices share an element.
                 parts = (
-                    local.view(-1).split(_SQUARE_SUM_CHUNK) if local.is_contiguous() else (local,)
+                    _grad_slices(local, _SQUARE_SUM_CHUNK)
+                    if local.layout == torch.strided
+                    and (local.is_contiguous() or _disjoint_strides(local))
+                    else (local,)
                 )
                 for part in parts:
                     part.copy_(part.float().mul_(c))
