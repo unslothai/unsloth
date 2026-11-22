@@ -2035,7 +2035,7 @@ def _fake_block_decoder(monkeypatch):
     module.VAEBlockDecoder = _VAEBlockDecoder
     monkeypatch.setitem(sys.modules, "mflux.models.common.vae.block_decoder", module)
     tiling = types.ModuleType("mflux.models.common.vae.tiling_config")
-    tiling.TilingConfig = None  # the strip path must not read it
+    tiling.TilingConfig = None
     monkeypatch.setitem(sys.modules, "mflux.models.common.vae.tiling_config", tiling)
 
 
@@ -2083,7 +2083,6 @@ _MFLUX_024_DECODE_GIB = ((512, 2.07, 0.47), (768, 4.61, 0.79), (1024, 6.30, 1.34
 
 def test_strip_and_whole_image_decode_estimates_match_the_metal_measurements():
     for side, full_gib, strip_gib in _MFLUX_024_DECODE_GIB:
-        # The whole-image peak is not linear in pixels: the estimate bounds it, within 1 GiB.
         assert full_gib <= mb.full_decode_bytes(side, side) / _GIB < full_gib + 1.0
         assert abs(mb.strip_decode_bytes(side, side) / _GIB - strip_gib) < 0.05
     assert mb.strip_decode_bytes(1024, 1024) <= mb.ACTIVATION_HEADROOM_BYTES

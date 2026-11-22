@@ -18,10 +18,9 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 CONVERTER_VERSION = "1"
-# mflux 0.24 requires Python 3.11, so a Python 3.10 venv keeps 0.22, the newest release that installs there.
+# mflux 0.24 requires Python 3.11.
 MFLUX_VERSION = "0.24.0" if sys.version_info >= (3, 11) else "0.22.0"
-# Every mflux the engine runs on (the decode path is read off the loaded VAE), so a pin that has not moved yet
-# keeps loading. Both write the same Z-Image weight layout, so a converted GGUF serves either.
+# Both share the Z-Image weight layout, so a converted GGUF serves either.
 MFLUX_COMPATIBLE_VERSIONS = frozenset({"0.22.0", "0.24.0"})
 GROUP_SIZE = 32
 OUTPUT_FILENAME = "0.safetensors"

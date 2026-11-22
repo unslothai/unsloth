@@ -414,7 +414,6 @@ def test_an_incompatible_installed_runtime_falls_back(monkeypatch, versions, nee
 
 @pytest.mark.parametrize("mflux", ["0.22.0", "0.24.0"])
 def test_either_supported_mflux_selects_mlx(monkeypatch, mflux):
-    # A pin that lags (a Python 3.10 venv, or an update that could not reach PyPI) keeps the engine.
     _host(monkeypatch)
     _device(monkeypatch, "mps")
     _runtime(monkeypatch, versions = {"mflux": mflux})

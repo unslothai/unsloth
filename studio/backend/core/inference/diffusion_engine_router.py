@@ -454,8 +454,7 @@ def _mlx_host_refusal() -> Optional[str]:
 # mflux's own darwin mlx range plus the light deps install_python_stack.py installs beside it (mflux goes in --no-deps).
 _MLX_RUNTIME_REQUIREMENTS: tuple[str, ...] = (
     "mlx>=0.32.0,<0.33.0",
-    # Pillow 13.0.0 breaks every mflux 0.22 import (PIL._typing), and the installer keeps 0.24 on 12 too, so it is
-    # refused here, not at load.
+    # Pillow 13.0.0 breaks every mflux 0.22 import (PIL._typing), so it is refused here, not at load.
     "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
     "platformdirs>=4,<5",

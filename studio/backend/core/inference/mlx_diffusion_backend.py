@@ -151,8 +151,7 @@ _VAE_TILING_OFF = ("0", "off", "false", "no")
 
 
 def decode_headroom_bytes(runtime: Any) -> int:
-    """Headroom for the decode path ``runtime`` takes: the low-memory peak (tiles, or mflux >= 0.24's row strips) only
-    when it can take that path (``vae_tiled``) and it is not forced off, else the whole-image 1024x1024 peak."""
+    """Low-memory decode peak when ``runtime`` can take it (``vae_tiled``, not forced off), else the 1024x1024 peak."""
     can_tile = callable(getattr(runtime, "vae_tiled", None))
     forced_off = (
         os.environ.get("UNSLOTH_DIFFUSION_MLX_VAE_TILING", "").strip().lower() in _VAE_TILING_OFF
@@ -347,10 +346,8 @@ _VAE_DECODE_BYTES_PER_PIXEL = 6350
 VAE_TILING_ENV = "UNSLOTH_DIFFUSION_MLX_VAE_TILING"
 
 
-# mflux >= 0.24 decodes block by block, above the weights (same VAE and Mac): the whole image (``full_precision``,
-# the untiled decode's pixels bit for bit; measured 2.07 / 4.61 / 6.30 GiB at 512 / 768 / 1024, so the line is an
-# upper bound) ~1.40 GiB plus 5.9 KB per output pixel, or 128-row strips with whole-image GroupNorm statistics
-# (``low_memory``: no seams, ~50 dB from the untiled decode) ~0.15 GiB plus 1.19 KB per pixel.
+# mflux >= 0.24 decode above weights: ``full_precision`` measured 2.07 / 4.61 / 6.30 GiB at 512 / 768 / 1024 (line is an
+# upper bound); ``low_memory`` 128-row strips, whole-image GroupNorm (no seams, ~50 dB from untiled).
 _FULL_DECODE_FIXED_BYTES = int(1.40 * 1024**3)
 _FULL_DECODE_BYTES_PER_PIXEL = 5875
 _STRIP_DECODE_FIXED_BYTES = int(0.15 * 1024**3)
@@ -581,14 +578,13 @@ class MfluxRuntime:
         try:
             from core.inference.gpu_residency import metal_media_priced
 
-            # Price reserved the low-memory decode; a chat model may join mid-generation on it.
+            # A chat model may join mid-generation on the reserved low-memory headroom.
             priced = metal_media_priced()
         except Exception:  # noqa: BLE001
             priced = False
         vae = getattr(model, "vae", None)
         if isinstance(getattr(vae, "decode_mode", None), str):
-            # mflux >= 0.24 ignores tiling here: the whole image block by block, or row strips with whole-image
-            # GroupNorm statistics (no seams) when that would not fit.
+            # mflux >= 0.24 ignores tiling; decode_mode picks whole image or strips.
             from mflux.models.common.vae.block_decoder import VAEBlockDecoder
 
             strips = vae_tiling_needed(
