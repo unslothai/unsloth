@@ -158,3 +158,36 @@ def test_call_only_final_answer_is_retried_once(monkeypatch):
         [{"type": "function", "function": {"name": "web_search"}}],
     )
     assert len(payloads) == 3 and "tools" not in payloads[2]
+
+
+def test_reasoning_then_call_final_answer_is_retried(monkeypatch):
+    first = _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({"query": "q"})},
+                }
+            ]
+        }
+    )
+    thought_then_call = [
+        _sse({"reasoning_content": "Need more detail."}),
+        _sse({"content": CALL}),
+        _done(),
+    ]
+    answer = [_sse({"content": "A sparse MoE model."}), _done()]
+    backend, payloads = _backend_and_payloads(
+        monkeypatch, [[first, _done()], thought_then_call, answer]
+    )
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 3 and "tools" not in payloads[2]
+    final = [e["text"] for e in events if e.get("type") == "content"][-1]
+    assert final.endswith("A sparse MoE model.") and "tool_call_start" not in final, final

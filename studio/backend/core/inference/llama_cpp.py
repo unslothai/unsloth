@@ -43389,7 +43389,7 @@ class LlamaCppBackend:
                         and stream_payload.get("tools")
                         and _metadata_finish_reason != "length"
                         and answer_text.strip()
-                        and not _shown_this_attempt.strip()
+                        and not _strip_tool_markup(answer_text, final = True).strip()
                         and _remaining_output_budget() != 0
                     ):
                         # The answer was only a stripped tool call despite tool_choice "none" (#18802): re-ask once with no tools in the prompt.
