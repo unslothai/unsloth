@@ -559,7 +559,6 @@ def test_a_long_prompt_read_under_keep_alives_does_not_count_against_the_total(m
     monkeypatch.setattr(cloud_compaction, "SUMMARY_TIMEOUT_S", 0.3)
 
     async def stream():
-        # llama.cpp sends an SSE comment every 30 s while it reads the prompt.
         for _ in range(6):
             await asyncio.sleep(0.1)
             yield ":"

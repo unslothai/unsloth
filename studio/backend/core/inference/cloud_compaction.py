@@ -27,18 +27,17 @@ TAIL_TOKENS = 15_000
 TAIL_BUDGET_SHARE = 0.3
 SUMMARY_MAX_TOKENS = 4_096
 SUMMARY_MIN_TOKENS = 1_024
-# A slow but streaming provider (a local server, a large backlog) is waited for; one that goes
-# silent is not. The total cap only bounds a reply that never ends: it starts with the reply, so
-# a server reading a long prompt (llama.cpp sends a keep-alive comment every 30 s) is not cut off.
+# Only silence ends a summary call early. The total cap starts with the reply, so reading a long
+# prompt (llama.cpp sends a keep-alive every 30 s) does not count against it.
 SUMMARY_IDLE_TIMEOUT_S = 120.0
-# Self-hosted servers are silent while reading the prompt; same as the chat stream's read timeout.
+# The chat stream's read timeout: some self-hosted servers send nothing while reading.
 SUMMARY_FIRST_LINE_TIMEOUT_S = 300.0
 SUMMARY_TIMEOUT_S = 600.0
 SUMMARY_MAX_CALLS = 8
 # One tool result or pasted file must not crowd the rest of the transcript out of the summary call.
 _TRANSCRIPT_MESSAGE_CHARS = 12_000
 _TRANSCRIPT_TOOL_CHARS = 3_000
-# Thinking can spend the whole summary cap; off is a no-op here without it, cloud may reject it.
+# Thinking can spend the whole summary cap; cloud providers may reject an explicit off.
 _THINKING_OFF_PROVIDERS = frozenset({"ollama", "llama_cpp", "vllm", "custom"})
 
 COMPACTING_SSE_LINE = 'data: {"type":"generation_progress","phase":"compacting"}'
