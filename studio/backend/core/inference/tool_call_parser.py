@@ -4505,9 +4505,9 @@ def _parse_minimax_tool_calls(
     return out
 
 
-# Call-list body start (``[name(``, ``name(``, ``[{``); a bare ``[`` / ``[name`` is a call still streaming.
+# Call-list body start (``[name(``, ``name(``, ``[{``, ``{``); a bare ``[`` / ``[name`` is a call still streaming.
 _LFM_CALL_SHAPE_RE = re.compile(
-    r"\s*(?:\[\s*(?:[A-Za-z_][\w.\-]*\s*(?:\(|\Z)|\{|\Z)|[A-Za-z_][\w.\-]*\s*\()"
+    r"\s*(?:\[\s*(?:[A-Za-z_][\w.\-]*\s*(?:\(|\Z)|\{|\Z)|\{|[A-Za-z_][\w.\-]*\s*\()"
 )
 # Auto-Heal: one keyword whose quoted string holds the same quote unescaped (``query='what's new'``).
 _LFM_ONE_STRING_CALL_RE = re.compile(

@@ -239,7 +239,16 @@ def test_a_block_inside_reasoning_is_a_rehearsal():
 
 
 @pytest.mark.parametrize(
-    "text", [SINGLE, MULTI, QUOTES_AND_COMMAS, AFTER_RESULTS, REPORTED, MALFORMED_INNER_QUOTES]
+    "text",
+    [
+        SINGLE,
+        MULTI,
+        QUOTES_AND_COMMAS,
+        AFTER_RESULTS,
+        REPORTED,
+        MALFORMED_INNER_QUOTES,
+        START + '{"name": "web_search", "arguments": {"query": "test"}}' + END,
+    ],
 )
 def test_the_display_strip_hides_a_call_block_and_keeps_the_prose(text):
     assert START in TOOL_XML_SIGNALS
