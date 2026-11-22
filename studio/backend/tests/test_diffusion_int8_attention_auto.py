@@ -1008,3 +1008,27 @@ def test_register_route_prunes_dead_routes_and_keeps_live_ones():
     I._prune_routes()
     assert [r[2].alive() if hasattr(r[2], "alive") else r[2] for r in I._ROUTES] == [True, plain]
     I.forget_plans()
+
+
+def test_a_register_on_another_thread_during_a_prune_is_kept(monkeypatch):
+    """A prune rewrites ``_ROUTES`` (read, filter, write back): a register on another thread (a video load during an
+    image render) that lands between the read and the write must survive the write."""
+    import threading
+
+    late = lambda tokens: False  # noqa: E731
+    live = lambda tokens: False  # noqa: E731
+    racer: list = []
+
+    class _Routes(list):
+        def __setitem__(self, key, value):
+            if isinstance(key, slice) and not racer:
+                # the other thread's register, scheduled right before the write; it waits only if a lock holds it
+                racer.append(threading.Thread(target = I.register_route, args = (0, 64, late)))
+                racer[0].start()
+                racer[0].join(0.5)
+            super().__setitem__(key, value)
+
+    monkeypatch.setattr(I, "_ROUTES", _Routes([(0, 128, live)]))
+    I._prune_routes()
+    racer[0].join(5)
+    assert [route[2] for route in I._ROUTES] == [live, late]
