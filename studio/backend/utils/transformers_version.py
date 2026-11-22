@@ -2425,6 +2425,16 @@ def _venv_t5_is_valid() -> bool:
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
     pkg = _install_source(pkg)
+    # Requirement in a file, never argv: macOS XProtect checks argv of a pasted-install session
+    # with Safe Browsing, reads transformers==5.13.1 as the listed IP 5.13.0.1 and kills it (#18699).
+    with tempfile.TemporaryDirectory(prefix = "unsloth-sidecar-") as tmp:
+        req = os.path.join(tmp, "requirements.txt")
+        with open(req, "w", encoding = "utf-8") as f:
+            f.write(pkg + "\n")
+        return _install_requirement_file_to_dir(pkg, req, target_dir)
+
+
+def _install_requirement_file_to_dir(pkg: str, req: str, target_dir: str) -> bool:
     # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
@@ -2438,7 +2448,8 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
                 target_dir,
                 "--no-deps",
                 "--upgrade",
-                pkg,
+                "-r",
+                req,
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2470,7 +2481,8 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             target_dir,
             "--no-deps",
             "--upgrade",
-            pkg,
+            "-r",
+            req,
         ],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,

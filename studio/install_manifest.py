@@ -1705,10 +1705,13 @@ _SIDECAR_CLI_MARKER = "sidecar:"
 
 
 def _sidecar_cli(argv: Sequence[str]) -> int:
-    if len(argv) < 2:
-        print("usage: install_manifest.py sidecar <dir> <pin>...", file = sys.stderr)
+    # "-" reads the pins from stdin: macOS XProtect kills a pasted-install session whose argv
+    # holds transformers==5.13.1 (read as the listed IP 5.13.0.1, #18699).
+    pins = tuple(sys.stdin.read().split()) if list(argv[1:]) == ["-"] else tuple(argv[1:])
+    if len(argv) < 2 or not pins:
+        print("usage: install_manifest.py sidecar <dir> <pin>... | -", file = sys.stderr)
         return 2
-    current, reason = sidecar_is_current(argv[0], tuple(argv[1:]))
+    current, reason = sidecar_is_current(argv[0], pins)
     print(f"{_SIDECAR_CLI_MARKER} {'current' if current else reason}")
     return 0 if current else 1
 
@@ -1716,5 +1719,5 @@ def _sidecar_cli(argv: Sequence[str]) -> int:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["sidecar"]:
         sys.exit(_sidecar_cli(sys.argv[2:]))
-    print(f"usage: {os.path.basename(__file__)} sidecar <dir> <pin>...", file = sys.stderr)
+    print(f"usage: {os.path.basename(__file__)} sidecar <dir> <pin>... | -", file = sys.stderr)
     sys.exit(2)

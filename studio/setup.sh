@@ -3531,14 +3531,15 @@ _sidecar_current() {
         return $?
     fi
     # Bounded where timeout exists: the shim cannot interrupt a stalled read.
+    # Pins on stdin, never argv: see _sidecar_install_pin.
     # shellcheck disable=SC2086  # the pins are a deliberate word-split list
     if command -v timeout >/dev/null 2>&1; then
-        _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
-            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_out=$(printf '%s\n' "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS \
+            | timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" - 2>/dev/null)
         _sc_rc=$?
     else
-        _sc_out=$("$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
-            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_out=$(printf '%s\n' "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS \
+            | "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" - 2>/dev/null)
         _sc_rc=$?
     fi
     # 124 is timeout's TERM, 137 its KILL.
@@ -3568,6 +3569,19 @@ _sidecar_current() {
     _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
 }
 
+# fast_install_sidecar with the pin in a requirements file, never in argv: macOS XProtect
+# checks a pasted install's argv with Safe Browsing, reads transformers==5.13.1 as the listed
+# IP 5.13.0.1 and kills the whole Terminal session (#18699).
+_sidecar_install_pin() {
+    local _spf_dir _spf_rc
+    _spf_dir=$(mktemp -d) || return 1
+    printf '%s\n' "$2" > "$_spf_dir/requirements.txt"
+    fast_install_sidecar --target "$1" --no-deps -r "$_spf_dir/requirements.txt"
+    _spf_rc=$?
+    rm -rf "${_spf_dir:?}"
+    return "$_spf_rc"
+}
+
 _install_sidecar() {
     _is_dir="$1"
     _is_ver="$2"
@@ -3577,10 +3591,10 @@ _install_sidecar() {
     [ -d "$_is_dir" ] && rm -rf "$_is_dir"
     mkdir -p "$_is_dir"
     : > "$_is_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
+    run_quiet "install transformers $_is_ver" _sidecar_install_pin "$_is_dir" "transformers==$_is_ver"
     # From $_SIDECAR_COMMON_PINS, not a copy: a pin demanded but never installed reads stale forever.
     for _is_pin in $_SIDECAR_COMMON_PINS; do
-        run_quiet "install ${_is_pin%%==*} for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "$_is_pin"
+        run_quiet "install ${_is_pin%%==*} for $_is_label" _sidecar_install_pin "$_is_dir" "$_is_pin"
     done
     unset _is_pin
     # Optional, as in setup.ps1; _sidecar_top_up_tiktoken retries it later.
