@@ -330,6 +330,9 @@ def test_a_split_over_native_tls_matches_the_relays(tmp_path, procs, monkeypatch
             assert reply["type"] == "native_ok", reply
             assert reply["fingerprint"] == peers[node_id].fingerprint and reply["port"] == port
             tls_endpoints.append(f"tls://{reply['fingerprint']}@{host}:{port}")
+            # The master dials the port before choosing it (cluster_serving._native_port_open): a bare
+            # connect that sends nothing must not cost the session llama-server opens next.
+            socket.create_connection((host, port), timeout = 5).close()
         env = node_env(
             master_state, GGML_RPC_TLS_CERT = master.certfile, GGML_RPC_TLS_KEY = master.keyfile,
             GGML_RPC_TLS_CA = master.rootfile,
