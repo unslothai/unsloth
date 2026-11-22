@@ -72,7 +72,8 @@ def _route(monkeypatch, tmp_path, family):
         dit, "discover_image_caption_pairs", lambda *a, **k: [(str(tmp_path / "a.png"), "c")]
     )
     monkeypatch.setattr(dit, "resolve_train_steps", lambda cfg, *a, **k: 3)
-    monkeypatch.setattr(dit, "identity_for_config", lambda *a, **k: None)
+    # The real checkpoint identity: the trainer rewrites it with dataclasses.replace (world size, cache mode), so a None
+    # stand-in raises before the dtype route this file checks.
     monkeypatch.setattr(dit, "_apply_perf_flags", lambda *a, **k: None)
     monkeypatch.setattr(dit, "_restore_perf_flags", lambda *a, **k: None)
     monkeypatch.setattr(dit, "training_fetch_repo", lambda *a, **k: "x")
