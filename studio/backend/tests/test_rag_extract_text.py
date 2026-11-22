@@ -48,6 +48,18 @@ def test_works_without_sqlite_vec(rag_home, monkeypatch):
     assert result["text"] == "hello"
 
 
+@pytest.mark.parametrize(
+    "name, text",
+    [
+        ("export.tsv.txt", "\tName\tCity\n1\tJosé\tParis\n"),
+        ("notes.md", "    first\n    second\n"),
+    ],
+)
+def test_a_text_file_keeps_its_boundary_whitespace(rag_home, name, text):
+    result = rag_routes.extract_text(_upload(name, text.encode("cp1252")), subject = "owner")
+    assert result["text"] == text
+
+
 def test_unsupported_type_is_refused(rag_home):
     with pytest.raises(HTTPException) as exc:
         rag_routes.extract_text(_upload("model.gguf", b"GGUF"), subject = "owner")
