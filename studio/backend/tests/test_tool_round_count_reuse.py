@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A tool round counts its prompt twice back to back: the admission re-cost and the fit. The fit's
-count now starts beside the re-cost, and an identical native count is served from memory."""
+"""Tool-round count reuse: fit-count prefetch and native count memo."""
 
 from __future__ import annotations
 
@@ -256,7 +255,6 @@ def _run_loop(
     recounts = []
 
     def on_grew(conversation):
-        # The admission re-cost: a native count of the same conversation.
         recounts.append(
             backend.count_chat_tokens(
                 copy.deepcopy(conversation), None, None, strict = True, prefer_native = True
@@ -296,7 +294,6 @@ def test_the_prefetch_fills_the_memo_and_the_fit_makes_no_extra_count(monkeypatc
     server = _Server(monkeypatch)
     _run_loop(monkeypatch, rounds = 2)
     prefetched = server.paths("/apply-template", thread = "fit-count-prefetch")
-    # One per tool round plus the round that answers.
     assert len(prefetched) == 3
     renders = _renders(server)
     assert len(renders) == len(set(renders)), "a prompt the prefetch counted was rendered again"

@@ -8604,7 +8604,7 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
 
 
 _RENDER_COUNT_MEMO = ("_count_memo_state", _COUNT_MEMO_SIZE)
-# Native /input_tokens answers sit apart, so a tool round's fresh re-cost never evicts a render.
+# Separate from the render memo so native re-costs never evict renders.
 _NATIVE_COUNT_MEMO = ("_native_count_memo_state", 2)
 
 
@@ -40064,7 +40064,6 @@ class LlamaCppBackend:
         )
 
         def _round_tool_choice(active_tools):
-            """This round's prompt tools and tool choice, shared with the fit-count prefetch."""
             from core.inference.chat_template_helpers import (
                 neutralize_tool_descriptions,
                 reconciled_tool_choice,
@@ -40099,7 +40098,6 @@ class LlamaCppBackend:
             )
 
         def _fit_count_tokens(fitted, safe_tools, reasoning_kw):
-            """The preflight fit's count; the prefetch below calls it with the same arguments."""
             from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
             return self.count_chat_tokens(
                 neutralize_control_markup_in_messages(
@@ -40118,11 +40116,7 @@ class LlamaCppBackend:
             )
 
         def _prefetch_fit_count(round_conversation, round_limit):
-            """Starts the fit's first count while the admission re-cost counts the same prompt.
-
-            It only fills the count memo: the fit still makes its own call, which reads the stored
-            number back, or counts as before when this one failed or priced something else.
-            """
+            """Warm the count memo only; the fit still makes its own call."""
             if (
                 context_overflow != "truncate_oldest"
                 or not self._effective_context_length
@@ -40140,7 +40134,7 @@ class LlamaCppBackend:
             def _count() -> None:
                 try:
                     _fit_count_tokens(list(round_conversation), safe_tools, reasoning_kw)
-                except Exception:  # the fit counts again and reports its own failure
+                except Exception:
                     logger.debug("fit count prefetch failed", exc_info = True)
 
             worker = threading.Thread(target = _count, name = "fit-count-prefetch", daemon = True)
@@ -40228,7 +40222,6 @@ class LlamaCppBackend:
                             compaction_headroom_ratio = compaction_headroom_ratio,
                         )
                     )
-                    # Before the fit: an oversized attachment is cut in place.
                     if _fit_count_prefetch is not None:
                         _fit_count_prefetch.join()
                     conversation, truncation = _fit_with_instruction_pins(
@@ -43772,8 +43765,7 @@ class LlamaCppBackend:
                         if prefer_native and on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
-                            # The reservation and the tool loop's first re-cost send the same body; only a
-                            # native answer is kept, so a failed endpoint is asked again next time.
+                            # Only native answers are kept; a failed endpoint is retried next time.
                             native_key = _count_memo_key(self, "native-input-tokens", template_body)
                             cached = _count_memo_get(self, native_key, _NATIVE_COUNT_MEMO)
                             if cached is not None:
