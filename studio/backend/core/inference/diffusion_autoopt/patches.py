@@ -414,6 +414,14 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_qwenimage21 import install_for_pipe
         return install_for_pipe(ctx.pipe, ctx.logger)
 
+    def krea2_text_trim(ctx: PatchContext) -> bool:
+        from ..diffusion_krea2_text_trim import install_for_pipe
+
+        off = ctx.explicit_off
+        if off is None:
+            off = str(ctx.speed_mode or "").strip().lower() == "off"
+        return install_for_pipe(ctx.pipe, ctx.logger, explicit_off = bool(off))
+
     def flux2_rope(ctx: PatchContext) -> bool:
         from ..diffusion_flux2_rope import install_for_pipe
         return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger)
@@ -569,6 +577,15 @@ def _builtin_specs() -> list[PatchSpec]:
             q21_fast_step,
             backends = ("image",),
             env = "UNSLOTH_DIFFUSION_Q21_FAST_STEP",
+        ),
+        # Exact (masked keys only), so every tier but an explicit off; per instance, so nothing to restore.
+        PatchSpec(
+            "krea2_text_trim",
+            STAGE_LOAD,
+            krea2_text_trim,
+            classes = ("Krea2Transformer2DModel",),
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_KREA2_TEXT_TRIM",
         ),
         PatchSpec(
             "flux2_rope",
