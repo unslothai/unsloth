@@ -28,7 +28,8 @@ TAIL_BUDGET_SHARE = 0.3
 SUMMARY_MAX_TOKENS = 4_096
 SUMMARY_MIN_TOKENS = 1_024
 # A slow but streaming provider (a local server, a large backlog) is waited for; one that goes
-# silent is not. The total cap only bounds a stream that never ends.
+# silent is not. The total cap only bounds a reply that never ends: it starts with the reply, so
+# a server reading a long prompt (llama.cpp sends a keep-alive comment every 30 s) is not cut off.
 SUMMARY_IDLE_TIMEOUT_S = 120.0
 # Self-hosted servers are silent while reading the prompt; same as the chat stream's read timeout.
 SUMMARY_FIRST_LINE_TIMEOUT_S = 300.0
@@ -400,15 +401,15 @@ def summary_chunks(
 async def collect_summary(stream: AsyncIterator[str]) -> str:
     """The text of a streamed chat completion. Raises SummaryFailed on an error line, an empty
     reply, SUMMARY_FIRST_LINE_TIMEOUT_S before the first line or SUMMARY_IDLE_TIMEOUT_S between
-    later ones, or SUMMARY_TIMEOUT_S in all."""
+    later ones, or SUMMARY_TIMEOUT_S once the reply has started."""
     parts: list[str] = []
     finish_reason = None
 
-    async def _read(on_line: Callable[[], None] = lambda: None) -> None:
+    async def _read(on_line: Callable[[bool], None] = lambda data: None) -> None:
         nonlocal finish_reason
         async for line in stream:
-            on_line()
             payload = _sse_json(line)
+            on_line(payload is not None)
             if payload is None:
                 continue
             if "error" in payload:
@@ -427,15 +428,19 @@ async def collect_summary(stream: AsyncIterator[str]) -> str:
             if hasattr(asyncio, "timeout_at"):
                 # One timer in this task: a wait_for per line runs each read in its own task on 3.11.
                 loop = asyncio.get_running_loop()
-                deadline = loop.time() + SUMMARY_TIMEOUT_S
+                deadline: Optional[float] = None
 
-                def _next_limit(idle: float = SUMMARY_IDLE_TIMEOUT_S) -> float:
-                    return min(loop.time() + idle, deadline)
+                def _on_line(data: bool) -> None:
+                    nonlocal deadline
+                    if data and deadline is None:
+                        deadline = loop.time() + SUMMARY_TIMEOUT_S
+                    limit = loop.time() + SUMMARY_IDLE_TIMEOUT_S
+                    scope.reschedule(limit if deadline is None else min(limit, deadline))
 
                 async with asyncio.timeout_at(  # novermin
-                    _next_limit(SUMMARY_FIRST_LINE_TIMEOUT_S)
+                    loop.time() + SUMMARY_FIRST_LINE_TIMEOUT_S
                 ) as scope:
-                    await _read(lambda: scope.reschedule(_next_limit()))
+                    await _read(_on_line)
             else:  # Python < 3.11
                 await asyncio.wait_for(_read(), timeout = SUMMARY_FIRST_LINE_TIMEOUT_S)
         finally:

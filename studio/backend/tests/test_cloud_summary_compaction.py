@@ -553,6 +553,21 @@ def test_a_server_still_reading_the_prompt_is_waited_for(monkeypatch):
         asyncio.run(cloud_compaction.collect_summary(stream(0.0, 0.4)))
 
 
+def test_a_long_prompt_read_under_keep_alives_does_not_count_against_the_total(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_FIRST_LINE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_TIMEOUT_S", 0.3)
+
+    async def stream():
+        # llama.cpp sends an SSE comment every 30 s while it reads the prompt.
+        for _ in range(6):
+            await asyncio.sleep(0.1)
+            yield ":"
+        yield 'data: {"choices":[{"delta":{"content":"read"},"finish_reason":"stop"}]}'
+
+    assert asyncio.run(cloud_compaction.collect_summary(stream())) == "read"
+
+
 def test_compact_on_anthropic_lowers_the_native_trigger_for_a_long_chat():
     thread = _saved_thread("thread-anthropic-native")
     chunks, sent = _proxy(
