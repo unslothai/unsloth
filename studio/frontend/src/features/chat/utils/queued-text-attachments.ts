@@ -6,11 +6,12 @@ import type {
   CompleteAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
+import { quoteContextTransport } from "../../../components/assistant-ui/message-quote-context.ts";
 import type { QuoteDispatch } from "../../../components/assistant-ui/message-quote-dispatch.ts";
 import { getQuoteDispatch } from "../../../components/assistant-ui/message-quote-dispatch.ts";
-import { quoteContextTransport } from "../../../components/assistant-ui/message-quote-context.ts";
 import { cachedTextAttachment } from "../text-attachment-accept.ts";
 import { attachmentContentText, isPastedTextFile } from "./pasted-text.ts";
+import { QUEUE_APPEND_TOKEN_KEY } from "./queue-append-lifecycle.ts";
 
 import { annotationsContentText, annotationsOfFile } from "./document-annotations.ts";
 
@@ -173,13 +174,19 @@ export function queuedPromptHasContent(item: QueuedPrompt): boolean {
   return item.prompt.trim().length > 0 || Boolean(item.attachments?.length);
 }
 
-export function queuedPromptMessage(item: QueuedPrompt) {
+export function queuedPromptMessage(item: QueuedPrompt, appendToken?: string) {
   const quote = queuedPromptQuoteInfo(item);
+  const custom = {
+    ...(quote === undefined ? {} : { quote }),
+    ...(appendToken === undefined
+      ? {}
+      : { [QUEUE_APPEND_TOKEN_KEY]: appendToken }),
+  };
   return {
     role: "user" as const,
     content: item.prompt ? [{ type: "text" as const, text: item.prompt }] : [],
     attachments: item.attachments ?? [],
-    ...(quote === undefined ? {} : { metadata: { custom: { quote } } }),
+    ...(Object.keys(custom).length === 0 ? {} : { metadata: { custom } }),
     createdAt: new Date(),
   };
 }

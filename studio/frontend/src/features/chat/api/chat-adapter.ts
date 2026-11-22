@@ -128,6 +128,7 @@ import {
 } from "../search-images/search-images";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
+import { deepResearchUserMessageRecord } from "../utils/deep-research-user-message";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
   providerCompactionConnectionKey,
@@ -4973,21 +4974,29 @@ export function createOpenAIStreamAdapter(
           const storedUserMessage = (
             await listStoredChatMessages(resolvedThreadId)
           ).find((message) => message.id === userMessage.id);
-          await saveStoredChatMessage({
-            id: userMessage.id,
-            threadId: resolvedThreadId,
-            // A stored null is an edited root; `??` would reparent it.
-            parentId:
-              storedUserMessage && storedUserMessage.parentId !== undefined
-                ? storedUserMessage.parentId
-                : userMessageParentId,
-            role: "user",
-            content: userMessage.content,
-            ...(userMessage.attachments?.length
-              ? { attachments: userMessage.attachments }
-              : {}),
-            createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
-          });
+          await saveStoredChatMessage(
+            deepResearchUserMessageRecord({
+              id: userMessage.id,
+              threadId: resolvedThreadId,
+              // A stored null is an edited root; `??` would reparent it.
+              parentId:
+                storedUserMessage && storedUserMessage.parentId !== undefined
+                  ? storedUserMessage.parentId
+                  : userMessageParentId,
+              content: userMessage.content,
+              ...(userMessage.attachments?.length
+                ? { attachments: userMessage.attachments }
+                : {}),
+              createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
+              storedMetadata: storedUserMessage?.metadata,
+              // Never use `userMessage.metadata` directly: live custom is nested.
+              liveMetadata: (
+                userMessage as {
+                  metadata?: { custom?: Record<string, unknown> };
+                }
+              ).metadata?.custom,
+            }),
+          );
           const createdRun = await createResearchRun({
             threadId: resolvedThreadId,
             userMessageId: userMessage.id,

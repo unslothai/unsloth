@@ -6,24 +6,25 @@
 // rather than searching the rest of the conversation.
 
 import { useChatRuntimeStore } from "@/features/chat";
-import {
-  buildTextIndex,
-  type FindElementLike,
-  type FindTextIndex,
-} from "../../features/find-in-page/lib/find-text-index.ts";
 import { rangeForMatch } from "../../features/find-in-page/lib/find-dom.ts";
 import {
-  normalizeQuoteText,
-  resolveQuoteAnchor,
-  type QuoteAnchor,
-} from "./message-quote-model";
+  type FindElementLike,
+  type FindTextIndex,
+  buildTextIndex,
+} from "../../features/find-in-page/lib/find-text-index.ts";
 import {
   clearQuoteAnnouncement,
   clearQuoteHighlight,
   paintQuoteHighlight,
 } from "./message-quote-highlight";
+import {
+  type QuoteAnchor,
+  normalizeQuoteText,
+  resolveQuoteAnchor,
+} from "./message-quote-model";
 import { QUOTE_PRUNE_SELECTOR } from "./message-selection-model";
 import { restoreMessageWindowBody } from "./message-window-controller";
+import { holdMessage } from "./message-window-hold";
 import {
   completeProgressiveMounts,
   revealProgressiveRow,
@@ -177,6 +178,8 @@ type NavigationSession = {
   readonly readThreadKey: (() => string) | undefined;
   readonly isCurrentScope: (() => boolean) | undefined;
   collapsed: CollapsedSession | null;
+  /** Scoped body/row hold, released after success or any terminal path. */
+  releaseWindowHold: (() => void) | null;
   readonly escape: (event: KeyboardEvent) => void;
 };
 
@@ -245,8 +248,15 @@ function stopThreadWatch(): void {
   watchedThreadId = null;
 }
 
+function releaseWindowHold(session: NavigationSession): void {
+  const release = session.releaseWindowHold;
+  session.releaseWindowHold = null;
+  release?.();
+}
+
 function finishSession(session: NavigationSession): void {
   session.abort.abort();
+  releaseWindowHold(session);
   session.collapsed?.restore();
   session.collapsed = null;
   document.removeEventListener("keydown", session.escape, true);
@@ -271,6 +281,7 @@ export function cancelQuoteNavigation(threadKey?: string): void {
   activeSession = null;
   if (session !== null) {
     session.abort.abort();
+    releaseWindowHold(session);
     document.removeEventListener("keydown", session.escape, true);
   }
   clearQuoteHighlight();
@@ -462,6 +473,7 @@ export async function navigateToQuote(
     readThreadKey: options.readThreadKey,
     isCurrentScope: options.isCurrentScope,
     collapsed: null,
+    releaseWindowHold: null,
     escape: (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) {
         cancelQuoteNavigation();
@@ -471,6 +483,8 @@ export async function navigateToQuote(
   activeSession = session;
   startThreadWatch();
   document.addEventListener("keydown", session.escape, true);
+  // Cover progressive lookup as well as restoring an already parked body.
+  session.releaseWindowHold = holdMessage(viewport, anchor.messageId);
 
   const fail = (result: QuoteNavigationResult): QuoteNavigationResult => {
     finishSession(session);
@@ -550,8 +564,12 @@ export async function navigateToQuote(
       onClear: () => finishSession(session),
     });
     focusQuoteRow(row);
+    releaseWindowHold(session);
     return "highlighted";
   } catch {
     return fail("passage-missing");
+  } finally {
+    // Idempotent: covers unexpected returns as well as the paths above.
+    releaseWindowHold(session);
   }
 }

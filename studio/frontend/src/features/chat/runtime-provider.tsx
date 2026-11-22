@@ -62,6 +62,10 @@ import {
 } from "./api/chat-api";
 import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
 import {
+  noteComposerSendMessage,
+  reportComposerAttachmentFailure,
+} from "@/components/assistant-ui/composer-send-lifecycle";
+import {
   acceptQuoteDispatchForMessage,
   markQuoteDispatchHistoryFailed,
   markQuoteDispatchHistoryOutcome,
@@ -69,6 +73,12 @@ import {
   quoteContextIdForMessage,
   releaseQuoteDispatchForMessage,
 } from "@/components/assistant-ui/message-quote-dispatch";
+import {
+  failQueueAppend,
+  settleQueueAppend,
+  stripQueueAppendToken,
+  takeQueueAppendToken,
+} from "./utils/queue-append-lifecycle";
 import {
   type HistoryWriteOutcome,
   historyWriteOutcome,
@@ -411,7 +421,11 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
       ) {
         notifyPromptQueueRunFailed(threadIds.find(Boolean) ?? null);
       }
-      throw error;
+      throw reportComposerAttachmentFailure(
+        reservationToken,
+        threadIds,
+        error,
+      );
     }
   }
 }
@@ -3048,7 +3062,11 @@ function useStudioRuntimeAdapters(
           initializeThread.then(({ remoteId }) => remoteId),
           localThreadId,
         );
+        // The public wrapper drops append()'s Promise. This token is our only
+        // settlement signal when the history adapter reaches the write.
+        const queueAppendToken = takeQueueAppendToken(message);
         const quoteContextId = quoteContextIdForMessage(message);
+        noteComposerSendMessage(quoteContextId);
         if (quoteContextId !== null) {
           markQuoteDispatchHistoryPending(quoteContextId);
         }
@@ -3093,7 +3111,7 @@ function useStudioRuntimeAdapters(
             message.role === "user"
               ? cloneAttachments(message.attachments)
               : [];
-          const custom = message.metadata?.custom;
+          const custom = stripQueueAppendToken(message.metadata?.custom);
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
@@ -3149,6 +3167,9 @@ function useStudioRuntimeAdapters(
         })();
         const tracked = write.then(
           (outcome) => {
+            if (queueAppendToken !== null) {
+              settleQueueAppend(queueAppendToken);
+            }
             if (quoteContextId === null) {
               return;
             }
@@ -3158,6 +3179,9 @@ function useStudioRuntimeAdapters(
             }
           },
           (error) => {
+            if (queueAppendToken !== null) {
+              failQueueAppend(queueAppendToken, error);
+            }
             if (quoteContextId !== null) {
               markQuoteDispatchHistoryFailed(quoteContextId);
               releaseQuoteDispatchForMessage(message);

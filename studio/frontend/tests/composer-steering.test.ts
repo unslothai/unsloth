@@ -38,6 +38,7 @@ const names = [
   "steerPromptQueueItem",
   "findPromptQueueRunByItemId",
   "pausePromptQueueRun",
+  "discardQueuedPromptItem",
   "resumePromptQueueRun",
   "getPromptQueueRunsForThreadIds",
   "getActivePromptQueueItem",
@@ -156,6 +157,7 @@ function world() {
       item.dispatched = true;
     },
     releaseAndForgetPromptQueueItem: () => "nothing",
+    abandonQueuedAppend: noop,
     forgetPromptQueueItemQuotes: () => "nothing",
     reserveQuoteDispatch: () => ({ kind: "none" }),
     attachQueuedQuoteDispatch: (item: unknown) => normalizeQueuedPrompt(item as string),
@@ -505,7 +507,7 @@ const targetFactoryJs = composerCallbackJs("createPromptQueueTarget");
 test("queued files use resolved model capabilities before append", () => {
   assert.match(
     targetFactoryJs,
-    /const resolvedRunSettings = deferModelResolution[\s\S]*?resolveDeferredQueuedModelSettings\([\s\S]*?useChatRuntimeStore\.getState\(\)[\s\S]*?pythonToolRunsInStudio\([\s\S]*?prepareQueuedPromptFiles\([\s\S]*?withAttachmentOriginal\([\s\S]*?keepQueuedFilesForPython[\s\S]*?queuedPromptMessage\(readyPrompt\)/,
+    /const resolvedRunSettings = deferModelResolution[\s\S]*?resolveDeferredQueuedModelSettings\([\s\S]*?useChatRuntimeStore\.getState\(\)[\s\S]*?pythonToolRunsInStudio\([\s\S]*?prepareQueuedPromptFiles\([\s\S]*?withAttachmentOriginal\([\s\S]*?keepQueuedFilesForPython[\s\S]*?queuedPromptMessage\(readyPrompt, appendToken\)/,
   );
 });
 

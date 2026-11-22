@@ -338,6 +338,19 @@ test("main cancels an audio upload only after a normal send reservation succeeds
       releasePreStreamRunReservation: () => true,
       notifyPromptQueueRunFailed: () => undefined,
       referenceThreadId: "chat",
+      isPreStreamRunReservationActive: () => false,
+    composerSendObserverRef: { current: null },
+      observeComposerSend: () => {
+        calls.push("observe");
+        return {
+          kind: "observing",
+          attempt: {
+            token: null,
+            stop: () => calls.push("stop"),
+            isActive: () => true,
+          },
+        };
+      },
     };
     const send = createCallback(reservedSendCallback, deps);
     send();
@@ -348,9 +361,318 @@ test("main cancels an audio upload only after a normal send reservation succeeds
   assert.deepEqual(run(Symbol("reservation")), [
     "cancel-upload",
     "claim",
+    "observe",
     "send",
     "arm",
   ]);
+});
+
+test("a reported attachment failure releases the send exactly once", () => {
+  const calls: string[] = [];
+  let onFailed: ((error: unknown) => void) | null = null;
+  let stopCalls = 0;
+  const deps = {
+    aui: {
+      threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+      composer: () => ({
+        getState: () => ({ text: "Draft", quote: undefined }),
+        send: () => calls.push("send"),
+      }),
+    },
+    reservePreStreamRun: () => Symbol("reservation"),
+    preStreamThreadIds: ["chat"],
+    parseExternalModelId: () => null,
+    useChatRuntimeStore: {
+      getState: () => ({
+        params: { checkpoint: "local/model" },
+        incognito: false,
+        activeGgufVariant: null,
+      }),
+    },
+    preStreamRunReservationRef: { current: null },
+    toast: { error: (_message: string) => calls.push("toast") },
+    cancelAudioUpload: () => undefined,
+    claimThreadCreation: () => undefined,
+    projectScope: null,
+    armJustSent: () => undefined,
+    releasePreStreamRunReservation: () => {
+      calls.push("release");
+      return true;
+    },
+    notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
+    referenceThreadId: "chat",
+    isPreStreamRunReservationActive: () => false,
+    composerSendObserverRef: { current: null },
+    observeComposerSend: (
+      _composer: unknown,
+      _threads: unknown,
+      _token: unknown,
+      callbacks: { onFailed: (error: unknown) => void },
+    ) => {
+      onFailed = callbacks.onFailed;
+      return {
+        kind: "observing",
+        attempt: {
+          token: null,
+          stop: () => {
+            stopCalls += 1;
+          },
+          isActive: () => true,
+        },
+      };
+    },
+  };
+  const send = createCallback(reservedSendCallback, deps);
+  send();
+  assert.deepEqual(calls, ["send"]);
+  const fail = onFailed as ((error: unknown) => void) | null;
+  assert.ok(fail);
+  fail(new Error("upload failed"));
+  fail(new Error("second report"));
+  assert.deepEqual(calls, ["send", "release", "queue-failed", "toast"]);
+  assert.equal(stopCalls, 1);
+});
+
+test("a quoted attachment failure releases quote and pre-stream reservations once", () => {
+  const calls: string[] = [];
+  let onFailed: ((error: unknown) => void) | null = null;
+  const composerState: { text: string; quote: unknown } = {
+    text: "Draft",
+    quote: undefined,
+  };
+  const deps = {
+    aui: {
+      threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+      composer: () => ({
+        getState: () => composerState,
+        setQuote: (quote: unknown) => {
+          composerState.quote = quote;
+        },
+        send: () => {
+          // BaseComposerRuntimeCore clears the quote synchronously before it
+          // awaits attachments; a mock that kept it would look ignored.
+          composerState.quote = undefined;
+          calls.push("send");
+        },
+      }),
+    },
+    reservePreStreamRun: () => Symbol("reservation"),
+    preStreamThreadIds: ["chat"],
+    parseExternalModelId: () => null,
+    useChatRuntimeStore: {
+      getState: () => ({
+        params: { checkpoint: "local/model" },
+        incognito: false,
+        activeGgufVariant: null,
+      }),
+    },
+    preStreamRunReservationRef: { current: null },
+    toast: { error: () => calls.push("toast") },
+    cancelAudioUpload: () => undefined,
+    claimThreadCreation: () => undefined,
+    projectScope: null,
+    armJustSent: () => undefined,
+    releasePreStreamRunReservation: () => {
+      calls.push("release-pre-stream");
+      return true;
+    },
+    notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
+    referenceThreadId: "chat",
+    quoteThreadId: "thread-1",
+    reserveQuoteDispatch: () => ({
+      kind: "reserved",
+      dispatch: {
+        contextId: "ctx-1",
+        quoteIds: ["q1"],
+        envelope: { quotes: [] },
+        origin: "composer",
+      },
+    }),
+    quoteInfoForDispatch: () => ({
+      messageId: "__unsloth_quote_context_v1__",
+      text: "ctx-1",
+    }),
+    parseQuoteContext: () => ({
+      kind: "valid",
+      envelope: { contextId: "ctx-1" },
+    }),
+    markQuoteDispatchSendStarted: () => calls.push("send-started"),
+    markQuoteDispatchSendFailed: () => calls.push("send-failed"),
+    releaseQuoteDispatch: () => calls.push("release-quote"),
+    isPreStreamRunReservationActive: () => false,
+    composerSendObserverRef: { current: null },
+    observeComposerSend: (
+      _composer: unknown,
+      _threads: unknown,
+      _token: unknown,
+      callbacks: { onFailed: (error: unknown) => void },
+    ) => {
+      onFailed = callbacks.onFailed;
+      return {
+        kind: "observing",
+        attempt: {
+          token: null,
+          stop: () => calls.push("stop-observer"),
+          isActive: () => true,
+        },
+      };
+    },
+  };
+  const send = createCallback(
+    reservedSendCallback,
+    deps,
+  ) as unknown as (options?: { attachQuotes?: boolean }) => void;
+  send({ attachQuotes: true });
+  assert.deepEqual(calls, ["send-started", "send"]);
+  const fail = onFailed as ((error: unknown) => void) | null;
+  assert.ok(fail);
+  fail(new Error("upload failed"));
+  fail(new Error("second report"));
+  assert.deepEqual(calls, [
+    "send-started",
+    "send",
+    "stop-observer",
+    "send-failed",
+    "release-quote",
+    "release-pre-stream",
+    "queue-failed",
+    "toast",
+  ]);
+});
+
+test("a busy registration leaves the prior observer and its reservation untouched", () => {
+  const calls: string[] = [];
+  const reservation = Symbol("reservation");
+  const previous = {
+    token: reservation,
+    stop: () => calls.push("stop-previous"),
+    isActive: () => true,
+  };
+  const composerSendObserverRef = { current: previous };
+  const preStreamRunReservationRef = { current: null as symbol | null };
+  let observeCalls = 0;
+  let releaseCalls = 0;
+  const deps = {
+    aui: {
+      threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+      composer: () => ({
+        getState: () => ({ text: "Draft", quote: undefined, isEmpty: false }),
+        send: () => calls.push("send"),
+      }),
+    },
+    reservePreStreamRun: () => reservation,
+    preStreamThreadIds: ["chat"],
+    parseExternalModelId: () => null,
+    useChatRuntimeStore: {
+      getState: () => ({
+        params: { checkpoint: "local/model" },
+        incognito: false,
+        activeGgufVariant: null,
+      }),
+    },
+    preStreamRunReservationRef,
+    toast: { error: () => calls.push("toast") },
+    cancelAudioUpload: () => undefined,
+    claimThreadCreation: () => undefined,
+    projectScope: null,
+    armJustSent: () => undefined,
+    releasePreStreamRunReservation: () => {
+      releaseCalls += 1;
+      return true;
+    },
+    notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
+    referenceThreadId: "chat",
+    isPreStreamRunReservationActive: (token: symbol | null) =>
+      token === reservation,
+    composerSendObserverRef,
+    observeComposerSend: () => {
+      observeCalls += 1;
+      return { kind: "busy", activeToken: reservation };
+    },
+  };
+  const send = createCallback(reservedSendCallback, deps);
+  send();
+  assert.equal(observeCalls, 1, "the rejected send does not register twice");
+  assert.equal(releaseCalls, 0, "the active attempt keeps its reservation");
+  assert.equal(composerSendObserverRef.current, previous);
+  assert.equal(preStreamRunReservationRef.current, reservation);
+  assert.deepEqual(calls, ["toast"]);
+});
+
+test("a stale observer is reclaimed without releasing the new reservation", () => {
+  const calls: string[] = [];
+  const reservation = Symbol("new-reservation");
+  const previous = {
+    token: Symbol("old-reservation"),
+    stop: () => calls.push("stop-previous"),
+    isActive: () => true,
+  };
+  let onFailed: ((error: unknown) => void) | null = null;
+  let releaseCalls = 0;
+  const deps = {
+    aui: {
+      threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+      composer: () => ({
+        getState: () => ({ text: "Draft", quote: undefined, isEmpty: false }),
+        send: () => calls.push("send"),
+      }),
+    },
+    reservePreStreamRun: () => reservation,
+    preStreamThreadIds: ["chat"],
+    parseExternalModelId: () => null,
+    useChatRuntimeStore: {
+      getState: () => ({
+        params: { checkpoint: "local/model" },
+        incognito: false,
+        activeGgufVariant: null,
+      }),
+    },
+    preStreamRunReservationRef: { current: null as symbol | null },
+    toast: { error: () => calls.push("toast") },
+    cancelAudioUpload: () => undefined,
+    claimThreadCreation: () => undefined,
+    projectScope: null,
+    armJustSent: () => undefined,
+    releasePreStreamRunReservation: () => {
+      releaseCalls += 1;
+      return true;
+    },
+    notifyPromptQueueRunFailed: () => calls.push("queue-failed"),
+    referenceThreadId: "chat",
+    isPreStreamRunReservationActive: () => false,
+    composerSendObserverRef: { current: previous },
+    observeComposerSend: (
+      _composer: unknown,
+      _threads: unknown,
+      _token: unknown,
+      callbacks: { onFailed: (error: unknown) => void },
+    ) => {
+      onFailed = callbacks.onFailed;
+      return {
+        kind: "observing",
+        attempt: {
+          token: reservation,
+          stop: () => calls.push("stop-current"),
+          isActive: () => true,
+        },
+      };
+    },
+  };
+  const send = createCallback(reservedSendCallback, deps);
+  send();
+  assert.deepEqual(calls, ["stop-previous", "send"]);
+  const fail = onFailed as ((error: unknown) => void) | null;
+  assert.ok(fail);
+  fail(new Error("upload failed"));
+  fail(new Error("second report"));
+  assert.deepEqual(calls, [
+    "stop-previous",
+    "send",
+    "stop-current",
+    "queue-failed",
+    "toast",
+  ]);
+  assert.equal(releaseCalls, 1, "only the current attempt's reservation is released");
 });
 
 test("main, edit and comparison composers use the setting and expose settings access", () => {

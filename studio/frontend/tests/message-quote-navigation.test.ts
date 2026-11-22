@@ -241,6 +241,56 @@ test("navigation uses the source message, progressive reveal, and body restore",
   assert.doesNotMatch(navigationSource, /querySelectorAll\([^)]*\)\.find\(/);
 });
 
+test("navigation acquires the source hold before reveal and releases it once", () => {
+  const hold = navigationSource.indexOf(
+    "session.releaseWindowHold = holdMessage(viewport, anchor.messageId)",
+  );
+  const locate = navigationSource.indexOf(
+    "const row = await locateQuoteRow(viewport, anchor.messageId, session)",
+  );
+  const restore = navigationSource.indexOf(
+    "restoreMessageWindowBody(viewport, anchor.messageId)",
+  );
+  assert.ok(hold > 0, "navigation must acquire the shared hold");
+  assert.ok(hold < locate, "the hold covers progressive lookup");
+  assert.ok(hold < restore, "the hold covers body restoration");
+  assert.match(
+    navigationSource,
+    /focusQuoteRow\(row\);\s*releaseWindowHold\(session\);\s*return "highlighted";/,
+  );
+  assert.match(
+    navigationSource,
+    /finally \{\s*\/\/ Idempotent[\s\S]*?releaseWindowHold\(session\);\s*\}/,
+  );
+
+  const finish = new Function(
+    "activeSession",
+    "stopThreadWatch",
+    "document",
+    `${lifted("releaseWindowHold")}\n${lifted("finishSession")}
+     return finishSession;`,
+  )(
+    null,
+    () => undefined,
+    { removeEventListener: () => undefined },
+  ) as (session: unknown) => void;
+
+  let releases = 0;
+  let aborts = 0;
+  let restores = 0;
+  const session = {
+    abort: { abort: () => aborts++ },
+    collapsed: { restore: () => restores++ },
+    escape: () => undefined,
+    releaseWindowHold: () => releases++,
+  };
+  finish(session);
+  finish(session);
+  assert.equal(releases, 1, "session cleanup releases the hold exactly once");
+  assert.equal(aborts, 2);
+  assert.equal(restores, 1);
+});
+
 test("capture canonicalizes block separators and paint validates the range text", () => {
   assert.match(captureSource, /canonicalQuoteText\(captured, spanText\)/);
   assert.match(

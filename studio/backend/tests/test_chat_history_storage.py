@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 import os
 import platform
 import shutil
@@ -101,6 +102,65 @@ def _stored_message(
         "content": [{"type": type, "text": text}],
         "createdAt": createdAt,
     }
+
+
+def test_deep_research_rewrite_preserves_user_quote_metadata(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+
+    quote = {
+        "messageId": "__unsloth_quote_context_v1__",
+        "text": "unsloth-quote-context:v1\n"
+        + json.dumps(
+            {
+                "version": 1,
+                "contextId": "ctx-1",
+                "quotes": [
+                    {
+                        "order": 1,
+                        "quoteId": "q1",
+                        "messageId": "assistant-1",
+                        "turn": 1,
+                        "text": "quoted passage",
+                        "markdown": "quoted passage",
+                        "comment": "Keep this comment.",
+                    }
+                ],
+            }
+        ),
+    }
+    metadata = {
+        "quote": quote,
+        "revision": 7,
+        "foreign": {"kept": True},
+        "cleared": None,
+    }
+    original = _stored_message(id = "user-1", threadId = "thread-1", text = "Research this")
+    original["metadata"] = metadata
+    studio_db.upsert_chat_message(original)
+
+    # Deep Research rewrites the same user row before starting its run. The
+    # backend snapshot writer is authoritative, so the complete metadata
+    # snapshot must be sent with it.
+    rewritten = _stored_message(
+        id = "user-1",
+        threadId = "thread-1",
+        text = "Research this",
+        createdAt = original["createdAt"],
+    )
+    rewritten["metadata"] = metadata
+    studio_db.upsert_chat_message(rewritten)
+
+    stored = studio_db.get_chat_message("thread-1", "user-1")
+    assert stored is not None
+    assert stored["metadata"] == metadata
+    assert "Keep this comment." in stored["metadata"]["quote"]["text"]
+
+    reopened = studio_db.list_chat_messages("thread-1")
+    reloaded = next(message for message in reopened if message["id"] == "user-1")
+    assert reloaded["metadata"]["quote"]["text"] == quote["text"]
+    assert reloaded["metadata"]["foreign"] == {"kept": True}
+    assert reloaded["metadata"]["cleared"] is None
 
 
 def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):

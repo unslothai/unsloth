@@ -173,6 +173,13 @@ export function isPreStreamRunReservationCancelled(token: symbol): boolean {
   return reservations.get(token)?.cancelled ?? false;
 }
 
+/** A composer observer is valid only while its reservation still exists. */
+export function isPreStreamRunReservationActive(
+  token: symbol | null,
+): boolean {
+  return token !== null && reservations.has(token);
+}
+
 export function adoptPreStreamRunReservation(
   token: symbol,
   threadIds: Iterable<string | null | undefined>,

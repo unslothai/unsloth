@@ -5,6 +5,12 @@ import { MemoryToolUI } from "./tool-ui-memory";
 import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
+  abandonQueueAppend,
+  createQueueAppendToken,
+  failQueueAppend,
+  waitForQueueAppend,
+} from "@/features/chat/utils/queue-append-lifecycle";
+import {
   attachQueuedQuoteDispatch,
   canQueueTextAttachment,
   normalizeQueuedPrompt,
@@ -32,6 +38,11 @@ import {
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
+import {
+  type ComposerSendAttempt,
+  type ComposerSendObservable,
+  observeComposerSend,
+} from "@/components/assistant-ui/composer-send-lifecycle";
 import {
   compactionDividerRows,
   compactionToolCallDividers,
@@ -372,6 +383,7 @@ import {
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
   hasPreStreamRunReservation,
+  isPreStreamRunReservationActive,
   localPromptQueueModelBoundary,
   notifyPromptQueueRunFailed,
   planLocalPromptQueueStop,
@@ -631,6 +643,8 @@ type PromptQueueItem = QueuedPrompt & {
   dispatched: boolean;
   dispatchRetries: number;
   appendAttempt: number;
+  /** In-memory correlation token for the current history append, never persisted. */
+  appendToken: string | null;
   quoteOutcome: QuoteDispatchOutcome | null;
   unsubscribeQuoteOutcome: (() => void) | null;
   blockedByModelFailure?: boolean;
@@ -729,7 +743,7 @@ function resetPromptQueues() {
     run.generation += 1;
     clearPromptQueueRetryTimer(run);
     for (const item of [...run.items]) {
-      forgetPromptQueueItemQuotes(item);
+      discardQueuedPromptItem(item);
     }
   }
   promptQueueRuns.clear();
@@ -816,6 +830,21 @@ function forgetPromptQueueItemQuotes(
   return result;
 }
 
+function abandonQueuedAppend(item: PromptQueueItem): void {
+  const token = item.appendToken;
+  item.appendToken = null;
+  if (token !== null) {
+    abandonQueueAppend(token);
+  }
+}
+
+function discardQueuedPromptItem(
+  item: PromptQueueItem,
+): QueuedQuoteReleaseResult {
+  abandonQueuedAppend(item);
+  return forgetPromptQueueItemQuotes(item);
+}
+
 function dropQueueItem(
   run: PromptQueueRun,
   item: PromptQueueItem,
@@ -826,7 +855,7 @@ function dropQueueItem(
   }
   // Discarding the queue row transfers a refused pending/writing dispatch to
   // Milestone C: it stays visible and releasable in the quote pill.
-  return forgetPromptQueueItemQuotes(item);
+  return discardQueuedPromptItem(item);
 }
 
 function isCurrentQueuedAppendAttempt(
@@ -910,6 +939,7 @@ function pauseUnknownQueuedQuoteOutcome(
 ): void {
   takeQueuedQuoteDispatch(item);
   unsubscribeQueuedItemQuoteOutcome(item);
+  item.appendToken = null;
   item.quoteOutcome = null;
   item.dispatched = false;
   item.blockedByModelFailure = true;
@@ -923,6 +953,7 @@ function retireAcceptedQueuedAppend(
 ): void {
   takeQueuedQuoteDispatch(item);
   unsubscribeQueuedItemQuoteOutcome(item);
+  item.appendToken = null;
   item.quoteOutcome = null;
   item.dispatched = true;
   if (getActivePromptQueueItem(run) !== item) {
@@ -964,6 +995,7 @@ function handleQueuedPromptAppendFailure(
     return;
   }
 
+  item.appendToken = null;
   const handle = item.quoteDispatch;
   const dispatch =
     handle === undefined ? null : getQuoteDispatch(handle.contextId);
@@ -1063,6 +1095,7 @@ function observeQueuedAppendCompletion(
       if (!isCurrentQueuedAppendAttempt(run, item, attempt, generation)) {
         return;
       }
+      item.appendToken = null;
       const dispatch = item.quoteDispatch;
       if (dispatch !== undefined) {
         markQuoteDispatchSendSettled(dispatch.contextId);
@@ -1072,6 +1105,7 @@ function observeQueuedAppendCompletion(
       if (!isCurrentQueuedAppendAttempt(run, item, attempt, generation)) {
         return;
       }
+      item.appendToken = null;
       const dispatch = item.quoteDispatch;
       if (dispatch !== undefined) {
         // The observer only records failure. handleQueuedPromptAppendFailure
@@ -1389,6 +1423,7 @@ function createQueuedPrompt(prompt: QueuedPrompt, target: PromptQueueTarget) {
     dispatched: false,
     dispatchRetries: 0,
     appendAttempt: 0,
+    appendToken: null,
     quoteOutcome: null,
     unsubscribeQuoteOutcome: null,
   };
@@ -2101,7 +2136,7 @@ function pausePromptQueueRun(threadIds?: string[]) {
       const retained = new Set(plan.retainedItemIndexes);
       for (const [index, dropped] of run.items.entries()) {
         if (!retained.has(index)) {
-          forgetPromptQueueItemQuotes(dropped);
+          discardQueuedPromptItem(dropped);
         }
       }
       run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
@@ -2217,7 +2252,7 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
   const retained = new Set(plan.retainedItemIndexes);
   for (const [index, dropped] of run.items.entries()) {
     if (!retained.has(index)) {
-      forgetPromptQueueItemQuotes(dropped);
+      discardQueuedPromptItem(dropped);
     }
   }
   const heldItems = plan.heldItemIndexes.map((index) => run.items[index]);
@@ -4795,6 +4830,7 @@ const Composer: FC<{
     [promptQueueThreadIds, referenceThreadId],
   );
   const preStreamRunReservationRef = useRef<symbol | null>(null);
+  const composerSendObserverRef = useRef<ComposerSendAttempt | null>(null);
   // Wakes a parked attachment when a preflight releases without ever streaming.
   const preStreamRunActive = useSyncExternalStore(
     subscribePreStreamRunReservations,
@@ -5504,29 +5540,25 @@ const Composer: FC<{
           ) {
             return;
           }
-          let appendResult: unknown;
+          // ThreadRuntimeImpl.append() returns void and the core drops the
+          // history Promise. Correlate through metadata.custom and settle when
+          // our own history adapter actually reaches the write.
+          const appendToken = createQueueAppendToken();
+          const completion = waitForQueueAppend(appendToken);
+          const queuedItem = prompt as PromptQueueItem;
+          queuedItem.appendToken = appendToken;
           try {
-            appendResult = thread.append(queuedPromptMessage(readyPrompt));
+            thread.append(queuedPromptMessage(readyPrompt, appendToken));
           } catch (error) {
             // Invocation threw synchronously: convert it into an observed
             // completion rejection. target.append must resolve, not reject,
             // or the pre-invocation catch and observer would both classify.
-            onCompletion?.(Promise.reject(error));
+            failQueueAppend(appendToken, error);
+            onCompletion?.(completion);
             return;
           }
           freshThreadAppendAccepted = true;
-          const completion =
-            appendResult !== null &&
-            typeof appendResult === "object" &&
-            typeof (appendResult as PromiseLike<void>).then === "function"
-              ? (appendResult as Promise<void>)
-              : null;
-          // Attach the observer at invocation. A null completion is the
-          // documented void fallback: history or the pill release recovers it.
           onCompletion?.(completion);
-          if (completion !== null) {
-            void completion.catch(() => undefined);
-          }
         } catch (error) {
           // retry setup failures unless stop or Clear all invalidated this queue
           removeFreshThreadPersistedAfterAbort();
@@ -6120,17 +6152,34 @@ const Composer: FC<{
           aui.composer().setQuote(undefined);
         }
       };
-      const failSend = (error: unknown) => {
+      let sendFailed = false;
+      let sendObserver: ComposerSendAttempt | null = null;
+      const failSend = (error: unknown, releaseReservation = true) => {
+        if (sendFailed) {
+          return;
+        }
+        sendFailed = true;
+        const attempt = sendObserver;
+        sendObserver = null;
+        attempt?.stop();
+        if (composerSendObserverRef.current === attempt) {
+          composerSendObserverRef.current = null;
+        }
         if (dispatch !== null) {
           const contextId = dispatch.contextId;
           markQuoteDispatchSendFailed(contextId);
           releaseDispatch();
           clearOurQuote(contextId);
         }
-        if (releasePreStreamRunReservation(reservationToken)) {
+        if (
+          releaseReservation &&
+          releasePreStreamRunReservation(reservationToken)
+        ) {
           notifyPromptQueueRunFailed(referenceThreadId);
         }
-        preStreamRunReservationRef.current = null;
+        if (releaseReservation) {
+          preStreamRunReservationRef.current = null;
+        }
         toast.error("Could not prepare attachments", {
           description:
             error instanceof Error ? error.message : "Please retry the send.",
@@ -6173,47 +6222,72 @@ const Composer: FC<{
             (dispatch as QuoteDispatch).contextId,
           );
         }
-        const sendResult = aui.composer().send() as unknown;
-        if (dispatch !== null) {
-          const activeDispatch = dispatch as QuoteDispatch;
-          const contextId = activeDispatch.contextId;
-          if (aui.composer().getState().quote !== undefined) {
-            // The composer ignored the send; the quote was not consumed.
-            markQuoteDispatchSendFailed(contextId);
-            releaseDispatch();
-            clearOurQuote(contextId);
-            if (releasePreStreamRunReservation(reservationToken)) {
-              notifyPromptQueueRunFailed(referenceThreadId);
-            }
-            preStreamRunReservationRef.current = null;
-            return;
+        // A new reservation means any previous observer's reservation is no
+        // longer current. Reclaim only that stale owner; never stop an attempt
+        // that still owns the reservation we just acquired.
+        const previousObserver = composerSendObserverRef.current;
+        if (
+          previousObserver !== null &&
+          !isPreStreamRunReservationActive(previousObserver.token)
+        ) {
+          previousObserver.stop();
+          if (composerSendObserverRef.current === previousObserver) {
+            composerSendObserverRef.current = null;
           }
         }
-        const sendPromise =
-          sendResult !== null &&
-          typeof sendResult === "object" &&
-          typeof (sendResult as PromiseLike<void>).then === "function"
-            ? (sendResult as Promise<void>)
-            : null;
-        if (sendPromise === null) {
-          if (dispatch !== null) {
-            markQuoteDispatchSendSettled(
-              (dispatch as QuoteDispatch).contextId,
-            );
-          }
-        } else {
-          void sendPromise.then(
-            () => {
+        const registration = observeComposerSend(
+          aui.composer() as unknown as ComposerSendObservable,
+          preStreamThreadIds,
+          reservationToken,
+          {
+            onSent: () => {
+              if (composerSendObserverRef.current === sendObserver) {
+                composerSendObserverRef.current = null;
+              }
+              sendObserver = null;
               if (dispatch !== null) {
                 markQuoteDispatchSendSettled(
                   (dispatch as QuoteDispatch).contextId,
                 );
               }
             },
-            (error) => {
-              failSend(error);
-            },
+            onFailed: failSend,
+          },
+          {
+            expectedContextId:
+              dispatch === null
+                ? null
+                : (dispatch as QuoteDispatch).contextId,
+          },
+        );
+        if (registration.kind !== "observing") {
+          const busyOwnsReservation =
+            registration.kind === "busy" &&
+            registration.activeToken === reservationToken;
+          failSend(
+            new Error(
+              registration.kind === "busy"
+                ? "A composer send is already in flight."
+                : "The composer has nothing to send.",
+            ),
+            !busyOwnsReservation,
           );
+          return;
+        }
+        sendObserver = registration.attempt;
+        composerSendObserverRef.current = sendObserver;
+        // Public ComposerRuntimeImpl.send() returns void. The installed core
+        // reports success through the send event and failure through the
+        // attachment adapter; never inspect this return value.
+        aui.composer().send();
+        if (dispatch !== null) {
+          const activeDispatch = dispatch as QuoteDispatch;
+          const contextId = activeDispatch.contextId;
+          if (aui.composer().getState().quote !== undefined) {
+            // The composer ignored the send; the quote was not consumed.
+            failSend(new Error("The composer ignored the send."));
+            return;
+          }
         }
         // Empty texts are dropped, so an attachment-only send still clears.
         armJustSent(sentText, ...alsoGuard);
@@ -6388,6 +6462,8 @@ const Composer: FC<{
 
   useEffect(
     () => () => {
+      composerSendObserverRef.current?.stop();
+      composerSendObserverRef.current = null;
       pendingSendRef.current = false;
       pendingFollowUpBehaviorRef.current = "queue";
       if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);

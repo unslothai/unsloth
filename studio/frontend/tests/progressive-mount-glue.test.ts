@@ -135,7 +135,8 @@ test("a pinned row survives every way the window can leave it behind", () => {
   // Rows with unsaved edits are pinned rather than widening the window across every row between.
   const keep = section(GLUE, "function keepPinned(", "\n}\n");
   assert.match(keep, /if \(index === undefined \|\| \(index >= next\.start && index < next\.end\)\) continue;/);
-  assert.match(keep, /return withPins\(next, pins, lookup\.metas\.length\);/);
+  assert.match(keep, /const uniquePins = \[\.\.\.new Set\(pins\)\]\.sort\(\(a, b\) => a - b\);/);
+  assert.match(keep, /return withPins\(next, uniquePins, lookup\.metas\.length\);/);
   // Rows are the viewport's own children, read in document order, so the pins come out ascending.
   assert.match(keep, /for \(const child of viewport\.children\)/);
   const step = section(GLUE, "const step = useCallback(", "stepRef.current = step;");
@@ -149,6 +150,22 @@ test("a pinned row survives every way the window can leave it behind", () => {
   // A pin is let go when the reader leaves the row, which nothing else would step for.
   assert.match(GLUE, /viewport\.addEventListener\("focusout", schedule\);/);
   assert.match(GLUE, /viewport\.removeEventListener\("focusout", schedule\);/);
+});
+
+test("a navigation hold pins only the target row and wakes the window", () => {
+  const keep = section(GLUE, "function keepPinned(", "\n}\n");
+  assert.match(
+    keep,
+    /for \(const messageId of heldMessageIds\(viewport\)\) \{\s*const index = lookup\.index\.get\(messageId\);\s*if \(index !== undefined\) pins\.push\(index\);/,
+  );
+  assert.match(
+    keep,
+    /const uniquePins = \[\.\.\.new Set\(pins\)\]\.sort\(\(a, b\) => a - b\);/,
+  );
+  assert.match(
+    GLUE,
+    /subscribeMessageHolds\(\(viewport\) => \{\s*if \(viewport === viewportRef\.current\) \{\s*schedule\(\);/,
+  );
 });
 
 test("a spacer is keyed by where it sits among the rows", () => {

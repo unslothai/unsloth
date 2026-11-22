@@ -10,7 +10,12 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 import { readSrc } from "./helpers/kit.ts";
 import { steeringInsertionIndex } from "../src/features/chat/utils/composer-preferences.ts";
+import { planLocalPromptQueueStop } from "../src/features/chat/utils/prompt-queue-model-boundary.ts";
 import { reorderPromptQueueItems } from "../src/features/chat/utils/prompt-queue-reorder.ts";
+import {
+  planUserPromptQueueStop,
+  userStopTargetCancelMode,
+} from "../src/features/chat/utils/prompt-queue-user-stop.ts";
 import type { Attachment } from "@assistant-ui/react";
 import {
   attachQueuedQuoteDispatch,
@@ -48,6 +53,14 @@ import {
   getReservedQuoteIds,
   removeQuote,
 } from "../src/components/assistant-ui/message-quote-store.ts";
+import {
+  QueueAppendAbandonedError,
+  abandonQueueAppend as abandonQueueAppendWaiter,
+  createQueueAppendToken,
+  failQueueAppend,
+  settleQueueAppend,
+  waitForQueueAppend,
+} from "../src/features/chat/utils/queue-append-lifecycle.ts";
 
 const source = ts.createSourceFile(
   "thread.tsx",
@@ -66,17 +79,24 @@ const names = [
   "scheduleQueuedQuoteRetry",
   "retireAcceptedQueuedAppend",
   "pauseUnknownQueuedQuoteOutcome",
+  "abandonQueuedAppend",
+  "discardQueuedPromptItem",
   "releaseAndForgetPromptQueueItem",
   "forgetPromptQueueItemQuotes",
   "dropQueueItem",
+  "resetPromptQueues",
+  "pausePromptQueueRun",
+  "stopLocalPromptQueueRun",
   "releasePromptQueueQuotes",
   "removePromptQueueItem",
   "editPromptQueueItem",
   "movePromptQueueItem",
   "steerPromptQueueItem",
   "findPromptQueueRunByItemId",
+  "findPromptQueueRunByThreadIds",
   "findPromptQueueRunByTarget",
   "promptQueueRunMatchesThreadIds",
+  "getPromptQueueRunsForThreadIds",
   "getPromptQueueRunTargetIds",
   "getActivePromptQueueItem",
   "isActivePromptQueueItem",
@@ -131,6 +151,7 @@ type Item = QueuedPrompt & {
   dispatched: boolean;
   dispatchRetries: number;
   appendAttempt: number;
+  appendToken: string | null;
   quoteOutcome: "accepted" | "released" | null;
   unsubscribeQuoteOutcome: (() => void) | null;
   blockedByModelFailure?: boolean;
@@ -195,6 +216,7 @@ function world() {
   const active = new Set<string>();
   const dispatching = new Set<string>();
   const scheduled: string[] = [];
+  const abandoned: string[] = [];
   let serial = 0;
   let syncThrows = false;
   const noop = () => undefined;
@@ -214,6 +236,10 @@ function world() {
     canReleaseQueuedQuoteDispatch,
     attachQueuedQuoteDispatch,
     takeQueuedQuoteDispatch,
+    abandonQueueAppend: (token: string) => {
+      abandoned.push(token);
+      abandonQueueAppendWaiter(token);
+    },
     markQuoteDispatchSendFailed,
     markQuoteDispatchSendSettled,
     markQuoteDispatchSendStarted,
@@ -221,6 +247,12 @@ function world() {
     subscribeQuoteDispatchOutcome,
     steeringInsertionIndex,
     reorderPromptQueueItems,
+    planUserPromptQueueStop,
+    userStopTargetCancelMode,
+    planLocalPromptQueueStop,
+    waitForPromptQueueTargetIdle: noop,
+    refreshPromptQueueTargetIdleWait: noop,
+    shouldPollPromptQueueTargetState: () => false,
     promptQueueActiveItemChanged: (
       before: readonly unknown[],
       after: readonly unknown[],
@@ -264,7 +296,11 @@ return {
   observeQueuedAppendCompletion,
   handleQueuedPromptAppendFailure,
   releaseAndForgetPromptQueueItem,
+  discardQueuedPromptItem,
   dropQueueItem,
+  resetPromptQueues,
+  pausePromptQueueRun,
+  stopLocalPromptQueueRun,
   releasePromptQueueQuotes,
   removePromptQueueItem,
   editPromptQueueItem,
@@ -296,7 +332,11 @@ return {
       generation: number,
     ) => void;
     releaseAndForgetPromptQueueItem: (item: Item) => string;
+    discardQueuedPromptItem: (item: Item) => string;
     dropQueueItem: (run: Run, item: Item) => string;
+    resetPromptQueues: () => void;
+    pausePromptQueueRun: (threadIds?: string[]) => void;
+    stopLocalPromptQueueRun: (run: Run) => void;
     releasePromptQueueQuotes: (itemId: string) => boolean;
     removePromptQueueItem: (itemId: string) => boolean;
     editPromptQueueItem: (itemId: string, prompt: string) => boolean;
@@ -311,6 +351,7 @@ return {
     ...engine,
     runs,
     scheduled,
+    abandoned,
     setSyncThrows: (value: boolean) => {
       syncThrows = value;
     },
@@ -764,20 +805,57 @@ test("a synchronous post-invocation throw is classified exactly once", async () 
   assert.deepEqual(w.scheduled, [item.id]);
 });
 
-test("void append is a documented manual-release fallback", async () => {
-  const thread = "queued-void";
+test("history settlement completes a queue append whose wrapper returns void", async () => {
+  const thread = "queued-token-settled";
   add(thread, "qa");
   const w = world();
   const target = makeTarget("chat");
-  target.append = (() => undefined) as unknown as typeof target.append;
-  w.startPromptQueue(["void"], target, false, "queue", thread);
+  const token = createQueueAppendToken();
+  let completion: Promise<void> | null = null;
+  target.append = ((prompt: unknown, onCompletion?: (value: Promise<void> | null) => void) => {
+    target.appended.push(prompt);
+    completion = waitForQueueAppend(token);
+    onCompletion?.(completion);
+    settleQueueAppend(token);
+    return undefined;
+  }) as unknown as typeof target.append;
+  w.startPromptQueue(["token"], target, false, "queue", thread);
+  const run = w.run();
+  const item = run.items[0]!;
+  w.appendQueuedPrompt(run, item);
+  await completion;
+  await Promise.resolve();
+  assert.equal(item.dispatched, true);
+  assert.equal(getQuoteDispatch(item.quoteDispatch!.contextId)?.sendState, "settled");
+  assert.equal(item.appendToken, null);
+  assert.deepEqual(w.scheduled, []);
+});
+
+test("history failure rejects the token and reuses the existing retry path", async () => {
+  const thread = "queued-token-failed";
+  add(thread, "qa");
+  const w = world();
+  const target = makeTarget("chat");
+  const token = createQueueAppendToken();
+  let completion: Promise<void> | null = null;
+  target.append = ((prompt: unknown, onCompletion?: (value: Promise<void> | null) => void) => {
+    target.appended.push(prompt);
+    completion = waitForQueueAppend(token);
+    onCompletion?.(completion);
+    failQueueAppend(token, new Error("history failed"));
+    return undefined;
+  }) as unknown as typeof target.append;
+  w.startPromptQueue(["token"], target, false, "queue", thread);
   const run = w.run();
   const item = run.items[0]!;
   w.appendQueuedPrompt(run, item);
   await Promise.resolve();
-  assert.equal(item.dispatched, true);
-  assert.equal(getQuoteDispatch(item.quoteDispatch!.contextId)?.sendState, "pending");
-  assert.deepEqual(w.scheduled, []);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(item.dispatched, false);
+  assert.equal(item.appendToken, null);
+  assert.equal(getQuoteDispatch(item.quoteDispatch!.contextId)?.sendState, "not-started");
+  assert.deepEqual(w.scheduled, [item.id]);
 });
 
 test("cross-thread delivery settles the source quote collection", () => {
@@ -807,6 +885,70 @@ test("queue UI exposes a quote badge and live-gated release action", () => {
   assert.match(store, /canReleaseQuotes/);
 });
 
+test("bulk reset abandons an in-flight queued append", async () => {
+  const thread = "queued-reset-abandon";
+  const w = world();
+  const target = makeTarget("chat");
+  w.startPromptQueue(["first"], target, false, "queue", thread);
+  const run = w.run();
+  const item = run.items[0]!;
+  item.dispatched = true;
+  const completion = waitForQueueAppend("reset-token");
+  item.appendToken = "reset-token";
+  w.resetPromptQueues();
+  assert.deepEqual(w.abandoned, ["reset-token"]);
+  assert.equal(w.runs.size, 0);
+  await assert.rejects(completion, QueueAppendAbandonedError);
+  settleQueueAppend("reset-token");
+  assert.deepEqual(w.scheduled, []);
+});
+
+test("pause abandons a discarded in-flight queued append", async () => {
+  const thread = "queued-pause-abandon";
+  const w = world();
+  const target = makeTarget("chat");
+  w.startPromptQueue(["first"], target, false, "queue", thread);
+  const run = w.run();
+  const first = run.items[0]!;
+  const second = w.createQueuedPrompt({ prompt: "second" }, target);
+  run.items.push(second);
+  run.index = 0;
+  first.dispatched = true;
+  const completion = waitForQueueAppend("pause-token");
+  first.appendToken = "pause-token";
+  w.pausePromptQueueRun(["chat"]);
+  assert.deepEqual(w.abandoned, ["pause-token"]);
+  assert.deepEqual(run.items, [second]);
+  await assert.rejects(completion, QueueAppendAbandonedError);
+  // A late history settlement after abandonment has no waiter and cannot
+  // re-dispatch the removed item or advance the queue.
+  settleQueueAppend("pause-token");
+  w.appendQueuedPrompt(run, first);
+  assert.deepEqual(w.scheduled, []);
+});
+
+test("local-model stop abandons a discarded in-flight queued append", async () => {
+  const thread = "queued-stop-abandon";
+  const w = world();
+  const target = makeTarget("chat");
+  target.usesLocalModel = true;
+  w.startPromptQueue(["first"], target, false, "queue", thread);
+  const run = w.run();
+  const first = run.items[0]!;
+  const second = w.createQueuedPrompt({ prompt: "second" }, target);
+  run.items.push(second);
+  run.index = 0;
+  first.dispatched = true;
+  const completion = waitForQueueAppend("stop-token");
+  first.appendToken = "stop-token";
+  w.stopLocalPromptQueueRun(run);
+  assert.deepEqual(w.abandoned, ["stop-token"]);
+  assert.deepEqual(run.items, [second]);
+  await assert.rejects(completion, QueueAppendAbandonedError);
+  settleQueueAppend("stop-token");
+  assert.deepEqual(w.scheduled, []);
+});
+
 test("dropQueueItem is the centralized cleanup path", () => {
   const thread = "queued-drop";
   add(thread, "qa");
@@ -816,7 +958,9 @@ test("dropQueueItem is the centralized cleanup path", () => {
   w.startPromptQueue(["second"], target, false, "queue");
   const run = w.run();
   const first = run.items[0]!;
+  first.appendToken = "drop-token";
   assert.equal(w.dropQueueItem(run, first), "released");
   assert.equal(run.items.length, 1);
+  assert.deepEqual(w.abandoned, ["drop-token"]);
   assert.deepEqual([...getReservedQuoteIds(thread)], []);
 });
