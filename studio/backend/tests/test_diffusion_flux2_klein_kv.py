@@ -525,3 +525,49 @@ def test_native_stock_klein_reference_keeps_its_own_message():
             prompt = "p", steps = 2, workflow = "reference", width = 512, height = 512, init_image = _png()
         )
     assert "1341" not in str(info.value)
+
+
+def _kv_load_state(repo_id, gguf_filename):
+    return types.SimpleNamespace(
+        family = _klein(),
+        base_repo = "black-forest-labs/FLUX.2-klein-9B",
+        repo_id = repo_id,
+        gguf_filename = gguf_filename,
+        display_repo_id = None,
+        pipe = types.SimpleNamespace(),
+    )
+
+
+def test_kv_checkpoint_does_not_advertise_inpaint_or_outpaint():
+    """Flux2KleinInpaintPipeline always feeds the encoded source image to the transformer as condition tokens through
+    the stock bidirectional per-step path, with no kv_cache_mode: over the KV weights that is another model. diffusers
+    ships no KV inpaint pipeline, so the KV checkpoint keeps only what Flux2KleinKVPipeline runs itself."""
+    from core.inference import diffusion as d
+
+    kv = _kv_load_state("QuantStack/FLUX.2-Klein-9B-KV-GGUF", "Flux-2-Klein-9B-KV-Q8_0.gguf")
+    stock = _kv_load_state("unsloth/FLUX.2-klein-9B-GGUF", "flux-2-klein-9b-Q8_0.gguf")
+    assert d._state_workflows(kv) == ["txt2img", "reference"]
+    assert d._state_workflows(stock) == d._family_workflows(stock.family)
+    assert "inpaint" in d._state_workflows(stock)
+
+
+@pytest.mark.parametrize("workflow", ["inpaint", "upscale"])
+def test_kv_checkpoint_refuses_a_stock_workflow_pipe(monkeypatch, workflow):
+    """A masked request reaches _workflow_pipe with the family's inpaint class: for a KV checkpoint it is refused
+    before from_pipe builds the stock pipeline over the KV transformer; the stock 9B still gets its workflow pipe."""
+    from core.inference import diffusion as d
+
+    built = []
+    be = d.DiffusionBackend()
+    monkeypatch.setattr(
+        be, "_from_pipe_no_recast", lambda pipe, cls: built.append(cls) or types.SimpleNamespace()
+    )
+    monkeypatch.setattr(d.prompt_cache, "install", lambda *a, **k: None)
+    kv = _kv_load_state("someone/klein-quants", "flux-2-klein-9b-kv-Q4_K_M.gguf")
+    with pytest.raises(ValueError, match = "Flux2KleinKVPipeline") as info:
+        be._workflow_pipe(kv, "Flux2KleinInpaintPipeline", workflow)
+    assert "Text to image and reference edits work" in str(info.value)
+    assert built == []
+    stock = _kv_load_state("unsloth/FLUX.2-klein-9B-GGUF", "flux-2-klein-9b-Q8_0.gguf")
+    assert be._workflow_pipe(stock, "Flux2KleinInpaintPipeline", workflow) is not None
+    assert len(built) == 1

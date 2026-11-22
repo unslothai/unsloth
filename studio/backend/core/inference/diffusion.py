@@ -14571,6 +14571,14 @@ class DiffusionBackend:
             raise ValueError(
                 f"{workflow} is not supported for the '{state.family.name}' model family."
             )
+        variant = _checkpoint_variant_pipeline(state)
+        if variant is not None:
+            # from_pipe over the stock workflow class would run this checkpoint's weights as another model.
+            raise ValueError(
+                f"{workflow.capitalize()} is not available for this checkpoint: it runs through diffusers' {variant}, "
+                f"and {class_name} would run its weights through the stock {state.family.pipeline_class} path, which "
+                f"is a different model. Text to image and reference edits work; use the stock checkpoint for {workflow}."
+            )
         cached = self._aux_pipes.get(class_name)
         if cached is not None:
             return cached
@@ -17274,7 +17282,7 @@ class DiffusionBackend:
                 family = state.family,
             ),
             # Workflows the loaded family supports, so the UI can gate its tabs.
-            "workflows": _family_workflows(state.family),
+            "workflows": _state_workflows(state),
             "supports_negative_prompt": state.family.uses_negative_prompt,
             "supports_inpaint_only_masked": inpaint_class_accepts_padding_mask_crop(
                 getattr(state.family, "inpaint_pipeline_class", None)
@@ -17291,9 +17299,7 @@ class DiffusionBackend:
             else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
             "textual_inversion": getattr(state.family, "textual_inversion", None),
             **_hires_status(state.family),
-            "conditioning": conditioning_capabilities(
-                state.family, _family_workflows(state.family)
-            ),
+            "conditioning": conditioning_capabilities(state.family, _state_workflows(state)),
             "supports_lora": lora_reason is None,
             "lora_unavailable_reason": lora_reason,
             # Only Speed=Auto's 3rd-image compile blocks LoRA: a reload stays eager until then.
@@ -17438,6 +17444,39 @@ def _peak_workflow(fam: Any, workflow: Optional[str]) -> Optional[str]:
     except Exception:  # noqa: BLE001
         pass
     return workflow
+
+
+# Workflows the loaded pipe serves itself; the rest are built with from_pipe over a stock workflow class.
+_MAIN_PIPE_WORKFLOWS = frozenset({"txt2img", "reference", "edit"})
+
+
+def _checkpoint_variant_pipeline(state: Any) -> Optional[str]:
+    """The diffusers pipeline a checkpoint of its family needs instead of the family's (``pipeline_class_variants``:
+    FLUX.2 klein 9B KV -> Flux2KleinKVPipeline), or None for every other load."""
+    fam = getattr(state, "family", None)
+    if fam is None or not getattr(fam, "pipeline_class_variants", ()):
+        return None
+    try:
+        variant = family_pipeline_class(
+            fam,
+            getattr(state, "base_repo", None),
+            getattr(state, "repo_id", None),
+            getattr(state, "gguf_filename", None),
+            getattr(state, "display_repo_id", None),
+        )
+    except Exception:  # noqa: BLE001 - unreadable: the family's own workflows stand
+        return None
+    return variant if variant and variant != getattr(fam, "pipeline_class", None) else None
+
+
+def _state_workflows(state: Any) -> list[str]:
+    """``_family_workflows`` for the loaded checkpoint. A variant-pipeline checkpoint keeps only the workflows its own
+    pipe runs: the family's img2img / inpaint classes are the stock model's (Flux2KleinInpaintPipeline conditions on
+    the source image through the stock bidirectional path every step, which is not the KV model)."""
+    workflows = _family_workflows(state.family)
+    if _checkpoint_variant_pipeline(state) is None:
+        return workflows
+    return [w for w in workflows if w in _MAIN_PIPE_WORKFLOWS]
 
 
 def _family_workflows(fam: DiffusionFamily) -> list[str]:
