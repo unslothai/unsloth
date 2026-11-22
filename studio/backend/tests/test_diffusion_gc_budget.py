@@ -80,6 +80,37 @@ def test_budget_reads_trusted_free(monkeypatch):
     assert gb._mem_get_info() == (7, 9)
 
 
+@pytest.mark.parametrize(
+    "platform, hip, device, capped",
+    [
+        ("win32", "6.4.0", None, True),  # the spawned trainer: detection never ran, a ROCm torch
+        ("win32", None, None, False),  # Windows NVIDIA
+        ("linux", "6.4.0", None, False),  # Linux ROCm: the driver figure is trusted
+        ("win32", "6.4.0", "cuda", False),  # detection ran and did not say ROCm
+    ],
+)
+def test_trainer_child_caps_windows_rocm_free(platform, hip, device, capped, monkeypatch):
+    # The trainer is a spawned process that never runs detect_hardware(), so IS_ROCM stays False there
+    import types
+
+    import utils.hardware.hardware as hwmod
+    import core.training.diffusion_lora_fast as fl
+
+    gib = 1 << 30
+    fake = types.ModuleType("torch")
+    fake.version = types.SimpleNamespace(hip = hip)
+    fake.__version__ = "2.9.1"
+    fake.cuda = types.SimpleNamespace(
+        mem_get_info = lambda *a: (16 * gib, 16 * gib), memory_reserved = lambda *a: 6 * gib
+    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake)
+    monkeypatch.setattr(hwmod.sys, "platform", platform)
+    monkeypatch.setattr(hwmod, "IS_ROCM", False)
+    monkeypatch.setattr(hwmod, "DEVICE", device)
+    want = (10 * gib if capped else 16 * gib, 16 * gib)
+    assert gb._mem_get_info() == want and fl._mem_get_info() == want
+
+
 def _planned(
     class_cost,
     blocks,
