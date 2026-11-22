@@ -58,6 +58,12 @@ const set = (id: string, value: { name?: string; icon?: string }) =>
 test("stored entries are keyed case-insensitively and malformed ones dropped", () => {
   assert.deepEqual(byId(), { "org/saved": { name: "Spark", icon } });
   assert.equal(modelCustomizationKey(" Org/Saved "), "org/saved");
+  assert.equal(
+    modelCustomizationKey(
+      "/home/u/.cache/huggingface/hub/models--unsloth--Qwen3-4B-GGUF/snapshots/abc123",
+    ),
+    "unsloth/qwen3-4b-gguf",
+  );
 });
 
 test("saving is idempotent and an empty save clears the entry", () => {

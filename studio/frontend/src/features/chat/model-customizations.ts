@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { syncAcrossWindows } from "../../lib/sync-across-windows.ts";
+import { hfCacheRepoId } from "../hub/lib/model-identity.ts";
 
 // Labels only: loads and requests always use the model id.
 export const MODEL_CUSTOMIZATIONS_KEY = "unsloth_model_customizations";
@@ -17,8 +18,10 @@ export interface ModelCustomization {
   icon?: string;
 }
 
+// A model adopted from the backend can carry its HF cache snapshot path instead of the repo id.
 export function modelCustomizationKey(id: string | null | undefined): string {
-  return id?.trim().toLowerCase() ?? "";
+  const trimmed = id?.trim() ?? "";
+  return (hfCacheRepoId(trimmed) ?? trimmed).toLowerCase();
 }
 
 export function normaliseModelCustomization(
