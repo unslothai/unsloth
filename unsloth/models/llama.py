@@ -60,6 +60,7 @@ except ImportError:  # unsloth_zoo predating the helper (unsloth-zoo#1751)
 
 
 from .loader_utils import (
+    _resolved_revision,
     DEFAULT_DEVICE_MAP,
     set_deepspeed_fused_lora_leaf_modules,
     set_deepspeed_moe_leaf_modules,
@@ -4000,7 +4001,7 @@ class FastLlamaModel:
                     model_name,
                     token = token,
                     attn_implementation = "sdpa",
-                    revision = revision,
+                    revision = _resolved_revision(model_name, revision, token),
                 )
                 _checkpoint_quant = getattr(_checkpoint_config, "quantization_config", None)
                 if _checkpoint_quant is not None:
@@ -4010,7 +4011,7 @@ class FastLlamaModel:
                 model_name,
                 token = token,
                 attn_implementation = "sdpa",
-                revision = revision,
+                revision = _resolved_revision(model_name, revision, token),
             )
         model_config.model_name = model_name
         _fp8_backfilled = backfill_fp8_modules_to_convert(
@@ -4440,7 +4441,13 @@ class FastLlamaModel:
                             token = token,
                             trust_remote_code = trust_remote_code,
                             attn_implementation = preferred_attn_impl,
-                            revision = revision,
+                            revision = _resolved_revision(
+                                model_name,
+                                revision,
+                                token,
+                                kwargs.get("local_files_only", False),
+                                kwargs.get("cache_dir"),
+                            ),
                             **kwargs,
                         )
                 finally:
@@ -4526,7 +4533,13 @@ class FastLlamaModel:
                                 token = token,
                                 trust_remote_code = trust_remote_code,
                                 attn_implementation = preferred_attn_impl,
-                                revision = revision,
+                                revision = _resolved_revision(
+                                    model_name,
+                                    revision,
+                                    token,
+                                    kwargs.get("local_files_only", False),
+                                    kwargs.get("cache_dir"),
+                                ),
                                 **kwargs,
                             )
                     finally:
@@ -4541,7 +4554,13 @@ class FastLlamaModel:
                             max_position_embeddings = max_position_embeddings,
                             trust_remote_code = trust_remote_code,
                             attn_implementation = preferred_attn_impl,
-                            revision = revision,
+                            revision = _resolved_revision(
+                                model_name,
+                                revision,
+                                token,
+                                kwargs.get("local_files_only", False),
+                                kwargs.get("cache_dir"),
+                            ),
                             **kwargs,
                         )
                 warn_if_bitsandbytes_quantized_nothing(
