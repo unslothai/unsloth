@@ -18,6 +18,7 @@ import secrets
 import threading
 import time
 import uuid
+import weakref
 from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -36,6 +37,44 @@ _BATCH_WAIT_S = 0.0005
 def _inplace_lora():
     # One slot overwritten per sync: with max_loras=1 a new id per sync stalls new requests behind stragglers.
     return os.environ.get("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "1") != "0"
+
+
+def _tensor_sync():
+    # Kill switch: 0 hands each synced adapter to vLLM through TRL's safetensors files and a load from disk.
+    return os.environ.get("UNSLOTH_ASYNC_GRPO_TENSOR_SYNC", "1") != "0"
+
+
+def _tensor_request_builder():
+    # Zoo's load_lora(load_tensors = True) body without the merged-rollout branch, which folds the adapter into
+    # the shared base around a generate call and cannot serve a continuously stepping engine.
+    try:
+        from unsloth_zoo.vllm_utils import _build_lora_request
+    except Exception:
+        return None
+    return _build_lora_request
+
+
+def _host_snapshot(tensors, dtype = None):
+    """Copies `tensors` to host memory with one device-to-host copy per dtype, so the version keeps its values
+    after the optimizer steps the live weights. Returns name -> view of a flat host buffer."""
+    import torch
+
+    groups = {}
+    for name, tensor in tensors.items():
+        tensor = tensor.detach()
+        if dtype is not None and tensor.is_floating_point():
+            tensor = tensor.to(dtype)
+        groups.setdefault((tensor.device, tensor.dtype), []).append((name, tensor))
+    out = {}
+    for (device, _), items in groups.items():
+        flat = torch.cat([tensor.reshape(-1) for _, tensor in items])
+        flat = flat.to("cpu") if device.type != "cpu" else flat.clone()
+        offset = 0
+        for name, tensor in items:
+            size = tensor.numel()
+            out[name] = flat[offset : offset + size].view(tensor.shape)
+            offset += size
+    return {name: out[name] for name in tensors}
 
 
 def _pause_on_sync():
@@ -131,6 +170,9 @@ class _Engine:
         self.newest = None
         self.lora_holds = {}
         self.inplace = _inplace_lora()
+        self.tensor_sync = _tensor_sync()
+        # (path, LoRARequest) snapshotted by `stage` for the next load of that path.
+        self.staged = None
         self.slot_id = None
         self.slot_version = 0
         self.aborted = None
@@ -142,6 +184,7 @@ class _Engine:
             "max_batch": 0,
             "syncs": 0,
             "sync_steps": 0,
+            "tensor_syncs": 0,
         }
         try:
             _track_preemptions(_scheduler(self.engine))
@@ -306,12 +349,39 @@ class _Engine:
                 self.lora_holds[lora_id][1] -= 1
                 self._maybe_remove(lora_id)
 
+    # Called from the trainer thread while TRL saves the adapter; the engine keeps stepping.
+    def stage_id(self):
+        if not self.inplace:
+            return next(_LORA_IDS)
+        if self.slot_id is None:
+            self.slot_id = next(_LORA_IDS)
+        return self.slot_id
+
+    def stage(self, path, lora):
+        self.staged = (path, lora)
+
+    def _take_staged(self, path):
+        staged, self.staged = self.staged, None
+        if staged is None or staged[0] != path:
+            return None
+        self.stats["tensor_syncs"] += 1
+        return staged[1]
+
+    def _load(self, path, lora_id):
+        lora = self._take_staged(path)
+        if lora is not None and lora.lora_int_id == lora_id:
+            return lora
+        return self.load_lora(path, lora_request_id = lora_id)
+
     # Commands (run on the engine thread through `call`).
     def add_adapter(self, name, path):
         if self.inplace:
             return self._overwrite_slot(name, path)
-        lora_id = next(_LORA_IDS)
-        lora = self.load_lora(path, lora_request_id = lora_id)
+        staged = self.staged
+        lora_id = (
+            staged[1].lora_int_id if staged is not None and staged[0] == path else next(_LORA_IDS)
+        )
+        lora = self._load(path, lora_id)
         # Load now, while the trainer waits on this sync, not lazily on the first request.
         self.engine.add_lora(lora)
         self.loras[name] = lora
@@ -336,7 +406,7 @@ class _Engine:
     def _overwrite_slot(self, name, path):
         if self.slot_id is None:
             self.slot_id = next(_LORA_IDS)
-        lora = self.load_lora(path, lora_request_id = self.slot_id)
+        lora = self._load(path, self.slot_id)
         self._reload_slot(lora, self.loras.get(self.newest) if self.newest is not None else None)
         self.loras[name] = lora
         self.newest = name
@@ -515,6 +585,11 @@ class UnslothAsyncVLLMServer:
                 "Unsloth: AsyncGRPOTrainer with fast_inference=True needs a LoRA model from get_peft_model."
             )
         _keep_awake(llm)
+        try:
+            self._model = weakref.ref(model)
+        except TypeError:
+            self._model = lambda: None
+        self._tensor_dir = None
         self.engine = _Engine(llm, load_lora, sampling_params)
         self.stopped = False
         self._token = secrets.token_urlsafe(32)
@@ -667,6 +742,41 @@ class UnslothAsyncVLLMServer:
             "logprobs": logprobs,
         }
         return {"id": output.request_id, "object": "text_completion", "choices": [choice]}
+
+    def stage_adapter(self, model, adapter_name, dest_dir):
+        """Snapshot the adapter TRL is about to save to `dest_dir` for its next `/v1/load_lora_adapter`, so the
+        sync skips the safetensors round trip (PEFT's save also probes the Hub for the base config each time).
+        False: nothing staged, TRL saves the files as usual."""
+        engine = self.engine
+        if self.stopped or not engine.tensor_sync or model is not self._model():
+            return False
+        if adapter_name != "default" or set(getattr(model, "peft_config", None) or ()) != {
+            "default"
+        }:
+            return False
+        build = _tensor_request_builder()
+        if build is None:
+            return False
+        if self._tensor_dir is None:
+            # Holds only adapter_config.json, written once; dot-prefixed so TRL's adapter namespace ignores it.
+            self._tensor_dir = os.path.join(os.path.dirname(dest_dir), ".unsloth-live-adapter")
+        import torch
+
+        dtype = getattr(getattr(self.vllm_config, "lora_config", None), "lora_dtype", None)
+        try:
+            lora = build(model, self._tensor_dir, True, engine.stage_id())
+            if lora is None or not getattr(lora, "lora_tensors", None):
+                return False
+            # What a load from TRL's files gives vLLM: the values at save time, cast to the LoRA dtype.
+            lora.lora_tensors = _host_snapshot(
+                lora.lora_tensors, dtype if isinstance(dtype, torch.dtype) else None
+            )
+        except Exception as error:
+            logger.info(f"Unsloth: syncing the adapter through files instead of tensors: {error}")
+            engine.tensor_sync = False
+            return False
+        engine.stage(dest_dir, lora)
+        return True
 
     def abort_all(self):
         if not self.stopped:

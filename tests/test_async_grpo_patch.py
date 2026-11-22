@@ -51,6 +51,7 @@ NAMES = (
     "_hold_peft_requires_grad",
     "_allow_moe_parameter_lora",
     "_check_async_grpo_adapter_servable",
+    "_async_grpo_tensor_save",
     "_async_grpo_masked_compute_loss",
     "_import_trl_async_grpo_module",
     "patch_trl_async_grpo",
@@ -373,6 +374,10 @@ class _FakeServer:
     def abort_all(self):
         self.aborted += 1
 
+    def stage_adapter(self, model, adapter_name, dest_dir):
+        self.staged = (model, adapter_name, dest_dir)
+        return getattr(self, "stage_result", True)
+
 
 def _fast_inference_peft(lm):
     peft = Peft(lm)
@@ -388,6 +393,8 @@ def _fast_inference_peft(lm):
 def fast_inference_trl(fake_trl):
     mod, calls = fake_trl
     mod.select_adapter_sync = lambda *a, **k: True
+    calls["save"] = []
+    mod.save_lora_adapter = lambda *a, **k: calls["save"].append(a)
 
     class AsyncGRPOConfig:
         def __init__(
@@ -930,3 +937,45 @@ def test_importance_sampling_mask_rewrites_the_installed_trl_loss():
     assert "where" in code.co_names
     assert not any(a == "torch" and b == "min" for a, b in zip(loads, loads[1:]))
     assert masked.__globals__ is AsyncGRPOTrainer.compute_loss.__globals__
+
+
+def _accelerator(processes = 1):
+    return types.SimpleNamespace(num_processes = processes)
+
+
+def test_weight_sync_hands_the_adapter_to_the_in_process_server(fast_inference_trl):
+    mod, ns = fast_inference_trl
+    assert mod.save_lora_adapter._unsloth_tensor_sync
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    (server,) = _FakeServer.started
+    assert ns["_ASYNC_GRPO_TENSOR_SERVERS"][peft] is server
+    mod.save_lora_adapter(peft, _accelerator(), "default", "/o/.vllm_lora/policy-v1")
+    assert server.staged == (peft, "default", "/o/.vllm_lora/policy-v1")
+    assert (
+        mod._calls["save"] == []
+    ), "TRL's safetensors save ran although the server took the tensors"
+
+
+def test_weight_sync_falls_back_to_trl_files(fast_inference_trl):
+    mod, ns = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    (server,) = _FakeServer.started
+    other = _fast_inference_peft(CausalLM(FastBackbone()))
+    mod.save_lora_adapter(other, _accelerator(), "default", "/d1")  # not served in process
+    mod.save_lora_adapter(
+        peft, _accelerator(2), "default", "/d2"
+    )  # every rank gathers; files as TRL writes them
+    server.stage_result = False
+    mod.save_lora_adapter(peft, _accelerator(), "default", "/d3")  # the server declined
+    assert [call[-1] for call in mod._calls["save"]] == ["/d1", "/d2", "/d3"]
+
+
+def test_tensor_save_wraps_once():
+    ns = _load()
+    calls = []
+    wrapped = ns["_async_grpo_tensor_save"](lambda *a: calls.append(a))
+    assert wrapped._unsloth_tensor_sync
+    wrapped(torch.nn.Linear(1, 1), _accelerator(), "default", "/d")
+    assert len(calls) == 1

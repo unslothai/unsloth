@@ -1145,3 +1145,187 @@ def test_trl_lora_sync_decodes_through_the_save_on_the_previous_version(
         assert server.engine.stats["syncs"] == 1 and server.engine.syncing is False
     finally:
         server.stop()
+
+
+# Weight sync through tensors: TRL's save is replaced by `stage_adapter`, its load by the staged snapshot.
+class _TensorLora:
+    def __init__(self, lora_request_id, tensors):
+        self.lora_int_id = lora_request_id
+        self.lora_path = ""
+        self.lora_tensors = tensors
+
+
+class _PeftModel:
+    def __init__(
+        self,
+        llm,
+        adapters = ("default",),
+    ):
+        self.vllm_engine = llm
+        self.config = types.SimpleNamespace(_name_or_path = "org/tiny")
+        self.peft_config = {name: object() for name in adapters}
+        self.file_loads = []
+        torch = pytest.importorskip("torch")
+        self.weight = torch.arange(6, dtype = torch.float32).reshape(2, 3) / 7
+
+    def load_lora(
+        self,
+        path,
+        lora_request_id = None,
+    ):
+        self.file_loads.append(path)
+        return _Lora(path, lora_request_id)
+
+
+def _tensor_served(
+    monkeypatch,
+    adapters = ("default",),
+    builder = None,
+):
+    torch = pytest.importorskip("torch")
+    built = []
+
+    def build(model, save_directory, load_tensors, lora_request_id):
+        assert load_tensors
+        built.append(save_directory)
+        # Aliases of the live weights, as zoo's builder returns them.
+        return _TensorLora(lora_request_id, {"layers.0.q_proj.lora_A.weight": model.weight})
+
+    monkeypatch.setattr(server_module, "_tensor_request_builder", lambda: builder or build)
+    llm = _FakeLLM()
+    llm.llm_engine.vllm_config.lora_config.lora_dtype = torch.bfloat16
+    model = _PeftModel(llm, adapters)
+    server = server_module.UnslothAsyncVLLMServer(model, sampling_params = _Sampling)
+    return server, llm, model, built
+
+
+def test_a_staged_adapter_is_served_from_its_snapshot_without_files(monkeypatch):
+    torch = pytest.importorskip("torch")
+    server, llm, model, built = _tensor_served(monkeypatch)
+    try:
+        engine = llm.llm_engine
+        seen = _recording(engine)
+        saved = model.weight.clone()
+        assert server.stage_adapter(model, "default", "/o/.vllm_lora/trl-policy-v1")
+        assert built == ["/o/.vllm_lora/.unsloth-live-adapter"]
+        model.weight.add_(1.0)  # the optimizer steps the live adapter after the save
+        _post(
+            server,
+            "/v1/load_lora_adapter",
+            {"lora_name": "trl-policy-v1", "lora_path": "/o/.vllm_lora/trl-policy-v1"},
+        )
+        assert model.file_loads == [], "the load read TRL's files although a snapshot was staged"
+        assert server.engine.stats["tensor_syncs"] == 1
+        _complete(server, [1], model = "trl-policy-v1")
+        (tensor,) = seen[-1][1].lora_tensors.values()
+        assert tensor.device.type == "cpu" and tensor.dtype == torch.bfloat16
+        assert torch.equal(
+            tensor, saved.to(torch.bfloat16)
+        ), "the served version moved with the live weights"
+        first_salt = seen[-1][0]["cache_salt"]
+        # Next sync: same slot, new values, new salt.
+        assert server.stage_adapter(model, "default", "/o/.vllm_lora/trl-policy-v2")
+        _post(
+            server,
+            "/v1/load_lora_adapter",
+            {"lora_name": "trl-policy-v2", "lora_path": "/o/.vllm_lora/trl-policy-v2"},
+        )
+        _complete(server, [1], model = "trl-policy-v2")
+        (tensor,) = seen[-1][1].lora_tensors.values()
+        assert torch.equal(tensor, (saved + 1.0).to(torch.bfloat16))
+        assert seen[-1][0]["cache_salt"] != first_salt
+        slot = seen[-1][1].lora_int_id
+        assert engine.added_loras == [slot, slot] and engine.removed_loras == [slot]
+        # Unloading the newest restores the previous snapshot, not the live weights.
+        _post(server, "/v1/unload_lora_adapter", {"lora_name": "trl-policy-v2"})
+        _complete(server, [1], model = "trl-policy-v1")
+        (tensor,) = seen[-1][1].lora_tensors.values()
+        assert torch.equal(tensor, saved.to(torch.bfloat16))
+    finally:
+        server.stop()
+
+
+def test_a_load_of_an_unstaged_path_reads_the_files(monkeypatch):
+    server, llm, model, _ = _tensor_served(monkeypatch)
+    try:
+        assert server.stage_adapter(model, "default", "/o/v1")
+        _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v2", "lora_path": "/o/v2"})
+        assert model.file_loads == ["/o/v2"] and server.engine.stats["tensor_syncs"] == 0
+        # The unused snapshot is dropped, so a later load of its path reads the files too.
+        _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/o/v1"})
+        assert model.file_loads == ["/o/v2", "/o/v1"]
+    finally:
+        server.stop()
+
+
+def test_tensor_sync_kill_switch_and_unsupported_layouts_keep_trl_files(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_ASYNC_GRPO_TENSOR_SYNC", "0")
+    server, _, model, built = _tensor_served(monkeypatch)
+    try:
+        assert not server.stage_adapter(model, "default", "/o/v1")
+    finally:
+        server.stop()
+    monkeypatch.delenv("UNSLOTH_ASYNC_GRPO_TENSOR_SYNC")
+    server, _, model, built = _tensor_served(monkeypatch, adapters = ("default", "other"))
+    try:
+        assert not server.stage_adapter(
+            model, "default", "/o/v1"
+        )  # several adapters: TRL picks the files
+        assert not server.stage_adapter(
+            _PeftModel(model.vllm_engine), "default", "/o/v1"
+        )  # another model
+        assert built == []
+    finally:
+        server.stop()
+
+
+def test_a_failed_snapshot_falls_back_to_files_for_the_rest_of_the_run(monkeypatch):
+    def build(*args):
+        raise RuntimeError("unservable")
+
+    server, _, model, _ = _tensor_served(monkeypatch, builder = build)
+    try:
+        assert not server.stage_adapter(model, "default", "/o/v1")
+        assert not server.engine.tensor_sync
+        _post(server, "/v1/load_lora_adapter", {"lora_name": "trl-policy-v1", "lora_path": "/o/v1"})
+        assert model.file_loads == ["/o/v1"]
+    finally:
+        server.stop()
+
+
+def test_staged_versions_get_their_own_ids_without_the_shared_slot(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_ASYNC_GRPO_INPLACE_LORA", "0")
+    server, llm, model, _ = _tensor_served(monkeypatch)
+    try:
+        ids = []
+        for version in (1, 2):
+            path = f"/o/v{version}"
+            assert server.stage_adapter(model, "default", path)
+            _post(
+                server,
+                "/v1/load_lora_adapter",
+                {"lora_name": f"trl-policy-v{version}", "lora_path": path},
+            )
+            ids.append(llm.llm_engine.added_loras[-1])
+        assert (
+            ids[0] != ids[1] and model.file_loads == [] and server.engine.stats["tensor_syncs"] == 2
+        )
+    finally:
+        server.stop()
+
+
+def test_host_snapshot_is_one_copy_per_dtype_and_keeps_order():
+    torch = pytest.importorskip("torch")
+    tensors = {
+        "b": torch.ones(2, 2),
+        "a": torch.arange(3, dtype = torch.float32),
+        "c": torch.zeros(1, dtype = torch.float64),
+    }
+    out = server_module._host_snapshot(tensors)
+    assert list(out) == ["b", "a", "c"]
+    assert out["b"].untyped_storage().data_ptr() == out["a"].untyped_storage().data_ptr()
+    assert out["c"].dtype == torch.float64 and torch.equal(out["a"], tensors["a"])
+    tensors["a"].add_(5)
+    assert torch.equal(out["a"], torch.arange(3, dtype = torch.float32))
+    cast = server_module._host_snapshot(tensors, torch.bfloat16)
+    assert all(t.dtype == torch.bfloat16 for t in cast.values())

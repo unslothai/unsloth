@@ -5680,6 +5680,32 @@ def _dataset_has_images(dataset):
 _ASYNC_GRPO_SERVER_URLS = set()
 
 
+# Model -> the in-process server serving it, for the adapter hand-off at each weight sync.
+_ASYNC_GRPO_TENSOR_SERVERS = weakref.WeakKeyDictionary()
+
+
+def _async_grpo_tensor_save(save_lora_adapter):
+    # TRL writes the adapter to safetensors for vLLM to read back; the in-process engine takes a host snapshot of
+    # the tensors instead. Other servers and multi-process runs save the files as before.
+    @functools.wraps(save_lora_adapter)
+    def wrapper(model, accelerator, adapter_name, dest_dir, *args, **kwargs):
+        server = (
+            _ASYNC_GRPO_TENSOR_SERVERS.get(model) if isinstance(model, torch.nn.Module) else None
+        )
+        if (
+            server is not None
+            and not args
+            and not kwargs
+            and getattr(accelerator, "num_processes", 1) == 1
+            and server.stage_adapter(model, adapter_name, dest_dir)
+        ):
+            return None
+        return save_lora_adapter(model, accelerator, adapter_name, dest_dir, *args, **kwargs)
+
+    wrapper._unsloth_tensor_sync = True
+    return wrapper
+
+
 def _start_async_grpo_vllm_server(model):
     from ._async_grpo_vllm import UnslothAsyncVLLMServer
     return UnslothAsyncVLLMServer(model)
@@ -5950,6 +5976,12 @@ def patch_trl_async_grpo():
             _unsloth_async_grpo_lm_head(getattr(async_module, name), flag, tree_attention),
         )
 
+    save_lora_adapter = getattr(async_module, "save_lora_adapter", None)
+    if callable(save_lora_adapter) and not getattr(
+        save_lora_adapter, "_unsloth_tensor_sync", False
+    ):
+        async_module.save_lora_adapter = _async_grpo_tensor_save(save_lora_adapter)
+
     trainer_class = async_module.AsyncGRPOTrainer
     original_init = trainer_class.__init__
     original_train = getattr(trainer_class, "train", None)
@@ -6033,6 +6065,7 @@ def patch_trl_async_grpo():
             raise
         if server is not None:
             self._unsloth_vllm_server = server
+            _ASYNC_GRPO_TENSOR_SERVERS[model] = server
             weakref.finalize(self, server.stop)
         if masked_loss is not None:
             self.compute_loss = types.MethodType(masked_loss, self)
