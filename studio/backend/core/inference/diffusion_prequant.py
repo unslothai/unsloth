@@ -7,6 +7,7 @@ files return None so the caller falls back to dense quantise"""
 from __future__ import annotations
 
 import contextvars
+import os
 import functools
 import re as _re
 import threading as _threading
@@ -1076,13 +1077,14 @@ def resolve_prequant_source(
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         names = without_nvfp4_pickles(scheme, names)
         if names:
-            return PrequantSource(
+            hosted = PrequantSource(
                 kind = "repo",
                 location = repo_id,
                 filename = names[0],
                 fallback_filenames = tuple(names[1:]),
                 declared_filenames = declared,
             )
+            return _offline_local_build(fam, scheme, base_repo, task, hosted) or hosted
         if not (rotated and convrot_drops_plain_hosted(scheme, fam_name)):
             return None
     # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
@@ -1099,6 +1101,46 @@ def resolve_prequant_source(
     if cached and not nvfp4_pickle_name(scheme, cached):
         return PrequantSource(kind = "path", location = cached, filename = None)
     return None
+
+
+# "0": an offline load whose hosted checkpoint is not on disk quantises the dense shards again, as before.
+OFFLINE_LOCAL_BUILD_ENV = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_OFFLINE"
+
+
+def _offline_local_build(
+    fam: Any, scheme: str, base_repo: Optional[str], task: Optional[str], hosted: PrequantSource
+) -> Optional[PrequantSource]:
+    """This machine's cached build when the load is offline and ``hosted`` is not on disk, else None. Never raises.
+
+    Offline, a hosted name that is not cached can never be fetched, so the load would quantise the dense shards at
+    runtime: the cache entry is that same runtime build of the same shards, written by an earlier load."""
+    if (os.environ.get(OFFLINE_LOCAL_BUILD_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    try:
+        if not (_LOCAL_FILES_ONLY.get() or hub_offline()):
+            return None
+        from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup
+
+        if scheme not in CACHEABLE_SCHEMES:
+            return None
+        if cached_checkpoint_path(hosted, online = False) is not None:
+            return None
+        cached = lookup(
+            fam,
+            scheme,
+            base_repo = base_repo,
+            component = task if task in ("transformer_2",) else "transformer",
+        )
+        if not cached or nvfp4_pickle_name(scheme, cached):
+            return None
+        return PrequantSource(kind = "path", location = cached, filename = None)
+    except Exception:  # noqa: BLE001 - a cache problem keeps the hosted source, today's behaviour
+        return None
 
 
 def _is_variant_prequant_repo(fam: Any, repo_id: Optional[str]) -> bool:
