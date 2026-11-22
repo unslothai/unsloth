@@ -149,8 +149,12 @@ export function useChatProjects(): {
   return { projects, isLoading, hasLoaded };
 }
 
-export async function createChatProject(name: string): Promise<ProjectRecord> {
-  return createStoredChatProject(name);
+export async function createChatProject(
+  name: string,
+  nativePathLease?: string,
+  id?: string,
+): Promise<ProjectRecord> {
+  return createStoredChatProject(name, nativePathLease, id);
 }
 
 export async function renameChatProject(

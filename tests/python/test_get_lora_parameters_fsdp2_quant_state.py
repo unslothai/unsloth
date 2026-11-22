@@ -121,10 +121,40 @@ def test_dense_weight_never_takes_the_module_getattr_path():
     assert "quant_state" not in lookups, lookups
 
 
-def test_fallback_only_after_fsdp2_qlora_preparation():
-    # Without prepare_fsdp2_qlora no weight can lose its quant_state, so the default LoRA forward keeps
-    # the merge base's single getattr and never consults the base layer.
+def test_fallback_reads_no_process_global():
+    # The fallback is gated per weight on the packed (N, 1) shape, never on a module-global flag: a
+    # global read inside a compiled LoRA forward is a dynamo guard, so preparing one FSDP2 QLoRA model
+    # recompiled every compiled dense LoRA forward (#13880 review).
     for name in ("get_lora_parameters", "get_lora_parameters_bias"):
-        fn = _load_function(name, fsdp2_qlora_prepared = False)
-        proj, _ = _fsdp2_unsharded_4bit()
-        assert fn(proj)[1] is None
+        fn = _load_function(name)
+        assert "_FSDP2_QLORA_PREPARED" not in fn.__code__.co_names, name
+        proj, state = _fsdp2_unsharded_4bit()
+        assert fn(proj)[1] is state
+
+
+def test_compiled_dense_lookup_does_not_recompile_when_flag_flips():
+    # The review's repro: compile a dense LoRA lookup, flip the old global, call again: one graph.
+    import torch._dynamo
+
+    get_lora_parameters = _load_function("get_lora_parameters", fsdp2_qlora_prepared = False)
+    base_layer = torch.nn.Linear(64, 32, bias = False)
+    proj = _LoRA(base_layer)
+    graphs = []
+
+    def backend(gm, example_inputs):
+        graphs.append(gm)
+        return gm
+
+    torch._dynamo.reset()
+
+    @torch.compile(backend = backend, fullgraph = True)
+    def lookup(x):
+        W, W_quant, A, B, s = get_lora_parameters(proj)
+        return x @ W.t() + (x @ A.t()) @ B.t() * s
+
+    x = torch.randn(2, 64)
+    out = lookup(x)
+    get_lora_parameters.__globals__["_FSDP2_QLORA_PREPARED"] = True
+    assert torch.equal(lookup(x), out)
+    assert len(graphs) == 1, len(graphs)
+    torch._dynamo.reset()

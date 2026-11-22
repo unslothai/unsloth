@@ -45,6 +45,7 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .media_chat_tools import MEDIA_CHAT_TOOLS
 from . import file_history
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
@@ -250,6 +251,40 @@ _BLOCKED_COMMANDS = (
     if sys.platform == "win32"
     else _BLOCKED_COMMANDS_COMMON
 )
+
+# An approved call may run `rm`, but only as one plain command naming its files, never recursively. An allowlist, not a
+# recursive-flag scan: globs and xargs can feed rm a file named `-rf`, a line continuation splits a flag, `./rm` may be
+# another program, so any shell syntax keeps the block.
+_APPROVED_RM_SHELL_CHARS = frozenset(";&|<>()$`\\{}*?[]!#%^\n\r")
+# No -i / -I / --interactive: stdin is /dev/null, so rm reads "no", deletes nothing and still exits 0.
+_APPROVED_RM_SHORT_OPTION_RE = re.compile(r"-[fvd]+")
+_APPROVED_RM_LONG_OPTIONS = frozenset({"--force", "--verbose", "--dir", "--interactive=never"})
+_APPROVED_RM_REFUSED = (
+    "Blocked command(s) for safety: rm. Approval allows only one plain rm naming each file, "
+    "e.g. rm notes.txt old.log. Recursive deletion (-r, -R, -rf, --recursive) is never allowed, "
+    "nor are globs, pipes, xargs, chained commands or $ expansion."
+)
+
+
+def _is_approvable_rm(command: str) -> bool:
+    # A trailing newline only ends the command; one inside starts another.
+    command = command.strip()
+    if _APPROVED_RM_SHELL_CHARS & set(command):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if len(words) < 2 or words[0] != "rm":
+        return False
+    for i, word in enumerate(words[1:], 1):
+        if word == "--":
+            return i + 1 < len(words)
+        if word.startswith("-") and not (
+            _APPROVED_RM_SHORT_OPTION_RE.fullmatch(word) or word in _APPROVED_RM_LONG_OPTIONS
+        ):
+            return False
+    return any(not w.startswith("-") for w in words[1:])
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
@@ -7288,6 +7323,8 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
         # purchases, sign-ins and new sites ask there, in every permission mode.
         *BROWSER_TOOL_NAMES,
+        # Render on the resident image/video model; never load/unload a model or reach the network.
+        *MEDIA_CHAT_TOOLS,
     }
 )
 
@@ -14739,6 +14776,21 @@ def execute_tool(
                     arguments,
                     session_id = session_id,
                     disable_sandbox = disable_sandbox,
+                ),
+                name,
+            )
+    if name in MEDIA_CHAT_TOOLS:
+        if name == "generate_image":
+            from .generate_image_tool import run_generate_image as run_media_tool
+        else:
+            from .generate_video_tool import run_generate_video as run_media_tool
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                run_media_tool(
+                    arguments,
+                    workdir = _get_workdir(session_id),
+                    cancel_event = cancel_event,
+                    timeout = effective_timeout,
                 ),
                 name,
             )
@@ -23744,6 +23796,11 @@ def _bash_exec(
             )
         else:
             blocked = _find_blocked_commands(command)
+        if host_access_approved and blocked == {"rm"}:
+            # The allowlist reads words the POSIX way; cmd quotes differently and deletes with `del`, not rm.
+            if profile in _CMD_PROFILES or not _is_approvable_rm(command):
+                return _APPROVED_RM_REFUSED
+            blocked = set()
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.

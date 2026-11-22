@@ -555,12 +555,17 @@ async def test_native_gguf_prefill_progress_holds_the_lease(
 
         async def body():
             comments = 0
+            chunks = 0
             async for raw in inner:
                 text = raw.decode() if isinstance(raw, bytes) else str(raw)
+                chunks += text.count("data: {")
                 if text.startswith(":") and entered.is_set():
                     comments += 1
                     sampled["comments"].add(text.strip())
                     if comments == 2:
+                        # Commits run beside the stream now, so let the chunks read so far land before the clock
+                        # jumps; a slow runner would otherwise stamp them as progress made after it.
+                        await _await_chunk_payloads("run-1", chunks, 10.0)
                         now["ms"] += 21 * 60_000
                     elif comments == 5 and "reaped" not in sampled:
                         sampled["reaped"] = runs_db.reconcile_runs(stale_after_ms = 1_200_000)
@@ -765,6 +770,166 @@ async def test_a_lone_chunk_is_appended_without_waiting_for_another(durable_run,
     assert stored == [chunk]
     release.set()
     await task
+
+
+def _numbered_chunks(count):
+    return [{"choices": [{"delta": {"content": f"t{i} "}}]} for i in range(count)]
+
+
+def _held_append(monkeypatch):
+    """Patch append_events so every commit blocks until `gate` is set. Returns (entered, gate)."""
+    entered = threading.Event()
+    gate = threading.Event()
+    original = runs_db.append_events
+
+    def held(run_id, worker_token, events):
+        entered.set()
+        assert gate.wait(10)
+        return original(run_id, worker_token, events)
+
+    monkeypatch.setattr(runs_db, "append_events", held)
+    return entered, gate
+
+
+@pytest.mark.asyncio
+async def test_a_slow_commit_does_not_stop_the_stream_being_read(durable_run, monkeypatch):
+    chunks = _numbered_chunks(50)
+    drained = asyncio.Event()
+    release = asyncio.Event()
+
+    async def body():
+        yield f"data: {json.dumps(chunks[0])}\n\n"
+        # The rest is only offered once the first commit is under way and held.
+        assert await asyncio.to_thread(entered.wait, 2)
+        for chunk in chunks[1:]:
+            yield f"data: {json.dumps(chunk)}\n\n"
+        drained.set()
+        await release.wait()
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    entered, gate = _held_append(monkeypatch)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    task = asyncio.create_task(supervisor._produce("run-1"))
+    try:
+        await asyncio.wait_for(drained.wait(), timeout = 2)
+        assert not gate.is_set()
+    finally:
+        gate.set()
+        release.set()
+        await task
+    stored = [e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"]
+    assert stored == chunks
+    assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_slow_commits_batch_a_burst_instead_of_one_chunk_each(durable_run, monkeypatch):
+    chunks = _numbered_chunks(400)
+    calls = []
+    original = runs_db.append_events
+
+    def slow(run_id, worker_token, events):
+        calls.append(len(events))
+        time.sleep(0.04)
+        return original(run_id, worker_token, events)
+
+    async def body():
+        for chunk in chunks:
+            yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    monkeypatch.setattr(runs_db, "append_events", slow)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    stored = [e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"]
+    assert stored == chunks
+    assert len(calls) <= 5, calls
+    assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_commit_keeps_its_events_and_fails_the_run(durable_run, monkeypatch):
+    chunks = _numbered_chunks(3)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("database is locked")
+
+    async def body():
+        for chunk in chunks:
+            yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    monkeypatch.setattr(runs_db, "append_events", broken)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    run = runs_db.get_run("run-1", "alice")
+    assert (run["status"], run["finishReason"], run["error"]) == (
+        "failed",
+        "error",
+        "database is locked",
+    )
+    stored = [e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"]
+    assert stored and stored == chunks[: len(stored)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancels", [1, 2], ids = ["cancel", "cancel-again-while-settling"])
+async def test_cancel_during_a_commit_waits_for_it_before_settling(
+    durable_run, monkeypatch, cancels
+):
+    chunks = _numbered_chunks(20)
+    leaked = []
+    drained = asyncio.Event()
+
+    async def body():
+        for chunk in chunks:
+            yield f"data: {json.dumps(chunk)}\n\n"
+        drained.set()
+        await asyncio.Event().wait()
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    entered, gate = _held_append(monkeypatch)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: leaked.append(context))
+    cancel_event = threading.Event()
+    task = asyncio.create_task(supervisor._produce("run-1", cancel_event))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        await asyncio.wait_for(drained.wait(), timeout = 2)
+        cancel_event.set()
+        task.cancel()
+        # A second cancel (shutdown's forced one) lands while settlement waits on the commit; the run must still settle.
+        for _ in range(cancels - 1):
+            loop.call_later(0.05, task.cancel)
+        # finish_run must not overtake the commit still holding its batch.
+        loop.call_later(0.1, gate.set)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+    finally:
+        gate.set()
+        loop.set_exception_handler(previous_handler)
+    assert leaked == []
+    assert runs_db.get_run("run-1", "alice")["status"] == "cancelled"
+    stored = [e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"]
+    assert stored == chunks
 
 
 @pytest.mark.asyncio

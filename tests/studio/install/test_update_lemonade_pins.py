@@ -46,6 +46,18 @@ def _hasher(url: str) -> tuple[str, int]:
     return hashlib.sha256(data).hexdigest(), len(data)
 
 
+def _newer(version: str) -> str:
+    """A release above `version` in its own scheme: Lemonade moved from 11.9.0 to calendar
+    versions (2026.42.1), so a fixed fake like 99.0.0 stops being newer once the pin crosses it."""
+    major = up.version_key(version)[0]
+    return f"v{major + 1}.0.1"
+
+
+_PINS = lp.load_pins()
+NEW_LEMONADE = _newer(_PINS["lemonade"]["version"])
+NEW_FLM = _newer(_PINS["fastflowlm"]["version"])
+
+
 def _releases(lemonade: str, flm: str, **overrides):
     by_repo = {
         "lemonade-sdk/lemonade": _release(
@@ -58,21 +70,29 @@ def _releases(lemonade: str, flm: str, **overrides):
 
 def test_newer_releases_move_both_pins_in_the_installers_format():
     pins = lp.load_pins()
-    new, changes = up.update_pins(pins, _releases("v99.0.0", "v99.0.1"), _hasher)
+    new, changes = up.update_pins(pins, _releases(NEW_LEMONADE, NEW_FLM), _hasher)
+    lemonade, flm = NEW_LEMONADE[1:], NEW_FLM[1:]
     assert changes == [
-        f"lemonade: {pins['lemonade']['version']} -> 99.0.0",
-        f"fastflowlm: {pins['fastflowlm']['version']} -> v99.0.1",
+        f"lemonade: {pins['lemonade']['version']} -> {lemonade}",
+        f"fastflowlm: {pins['fastflowlm']['version']} -> {NEW_FLM}",
     ]
-    assert new["lemonade"]["version"] == "99.0.0"
-    assert new["fastflowlm"]["version"] == "v99.0.1"
+    assert new["lemonade"]["version"] == lemonade
+    assert new["fastflowlm"]["version"] == NEW_FLM
     linux = new["lemonade"]["assets"]["linux-x64"]
-    assert linux["name"] == "lemonade-embeddable-99.0.0-ubuntu-x64.tar.gz"
+    assert linux["name"] == f"lemonade-embeddable-{lemonade}-ubuntu-x64.tar.gz"
     assert linux["size"] == len(_blob(linux["name"]))
+    windows = f"fastflowlm_{flm}_windows_amd64.zip"
     assert new["fastflowlm"]["assets"]["windows-x64"] == {
-        "name": "fastflowlm_99.0.1_windows_amd64.zip",
-        "sha256": hashlib.sha256(_blob("fastflowlm_99.0.1_windows_amd64.zip")).hexdigest(),
+        "name": windows,
+        "sha256": hashlib.sha256(_blob(windows)).hexdigest(),
     }
     assert pins == lp.load_pins(), "the input pins were modified"
+
+
+def test_the_fake_releases_are_newer_than_the_pins():
+    # Every "newer release" case below is vacuous if the fakes sort at or below the pins.
+    for section, fake in (("lemonade", NEW_LEMONADE), ("fastflowlm", NEW_FLM)):
+        assert up.version_key(fake) > up.version_key(_PINS[section]["version"])
 
 
 def test_current_or_older_releases_change_nothing():
@@ -90,21 +110,21 @@ def test_calendar_versions_sort_after_the_old_scheme():
 
 
 def test_a_digest_mismatch_is_refused():
-    name = "fastflowlm_99.0.1_linux.tar.gz"
-    releases = _releases("v1.0.0", "v99.0.1", **{name: {"digest": "sha256:" + "0" * 64}})
+    name = f"fastflowlm_{NEW_FLM[1:]}_linux.tar.gz"
+    releases = _releases("v1.0.0", NEW_FLM, **{name: {"digest": "sha256:" + "0" * 64}})
     with pytest.raises(RuntimeError, match = "GitHub publishes"):
         up.update_pins(lp.load_pins(), releases, _hasher)
 
 
 def test_an_asset_without_a_published_digest_is_refused():
-    name = "fastflowlm_99.0.1_linux.tar.gz"
-    releases = _releases("v1.0.0", "v99.0.1", **{name: {"digest": None}})
+    name = f"fastflowlm_{NEW_FLM[1:]}_linux.tar.gz"
+    releases = _releases("v1.0.0", NEW_FLM, **{name: {"digest": None}})
     with pytest.raises(RuntimeError, match = "publishes no digest"):
         up.update_pins(lp.load_pins(), releases, _hasher)
 
 
 def test_a_release_missing_an_asset_is_refused():
-    release = _release("v99.0.1", {"linux-x64": "fastflowlm_99.0.1_linux.tar.gz"})
+    release = _release(NEW_FLM, {"linux-x64": f"fastflowlm_{NEW_FLM[1:]}_linux.tar.gz"})
     releases = {"lemonade-sdk/lemonade": {"tag_name": "v1.0.0", "assets": []}}
     releases["ROCm/FastFlowLM"] = release
     with pytest.raises(RuntimeError, match = "windows_amd64.zip"):
@@ -114,12 +134,12 @@ def test_a_release_missing_an_asset_is_refused():
 def test_write_is_idempotent_and_only_limits_the_sections(tmp_path, monkeypatch):
     path = tmp_path / "pins.json"
     path.write_text(json.dumps(lp.load_pins(), indent = 2) + "\n", encoding = "utf-8")
-    monkeypatch.setattr(up, "fetch_latest_release", _releases("v99.0.0", "v99.0.1"))
+    monkeypatch.setattr(up, "fetch_latest_release", _releases(NEW_LEMONADE, NEW_FLM))
     monkeypatch.setattr(up, "hash_asset", _hasher)
     assert up.main(["--pins", str(path), "--check"]) == 1
     assert up.main(["--pins", str(path), "--write", "--only", "fastflowlm"]) == 0
     written = json.loads(path.read_text(encoding = "utf-8"))
-    assert written["fastflowlm"]["version"] == "v99.0.1"
+    assert written["fastflowlm"]["version"] == NEW_FLM
     assert written["lemonade"] == lp.load_pins()["lemonade"]
     lp.load_pins(path)
     before = path.read_text(encoding = "utf-8")

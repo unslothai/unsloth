@@ -103,7 +103,7 @@ def _worker(rank, port, out_dir, user_config):
             pass
 
         trl.SFTTrainer = SFTTrainer
-        cp.patch_sft_trainer()
+        cp.patch_sft_trainer(install_cp_methods = True)
 
         class Acc:
             parallelism_config = property(lambda self: self.state.parallelism_config)

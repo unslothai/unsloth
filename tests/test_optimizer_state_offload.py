@@ -704,3 +704,46 @@ def test_q_galore_multi_chunk_offload(monkeypatch, weight_quant):
             assert torch.equal(p, q)
         assert torch.equal(p.grad, q.grad)
     assert _state_devices(optimizer) == {"cpu"}
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_load_state_dict_tracks_dtensor_state_on_host():
+    import copy
+
+    import torch.distributed as dist
+    from torch.distributed.tensor import DeviceMesh, DTensor, Shard
+    from torch.testing._internal.distributed.fake_pg import FakeStore
+
+    module = _module()
+    if dist.is_initialized():
+        pytest.skip("a process group is already initialized")
+    dist.init_process_group(backend = "fake", rank = 0, world_size = 2, store = FakeStore())
+    try:
+        mesh = DeviceMesh("cuda", [0, 1])
+
+        def make(local):
+            param = torch.nn.Parameter(DTensor.from_local(local, mesh, [Shard(0)]))
+            return param, torch.optim.AdamW([param], lr = 1e-2)
+
+        param, optimizer = make(torch.randn(4, 8, device = "cuda"))
+        module.offload_optimizer_state(optimizer)
+        param.grad = DTensor.from_local(torch.ones(4, 8, device = "cuda"), mesh, [Shard(0)])
+        optimizer.step()
+        assert optimizer.state[param]["exp_avg"]._local_tensor.device.type == "cpu"
+
+        resumed, optimizer2 = make(param._local_tensor.detach().clone())
+        offloader = module.offload_optimizer_state(optimizer2)
+        # A checkpoint round trip: the loaded state shares no tensors with the live optimizer.
+        optimizer2.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+        state = optimizer2.state[resumed]
+        assert state["exp_avg"]._local_tensor.device.type == "cpu"
+        assert (resumed, "exp_avg") in offloader.offloaded
+        assert (resumed, "exp_avg_sq") in offloader.offloaded
+        resumed.grad = DTensor.from_local(torch.ones(4, 8, device = "cuda"), mesh, [Shard(0)])
+        param.grad = DTensor.from_local(torch.ones(4, 8, device = "cuda"), mesh, [Shard(0)])
+        optimizer2.step()
+        optimizer.step()
+        assert torch.equal(resumed._local_tensor, param._local_tensor)
+        assert state["exp_avg"]._local_tensor.device.type == "cpu"
+    finally:
+        dist.destroy_process_group()

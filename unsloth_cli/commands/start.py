@@ -6557,11 +6557,33 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
     )
 
 
-def _vscode_over_ssh(path: Path) -> bool:
-    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+def _container_engine() -> Optional[str]:
+    # `docker run unsloth/unsloth` sets none of the env vars below, only these markers.
+    if os.path.exists("/.dockerenv"):
+        return "docker"
+    if os.path.exists("/run/.containerenv"):
+        return "podman"
+    return None
+
+
+_VSCODE_REMOTE_ENV = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+
+
+def _vscode_over_ssh(path: Path, unconfirmed: bool = False) -> bool:
+    if sys.platform in ("win32", "darwin"):
         return False
-    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
-    return any(os.environ.get(name) for name in remote)
+    if path.parent.is_dir():
+        # In a container, a dir holding only what an earlier release of this command wrote there
+        # (state without "written") is not VS Code's.
+        return (
+            unconfirmed
+            and _container_engine() is not None
+            and path.is_file()
+            and all(p.name.lstrip(".").startswith(path.name) for p in path.parent.iterdir())
+        )
+    return (
+        any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV) or _container_engine() is not None
+    )
 
 
 def _add_vscode_provider(
@@ -6579,7 +6601,7 @@ def _add_vscode_provider(
         state_path, state, text, key, key_id = _open_app_config(
             target, base, explicit_key, _vscode_groups
         )
-        remote = _vscode_over_ssh(target.path)
+        remote = _vscode_over_ssh(target.path, bool(state) and not state.get("written"))
         new_text = _vscode_models_text(
             None if remote else text,
             target.path,
@@ -6598,6 +6620,7 @@ def _add_vscode_provider(
             "key": key,
             "key_id": key_id,
             "models": [entry["id"]],
+            "written": not remote,
         }
         if remote:
             # Keep the key in state so a re-run reuses it; a file here would never be read.
@@ -6611,12 +6634,20 @@ def _add_vscode_provider(
     if remote:
         url = urlparse(base)
         port = url.port or (443 if url.scheme == "https" else 80)
-        reach = (
-            f"forward port {port} to the same port on your machine (for example: "
-            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
-            if is_loopback_url(base)
-            else f"make sure your machine can reach {base}"
-        )
+        managed = any(os.environ.get(name) for name in _VSCODE_REMOTE_ENV)
+        engine = _container_engine()
+        if not is_loopback_url(base):
+            reach = f"make sure your machine can reach {base}"
+        elif engine and not managed:
+            reach = (
+                f"publish port {port} to the same port on your machine (for example: "
+                f"{engine} run -p {port}:{port} ...)"
+            )
+        else:
+            reach = (
+                f"forward port {port} to the same port on your machine (for example: "
+                f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            )
         typer.echo(
             "This is a remote session (SSH or a container) with no VS Code user dir here, so "
             "nothing was written. VS Code does not list these models in remote windows yet "

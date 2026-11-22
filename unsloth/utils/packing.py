@@ -767,8 +767,9 @@ def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
     tensor = _varlen_input(args, kwargs)
     if tensor is None or tensor.dim() < 2 or seq_idx.shape[0] != tensor.shape[0]:
         return False
-    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...).
-    return total in (tensor.shape[1], tensor.shape[-1])
+    # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...). Compared with ==:
+    # after a dynamic-shape recompile Dynamo evaluated `total in (...)` False for a matching row.
+    return total == tensor.shape[1] or total == tensor.shape[-1]
 
 
 def _wrap_mamba2_seq_idx_call(orig, *, hit_attr = "_unsloth_varlen_fused_hit"):
@@ -931,6 +932,13 @@ def _kwargs_kernels_available(modules, recurrent_ids = ()) -> Optional[str]:
     return None
 
 
+def _kwargs_alias_namespace(namespace):
+    """The namespace Dynamo resolves `namespace`'s globals through (sys.modules[__name__]), when it differs."""
+    name = namespace.get("__name__") if isinstance(namespace, dict) else None
+    alias = getattr(sys.modules.get(name), "__dict__", None) if isinstance(name, str) else None
+    return alias if isinstance(alias, dict) and alias is not namespace else None
+
+
 def _install_kwargs_probes(namespace) -> None:
     if not isinstance(namespace, dict):
         return
@@ -953,6 +961,33 @@ def _install_kwargs_probes(namespace) -> None:
 
         probe._unsloth_varlen_probe_of = fn
         namespace[name] = probe
+        # Dynamo reads an inlined function's globals through sys.modules[__name__]; Unsloth's compiled
+        # modules import transformers' __name__, so both namespaces must hold the same probe or the
+        # block compile guards one object and traces the other.
+        alias = _kwargs_alias_namespace(namespace)
+        if alias is not None and callable(alias.get(name)):
+            alias[name] = probe
+
+
+_FOLDS_IS_EXPORTING = []
+
+
+def _dynamo_folds_is_exporting() -> bool:
+    # torch 2.10 / 2.11 Dynamo constant-folds torch.compiler.is_exporting() to True inside any
+    # compiled region; 2.12+ reads the real flag. Probed once, eagerly, outside any trace.
+    if not _FOLDS_IS_EXPORTING:
+
+        def probe(x):
+            return x + 1 if torch.compiler.is_exporting() else x
+
+        try:
+            folds = bool(
+                torch.compile(probe, backend = "eager", fullgraph = True)(torch.zeros(1)).item()
+            )
+        except Exception:
+            folds = True  # unknown: keep the packed mixer eager, which is always correct
+        _FOLDS_IS_EXPORTING.append(folds)
+    return _FOLDS_IS_EXPORTING[0]
 
 
 def _wrap_kwargs_mixer_forward(module) -> None:
@@ -963,6 +998,9 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         varlen = getattr(module, "_unsloth_varlen", None)
         if varlen is None or not _varlen_seq_idx_applies(varlen[1], args, kwargs):
             return forward_orig(*args, **kwargs)
+        return _packed_forward(varlen, args, kwargs)
+
+    def _packed_forward(varlen, args, kwargs):
         varlen = _varlen_on(varlen, args, kwargs)
         if kwargs.get("seq_idx") is None:
             kwargs["seq_idx"] = varlen[1]
@@ -977,6 +1015,13 @@ def _wrap_kwargs_mixer_forward(module) -> None:
         if all(ok for _, ok in trace) and any(n != "causal_conv1d_fn" for n, _ in trace):
             module._unsloth_varlen_kwargs_hit = True
         return out
+
+    if _dynamo_folds_is_exporting():
+        # Eager even inside a compiled block: Dynamo folds torch.compiler.is_exporting() to True, so
+        # the hub-kernel wrappers trace their torch reference, which drops seq_idx / cu_seqlens and
+        # runs the packed documents into each other (Qwen3.5-0.8B per-document cosine 0.71). Newer
+        # torch traces the real kernels, and the eager mixer costs 6-20% per step there.
+        _packed_forward = torch.compiler.disable(_packed_forward)
 
     module.forward = forward
     module._unsloth_varlen_kwargs_mode = True
@@ -1442,9 +1487,14 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     kwargs_namespaces = list(_iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs))
     namespace_rollback = {}
     for ns in mask_namespaces + kwargs_namespaces:
-        if isinstance(ns, dict) and id(ns) not in namespace_rollback:
-            names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
-            namespace_rollback[id(ns)] = (ns, {name: ns[name] for name in names if name in ns})
+        # The alias namespace too: _install_kwargs_probes mirrors into it, and a failed probe must undo that.
+        for space in (ns, _kwargs_alias_namespace(ns)):
+            if isinstance(space, dict) and id(space) not in namespace_rollback:
+                names = tuple(_MASK_BUILDERS) + tuple(_KWARGS_KERNELS)
+                namespace_rollback[id(space)] = (
+                    space,
+                    {name: space[name] for name in names if name in space},
+                )
     for ns in mask_namespaces:
         _install_packed_mask_positions(ns, lambda: _PACKED[0])
     for ns in kwargs_namespaces:

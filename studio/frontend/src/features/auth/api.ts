@@ -25,7 +25,7 @@ type AuthFetchOptions = {
 };
 
 let isRedirecting = false;
-let refreshInflight: Promise<boolean> | null = null;
+let refreshInflight: Promise<RefreshOutcome> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
@@ -307,38 +307,89 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
-export async function refreshSession(): Promise<boolean> {
+/** "rejected": the server refused the token or the user signed out. "unavailable": no answer yet. */
+export type RefreshOutcome = "ok" | "rejected" | "unavailable";
+
+// Never abort an in-flight POST: if the server already rotated the pair, dropping its answer loses the new token.
+const REFRESH_MAX_ATTEMPTS = 3;
+const REFRESH_BUDGET_MS = 8000;
+const REFRESH_RETRY_DEFAULT_MS = 1000;
+const REFRESH_RETRY_MIN_MS = 250;
+const REFRESH_RETRY_MAX_MS = 5000;
+
+function refreshRetryDelay(response: Response): number {
+  const header = response.headers.get("Retry-After")?.trim();
+  const seconds = header ? Number(header) : Number.NaN;
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return REFRESH_RETRY_DEFAULT_MS;
+  }
+  return Math.min(
+    Math.max(seconds * 1000, REFRESH_RETRY_MIN_MS),
+    REFRESH_RETRY_MAX_MS,
+  );
+}
+
+async function runRefresh(refreshToken: string): Promise<RefreshOutcome> {
+  const startGeneration = logoutGeneration;
+  const startedAt = Date.now();
+  const superseded = (): RefreshOutcome | null => {
+    if (startGeneration !== logoutGeneration) return "rejected";
+    if (getRefreshToken() !== refreshToken) return "unavailable";
+    return null;
+  };
+  for (let attempt = 1; ; attempt++) {
+    let response: Response;
+    try {
+      response = await fetchWithTauriNetworkRetry(apiUrl("/api/auth/refresh"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+    } catch {
+      return "unavailable";
+    }
+    // Only a 401 rejects the token; a 5xx, 429 or proxy error says nothing about the session.
+    if (response.status === 401) {
+      clearAuthTokensIfCurrent(refreshToken);
+      return "rejected";
+    }
+    if (response.ok) {
+      let payload: RefreshResponse;
+      try {
+        payload = (await response.json()) as RefreshResponse;
+      } catch {
+        return "unavailable";
+      }
+      const stale = superseded();
+      if (stale) return stale;
+      storeAuthTokens(payload.access_token, payload.refresh_token);
+      setMustChangePassword(payload.must_change_password ?? false);
+      return "ok";
+    }
+    if (response.status !== 503 && response.status !== 429) {
+      return "unavailable";
+    }
+    const delay = refreshRetryDelay(response);
+    if (
+      attempt >= REFRESH_MAX_ATTEMPTS ||
+      Date.now() - startedAt + delay > REFRESH_BUDGET_MS
+    ) {
+      return "unavailable";
+    }
+    await wait(delay);
+    const stale = superseded();
+    if (stale) return stale;
+  }
+}
+
+export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
   const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
+  if (!refreshToken) return "rejected";
   if (refreshInflight && refreshInflightToken === refreshToken) {
     return refreshInflight;
   }
 
-  const startGeneration = logoutGeneration;
-  const promise = (async () => {
-    try {
-      const response = await fetchWithTauriNetworkRetry(
-        apiUrl("/api/auth/refresh"),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token: refreshToken }),
-        },
-      );
-      if (!response.ok) {
-        clearAuthTokensIfCurrent(refreshToken);
-        return false;
-      }
-      const payload = (await response.json()) as RefreshResponse;
-      if (startGeneration !== logoutGeneration) return false;
-      if (getRefreshToken() !== refreshToken) return false;
-      storeAuthTokens(payload.access_token, payload.refresh_token);
-      setMustChangePassword(payload.must_change_password ?? false);
-      return true;
-    } catch {
-      return false;
-    }
-  })();
+  const promise = runRefresh(refreshToken);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
   try {
@@ -349,6 +400,10 @@ export async function refreshSession(): Promise<boolean> {
       refreshInflightToken = null;
     }
   }
+}
+
+export async function refreshSession(): Promise<boolean> {
+  return (await refreshSessionOutcome()) === "ok";
 }
 
 export async function authFetch(
@@ -400,8 +455,9 @@ export async function authFetch(
   if (response.status !== 401) return response;
 
   const refreshToken = getRefreshToken();
-  const refreshed = await refreshSession();
-  if (!refreshed) {
+  const outcome = await refreshSessionOutcome();
+  if (outcome === "unavailable") return response;
+  if (outcome === "rejected") {
     if (isTauri) {
       return (
         (await retryWithTauriAutoAuth(

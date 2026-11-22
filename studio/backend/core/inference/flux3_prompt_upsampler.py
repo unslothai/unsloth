@@ -46,16 +46,20 @@ logger = get_logger(__name__)
 UPSAMPLER_ID = "flux-3-image-klein-pup"
 UPSAMPLER_REPO = "unsloth/flux-3-image-klein-pup-GGUF"
 UPSAMPLER_MODEL_FILES = {
+    "UD-Q4_K_XL": "flux-3-image-klein-pup-UD-Q4_K_XL.gguf",
     "Q4_K_M": "flux-3-image-klein-pup-Q4_K_M.gguf",
     "Q8_0": "flux-3-image-klein-pup-Q8_0.gguf",
 }
-UPSAMPLER_DEFAULT_QUANT = "Q4_K_M"
+# Unsloth Dynamic 4-bit with an imatrix: against BF16 on the upsampler's own captions, about 39% lower mean KL
+# divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
+UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
 # Vision projector, needed only for edits (reference images).
 UPSAMPLER_MMPROJ_FILE = "mmproj-F16.gguf"
 # Expected sizes of the files as built, for the UI before the download starts (the download reads the real ones).
 UPSAMPLER_FILE_SIZES = {
-    "flux-3-image-klein-pup-Q4_K_M.gguf": 5_629_109_248,
+    "flux-3-image-klein-pup-UD-Q4_K_XL.gguf": 5_966_095_584,
+    "flux-3-image-klein-pup-Q4_K_M.gguf": 5_629_109_472,
     "flux-3-image-klein-pup-Q8_0.gguf": 9_527_501_824,
     "mmproj-F16.gguf": 918_165_984,
 }
@@ -706,6 +710,8 @@ class PromptUpsamplerSidecar:
         self._stop_epoch = 0
         self._stopping = 0
         self._gpu_ordinal: Optional[int] = None
+        # A warm start owns the load in progress: a teardown, an unenhanced render or a Stop cancels it.
+        self._warming = False
 
     @property
     def loaded(self) -> bool:
@@ -956,7 +962,7 @@ class PromptUpsamplerSidecar:
         if self._update_in_progress:
             raise UpsamplerUnavailableError("llama.cpp is being updated.")
         epoch = self._stop_epoch
-        with self._request_lock:
+        with self._request_slot(cancel_event):
             if cancel_event is not None and cancel_event.is_set():
                 raise UpsamplerCancelledError("Cancelled.")
             with self._lock:
@@ -995,6 +1001,24 @@ class PromptUpsamplerSidecar:
                     self._active_requests -= 1
                     self._schedule_idle_locked()
 
+    @contextmanager
+    def _request_slot(self, cancel_event: Optional[threading.Event]) -> Iterator[None]:
+        """The request lock, waited for cancellably: a Stop on a request queued behind a warm start cancels that start
+        instead of waiting it out."""
+        while not self._request_lock.acquire(timeout = 0.2):
+            if cancel_event is not None and cancel_event.is_set():
+                if self._warming:
+                    self.cancel_pending_load()
+                raise UpsamplerCancelledError("Cancelled.")
+        try:
+            yield
+        finally:
+            self._request_lock.release()
+
+    def cancel_warm_start(self) -> bool:
+        """Cancel a warm start still launching, without waiting. True when one was."""
+        return self._warming and self.cancel_pending_load()
+
     def release_if_tight(self) -> bool:
         """Unload now when the server holds VRAM and the accelerator is short, so the DiT and text encoder do not
         denoise next to it. True when it unloaded."""
@@ -1010,6 +1034,204 @@ class PromptUpsamplerSidecar:
         )
         self.unload(wait = False)
         return True
+
+    @property
+    def stop_epoch(self) -> int:
+        """Bumped by every blocking unload (a GPU handover, a training start). A warm start scheduled under an older
+        epoch never starts."""
+        return self._stop_epoch
+
+    def serves(self, binary: str, model: str, mmproj: Optional[str]) -> bool:
+        """Up for these files (a vision server also serves a text-only ask)."""
+        with self._lock:
+            current = self._key if self.loaded else None
+        return (
+            current is not None
+            and current[:2] == (binary, model)
+            and (mmproj is None or current[2] == mmproj)
+        )
+
+    def warm(
+        self,
+        *,
+        binary: str,
+        model: str,
+        mmproj: Optional[str],
+        expected_epoch: Optional[int] = None,
+    ) -> str:
+        """Start the server ahead of the first enhanced run, so that run skips the ~20 s start. Never waits on a
+        request: one in flight already starts or holds the server. Declines where a call would not keep it resident
+        (training, another GPU owner, unknown or tight memory once it is up) and after any blocking unload since
+        ``expected_epoch``. Returns why it did or did not start."""
+        if self._update_in_progress:
+            return "updating"
+        epoch = self._stop_epoch if expected_epoch is None else expected_epoch
+        if not self._request_lock.acquire(blocking = False):
+            return "busy"
+        try:
+            with self._lock:
+                current = self._key if self.loaded else None
+                if (
+                    current is not None
+                    and current[:2] == (binary, model)
+                    and (mmproj is None or current[2] == mmproj)
+                ):
+                    # Already up for these files: the toggle counts as use, so the keep-alive restarts.
+                    self._schedule_idle_locked()
+                    return "loaded"
+                if self._stopping or epoch != self._stop_epoch:
+                    return "stopped"
+                self._cancel_idle_locked()
+                # Counted as a request while it starts, as generate does: a non-blocking unload leaves it alone.
+                self._active_requests += 1
+            try:
+                return self._warm_start(binary, model, mmproj, epoch, replace = current is not None)
+            finally:
+                with self._lock:
+                    self._active_requests -= 1
+                    self._schedule_idle_locked()
+        except Exception as exc:  # noqa: BLE001 -- a warm start is an optimisation; the run starts it itself
+            logger.warning("flux3.prompt_upsampler: warm start failed (%s)", exc)
+            return "failed"
+        finally:
+            self._request_lock.release()
+
+    def _warm_start(
+        self, binary: str, model: str, mmproj: Optional[str], epoch: int, *, replace: bool
+    ) -> str:
+        from core.inference.stt_sidecar import _training_active
+
+        # Published before the training and owner probes, as _launch does: a training start that passes them finds a
+        # load to cancel (free_prompt_upsampler_for_training reads is_loading).
+        self._load_cancel.clear()
+        with self._lock:
+            self._loading = True
+            self._warming = True
+        slot_held = None
+        try:
+            # The image model must hold the GPU: with nobody on it the server would start CPU-only and stay outside
+            # every eviction.
+            if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
+                return "gpu"
+            # The engine's generation slot, held until the server is up: a render or model transition that arrives
+            # meanwhile queues behind the start instead of overlapping it (a load cancels it first through
+            # stop_for_handover). Not taken while one runs or a load is in flight.
+            slot, why = _take_render_slot()
+            if slot is None:
+                return why
+            slot_held = slot
+            ordinal = _resident_cuda_ordinal()
+            # Unpinnable on a multi-GPU host (the native engine records its card elsewhere): the server would split
+            # over every visible card and the probe below would read the wrong one. Its first enhanced run starts it.
+            if ordinal is None and _cuda_device_count() > 1:
+                return "placement"
+            free_mib, total_mib, device = _accelerator_memory_mib(ordinal)
+            if free_mib is None or device not in ("cuda", "mps"):
+                return "memory"
+            need_mib = _footprint_mib(model, mmproj)
+            # A replaced server's memory comes back before the new one loads: free memory already excludes it.
+            reclaim_mib = 0.0
+            if replace and self._gpu_layers and self._key is not None:
+                reclaim_mib = _footprint_mib(self._key[1], self._key[2], self._gpu_layers)
+            # The same floor release_if_tight applies after a call: a server that floor would unload is not started.
+            if vram_is_tight(int(free_mib + reclaim_mib - need_mib), total_mib):
+                return "tight"
+            with self._lock:
+                if self._load_cancel.is_set() or self._stopping or epoch != self._stop_epoch:
+                    return "stopped"
+                if replace:
+                    # Up for other files (text-only, and an edit needs the projector): replaced only once starting.
+                    self._release_locked()
+            self._spawn_server(binary, model, mmproj)
+            # Revalidate once up: a load published or a handover made while the server came up means it now serves a
+            # model that is leaving.
+            with self._lock:
+                stale = self._load_cancel.is_set() or self._stopping or epoch != self._stop_epoch
+            if stale or _active_engine_loading():
+                with self._lock:
+                    self._release_locked()
+                return "stale"
+            return "started"
+        except UpsamplerCancelledError:
+            return "cancelled"
+        finally:
+            if slot_held is not None:
+                slot_held.release()
+            with self._lock:
+                self._loading = False
+                self._warming = False
+                self._starting_process = None
+
+
+def _footprint_mib(
+    model: str,
+    mmproj: Optional[str],
+    gpu_layers: Optional[int] = None,
+) -> float:
+    """What a server holds on the accelerator: its share of the GGUF (all of it by default, ``gpu_layers`` of
+    _NUM_LAYERS for a partial offload), the projector (offloaded with any GPU layer) and the KV / compute overhead."""
+
+    def _size(path: Optional[str]) -> int:
+        if not path:
+            return 0
+        with suppress(OSError):
+            return os.path.getsize(path)
+        return 0
+
+    share = 1.0 if gpu_layers is None else min(max(gpu_layers, 0), _NUM_LAYERS) / _NUM_LAYERS
+    return (_size(model) * share + _size(mmproj)) / (1024 * 1024) + _GPU_OVERHEAD_MIB
+
+
+def _cuda_device_count() -> int:
+    try:
+        import torch
+        return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def cancel_warm_start() -> bool:
+    """Cancel a warm start still launching (it holds the image engine's generation slot until its server is up), for
+    a teardown, a model switch or an unenhanced render that would otherwise wait it out. Never creates the sidecar,
+    never blocks."""
+    sidecar = _sidecar
+    return sidecar is not None and sidecar.cancel_warm_start()
+
+
+def _take_render_slot() -> tuple[Any, str]:
+    """(the active image engine's generation lock, acquired) or (None, why not): ``generating`` while a render or model
+    transition holds it, ``loading`` while a load is in flight (the old model still reads as loaded), ``engine``
+    when the engine cannot be read. Never blocks."""
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        engine = get_active_diffusion_engine()
+        lock = getattr(engine, "_generate_lock", None)
+    except Exception:  # noqa: BLE001 -- fail closed
+        return None, "engine"
+    if lock is None:
+        return None, "engine"
+    if _engine_loading(engine):
+        return None, "loading"
+    if not lock.acquire(blocking = False):
+        return None, "generating"
+    # A load that began while this waited for nothing: re-read under the slot.
+    if _engine_loading(engine):
+        lock.release()
+        return None, "loading"
+    return lock, ""
+
+
+def _active_engine_loading() -> bool:
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        return _engine_loading(get_active_diffusion_engine())
+    except Exception:  # noqa: BLE001 -- unreadable: treat as a load in flight
+        return True
+
+
+def _engine_loading(engine: Any) -> bool:
+    loading = getattr(engine, "_loading", None)
+    return loading is not None and not getattr(loading, "error", None)
 
 
 def _gpu_unowned() -> bool:
@@ -1136,6 +1358,56 @@ def stop_for_handover() -> None:
     so nothing of it outlives the DIFFUSION claim."""
     cancel_active()
     unload_sidecar(wait = True)
+
+
+def _resident_identity() -> Optional[tuple]:
+    """(repo_id, family) of the resident image model, else None."""
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        status = get_active_diffusion_engine().status()
+    except Exception:  # noqa: BLE001 -- no engine reads as nothing loaded
+        return None
+    return (status.get("repo_id"), status.get("family")) if status.get("loaded") else None
+
+
+def warm_for_family(
+    family_name: Optional[str],
+    *,
+    expected_epoch: Optional[int] = None,
+    resident: Optional[tuple] = None,
+) -> str:
+    """Start the server for the resident ``family_name`` when Enhance prompt is on, in the background. The vision
+    projector comes up too when downloaded, so a later edit does not relaunch it. ``expected_epoch`` (the sidecar's
+    stop epoch read before the resident was) and ``resident`` (its (repo_id, family)) bind the start to that model: a
+    handover or model swap before the worker runs cancels it. Returns ``scheduled`` or why not."""
+    if not supports_family(family_name):
+        return "unsupported"
+    binary = find_llama_server_binary()
+    model = model_path()
+    if binary is None:
+        return "unavailable"
+    if model is None:
+        return "not_downloaded"
+    sidecar = get_sidecar()
+    mmproj = mmproj_path()
+    if sidecar.is_loading() or sidecar.serves(binary, model, mmproj):
+        # Starting, or up for these files (the call refreshes its keep-alive): nothing to wait for on a thread. A
+        # server for other files is replaced on the thread below, so the route never waits for a start.
+        return sidecar.warm(
+            binary = binary, model = model, mmproj = mmproj, expected_epoch = expected_epoch
+        )
+
+    def _run() -> None:
+        if resident is not None and _resident_identity() != resident:
+            outcome = "stale"
+        else:
+            outcome = sidecar.warm(
+                binary = binary, model = model, mmproj = mmproj, expected_epoch = expected_epoch
+            )
+        logger.info("flux3.prompt_upsampler: warm start %s", outcome)
+
+    threading.Thread(target = _run, name = "flux3-upsampler-warm", daemon = True).start()
+    return "scheduled"
 
 
 def unload_sidecar(wait: bool = False) -> None:

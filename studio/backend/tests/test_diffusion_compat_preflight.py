@@ -17,6 +17,7 @@ and a stubbed ``hf_hub_download`` fails the test if anything tries to fetch a wh
 from __future__ import annotations
 
 import inspect
+import re
 import threading
 import time
 import types
@@ -1434,18 +1435,20 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
     for source, acquire, label in (
         (
             inspect.getsource(video_route.load_video_model_gated),
-            "acquire_for_request(VIDEO",
+            r"acquire_for_request\(\s*VIDEO\b",
             "video",
         ),
         (
             inspect.getsource(inference_route.load_diffusion_model_gated),
-            "acquire_for_request(DIFFUSION",
+            r"acquire_for_request\(\s*DIFFUSION\b",
             "images",
         ),
     ):
         assert "assert_pick_is_not_speech" in source, label
-        assert acquire in source, label
-        assert source.index("assert_pick_is_not_speech") < source.index(acquire), label
+        # The call may wrap its arguments over several lines (e.g. with policy_kwargs).
+        call = re.search(acquire, source)
+        assert call is not None, label
+        assert source.index("assert_pick_is_not_speech") < call.start(), label
 
 
 def test_an_automatic_image_load_keeps_the_pre_eviction_preflight_offline():

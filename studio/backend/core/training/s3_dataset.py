@@ -6,8 +6,7 @@ S3 dataset loader.
 
 Downloads dataset files (parquet / json / jsonl / csv) from an AWS S3 bucket
 to a local temp directory so the existing local-file dataset path can consume
-them. boto3 is an optional dependency and is imported lazily — callers should
-gate on :func:`boto3_available` before invoking the loader.
+them. boto3 is an optional dependency installed on the first S3 load if missing.
 
 Audio keys download too, keeping their prefix-relative layout, and audio values in
 JSON/JSONL/CSV manifests are rewritten to the local paths (``datasets.Audio`` opens path
@@ -36,6 +35,7 @@ from importlib.util import find_spec
 from typing import Callable, Optional
 from utils.datasets.format_detection import _AUDIO_EXTENSIONS
 from utils.paths.path_utils import drop_shadowed_appledouble_names
+from utils.s3_runtime import ensure_boto3
 
 logger = logging.getLogger(__name__)
 
@@ -332,18 +332,17 @@ def prepare_s3_dataset_download(
     Returns the local files plus the owned temporary directory, when one was
     created. Call ``cleanup()`` after the dataset loader has materialized data.
 
-    Raises ``RuntimeError`` if boto3 is missing, and ``ValueError`` if the
+    Raises ``RuntimeError`` if boto3 cannot be installed, and ``ValueError`` if the
     bucket/prefix contains no supported dataset files.
     """
-    if not boto3_available():
-        raise RuntimeError("S3 dataset loading requires boto3. Install it with: pip install boto3")
-
     bucket = s3_config.get("bucket")
     if not bucket:
         raise ValueError("s3_config.bucket is required")
     prefix = s3_config.get("prefix")
 
     _raise_if_cancelled(cancel_callback)
+    if not boto3_available():
+        ensure_boto3()
     client = _build_s3_client(s3_config)
 
     listed = _list_dataset_keys(client, bucket, prefix)

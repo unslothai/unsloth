@@ -11,6 +11,7 @@ import importlib.util
 import ipaddress
 import os
 import shlex
+import sqlite3
 import sys
 import threading
 import time
@@ -33,6 +34,8 @@ from models.auth import (
 )
 from models.users import Token
 from auth import storage, hashing, policy
+from loggers import get_logger
+from storage import sqlite_gate
 from utils.account_context import OWNER_ACCOUNT_ID
 from auth.authentication import (
     authenticated_via_desktop_jwt,
@@ -43,11 +46,13 @@ from auth.authentication import (
     get_current_subject,
     get_current_subject_allow_password_change,
     is_keyless,
+    new_refresh_token_value,
     refresh_access_token,
     security,
 )
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 def _account_id_of(username: str) -> "str | None":
@@ -613,30 +618,37 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     )
 
 
+# Sync def: rotation is one transaction, so a busy auth.db wait must not freeze the event loop.
 @router.post("/refresh", response_model = Token)
-async def refresh(payload: RefreshTokenRequest) -> Token:
+def refresh(payload: RefreshTokenRequest) -> Token:
     """Exchange a refresh token for a new access+refresh pair (single-use)."""
-    consumed = storage.consume_refresh_token(payload.refresh_token)
-    if consumed is None:
+    new_refresh_token, new_expires_at = new_refresh_token_value()
+    try:
+        rotated = storage.rotate_refresh_token(
+            payload.refresh_token, new_refresh_token, new_expires_at
+        )
+    except sqlite3.OperationalError as exc:
+        if not sqlite_gate.is_busy_error(exc):
+            raise
+        logger.warning("Token refresh deferred: auth.db is busy (%s)", exc)
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = "Unsloth Studio is busy. Try again in a moment.",
+            headers = {"Retry-After": "2"},
+        )
+    if rotated is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
-    username, is_desktop, jwt_secret = consumed
-    account = storage.get_account(username)
-    if is_desktop:
-        is_desktop = account is not None and account.is_owner
-    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
-    new_refresh_token = create_refresh_token(
-        subject = username, desktop = is_desktop, secret = jwt_secret
-    )
-
     return Token(
-        access_token = new_access_token,
+        access_token = create_access_token(
+            subject = rotated.username, desktop = rotated.is_desktop, secret = rotated.jwt_secret
+        ),
         refresh_token = new_refresh_token,
         token_type = "bearer",
-        must_change_password = False if is_desktop else storage.requires_password_change(username),
-        account_id = account.account_id if account is not None else None,
+        must_change_password = rotated.must_change_password,
+        account_id = rotated.account_id,
     )
 
 

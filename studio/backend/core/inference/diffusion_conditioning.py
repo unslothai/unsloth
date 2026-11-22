@@ -232,6 +232,18 @@ def decode_condition_images(
     return images
 
 
+# QwenImageEditPlusPipeline's VAE_IMAGE_SIZE: each image of a multi-image edit is VAE-encoded at this area (pixels).
+EDIT_EXTRA_IMAGE_AREA = 1024 * 1024
+
+
+def edit_takes_extra_images(fam: Any) -> bool:
+    """An instruction-edit family that reads more than the source in one edit (Qwen-Image-Edit-Plus): its edit
+    workflow takes ``reference_images`` after ``init_image``, up to ``max_condition_images`` in total."""
+    return (
+        bool(getattr(fam, "edit", False)) and int(getattr(fam, "max_condition_images", 4) or 4) > 1
+    )
+
+
 def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, Any]:
     """What the UI may offer for ``fam`` given the ``workflows`` the active engine runs for it.
     Localized editing is advertised only where the unified edit workflow itself is."""
@@ -244,5 +256,7 @@ def conditioning_capabilities(fam: Any, workflows: Sequence[str]) -> dict[str, A
         "max_output_pixels": int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048),
         "reference_resolutions": list(getattr(fam, "reference_resolutions", ()) or ()),
         "unified_edit": unified,
+        # Edit-only families whose edit takes the extra images too (the UI shows them on the Edit tab).
+        "multi_image_edit": edit_takes_extra_images(fam) and "edit" in workflows,
         "localized_edit_modes": list(LOCALIZED_EDIT_MODES) if unified else [],
     }

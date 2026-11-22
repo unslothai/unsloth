@@ -2226,3 +2226,73 @@ def test_an_existing_specs_folder_is_kept_without_a_fetch(monkeypatch, tmp_path)
     calls = _spec_repo(monkeypatch)
     assert M._fetch_model_specs(FORK, _SPEC_COMMIT, tmp_path) is True
     assert calls == []
+
+
+# #14052: a tree an elevated run staged under mkdtemp's ACL is unreadable to the same account unelevated
+
+
+def test_windows_staging_dirs_inherit_the_parent_acl(monkeypatch, tmp_path):
+    # mkdtemp's 0o700 is a protected owner-only ACL on Windows, which a tree renamed out of it keeps.
+    made = []
+    real_mkdir = M.core.os.mkdir
+
+    def mkdir(path, *args, **kwargs):
+        made.append((Path(path), args, kwargs))
+        real_mkdir(path)
+
+    monkeypatch.setattr(M.core.sys, "platform", "win32")
+    monkeypatch.setattr(M.core.os, "mkdir", mkdir)
+    monkeypatch.setattr(M.core.tempfile, "mkdtemp", lambda *a, **k: pytest.fail("mkdtemp used"))
+    path = M.core.make_staging_dir(tmp_path, ".audio.cpp-staging-")
+    assert path.is_dir() and path.parent == tmp_path
+    assert path.name.startswith(".audio.cpp-staging-")
+    assert made == [(path, (), {})]
+
+
+def _unreadable(path):
+    # Write but no search: nothing inside can be stat'ed.
+    path.chmod(0o200)
+    if M.os.access(path, M.os.X_OK):
+        path.chmod(0o755)
+        pytest.skip("chmod denies nothing to root or on Windows")
+
+
+def test_an_unreadable_install_names_the_repair_instead_of_in_use(monkeypatch, tmp_path, capsys):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    root = tmp_path / "audio.cpp"
+    downloaded = []
+    monkeypatch.setattr(M, "_download", lambda *a, **k: downloaded.append(a))
+    _unreadable(root)
+    try:
+        assert M.main(["--install-dir", str(root), "--accelerator", "cpu"]) == M.EXIT_FAILED
+        assert root.is_dir() and not list(tmp_path.glob("audio.cpp.old-*"))
+    finally:
+        root.chmod(0o755)
+    err = capsys.readouterr().err
+    assert "cannot be read by this account" in err and f"sudo rm -rf '{root}'" in err
+    assert "in use" not in err and downloaded == []
+    assert (root / M.OWNERSHIP_MARKER).is_file()
+
+
+def test_the_unreadable_repair_on_windows_is_powershell(monkeypatch, tmp_path):
+    root = tmp_path / "audio.cpp"
+    root.mkdir()
+    monkeypatch.setattr(M, "_is_unreadable", lambda target: True)
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match = "elevated PowerShell with Remove-Item -Recurse -Force"):
+        M.install(install_dir = root, accelerator = "cpu")
+
+
+def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
+    release = _release(tmp_path, CPU_ZIP)
+    _install(monkeypatch, tmp_path, release)
+    stuck = tmp_path / "audio.cpp.old-123"
+    stuck.mkdir()
+    (stuck / M.OWNERSHIP_MARKER).touch()
+    _unreadable(stuck)
+    try:
+        server = _install(monkeypatch, tmp_path, release, force = True)
+        assert server.is_file() and stuck.is_dir()
+    finally:
+        stuck.chmod(0o755)

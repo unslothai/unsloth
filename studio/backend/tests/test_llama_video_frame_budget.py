@@ -133,6 +133,104 @@ def test_the_probe_reads_the_flag_from_help(monkeypatch, tmp_path):
     assert without["supports_video_fps"] is False
 
 
+def _timestamp_launch(
+    tmp_path,
+    monkeypatch,
+    extra_args = None,
+    **env,
+):
+    for name in ("LLAMA_ARG_VIDEO_FPS", "LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _video_backend(
+        tmp_path, supports_video_fps = True, supports_video_timestamp_interval = True
+    )
+    return _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+
+def _last_value(cmd, flag):
+    positions = [i for i, token in enumerate(cmd) if token == flag]
+    return cmd[positions[-1] + 1] if positions else None
+
+
+def test_every_other_sampled_frame_gets_a_timestamp(tmp_path, monkeypatch):
+    cmd = _timestamp_launch(tmp_path, monkeypatch)
+
+    assert cmd.count("--video-timestamp-interval") == 1
+    assert _last_value(cmd, "--video-timestamp-interval") == "2000"
+
+
+def test_the_timestamp_interval_follows_a_hand_typed_frame_rate(tmp_path, monkeypatch):
+    cmd = _timestamp_launch(tmp_path, monkeypatch, extra_args = ["--video-fps", "2"])
+
+    assert _last_value(cmd, "--video-fps") == "2"
+    assert _last_value(cmd, "--video-timestamp-interval") == "1000"
+
+
+def test_the_timestamp_interval_follows_an_inherited_frame_rate(tmp_path, monkeypatch):
+    cmd = _timestamp_launch(tmp_path, monkeypatch, LLAMA_ARG_VIDEO_FPS = "3")
+
+    assert "--video-fps" not in cmd
+    assert _last_value(cmd, "--video-timestamp-interval") == "666"
+
+
+def test_a_hand_typed_timestamp_interval_is_left_alone(tmp_path, monkeypatch):
+    cmd = _timestamp_launch(
+        tmp_path, monkeypatch, extra_args = ["--video-timestamp-interval", "5000"]
+    )
+
+    assert cmd.count("--video-timestamp-interval") == 1
+    assert _last_value(cmd, "--video-timestamp-interval") == "5000"
+
+
+def test_an_inherited_timestamp_interval_is_not_overridden(tmp_path, monkeypatch):
+    cmd = _timestamp_launch(tmp_path, monkeypatch, LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL = "2000")
+
+    assert "--video-timestamp-interval" not in cmd
+
+
+def test_a_build_without_the_timestamp_flag_is_not_sent_it(tmp_path, monkeypatch):
+    monkeypatch.delenv("LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL", raising = False)
+    backend, gguf = _video_backend(tmp_path, supports_video_fps = True)
+
+    assert "--video-timestamp-interval" not in _launch(backend, gguf)["cmd"]
+
+
+def test_the_timestamp_lands_on_every_other_frame():
+    """llama-server labels frame k when k / fps * 1000 reaches a threshold that grows by
+    the interval per label. Even frames only keeps Qwen-VL's frame pairs whole."""
+    caps = {"supports_video_fps": True, "supports_video_timestamp_interval": True}
+    for fps in ("1", "2", "3", "4", "0.5", "7"):
+        flags = _video_fps_flags(caps, env = {}, extra_args = ["--video-fps", fps])
+        interval = float(flags[flags.index("--video-timestamp-interval") + 1])
+        threshold, labelled = 0.0, []
+        for k in range(120):
+            if k / float(fps) * 1000.0 >= threshold:
+                labelled.append(k)
+                threshold += interval
+        assert labelled == list(range(0, 120, 2)), fps
+    old_build = {"supports_video_timestamp_interval": True}
+    assert _video_fps_flags(old_build, env = {}) == ["--video-timestamp-interval", "500"]
+
+
+def test_the_probe_reads_the_timestamp_flag_from_help(monkeypatch, tmp_path):
+    with_flag = _probe_with_help(
+        monkeypatch,
+        tmp_path,
+        "--video-timestamp-interval N            interval in milliseconds between text "
+        "timestamps (default: 5000)\n",
+    )
+    assert with_flag["supports_video_timestamp_interval"] is True
+
+    older = tmp_path / "older"
+    older.mkdir()
+    without = _probe_with_help(
+        monkeypatch, older, "--video-fps N                           target video frame rate\n"
+    )
+    assert without["supports_video_timestamp_interval"] is False
+
+
 def _clip(
     tmp_path: Path,
     name: str,

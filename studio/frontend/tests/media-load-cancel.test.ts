@@ -41,10 +41,12 @@ for (const [page, path] of PAGES) {
     // the mount-time resume of a load started elsewhere, re-created in place by
     // each progress tick, and rebuilt by handleCancelLoad when the unload fails
     // and the load it could not stop has to stay visible. A tick that dropped
-    // the action would make the button vanish one second into the load.
+    // the action would make the button vanish one second into the load. The
+    // fifth is handleLoad's "Saving chat context…" update while the start
+    // request is pending, which must keep the Cancel too.
     // Call sites only: the declaration's own argument list opens with a newline.
     const sites = SOURCE.match(/loadToastArgs\((?!\n)[^)\n]*\)/g) ?? [];
-    assert.equal(sites.length, 4, "expected the four load-toast call sites");
+    assert.equal(sites.length, 5, "expected the five load-toast call sites");
     for (const site of sites) {
       assert.match(
         site,

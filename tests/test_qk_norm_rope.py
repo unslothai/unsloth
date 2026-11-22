@@ -185,3 +185,47 @@ def test_compiled_no_graph_breaks_same_bytes(dtype, packed):
     for x, y in zip(eager, compiled):
         assert torch.equal(x, y)
     torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("packed", [False, True])
+def test_mixed_dtype_tables_match_unfused(dtype, packed):
+    # bf16 cos / sin with fp32 or fp16 activations: the indexed RoPE kernel the fused path replaces
+    # multiplies with type promotion, so the fused output must not be rounded to the table dtype.
+    case = list(_case(2, 66, 8, 2, 128, dtype, packed))
+    case[2], case[3] = case[2].to(torch.bfloat16), case[3].to(torch.bfloat16)
+    fused = _run(fast_qk_norm_rope, *case, 128)
+    main = _run(_unfused, *case, 128)
+    ref = _ref64(*case, 128)
+    ulp = torch.finfo(dtype).eps
+    for f, m, r in zip(fused, main, ref):
+        scale = r.abs().max().item()
+        assert _err(f, r) <= 1.5 * _err(m, r) + 2 * ulp * scale
+
+
+def test_trainable_norm_fallback_reuses_grad_buffer():
+    # The trainable-norm fallback must keep the flag-off path's reuse_grad, so its backward peak
+    # matches the flag-off fast_rms_layernorm + fast_rope_embedding sequence.
+    from unsloth.kernels import fast_rms_layernorm, fast_rope_embedding
+
+    def flag_off(q_norm, k_norm, Q, K, cos, sin, pos):
+        Q = fast_rms_layernorm(q_norm, Q, reuse_grad = True).transpose(1, 2)
+        K = fast_rms_layernorm(k_norm, K, reuse_grad = True).transpose(1, 2)
+        return fast_rope_embedding(Q, K, cos, sin, pos)
+
+    case = _case(1, 1024, 16, 4, 128, CDTYPE, True, trainable = True)
+    peaks = []
+    outs = []
+    for fn in (flag_off, fast_qk_norm_rope, flag_off):
+        for n in case[-1]:
+            n.weight.grad = None
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        start = torch.cuda.memory_allocated()
+        outs.append(_run(fn, *case, 128) + tuple(n.weight.grad.clone() for n in case[-1]))
+        torch.cuda.synchronize()
+        peaks.append(torch.cuda.max_memory_allocated() - start)
+    assert peaks[0] == peaks[2]
+    assert peaks[1] <= peaks[0], peaks
+    for x, y in zip(outs[0], outs[1]):
+        assert torch.equal(x, y)

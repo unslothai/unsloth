@@ -143,6 +143,18 @@ def driver_version(pynvml = None) -> Optional[str]:
         return None
 
 
+def _nvml_int(pynvml, name, default):
+    """An NVML enum constant as an int. nvidia-ml-py defines NVML_P2P_CAPS_INDEX_READ = 0, (a
+    1-tuple, stray comma), which ctypes refuses, so every P2P read query would fail."""
+    value = getattr(pynvml, name, default)
+    if isinstance(value, (tuple, list)):
+        value = value[0] if len(value) == 1 else default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def nvml_topology(pynvml, gpus: List[dict]):
     """({(a, b): {"level": "PHB", "nvlink": bool, "p2p_read": bool}} keyed by torch index, error).
 
@@ -154,9 +166,9 @@ def nvml_topology(pynvml, gpus: List[dict]):
         return None, "nvidia-ml-py is not installed"
     if len(gpus) < 2 or any(g["pci"] is None and not g.get("uuid") for g in gpus):
         return None, "torch reports neither PCI bus ids nor device UUIDs"
-    read_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
-    nvlink_idx = getattr(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
-    status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
+    read_idx = _nvml_int(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
+    nvlink_idx = _nvml_int(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", 2)
+    status_ok = _nvml_int(pynvml, "NVML_P2P_STATUS_OK", 0)
 
     def query(fn, *args):
         try:

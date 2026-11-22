@@ -109,6 +109,8 @@ const TOOL_CALL_LABELS: Record<string, string> = {
   terminal: "Terminal",
   edit_file: "Edit",
   image_generation: "Images",
+  generate_image: "Images",
+  generate_video: "Video",
   search_knowledge_base: "Docs",
   render_html: "Canvas",
 };
@@ -129,7 +131,13 @@ function toolCategoryFromCall(toolName: string): string | null {
   ) {
     return "code";
   }
-  if (normalized === "image_generation") return "images";
+  if (
+    normalized === "image_generation" ||
+    normalized === "generate_image" ||
+    normalized === "generate_video"
+  ) {
+    return "images";
+  }
   if (normalized === "search_knowledge_base") return "docs";
   if (normalized === "render_html") return "artifacts";
   if (normalized.startsWith("mcp__")) return "mcp";

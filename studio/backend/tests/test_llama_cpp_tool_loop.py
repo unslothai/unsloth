@@ -5580,9 +5580,14 @@ def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
     assert len(calls) == (1 if deduplicate else 3), [c[0] for c in calls]
 
 
-def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
-    # Each acts on the page as it is then, so the second scroll is not a repeat of the first.
-    blocks = '<tool_call>{"name":"browser_scroll","arguments":{"direction":"down"}}</tool_call>' * 2
+@pytest.mark.parametrize(
+    "name, arguments",
+    [("browser_scroll", '{"direction":"down"}'), ("generate_image", '{"prompt":"a sloth"}')],
+)
+def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch, name, arguments):
+    # Each acts on the page as it is then, so the second scroll is not a repeat of the first;
+    # a second identical generate_image is a second image.
+    blocks = f'<tool_call>{{"name":"{name}","arguments":{arguments}}}</tool_call>' * 2
     first_stream = [_sse({"content": blocks}), _done()]
     final_stream = [_sse({"content": "done"}), _done()]
     backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
@@ -5596,12 +5601,12 @@ def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
     list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "scroll"}],
-            tools = [{"type": "function", "function": {"name": "browser_scroll"}}],
+            tools = [{"type": "function", "function": {"name": name}}],
             max_tool_iterations = 1,
         )
     )
 
-    assert [name for name, _ in calls] == ["browser_scroll", "browser_scroll"]
+    assert [called for called, _ in calls] == [name, name]
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):

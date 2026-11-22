@@ -15,7 +15,11 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildAudioTourSteps } from "./tour";
 import { useSidebar } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
-import { type InferenceStatusResponse, getInferenceStatus } from "@/features/chat";
+import {
+  type InferenceStatusResponse,
+  getInferenceStatus,
+  syncKeepModelsLoaded,
+} from "@/features/chat";
 import { useHubInventory } from "@/features/hub";
 import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -41,6 +45,7 @@ import {
   type AudioGalleryClip,
   audioInputAlive,
   fetchAudioBlob,
+  setAudioSlotModel,
   uploadAudioInput,
 } from "./api";
 import {
@@ -50,6 +55,7 @@ import {
   audioGenerationPresentation,
   audioLoadedSelection,
   deleteCoversRememberedModel,
+  describeAudioSlot,
   rememberedModelIsGone,
   rememberedModelUnavailable,
   settledDeleteMarkers,
@@ -317,9 +323,16 @@ export function AudioPage({
     try {
       const next = await getInferenceStatus();
       if (generation !== ttsStatusRefreshGeneration.current) return;
-      setStatus(next);
+      syncKeepModelsLoaded(next.multi_model_mode);
+      const view = await describeAudioSlot(next, (model) =>
+        getInferenceStatus(undefined, model),
+      );
+      if (generation !== ttsStatusRefreshGeneration.current) return;
+      setAudioSlotModel(view.slotModel, view.slotLabel);
+      setStatus(view.status);
     } catch {
       if (generation !== ttsStatusRefreshGeneration.current) return;
+      setAudioSlotModel(null);
       // Do not leave Generate enabled against residency the backend can no longer confirm. A later
       // refresh adopts the recovered runtime.
       setStatus(null);

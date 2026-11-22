@@ -52,6 +52,7 @@ _PEAK_TFLOPS_16BIT = (
     ("H100 PCIE", 756.0),
     ("H100 NVL", 835.0),
     ("H100", 989.0),
+    ("H200 NVL", 835.5),
     ("H200", 989.0),
     ("GH200", 989.0),
     ("B200", 2250.0),
@@ -351,12 +352,15 @@ def _sequence_lengths(kwargs, args):
         return attention_mask.sum(dim = -1)
     position_ids = kwargs.get("position_ids")
     if torch.is_tensor(position_ids) and position_ids.dim() == 2 and position_ids.shape[0] == 1:
-        # Padding free packing: each document restarts its positions at 0.
+        # Padding free packing: each document restarts its positions at 0. Fixed shape [N] with
+        # zero padding (no nonzero / data dependent branch): no host sync, and fullgraph compiles.
         position_ids = position_ids[0]
-        starts = torch.nonzero(position_ids == 0).reshape(-1)
-        if starts.numel() > 0:
-            ends = torch.cat([starts[1:], starts.new_tensor([position_ids.numel()])])
-            return ends - starts
+        starts = position_ids == 0
+        doc = starts.cumsum(0) - 1
+        lengths = torch.zeros_like(doc).scatter_add_(0, doc.clamp(min = 0), (doc >= 0).to(doc.dtype))
+        whole_row = torch.zeros_like(doc)
+        whole_row[0] = position_ids.numel()
+        return torch.where(starts.any(), lengths, whole_row)
     if torch.is_tensor(input_ids) and input_ids.dim() >= 2:
         return torch.full((input_ids.shape[0],), input_ids.shape[1], device = input_ids.device)
     return None

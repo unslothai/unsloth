@@ -12,6 +12,7 @@ from typing import Annotated, Any, Optional, Union
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from studio_mcp import video_queue
 from studio_mcp.caller import current_caller
 from studio_mcp.inputs import (
     AudioInput,
@@ -22,7 +23,7 @@ from studio_mcp.inputs import (
     resolve_images,
 )
 from studio_mcp.outputs import VideoJobRef
-from studio_mcp.tools import WRITES, opt_text, present, route_json
+from studio_mcp.tools import WRITES, opt_text, present
 from utils.upload_limits import (
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -188,15 +189,8 @@ async def generate_video(
         raise ToolError(TOO_MANY_IMAGE_BYTES)
     if reference_audios:
         body["reference_audios"] = [await audio_ref(caller, audio) for audio in reference_audios]
-    job = await route_json(
-        "POST",
-        "/v1/videos",
-        caller = caller,
-        json_body = body,
-        hub_header = True,
-        hints = {503: LOAD_VIDEO_HINT},
-    )
-    return job_ref(job)
+    job = await video_queue.post_or_queue(caller, body, hints = {503: LOAD_VIDEO_HINT})
+    return job if isinstance(job, VideoJobRef) else job_ref(job)
 
 
 TOOLS = ((generate_video, WRITES),)

@@ -148,3 +148,35 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     local_src = src.replace(external_body, "")
     assert "nudge_tool_calls: runtime.nudgeToolCalls" in local_src
     assert "run_tools_locally: true" not in local_src
+
+
+def test_safetensors_loop_runs_identical_generate_image_calls_in_one_turn():
+    # Two identical renders are two images; an identical web_search is still deduplicated.
+    ran = []
+    turns = iter(
+        [
+            '<tool_call>{"name": "generate_image", "arguments": {"prompt": "x"}}</tool_call>' * 2
+            + '<tool_call>{"name": "web_search", "arguments": {"query": "q"}}</tool_call>' * 2,
+            "done",
+        ]
+    )
+
+    def single_turn(_messages):
+        for turn in turns:
+            yield turn
+            return
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "two images"}],
+            tools = [
+                {"type": "function", "function": {"name": "generate_image"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            execute_tool = lambda name, arguments, **_k: ran.append(name) or "OK",
+            session_id = "s",
+            confirm_tool_calls = False,
+        )
+    )
+    assert ran == ["generate_image", "generate_image", "web_search"]

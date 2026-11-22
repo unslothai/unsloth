@@ -258,7 +258,7 @@ class TestStepThirteenWiring:
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
-            + ["_ensure_flash_attn"]
+            + ["_ensure_flash_attn", "_remove_stale_ssm_kernels"]
             + ["_evict_xformers_built_for_another_torch", "_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])

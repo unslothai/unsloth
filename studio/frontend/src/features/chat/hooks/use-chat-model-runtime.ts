@@ -16,6 +16,13 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { evictedSlotsFrom, resyncEvicted, toastEvicted } from "@/lib/evicted-toast";
+import {
+  isMultiModelRefusal,
+  MULTI_MODEL_REFUSAL_TITLE,
+  refusalHeadersOf,
+} from "@/lib/multi-model-refusal";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isBackendDownForDesktopUpdate,
@@ -120,6 +127,7 @@ import {
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  syncKeepModelsLoaded,
   takeEffortDisplacedByPin,
   useChatRuntimeStore,
   type LoadingModelPick,
@@ -718,6 +726,7 @@ async function syncInferenceStatusToStore(options?: {
 
     if (signal?.aborted || superseded()) return;
 
+    syncKeepModelsLoaded(statusRes.multi_model_mode);
     setModels(listRes.models.map(toChatModelRow));
     publishLoadedModels(
       statusRes.serving ?? [],
@@ -804,7 +813,7 @@ async function syncInferenceStatusToStore(options?: {
       });
       // A known prior resident or a definitive speech-only owner both prove the
       // persisted Chat pick is stale. Do not clear for a Chat load that this tab
-      // started. TTS is different because it owns this same slot.
+      // started. A TTS load without Keep multiple models loaded takes this same slot.
       if (
         (wasResident || isSpeechOnlyStatus(statusRes)) &&
         selectedCheckpoint &&
@@ -2846,15 +2855,9 @@ export function useChatModelRuntime() {
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
             offloadCounts = offloadCountsFrom(loadResponse);
-            if (loadResponse.evicted?.length) {
-              toast.info(
-                `Unloaded ${loadResponse.evicted.join(", ")} to make room`,
-                {
-                  description:
-                    "Select it again to load it back.",
-                },
-              );
-            }
+            const evictedSlots = evictedSlotsFrom(loadResponse);
+            toastEvicted(evictedSlots);
+            resyncEvicted(evictedSlots, "chat");
 
             // If cancelled while loading, do not show the model as active: it is being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -3751,16 +3754,18 @@ export function useChatModelRuntime() {
                   runnerLogPath,
                 )
               : undefined;
+            // Refused by Model memory: the backend's sentence is the explanation, settings the fix.
+            const refusal = isMultiModelRefusal(null, refusalHeadersOf(err), message);
+            const title = refusal ? MULTI_MODEL_REFUSAL_TITLE : summary;
+            const description = refusal ? message : detail || undefined;
+            const action = refusal ? modelMemorySettingsAction() : logsAction;
             if (loadToastDismissedRef.current) {
-              toast.error(summary, {
-                description: detail || undefined,
-                action: logsAction,
-              });
+              toast.error(title, { description, action });
             } else {
-              toast.error(summary, {
+              toast.error(title, {
                 id: toastId,
-                description: detail || undefined,
-                action: logsAction,
+                description,
+                action,
                 cancel: undefined,
                 classNames: undefined,
                 closeButton: true,

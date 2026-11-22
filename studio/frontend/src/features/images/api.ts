@@ -4,18 +4,13 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
-import {
-  parsePromptUpsamplerStatus,
-  PROMPT_UPSAMPLER_ROUTES,
-  type PromptEnhancement,
-  type PromptUpsamplerPreviewRequest,
-  type PromptUpsamplerStatus,
-} from "./lib/prompt-enhance";
+import type { PromptEnhancement } from "./lib/prompt-enhance";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -78,6 +73,15 @@ export interface DiffusionStatus {
   workflows?: string[];
   // Absent on an older backend: callers keep the historical limits (4 images, RGB, 16 px, 2048).
   conditioning?: DiffusionConditioning | null;
+  // Engine that ran the load ("diffusers" | "sd_cpp" | "mlx") and, for diffusers, why it was chosen.
+  engine?: string | null;
+  fallback_reason?: string | null;
+  // Engine UNSLOTH_DIFFUSION_ENGINE pins; a load's own engine pick is ignored while set.
+  engine_forced?: string | null;
+  // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
+  native_engine_eligible?: boolean;
+  // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
+  lora_via_native?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
@@ -113,6 +117,9 @@ export interface DiffusionConditioning {
   max_output_pixels: number;
   reference_resolutions: number[];
   unified_edit: boolean;
+  // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
+  // max_condition_images in total). Absent on older backends.
+  multi_image_edit?: boolean;
   localized_edit_modes: LocalizedEditMode[];
   // Engine-specific caveats shown next to the inputs.
   notes?: string[];
@@ -138,7 +145,13 @@ export interface DiffusionGenerateProgress {
 }
 
 export interface DiffusionLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   bytes_downloaded: number;
   bytes_total: number;
   fraction: number;
@@ -157,6 +170,8 @@ export interface DiffusionLoadRequest {
   base_repo?: string;
   family_override?: string;
   hf_token?: string;
+  // Engine for this load (GGUF only); omit for auto. Refused with a 400 when the engine cannot serve the pick.
+  engine?: "auto" | "diffusers" | "sd_cpp";
   cpu_offload?: boolean;
   // Separate .safetensors files (e.g. ComfyUI models/text_encoders, models/vae); gguf / single_file only.
   text_encoder_file?: string | string[];
@@ -389,7 +404,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
     "image",
     body.model_path,
     async () =>
-      parseJson<DiffusionStatus>(
+      parseLoadJson<DiffusionStatus>(
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -513,43 +528,6 @@ export async function cancelDiffusionGeneration(
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
   return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
-}
-
-export async function getPromptUpsamplerStatus(signal?: AbortSignal): Promise<PromptUpsamplerStatus> {
-  return parsePromptUpsamplerStatus(
-    await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.status, { signal })),
-  );
-}
-
-/** Start the background download of the prompt upsampler. Progress is read back from the status route. */
-export async function startPromptUpsamplerDownload(hfToken?: string): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.download, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
-    }),
-  );
-}
-
-/** Stop the download. Partial files stay cached, so a later download resumes. */
-export async function cancelPromptUpsamplerDownload(): Promise<void> {
-  await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.cancel, { method: "POST" }),
-  );
-}
-
-/** Rewrite a prompt without generating, so the caption can be read or edited first. */
-export async function previewEnhancedPrompt(
-  body: PromptUpsamplerPreviewRequest,
-): Promise<{ enhanced_prompt: string }> {
-  return parseJson(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.preview, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
 }
 
 /** List diffusion LoRA adapters, optionally filtered to a model family. */

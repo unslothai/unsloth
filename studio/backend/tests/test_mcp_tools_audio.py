@@ -16,11 +16,14 @@ from .mcp_harness import (
     b64,
     bodies,
     call_to,
+    call_with_progress,
+    fake_studio,
     fast_polls,  # noqa: F401  (fixture)
     form,
     openai_error,
     run_tool,
     sequence,
+    slow,
     stt_state,
 )
 
@@ -124,7 +127,7 @@ WORKFLOWS = [
         lambda body, result: (
             [c["role"] for c in result["structuredContent"]["clips"]] == list(STEMS)
             and result["structuredContent"]["group_id"] == "grp-1"
-            and [c["type"] for c in result["content"][1:]] == ["audio"] * 4
+            and [c["type"] for c in result["content"][1:]] == ["resource_link"] * 4
         ),
     ),
 ]
@@ -201,7 +204,11 @@ def test_short_clips_are_inline_and_long_ones_are_links_never_fetched(monkeypatc
         or Response(WAV)
     }
     result, _studio = _generate(
-        monkeypatch, {"workflow": "speak", "text": "Hi"}, run, long_file, **REMOTE
+        monkeypatch,
+        {"workflow": "speak", "text": "Hi", "return_media": "inline"},
+        run,
+        long_file,
+        **REMOTE,
     )
     content = result["content"]
     assert [c["type"] for c in content[1:]] == ["audio", "resource_link"]
@@ -310,8 +317,8 @@ def test_small_audio_runs_on_the_loaded_non_transformers_model(monkeypatch):
 
 
 SEGMENTS = [
-    {"start": 0.0, "end": 1.2, "text": "Hello"},
-    {"start": 1.2, "end": 2.0, "text": "from Studio."},
+    {"start": 0.0, "end": 1.2, "text": "Hello", "speaker": None},
+    {"start": 1.2, "end": 2.0, "text": "from Studio.", "speaker": None},
 ]
 
 
@@ -451,9 +458,13 @@ def test_a_stored_clip_is_transcribed_by_id_with_the_loaded_model(
     timestamps = args.get("timestamps", False)
     assert result["structuredContent"] == {
         "text": "A long meeting.",
+        "transcript_id": "tr-1",
         "language": "en",
         "model": model,
-        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting."}] if timestamps else None,
+        "segments": [{"start": 0.0, "end": 5.0, "text": "A long meeting.", "speaker": None}]
+        if timestamps
+        else None,
+        "match_score": None,
         "saved_to_history": True,
     }
     extra = {"language": "en"} if "language" in args else {}
@@ -599,3 +610,17 @@ def test_an_ndjson_error_line_or_early_stop_is_a_tool_error(monkeypatch, events,
     result, _studio = _from_source(monkeypatch, {"audio": {"clip_id": "clip-7"}}, events)
     assert result["isError"] is True
     assert message is None or result["content"][0]["text"] == message
+
+
+def test_a_slow_song_sends_a_heartbeat_and_still_returns_its_clip(monkeypatch):
+    from studio_mcp import progress as progress_module
+
+    monkeypatch.setattr(progress_module, "HEARTBEAT_S", 0.05)
+    studio = fake_studio({("POST", "/v1/audio/run"): slow(RUN, 0.3), **GALLERY})
+    progress, result = call_with_progress(
+        monkeypatch, studio, "generate_audio", {"workflow": "speak", "text": "Hi"}
+    )
+    assert result["isError"] is False
+    assert result["structuredContent"]["clips"][0]["id"] == "clip-1"
+    assert len(progress) >= 2
+    assert all(p["message"].startswith("Generating audio") for p in progress)

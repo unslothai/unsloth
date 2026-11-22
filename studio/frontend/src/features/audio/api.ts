@@ -86,6 +86,34 @@ export async function fetchAudioCatalog(): Promise<AudioCatalogResponse> {
   return parseJson<AudioCatalogResponse>(response);
 }
 
+// The speech model kept beside the chat model (routing id, status name); null when it is the active one.
+let audioSlotModel: string | null = null;
+let audioSlotLabel: string | null = null;
+
+export function setAudioSlotModel(
+  model: string | null,
+  label: string | null = model,
+): void {
+  audioSlotModel = model;
+  audioSlotLabel = model ? label : null;
+}
+
+export function audioSlotRoutingId(
+  model: string | null | undefined,
+): string | null {
+  return model && audioSlotModel && model === audioSlotLabel
+    ? audioSlotModel
+    : null;
+}
+
+export function isAudioSlotModel(model: string | null | undefined): boolean {
+  return audioSlotRoutingId(model) !== null;
+}
+
+function withAudioSlotModel<T extends object>(body: T): T {
+  return audioSlotModel ? { ...body, model: audioSlotModel } : body;
+}
+
 export async function generateAudio(
   text: string,
   options: GenerateAudioOptions = {},
@@ -94,11 +122,13 @@ export async function generateAudio(
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messages: [{ role: "user", content: text }],
-      stream: false,
-      ...sampling,
-    }),
+    body: JSON.stringify(
+      withAudioSlotModel({
+        messages: [{ role: "user", content: text }],
+        stream: false,
+        ...sampling,
+      }),
+    ),
     signal,
   });
   return parseJson<GenerateAudioResponse>(response);
@@ -507,7 +537,7 @@ export async function runAudio(
   const response = await authFetch("/api/inference/audio/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(buildAudioRunBody(request)),
+    body: JSON.stringify(withAudioSlotModel(buildAudioRunBody(request))),
     signal,
   });
   return parseAudioJson<AudioRunResponse>(response);

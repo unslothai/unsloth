@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
 import { isTouchClick } from "@/components/ui/touch-click";
+import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
@@ -281,14 +282,7 @@ function TooltipContent({
   const contentRef = useCallback(
     (el: React.ComponentRef<typeof TooltipPrimitive.Content> | null) => {
       assignRef(ref, el);
-      if (!el || variant !== "default") return;
-      const cs = getComputedStyle(el);
-      const lineHeight = Number.parseFloat(cs.lineHeight) || 16;
-      const innerHeight =
-        el.clientHeight -
-        Number.parseFloat(cs.paddingTop) -
-        Number.parseFloat(cs.paddingBottom);
-      el.classList.toggle("rounded-full!", innerHeight < lineHeight * 1.5);
+      if (variant === "default") roundIfSingleLine(el);
     },
     [ref, variant],
   );

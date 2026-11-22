@@ -508,8 +508,9 @@ def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
     return _record(audio_id, meta)
 
 
-def delete(audio_id: str) -> bool:
-    """Remove both files of an owned pair; True if the WAV existed and was ours.
+def delete(audio_id: str, *, cascade: bool = True) -> bool:
+    """Remove both files of an owned pair; True if the WAV existed and was ours. ``cascade=False``
+    keeps the hidden Original even when no other clip plays it.
 
     WAV first: sidecar-first then failing would lose a clip with no retry, while this
     leaves at worst an orphan sidecar list_audio ignores."""
@@ -534,7 +535,8 @@ def delete(audio_id: str) -> bool:
     # An Edit's hidden Original goes with the last clip that plays it.
     original = str(meta.get("source_clip_id") or "")
     if (
-        _ID_RE.match(original)
+        cascade
+        and _ID_RE.match(original)
         and (_read_meta(_sidecar_path(original)) or {}).get("role") == "source"
         and original not in _sources_in_use(gallery_dir(), set())
     ):

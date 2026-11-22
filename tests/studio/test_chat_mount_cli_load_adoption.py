@@ -127,6 +127,8 @@ export async function loadOpenAIAutoSwitchSettings(): Promise<any> {
   return { idleUnloadActive: false };
 }
 
+// Follows Keep multiple models loaded from each status read; no scenario here sets a mode.
+export function syncKeepModelsLoaded(_mode: unknown): void {}
 export const toChatModelRow = (model: any) => model;
 export const toLoraSummary = (lora: any) => lora;
 export const isExternalModelId = (id: unknown) =>

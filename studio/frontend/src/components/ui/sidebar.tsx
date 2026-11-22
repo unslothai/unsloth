@@ -334,7 +334,7 @@ function Sidebar({
   return (
     <div
       className={cn(
-        "group peer text-sidebar-foreground relative shrink-0",
+        "group sidebar-peer text-sidebar-foreground relative shrink-0",
         hasPinMode && pinned && "w-(--sidebar-width)",
         hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
@@ -587,7 +587,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
+        "bg-background md:[:where(.sidebar-peer)[data-variant=inset]~&]:m-2 md:[:where(.sidebar-peer)[data-variant=inset]~&]:ml-0 md:[:where(.sidebar-peer)[data-variant=inset]~&]:rounded-xl md:[:where(.sidebar-peer)[data-variant=inset]~&]:shadow-sm md:[:where(.sidebar-peer)[data-variant=inset]~&]:[:where(.sidebar-peer)[data-state=collapsed]~&]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
         className
       )}
       {...props}
@@ -841,6 +841,8 @@ function SidebarMenuButton({
   )
 }
 
+const sidebarMenuPeerActiveClass = String.raw`[:where(.peer\/menu-button):where([data-state=active],[data-active]:not([data-active=false]))~&]:text-sidebar-accent-foreground`
+
 function SidebarMenuAction({
   className,
   asChild = false,
@@ -858,8 +860,10 @@ function SidebarMenuAction({
       data-sidebar="menu-action"
       className={cn(
         "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground peer-hover/menu-button:text-sidebar-accent-foreground absolute top-1.5 right-1 aspect-square w-5 rounded-md p-0 peer-data-[size=default]/menu-button:top-2 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 focus-visible:ring-1 [&>svg]:size-4 flex items-center justify-center outline-hidden transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 md:after:hidden [&>svg]:shrink-0",
-        showOnHover &&
-          "peer-data-active/menu-button:text-sidebar-accent-foreground group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        showOnHover && [
+          sidebarMenuPeerActiveClass,
+          "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        ],
         className
       )}
       {...props}
@@ -876,7 +880,8 @@ function SidebarMenuBadge({
       data-slot="sidebar-menu-badge"
       data-sidebar="menu-badge"
       className={cn(
-        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground peer-data-active/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-md px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-md px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        sidebarMenuPeerActiveClass,
         className
       )}
       {...props}

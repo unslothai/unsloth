@@ -148,6 +148,10 @@ def test_raises_when_no_supported_files(monkeypatch, tmp_path):
 
 
 def test_raises_when_boto3_missing(monkeypatch, tmp_path):
+    from utils import s3_runtime
+
+    monkeypatch.setenv("UNSLOTH_S3_AUTO_INSTALL", "0")
+    monkeypatch.setattr(s3_runtime, "_import_sdk", lambda: None)
     monkeypatch.setattr(s3_dataset, "boto3_available", lambda: False)
     with pytest.raises(RuntimeError, match = "requires boto3"):
         s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))

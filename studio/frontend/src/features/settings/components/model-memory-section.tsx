@@ -1,21 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
 import { useT } from "@/i18n";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
-import { useEffect, useRef, useState } from "react";
+import { type Ref, useEffect, useRef, useState } from "react";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
   updateModelMemorySettings,
 } from "../api/model-memory";
 import {
-  loadMultiModelEnabled,
-  updateMultiModelEnabled,
+  type MultiModelMode,
+  isMultiModelMode,
+  keepsModelsLoaded,
+  loadMultiModelMode,
+  updateMultiModelMode,
 } from "../api/multi-model";
+import { MediaIdleUnloadSetting } from "./model-auto-switch-section";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -59,23 +70,35 @@ async function refreshModelMemory(
   }
 }
 
-export function ModelMemorySection() {
+const MULTI_MODEL_DESCRIPTION = {
+  off: "settings.resources.modelMemory.multiModelDescription",
+  fit: "settings.resources.modelMemory.multiModelDescriptionFit",
+  always: "settings.resources.modelMemory.multiModelDescriptionAlways",
+} as const;
+
+export function ModelMemorySection({ ref }: { ref?: Ref<HTMLElement> }) {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   // Bumped by every refresh and save: a read that resolves after either no longer describes the panel.
   const latestRef = useRef(0);
-  const multiModel = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  // Seeded from the chat store so the description does not flash before the read.
+  const [mode, setMode] = useState<MultiModelMode>(() =>
+    useChatRuntimeStore.getState().keepModelsLoaded ? "fit" : "off",
+  );
   const [multiModelRead, setMultiModelRead] = useState(false);
   const [isSavingMultiModel, setIsSavingMultiModel] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    loadMultiModelEnabled(t("settings.resources.modelMemory.loadError")).then(
-      (enabled) => {
+    loadMultiModelMode(t("settings.resources.modelMemory.loadError")).then(
+      (loaded) => {
         if (!cancelled) {
-          useChatRuntimeStore.getState().setKeepModelsLoaded(enabled);
+          setMode(loaded);
+          useChatRuntimeStore
+            .getState()
+            .setKeepModelsLoaded(keepsModelsLoaded(loaded));
           setMultiModelRead(true);
         }
       },
@@ -94,18 +117,18 @@ export function ModelMemorySection() {
     };
   }, [t]);
 
-  const persistMultiModel = async (enabled: boolean) => {
+  const persistMultiModel = async (next: MultiModelMode) => {
     setIsSavingMultiModel(true);
     setError(null);
     try {
+      const saved = await updateMultiModelMode(
+        next,
+        t("settings.resources.modelMemory.saveError"),
+      );
+      setMode(saved);
       useChatRuntimeStore
         .getState()
-        .setKeepModelsLoaded(
-          await updateMultiModelEnabled(
-            enabled,
-            t("settings.resources.modelMemory.saveError"),
-          ),
-        );
+        .setKeepModelsLoaded(keepsModelsLoaded(saved));
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -172,7 +195,7 @@ export function ModelMemorySection() {
       : null;
 
   return (
-    <SettingsSection title={t("settings.resources.modelMemory.title")}>
+    <SettingsSection title={t("settings.resources.modelMemory.title")} ref={ref}>
       <SettingsRow
         label={t("settings.resources.modelMemory.keepResident")}
         description={t(
@@ -203,15 +226,38 @@ export function ModelMemorySection() {
       </SettingsRow>
       <SettingsRow
         label={t("settings.resources.modelMemory.multiModel")}
-        description={t("settings.resources.modelMemory.multiModelDescription")}
+        description={t(MULTI_MODEL_DESCRIPTION[mode])}
         hint={t("settings.resources.modelMemory.multiModelHint")}
       >
-        <Switch
-          aria-label={t("settings.resources.modelMemory.multiModel")}
-          checked={multiModel}
+        <Select
+          value={mode}
           disabled={!multiModelRead || isSavingMultiModel}
-          onCheckedChange={(enabled) => void persistMultiModel(enabled)}
-        />
+          onValueChange={(next) => {
+            if (isMultiModelMode(next)) {
+              void persistMultiModel(next);
+            }
+          }}
+        >
+          <SelectTrigger
+            aria-label={t("settings.resources.modelMemory.multiModel")}
+            className="w-48"
+            size="sm"
+            data-testid="multi-model-mode-select"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">
+              {t("settings.resources.modelMemory.multiModelOff")}
+            </SelectItem>
+            <SelectItem value="fit">
+              {t("settings.resources.modelMemory.multiModelFit")}
+            </SelectItem>
+            <SelectItem value="always">
+              {t("settings.resources.modelMemory.multiModelAlways")}
+            </SelectItem>
+          </SelectContent>
+        </Select>
       </SettingsRow>
       {error ? (
         <p className="pb-3 text-xs text-destructive">{error}</p>
@@ -237,6 +283,7 @@ export function ModelMemorySection() {
           ) : null}
         </>
       )}
+      <MediaIdleUnloadSetting residencyKey={settings?.keepResident} />
     </SettingsSection>
   );
 }

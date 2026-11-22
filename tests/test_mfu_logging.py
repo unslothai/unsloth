@@ -99,7 +99,7 @@ def test_sequence_lengths_exclude_padding_and_split_packing():
     assert mfu._sequence_lengths({"attention_mask": mask}, ()).tolist() == [3, 2]
     packed = torch.tensor([[0, 1, 2, 0, 1, 0, 1, 2, 3]])
     lengths = mfu._sequence_lengths({"input_ids": packed, "position_ids": packed}, ())
-    assert lengths.tolist() == [3, 2, 4]
+    assert [n for n in lengths.tolist() if n] == [3, 2, 4]
     ids = torch.zeros(2, 5, dtype = torch.long)
     assert mfu._sequence_lengths({"input_ids": ids}, ()).tolist() == [5, 5]
 
@@ -571,3 +571,51 @@ def test_diffusion_and_data_parallel_report_nothing():
     callback = mfu.UnslothMFUCallback(peak_tflops = 1)
     callback.on_train_begin(SimpleNamespace(n_gpu = 1), _State(), None, model = model)
     assert not callback._enabled and callback._handle is None
+
+
+def test_position_id_packing_counts_under_fullgraph_compile():
+    # Position-id-only padding free batches (TRL padding_free) must not add a data dependent
+    # branch to a model compiled with fullgraph = True.
+    from types import SimpleNamespace
+
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(4, 4, bias = False)
+            self.config = SimpleNamespace(num_hidden_layers = 1, num_attention_heads = 1, hidden_size = 4)
+
+        def forward(
+            self,
+            input_ids,
+            position_ids = None,
+        ):
+            return self.proj(torch.nn.functional.one_hot(input_ids, 4).float())
+
+    torch._dynamo.reset()
+    model = Tiny().train()
+    callback = mfu.UnslothMFUCallback()
+    callback.on_train_begin(SimpleNamespace(n_gpu = 1), None, None, model = model)
+    try:
+        compiled = torch.compile(model, backend = "eager", fullgraph = True)
+        ids = torch.tensor([[0, 1, 2, 1, 2, 3, 0]])
+        positions = torch.tensor([[0, 1, 2, 0, 1, 0, 1]])
+        compiled(input_ids = ids, position_ids = positions).sum().backward()
+        assert int(callback._tokens) == 7
+        assert int(callback._pairs) == 6 + 3 + 3
+    finally:
+        callback.on_train_end(None, None, None)
+        torch._dynamo.reset()
+    # Leading tokens before the first restart are skipped; no restart counts the whole row.
+    lead = mfu._sequence_lengths({"position_ids": torch.tensor([[3, 4, 0, 1]])}, ())
+    assert [n for n in lead.tolist() if n] == [2]
+    none = mfu._sequence_lengths({"position_ids": torch.tensor([[1, 2, 3]])}, ())
+    assert [n for n in none.tolist() if n] == [3]
+
+
+def test_h200_nvl_uses_its_own_dense_peak(monkeypatch):
+    # NVIDIA H200 datasheet: NVL 1,671 TFLOPS BF16 with sparsity -> 835.5 dense; SXM 1,979 -> 989.
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name, peak in (("NVIDIA H200 NVL", 835.5), ("NVIDIA H200", 989.0)):
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name

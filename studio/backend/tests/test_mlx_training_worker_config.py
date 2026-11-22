@@ -82,12 +82,14 @@ def _load_worker_module():
             "flash_attn_wheel_url",
             "install_wheel",
             "is_windows_wheel_env",
+            "pinned_source_build_supported",
             "probe_torch_wheel_env",
             "url_exists",
         ):
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         # Read at import by utils.kernel_install, which the worker imports.
         for name in (
+            "package_installs_offline_env",
             "redact_url_credentials",
             "xformers_wheel_url",
         ):

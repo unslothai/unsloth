@@ -44,6 +44,7 @@ def _norm_rope_fwd_block(
     cols,
     eps,
     HEAD_DIM: tl.constexpr,
+    HAS_ROPE_INDICES: tl.constexpr,
 ):
     HALF = HEAD_DIM // 2
     hmask = heads < n_heads
@@ -57,9 +58,14 @@ def _norm_rope_fwd_block(
     w0 = tl.load(W + cols)
     w1 = tl.load(W + HALF + cols)
     # Same roundings as fast_rms_layernorm then the RoPE kernel: normed in W's dtype, the norm output
-    # in Y's dtype, the rotation in cos's dtype.
-    y0 = ((x0 * inv[:, None]).to(w0.dtype) * w0[None, :]).to(Y.dtype.element_ty).to(cos1.dtype)
-    y1 = ((x1 * inv[:, None]).to(w1.dtype) * w1[None, :]).to(Y.dtype.element_ty).to(cos1.dtype)
+    # in Y's dtype. The rotation matches the RoPE kernel it replaces: the indexed one multiplies the
+    # norm output by cos / sin with type promotion (fp32 activations stay fp32 for bf16 tables), the
+    # plain one casts to cos's dtype first. A no-op when the dtypes already match.
+    y0 = ((x0 * inv[:, None]).to(w0.dtype) * w0[None, :]).to(Y.dtype.element_ty)
+    y1 = ((x1 * inv[:, None]).to(w1.dtype) * w1[None, :]).to(Y.dtype.element_ty)
+    if not HAS_ROPE_INDICES:
+        y0 = y0.to(cos1.dtype)
+        y1 = y1.to(cos1.dtype)
     y_ptr = Y + (row * n_heads + heads[:, None].to(tl.int64)) * HEAD_DIM + cols[None, :]
     tl.store(y_ptr, y0 * cos1[None, :] - y1 * sin1[None, :], mask = mask)
     tl.store(y_ptr + HALF, y1 * cos1[None, :] + y0 * sin1[None, :], mask = mask)
@@ -107,13 +113,13 @@ def _qk_norm_rope_forward(
         heads = hblock * BLOCK_H + tl.arange(0, BLOCK_H)
         _norm_rope_fwd_block(
             Qo, Q, Q_row_stride, Q_head_stride, Wq, rq, row, heads, n_heads_Q,
-            cos1, sin1, cols, eps_Q, HEAD_DIM,
+            cos1, sin1, cols, eps_Q, HEAD_DIM, HAS_ROPE_INDICES,
         )  # fmt: skip
     else:
         heads = (hblock - n_blocks_Q) * BLOCK_H + tl.arange(0, BLOCK_H)
         _norm_rope_fwd_block(
             Ko, K, K_row_stride, K_head_stride, Wk, rk, row, heads, n_heads_K,
-            cos1, sin1, cols, eps_K, HEAD_DIM,
+            cos1, sin1, cols, eps_K, HEAD_DIM, HAS_ROPE_INDICES,
         )  # fmt: skip
 
 
@@ -383,8 +389,9 @@ def _eps(norm):
 
 
 def _unfused(q_norm, k_norm, Q, K, cos, sin, position_ids):
-    Q = fast_rms_layernorm(q_norm, Q).transpose(1, 2)
-    K = fast_rms_layernorm(k_norm, K).transpose(1, 2)
+    # reuse_grad as in the flag-off Qwen3 path: the norm output only feeds the RoPE kernel.
+    Q = fast_rms_layernorm(q_norm, Q, reuse_grad = True).transpose(1, 2)
+    K = fast_rms_layernorm(k_norm, K, reuse_grad = True).transpose(1, 2)
     return fast_rope_embedding(Q, K, cos, sin, position_ids)
 
 

@@ -50,6 +50,7 @@ import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
 import {
@@ -356,10 +357,13 @@ function PayloadBlock({
   loading?: boolean;
   tone?: "error";
 }): ReactElement {
-  const preview =
-    body.length > 12_000
-      ? `${body.slice(0, 11_997).replace(/[\uD800-\uDBFF]$/, "")}...`
-      : body;
+  const [showAll, setShowAll] = useState(false);
+  const preview = payloadPreview(body);
+  const canShowAll =
+    !truncated &&
+    preview !== body &&
+    body.length <= PAYLOAD_SHOW_ALL_MAX_CHARS;
+  const shown = showAll && canShowAll ? body : preview;
   return (
     <section className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -367,7 +371,18 @@ function PayloadBlock({
           {title}
         </h3>
         <div className="flex items-center gap-1">
-          {truncated || preview !== body ? (
+          {canShowAll ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              aria-pressed={showAll}
+              onClick={() => setShowAll((value) => !value)}
+              className="text-ui-10 text-muted-foreground"
+            >
+              {showAll ? "Show less" : "Show all"}
+            </Button>
+          ) : truncated || preview !== body ? (
             <span className="text-ui-10 text-muted-foreground">
               preview only
             </span>
@@ -385,7 +400,7 @@ function PayloadBlock({
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
-        {loading && !body ? "Loading…" : preview || "–"}
+        {loading && !body ? "Loading…" : shown || "–"}
       </pre>
     </section>
   );
@@ -536,12 +551,14 @@ function RequestDetail({
       ) : null}
 
       <PayloadBlock
+        key={`${entry.id}:prompt`}
         title="Prompt"
         body={prompt}
         truncated={entry.prompt_truncated && detail?.prompt == null}
         loading={loading}
       />
       <PayloadBlock
+        key={`${entry.id}:reply`}
         title="Reply"
         body={reply}
         truncated={entry.reply_truncated && !detailIsCurrent}

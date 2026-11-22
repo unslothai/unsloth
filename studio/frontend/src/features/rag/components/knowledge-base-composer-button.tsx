@@ -119,7 +119,7 @@ export function KnowledgeBaseComposerButton({
           <button
             type="button"
             className="composer-pill-btn"
-            data-pill-label="RAG"
+            data-pill-label="Files"
             data-active={ragDisabled ? "false" : "true"}
             aria-label="Retrieval source"
           >
@@ -149,7 +149,7 @@ export function KnowledgeBaseComposerButton({
               />
               <XIcon className="composer-pill-x" />
             </span>
-            <span>RAG</span>
+            <span>Files</span>
             <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>

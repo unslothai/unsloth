@@ -523,6 +523,22 @@ def run_keystroke_search(page) -> None:
     report["steps"].append("keystroke-search")
 
 
+def assert_model_memory_rows() -> None:
+    """The image/video idle row moved to Model memory; keepKv renders without a backend."""
+    labels = {
+        tab: report["tabs"][tab]["settled"].get("labels", []) for tab in ("resources", "api-keys")
+    }
+    expected = [
+        ("resources", "Keep multiple models loaded", True),
+        ("resources", "Idle auto-unload for image and video", True),
+        ("api-keys", "Idle auto-unload for image and video", False),
+        ("api-keys", "Keep chat context across unloads", True),
+    ]
+    for tab, label, present in expected:
+        if (label in labels[tab]) != present:
+            fail(f"{tab}: '{label}' {'missing' if present else 'still renders'} ({labels[tab]})")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
@@ -553,6 +569,7 @@ def run(page) -> None:
                 f"blank frames {obs['blank_frames']}/{obs['frames_sampled']}"
             )
     report["steps"].append("all-tabs-render")
+    assert_model_memory_rows()
 
     run_lan_address_actions(page)
 

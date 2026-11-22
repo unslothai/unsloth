@@ -80,6 +80,8 @@ export interface PersistedChatSettings {
   fitOnDeviceOnly?: boolean;
   /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
   autoCompactEnabled?: boolean;
+  /** Off: a reply or Deep Research run stops once no tab follows it, instead of finishing on the server. */
+  keepRunningWhenTabClosed?: boolean;
 }
 
 interface ChatSettingsResponse {

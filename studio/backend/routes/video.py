@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.datastructures import UploadFile
 
 from auth.authentication import (
@@ -52,6 +52,7 @@ from loggers.media_progress import (
     reset_media_load_progress,
 )
 from models.inference import (
+    AudioInputRecord,
     DiffusionDownloadPlanResponse,
     GalleryFlagsPatch,
     GalleryMoveRequest,
@@ -336,10 +337,19 @@ async def load_video_model_gated(
         resolve_selected_cuda_ordinal,
     )
     from core.inference.gpu_arbiter import (
+        DIFFUSION,
         VIDEO,
+        MultiModelAlwaysRefusal,
         acquire_for_request,
+        eviction_sink,
+        note_evictions,
+        begin_media_load,
+        guarded_media_begin,
+        refusal_for,
+        refuse_replacing_media,
         release,
         require_no_foreign_generations,
+        resident_slots,
     )
     from core.inference.media_keepwarm import note_load_origin
     from hub.utils.gguf import extract_quant_token
@@ -461,12 +471,29 @@ async def load_video_model_gated(
         require_no_foreign_generations()
         from core.inference.sd_cpp_args import forces_cpu_backend
         from core.inference.video_minimax_h3 import is_h3_native
+        from utils.multi_model_settings import get_multi_model_mode
+
+        multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
+        media_names = (request.model_path,)
+        # On any device: the load would replace the loaded video model, which no acquire evicts.
+        replaced_media = await asyncio.to_thread(
+            refuse_replacing_media, VIDEO, multi_model_mode, media_names
+        )
+        evicted: list = []
+        note_evictions(replaced_media, evicted)
+
+        def begin():
+            return begin_media_load(VIDEO, multi_model_mode, media_names, _begin_load)
 
         if is_h3_native(fam, kind):
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
             images = get_active_diffusion_engine()
             if getattr(images, "runs_off_torch_device", False) is True:
                 # No arbiter owner evicts it, yet it holds the one managed sd.cpp tree H3 installs into.
+                image_slots = resident_slots(DIFFUSION) or [{"kind": "image", "model": ""}]
+                if multi_model_mode == "always":
+                    raise refusal_for(image_slots, "image")
+                note_evictions(image_slots, evicted)
                 await asyncio.to_thread(images.unload)
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend: take no VIDEO claim, but keep any existing one until the
         # worker tears the old model down and releases it.
@@ -476,20 +503,37 @@ async def load_video_model_gated(
             and await asyncio.to_thread(forces_cpu_backend, device)
         )
         if forced_cpu:
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(begin)
         elif device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
             # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
             # the same span.
+            from core.inference.gpu_residency import media_fit_kwargs
             from routes.inference import _diffusion_training_admission
-            def _acquire_and_begin():
-                with _diffusion_training_admission():
-                    return acquire_for_request(VIDEO, _begin_load)
 
-            status_dict = await asyncio.to_thread(_acquire_and_begin)
+            fit_kwargs = await asyncio.to_thread(
+                media_fit_kwargs, VIDEO, request, gpu_ordinal, multi_model_mode
+            )
+
+            def _acquire_and_begin():
+                token = eviction_sink.set(evicted)
+                try:
+                    with _diffusion_training_admission():
+                        return acquire_for_request(
+                            VIDEO,
+                            guarded_media_begin(VIDEO, multi_model_mode, media_names, _begin_load),
+                            **fit_kwargs,
+                        )
+                finally:
+                    eviction_sink.reset(token)
+
+            from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap
+
+            swap = await save_chat_kv_before_swap(VIDEO, "video", **fit_kwargs)
+            status_dict = await acquire_then_close(swap, _acquire_and_begin)
         else:
             await asyncio.to_thread(release, VIDEO)
-            status_dict = await asyncio.to_thread(_begin_load)
+            status_dict = await asyncio.to_thread(begin)
         # Keyed to the target: this load can still fail with the previous model resident
         note_load_origin(
             VIDEO,
@@ -506,11 +550,18 @@ async def load_video_model_gated(
             *account_access.media_adapter_references(request),
         )
         reset_media_load_progress("video")
+        status_dict = {
+            **status_dict,
+            "evicted": [slot["model"] for slot in evicted if slot.get("model")],
+            "evicted_slots": evicted,
+        }
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except account_access.GpuBusyForAnotherAccountError as exc:
         raise account_access.gpu_busy_error() from exc
+    except MultiModelAlwaysRefusal as exc:
+        raise exc.as_http_exception() from exc
     except RuntimeError as exc:
         # A video load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
@@ -521,6 +572,11 @@ async def video_load_progress(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
+    from core.inference.chat_swap_kv import saving_progress
+
+    saving = saving_progress("video")
+    if saving is not None:
+        return VideoLoadProgressResponse(**saving)
     if account_access.resident_hidden("video"):
         return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
@@ -772,10 +828,40 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
     return VideoGenerateProgressResponse(**progress)
 
 
+_CANCEL_BODY_MSG = 'Send a JSON object such as {"video_id": "..."}, or no body.'
+
+
+async def _cancel_video_id(request: Request) -> Optional[str]:
+    """The optional ``video_id`` a cancel names; no body means the running render."""
+    import json
+
+    raw = await request.body()
+    if not raw.strip():
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise HTTPException(status_code = 422, detail = _CANCEL_BODY_MSG)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code = 422, detail = _CANCEL_BODY_MSG)
+    video_id = body.get("video_id")
+    if video_id is not None and not isinstance(video_id, str):
+        raise HTTPException(status_code = 422, detail = _CANCEL_BODY_MSG)
+    if video_id is not None and not video_id.strip():
+        # An empty id must not widen into a cancel of whatever is rendering.
+        raise HTTPException(
+            status_code = 422, detail = "video_id is empty; leave it out to stop the running render."
+        )
+    return video_id
+
+
 @router.post("/video/generate/cancel")
-async def cancel_video_generation(current_subject: str = Depends(get_current_subject)):
+async def cancel_video_generation(
+    request: Request, current_subject: str = Depends(get_current_subject)
+):
     from core.inference.video import get_video_backend
 
+    video_id = await _cancel_video_id(request)
     backend = get_video_backend()
     # One read serves check and recheck: a second read could name a successor and hand it back
     # as expected_account.
@@ -786,17 +872,23 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
         with _generation_lock:
             started_by = _generation_account
     if _generation_hidden(backend, started_by):
-        return {"cancelled": False}
-    if started_by is None and account_access.foreign_work_active():
-        return {"cancelled": False}
-    if reserved is None:
-        # No reservation yet: bind the cancel to the caller, else an account reserving before the
-        # executor runs would receive it.
-        from utils.account_context import current_account
-        expected = current_account().account_id
+        cancelled = False
+    elif started_by is None and account_access.foreign_work_active():
+        cancelled = False
     else:
-        expected = reserved
-    cancelled = await asyncio.to_thread(backend.cancel_generate, expected_account = expected)
+        if reserved is None:
+            # No reservation yet: bind the cancel to the caller so a later reservation can't receive it.
+            from utils.account_context import current_account
+            expected = current_account().account_id
+        else:
+            expected = reserved
+        # The id is rechecked under the backend's lock, so a finished render's successor is safe.
+        cancelled = await asyncio.to_thread(
+            backend.cancel_generate, expected_video_id = video_id, expected_account = expected
+        )
+    if video_id is not None and not cancelled:
+        # Hidden and foreign renders answer the same, so this reveals nothing about them.
+        raise HTTPException(status_code = 409, detail = "That video is not rendering.")
     return {"cancelled": cancelled}
 
 
@@ -923,8 +1015,8 @@ _VIDEO_LINK_TTL = 12 * 3600
 _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
 
-def _sign_video_id(video_id: str) -> str:
-    exp = int(_time.time()) + _VIDEO_LINK_TTL
+def _sign_video_id(video_id: str, ttl_s: Optional[int] = None) -> str:
+    exp = int(_time.time()) + (_VIDEO_LINK_TTL if ttl_s is None else ttl_s)
     payload = f"{media_link_target(video_id)}.{exp}"
     sig = _hmac.new(_VIDEO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
@@ -955,10 +1047,12 @@ async def get_gallery_video_signed_url(
     video_id: str,
     current_subject: str = Depends(get_current_subject),
     no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
+    ttl_s: Optional[int] = Query(None, ge = 60, le = 12 * 3600),
 ):
     """A directly playable, range-capable link for one clip (bearer-gated to mint, HMAC to use).
 
-    Returned as a relative URL so it works behind any proxy the page itself is served through."""
+    Returned as a relative URL so it works behind any proxy the page itself is served through.
+    ``ttl_s`` shortens the life (MCP asks for 1 h); omitted, the UI's 12 h applies."""
     if no_credential:
         raise HTTPException(
             status_code = 403,
@@ -970,7 +1064,7 @@ async def get_gallery_video_signed_url(
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
-    token = _sign_video_id(video_id)
+    token = _sign_video_id(video_id, ttl_s)
     return {"url": f"/api/inference/video/gallery/{video_id}/file-signed?token={token}"}
 
 
@@ -994,6 +1088,79 @@ async def get_gallery_video_file_signed(video_id: str, token: str = Query(...)):
         media_type = "video/mp4",
         headers = {"Cache-Control": "private, max-age=31536000, immutable"},
     )
+
+
+@router.get("/video/gallery/{video_id}/frame")
+async def get_gallery_video_frame(
+    video_id: str,
+    at: str = Query("first", max_length = 32),
+    max_px: Optional[int] = Query(None, ge = 32, le = 4096),
+    current_subject: str = Depends(get_current_subject),
+):
+    """One frame of an owned clip as PNG: ``at`` is ``first``, ``last`` or a time in seconds.
+    Nothing is saved to the Images gallery."""
+    from core.inference import video_gallery
+
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    try:
+        data = await asyncio.to_thread(video_gallery.frame_png, path, at, max_px)
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "Video not found.") from None
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 501, detail = str(exc)) from None
+    return Response(
+        content = data,
+        media_type = "image/png",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+class _VideoAudioInput(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    start_s: float = Field(0.0, ge = 0, le = 3600)
+    end_s: Optional[float] = Field(None, gt = 0, le = 3600)
+
+    @model_validator(mode = "after")
+    def _ordered(self):
+        if self.end_s is not None and self.end_s <= self.start_s:
+            raise ValueError("end_s must be after start_s.")
+        return self
+
+
+@router.post(
+    "/video/gallery/{video_id}/audio-input", status_code = 201, response_model = AudioInputRecord
+)
+async def extract_gallery_video_audio(
+    video_id: str,
+    body: _VideoAudioInput,
+    response: Response,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Register an owned clip's audio track (optionally trimmed) as an audio input; the same
+    extract again returns the existing record with 200."""
+    from core.inference import audio_inputs, video_gallery
+
+    record = await asyncio.to_thread(video_gallery.get_record, video_id)
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if record is None or path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    # The name is cleaned as a file name, so '/' and line breaks in the prompt become spaces first.
+    prompt = " ".join(str(record.get("prompt") or "").replace("/", " ").replace("\\", " ").split())
+    name = f"{(prompt or 'Video')[:60]} (audio).wav"
+    try:
+        saved, created = await asyncio.to_thread(
+            audio_inputs.save_from_media, path, name, body.start_s, body.end_s
+        )
+    except audio_inputs.AudioInputError as exc:
+        raise HTTPException(status_code = exc.status, detail = exc.detail) from None
+    if not created:
+        response.status_code = 200
+    return AudioInputRecord(**saved)
 
 
 @router.get("/video/gallery/{video_id}/export")

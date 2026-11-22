@@ -487,6 +487,17 @@ def _isolate_wal_keepers():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_auth_wal_keeper():
+    """Close an auth.db keeper a test opened, so it never outlives that test's DB_PATH."""
+    auth_storage = sys.modules.get("auth.storage")
+    before = auth_storage._wal_keeper if auth_storage is not None else None
+    yield
+    auth_storage = sys.modules.get("auth.storage")
+    if auth_storage is not None and auth_storage._wal_keeper is not before:
+        auth_storage.close_wal_keeper()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
@@ -551,8 +562,12 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
 def _no_live_metal_wired_ceiling(monkeypatch):
     """Keep Metal context verdicts off the host's live GPU memory."""
     from core.inference.llama_cpp import LlamaCppBackend
+
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_headroom_bytes", staticmethod(lambda: None)
     )
 
 
@@ -1450,3 +1465,14 @@ def traced_offload_hooks(monkeypatch):
             orig = getattr(fn, "_unsloth_orig", None)
             if orig is not None:
                 monkeypatch.setattr(cls, name, orig)
+
+
+@pytest.fixture(scope = "session")
+def _kernel_lock_dir(tmp_path_factory):
+    return str(tmp_path_factory.mktemp("kernel-locks"))
+
+
+@pytest.fixture(autouse = True)
+def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
+    # Tests never take (or create) the environment's real kernel install locks.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)

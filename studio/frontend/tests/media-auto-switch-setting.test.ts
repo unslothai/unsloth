@@ -120,3 +120,14 @@ test("a saved auto-switch value reaches subscribers until they unsubscribe", asy
   await updateOpenAIAutoSwitchSettings({ enabled: true });
   assert.deepEqual(seen, [false]);
 });
+
+test("a media TTL save from Model memory leaves the chat toggle stored", async () => {
+  // That row has no chat toggle on screen, so it must not write back a stale `enabled`.
+  invalidateOpenAIAutoSwitchSettings();
+  bodies.length = 0;
+  await updateOpenAIAutoSwitchSettings({ mediaAutoUnloadIdleSeconds: 600 });
+  // biome-ignore lint/style/useNamingConvention: API schema
+  assert.deepEqual(JSON.parse(bodies[0] ?? "{}"), {
+    media_auto_unload_idle_seconds: 600,
+  });
+});

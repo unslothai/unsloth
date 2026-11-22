@@ -432,3 +432,10 @@ def test_host_launches_keep_cmd_quoting(monkeypatch):
     assert mxc_policy.host_spawn_args(["bash", "-c", "ls"]) == ["bash", "-c", "ls"]
     multiline = ["cmd", "/c", "echo a\necho b"]
     assert mxc_policy.host_spawn_args(multiline) is multiline
+
+
+def test_cmd_profile_keeps_an_approved_rm_blocked(windows, monkeypatch, tmp_path):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    plan, result = _exec(monkeypatch, tmp_path, "rm notes.txt", host_access_approved = True)
+    assert plan is None
+    assert result == tools._APPROVED_RM_REFUSED

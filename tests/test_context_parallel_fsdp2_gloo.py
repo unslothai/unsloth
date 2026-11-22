@@ -171,7 +171,7 @@ def _worker(rank, port, out_dir):
                 return loss.detach()
 
         trl.SFTTrainer = Trainer
-        cp.patch_sft_trainer()
+        cp.patch_sft_trainer(install_cp_methods = True)
         trainer = object.__new__(Trainer)
         trainer._context_parallel_manager = manager
 

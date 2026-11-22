@@ -81,7 +81,11 @@ export async function ejectChatModel(
   // else's.
   const holdsTarget = (names: string[] | undefined) =>
     names?.some((name) => deps.matches(target, name)) ?? false;
-  if (deps.cachedRow || holdsTarget(await deps.readCached?.())) {
+  // Re-read even for a cached row: another tab may have evicted it since the card polled, and
+  // unloading a name nobody holds would still stop the active model's queues. A failed read
+  // keeps the row's own word, as before.
+  const cachedNow = await deps.readCached?.().catch(() => undefined);
+  if (cachedNow === undefined ? deps.cachedRow : holdsTarget(cachedNow)) {
     // A cached row is never the active model, so the scoped read can never
     // match it. Name it directly: the Transformers backend can still hold it.
     await deps.unload(target);

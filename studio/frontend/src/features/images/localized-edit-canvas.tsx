@@ -11,6 +11,8 @@ import {
 
 import type { LocalizedEditMode } from "./api";
 import { ANNOTATION_COLORS, TRANSPARENCY_CHECKER } from "./edit-conditioning";
+import type { AppliedMask } from "./lib/mask-from-text";
+import { applyMaskToLayer } from "./mask-apply";
 
 /** Draws the localized-edit layer over the source at its NATIVE resolution: an RGBA layer of
  *  coloured strokes for annotate, a white-on-black mask for paint and mask. */
@@ -22,6 +24,7 @@ export function LocalizedEditCanvas({
   resetKey,
   onLayerChange,
   onColorsChange,
+  applyMask,
 }: {
   image: string;
   mode: LocalizedEditMode;
@@ -30,6 +33,8 @@ export function LocalizedEditCanvas({
   resetKey: number;
   onLayerChange: (dataUrl: string | null) => void;
   onColorsChange: (names: string[]) => void;
+  /** A "Mask from text" result for the paint and mask modes; each new key is drawn into the layer once. */
+  applyMask?: AppliedMask | null;
 }) {
   const dispRef = useRef<HTMLCanvasElement | null>(null);
   const layerRef = useRef<HTMLCanvasElement | null>(null);
@@ -82,6 +87,38 @@ export function LocalizedEditCanvas({
       live = false;
     };
   }, [image, mode, resetKey, onLayerChange, onColorsChange]);
+
+  // A "Mask from text" result lands in the layer like a stroke, so the brush can still extend or Clear can drop it.
+  // Annotate layers are coloured outlines, not a mask, so they never take one.
+  // A result from before this canvas mounted (another painter) is not replayed.
+  const appliedKey = useRef<number | null>(applyMask?.key ?? null);
+  useEffect(() => {
+    if (!applyMask || !ready || mode === "annotate") return;
+    if (appliedKey.current === applyMask.key) return;
+    appliedKey.current = applyMask.key;
+    const disp = dispRef.current;
+    const layer = layerRef.current;
+    if (!disp || !layer) return;
+    let live = true;
+    applyMaskToLayer({
+      layer,
+      display: disp,
+      dataUrl: applyMask.dataUrl,
+      additive: applyMask.additive,
+      overlay: mode === "paint" ? "paint" : "mask",
+      isCurrent: () => live,
+    })
+      .then((url) => {
+        if (!live || url === null) return;
+        // An empty Replace leaves the layer black: nothing is selected, so the page's empty-layer checks still hold.
+        dirty.current = !applyMask.empty;
+        onLayerChange(applyMask.empty ? null : url);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [applyMask, ready, mode, onLayerChange]);
 
   const radius = useCallback(() => {
     const base = Math.min(dims.current.w, dims.current.h) || 1024;

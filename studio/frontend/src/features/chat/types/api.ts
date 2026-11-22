@@ -419,6 +419,8 @@ export interface InferenceStatusResponse {
   serving?: string[];
   /** Per `serving` entry, the id to select, load and unload it by: a local model's path. */
   serving_checkpoints?: string[];
+  /** Keep multiple models loaded, as saved on the server. Absent from older servers. */
+  multi_model_mode?: "off" | "fit" | "always";
   inference?: {
     temperature?: number;
     top_p?: number;

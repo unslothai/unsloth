@@ -83,7 +83,7 @@ def isolated(monkeypatch, tmp_path):
             )
     connection.close()
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
-    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
+    monkeypatch.setattr(gpu_arbiter, "owner_account", lambda *_a, **_k: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
     yield
     policy.invalidate_account_cache()

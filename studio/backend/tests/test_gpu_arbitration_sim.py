@@ -10,6 +10,7 @@ import itertools
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -716,6 +717,411 @@ def test_cpu_media_drain_does_not_refuse_unrelated_gpu_work(sim, media_switch, m
     sim.finish("a")
 
 
+# Keep multiple models loaded (When they fit / Always) against a fake VRAM ledger: the arbiter, gpu_residency and the
+# chat pricing helpers are real; only the GPU probe, the evictors and the slot reports are fakes.
+GIB = 1024
+
+
+class VramSim:
+    def __init__(self, monkeypatch, totals_gb):
+        import utils.hardware as hardware
+        from core.inference import gpu_residency, model_slots, video_minimax_h3
+        from utils.hardware import hardware as hardware_impl
+
+        self.residency = gpu_residency
+        self.totals = {gpu: gb * GIB for gpu, gb in enumerate(totals_gb)}
+        self.footprint: dict[str, dict[int, int]] = {}
+        self.evictions: list[str] = []
+        self.probes = 0
+        self.index_kind = "physical"
+        self.parent = sorted(self.totals)
+        self.policy = "off"
+        for owner in BACKENDS:
+            monkeypatch.setitem(arb._EVICTORS, owner, lambda o = owner: self._evict(o))
+            monkeypatch.setitem(
+                arb._SLOT_REPORTERS,
+                owner,
+                lambda o = owner: [
+                    {"kind": arb.KIND_LABELS[o], "model": f"{arb.KIND_LABELS[o]}-model"}
+                ],
+            )
+        monkeypatch.setattr(arb, "_residents", {})
+        monkeypatch.setattr(arb, "_accounts", {})
+        monkeypatch.setattr(arb, "_media_needs", {})
+        monkeypatch.setattr(arb, "_release_idle_video_servers", lambda reason: None)
+        monkeypatch.setattr(video_minimax_h3, "release_h3_native_servers", lambda reason: 0)
+        monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+        monkeypatch.setattr(hardware, "get_visible_gpu_utilization", self._utilization)
+        monkeypatch.setattr(hardware_impl, "get_parent_visible_gpu_ids", lambda: list(self.parent))
+        monkeypatch.setattr(gpu_residency, "current_policy", lambda: self.policy)
+        monkeypatch.setattr(gpu_residency, "_media_busy", lambda owner: (False, False))
+        monkeypatch.setattr(gpu_residency, "_loaded_or_loading", lambda owner: True)
+        monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
+        # The diffusion planner's own verdict is covered in test_gpu_residency_coexistence.py.
+        monkeypatch.setattr(gpu_residency, "_keeps_transformer_resident", lambda *a: True)
+        monkeypatch.setattr(model_slots, "eviction_victims", lambda *a, **k: [])
+
+    def _utilization(self):
+        self.probes += 1
+        return {
+            "index_kind": self.index_kind,
+            "devices": [
+                {"index": gpu, "vram_total_gb": total / GIB, "vram_used_gb": self.used(gpu) / GIB}
+                for gpu, total in self.totals.items()
+            ],
+        }
+
+    def used(self, gpu):
+        return sum(held.get(gpu, 0) for held in self.footprint.values())
+
+    def _evict(self, owner):
+        self.evictions.append(owner)
+        self.footprint.pop(owner, None)
+
+    def load(self, owner, held, **kwargs):
+        evicted: list = []
+
+        def register():
+            self.footprint[owner] = dict(held)
+
+        arb.acquire_for(owner, register, evicted = evicted, **kwargs)
+        return evicted
+
+    def load_image(
+        self,
+        need_gb,
+        gpu = 0,
+        headroom_gb = 4,
+        **kwargs,
+    ):
+        """An image load priced at ``need_gb``; idle, only its weights are allocated (the headroom is not)."""
+        need, headroom = need_gb * GIB, headroom_gb * GIB
+        priced = self.residency.MediaNeed(
+            {gpu: need}, weights_mib = need - headroom, headroom_mib = headroom, kind = "image"
+        )
+        return self.load(arb.DIFFUSION, {gpu: need - headroom}, need_mib = priced, **kwargs)
+
+    def load_chat(
+        self,
+        gb = 10,
+        gpu_ids = (0,),
+        **kwargs,
+    ):
+        held = {gpu: gb * GIB // max(len(gpu_ids or (0,)), 1) for gpu in (gpu_ids or (0,))}
+        return self.load(
+            arb.CHAT, held, gpu_ids = list(gpu_ids) if gpu_ids is not None else None, **kwargs
+        )
+
+
+@pytest.fixture
+def vram(monkeypatch):
+    return lambda *totals_gb: VramSim(monkeypatch, totals_gb)
+
+
+CHAT_SLOT = {"kind": "chat", "model": "chat-model"}
+IMAGE_SLOT = {"kind": "image", "model": "image-model"}
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_image_joins_chat_on_one_gpu_when_it_fits(vram, policy):
+    v = vram(80)
+    v.load_chat(10)
+    assert v.load_image(20, policy = policy) == []
+    assert v.evictions == [] and set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
+    assert v.residency.media_held_mib() == {0: 20 * GIB}
+    assert v.used(0) == 26 * GIB  # 10 GB chat + 16 GB idle image weights
+
+
+def test_image_evicts_chat_on_one_gpu_when_short_under_fit(vram):
+    v = vram(80)
+    v.load_chat(10)
+    assert v.load_image(75, policy = "fit") == [CHAT_SLOT]
+    assert v.evictions == [arb.CHAT] and set(arb.residents()) == {arb.DIFFUSION}
+    assert arb.CHAT not in v.footprint
+
+
+def test_image_short_on_one_gpu_under_always_refuses_and_keeps_chat(vram):
+    v = vram(80)
+    v.load_chat(10)
+    with pytest.raises(arb.MultiModelAlwaysRefusal, match = "is set to Always"):
+        v.load_image(75, policy = "always")
+    assert v.evictions == [] and set(arb.residents()) == {arb.CHAT}
+    assert v.footprint == {arb.CHAT: {0: 10 * GIB}} and v.residency.media_held_mib() == {}
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_image_on_another_gpu_never_evicts_or_probes(vram, policy):
+    v = vram(80, 80)
+    v.load_chat(10, gpu_ids = (0,))
+    assert v.load_image(75, gpu = 1, policy = policy) == []
+    assert v.evictions == [] and v.probes == 0
+    assert arb.residents() == {arb.CHAT: frozenset({0}), arb.DIFFUSION: frozenset({1})}
+
+
+def test_a_refused_image_registration_keeps_the_loaded_image_on_its_gpu(vram):
+    v = vram(80, 80)
+    v.load_image(20, gpu = 0, policy = "always")
+
+    def refuse():
+        raise arb.MultiModelAlwaysRefusal("another image model is loaded")
+
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        arb.acquire_for(arb.DIFFUSION, refuse, policy = "always", gpu_ids = [1])
+    assert arb.residents()[arb.DIFFUSION] == frozenset({0})
+    # A chat load on GPU 0 still sees the image there.
+    with pytest.raises(arb.MultiModelAlwaysRefusal):
+        v.load_chat(70, gpu_ids = (0,), policy = "always", evict_first = True)
+    assert v.evictions == [] and set(arb.residents()) == {arb.DIFFUSION}
+
+
+def test_image_on_another_gpu_under_off_still_swaps(vram):
+    v = vram(80, 80)
+    v.load_chat(10, gpu_ids = (0,))
+    assert v.load_image(20, gpu = 1) == [CHAT_SLOT]
+    assert v.evictions == [arb.CHAT] and set(arb.residents()) == {arb.DIFFUSION}
+
+
+def _chat_kwargs(
+    config,
+    placement,
+    *,
+    primary_can_retry = False,
+):
+    from routes import inference as inf
+    token = inf._primary_can_retry_fit.set(primary_can_retry)
+    try:
+        return inf._chat_fit_kwargs(config, placement)
+    finally:
+        inf._primary_can_retry_fit.reset(token)
+
+
+def _placement(
+    gpus = (0,),
+    *,
+    vulkan = False,
+    native_gb = None,
+):
+    from routes.inference import _LoadPlacement
+    resolved = list(gpus) if gpus is not None else None
+    return _LoadPlacement(resolved, resolved, vulkan, None, native_required_gb = native_gb)
+
+
+def test_gguf_chat_joins_an_idle_image_and_its_launch_prices_the_image(vram):
+    from core.inference import llama_cpp
+
+    v = vram(80, 80)
+    v.policy = "fit"
+    v.load_image(20, policy = "fit")
+    placement = _placement((0,))
+    kwargs = _chat_kwargs(SimpleNamespace(is_gguf = True), placement, primary_can_retry = True)
+    assert kwargs == {"policy": "fit", "gpu_ids": [0]}
+    assert v.load_chat(10, **kwargs) == []
+    assert v.evictions == [] and set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
+
+    backend = llama_cpp.LlamaCppBackend(manages_processes = False)
+    llama_cpp.register_serving_backend(backend)
+    try:
+        held = backend._other_planned_vram_mib()
+    finally:
+        llama_cpp.unregister_serving_backend(backend)
+    assert held == {
+        0: 20 * GIB
+    }  # weights plus the headroom the idle image will allocate when it generates
+    # A stale free reading on GPU 0 is capped at total less what the image holds; GPU 1 is left alone.
+    probed = [(0, 80 * GIB, 80 * GIB), (1, 70 * GIB, 80 * GIB)]
+    assert llama_cpp._net_of_held_vram(probed, held) == [
+        (0, 60 * GIB, 80 * GIB),
+        (1, 70 * GIB, 80 * GIB),
+    ]
+
+
+def test_gguf_chat_sizing_keeps_an_idle_image_headroom_when_another_process_uses_the_gpu(vram):
+    from core.inference import llama_cpp
+
+    v = vram(80)
+    v.policy = "fit"
+    v.load_image(24, headroom_gb = 8, policy = "fit")  # 16 GB weights allocated, 8 GB headroom not yet
+    v.footprint["other process"] = {0: 20 * GIB}
+    probed = [(0, v.totals[0] - v.used(0), v.totals[0])]
+    assert probed == [(0, 44 * GIB, 80 * GIB)]
+    backend = llama_cpp.LlamaCppBackend(manages_processes = False)
+    llama_cpp.register_serving_backend(backend)
+    try:
+        held = backend._other_planned_vram_mib()
+        unallocated = backend._media_unallocated_vram_mib()
+    finally:
+        llama_cpp.unregister_serving_backend(backend)
+    sized = llama_cpp._net_of_other_models_vram(probed, held, unallocated)
+    # 44 GB is free, but 8 GB of it is the image's generation budget.
+    assert sized == [(0, 36 * GIB, 80 * GIB)]
+    launch = " ".join(Path(llama_cpp.__file__).read_text(encoding = "utf-8").split())
+    assert (
+        "_gpu_mem = _net_of_other_models_vram( _gpu_mem, _held_by_others, self._media_unallocated_vram_mib() )"
+        in launch
+    )
+
+
+@pytest.mark.parametrize("loading", [False, True])
+def test_gguf_chat_sizing_charges_the_image_once_on_an_otherwise_empty_gpu(
+    vram, monkeypatch, loading
+):
+    """Nothing else on the card: the total cap alone charges the image's full price, never twice."""
+    from core.inference import llama_cpp
+
+    v = vram(80)
+    v.policy = "fit"
+    v.load_image(24, headroom_gb = 8, policy = "fit")
+    if loading:
+        monkeypatch.setattr(v.residency, "_media_busy", lambda owner: (True, False))
+        v.footprint.pop(arb.DIFFUSION)  # nothing allocated yet
+    probed = [(0, v.totals[0] - v.used(0), v.totals[0])]
+    backend = llama_cpp.LlamaCppBackend(manages_processes = False)
+    llama_cpp.register_serving_backend(backend)
+    try:
+        held = backend._other_planned_vram_mib()
+        unallocated = backend._media_unallocated_vram_mib()
+    finally:
+        llama_cpp.unregister_serving_backend(backend)
+    sized = llama_cpp._net_of_other_models_vram(probed, held, unallocated)
+    assert sized == [(0, 56 * GIB, 80 * GIB)]
+
+
+def test_a_loading_image_is_held_in_full_by_chat_sizing(vram, monkeypatch):
+    from core.inference import llama_cpp
+
+    v = vram(80)
+    v.load_image(24, headroom_gb = 8, policy = "fit")
+    monkeypatch.setattr(v.residency, "_media_busy", lambda owner: (True, False))
+    assert v.residency.media_unallocated_mib() == {0: 24 * GIB}
+    assert llama_cpp._net_of_unallocated_vram([(0, 60 * GIB, 0)], {0: 24 * GIB}) == [
+        (0, 60 * GIB, 0)
+    ]  # an integrated GPU's reading already counts shared memory
+
+
+@pytest.mark.parametrize("alongside", [False, True])
+def test_chat_reasserted_behind_an_image_keeps_the_account_that_loaded_it(vram, alongside):
+    """Another account reusing the chat model (or adding a slot) while an image sits beside it does not take it."""
+    v = vram(80)
+    v.policy = "fit"
+    run_as(ALICE, v.load_chat, 10)
+    assert run_as(ALICE, v.load_image, 20, policy = "fit") == []
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+    if alongside:
+        run_as(BOB, v.load_chat, 5, policy = "fit", alongside = True)
+    else:
+        run_as(BOB, arb.acquire_for_request, arb.CHAT, policy = "fit")
+    assert set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+    assert arb.owner_account(arb.DIFFUSION) == ALICE.account_id
+
+
+def test_gguf_chat_with_no_fit_retry_evicts_first_under_fit(vram):
+    v = vram(80)
+    v.policy = "fit"
+    assert _chat_kwargs(SimpleNamespace(is_gguf = True), _placement()) == {
+        "policy": "fit",
+        "gpu_ids": [0],
+        "evict_first": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected", "evicted"),
+    [
+        ("fit", {"policy": "fit", "gpu_ids": [0], "evict_first": True}, [IMAGE_SLOT]),
+        ("always", {"policy": "always", "gpu_ids": [0]}, []),
+    ],
+)
+def test_non_gguf_chat_beside_an_image(vram, policy, expected, evicted):
+    v = vram(80)
+    v.policy = policy
+    v.load_image(20, policy = policy)
+    placement = _placement((0,))
+    kwargs = _chat_kwargs(SimpleNamespace(is_gguf = False), placement, primary_can_retry = True)
+    assert kwargs == expected
+    assert v.load_chat(10, **kwargs) == evicted
+    assert v.evictions == [arb.DIFFUSION for _ in evicted]
+    assert arb.CHAT in arb.residents() and (arb.DIFFUSION in arb.residents()) == (not evicted)
+
+
+def _audio_cpp_chat(v, native_gb, **placement_kw):
+    placement = _placement(native_gb = native_gb, **placement_kw)
+    kwargs = _chat_kwargs(SimpleNamespace(is_gguf = False), placement)
+    gpus = None if placement.gpu_ids_are_vulkan_ordinals else placement.resolved_gpu_ids
+    return kwargs, v.load(arb.CHAT, {0: int(native_gb * GIB)}, **{"gpu_ids": gpus, **kwargs})
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_audio_cpp_chat_joins_a_resident_image_when_native_estimate_fits(vram, policy):
+    v = vram(80)
+    v.policy = policy
+    v.load_image(20, policy = policy)
+    kwargs, evicted = _audio_cpp_chat(v, 6.0)
+    assert kwargs == {"policy": policy, "gpu_ids": [0], "need_mib": {0: 6144}}
+    assert evicted == [] and v.evictions == [] and set(arb.residents()) == {arb.CHAT, arb.DIFFUSION}
+
+
+def test_audio_cpp_chat_short_beside_an_image_evicts_it_under_fit(vram):
+    v = vram(80)
+    v.policy = "fit"
+    v.load_image(20, policy = "fit")
+    kwargs, evicted = _audio_cpp_chat(v, 70.0)
+    assert kwargs["need_mib"] == {0: 70 * GIB}
+    assert evicted == [IMAGE_SLOT] and v.evictions == [arb.DIFFUSION]
+    assert set(arb.residents()) == {arb.CHAT} and v.residency.media_held_mib() == {}
+
+
+def test_audio_cpp_chat_short_beside_an_image_refuses_under_always(vram):
+    v = vram(80)
+    v.policy = "always"
+    v.load_image(20, policy = "always")
+    with pytest.raises(arb.MultiModelAlwaysRefusal, match = "is set to Always"):
+        _audio_cpp_chat(v, 70.0)
+    assert v.evictions == [] and set(arb.residents()) == {arb.DIFFUSION}
+
+
+@pytest.mark.parametrize("placement_kw", [{"vulkan": True}, {"gpus": None}])
+def test_audio_cpp_chat_without_physical_gpus_evicts_first_under_fit(vram, placement_kw):
+    v = vram(80)
+    v.policy = "fit"
+    v.load_image(20, policy = "fit")
+    kwargs, evicted = _audio_cpp_chat(v, 6.0, **placement_kw)
+    assert kwargs == {"policy": "fit", "evict_first": True}
+    assert evicted == [IMAGE_SLOT] and v.evictions == [arb.DIFFUSION]
+
+
+def _masked(v):
+    # A UUID/MIG mask: rows carry relative indices and there are no numeric parent ids.
+    v.index_kind = "relative"
+    v.parent = []
+    v.load_chat(10, gpu_ids = None)
+
+
+@pytest.mark.parametrize("priced", [False, True])
+def test_masked_host_image_beside_chat_evicts_first_under_fit(vram, priced):
+    v = vram(80)
+    _masked(v)
+    assert v.residency.media_load_need_mib(arb.DIFFUSION, SimpleNamespace(), None) is None
+    if priced:
+        assert v.load_image(20, policy = "fit") == [CHAT_SLOT]
+    else:
+        assert v.load(arb.DIFFUSION, {0: 16 * GIB}, policy = "fit") == [CHAT_SLOT]
+    assert v.evictions == [arb.CHAT] and set(arb.residents()) == {arb.DIFFUSION}
+
+
+@pytest.mark.parametrize("priced", [False, True])
+def test_masked_host_image_beside_chat_refuses_under_always(vram, priced):
+    v = vram(80)
+    _masked(v)
+    with pytest.raises(arb.MultiModelAlwaysRefusal, match = "is set to Always") as refused:
+        if priced:
+            v.load_image(20, policy = "always")
+        else:
+            v.load(arb.DIFFUSION, {0: 16 * GIB}, policy = "always")
+    assert refused.value.kind == "chat" and refused.value.model == "chat-model"
+    assert v.evictions == [] and set(arb.residents()) == {arb.CHAT}
+
+
 @pytest.mark.parametrize("owner", [arb.DIFFUSION, arb.VIDEO])
 @pytest.mark.parametrize("resident_owner", [arb.CHAT, arb.DIFFUSION, arb.VIDEO])
 def test_actual_media_load_routes_refuse_before_engine_activation_or_load(
@@ -816,3 +1222,96 @@ def test_chat_resident_fast_path_adds_no_account_policy_work(route, chat_switch,
     asyncio.run(
         arun_as(OWNER, route._maybe_auto_switch_model("org/one-GGUF", request, OWNER.username))
     )
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_automatic_native_placement_credits_the_chat_model_an_image_sits_beside(
+    vram, monkeypatch, policy
+):
+    """Chat (10 GB) then an image (2 GB) on 16 GB: a primary native load replaces the chat model, so its 10 GB
+    count, not the image's 2 GB (the image stays loaded beside it)."""
+    from routes import inference as inf
+
+    v = vram(16)
+    v.policy = policy
+    v.load_chat(10)
+    assert v.load_image(4, headroom_gb = 2, policy = policy) == []
+    assert arb.owner_snapshot()[0] == arb.DIFFUSION
+    monkeypatch.setattr(
+        inf, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    llama = SimpleNamespace(is_loaded = True, reclaimable_gpu_memory_gb = lambda: {0: 10.0})
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    availability = inf._native_audio_post_handoff_free_gb()
+    assert availability is not None
+    assert availability.credited == arb.CHAT
+    assert availability.effective_free_gb == {0: 14.0}
+    assert availability.owner_snapshot == arb.owner_snapshot()
+    placement = _placement((0,), native_gb = 8.0)
+    # The CHAT acquire reuses this measurement and keeps the image beside the new model.
+    credit, wait = inf._outgoing_chat_credit_gb(placement, policy, True, availability)
+    assert credit == {0: 10.0} and wait is None
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_native_load_replacing_the_primary_is_credited_with_its_memory(vram, monkeypatch, policy):
+    """A priced native load that replaces a 40 GB primary beside an idle image fits once the primary goes."""
+    from routes import inference as inf
+
+    v = vram(80)
+    v.policy = policy
+    v.load_chat(40)
+    assert v.load_image(20, policy = policy) == []
+    outgoing = inf._NativeAudioAvailability({0: 64.0}, {0: 40.0}, arb.owner_snapshot())
+    monkeypatch.setattr(
+        inf,
+        "_native_audio_post_handoff_free_gb",
+        lambda outgoing_owner = None: outgoing if outgoing_owner == arb.CHAT else None,
+    )
+    placement = _placement((0,), native_gb = 30.0)
+    credit, wait = inf._outgoing_chat_credit_gb(placement, policy, True, None)
+    assert credit == {0: 40.0} and wait == {0: 30.0}
+    kwargs = inf._chat_fit_kwargs(SimpleNamespace(is_gguf = False), placement, policy, credit)
+    assert v.load(arb.CHAT, {0: 30 * GIB}, replacing = True, **kwargs) == []
+    assert v.evictions == [] and arb.DIFFUSION in arb.residents()
+    # Loaded alongside, nothing is torn down, so nothing is credited.
+    assert inf._outgoing_chat_credit_gb(placement, policy, False, None) == (None, None)
+
+
+def test_extra_chat_load_that_evicts_the_image_keeps_the_chat_loader(vram):
+    """Alice's chat model sits behind her image; Bob's extra (unpriced) chat model evicts the image under When they
+    fit, but the primary chat model is still Alice's."""
+    v = vram(24)
+    run_as(ALICE, v.load_chat, 10, policy = "fit")
+    assert run_as(ALICE, v.load_image, 8, policy = "fit") == []
+    assert arb.owner_snapshot()[0] == arb.DIFFUSION
+    run_as(
+        BOB,
+        v.load,
+        arb.CHAT,
+        {0: 20 * GIB},
+        alongside = True,
+        policy = "fit",
+        gpu_ids = [0],
+        evict_first = True,
+    )
+    assert v.evictions == [arb.DIFFUSION]
+    assert arb.owner_account(arb.CHAT) == ALICE.account_id
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+def test_smaller_native_load_replacing_the_primary_fits_beside_a_tightly_packed_image(
+    vram, monkeypatch, policy
+):
+    """24 GB: a 14 GB chat model and an image admitted with no slack (6.5 GB weights + 2.5 GB headroom). A 2 GB
+    native model replacing the chat model frees 12 GB, so the image stays loaded."""
+    from routes import inference as inf
+
+    v = vram(24)
+    v.policy = policy
+    v.load_chat(14)
+    assert v.load_image(9, headroom_gb = 2.5, policy = policy) == []
+    placement = _placement((0,), native_gb = 2.0)
+    kwargs = inf._chat_fit_kwargs(SimpleNamespace(is_gguf = False), placement, policy, {0: 14.0})
+    assert v.load(arb.CHAT, {0: 2 * GIB}, replacing = True, **kwargs) == []
+    assert v.evictions == [] and arb.DIFFUSION in arb.residents()

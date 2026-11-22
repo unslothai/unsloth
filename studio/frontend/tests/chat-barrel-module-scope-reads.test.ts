@@ -1523,6 +1523,7 @@ const KNOWN_DEEP_CYCLE_READS = new Map<string, number>([
   ["components/assistant-ui/thread.tsx: RenderHtmlToolUI", 1],
   ["components/assistant-ui/thread.tsx: Sources", 1],
   ["components/assistant-ui/thread.tsx: TerminalToolUI", 1],
+  ["components/assistant-ui/thread.tsx: VideoGenerationToolUI", 1],
   ["components/assistant-ui/thread.tsx: ToolFallback", 1],
   ["components/assistant-ui/thread.tsx: WebSearchToolUI", 1],
   ["components/ui/sidebar.tsx: SIDEBAR_WIDTH_DEFAULT", 1],

@@ -16,11 +16,23 @@ import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 // Mirrors MIN_AUTO_UNLOAD_IDLE_SECONDS in the backend settings store.
-const MIN_IDLE_SECONDS = 60;
+export const MIN_IDLE_SECONDS = 60;
 
-// Its own row so the section keeps one job per control: this TTL has no enable
-// toggle in front of it, unlike the chat one above.
-function MediaIdleUnloadRow({
+// Parse an idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
+export const parseIdleSeconds = (draft: string): number | null => {
+  if (!draft.trim()) {
+    return null;
+  }
+  const parsed = Number(draft);
+  if (!Number.isInteger(parsed)) {
+    return null;
+  }
+  return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
+};
+
+// The image/video TTL, shown under Model memory: no enable toggle gates it, so
+// it lives beside the other memory settings rather than the chat TTL.
+export function MediaIdleUnloadRow({
   draftSeconds,
   onDraftChange,
   onSave,
@@ -47,9 +59,7 @@ function MediaIdleUnloadRow({
   return (
     <SettingsRow
       label={t("settings.general.modelAutoSwitch.mediaIdleUnload")}
-      description={t(
-        "settings.general.modelAutoSwitch.mediaIdleUnloadDescription",
-      )}
+      description={t("settings.resources.modelMemory.mediaIdleUnloadDescription")}
       below={
         error ? (
           <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
@@ -91,16 +101,86 @@ function MediaIdleUnloadRow({
   );
 }
 
+// Saves the media TTL alone, with no `enabled`, so a stale chat toggle is never
+// written back. Re-reads when residency changes: that decides the paused note.
+export function MediaIdleUnloadSetting({
+  residencyKey,
+}: { residencyKey?: unknown }) {
+  const t = useT();
+  const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(
+    null,
+  );
+  const [draft, setDraft] = useState("0");
+  const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: residencyKey only triggers the re-read
+  useEffect(() => {
+    let cancelled = false;
+    void loadOpenAIAutoSwitchSettings()
+      .then((loaded) => {
+        if (cancelled) return;
+        setSettings(loaded);
+        setDraft(String(loaded.mediaAutoUnloadIdleSeconds));
+        setError(null);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : t("settings.general.modelAutoSwitch.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t, residencyKey]);
+
+  const handleSave = async () => {
+    const mediaAutoUnloadIdleSeconds = parseIdleSeconds(draft);
+    if (mediaAutoUnloadIdleSeconds === null) {
+      setError(t("settings.general.modelAutoSwitch.idleError"));
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      const saved = await updateOpenAIAutoSwitchSettings({
+        mediaAutoUnloadIdleSeconds,
+      });
+      setSettings(saved);
+      setDraft(String(saved.mediaAutoUnloadIdleSeconds));
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : t("settings.general.modelAutoSwitch.saveError"),
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <MediaIdleUnloadRow
+      draftSeconds={draft}
+      onDraftChange={setDraft}
+      onSave={() => void handleSave()}
+      settings={settings}
+      isSaving={isSaving}
+      error={error}
+    />
+  );
+}
+
 export function ModelAutoSwitchSection() {
   const t = useT();
   const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(
     null,
   );
   const [draftIdleSeconds, setDraftIdleSeconds] = useState("0");
-  const [draftMediaIdleSeconds, setDraftMediaIdleSeconds] = useState("0");
   const [error, setError] = useState<string | null>(null);
-  // The media row validates its own input, so its message belongs beside it.
-  const [mediaError, setMediaError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -110,7 +190,6 @@ export function ModelAutoSwitchSection() {
         if (cancelled) return;
         setSettings(loaded);
         setDraftIdleSeconds(String(loaded.autoUnloadIdleSeconds));
-        setDraftMediaIdleSeconds(String(loaded.mediaAutoUnloadIdleSeconds));
         setError(null);
       })
       .catch((loadError) => {
@@ -126,18 +205,6 @@ export function ModelAutoSwitchSection() {
     };
   }, [t]);
 
-  // Parse an idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
-  const parseIdleSeconds = (draft: string): number | null => {
-    if (!draft.trim()) {
-      return null;
-    }
-    const parsed = Number(draft);
-    if (!Number.isInteger(parsed)) {
-      return null;
-    }
-    return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
-  };
-
   // syncDraft only for a write the chat idle-seconds input owns; every other row
   // leaves that draft alone so a save elsewhere cannot discard what is typed there.
   const persist = async (
@@ -149,9 +216,6 @@ export function ModelAutoSwitchSection() {
     try {
       const saved = await updateOpenAIAutoSwitchSettings(update);
       setSettings(saved);
-      if (update.mediaAutoUnloadIdleSeconds !== undefined) {
-        setDraftMediaIdleSeconds(String(saved.mediaAutoUnloadIdleSeconds));
-      }
       if (syncDraft) {
         setDraftIdleSeconds(String(saved.autoUnloadIdleSeconds));
       }
@@ -196,23 +260,6 @@ export function ModelAutoSwitchSection() {
       { enabled: true, autoUnloadIdleSeconds: idleSeconds },
       { syncDraft: true },
     );
-  };
-
-  // The image/video TTL is its own setting, so it saves on its own: no enable
-  // toggle gates it, and the chat seconds are left untouched.
-  const handleSaveMediaIdle = () => {
-    if (!settings) return;
-    const mediaIdleSeconds = parseIdleSeconds(draftMediaIdleSeconds);
-    setMediaError(
-      mediaIdleSeconds === null
-        ? t("settings.general.modelAutoSwitch.idleError")
-        : null,
-    );
-    if (mediaIdleSeconds === null) return;
-    void persist({
-      enabled: settings.enabled,
-      mediaAutoUnloadIdleSeconds: mediaIdleSeconds,
-    });
   };
 
   const handleKeepKvToggle = (keepKv: boolean) => {
@@ -325,26 +372,18 @@ export function ModelAutoSwitchSection() {
           onCheckedChange={handleMediaAutoSwitchToggle}
         />
       </SettingsRow>
-      <MediaIdleUnloadRow
-        draftSeconds={draftMediaIdleSeconds}
-        onDraftChange={setDraftMediaIdleSeconds}
-        onSave={handleSaveMediaIdle}
-        settings={settings}
-        isSaving={isSaving}
-        error={mediaError}
-      />
-      {settings?.idleUnloadActive ? (
-        <SettingsRow
-          label={t("settings.general.modelAutoSwitch.keepKv")}
-          description={t("settings.general.modelAutoSwitch.keepKvDescription")}
-        >
-          <Switch
-            checked={settings.autoUnloadKeepKv}
-            disabled={isSaving}
-            onCheckedChange={handleKeepKvToggle}
-          />
-        </SettingsRow>
-      ) : null}
+      {/* Ungated: the KV save also runs before an image or video model takes the GPU. */}
+      <SettingsRow
+        label={t("settings.general.modelAutoSwitch.keepKv")}
+        description={t("settings.general.modelAutoSwitch.keepKvDescription")}
+      >
+        <Switch
+          aria-label={t("settings.general.modelAutoSwitch.keepKv")}
+          checked={settings?.autoUnloadKeepKv ?? true}
+          disabled={!settings || isSaving}
+          onCheckedChange={handleKeepKvToggle}
+        />
+      </SettingsRow>
       {/* Also whenever a media TTL is saved: this switch decides which media models that
           TTL may free, so it has to be reachable without re-enabling chat unloading first. */}
       {settings &&

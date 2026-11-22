@@ -22,6 +22,8 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
+import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -220,7 +222,7 @@ export function LinkedFoldersManager({
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Unlink folder and remove files?</AlertDialogTitle>
+          <AlertDialogTitle>Unlink folder and remove indexed documents?</AlertDialogTitle>
           <AlertDialogDescription>
             This will unlink &quot;{removeIndexFolder?.name}&quot; and remove all
             documents it manages from the index. The files on disk will not be
@@ -325,7 +327,7 @@ export function LinkedFoldersManager({
               title={
                 manager.desktopSupported
                   ? "Choose a local folder"
-                  : "Requires the managed desktop backend"
+                  : sourceFolderUnavailableMessage(isTauri)
               }
               className={cn(
                 rowClass,
@@ -349,8 +351,8 @@ export function LinkedFoldersManager({
             native folder picker, and the rows already linked keep syncing regardless. */}
         {!manager.desktopSupported ? (
           <p className="px-1 text-ui-11 text-muted-foreground">
-            Linking a folder needs the managed desktop backend. Folders already
-            linked stay synced.
+            {sourceFolderUnavailableMessage(isTauri)} Existing source folders
+            continue to sync.
           </p>
         ) : null}
         {removeIndexConfirm}
@@ -363,12 +365,12 @@ export function LinkedFoldersManager({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-foreground">
-            Linked local folders
+            Source folders
           </h3>
           <p className="text-xs leading-snug text-muted-foreground">
             {manager.desktopSupported
-              ? "Keep supported documents indexed as this folder changes."
-              : "Existing linked folders stay synced; linking requires the managed desktop backend."}
+              ? SOURCE_FOLDER_DESCRIPTION
+              : `${sourceFolderUnavailableMessage(isTauri)} Existing source folders continue to sync.`}
           </p>
         </div>
         {scope ? (
@@ -382,7 +384,7 @@ export function LinkedFoldersManager({
             title={
               manager.desktopSupported
                 ? "Choose a local folder"
-                : "Requires the managed desktop backend"
+                : sourceFolderUnavailableMessage(isTauri)
             }
           >
             {manager.mutating ? (
@@ -390,7 +392,7 @@ export function LinkedFoldersManager({
             ) : (
               <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="size-3.5" />
             )}
-            Link folder
+            Add folder
           </Button>
         ) : null}
       </div>
@@ -401,7 +403,7 @@ export function LinkedFoldersManager({
         </div>
       ) : manager.folders.length === 0 ? (
         <div className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
-          No linked folders.
+          No source folders.
         </div>
       ) : (
         <ul className="flex flex-col gap-1.5">

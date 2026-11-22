@@ -13,7 +13,6 @@ import os
 import sys
 import torch
 from unsloth_zoo.utils import Version
-from . import utils as _kernel_utils
 from .utils import (
     _has_active_dora_adapter,
     _has_active_lora_bias,
@@ -1056,7 +1055,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
                 W_quant = getattr(W, "quant_state", None)
-                if W_quant is None and _kernel_utils._FSDP2_QLORA_PREPARED:
+                if W_quant is None and W.ndim == 2 and W.shape[1] == 1:
                     W_quant = _base_quant_state(self.base_layer, W)
                 return _apply(LoRA_W, x, W, W_quant, lora_A, lora_B, scaling)
             pass

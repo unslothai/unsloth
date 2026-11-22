@@ -216,6 +216,7 @@ export function useLoadedModels(
       const label = shortModelLabel(entry.name);
       try {
         const outcome = await ejectLoadedModel(entry);
+        if (outcome.status === "declined") return;
         if (outcome.status === "stillResident") {
           toast.warning(
             `"${shortModelLabel(outcome.model)}" was loaded while ejecting, so it is still using memory. Eject again to release it.`,

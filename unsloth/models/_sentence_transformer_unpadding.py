@@ -24,8 +24,11 @@ def _unpadding_backend():
     backend = ad.select_attention_backend(use_varlen = True)
     if backend == ad.FLASH_VARLEN:
         return backend
-    if backend == ad.XFORMERS and _XFormersBidirectionalMask is not None:
-        return backend
+    # Training may prefer torch's kernels over xformers; this route only runs on xformers or FA2.
+    if (
+        backend == ad.XFORMERS or (backend == ad.SDPA and ad.HAS_XFORMERS)
+    ) and _XFormersBidirectionalMask is not None:
+        return ad.XFORMERS
     return None
 
 

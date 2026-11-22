@@ -17,8 +17,8 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # ungated on PR refs and evicts main's shared entry.
 PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "consolidated"),
-    # Same install as `consolidated` but needs its own key: saves are gated on
-    # `cache-hit != 'true'`, so a shared key lets only one job ever save.
+    # Same install as `consolidated`, so it restores that entry read-only and never
+    # saves; see READ_ONLY_BORROWERS in test_pip_cache_naming.py.
     ("consolidated-tests-ci.yml", "consolidated-zoo"),
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
@@ -34,6 +34,10 @@ PIP_CACHE_JOBS = {
 
 # Partial saves on purpose: ccache checksums entries, so a truncated cache only costs misses.
 PARTIAL_SAVE_JOBS = {("prebuilt-cuda-wheels.yml", "warm")}
+
+# Restore another job's pip cache and deliberately save nothing (mirrors
+# READ_ONLY_BORROWERS in test_pip_cache_naming.py, which checks the owner side).
+PIP_CACHE_READ_ONLY_JOBS = {("consolidated-tests-ci.yml", "consolidated-zoo")}
 
 HEAVY = re.compile(
     r"torch|transformers|trl|peft|vllm|bitsandbytes|sentence-transformers|diffusers"
@@ -408,6 +412,11 @@ def test_every_pip_cache_scopes_its_key_to_what_it_installs(name, jid):
 def test_every_restored_pip_cache_is_also_saved_and_wired_to_its_restore(name, jid):
     """A restore without a save fills nothing; a save reading the wrong restore outputs writes nothing."""
     restore, save = _pip_cache_steps(name, jid)
+    if (name, jid) in PIP_CACHE_READ_ONLY_JOBS:
+        assert (
+            restore is not None and save is None
+        ), f"{name}:{jid} is a read-only borrower: it must restore and must not save"
+        return
     assert restore is not None and save is not None, (
         f"{name}:{jid} has restore={restore is not None}, save={save is not None}; the "
         f"pair has to stay together or the cache is never populated"
