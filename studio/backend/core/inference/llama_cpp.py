@@ -16102,6 +16102,9 @@ class LlamaCppBackend:
         except Exception:
             return None
         gpus = [] if child_has_no_gpu else list(detected_gpus or ())
+        # The carve-out verifier requires the complete GGUF size, not the later
+        # lazy-read-discounted size.
+        original_model_bytes = model_bytes
         # _get_gpu_memory returns [] on a failed probe, which looks like a GPU-less host.
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
@@ -16133,7 +16136,33 @@ class LlamaCppBackend:
             logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
-        offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
+        # The single Windows ROCm APU's BIOS carve-out may exceed free memory
+        # reported through Windows-visible RAM. The two readings describe the
+        # SAME GPU, so use their maximum, never their sum. The existing helper
+        # must verify whole-GPU placement and reject ambiguous/managed memory.
+        device_credit_bytes = free_vram_mib * 1024 * 1024
+        if (
+            sys.platform == "win32"
+            and not child_has_no_gpu
+            and len(gpus) == 1
+            and not shared
+            and not set(integrated_gpu_ids or ())
+            and self._amd_apu_wants_unified_memory([gpus[0][0]])
+        ):
+            try:
+                verified_carveout_bytes = self._windows_rocm_apu_carve_out_credit(
+                    original_model_bytes,
+                    model_path = model_path,
+                    caps = self.probe_server_capabilities(argv[0]),
+                    gpu_indices = [gpus[0][0]],
+                    extra_args = argv,
+                    env = _env,
+                )
+                device_credit_bytes = max(device_credit_bytes, int(verified_carveout_bytes))
+            except Exception:
+                # Fail closed: retain the original admission safeguard.
+                logger.debug("Windows APU carve-out credit unavailable.", exc_info = True)
+        offload_bytes = model_bytes - device_credit_bytes
         # Skip card-resident loads so a cgroup budget never applies to a nonpositive need.
         if 0 < offload_bytes and heap_bytes <= heap_free_mib * 1024 * 1024:
             # A finite cgroup still limits host-backed GPU allocations.
