@@ -62,6 +62,7 @@ type MessageCustomMetadata = {
   contextUsage?: ContextUsageMetadata;
   serverTimings?: Record<string, unknown>;
   reasoningDuration?: number;
+  runModelId?: string;
 };
 
 function asNumber(value: unknown): number | undefined {
@@ -315,9 +316,13 @@ function useResponseModelDisplay() {
     serverTimings,
     modelLabel,
     providerLabel,
+    recordedModelId,
     // The picker's id (external::... for connections), which customizations are keyed on.
     selectedModelId:
-      responseDetails?.modelId ?? usage?.modelId ?? recordedModelId,
+      responseDetails?.modelId ??
+      usage?.modelId ??
+      recordedModelId ??
+      custom?.runModelId,
     providerType: responseDetails?.providerType ?? provider?.providerType,
   };
 }
@@ -364,16 +369,14 @@ export const MessageResponseModelHeader: FC = () => {
 };
 
 const ResponseModelHeader: FC = () => {
-  const liveCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const models = useChatRuntimeStore((s) => s.models);
   const providers = useExternalProvidersStore((s) => s.providers);
-  const { message, modelLabel, selectedModelId, providerType } =
-    useResponseModelDisplay();
-  // Details are recorded when the reply finishes: until then, the model selected when it started.
-  const [startedWith] = useState(() =>
-    message.status?.type === "running" ? liveCheckpoint : null,
-  );
-  const modelId = selectedModelId ?? startedWith ?? undefined;
+  const {
+    modelLabel,
+    recordedModelId,
+    selectedModelId: modelId,
+    providerType,
+  } = useResponseModelDisplay();
   const provider = providers.find(
     (candidate) => candidate.id === parseExternalModelId(modelId)?.providerId,
   );
@@ -381,7 +384,7 @@ const ResponseModelHeader: FC = () => {
   if (!modelId) return null;
   const label =
     customName ??
-    (selectedModelId
+    (recordedModelId
       ? modelLabel
       : (models.find((model) => model.id === modelId)?.name ??
         parseExternalModelId(modelId)?.modelId ??
