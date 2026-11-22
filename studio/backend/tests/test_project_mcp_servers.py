@@ -38,7 +38,6 @@ def test_chat_uses_its_projects_saved_mcp_servers(monkeypatch):
     ]
 
     async def list_chat(session_id, server_ids):
-        """Inspect the actual completion selector and the cached catalog used to count it."""
         payload = ChatCompletionRequest(
             messages = [{"role": "user", "content": "Hello"}],
             session_id = session_id,
@@ -52,7 +51,6 @@ def test_chat_uses_its_projects_saved_mcp_servers(monkeypatch):
         assert bool(tools.mcp_tool_spec(f"mcp__{beta}__echo")) == (beta in server_ids)
 
     async def switch_chats():
-        """The same task may select a different chat later without retaining the earlier scope."""
         alpha_session = tools.project_session_id("alpha")
         beta_session = tools.project_session_id("beta")
         await list_chat(alpha_session, [alpha])

@@ -153,7 +153,6 @@ async def scene(
                 return await route.fulfill(status = 404, json = {"detail": "Project not found"})
             return await route.fulfill(json = stored)
         if path.startswith("mcp/servers") and req.method == "GET":
-            # The project dialog lists the account's MCP servers; the endpoint returns an array.
             return await route.fulfill(
                 json = [
                     {"id": "review-server", "display_name": "Review server", "is_enabled": True},
@@ -253,8 +252,7 @@ async def scene(
                         "Where code and file tools run for every chat in this project.", exact = True
                     )
                 ).to_be_visible()
-                # Projects with no saved servers inherit the account defaults; only servers
-                # enabled globally are offered once the project picks its own set.
+                # Only globally enabled servers are offered for a project's own set.
                 use_set = dialog.get_by_label("Use a specific set of servers for this project")
                 await expect(use_set).to_be_enabled()
                 await expect(use_set).not_to_be_checked()

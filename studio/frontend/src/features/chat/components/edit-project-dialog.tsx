@@ -78,7 +78,6 @@ function ProjectWorkingFolder({
   );
 }
 
-/** Edit the saved subset of globally enabled MCP servers, or inherit account defaults. */
 function ProjectMcpServers({
   value,
   onChange,

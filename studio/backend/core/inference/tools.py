@@ -14752,7 +14752,6 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 
 def _mcp_project_server_ids(session_id: str | None) -> frozenset[str] | None:
-    """Read the saved preference for a Studio project session in the current account."""
     if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     from storage.studio_db import get_chat_project
@@ -14763,7 +14762,6 @@ def _mcp_project_server_ids(session_id: str | None) -> frozenset[str] | None:
 
 
 async def set_mcp_project_scope(session_id: str | None) -> None:
-    """Capture the project's selection for discovery, cached schemas and lazy search this turn."""
     selected = (
         await asyncio.to_thread(_mcp_project_server_ids, session_id)
         if session_id and session_id.startswith(_PROJECT_SESSION_PREFIX)
@@ -15173,7 +15171,7 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         selected = _MCP_PROJECT_SERVER_IDS.get()
         if selected is None:
-            # A caller executing on a worker may not carry the discovery context.
+            # Worker threads may not carry the request's context.
             selected = _mcp_project_server_ids(session_id)
         if selected is not None and server_id not in selected:
             return f"Error: MCP server '{display}' is not enabled for this project"
