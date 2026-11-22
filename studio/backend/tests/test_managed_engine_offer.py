@@ -307,7 +307,9 @@ def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
 def test_fbgemm_fp8_is_offered_vllm_and_plain_fp8_and_modelopt_stay_on_default():
     # Unsloth rewrites ModelOpt FP8 / NVFP4 for the Default engine (unsloth/models/modelopt_*.py).
     for algo in ("FP8", "NVFP4"):
-        assert offer({"quantization_config": {"quant_method": "modelopt", "quant_algo": algo}}) is None
+        assert (
+            offer({"quantization_config": {"quant_method": "modelopt", "quant_algo": algo}}) is None
+        )
     fbgemm = {"quantization_config": {"quant_method": "fbgemm_fp8"}}
     assert offer(fbgemm) == {"quantization": "fbgemm_fp8", "engines": ["vllm"]}
     assert offer({"quantization_config": {"quant_method": "fp8"}}) is None
