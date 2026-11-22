@@ -106,7 +106,10 @@
    "Qwen/Qwen-Image-Layered": null
   },
   "sdxl": {
-   "stabilityai/stable-diffusion-xl-base-1.0": null
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
+    "steps": 25
+   }
   },
   "wan2.1-t2v-1.3b": {
    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": null
@@ -4565,6 +4568,10 @@
    "qwen/qwen-image-2.1": {
     "default": 3,
     "max": 3,
+    "steps": 25
+   },
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
     "steps": 25
    },
    "wan-ai/wan2.2-ti2v-5b-diffusers": {

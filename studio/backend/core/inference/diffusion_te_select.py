@@ -121,6 +121,21 @@ def plan(
     return {"length": n + 1, "layers": layers, "norm": norm, "stack": stack, "n": n}
 
 
+def _output_device(output: Any) -> Any:
+    """The device of the encoder output's first tensor (None when it holds none)."""
+    import torch
+
+    values = (
+        output.values()
+        if hasattr(output, "values")
+        else (output if isinstance(output, (list, tuple)) else ())
+    )
+    for value in values:
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return None
+
+
 @contextlib.contextmanager
 def selected_hidden_states(
     encoder: Any,
@@ -166,6 +181,13 @@ def selected_hidden_states(
         if set(states) != want or getattr(output, "hidden_states", None) is not None:
             # a recorder that did not fire, or a forward that still built the full tuple: refuse the result
             raise SelectionError("the selective encode did not record exactly the requested states")
+        # install_boundary already moved the output home; the recorded states are still on the encoder's card
+        home = _output_device(output)
+        if home is not None:
+            states = {
+                k: v.to(home) if getattr(v, "device", home) != home else v
+                for k, v in states.items()
+            }
         selected = SelectedHiddenStates(p["length"], states)
         try:
             output["hidden_states"] = selected

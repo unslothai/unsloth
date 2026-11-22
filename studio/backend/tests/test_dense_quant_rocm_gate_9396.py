@@ -328,8 +328,9 @@ def test_auto_never_resolves_to_int8_on_rocm(monkeypatch):
     """auto is the mode /info recommends, so it is the one users actually land on."""
     import core.training.diffusion_dit_trainer as dit
 
-    assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), True, True) == "int8"
-    assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), True, False) == "nf4"
+    # The resolver passes has_fp8=False on ROCm: (11, 5) is a gfx version there, not an sm89+ NVIDIA card.
+    assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), False, True) == "int8"
+    assert dit._pick_auto_precision(False, "cuda", 13.8, 12.0, (11, 5), False, False) == "nf4"
 
     _stub_train_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1")
     monkeypatch.setattr(dit, "repo_is_prequantized", lambda repo: False)
@@ -338,7 +339,7 @@ def test_auto_never_resolves_to_int8_on_rocm(monkeypatch):
         base_precision = "auto", base_model = "unsloth/Z-Image", mixed_precision = "bf16"
     )
     resolved = dit._resolve_base_precision(cfg, types.SimpleNamespace(dense_bf16_gb = 12.0), "cuda")
-    assert resolved != "int8"
+    assert resolved not in ("int8", "fp8")
 
 
 def test_the_explicit_decline_text_is_the_helper_not_a_copy_of_its_fallback():

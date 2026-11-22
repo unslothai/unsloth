@@ -83,7 +83,9 @@ def _grouped_supported(model: Any = None) -> bool:
     try:
         import torch
 
-        if not hasattr(torch, "_grouped_mm") or getattr(torch.version, "hip", None):
+        from .rocm_bf16 import is_rocm_torch
+
+        if not hasattr(torch, "_grouped_mm") or is_rocm_torch(torch):
             return False
         if not torch.cuda.is_available():
             return False

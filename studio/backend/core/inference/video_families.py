@@ -773,6 +773,21 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             auto_static_skip = (
                 ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
             ),
+            # 27 computed steps like every-3, placed by a propagation-weighted guided-error rule (RA-CFGCache,
+            # calibrated offline on one held-out prompt): denser early, wider gaps late. 832x480x49, CFG 5, shift 8,
+            # 4 held-out prompts: mean LPIPS 0.050 vs 0.104 for every-3 at the same 54 calls (lower on all 4).
+            # 40 steps (22 computed, same rule, calibrated through Studio's INT8 compiled path): mean LPIPS 0.093 on
+            # 4 prompts x 2 seeds, under the max-tier bar of 0.10 (every-3 there: 0.132, so 40 never skipped
+            # before). 20 and 30 steps stay unskipped: both schedules measured 0.19-0.27 there.
+            auto_static_skip_masks = (
+                (
+                    "wan-ai/wan2.2-ti2v-5b-diffusers",
+                    (
+                        ("max", "11111111111101010100100100010001001001000100011111"),
+                        ("max", "1111111111101010010001000100010001001111"),
+                    ),
+                ),
+            ),
             # FastVideo's dense-attention DMD student (video_dmd) loads from its own Diffusers repo.
             trusted_repos = ("fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",),
         ),
