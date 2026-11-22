@@ -4295,6 +4295,12 @@ def _parse_kimi_tool_calls(
 def _lfm_literal(node: ast.AST) -> Any:
     if isinstance(node, ast.Name) and node.id in _LFM_JSON_LITERALS:
         return _LFM_JSON_LITERALS[node.id]
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_lfm_literal(elt) for elt in node.elts]
+    if isinstance(node, ast.Dict):
+        if any(key is None for key in node.keys):
+            raise ValueError("dict unpacking")
+        return {_lfm_literal(k): _lfm_literal(v) for k, v in zip(node.keys, node.values)}
     return ast.literal_eval(node)
 
 

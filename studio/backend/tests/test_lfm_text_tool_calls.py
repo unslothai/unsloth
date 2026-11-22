@@ -267,6 +267,12 @@ def _names_args(text, **kw):
             '<|tool_call_start|>[ {"name": "web_search", "arguments": {"query": "x"}}]<|tool_call_end|>',
             [("web_search", {"query": "x"})],
         ),
+        (
+            "<|tool_call_start|>[edit_file(path='x', edits=[{'old_string': 'a', 'replace_all': true}])]<|tool_call_end|>",
+            [("edit_file", {"path": "x", "edits": [{"old_string": "a", "replace_all": True}]})],
+        ),
+        ("<|tool_call_start|>[f(a=[{**x}])]<|tool_call_end|>", []),
+        ("<|tool_call_start|>[f(a=[open('x')])]<|tool_call_end|>", []),
         ("<|tool_call_start|>[web_search(query={1, 2})]<|tool_call_end|>", []),
         ("<|tool_call_start|>[web_search(query=b'x')]<|tool_call_end|>", []),
         (
