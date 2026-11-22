@@ -99,10 +99,12 @@ _OPENAI_RESPONSES_FIXED_SAMPLING_MODEL = re.compile(
     r"o\d+(?:[-.]|$)|codex-mini(?:[-.]|$))"
 )
 _OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
-# RFC 3986 bars unencoded []{}|\^; CJK full-width punctuation ends a URL in prose.
+# RFC 3986 bars unencoded []{}|\^; typographic quotes and CJK punctuation end a URL in prose.
 _QUESTION_URL = re.compile(
-    r"https?://[^\s<>\"`\x00\[\]{}|\\^\u3000-\u303f\uff00-\uffef]+", re.IGNORECASE
+    r"https?://[^\s<>\"`\x00\[\]{}|\\^\u00ab\u00bb\u2018-\u201f\u3000-\u303f\uff00-\uffef]+",
+    re.IGNORECASE,
 )
+_QUESTION_URL_PAIRS = {('"', '"'), ("`", "`"), ("<", ">")}
 _WALL_CLOCK_TIMEOUT_CANCEL_MESSAGE = "research-wall-clock-timeout"
 _MAX_ERROR_CHARS = 500
 _MAX_CONTEXT_CHARS = 12_000
@@ -1046,7 +1048,6 @@ def _mcp_evidence(sources: list[dict]) -> str:
 def _question_url(question: str, match: re.Match) -> str:
     """GFM tail trim, plus the closing half of a *_~' run that opens the URL ('url', **url**)."""
     opener = question[: match.start()]
-    closer = opener[len(opener.rstrip("*_~'")) :][::-1]
     url = match.group(0)
     if opener.endswith("]("):
         # A Markdown link destination ends at its balancing ')', whatever follows it.
@@ -1054,8 +1055,11 @@ def _question_url(question: str, match: re.Match) -> str:
         for index, char in enumerate(url):
             depth += (char == "(") - (char == ")")
             if depth < 0:
-                url = url[:index]
-                break
+                return url[:index]
+        return url
+    if (opener[-1:], question[match.end() : match.end() + 1]) in _QUESTION_URL_PAIRS:
+        return url
+    closer = opener[len(opener.rstrip("*_~'")) :][::-1]
     while True:
         trimmed = _trim_url_tail(url)
         if closer and trimmed.endswith(closer):

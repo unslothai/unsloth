@@ -138,6 +138,7 @@ def test_a_linked_page_that_fails_to_load_is_not_cited(research_home, monkeypatc
         f"Research [{LINKED}] and compare it",
         f"研究{LINKED}，并比较",
         f"Research **[the release]({LINKED})** and compare it",
+        f"Research “{LINKED}” and compare it",
     ],
 )
 def test_a_quoted_link_is_read_without_its_delimiter(research_home, monkeypatch, question):
@@ -181,3 +182,12 @@ def test_linked_pages_past_the_source_cap_are_not_fetched(research_home, monkeyp
     assert calls[0] == {"url": LINKED}
     assert {"url": SECOND} not in calls
     assert [source["url"] for source in finished["sources"]] == [LINKED]
+
+
+@pytest.mark.parametrize("question", [f"Research [the search]({LINKED}?q=why?) and compare it"])
+def test_a_markdown_link_destination_keeps_its_trailing_punctuation(
+    research_home, monkeypatch, question
+):
+    _, calls, _ = _run(monkeypatch, question = question)
+
+    assert calls[0] == {"url": f"{LINKED}?q=why?"}
