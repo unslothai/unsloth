@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import sqlite3
 
-import pytest
-
-
-@pytest.mark.skipif(
-    not hasattr(sqlite3.Connection, "enable_load_extension"),
-    reason = "this interpreter's sqlite3 cannot load sqlite-vec",
-)
 def test_list_knowledge_bases_counts_only_completed_documents(rag_home, rag_conn):
     from core.rag import store
     from routes import rag as rag_routes
