@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import threading
 import types
 import weakref
 from typing import Iterator, Optional
@@ -2246,29 +2247,190 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     # blocks on that rank alone.
     if "attention_mask" in kwargs:
         kwargs["attention_mask"] = None
-    stack.append(seq_len)
+    # Claimed by this call alone: a second or nested call of the same decoder gathers every state.
+    selection = getattr(_LAST_HIDDEN, "selection", None)
+    if selection is not None and selection.decoder is module:
+        selection.decoder = None
+    else:
+        selection = None
+    stack.append((seq_len, selection))
     return args, kwargs
 
 
-# Depth of last_hidden_state_only() scopes: the caller reads only hidden_states[-1].
-_LAST_HIDDEN_ONLY = [0]
+class _LastHiddenSelection:
+    __slots__ = ("decoder", "truncated")
+
+    def __init__(self, decoder):
+        self.decoder = decoder
+        self.truncated = False
+
+
+# Per thread: a forward on another thread never sees this caller's selection, so whether a decoder call
+# gathers one state or all of them cannot depend on thread timing, which differs between ranks.
+_LAST_HIDDEN = threading.local()
 
 
 @contextlib.contextmanager
-def last_hidden_state_only() -> Iterator[None]:
+def last_hidden_state_only(decoder) -> Iterator[_LastHiddenSelection]:
     """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
-    forward): the decoder hook then gathers that state alone, not all L + 1 layers to full length."""
-    _LAST_HIDDEN_ONLY[0] += 1
+    forward): the next call of ``decoder`` on this thread gathers that state alone, not all L + 1 layers
+    to full length. ``decoder = None`` selects nothing (and hides an enclosing selection). The yielded
+    selection's ``truncated`` says whether the decoder did return only the last state."""
+    selection = _LastHiddenSelection(decoder)
+    previous = getattr(_LAST_HIDDEN, "selection", None)
+    _LAST_HIDDEN.selection = selection
     try:
-        yield
+        yield selection
     finally:
-        _LAST_HIDDEN_ONLY[0] -= 1
+        _LAST_HIDDEN.selection = previous
+
+
+# Forwards audited to read nothing but the decoder's last state and to hand its hidden_states tuple on untouched.
+_PASSTHROUGH_MARKER = "_unsloth_cp_hidden_states_passthrough"
+_PASSTHROUGH_AUDIT = {}  # code object -> {decoder attribute names: verdict}
+
+
+def _decoder_output_passthrough(function, attrs) -> bool:
+    """Static check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned to a plain
+    name, and that name is read only as ``.attr`` (``.hidden_states`` only as a ``hidden_states =``
+    keyword), ``[0]`` or ``[1:]``. Nothing reads ``hidden_states`` by string. Anything else: False."""
+    import ast
+    import inspect
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    except Exception:
+        return False
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+        if isinstance(node, ast.Constant) and node.value == "hidden_states":
+            return False
+
+    def decoder_call(node):
+        func = getattr(node, "func", None)
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(func, ast.Attribute)
+            and func.attr in attrs
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+        )
+
+    names = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in attrs
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            call = parents.get(node)
+            if not (isinstance(call, ast.Call) and call.func is node):
+                return False  # the decoder handed on whole
+            owner = parents.get(call)
+            if (
+                isinstance(owner, ast.Assign)
+                and len(owner.targets) == 1
+                and isinstance(owner.targets[0], ast.Name)
+            ):
+                names.add(owner.targets[0].id)
+            elif isinstance(owner, ast.AnnAssign) and isinstance(owner.target, ast.Name):
+                names.add(owner.target.id)
+            else:
+                return False  # returned or consumed in place
+    if not names:
+        return False
+
+    def passthrough_keyword(node):
+        keyword = parents.get(node)
+        return isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "hidden_states"
+            and not passthrough_keyword(node)
+        ):
+            return False
+        if not (isinstance(node, ast.Name) and node.id in names):
+            continue
+        if isinstance(node.ctx, ast.Store):
+            if not decoder_call(getattr(parents.get(node), "value", None)):
+                return False
+            continue
+        use = parents.get(node)
+        if isinstance(use, ast.Attribute) and use.value is node:
+            continue
+        if isinstance(use, ast.Subscript) and use.value is node:
+            index = use.slice
+            if isinstance(index, ast.Constant) and index.value == 0:
+                continue
+            if (
+                isinstance(index, ast.Slice)
+                and isinstance(index.lower, ast.Constant)
+                and isinstance(index.lower.value, int)
+                and index.lower.value >= 1
+                and index.upper is None
+                and index.step is None
+            ):
+                continue
+        return False
+    return True
+
+
+def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
+    """The decoder a GRPO hidden-state forward of ``model`` may scope with last_hidden_state_only(), or
+    None (gather every state). Only the one CP-attached text decoder held directly by ``model``, and only
+    when ``forward`` is marked or audited to pass the hidden states through without reading them: a forward
+    that reads an intermediate state before returning would get the wrong tensor otherwise. The answer
+    depends on code and module structure only, so it is the same on every rank."""
+    manager = get_cp_manager()
+    if manager is None or model is None:
+        return None
+    decoders = _decoders(model)
+    if len(decoders) != 1 or getattr(decoders[0], "_unsloth_cp_rl_manager", None) is not manager:
+        return None
+    decoder = decoders[0]
+    attrs = frozenset(name for name, child in model._modules.items() if child is decoder)
+    if not attrs:
+        return None
+    function = getattr(forward, "__func__", forward)
+    chain = [function]
+    while hasattr(chain[-1], "__wrapped__") and len(chain) < 16:
+        chain.append(chain[-1].__wrapped__)
+    if any(getattr(f, _PASSTHROUGH_MARKER, False) for f in chain):
+        return decoder
+    inner = getattr(chain[-1], "__func__", chain[-1])
+    try:
+        key = inner.__code__
+    except AttributeError:
+        return None
+    cached = _PASSTHROUGH_AUDIT.setdefault(key, {})
+    if attrs not in cached:
+        cached[attrs] = _decoder_output_passthrough(inner, attrs)
+    return decoder if cached[attrs] else None
+
+
+def _no_later_forward_hooks(module, hidden, manager) -> bool:
+    """True on every rank when no rank has a forward hook after the CP post hook on ``module``: such a hook
+    reads output["hidden_states"] by index. Agreed over the CP group, so a hook on one rank alone cannot make
+    the peers enter different gathers."""
+    hooks = list(module._forward_hooks)
+    mine = getattr(module, "_unsloth_cp_rl_post_hook_id", None)
+    later = mine not in hooks or hooks.index(mine) != len(hooks) - 1
+    flag = torch.tensor([int(later)], dtype = torch.int32, device = hidden.device)
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = manager.group)
+    return not bool(flag.item())
 
 
 def _rl_decoder_post_hook(module, args, kwargs, output):
-    seq_len = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
-    if seq_len is None:
+    entry = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
+    if entry is None:
         return None
+    seq_len, selection = entry
     manager = module._unsloth_cp_rl_manager
     last = output[0]
 
@@ -2287,9 +2449,15 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
             )
         return (hidden, *output[1:])
     output[next(iter(output.keys()))] = hidden
-    if layers is not None and _LAST_HIDDEN_ONLY[0] and len(layers):
+    if (
+        layers is not None
+        and selection is not None
+        and len(layers)
+        and _no_later_forward_hooks(module, last, manager)
+    ):
         # Only the last state is read: every other layer would be one more all-gather and a full-length copy.
         output["hidden_states"] = (hidden if layers[-1] is last else _full(layers[-1]),)
+        selection.truncated = True
     elif layers is not None:
         output["hidden_states"] = tuple(
             hidden if layer is last else _full(layer) for layer in layers
@@ -2316,7 +2484,8 @@ def attach_rl_hooks(manager, model) -> None:
         decoder._unsloth_cp_rl_stack = []
         if not getattr(decoder, "_unsloth_cp_rl_hooked", False):
             decoder.register_forward_pre_hook(_rl_decoder_pre_hook, with_kwargs = True)
-            decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            handle = decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            decoder._unsloth_cp_rl_post_hook_id = handle.id
             decoder._unsloth_cp_rl_hooked = True
     manager.attach_attention_hooks(model)
 

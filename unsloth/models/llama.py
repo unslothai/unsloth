@@ -2334,6 +2334,9 @@ def CausalLM_fast_forward(fast_forward_inference):
             attentions = outputs.attentions,
         )
 
+    # Audited: reads only outputs[0] and hands outputs.hidden_states on untouched, so under context
+    # parallelism GRPO's hidden-state forward may gather the decoder's last state alone.
+    _CausalLM_fast_forward._unsloth_cp_hidden_states_passthrough = True
     return _CausalLM_fast_forward
 
 
