@@ -33,6 +33,8 @@ _UNKNOWN_FOLDER = "unknown-folder"
 
 
 _META: dict[Path, dict] = {}
+# {home: {rollout id: path}} for fork bases, built once per list_projects run.
+_BY_ROLLOUT_ID: dict[Path, dict[str, Path]] = {}
 
 
 def _meta(path: Path) -> dict:
@@ -69,6 +71,19 @@ def _rollout_id(path: Path) -> str:
     return session_id_of(path)[len("rollout-YYYY-MM-DDThh-mm-ss-") :].rsplit("_", 1)[-1]
 
 
+def _rollout_path(home: Path, rollout: str) -> Path | None:
+    """The first rollout (by name) with this id; rescans if it is new or moved since the last scan."""
+    found = _BY_ROLLOUT_ID.get(home)
+    path = found.get(rollout) if found is not None else None
+    if path is None or not path.is_file():
+        found = {}
+        for candidate in _rollouts(home):
+            found.setdefault(_rollout_id(candidate), candidate)
+        _BY_ROLLOUT_ID[home] = found
+        path = found.get(rollout)
+    return path
+
+
 def _thread_id(path: Path) -> str:
     return str(_meta(path).get("id") or session_id_of(path))
 
@@ -83,6 +98,7 @@ def _by_thread(home: Path) -> dict[str, list[Path]]:
 
 def list_projects(home: Path) -> list[SourceProject]:
     _META.clear()
+    _BY_ROLLOUT_ID.clear()
     by_cwd: dict[str, list[Path]] = {}
     for paths in _by_thread(home).values():
         path = paths[-1]  # the thread's current state
@@ -111,9 +127,7 @@ def _records(path: Path) -> list[tuple[str, int, dict]]:
         (p.parent for p in path.parents if p.name in ("sessions", "archived_sessions")), None
     )
     rollout = str(base.get("thread_id"))
-    base_path = next(
-        (p for p in (_rollouts(home) if home else []) if _rollout_id(p) == rollout), None
-    )
+    base_path = _rollout_path(home, rollout) if home else None
     if base_path is None or base_path == path:
         return tagged  # base rollout deleted: the tail is all there is
     cut = base.get("end_ordinal_exclusive")
