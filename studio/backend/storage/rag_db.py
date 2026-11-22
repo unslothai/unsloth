@@ -319,7 +319,7 @@ def _ensure_fts_scope_index(conn: sqlite3.Connection) -> None:
     try:
         conn.execute(f"CREATE INDEX IF NOT EXISTS {FTS_SCOPE_INDEX} ON chunks_fts_content(c2)")
     except sqlite3.OperationalError as exc:
-        # SQLITE_DBCONFIG_DEFENSIVE makes shadow tables read-only.
+        # A locked or read-only database (or a build that refuses shadow-table DDL) keeps the unindexed filter.
         logger.info("RAG lexical scope index unavailable (%s)", exc)
 
 

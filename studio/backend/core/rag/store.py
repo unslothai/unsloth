@@ -798,9 +798,9 @@ def _lexical_scope_filter(conn: sqlite3.Connection, scopes: list[str], placehold
     lo = hi = None
     for scope in scopes:
         first, last = conn.execute(
-            "SELECT (SELECT min(id) FROM chunks_fts_content WHERE c2=?1), "
-            "(SELECT max(id) FROM chunks_fts_content WHERE c2=?1)",
-            (scope,),
+            "SELECT (SELECT min(id) FROM chunks_fts_content WHERE c2=?), "
+            "(SELECT max(id) FROM chunks_fts_content WHERE c2=?)",
+            (scope, scope),
         ).fetchone()
         if first is not None:
             lo = first if lo is None else min(lo, first)
