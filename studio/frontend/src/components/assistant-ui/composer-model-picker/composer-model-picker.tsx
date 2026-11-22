@@ -811,7 +811,6 @@ function RowMark({ row }: { row?: RowMarkRow }) {
   ) : null;
 }
 
-/** The picker's mark for a recorded model: custom icon, maker logo, or a letter disc. */
 export function ModelMark({
   modelId,
   label,
@@ -4135,7 +4134,6 @@ export function ComposerModelPicker({
     setConnectedSettings({ row, view });
   };
   const openCustomize = (row: Row) => {
-    // The dialog sits outside the panel, which would take its clicks as a dismiss.
     setOpen(false);
     setCustomizing(row);
   };

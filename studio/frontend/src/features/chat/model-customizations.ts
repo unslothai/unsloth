@@ -56,7 +56,6 @@ function normaliseAll(value: unknown): Record<string, ModelCustomization> {
 
 interface ModelCustomizationsState {
   byId: Record<string, ModelCustomization>;
-  /** Empty name and icon clear the entry. */
   setCustomization: (id: string, value: ModelCustomization) => void;
 }
 
