@@ -45,3 +45,22 @@ def test_normal_grid_unchanged(tmp_path):
     path = _doc_with(tmp_path, "w:gridBefore", 2, "normal.docx")
     text = "\n".join(p.text for p in parsers.parse(str(path)))
     assert " |  | LEFT | RIGHT" in text
+
+
+def test_nested_table_rows_keep_their_own_spans():
+    # Each nested row spends its own budget: 21 rows spanning 50 columns must not starve one another.
+    pytest.importorskip("docx")
+    import docx
+    from docx.oxml.ns import qn
+
+    from core.rag import parsers
+
+    document = docx.Document()
+    outer = document.add_table(rows = 1, cols = 1)
+    inner = outer.cell(0, 0).add_table(rows = 21, cols = 2)
+    for row in inner.rows:
+        tc_pr = row._tr.tc_lst[0].get_or_add_tcPr()
+        tc_pr.append(tc_pr.makeelement(qn("w:gridSpan"), {qn("w:val"): "50"}))
+    parsers._docx_clamp_grid(outer._tbl)
+    spans = [row._tr.tc_lst[0].tcPr.find(qn("w:gridSpan")).get(qn("w:val")) for row in inner.rows]
+    assert spans == ["50"] * 21

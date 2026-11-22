@@ -1616,12 +1616,23 @@ _DOCX_GRID_MAX = 1000
 _DOCX_GRID_TAGS = (_W + "gridSpan", _W + "gridBefore", _W + "gridAfter")
 
 
+def _docx_row_grid_elements(tr):
+    """This row's own gridBefore / gridAfter / gridSpan, not those of rows in nested tables."""
+    for child in tr:
+        if child.tag == _W + "trPr":
+            yield from (el for el in child if el.tag in _DOCX_GRID_TAGS)
+        elif child.tag == _W + "tc":
+            for tc_pr in child:
+                if tc_pr.tag == _W + "tcPr":
+                    yield from (el for el in tc_pr if el.tag in _DOCX_GRID_TAGS)
+
+
 def _docx_clamp_grid(tbl) -> None:
     """Clamp declared grid widths in place, so a few bytes of XML cannot expand into a giant row."""
+    # iter() still reaches nested tables' rows, but each row only spends its own declarations.
     for tr in tbl.iter(_W + "tr"):
-        # One budget per row, nested tables included: real rows stay far below it.
         budget = _DOCX_GRID_MAX
-        for el in tr.iter(*_DOCX_GRID_TAGS):
+        for el in _docx_row_grid_elements(tr):
             try:
                 value = int(el.get(_W + "val"))
             except (TypeError, ValueError):
