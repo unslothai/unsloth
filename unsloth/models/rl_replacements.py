@@ -3926,6 +3926,11 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
                 layer.merge()
         return {id(param): param.data for param in params}
     finally:
+        # Through train(), not only the flag: Int4PackedLinear syncs its quant_state there and
+        # PreTrainedModel re-kernelizes under use_kernels. modules() is parent-first, so the children's
+        # own calls undo each recursion; the flags then cover a child shared by two parents.
+        for module, training in modes:
+            module.train(training)
         for module, training in modes:
             module.training = training
         for param, data in zip(params, originals):
