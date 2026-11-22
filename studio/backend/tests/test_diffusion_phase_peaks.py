@@ -141,7 +141,12 @@ def test_whole_render_peaks_alone_place_as_before(qwen_pipe):
     plan = _qwen_flat_plan()
     _record(B200["peak"])
     later = _refine(qwen_pipe, plan)
-    assert later.resident_text_encoder_mib == 4621
+    # the flat room as before; beside the whole transformer the encoders may keep what free memory leaves
+    assert (
+        later.estimates.get("flat_resident_text_encoder_mib", later.resident_text_encoder_mib)
+        == 4621
+    )
+    assert 4621 <= later.resident_text_encoder_mib < 8917
     assert "decode_lend_text_encoder_mib" not in later.estimates
     assert dm.decode_lend_from_plan(later) is None
 
@@ -179,6 +184,13 @@ def test_phase_kill_switch_restores_the_whole_render_placement(qwen_pipe, monkey
     plan = _qwen_flat_plan()
     _record(**B200)
     monkeypatch.setenv(mp.PHASE_PEAKS_ENV, "0")
+    whole = _refine(qwen_pipe, plan)
+    assert (
+        whole.estimates.get("flat_resident_text_encoder_mib", whole.resident_text_encoder_mib)
+        == 4621
+    )
+    assert "decode_lend_text_encoder_mib" not in whole.estimates
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
     assert _refine(qwen_pipe, plan).resident_text_encoder_mib == 4621
 
 
