@@ -522,6 +522,14 @@ def _start_display_host_resolution(host: str) -> Callable[[], str]:
     import urllib.request  # noqa: F401
     from threading import Thread
 
+    # main.py installs these before its first connection; the worker connects before main.py runs,
+    # so install them here (both idempotent) to keep the OS trust store and the RFC 8305 connector.
+    from utils.native_tls import activate_native_tls
+    from utils.happy_eyeballs import activate_happy_eyeballs
+
+    activate_native_tls()
+    activate_happy_eyeballs()
+
     outcome: dict = {}
 
     def _resolve() -> None:

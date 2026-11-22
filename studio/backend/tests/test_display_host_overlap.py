@@ -140,3 +140,28 @@ def test_non_wildcard_binds_never_resolve_or_start_a_thread(monkeypatch, host):
         threading.Thread, "start", lambda self: pytest.fail("started a resolution thread")
     )
     assert run._start_display_host_resolution(host)() == host
+
+
+def test_worker_connects_with_the_trust_store_and_connector_main_installs(monkeypatch):
+    """main.py injects the OS trust store and the RFC 8305 connector before its first connection; the
+    worker connects before main.py runs, so both must already be active when it starts."""
+    import utils.happy_eyeballs as happy_eyeballs
+    import utils.native_tls as native_tls
+
+    order = []
+    monkeypatch.setattr(native_tls, "activate_native_tls", lambda: order.append("tls") or True)
+    monkeypatch.setattr(
+        happy_eyeballs, "activate_happy_eyeballs", lambda: order.append("he") or True
+    )
+
+    def _resolve(host):
+        order.append("lookup")
+        return "203.0.113.9"
+
+    monkeypatch.setattr(run, "_display_host_for_bind", _resolve)
+    assert run._start_display_host_resolution("0.0.0.0")() == "203.0.113.9"
+    assert order == ["tls", "he", "lookup"]
+
+    order.clear()
+    assert run._start_display_host_resolution("127.0.0.1")() == "127.0.0.1"
+    assert order == []
