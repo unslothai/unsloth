@@ -337,3 +337,28 @@ def test_automatic_placement_lends_only_an_idle_same_model_card(monkeypatch, par
     forced = types.SimpleNamespace(vae = _vae())
     with dm.selection_scope(automatic):
         assert vm.install(forced, 1) and vm.stats(forced)["partner"] == 1
+
+
+def test_the_copy_is_built_before_the_source_decode_fills_its_caches(monkeypatch):
+    # The load card's tiles start only after the partner's copy exists, so the copy never clones live causal caches.
+    from core.inference import diffusion_multigpu as dm
+
+    vae = _vae()
+    z = _latents(vae)
+    seen = []
+    real = dm.build_replica
+
+    def build(src, device):
+        import time
+
+        time.sleep(0.5)  # give a concurrently started source decode time to fill its caches
+        seen.append(any(t is not None for t in (getattr(src, "_feat_map", None) or [])))
+        return real(src, device)
+
+    monkeypatch.setattr(dm, "build_replica", build)
+    with torch.no_grad():
+        vae.clear_cache()
+        out = vm.split_tiled_decode(vae, z, torch.device("cpu"))
+        ref = vae.tiled_decode(z, return_dict = False)[0]
+    assert seen == [False]
+    assert torch.equal(out, ref)

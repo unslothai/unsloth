@@ -544,11 +544,14 @@ def split_tiled_decode(
                 if on_cuda:
                     side.wait_event(ready)
                 copy = replica
-                if copy is None:
-                    from .diffusion_multigpu import build_replica
-                    with _without_hooks(vae):
-                        copy = build_replica(vae, partner)
-                _rebind_forwards(vae, copy)
+                try:
+                    if copy is None:
+                        from .diffusion_multigpu import build_replica
+                        with _without_hooks(vae):
+                            copy = build_replica(vae, partner)
+                    _rebind_forwards(vae, copy)
+                finally:
+                    copied.set()
                 stray = _stray_tensors(copy, partner)
                 if stray:
                     raise RuntimeError(
@@ -562,9 +565,13 @@ def split_tiled_decode(
     worker = threading.Thread(
         target = partner_run, args = (coords[1::2],), name = "unsloth-vae-split", daemon = True
     )
+    # The source decode starts once the copy exists: copying while the load card fills the causal caches
+    # (_feat_map) would clone them on the load card, and the copy briefly lifts the source's hooks.
+    copied = threading.Event()
     worker.start()
     try:
         try:
+            copied.wait()
             run(vae, z, coords[0::2])
         finally:
             worker.join()
