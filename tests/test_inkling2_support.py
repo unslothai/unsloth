@@ -315,3 +315,26 @@ def test_fast_inference_switches_inkling2_to_unsloth_inference(loop):
     model_types = get_transformers_model_type(_tiny(loop).config)
     assert _vllm_unsupported_model_types(model_types)
     assert _vllm_unsupported_model_types(["llama"]) == []
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_merged_exports_refuse_inkling2(loop):
+    # Colab A100, real Mini 4-bit + LoRA r 8: merged_16bit wrote the released checkpoint back bit for bit (0 of 1244
+    # tensors changed, reload KL to the base 0.0): its names (attn.wq_du, controllers.*) and NVFP4 experts never match
+    # the LoRA targets. Every merged / GGUF export must refuse; the adapter save must not.
+    inkling2 = _inkling2()
+    model = _tiny(loop)
+    for method in ("merged_16bit", "merged_4bit", "forced_merged_4bit", "gguf"):
+        with pytest.raises(NotImplementedError, match = "Inkling 2"):
+            inkling2.raise_if_merging_inkling2(model, method)
+    inkling2.raise_if_merging_inkling2(model, "lora")
+    inkling2.raise_if_merging_inkling2(
+        SimpleNamespace(config = SimpleNamespace(model_type = "llama")), "merged_16bit"
+    )
+    # Each export entry point runs it right after the Mistral-format guard.
+    source = (_ROOT / "unsloth" / "save.py").read_text()
+    sites = re.findall(
+        r"raise_if_merging_mistral_format_view\((\w+), ([^)]+)\)[^\n]*\n\s*raise_if_merging_inkling2\(\1, \2\)",
+        source,
+    )
+    assert len(sites) == 4, sites
