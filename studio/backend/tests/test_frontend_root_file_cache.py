@@ -152,6 +152,22 @@ def test_an_updated_boot_script_gets_a_new_url_on_the_next_page_load(tmp_path, m
     assert revalidated.status_code == 200 and "v2" in revalidated.text
 
 
+def test_a_same_size_copy_with_its_mtime_restored_still_gets_a_new_url(tmp_path, main_module):
+    """cp -p / rsync -a keep size and mtime; the file's ctime still moves, so the old immutable URL is retired."""
+    dist = _dist(tmp_path)
+    client = _client(main_module, dist)
+    boot = dist / "theme-boot.js"
+    before = os.stat(boot)
+    old_url = _boot_url(client)
+    body = boot.read_bytes()
+    boot.write_bytes(bytes(b ^ 1 for b in body[:1]) + body[1:])
+    os.utime(boot, ns = (before.st_atime_ns, before.st_mtime_ns))
+    assert (
+        os.stat(boot).st_size == before.st_size and os.stat(boot).st_mtime_ns == before.st_mtime_ns
+    )
+    assert _boot_url(client) != old_url
+
+
 def test_bootstrap_injection_and_its_nonce_survive_the_rewrite(tmp_path, main_module, monkeypatch):
     from auth import policy
 

@@ -3613,13 +3613,23 @@ _INDEX_ROOT_SCRIPT_SRC = _re.compile(rb'(<script\b[^>]*?\ssrc=")(/(?!/)[^"?#]+)(
 
 
 def _root_file_version(stat_result: os.stat_result) -> str:
-    """Short digest of size + mtime: an in-place update (`unsloth studio update`) changes it."""
-    return _root_file_version_of(stat_result.st_size, stat_result.st_mtime_ns)
+    """Short digest of the file's identity: an in-place update (`unsloth studio update`) changes it.
+    inode and ctime are in too, so a same-size copy that restores mtime (cp -p, rsync -a) still changes it."""
+    return _root_file_version_of(
+        stat_result.st_size, stat_result.st_mtime_ns, stat_result.st_ino, stat_result.st_ctime_ns
+    )
 
 
 @functools.lru_cache(maxsize = 256)
-def _root_file_version_of(size: int, mtime_ns: int) -> str:
-    return hashlib.blake2b(f"{size}:{mtime_ns}".encode(), digest_size = 6).hexdigest()
+def _root_file_version_of(
+    size: int,
+    mtime_ns: int,
+    ino: int = 0,
+    ctime_ns: int = 0,
+) -> str:
+    return hashlib.blake2b(
+        f"{size}:{mtime_ns}:{ino}:{ctime_ns}".encode(), digest_size = 6
+    ).hexdigest()
 
 
 def _root_file_cache_control(file_path: Path, stat_result: os.stat_result, version) -> str:
