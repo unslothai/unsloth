@@ -962,6 +962,8 @@ def test_max_asks_for_the_room_the_window_leaves_after_the_prompt():
     # A fit shrinks a long prompt to the threshold first.
     assert ri._window_room_max_tokens(64_000, 70_000, 6_000) == 64_000 - 6_000 - 2_000
     assert ri._window_room_max_tokens(64_000, 63_000, None) == ri._MIN_WINDOW_ROOM_TOKENS
+    # Past the window with auto-compact off: a replayed summary shortens it later, so not 256.
+    assert ri._window_room_max_tokens(64_000, 200_000, None) == 16_000
 
 
 @pytest.mark.parametrize("provider_type", ["custom", "openrouter"])
@@ -986,3 +988,21 @@ def test_window_bounded_servers_and_explicit_limits_are_left_alone():
     assert "max_tokens" not in sent
     _, sent = _proxy("custom", chat, max_tokens = 512, context_window = 64_000)
     assert sent["max_tokens"] == 512
+
+
+def test_studio_max_on_a_custom_responses_connection_keeps_the_old_ceiling(monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
+    seen = {}
+    real = ep_mod.ExternalProviderClient.stream_chat_completion
+
+    def spy(self, *args, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        seen["api_type"] = self.api_type
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(ep_mod.ExternalProviderClient, "stream_chat_completion", spy)
+    chat = [{"role": "user", "content": "hello"}]
+    _proxy(
+        "custom", chat, max_tokens = None, context_window = 64_000, provider_api_type = "responses"
+    )
+    assert seen == {"max_tokens": ri._UNKNOWN_WINDOW_MAX_TOKENS, "api_type": "responses"}

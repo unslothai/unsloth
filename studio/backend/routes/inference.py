@@ -29850,6 +29850,9 @@ def _window_room_max_tokens(window: int, prompt_tokens: int, compaction_threshol
     # A fit will shrink the prompt to the threshold first, so leave room for that prompt, not this one.
     if compaction_threshold:
         prompt_tokens = min(prompt_tokens, compaction_threshold)
+    if prompt_tokens >= window:
+        # Only a replayed summary or compaction epoch (applied later) can make this fit: guess.
+        return window // 4
     return max(_MIN_WINDOW_ROOM_TOKENS, window - prompt_tokens - window // 32)
 
 
@@ -31149,16 +31152,18 @@ async def _proxy_to_external_provider(
     if (
         managed is None
         and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
-        and api_type != "responses"
         and _effective_max_tokens(payload) is None
     ):
         from routes.providers import cached_catalog_model_context
 
-        # Ollama's loaded num_ctx is usually far below the catalogued window: the smaller wins.
-        _reply_window = min(
-            filter(None, (payload.context_window, await client.served_context_window(model))),
-            default = None,
-        ) or cached_catalog_model_context(provider_type, model)
+        _reply_window = None
+        # A Responses endpoint is a hosted gateway with its own output caps: it keeps the old limit.
+        if api_type != "responses":
+            # Ollama's loaded num_ctx is usually far below the catalogued window: the smaller wins.
+            _reply_window = min(
+                filter(None, (payload.context_window, await client.served_context_window(model))),
+                default = None,
+            ) or cached_catalog_model_context(provider_type, model)
         if _reply_window:
             payload = payload.model_copy(
                 update = {
