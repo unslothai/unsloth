@@ -1742,6 +1742,7 @@ export const th = {
       memoryLabel: "ขีดจำกัดหน่วยความจำ",
       memoryDescription:
         "หน่วยความจำสูงสุดที่การเรียกใช้ Python หรือ Terminal ในแซนด์บ็อกซ์หนึ่งครั้งจองได้ มีผลตั้งแต่การเรียกใช้ครั้งถัดไป ค่าเริ่มต้นคือ {defaultSize} GB",
+      memoryAuto: "อัตโนมัติ",
       memoryLocked: "กำหนดโดย UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "ป้อนจำนวนเต็มตั้งแต่ {min} ถึง {max}",
       restored: "นำสิทธิ์การเข้าถึงออกจาก {count} โฟลเดอร์แล้ว",

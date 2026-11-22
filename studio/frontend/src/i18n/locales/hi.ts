@@ -1669,6 +1669,7 @@ export const hi = {
       lockedGrants: "UNSLOTH_MXC_PERSISTENT_READ_GRANTS द्वारा सेट",
       memoryLabel: "मेमोरी सीमा",
       memoryDescription: "सैंडबॉक्स में एक Python या Terminal कॉल अधिकतम कितनी मेमोरी आरक्षित कर सकती है। अगली कॉल से लागू होता है। डिफ़ॉल्ट {defaultSize} GB है।",
+      memoryAuto: "स्वचालित",
       memoryLocked: "UNSLOTH_STUDIO_SANDBOX_AS_GB द्वारा सेट",
       memoryInvalid: "{min} से {max} तक की पूर्ण संख्या दर्ज करें।",
       restored: "{count} फ़ोल्डरों से पहुँच हटाई गई।",

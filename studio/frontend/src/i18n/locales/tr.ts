@@ -1812,6 +1812,7 @@ export const tr = {
       memoryLabel: "Bellek sınırı",
       memoryDescription:
         "Korumalı alanda çalışan tek bir Python veya Terminal çağrısının ayırabileceği en fazla bellek. Bir sonraki çağrıdan itibaren geçerlidir. Varsayılan değer {defaultSize} GB'dir.",
+      memoryAuto: "Otomatik",
       memoryLocked: "UNSLOTH_STUDIO_SANDBOX_AS_GB tarafından ayarlandı",
       memoryInvalid: "{min} ile {max} arasında bir tam sayı girin.",
       restored: "{count} klasörden erişim kaldırıldı.",

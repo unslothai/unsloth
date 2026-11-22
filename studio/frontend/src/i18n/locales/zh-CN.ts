@@ -1663,6 +1663,7 @@ export const zhCN = {
       lockedGrants: "由 UNSLOTH_MXC_PERSISTENT_READ_GRANTS 设置",
       memoryLabel: "内存上限",
       memoryDescription: "沙盒中单次 Python 或 Terminal 调用可预留的最大内存。从下一次调用起生效。默认值为 {defaultSize} GB。",
+      memoryAuto: "自动",
       memoryLocked: "由 UNSLOTH_STUDIO_SANDBOX_AS_GB 设置",
       memoryInvalid: "请输入 {min} 到 {max} 之间的整数。",
       restored: "已移除 {count} 个文件夹的访问权限。",
