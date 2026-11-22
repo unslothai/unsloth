@@ -77,8 +77,9 @@ def _grads(rank, world, dtype, transport, micro, sync_each):
     return grads, len(comms), calls, fallbacks
 
 
-def _worker(rank, world, port, dtype_name, micro, sync_each, out):
+def _worker(rank, world, port, dtype_name, micro, sync_each, out, piece_mib):
     os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port))
+    os.environ["UNSLOTH_FSDP2_REDUCE_TRANSPORT_MIB"] = piece_mib
     dist.init_process_group("gloo", rank = rank, world_size = world)
     try:
         dtype = getattr(torch, dtype_name)
@@ -104,13 +105,14 @@ def _run(
     dtype_name,
     micro = 1,
     sync_each = True,
+    piece_mib = "32",
 ):
     import torch.multiprocessing as mp
 
-    out = str(tmp_path / f"r_{world}_{dtype_name}_{micro}_{sync_each}.txt")
+    out = str(tmp_path / f"r_{world}_{dtype_name}_{micro}_{sync_each}_{piece_mib}.txt")
     mp.spawn(
         _worker,
-        args = (world, _free_port(), dtype_name, micro, sync_each, out),
+        args = (world, _free_port(), dtype_name, micro, sync_each, out, piece_mib),
         nprocs = world,
         join = True,
     )
@@ -128,10 +130,11 @@ def _run(
     )
 
 
+@pytest.mark.parametrize("piece_mib", ["32", "0.0005"])  # one piece per unit / 131-element pieces
 @pytest.mark.parametrize("dtype_name", ["bfloat16", "float16"])
-def test_two_ranks_bitwise_equal_to_float32_reduce_scatter(tmp_path, dtype_name):
+def test_two_ranks_bitwise_equal_to_float32_reduce_scatter(tmp_path, dtype_name, piece_mib):
     n_ref, n_new, calls, fallbacks, bitwise, max_rel, dtypes = _run(
-        tmp_path, 2, dtype_name, micro = 2
+        tmp_path, 2, dtype_name, micro = 2, piece_mib = piece_mib
     )
     assert n_new == 3  # three blocks (the root holds no parameters, so no param group)
     assert (
@@ -142,7 +145,9 @@ def test_two_ranks_bitwise_equal_to_float32_reduce_scatter(tmp_path, dtype_name)
 
 
 def test_three_ranks_float32_summation_order_only(tmp_path):
-    _, _, calls, fallbacks, _, max_rel, _ = _run(tmp_path, 3, "bfloat16", micro = 2)
+    _, _, calls, fallbacks, _, max_rel, _ = _run(
+        tmp_path, 3, "bfloat16", micro = 2, piece_mib = "0.0005"
+    )
     assert calls == 6 and fallbacks == 0
     assert max_rel < 1e-6
 

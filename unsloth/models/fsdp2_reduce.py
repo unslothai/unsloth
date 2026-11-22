@@ -11,6 +11,8 @@ from half the bytes. A buffer holding a gradient FSDP2 accumulated in float32 ov
 reduce is not 16-bit exact, so that reduce (and any op other than SUM / AVG) runs the original collective.
 
 UNSLOTH_FSDP2_REDUCE_TRANSPORT: "auto" (default) engages where it is exact, "0" / "off" keeps FSDP2's own.
+UNSLOTH_FSDP2_REDUCE_TRANSPORT_MIB (default 32): 16-bit send buffer per all-to-all; a larger unit goes in pieces,
+so the scratch stays at most twice this however large the unit (the embedding / LM head root unit).
 """
 
 import os
@@ -26,6 +28,15 @@ _HALF = (torch.float16, torch.bfloat16)
 def half_transport_enabled():
     value = os.environ.get("UNSLOTH_FSDP2_REDUCE_TRANSPORT", "auto").strip().lower()
     return value not in ("0", "off", "false", "no", "none", "fp32")
+
+
+def _piece_bytes():
+    # Bytes of 16-bit send buffer per all-to-all (the receive buffer is the same size).
+    try:
+        mib = float(os.environ.get("UNSLOTH_FSDP2_REDUCE_TRANSPORT_MIB", "32"))
+    except ValueError:
+        mib = 32.0
+    return max(1, int(mib * 2**20))
 
 
 def _op_name(op):
@@ -78,14 +89,21 @@ class _HalfTransportReduceScatter:
                 async_op = async_op,
             )
         world = dist.get_world_size(group)
-        send = input_tensor.to(self.dtype)  # exact: the buffer holds fresh 16-bit gradients
-        recv = torch.empty_like(send)
-        dist.all_to_all_single(recv, send, group = group)
-        del send
-        recv = recv.view(world, -1)
-        output_tensor.copy_(recv[0])
-        for i in range(1, world):
-            output_tensor.add_(recv[i])
+        rows = input_tensor.view(world, -1)  # row r: this rank's contribution to rank r's shard
+        width = rows.shape[1]
+        # Pieces bound the 16-bit send / receive scratch (a whole-unit copy grew peak memory by the
+        # embedding's size); piece k of every row goes out in one all-to-all.
+        piece = max(1, min(width, _piece_bytes() // (2 * world)))
+        for start in range(0, width, piece):
+            end = min(width, start + piece)
+            send = torch.empty((world, end - start), dtype = self.dtype, device = input_tensor.device)
+            send.copy_(rows[:, start:end])  # exact: the buffer holds fresh 16-bit gradients
+            recv = torch.empty_like(send)
+            dist.all_to_all_single(recv, send, group = group)
+            out = output_tensor[start:end]
+            out.copy_(recv[0])
+            for i in range(1, world):
+                out.add_(recv[i])
         if name == "AVG":
             output_tensor.div_(world)
         self.calls += 1
