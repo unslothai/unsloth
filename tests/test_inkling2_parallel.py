@@ -14,25 +14,27 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def _by_path(name, rel):
+def _by_path(name, rel, monkeypatch):
     spec = importlib.util.spec_from_file_location(name, _ROOT / rel)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
+    monkeypatch.setitem(sys.modules, name, mod)  # restored after the test: no package state leaks
     spec.loader.exec_module(mod)
     return mod
 
 
-def _inkling2():
-    return _by_path("_unsloth_inkling2_par", "unsloth/models/inkling2.py")
+def _inkling2(monkeypatch):
+    return _by_path("_unsloth_inkling2_par", "unsloth/models/inkling2.py", monkeypatch)
 
 
-def _capabilities():
+def _capabilities(monkeypatch):
     # By path, as a submodule of a bare `unsloth` namespace (importing unsloth itself needs a GPU).
     if "unsloth" not in sys.modules:
         pkg = types.ModuleType("unsloth")
         pkg.__path__ = [str(_ROOT / "unsloth")]
-        sys.modules["unsloth"] = pkg
-    return _by_path("unsloth.parallel_capabilities", "unsloth/parallel_capabilities.py")
+        monkeypatch.setitem(sys.modules, "unsloth", pkg)
+    return _by_path(
+        "unsloth.parallel_capabilities", "unsloth/parallel_capabilities.py", monkeypatch
+    )
 
 
 def _config(model_type):
@@ -63,7 +65,7 @@ def _config(model_type):
     ],
 )
 def test_tp_pp_refused_from_the_config(monkeypatch, model_type, env, words):
-    ink = _inkling2()
+    ink = _inkling2(monkeypatch)
     for key in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE"):
         monkeypatch.delenv(key, raising = False)
     for key, value in env.items():
@@ -83,7 +85,7 @@ def test_tp_pp_refused_from_the_config(monkeypatch, model_type, env, words):
 
 
 def test_data_parallel_and_other_models_pass(monkeypatch):
-    ink = _inkling2()
+    ink = _inkling2(monkeypatch)
     for key in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE"):
         monkeypatch.delenv(key, raising = False)
     ink.raise_if_inkling2_parallel_unsupported(
@@ -118,8 +120,8 @@ def test_loader_refuses_in_the_inkling2_branch_before_loading():
 
 
 @pytest.mark.parametrize("family", ["inkling2", "inkling2_loop"])
-def test_capability_table_refuses_tp_pp(family):
-    cap = _capabilities()
+def test_capability_table_refuses_tp_pp(monkeypatch, family):
+    cap = _capabilities(monkeypatch)
     for layout in (dict(tp = 2), dict(pp = 2), dict(pp = 2, pp_schedule = "gpipe")):
         with pytest.raises(Exception) as info:
             cap.check(cap.Query(family = family, moe = True, expert_lora = True, **layout))
