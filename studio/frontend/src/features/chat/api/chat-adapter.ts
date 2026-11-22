@@ -9295,6 +9295,7 @@ export function createOpenAIStreamAdapter(
               timing: partialTiming,
               custom: {
                 ...reasoningDurationTracker.metadata(),
+                runModelId: params.checkpoint,
                 contextTruncation,
                 compactionMarkers,
                 providerCompaction,
