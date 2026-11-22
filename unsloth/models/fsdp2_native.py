@@ -2130,6 +2130,12 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     # The replicated-gradient average and the media agreement run over this mesh's ranks only.
     model.__dict__["_unsloth_fsdp2_mesh"] = mesh
     _post_shard(model, units, device, root_only = layout.root_only)
+    from .fsdp2_reduce import install_half_transport_reduce
+
+    # 16-bit gradients cross the wire as 16-bit and add in float32 (the float32 reduce's sum, half the bytes).
+    model._unsloth_fsdp2_half_transport = install_half_transport_reduce(
+        [*wrapped, *model._unsloth_fsdp2_extra_units, model]
+    )
     from .fsdp2_vision import install_vision_dummy
 
     install_vision_dummy(model)  # mixed image / text ranks
