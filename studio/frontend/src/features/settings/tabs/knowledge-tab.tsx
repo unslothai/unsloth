@@ -4,7 +4,6 @@
 import { KnowledgeBaseManager } from "@/features/rag";
 import { useT } from "@/i18n";
 
-/** The chat composer's knowledge base dialog, as a page: same views, same API, no new state. */
 export function KnowledgeTab() {
   const t = useT();
   return (

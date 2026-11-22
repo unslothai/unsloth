@@ -107,7 +107,6 @@ export interface KnowledgeBaseManagerProps {
   frame?: (content: ReactNode) => ReactNode;
 }
 
-/** Shared by the chat dialog and Settings, so both manage the same knowledge bases the same way. */
 export function KnowledgeBaseManager({
   open,
   focus = null,
