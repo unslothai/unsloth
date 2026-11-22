@@ -218,6 +218,25 @@ IMATRIX_QUANTS = {
 }
 
 
+def _check_quant_method(quant_method, has_imatrix):
+    """Raise unless llama-quantize can write `quant_method` (lowercase, aliases already resolved)."""
+    # IQ low-bit quants are only valid with an imatrix; other methods use the normal allow-list.
+    if quant_method in IMATRIX_QUANTS:
+        if not has_imatrix:
+            raise RuntimeError(
+                f"Unsloth: quant method '{quant_method}' is an IQ low-bit quant that requires an "
+                "importance matrix. Pass imatrix_file=True (to fetch the upstream Unsloth imatrix) "
+                "or imatrix_file='/path/to/imatrix' to save_pretrained_gguf / push_to_hub_gguf."
+            )
+    elif quant_method not in ALLOWED_QUANTS.keys():
+        error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
+        for key, value in ALLOWED_QUANTS.items():
+            error += f"[{key}] => {value}\n"
+        for key, value in IMATRIX_QUANTS.items():
+            error += f"[{key}] => {value} (needs imatrix_file)\n"
+        raise RuntimeError(error)
+
+
 def _describe_exception(exc) -> str:
     """A description that survives an exception with no message: f"{exc}" is the EMPTY STRING when args are empty, so leading with the type keeps the class of failure visible."""
     text = str(exc).strip()
@@ -2826,21 +2845,7 @@ def save_to_gguf(
         elif quant_method is None:
             quant_method = "q8_0"
 
-        # IQ low-bit quants are only valid with an imatrix; other methods use the normal allow-list.
-        if quant_method in IMATRIX_QUANTS:
-            if not has_imatrix:
-                raise RuntimeError(
-                    f"Unsloth: quant method '{quant_method}' is an IQ low-bit quant that requires an "
-                    "importance matrix. Pass imatrix_file=True (to fetch the upstream Unsloth imatrix) "
-                    "or imatrix_file='/path/to/imatrix' to save_pretrained_gguf / push_to_hub_gguf."
-                )
-        elif quant_method not in ALLOWED_QUANTS.keys():
-            error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
-            for key, value in ALLOWED_QUANTS.items():
-                error += f"[{key}] => {value}\n"
-            for key, value in IMATRIX_QUANTS.items():
-                error += f"[{key}] => {value} (needs imatrix_file)\n"
-            raise RuntimeError(error)
+        _check_quant_method(quant_method, has_imatrix)
 
         new_quantization_methods.append(quant_method)
     quantization_method = new_quantization_methods
@@ -4372,6 +4377,13 @@ def _imatrix_is_enabled(imatrix_file):
     return imatrix_file is not None and imatrix_file is not False
 
 
+def _check_gguf_quantization_methods(quantization_method, imatrix_file):
+    """save_to_gguf's quant gate, run before the 16-bit merge: a misspelt method or an IQ quant without an imatrix would otherwise fail only after the merge is written."""
+    has_imatrix = _imatrix_is_enabled(imatrix_file)
+    for quant_method in _normalize_quantization_methods(quantization_method):
+        _check_quant_method(quant_method, has_imatrix)
+
+
 def _gguf_reuses_loaded_checkpoint(model, state_dict = None):
     """Whether a non-PEFT GGUF export converts the folder the model was loaded from. Only when the weights to export are that folder's: full finetuning trains them in place, and a `state_dict` replaces them."""
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
@@ -5261,6 +5273,7 @@ def unsloth_save_pretrained_gguf(
     # Will this fit? Ask before the merge. Runs here because `arguments` below snapshots locals(), so a redirected save_directory must be in place first. gpt-oss takes the mxfp4 route, not the merge/convert/quantize one this sizes.
     _gguf_prewarm_ok = True
     if not is_gpt_oss:
+        _check_gguf_quantization_methods(quantization_method, imatrix_file)
         save_directory, _gguf_prewarm_ok = _preflight_gguf_disk(
             model = self,
             save_directory = save_directory,
