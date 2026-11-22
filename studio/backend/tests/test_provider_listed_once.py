@@ -74,9 +74,7 @@ def test_no_preset_shadows_a_visible_registry_provider():
     non-hidden registry entry appears twice."""
     source = _frontend_source()
     visible = {
-        entry["provider_type"]
-        for entry in list_available_providers()
-        if not entry["hidden"]
+        entry["provider_type"] for entry in list_available_providers() if not entry["hidden"]
     }
     shadowing = sorted(set(_preset_types(source)) & visible)
     assert shadowing == [], shadowing
@@ -100,9 +98,10 @@ def test_presets_are_local_or_user_supplied_endpoints():
     """The entries that defer to the frontend never carry a public vendor URL."""
     for preset_type in _preset_types(_frontend_source()):
         base_url = PROVIDER_REGISTRY[preset_type]["base_url"]
-        assert base_url == "" or base_url.startswith(
-            ("http://localhost", "http://127.0.0.1")
-        ), (preset_type, base_url)
+        assert base_url == "" or base_url.startswith(("http://localhost", "http://127.0.0.1")), (
+            preset_type,
+            base_url,
+        )
 
 
 # ── DeepInfra specifically ───────────────────────────────────────────
@@ -130,9 +129,7 @@ def test_deepinfra_keeps_the_additional_model_ids_box():
 
 def test_deepinfra_is_a_first_class_connection():
     entry = next(
-        item
-        for item in list_available_providers()
-        if item["provider_type"] == "deepinfra"
+        item for item in list_available_providers() if item["provider_type"] == "deepinfra"
     )
     # Not hidden, so the registry itself renders it -- the preset was the duplicate.
     assert entry["hidden"] is False
