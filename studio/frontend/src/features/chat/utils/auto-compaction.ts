@@ -79,7 +79,6 @@ export function normalizeAutoCompactTokensByModel(
   return Object.keys(limits).length > 0 ? limits : undefined;
 }
 
-/** A model's own limit wins over the connection's. */
 export function autoCompactTokensForModel(
   provider:
     | {

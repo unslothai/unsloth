@@ -36,7 +36,6 @@ export interface ExternalProviderConfig {
   maxOutputTokens?: number;
   /** Tokens after which chats on this connection compact; unset uses 75% of the model's window. */
   autoCompactTokens?: number;
-  /** Per-model overrides of autoCompactTokens, keyed by model ID. */
   autoCompactTokensByModel?: Record<string, number>;
   compactionMode?: ProviderCompactionMode;
   extraHeaders?: Record<string, string>;
