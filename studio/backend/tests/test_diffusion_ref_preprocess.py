@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """CPU tests for core.inference.diffusion_ref_preprocess (GPU reference preprocessing for FLUX.2 edits)."""
 
 import os
@@ -131,7 +134,7 @@ def test_config_gate():
 def test_kernel_crop_dims_not_specialized():
     src = (BACKEND / "core" / "inference" / "diffusion_lanczos_triton.py").read_text()
     assert "crop_width: tl.constexpr" not in src and "crop_height: tl.constexpr" not in src
-    assert "SPDX-License-Identifier: Apache-2.0" in src
+    assert "Apache License 2.0" in src and "SGLang project" in src
 
 
 def test_installed_at_load():

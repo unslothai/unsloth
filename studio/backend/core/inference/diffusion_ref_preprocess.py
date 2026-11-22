@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Reference-image preprocessing for FLUX.2 edits on the GPU, byte-identical to the CPU path.
 
 The FLUX.2 pipelines prepare each condition image on the CPU: a Pillow Lanczos resize to about 1 MP when the image is

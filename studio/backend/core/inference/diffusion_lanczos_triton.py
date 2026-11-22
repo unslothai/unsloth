@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: Apache-2.0
-# Copyright the SGLang project authors. Licensed under the Apache License, Version 2.0
-# (http://www.apache.org/licenses/LICENSE-2.0). Adapted from sglang
-# python/sglang/kernels/ops/mm/process/lanczos.py (commit 9667988e). Unsloth change: the output crop height and width
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+# Adapted from sglang python/sglang/kernels/ops/mm/process/lanczos.py (commit 9667988e), Copyright the SGLang project
+# authors, Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Change: the output crop height and width
 # are runtime arguments instead of tl.constexpr, so one compile serves every reference image size.
 """GPU RGB Lanczos resize with optional crop and normalization."""
 
