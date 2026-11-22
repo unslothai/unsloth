@@ -5708,16 +5708,26 @@ class FastBaseModel:
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)
-        # "all-linear" means every family, before any remap: the remap hooks below read these flags.
-        if target_modules == "all-linear":
+
+        # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
+        _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
+        # Multimodal models with their own projection names (Inkling 2) also map the vision tower's leaves.
+        try:
+            _remap_takes_vision = (
+                callable(_remap_targets)
+                and "vision" in inspect.signature(_remap_targets).parameters
+            )
+        except (TypeError, ValueError):
+            _remap_takes_vision = False
+        # "all-linear" means every family, and a multimodal remap reads these flags, so set them before it runs. Every
+        # other model keeps the caller's flags until the all-linear block below (T5 / BART turn all-linear into leaf names
+        # first; forcing finetune_audio_layers here sent those through get_peft_regex, which knows neither).
+        if target_modules == "all-linear" and _remap_takes_vision:
             finetune_vision_layers = True
             finetune_language_layers = True
             finetune_attention_modules = True
             finetune_mlp_modules = True
             finetune_audio_layers = True
-
-        # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
-        _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
         _targets_remapped = False
         _remapped_moe_targets = None
         if callable(_remap_targets) and finetune_language_layers:
@@ -5726,12 +5736,8 @@ class FastBaseModel:
                 attention = finetune_attention_modules,
                 mlp = finetune_mlp_modules,
             )
-            # Multimodal models with their own projection names (Inkling 2) also map the vision tower's leaves.
-            try:
-                if "vision" in inspect.signature(_remap_targets).parameters:
-                    _remap_kwargs["vision"] = finetune_vision_layers
-            except (TypeError, ValueError):
-                pass
+            if _remap_takes_vision:
+                _remap_kwargs["vision"] = finetune_vision_layers
             _remapped = _remap_targets(target_modules, **_remap_kwargs)
             if _remapped is not target_modules:
                 # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
