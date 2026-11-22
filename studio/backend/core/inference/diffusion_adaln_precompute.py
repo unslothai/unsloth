@@ -323,20 +323,16 @@ def _device_clone(mod: Any, device: Any) -> Any:
 
 
 def _host_copy(mod: Any) -> Any:
-    """Host copy of ``mod`` with its own tensors. Not ``copy.deepcopy``: a deep-copied GGUFParameter is rebuilt
-    without its quant_type (KeyError), so a GGUF time embedder would get no host copy."""
+    """Deep host copy of ``mod``. GGUFParameter's deepcopy rebuilds it without its quant_type (KeyError), so those
+    are copied through the memo (``.to`` keeps the subclass and quant_type); the rest deep-copies as before."""
     import copy
 
-    clone = copy.copy(mod)
-    clone._parameters = {
-        n: (None if t is None else t.detach().to("cpu", copy = True))
-        for n, t in mod._parameters.items()
+    memo = {
+        id(t): t.detach().to("cpu", copy = True)
+        for t in _tensors(mod)
+        if getattr(t, "quant_type", None) is not None
     }
-    clone._buffers = {
-        n: (None if t is None else t.detach().to("cpu", copy = True)) for n, t in mod._buffers.items()
-    }
-    clone._modules = {n: (None if c is None else _host_copy(c)) for n, c in mod._modules.items()}
-    return clone
+    return copy.deepcopy(mod, memo).to("cpu")
 
 
 def _key_of(tensors: list) -> tuple:
@@ -895,7 +891,7 @@ def _rebuild_streamed(model: Any, restored: list) -> set:
                     go, t, bool(getattr(group, "low_cpu_mem_usage", False))
                 )
             if isinstance(top_host, dict) and t not in top_host:
-                # pageable on the pinned variant too: these few restored weights upload without the async copy
+                # the install-time host copy (pinned when the arena could pin it) is what onload uploads
                 top_host[t] = t.data if t.data.device.type == "cpu" else t.data.cpu()
             if onloaded:
                 t.data = t.data.to(group.onload_device)

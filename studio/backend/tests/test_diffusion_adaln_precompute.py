@@ -899,12 +899,45 @@ def test_fallback_restore_joins_the_top_level_host_map():
     assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
 
 
+def test_host_copy_runs_on_its_own_weights():
+    """A deep copy: an instance-bound forward (MethodType patch) is rebound to the copy, never the live module."""
+    model = _gguf_qwen_edit()
+    lin = model.time_text_embed.timestep_embedder.linear_2
+    lin.forward = types.MethodType(type(lin).forward, lin)
+    host = ap._host_copy(model.time_text_embed)
+    copied = host.timestep_embedder.linear_2
+    assert copied.forward.__self__ is copied
+    assert copied.weight.quant_type == lin.weight.quant_type
+
+
+@pytest.mark.parametrize("guidance", [True, False])
+def test_gguf_flux_time_embedder_gets_a_host_copy(guidance):
+    """FLUX.1 GGUF (dev and schnell embedders): same deepcopy failure, same host copy."""
+    model = _gguf_q8(
+        _flux(guidance = guidance), lambda n: "timestep_embedder" in n or "guidance_embedder" in n
+    )
+    calls = _flux_calls(torch.float32, guidance = 3.5 if guidance else None)
+    ref = _run(model, calls)
+    assert ap.install(model, _pipe(len(calls)), requested = ap.MODE_ON)
+    assert model.__dict__[ap.STATE_ATTR].tte_host is not None
+    assert all(torch.equal(a, b) for a, b in zip(ref, _run(model, calls)))
+
+
+# CUDA only: the failure is a CPU weight meeting a CUDA activation after an offload onload
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("policy", ["streaming", "group"])
+@pytest.mark.parametrize("top", ["pinned", "pageable"])
 @pytest.mark.parametrize("fallback", [False, True])
-def test_gguf_qwen_edit_streamed_render_matches_stock(fallback):
-    """Issue 18759: GGUF Qwen-Image-Edit, streamed through Studio's group offload with the top-level copy-back
-    skipped, rendered every step (precompute on, and after a fallback) bit-identical to the stock model."""
+def test_gguf_qwen_edit_streamed_render_matches_stock(monkeypatch, policy, top, fallback):
+    """Issue 18759: GGUF Qwen-Image-Edit placed by Studio's streaming / group offload, top-level group pinned or
+    pageable with the copy-back skipped, rendered every step (precompute on, and after a fallback) bit-identical
+    to the stock model."""
+    from diffusers.hooks import group_offloading as go
+
     from core.inference import diffusion_memory as dm
+
+    if top == "pageable":
+        monkeypatch.setattr(dm, "_pin_top_level_group", lambda *_a, **_k: False)
 
     def build(precompute):
         model = _gguf_qwen_edit(torch.bfloat16)
@@ -916,8 +949,14 @@ def test_gguf_qwen_edit_streamed_render_matches_stock(fallback):
             assert ap.install(model, pipe, offloaded = True)
             if fallback:
                 model.__dict__[ap.STATE_ATTR].tte_host = None
-        assert dm._apply_group_offload(pipe, "cuda", None)
-        dm._skip_top_level_copy_back(model, None)
+        if policy == "streaming":
+            dm._apply_streaming_offload(pipe, "cuda", None)
+        else:
+            assert dm._apply_group_offload(pipe, "cuda", None)
+        group = model._diffusers_hook.get_hook(go._GROUP_OFFLOADING).group
+        flag = "_unsloth_pinned_top" if top == "pinned" else "_unsloth_top_no_copy_back"
+        if not getattr(group, flag, False):
+            pytest.skip(f"{top} top-level group not built here")
         cuda = []
         for kw in calls:
             kw = dict(kw)
@@ -936,4 +975,5 @@ def test_gguf_qwen_edit_streamed_render_matches_stock(fallback):
     model, calls = build(True)
     out = [o.cpu() for o in _run(model, calls)]
     assert all(torch.equal(a, b) for a, b in zip(ref, out))
+    assert all(torch.equal(a, b) for a, b in zip(ref, [o.cpu() for o in _run(model, calls)]))
     assert ap.installed(model) is not fallback
