@@ -432,14 +432,16 @@ def worker_main() -> None:
             time.sleep(2)
 
     threading.Thread(target = _parent_watch, name = "diffusion-ddp-parent", daemon = True).start()
-    for mod, fn in (
-        ("utils.native_tls", "activate_native_tls"),
-        ("utils.happy_eyeballs", "activate_happy_eyeballs"),
-    ):
-        try:
-            getattr(__import__(mod, fromlist = [fn]), fn)()
-        except Exception:  # noqa: BLE001 -- network tweaks never stop a rank
-            pass
+    try:
+        from utils.native_tls import activate_native_tls
+        activate_native_tls()
+    except Exception:  # noqa: BLE001 -- network tweaks never stop a rank
+        pass
+    try:
+        from utils.happy_eyeballs import activate_happy_eyeballs
+        activate_happy_eyeballs()
+    except Exception:  # noqa: BLE001 -- network tweaks never stop a rank
+        pass
     import torch
     import torch.distributed as dist
 
