@@ -28,13 +28,13 @@ def _hooked(module, kind):
 @pytest.mark.parametrize(
     "policy, memory_mode, hook, on_card, expected",
     [
-        ("none", "auto", None, False, True),  # the existing rule, unchanged
-        ("group", "auto", None, True, True),  # text encoder grouped, denoiser whole on the card
+        ("none", "auto", None, False, True),
+        ("group", "auto", None, True, True),
         ("group", "auto", "cache", True, True),  # a non-offload hook does not move weights
-        ("group", "auto", "group", True, False),  # streamed (or pinned-group) transformer
+        ("group", "auto", "group", True, False),
         ("group", "auto", "block_group", True, False),  # a hook on one block is enough
         ("group", "auto", "accelerate", True, False),
-        ("group", "auto", None, False, False),  # demoted to host or split
+        ("group", "auto", None, False, False),
         ("group", "low_vram", None, True, False),  # low_vram keeps the denoiser streamed
         ("model", "auto", None, True, False),
         ("streaming", "auto", None, True, False),

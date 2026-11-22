@@ -386,7 +386,7 @@ def test_group_policy_with_a_resident_denoiser_folds(engine, monkeypatch):
     with torch.no_grad():
         folded = engine.unet(*x).sample
     torch.testing.assert_close(folded, unfused, rtol = 1e-4, atol = 1e-5)
-    engine.apply(0.5)  # a change unfolds bit-exactly, as with no offload
+    engine.apply(0.5)
     assert _merged_layers(engine.unet) == 0
     assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
 
