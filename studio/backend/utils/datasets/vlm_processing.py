@@ -50,7 +50,11 @@ def generate_smart_vlm_instruction(
 
     # Hints read the rows the question scan reads, not row 0: a seeded row bound reorders train before formatting.
     text_rows = dataset
-    if hasattr(dataset, "select_columns"):
+    fmt = getattr(dataset, "format", None)
+    # A set_transform / with_transform callback may read the columns a projection drops: keep whole rows then.
+    if hasattr(dataset, "select_columns") and not (
+        isinstance(fmt, dict) and fmt.get("type") == "custom"
+    ):
         try:
             # Only the text column: full rows decode 100 images, about a second per split on Radiology_mini.
             text_rows = dataset.select_columns([text_column])

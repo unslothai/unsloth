@@ -146,3 +146,25 @@ def test_content_hint_scan_does_not_decode_the_images(monkeypatch):
     assert info["instruction"] == MEDICAL
     # Row 0 is read whole for its column names; the 100-row hint scan reads captions only.
     assert len(decoded) <= 1, len(decoded)
+
+
+def test_content_hint_scan_keeps_rows_a_custom_transform_reads():
+    # A with_transform callback that reads the image must still get it: the text-column projection would drop it.
+    from utils.datasets import generate_smart_vlm_instruction
+
+    ds = Dataset.from_dict(
+        {
+            "image": [Image.new("RGB", (8, 8))] * 20,
+            "caption": ["Radiograph shows a lytic lesion."] * 20,
+        }
+    )
+
+    def transform(batch):
+        assert "image" in batch, "the transform lost its image input"
+        return {"image": batch["image"], "caption": batch["caption"]}
+
+    ds = ds.with_transform(transform)
+    info = generate_smart_vlm_instruction(
+        ds, text_column = "caption", image_column = "image", dataset_name = "org/scans"
+    )
+    assert info["instruction"] == MEDICAL
