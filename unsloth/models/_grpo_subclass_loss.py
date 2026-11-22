@@ -156,6 +156,18 @@ def _temperature(trainer):
     return float(1.0 if raw is None else raw)
 
 
+def _entropy_from_logits(logits):
+    """TRL's entropy_from_logits (TRL >= 0.20); TRL 0.18 / 0.19 have none, so the same math inline there."""
+    try:
+        from trl.trainer.utils import entropy_from_logits
+    except ImportError:
+        log_p = torch.log_softmax(
+            logits.float() if logits.dtype in (torch.float16, torch.bfloat16) else logits, -1
+        )
+        return -(log_p.exp() * log_p).sum(-1)
+    return entropy_from_logits(logits)
+
+
 def _support_log_softmax(logits, targets, support):
     """log_softmax over each token's sampling candidates (``support``: ids padded with -1), as vLLM normalised the
     sampled token's logprob; positions without candidates use the whole vocabulary."""
@@ -288,7 +300,7 @@ def grpo_subclass_logps_and_entropies(
             _count(self, "fused")
         else:
             # The forward returned real logits (no hidden-state support, or a head the kernel cannot read).
-            from trl.trainer.utils import entropy_from_logits, selective_log_softmax
+            from trl.trainer.utils import selective_log_softmax
 
             logits = output / temperature
             if sampling_mask is not None:
@@ -301,7 +313,7 @@ def grpo_subclass_logps_and_entropies(
             entropies = None
             if compute_entropy:
                 with torch.set_grad_enabled(entropy_grad):
-                    entropies = entropy_from_logits(logits)
+                    entropies = _entropy_from_logits(logits)
             if completion_mask is not None:
                 logps = logps.masked_fill(~completion_mask, 0)
                 if entropies is not None:
