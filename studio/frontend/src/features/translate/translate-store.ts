@@ -6,6 +6,7 @@ import {
   DEFAULT_TARGET_LANGUAGE,
   findTranslateLanguage,
   suggestedTargetLanguage,
+  translatesLanguage,
 } from "./languages";
 import {
   CHAT_TRANSLATE_MODEL,
@@ -136,18 +137,43 @@ function withLanguage(tabs: string[], code: string): string[] {
     : [code, ...tabs].slice(0, RECENT_LANGUAGES);
 }
 
+export function translatesWithDedicated(
+  prefs: Pick<TranslatePrefs, "modelId" | "customModel">,
+): boolean {
+  return (
+    translatePromptKind(
+      translatePromptModel(prefs.modelId, prefs.customModel),
+    ) === "dedicated"
+  );
+}
+
+const suggestedTarget = () =>
+  typeof navigator === "undefined"
+    ? DEFAULT_TARGET_LANGUAGE
+    : suggestedTargetLanguage(navigator.languages ?? []);
+
+/** Switching to Hy-MT2 drops a chat-only pick; the recent tabs keep it for the next chat model. */
+function fitLanguages(prefs: TranslatePrefs): TranslatePrefs {
+  if (!translatesWithDedicated(prefs)) return prefs;
+  const fits = (code: string) => translatesLanguage(code, true);
+  const from =
+    prefs.from === AUTO_SOURCE || fits(prefs.from) ? prefs.from : AUTO_SOURCE;
+  const target = fits(prefs.target)
+    ? prefs.target
+    : (prefs.recentTargets.find(fits) ?? suggestedTarget());
+  return from === prefs.from && target === prefs.target
+    ? prefs
+    : { ...prefs, from, target };
+}
+
 function loadPrefs(): TranslatePrefs {
   const saved = (readJson(PREFS_KEY) ?? {}) as Partial<TranslatePrefs>;
   const known = (code: unknown): code is string =>
     typeof code === "string" && findTranslateLanguage(code) !== undefined;
   const customModel = parseCustomTranslateModel(saved.customModel);
-  return {
+  return fitLanguages({
     from: known(saved.from) ? saved.from : AUTO_SOURCE,
-    target: known(saved.target)
-      ? saved.target
-      : typeof navigator === "undefined"
-        ? DEFAULT_TARGET_LANGUAGE
-        : suggestedTargetLanguage(navigator.languages ?? []),
+    target: known(saved.target) ? saved.target : suggestedTarget(),
     recentSources: Array.isArray(saved.recentSources)
       ? saved.recentSources.filter(known).slice(0, RECENT_LANGUAGES)
       : [],
@@ -179,7 +205,7 @@ function loadPrefs(): TranslatePrefs {
     ),
     autoTranslate: saved.autoTranslate === true,
     saveHistory: saved.saveHistory !== false,
-  };
+  });
 }
 
 function saveHistory(
@@ -291,7 +317,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   },
 
   setPrefs: (patch) => {
-    const prefs = { ...get().prefs, ...patch };
+    const prefs = fitLanguages({ ...get().prefs, ...patch });
     set({ prefs });
     writeJson(PREFS_KEY, prefs);
   },

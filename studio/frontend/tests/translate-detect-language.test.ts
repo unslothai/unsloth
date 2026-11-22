@@ -116,6 +116,12 @@ const SENTENCES: Record<string, string[]> = {
     "ئەڭ يېقىن پويىز ئىستانسىسى قەيەردە؟ مەن بىلەت سېتىۋالماقچىمەن.",
     "كۆپ رەھمەت سىزگە",
   ],
+  hmn: [
+    "Lub chaw nres tsheb ciav hlau nyob qhov twg? Kuv xav yuav ib daim pib.",
+    "Nyob zoo, ua tsaug ntau.",
+    "Hnub no kuv mus kawm ntawv thiab tom qab ntawd kuv yuav mus ua haujlwm.",
+    "Koj puas paub hais lus Hmoob?",
+  ],
   am: [
     "በጣም የቅርቡ የባቡር ጣቢያ የት ነው? ትኬት መግዛት እፈልጋለሁ።",
     "አመሰግናለሁ",
