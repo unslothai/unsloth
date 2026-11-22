@@ -43397,6 +43397,8 @@ class LlamaCppBackend:
                         logger.info("Final answer was only a tool call; retrying without tools")
                         stream_payload.pop("tools", None)
                         stream_payload.pop("tool_choice", None)
+                        # Admission and respawn refits must count the request actually sent.
+                        _final_tools = None
                         _next_cap_t = _remaining_output_budget()
                         if _next_cap_t is not None:
                             stream_payload["max_tokens"] = _next_cap_t
@@ -43411,7 +43413,14 @@ class LlamaCppBackend:
                         _metadata_finish_reason = None
                         _metadata_usage = None
                         _metadata_timings = None
-                        # Drop the call from the buffer, or an unclosed one would hold the retry's text too.
+                        # Restart from what the client shows: a call prefix already emitted would otherwise swallow the retry's text.
+                        _visible_t = _strip_tool_markup(cumulative, final = True)
+                        if _last_emitted.startswith(_visible_t):
+                            # Keep the whitespace the client already counted; the final strip trims it.
+                            _cut_t = len(_visible_t)
+                            while _cut_t < len(_last_emitted) and _last_emitted[_cut_t].isspace():
+                                _cut_t += 1
+                            _last_emitted = _last_emitted[:_cut_t]
                         cumulative = _last_emitted
                         answer_text = ""
                         has_content_tokens = False

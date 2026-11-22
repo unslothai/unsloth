@@ -75,8 +75,6 @@ def test_route_display_strip_hides_the_call():
 
 
 def test_a_call_in_the_final_answer_pass_never_reaches_the_client(monkeypatch):
-    from routes.inference import _StreamingDisplayStrip
-
     tokens = [
         "\n\n",
         "<|tool_call_start|>",
@@ -120,17 +118,7 @@ def test_a_call_in_the_final_answer_pass_never_reaches_the_client(monkeypatch):
     # The call-only final answer is re-asked once with no tools in the prompt.
     assert len(payloads) == 3 and "tools" not in payloads[2] and "tool_choice" not in payloads[2]
     assert calls == [("web_search", {"query": "LFM2.5-24B-A2B"})]
-    strip = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
-    shown, prev = "", ""
-    for event in events:
-        if event.get("type") == "tool_start" or (
-            event.get("type") == "status" and not event.get("text")
-        ):
-            prev = ""
-        elif event.get("type") == "content":
-            clean = strip.strip(event.get("text", ""))
-            shown += clean[len(prev) :]
-            prev = clean
+    shown = _route_shown(events)
     assert "tool_call_start" not in shown and "tool_call_end" not in shown, shown
     assert "web_search(" not in shown, shown
     assert shown.strip() == "LFM2.5-24B-A2B is a sparse MoE model.", shown
@@ -191,3 +179,52 @@ def test_reasoning_then_call_final_answer_is_retried(monkeypatch):
     assert len(payloads) == 3 and "tools" not in payloads[2]
     final = [e["text"] for e in events if e.get("type") == "content"][-1]
     assert final.endswith("A sparse MoE model.") and "tool_call_start" not in final, final
+
+
+def _route_shown(events):
+    from routes.inference import _StreamingDisplayStrip
+
+    strip = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
+    shown, prev = "", ""
+    for event in events:
+        if event.get("type") == "tool_start" or (
+            event.get("type") == "status" and not event.get("text")
+        ):
+            prev = ""
+        elif event.get("type") == "content":
+            clean = strip.strip(event.get("text", ""))
+            shown += clean[len(prev) :]
+            prev = clean
+    return shown
+
+
+def test_split_qwen_call_prefix_does_not_swallow_the_retry(monkeypatch):
+    first = _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({"query": "q"})},
+                }
+            ]
+        }
+    )
+    parts = [
+        "<tool_call>",
+        '{"name": "web_search", ',
+        '"arguments": {"query": "x"}}',
+        "</tool_call>",
+    ]
+    split_call = [_sse({"content": part}) for part in parts] + [_done()]
+    answer = [_sse({"content": "A sparse MoE model."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [[first, _done()], split_call, answer])
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 3 and "tools" not in payloads[2]
+    assert _route_shown(events).strip() == "A sparse MoE model.", events
