@@ -526,18 +526,15 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         : AUTO_SOURCE;
     if (target) get().setTarget(target);
     get().setFrom(from);
-    // Hy-MT2 may refuse the saved languages: the output keeps them, and reads as stale.
-    const shown = {
-      ...resultOf(entry.source, get().prefs),
-      from,
-      ...(target ? { target } : {}),
-    };
+    const attempt = resultOf(entry.source, get().prefs);
+    // Hy-MT2 may refuse the saved languages: the output keeps them and reads as stale, while
+    // `attempt` matches the settings so translating as you type does not replace it.
     set({
       source: entry.source,
       output: entry.output,
       error: null,
-      result: shown,
-      attempt: shown,
+      result: { ...attempt, from, ...(target ? { target } : {}) },
+      attempt,
     });
   },
 

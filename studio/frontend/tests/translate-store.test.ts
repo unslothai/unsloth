@@ -299,6 +299,8 @@ test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", as
     assert.notEqual(state().prefs.target, "hmn");
     // The saved Hmong output is still labelled Hmong, so it reads aloud and moves on as Hmong.
     assert.equal(state().result.target, "hmn");
+    // Translating as you type compares `attempt` with the settings: no rerun on opening it.
+    assert.equal(state().attempt.target, state().prefs.target);
     assert.equal(
       translationIsStale({
         result: state().result,
