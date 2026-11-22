@@ -31,13 +31,15 @@ def test_only_flux2_processor(monkeypatch):
 
 
 def test_kernel_crop_dims_not_specialized():
-    src = (BACKEND / "core" / "inference" / "diffusion_lanczos_triton.py").read_text()
+    src = (BACKEND / "core" / "inference" / "diffusion_lanczos_triton.py").read_text(
+        encoding = "utf-8"
+    )
     assert "crop_width: tl.constexpr" not in src and "crop_height: tl.constexpr" not in src
     assert "Apache License 2.0" in src and "SGLang project" in src
 
 
 def test_installed_at_load():
-    src = (BACKEND / "core" / "inference" / "diffusion.py").read_text()
+    src = (BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
     assert "from .diffusion_ref_preprocess import install as install_ref_preprocess" in src
 
 
