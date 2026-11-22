@@ -959,7 +959,6 @@ def test_the_summary_request_keeps_embedded_instructions_out_of_the_summary():
 
 def test_max_asks_for_the_room_the_window_leaves_after_the_prompt():
     assert ri._window_room_max_tokens(64_000, 10_000, None) == 64_000 - 10_000 - 2_000
-    # A fit shrinks a long prompt to the threshold first.
     assert ri._window_room_max_tokens(64_000, 70_000, 6_000) == 64_000 - 6_000 - 2_000
     assert ri._window_room_max_tokens(64_000, 63_000, None) == ri._MIN_WINDOW_ROOM_TOKENS
     # Past the window with auto-compact off: a replayed summary shortens it later, so not 256.

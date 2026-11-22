@@ -209,8 +209,7 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   { providerType: "kimi", prefixes: ["kimi-k3"], cap: 1048576 },
 ];
 
-// Max sends no limit: llama.cpp and vLLM stop at their window, and for the rest the backend
-// asks for the room the window leaves after the prompt (_WINDOW_ROOM_REPLY_PROVIDERS).
+// Max sends no limit; the backend bounds the rest by the window (_WINDOW_ROOM_REPLY_PROVIDERS).
 const SERVER_WINDOW_BOUNDED_PROVIDERS = new Set([
   "llama_cpp",
   "vllm",
@@ -229,8 +228,7 @@ export function getExternalMaxOutputTokens(
 ): number {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
   const documented = _documentedMaxOutputTokens(providerType, modelId);
-  // No published output limit: where Max sends none, the model's window (the backend takes the
-  // prompt off it); hosted APIs may cap output below the window, so they keep the fallback.
+  // Hosted APIs may cap output below the window, so only Max-sends-none providers use it.
   const window =
     providerType != null && SERVER_WINDOW_BOUNDED_PROVIDERS.has(providerType)
       ? resolveModelCatalogEntry(providerType, modelId)?.contextLength
