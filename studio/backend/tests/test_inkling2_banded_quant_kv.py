@@ -142,7 +142,7 @@ class TestBuildDecidesTheQuantizedPath:
         assert b._compute_buffer_ctx_bytes(65536, 1024, "iq4_nl") == 1024 * 198 * 65536
 
     def test_shared_mask_shrinks_the_f16_rate(self):
-        for support, rate in ((OLD_CUDA, 18), (NEW_CUDA, 2)):
+        for support, rate in ((OLD_CUDA, 18), (NEW_CUDA, 4)):
             b = _inkling2_mini(support)
             slope = (
                 b._compute_buffer_ctx_bytes(2_000_000, 1024, "f16")
@@ -169,11 +169,22 @@ class TestRuntimeComputeBuffer:
         (OLD_CUDA, 512, 162048, "f16", 1629.0, 1629.0),
         (NEW_CUDA, 512, 162048, "f16", 418.5, 885.0),
     ]
+    # Long context, slot 0 filled to only 0.125 n_ctx: the load-time reserve, a floor.
+    _RESERVE = [
+        (NEW_CUDA, 512, 524288, "f16", 1078.0),
+        (NEW_CUDA, 512, 1048576, "f16", 2102.0),
+        (NEW_CUDA, 1024, 1048576, "f16", 4205.6),
+    ]
 
     @pytest.mark.parametrize("support,ub,ctx,kv,reserve,runtime", _MEASURED)
     def test_estimate_covers_the_reallocated_buffer(self, support, ub, ctx, kv, reserve, runtime):
         est = _compute(_inkling2_mini(support), ctx, kv, ub = ub) / MIB
         assert runtime <= est <= runtime * 1.2
+
+    @pytest.mark.parametrize("support,ub,ctx,kv,reserve", _RESERVE)
+    def test_long_context_estimate_covers_the_reserve(self, support, ub, ctx, kv, reserve):
+        est = _compute(_inkling2_mini(support), ctx, kv, ub = ub) / MIB
+        assert reserve <= est <= reserve * 1.25
 
 
 class TestProbe:

@@ -18917,9 +18917,11 @@ class LlamaCppBackend:
     _INKLING2_BANDED_QUANT_TYPES = frozenset({"q8_0", "q4_0", "q4_1", "q5_0", "q5_1"})
     _INKLING2_BANDED_TILE_TYPES = frozenset({"q8_0", "q4_0"})
     # Prompt graphs regrow the banded buffer past the reserve; fit to B200 Inkling-2-Mini at exit.
+    # #399 shared-mask reserve grows 4 B/cell per ub token and leads above ~600K cells.
     _INKLING2_BANDED_RUNTIME_BYTES = 15
     _INKLING2_RUNTIME_BYTES_PER_UB = 800 * 1024
     _INKLING2_BANDED_SHARED_BYTES = 2
+    _INKLING2_BANDED_SHARED_RESERVE_BYTES = 4
     _INKLING2_SHARED_RUNTIME_BYTES_PER_UB = 1200 * 1024
 
     def _compute_activation_width(self) -> int:
@@ -19184,14 +19186,16 @@ class LlamaCppBackend:
                         + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
                     )
                     return int(max(reserve, regrown))
-                per_tok = self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
+                copy = 0
                 if quantized and not (
                     build.backend == "cuda" and kv_type in self._INKLING2_BANDED_TILE_TYPES
                 ):
-                    per_tok += self._attention_dequant_width() * 2
-                return int(
-                    per_tok * n_ctx + block + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
-                )
+                    copy = self._attention_dequant_width() * 2
+                reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx
+                regrown = (
+                    self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
+                ) * n_ctx + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
+                return int(max(reserve, regrown) + copy * n_ctx + block)
             per_tok = (
                 mask_rate
                 + split_extra
