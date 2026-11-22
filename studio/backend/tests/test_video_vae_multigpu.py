@@ -271,28 +271,30 @@ def test_a_copy_whose_forward_reaches_the_source_is_detected():
 @pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs two CUDA cards"
 )
-def test_split_tiles_with_the_fused_wan_forwards_on_two_cards():
+def test_split_tiles_with_the_fused_wan_forwards_on_two_cards(monkeypatch):
     # The default speed tier installs fused Wan forwards (closures over the load card's blocks) before the split:
-    # the partner must run its own copies, and the result is the fused one-card tiled decode.
+    # the partner must run its own copies through the fused path, and the result is the fused one-card decode.
+    import threading
+
     from core.inference import diffusion_vae_fused as fused
 
     vae = _vae().to("cuda:0")
     if not fused.install_wan_vae(vae, encoder = False):
         pytest.skip("fused Wan VAE path unavailable here")
+    if vm.eligible(vae) is not None:
+        pytest.skip(vm.eligible(vae))
     z = _latents(vae).to("cuda:0")
-
-    def engaged():
-        return sum(fused.ENGAGED.values())
-
+    threads = []
+    count = fused._count
+    monkeypatch.setattr(
+        fused, "_count", lambda name: (threads.append(threading.current_thread().name), count(name))
+    )
     with torch.no_grad():
-        before = engaged()
         ref = vae.tiled_decode(z, return_dict = False)[0]
-        one_card = engaged() - before
-        before = engaged()
+        threads.clear()
         out = vm.split_tiled_decode(vae, z, torch.device("cuda:1"))
-        split = engaged() - before
-    # Every tile ran the fused path on both cards (a partner falling back to stock forwards would count fewer).
-    assert one_card > 0 and split == one_card
+    # Fused kernels ran on both cards: a partner falling back to the stock forwards would record none.
+    assert "unsloth-vae-split" in threads and any(t != "unsloth-vae-split" for t in threads)
     # One card repeats bitwise; the partner's cuDNN / Triton picks on its own card can differ by an ulp
     # (Kaggle 2x T4: 4.5e-7 at scale 0.85 in fp32).
     torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 2e-6)
