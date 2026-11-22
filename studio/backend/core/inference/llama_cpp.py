@@ -18697,12 +18697,12 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         include_requested: bool = False,
         exact: bool = False,
-        slot_step: int = 1,
         integrated: frozenset = frozenset(),
         discrete_host_only_bytes: int = 0,
         prefer_discrete: bool = True,
         discount_prefixes: frozenset = frozenset(),
         shared_gpu_ids: Optional[Iterable[int]] = None,
+        slot_step: int = 1,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
