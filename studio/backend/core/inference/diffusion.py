@@ -280,6 +280,7 @@ from .diffusion_memory import (
     without_cfg_off,
     live_vae_saver_tag,
     planned_vae_saver_tag,
+    encoder_window_pad_mib,
     stream_window_pad_mib,
     with_label_part,
     applied_plan,
@@ -3388,6 +3389,8 @@ def _start_peak_probe(state: Any) -> Any:
         if probe.device is None:
             return None
         probe.window_pad = window_pad
+        # the encoders' share of the pad goes on the prompt-encode phase only (_padded_peak)
+        probe.encoder_pad = encoder_window_pad_mib(pipe)
         probe.failed_captures = cuda_graph.failed_capture_count()
         probe.conditioning_hits = _conditioning_cache_hits(pipe)
         return probe
@@ -3983,6 +3986,20 @@ def _conditioning_cache_hits(pipe: Any) -> int:
     return hits
 
 
+def _padded_peak(probe: Any, peak: int, pad: int) -> int:
+    """``peak`` (MiB above the render's start) on the streamed baseline. The denoiser's share of ``pad`` sits beside
+    every phase; the encoders' share only beside the prompt encode they stream in: a resident encoder's window added to
+    the denoise peak (a 1.2 GB embedding x 3 on Qwen3-VL) raised the next load's peak and streamed the encoder whole.
+    No encode reading (or the share off): the whole pad, as before."""
+    parts = getattr(probe, "encoder_pad", None)
+    encode = getattr(probe, "encode_peak", None)
+    if not isinstance(parts, tuple) or len(parts) != 2 or encode is None:
+        return int(peak) + int(pad)
+    share = max(0, min(int(parts[0]), int(pad)))
+    window = max(0, int(parts[1]))
+    return max(int(peak), min(int(encode), int(peak)) + window) + int(pad) - share
+
+
 def _record_peak_probe(
     state: Any,
     probe: Any,
@@ -4038,14 +4055,14 @@ def _record_peak_probe(
         graphs = cuda_graph.live_graph_count(index)
         generation = cuda_graph.capture_generation(index)
         pad = int(getattr(probe, "window_pad", 0) or 0)
-        peak += pad
+        peak = _padded_peak(probe, peak, pad)
         split = getattr(probe, "phase_peaks", None) or {}
         phases = {}
         if PHASE_PRE_DECODE in split and PHASE_DECODE in split:
             pre, dec = int(split[PHASE_PRE_DECODE]), int(split[PHASE_DECODE])
             phases = {
-                PHASE_PRE_DECODE: pre + pad,
-                PHASE_DECODE: dec + pad,
+                PHASE_PRE_DECODE: _padded_peak(probe, pre, pad),
+                PHASE_DECODE: _padded_peak(probe, dec, pad),
                 PHASE_DECODE_UNPADDED: dec,
                 PHASE_UNPADDED: max(pre, dec),
             }
@@ -16477,6 +16494,9 @@ class DiffusionBackend:
                                 float_seeds.seed()
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
+                            if peak_probe is not None:
+                                # before any encoder release below: the encode phase's peak on the probe's baseline
+                                peak_probe.mark_encode()
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
                             if state.te_releaser is not None:
                                 state.te_releaser.release()

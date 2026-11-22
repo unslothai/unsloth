@@ -558,6 +558,28 @@ class PeakProbe:
         self.pre_decode = None
         self.decodes = 0
         self.phase_peaks: dict = {}
+        self.encode_peak = None
+        self.encodes = 0
+
+    def mark_encode(self) -> None:
+        """Read the prompt-encode peak (everything before the denoiser's first forward) without a reset. A second
+        encode (split batch) interleaves phases, so none is reported."""
+        if self.device is None or self.base is None:
+            return
+        self.encodes += 1
+        if self.encodes > 1:
+            self.encode_peak = None
+            return
+        try:
+            import torch
+            peak = (
+                int(torch.cuda.max_memory_allocated(self.device))
+                + _range_peak_bytes(self.device)
+                - self.base
+            )
+        except Exception:  # noqa: BLE001
+            return
+        self.encode_peak = -(-peak // (1024 * 1024)) if peak > 0 else 0
 
     def mark_decode(self) -> None:
         """Read the pre-decode peak without a reset (other measurements share the counters). A second decode (split

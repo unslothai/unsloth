@@ -4030,15 +4030,35 @@ def _streaming_state(module: Any) -> Optional[bool]:
         return None
 
 
-def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
+# "0": an image render's learned peak carries the encoders' streaming window as ``depth + 1`` copies of the largest
+# leaf (a 1.2 GB bf16 embedding counts three times) on top of the whole render's peak; unset, the window is the
+# ``depth + 1`` largest leaves (as ``encode_need_mib`` prices it) on the prompt-encode phase only, where they stream.
+ENCODER_PAD_PHASE_ENV = "UNSLOTH_DIFFUSION_ENCODER_PAD_PHASE"
+
+
+def encoder_pad_phase_enabled() -> bool:
+    return not _env_off(ENCODER_PAD_PHASE_ENV)
+
+
+def _window_of(sizes: list, depth: int, legacy: bool) -> int:
+    """MiB ``depth + 1`` groups of ``sizes`` (bytes) hold in flight: the largest ones (``legacy``: the largest, again)."""
+    if not sizes:
+        return 0
+    ordered = sorted((int(x) for x in sizes), reverse = True)
+    nbytes = ordered[0] * (depth + 1) if legacy else sum(ordered[: depth + 1])
+    return -(-nbytes // (1024 * 1024))
+
+
+def _encoder_stream_window_mib(pipe: Any, legacy: bool = True) -> Optional[int]:
     """MiB a load that streams the text encoders (leaf-level groups) holds in flight that a render with them resident
-    did not: ``depth + 1`` of the largest leaf of each resident encoder, less the streamed leaves' window of a
-    partially resident one. None when an encoder's placement is unknown."""
+    did not: ``depth + 1`` of the largest leaf of each resident encoder (``legacy``; else the ``depth + 1`` largest
+    leaves), less the streamed leaves' window of a partially resident one. None when an encoder's placement is unknown."""
     try:
         import torch
 
         from .diffusion_offload_prefetch import prefetch_depth
 
+        depth = int(prefetch_depth())
         total = 0
         for name, module in (getattr(pipe, "components", {}) or {}).items():
             if not str(name).startswith("text_encoder") or not isinstance(module, torch.nn.Module):
@@ -4049,7 +4069,7 @@ def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
             groups = list(_offload_groups(module) or ()) if state else []
             if state and not any(getattr(g, "_unsloth_resident", False) for g in groups):
                 continue  # fully streamed during the render: its whole window is in the peak
-            largest = 0
+            leaves: list = []
             for sub in module.modules():
                 seen: set[int] = set()
                 nbytes = 0
@@ -4057,24 +4077,33 @@ def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
                     if id(t) not in seen:
                         seen.add(id(t))
                         nbytes += sum(_storage_nbytes(t))
-                largest = max(largest, nbytes)
-            window = -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+                if nbytes:
+                    leaves.append(nbytes)
+            window = _window_of(leaves, depth, legacy)
             if state:
-                # some leaves resident: the peak holds the largest STREAMED leaf's window, a fully streamed encoder
-                # the largest of all; pad the difference
-                streamed = max(
-                    (
-                        _group_nbytes(g)
-                        for g in groups
-                        if not getattr(g, "_unsloth_resident", False)
-                    ),
-                    default = 0,
-                )
-                window = max(0, window - -(-streamed * (prefetch_depth() + 1) // (1024 * 1024)))
+                # some leaves resident: the peak holds the STREAMED leaves' window, a fully streamed encoder the
+                # largest leaves'; pad the difference
+                streamed = [
+                    _group_nbytes(g) for g in groups if not getattr(g, "_unsloth_resident", False)
+                ]
+                window = max(0, window - _window_of(streamed, depth, legacy))
             total += window
         return total
     except Exception:  # noqa: BLE001
         return None
+
+
+def encoder_window_pad_mib(pipe: Any) -> Optional[tuple[int, int]]:
+    """``(share of stream_window_pad_mib, phase window)`` for the text encoders: an image render's learned peak takes
+    the share off the whole render and adds the window (the ``depth + 1`` largest leaves) to the prompt-encode phase
+    only, the phase the encoders stream in. None when off, unknown or nothing is resident."""
+    if not encoder_pad_phase_enabled():
+        return None
+    share = _encoder_stream_window_mib(pipe)
+    window = _encoder_stream_window_mib(pipe, legacy = False)
+    if not share or window is None:
+        return None
+    return int(share), int(window)
 
 
 def vae_saver_tag(tiling: Any, slicing: Any) -> str:
@@ -4203,6 +4232,34 @@ def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: 
 
 
 STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
+
+# "0": text encoders streamed beside a whole-resident transformer keep only the flat room (planner reserve and base
+# overhead taken off on top of the measured peak; none at all on the streaming tier). Unset, they keep what free memory
+# less the resident slack, the measured peak, the other components and the transformer leaves: the whole-transformer
+# fit, applied to the encoders, so fewer encoder bytes stream on every new prompt.
+TE_RESIDENT_ROOM_ENV = "UNSLOTH_DIFFUSION_TE_RESIDENT_ROOM"
+
+
+def _resident_te_room_mib(
+    memory: Any, encoders_mib: int, dit_mib: int, headroom_mib: int, other_mib: int
+) -> int:
+    """Encoder MiB that stay resident beside a whole transformer: free memory less the resident slack, the measured
+    whole-render peak, the non-encoder components and the transformer (no planner reserve or base overhead on top: the
+    free reading already has the CUDA context taken off, as for ``_resident_dit_fits``). 0 when off or unreadable."""
+    free = getattr(memory, "free_mib", None)
+    if free is None or _env_off(TE_RESIDENT_ROOM_ENV):
+        return 0
+    return min(
+        int(encoders_mib),
+        max(
+            0,
+            int(free)
+            - _resident_dit_slack_mib(memory)
+            - int(other_mib)
+            - int(headroom_mib)
+            - int(dit_mib),
+        ),
+    )
 
 
 @functools.lru_cache(maxsize = 1)
@@ -5178,6 +5235,26 @@ def _refine_plan_from_loaded_weights(
                     measured_reference_reserve_mib = int(basis) + spare + reference_cut,
                     measured_reference_te_cut_mib = reference_cut,
                 )
+        whole_beside = (
+            # the transformer is held whole: unhooked by the group plan, or pinned whole on the streaming tier
+            (policy == OFFLOAD_GROUP and stream_te and not wide_dit and not whole_dit
+             and (not bool(getattr(plan, "stream_transformer", True)) or dit_room >= dit))
+            or (policy == OFFLOAD_STREAMING and whole_dit)
+        )  # fmt: skip
+        if (
+            whole_beside
+            and te_room < encoders
+            # torchao denoisers only (the slack was measured on that route); an encoder cut for an edit's denoise
+            # stays cut and a decode lend keeps its phase pricing: both are sized on the flat room above
+            and dense_mib is None
+            and not reference_cut
+            and lend == 0
+        ):
+            wide_te = _resident_te_room_mib(memory, encoders, dit, headroom, priced_other)
+            if wide_te > te_room:
+                estimates["flat_resident_text_encoder_mib"] = int(te_room)
+                estimates["resident_te_slack_mib"] = _resident_dit_slack_mib(memory)
+                te_room = wide_te
         if dit_room <= 0 and te_room <= 0 and not reference_cut:
             return plan
         if whole_dit or wide_dit:
@@ -5269,10 +5346,12 @@ def _keep_groups_resident(
     device: Any,
     logger: Any = None,
     only: Optional[set] = None,
+    last: Optional[Callable[[Any], bool]] = None,
 ) -> int:
     """Make whole offload groups of a streamed ``module`` resident within ``room_mib`` (top-level group first, then
     blocks in order); their onload / offload become no-ops and the rest keeps streaming. Returns the MiB kept.
-    ``only`` (group ids): a restore pins back what its own release streamed, not an enclosing release's groups."""
+    ``only`` (group ids): a restore pins back what its own release streamed, not an enclosing release's groups.
+    ``last``: groups it accepts are considered after every other one (a vision tower a text prompt never runs)."""
     if room_mib is None or int(room_mib) <= 0 or _env_off(PARTIAL_RESIDENT_ENV):
         return 0
     try:
@@ -5284,6 +5363,8 @@ def _keep_groups_resident(
             return 0
         top = [g for g in groups if getattr(g, "offload_leader", None) is module]
         ordered = top + [g for g in groups if getattr(g, "offload_leader", None) is not module]
+        if last is not None:
+            ordered = [g for g in ordered if not last(g)] + [g for g in ordered if last(g)]
         is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
         onload = torch.device(device)
         left = int(room_mib) * 1024 * 1024
@@ -5426,6 +5507,30 @@ def _keep_groups_resident(
         if logger is not None:
             logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
         return 0
+
+
+_VISION_SUBMODULES = ("visual", "vision_tower", "vision_model")
+
+
+def _vision_group_test(module: Any) -> Optional[Callable[[Any], bool]]:
+    """A test for ``module``'s offload groups that sit under a vision tower (``visual`` / ``vision_tower`` /
+    ``vision_model``): a text-only prompt encode never runs them, so a partial residency places them last. None when
+    the encoder has no such submodule."""
+    try:
+        vision: set = set()
+        for name, sub in module.named_modules():
+            if any(part in _VISION_SUBMODULES for part in str(name).split(".")):
+                vision.add(id(sub))
+        if not vision:
+            return None
+
+        def _test(group: Any) -> bool:
+            members = list(getattr(group, "modules", None) or ())
+            return bool(members) and all(id(m) in vision for m in members)
+
+        return _test
+    except Exception:  # noqa: BLE001 - module order stands
+        return None
 
 
 def _tied_group_closures(groups: list, tensors_of: Callable[[Any], list]) -> dict:
@@ -6891,7 +6996,16 @@ def apply_memory_plan(
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
         resident_mib = getattr(plan, "resident_transformer_mib", None)
-        if resident_mib:
+        resident_te_mib = getattr(plan, "resident_text_encoder_mib", None)
+        if resident_mib and resident_te_mib:
+            _apply_streaming_offload(
+                pipe,
+                placement,
+                logger,
+                resident_transformer_mib = int(resident_mib),
+                resident_text_encoder_mib = int(resident_te_mib),
+            )
+        elif resident_mib:
             _apply_streaming_offload(
                 pipe, placement, logger, resident_transformer_mib = int(resident_mib)
             )
@@ -9825,8 +9939,10 @@ def _apply_streaming_offload(
     logger: Any,
     *,
     resident_transformer_mib: Optional[int] = None,
+    resident_text_encoder_mib: Optional[int] = None,
 ) -> None:
-    """Streams blocks and encoder leaves; a whole-component onload would OOM, so setup failure is fatal."""
+    """Streams blocks and encoder leaves; a whole-component onload would OOM, so setup failure is fatal.
+    ``resident_text_encoder_mib``: leaf groups of the text encoders kept on the card beside the whole transformer."""
     installed = 0
     try:
         import inspect
@@ -10041,6 +10157,13 @@ def _apply_streaming_offload(
             for module, offload_type in streamed.values():
                 if offload_type == "block_level":
                     room -= _keep_groups_resident(module, room, onload, logger)
+        if resident_transformer_mib and resident_text_encoder_mib:
+            te_room = int(resident_text_encoder_mib)
+            for comp_name, (module, offload_type) in streamed.items():
+                if offload_type == "leaf_level" and str(comp_name).startswith("text_encoder"):
+                    te_room -= _keep_groups_resident(
+                        module, te_room, onload, logger, last = _vision_group_test(module)
+                    )
         if deferred_dits:
             install_group_pin_wait()
             if logger is not None:
