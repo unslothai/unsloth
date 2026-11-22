@@ -204,3 +204,86 @@ def test_respawn_of_a_studio_planned_context_shrinks_it_by_the_headroom(tmp_path
     assert h.last(respawn, "--fit") == "off"
     freed_mib = (_ctx(first) - _ctx(respawn)) * 32 / 1024
     assert freed_mib >= llama_cpp._GPU_OOM_HEADROOM_STEP_MIB * 0.9
+
+
+def _two_card_backend(tmp_path, monkeypatch, weights_mib):
+    # The simulation's 2x24 GiB host: a model that just fits one card at a small Auto context.
+    B = LlamaCppBackend
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    for k in ("CUDA_VISIBLE_DEVICES", "LLAMA_ARG_DEVICE", "LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_RPC"):
+        monkeypatch.delenv(k, raising = False)
+    monkeypatch.setattr(llama_cpp, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(B, "_smi_uuid_mask_order", staticmethod(lambda: None))
+    monkeypatch.setattr(B, "_visibility_mask_is_unmappable", staticmethod(lambda: False))
+    monkeypatch.setattr(B, "_SMI_MIG_INDICES", frozenset())
+    monkeypatch.setattr(B, "_host_torch_is_rocm", staticmethod(lambda: False))
+    # Two discrete cards; no torch device query from a CPU test.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    memory = [(0, 23_857, 24_122), (1, 23_857, 24_122)]
+    backend, gguf = h.placement._backend(tmp_path, vulkan = False, memory = memory)
+    backend._arch_gate_survivors = lambda binary = None: []
+    backend.probe_server_capabilities = lambda _binary = None: dict(h.CAPS)
+    backend._apple_metal_memory_budget_bytes = lambda: 0
+    backend._get_gguf_size_bytes = lambda path: weights_mib * h.MIB
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **kw: n_ctx * 32 * 1024
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, **kw: 0
+    backend._context_length = 1048576
+    return backend, gguf
+
+
+def _spawn(backend, intent):
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return h.placement._REAL_POPEN(cmd, **kwargs)
+        captured["cmd"] = list(cmd)
+        captured["env"] = kwargs.get("env") or {}
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 2**31 - 1,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(intent)
+    return captured["cmd"], captured["env"].get("CUDA_VISIBLE_DEVICES")
+
+
+def test_oom_respawn_never_grows_the_auto_context_onto_more_cards(tmp_path, monkeypatch):
+    # One card at a small Auto context; the 1 GiB headroom no longer fits it there, so the
+    # planner moves to both cards, but must not fill them with a far bigger context.
+    backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
+    intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 0)
+    first, first_mask = _spawn(backend, intent)
+    assert first_mask == "0"
+    # The served child dies of the OOM; its own context is what the strike records.
+    backend._process.poll = lambda: 1
+    backend._healthy = False
+    backend._note_gpu_oom_strike(intent)
+    with llama_cpp._automatic_recovery_load():
+        respawn, mask = _spawn(backend, intent)
+    assert mask == "0,1"
+    assert _ctx(respawn) <= _ctx(first)
+
+    # A fixed context is the user's: the cap leaves it to the existing plan.
+    backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
+    fixed = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 65536)
+    first, _ = _spawn(backend, fixed)
+    backend._process.poll = lambda: 1
+    backend._healthy = False
+    backend._note_gpu_oom_strike(fixed)
+    with llama_cpp._automatic_recovery_load():
+        respawn, _ = _spawn(backend, fixed)
+    assert _ctx(respawn) == _ctx(first) == 65536

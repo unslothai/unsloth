@@ -26287,6 +26287,12 @@ class LlamaCppBackend:
                         effective_ctx = self._context_length
                     else:
                         effective_ctx = 0
+                    # An OOM recovery never plans a bigger Auto context than the load that crashed.
+                    _oom_ctx_cap = self._gpu_oom_ctx_cap(intent) if requested_ctx <= 0 else None
+                    if _oom_ctx_cap:
+                        effective_ctx = (
+                            min(effective_ctx, _oom_ctx_cap) if effective_ctx > 0 else _oom_ctx_cap
+                        )
                     original_ctx = effective_ctx
                     # Default UI ceiling to the native context length;
                     # GPU/VRAM-fit logic below may shrink it on limited HW.
@@ -38839,6 +38845,8 @@ class LlamaCppBackend:
         strikes = prior[1] + 1 if prior is not None and prior[0] == key else 1
         strikes = min(strikes, _GPU_OOM_HEADROOM_MAX_STRIKES)
         self._gpu_oom_strikes = (key, strikes)
+        # The crashed child's total context caps the recovery's Auto context.
+        self._gpu_oom_crashed_ctx = getattr(self, "_kv_cache_context_total", None) or None
         try:
             logger.warning(
                 f"llama-server for '{self._model_identifier}' ran out of GPU memory; "
@@ -38854,6 +38862,13 @@ class LlamaCppBackend:
         if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
             return 0.0
         return prior[1] * _GPU_OOM_HEADROOM_STEP_MIB
+
+    def _gpu_oom_ctx_cap(self, intent) -> Optional[int]:
+        """Total context of the load that ran out of GPU memory, for a reload of it; None otherwise."""
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
+            return None
+        return getattr(self, "_gpu_oom_crashed_ctx", None)
 
     def _metal_oom_is_terminal(self, intent) -> bool:
         """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
