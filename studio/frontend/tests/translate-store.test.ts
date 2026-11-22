@@ -259,3 +259,41 @@ test("a typed draft too long for the history keeps the entry it would have repla
     [first],
   );
 });
+
+test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", () => {
+  const gemma = {
+    id: "unsloth/gemma-4-E2B-it-GGUF",
+    name: "Gemma 4",
+    variant: "Q4_K_M",
+    sizeBytes: null,
+  };
+  try {
+    state().setPrefs({ modelId: "custom", customModel: gemma });
+    state().setFrom("hmn");
+    state().setTarget("de");
+    assert.equal(state().prefs.from, "hmn");
+    state().setFrom("en");
+    state().setTarget("hmn");
+    assert.equal(state().prefs.target, "hmn");
+
+    state().setPrefs({ modelId: "hy-mt2-1.8b" });
+    assert.equal(state().prefs.target, "de");
+    state().setTarget("hmn");
+    assert.equal(state().prefs.target, "de");
+    state().setFrom("hmn");
+    assert.equal(state().prefs.from, AUTO_SOURCE);
+    // The tab stays for the next chat model.
+    assert.ok(state().prefs.recentTargets.includes("hmn"));
+
+    state().setPrefs({ modelId: "custom", customModel: gemma });
+    state().setTarget("hmn");
+    assert.equal(state().prefs.target, "hmn");
+    // A Hy-MT2 GGUF picked as a custom model is still Hy-MT2.
+    state().setPrefs({
+      customModel: { ...gemma, id: "unsloth/Hy-MT2-7B-GGUF" },
+    });
+    assert.notEqual(state().prefs.target, "hmn");
+  } finally {
+    state().setPrefs({ modelId: "hy-mt2-1.8b", customModel: null });
+  }
+});
