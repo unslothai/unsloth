@@ -52,6 +52,7 @@ from ..device_type import (
 )
 import textwrap
 from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
+from ._grpo_subclass_loss import grpo_subclass_compute_loss as _unsloth_grpo_subclass_owner
 import ast
 import sys
 
@@ -2087,6 +2088,12 @@ def _unsloth_grpo_support_mismatch(self):
     not sum to 1 and the PPO ratio / KL inputs are wrong. A shared set would need the sampler's kept ids.
     """
     reasons = []
+    # Body-local: this source is copied out without this module's imports.
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+    if grpo_subclass_compute_loss(self) is not None:
+        # Its scorer (every pass) normalises over the full vocabulary, or over vLLM's recorded candidates.
+        reasons.append(f"{type(self).__name__} overrides _compute_loss, which scores TRL's way")
     if getattr(self, "_unsloth_vllm_sync_skip", False):
         reasons.append("vLLM weight sync is skipped, so rollouts use the initial weights")
     beta = getattr(self, "beta", 0.0)
@@ -3087,7 +3094,12 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # TRL's importance sampling is disabled because the LLM path moves left padding to the right, so Unsloth adjusts the vLLM sampling_logprob tensor itself.
     string_to_find = "if self.use_vllm and self.vllm_importance_sampling_correction:"
 
-    replacement_string = "if False and self.use_vllm and self.vllm_importance_sampling_correction:"
+    # A subclass objective reads TRL's completion-width old_per_token_logps and importance_sampling_ratio, so TRL's
+    # own ratio, metrics and export stay live for it.
+    replacement_string = (
+        "if _unsloth_grpo_subclass_owner(self) is not None and self.use_vllm "
+        "and self.vllm_importance_sampling_correction:"
+    )
 
     function = function.replace(string_to_find, replacement_string)
 
@@ -4329,8 +4341,27 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         input_ids,
         attention_mask,
         logits_to_keep,
+        batch_size = None,
+        *args,
         compute_efficient = False,
+        **kwargs,
     ):
+        if not compute_efficient:
+            # A subclass objective (and the rollout scoring for it) gets real, completion-width logps.
+            from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+            if grpo_subclass_compute_loss(self) is not None:
+                from unsloth.models._grpo_subclass_loss import grpo_subclass_logps_and_entropies
+                return grpo_subclass_logps_and_entropies(
+                    self,
+                    model,
+                    input_ids,
+                    attention_mask,
+                    logits_to_keep,
+                    batch_size,
+                    False,
+                    *args,
+                    **kwargs,
+                )[0]
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too (see below).
             _unsloth_grpo_autocast_unscored(self)
@@ -4383,6 +4414,23 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _unsloth_grpo_refuse_unscored_support(self)
             return None, None
         else:
+            # A subclass objective (TRL's GMPOTrainer, a user loss): rollout old / reference scores and the gradient
+            # pass share one completion-width scorer. Body-local: this source is copied out without imports.
+            from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+            if grpo_subclass_compute_loss(self) is not None:
+                from unsloth.models._grpo_subclass_loss import grpo_subclass_logps_and_entropies
+                return grpo_subclass_logps_and_entropies(
+                    self,
+                    model,
+                    input_ids,
+                    attention_mask,
+                    logits_to_keep,
+                    batch_size,
+                    compute_entropy,
+                    *args,
+                    **kwargs,
+                )
             _unsloth_grpo_autocast(self)
 
             compute_aux_loss = kwargs.get("compute_aux_loss", None)
@@ -5671,9 +5719,13 @@ def _unsloth_grpo_rollout_logps_as_old(
             )
         return False
 
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
     reason = None
     if sampling_per_token_logps is None:
         reason = "there are no rollout logprobs (needs use_vllm=True or a rollout_func)"
+    elif grpo_subclass_compute_loss(trainer) is not None:
+        reason = f"{type(trainer).__name__} overrides _compute_loss, which reads TRL's old_per_token_logps"
     elif getattr(trainer.args, "loss_type", None) == "vespo":
         reason = "loss_type='vespo' weights by the vLLM importance ratio itself"
     elif not hasattr(trainer.args, "loss_type"):
@@ -5711,6 +5763,11 @@ def _unsloth_grpo_old_logps_from_new(trainer):
     pi_old is then the policy the loss scores (TRL uses per_token_logps.detach() too). Not with a
     stochastic forward (dropout), where two passes score different policies."""
     import os
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+    if grpo_subclass_compute_loss(trainer) is not None:
+        # A subclass _compute_loss reads TRL's old_per_token_logps, not Unsloth's markers: let TRL score pi_old.
+        return False
 
     if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
         return False
@@ -5748,6 +5805,11 @@ def _unsloth_grpo_old_logps_store(trainer):
     """num_iterations > 1, generation aligned to an optimizer step: the first loss pass of each micro-batch
     scores the rollout policy (pi_old), so reuse it. Not with dropout or a zoo that cannot return logps."""
     import os
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+    if grpo_subclass_compute_loss(trainer) is not None:
+        # A subclass _compute_loss reads TRL's old_per_token_logps, not Unsloth's markers: let TRL score pi_old.
+        return False
 
     if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
         return False
@@ -5813,6 +5875,19 @@ def _unsloth_grpo_sample_weight(
     tokens within each group, then over groups. Training batches only."""
     settings = _unsloth_grpo_sample_weight_mode()
     if settings is None or mode != "train":
+        return None
+    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+    if grpo_subclass_compute_loss(trainer) is not None:
+        # The weights feed only the fused GRPO loss: do not log exclusions a subclass objective never applies.
+        if not getattr(trainer, "_unsloth_sample_weight_warned", False):
+            import warnings
+            warnings.warn(
+                "Unsloth: UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE / UNSLOTH_GRPO_LOSS_AGGREGATION need the fused GRPO "
+                f"loss; {type(trainer).__name__} supplies its own _compute_loss, so they are ignored.",
+                stacklevel = 2,
+            )
+            trainer._unsloth_sample_weight_warned = True
         return None
     exclude, prompt_level = settings
     loss_type = getattr(trainer.args, "loss_type", None)
@@ -5979,6 +6054,15 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_uns
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_unscored_support))
+# The generated rollout reads this name in TRL's vLLM importance-sampling conditions (see
+# grpo_trainer__generate_and_score_completions).
+RL_PRE_ITEMS["grpo_trainer"].append(
+    "try:\n"
+    "    from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss as _unsloth_grpo_subclass_owner\n"
+    "except Exception:\n"
+    "    def _unsloth_grpo_subclass_owner(trainer):\n"
+    "        return None\n"
+)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
@@ -6096,6 +6180,13 @@ def grpo_trainer_compute_loss(function_name, function):
     ):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
+        # A subclass objective (TRL's GMPOTrainer, a user loss) overriding _compute_loss replaces the fused GRPO loss.
+        # Body-local: this source is copied out without this module's imports.
+        from unsloth.models._grpo_subclass_loss import grpo_subclass_compute_loss
+
+        if grpo_subclass_compute_loss(self) is not None:
+            from unsloth.models._grpo_subclass_loss import grpo_run_subclass_compute_loss
+            return grpo_run_subclass_compute_loss(self, model, inputs)
 
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = (
@@ -6169,7 +6260,11 @@ def grpo_trainer_compute_loss(function_name, function):
             compute_entropy = False,
             compute_efficient = False: (
                 self._get_per_token_logps(
-                    model, input_ids, attention_mask, logits_to_keep, compute_efficient
+                    model,
+                    input_ids,
+                    attention_mask,
+                    logits_to_keep,
+                    compute_efficient = compute_efficient,
                 )
                 if hasattr(self, "_get_per_token_logps")
                 else self._get_per_token_logps_and_entropies(
