@@ -225,9 +225,14 @@ def _two_card_backend(tmp_path, monkeypatch, weights_mib):
     memory = [(0, 23_857, 24_122), (1, 23_857, 24_122)]
     backend, gguf = h.placement._backend(tmp_path, vulkan = False, memory = memory)
     backend._arch_gate_survivors = lambda binary = None: []
-    backend.probe_server_capabilities = lambda _binary = None: dict(h.CAPS)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        **h.CAPS,
+        "supports_ngram_mod": True,
+    }
     backend._apple_metal_memory_budget_bytes = lambda: 0
-    backend._get_gguf_size_bytes = lambda path: weights_mib * h.MIB
+    backend._get_gguf_size_bytes = lambda path: (
+        h.GIB if "dspark" in str(path) else weights_mib * h.MIB
+    )
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **kw: n_ctx * 32 * 1024
     backend._estimate_mtp_overhead_bytes = lambda n_ctx, **kw: 0
@@ -287,3 +292,40 @@ def test_oom_respawn_never_grows_the_auto_context_onto_more_cards(tmp_path, monk
     with llama_cpp._automatic_recovery_load():
         respawn, _ = _spawn(backend, fixed)
     assert _ctx(respawn) == _ctx(first) == 65536
+
+
+def _strike_and_respawn(backend, intent):
+    first, first_mask = _spawn(backend, intent)
+    backend._process.poll = lambda: 1
+    backend._healthy = False
+    backend._note_gpu_oom_strike(intent)
+    with llama_cpp._automatic_recovery_load():
+        respawn, mask = _spawn(backend, intent)
+    return first, first_mask, respawn, mask
+
+
+@pytest.mark.parametrize("speculative_type", [None, "dspark"], ids = ["auto", "forced-dspark"])
+def test_oom_respawn_adds_no_drafter_the_crashed_load_lacked(
+    tmp_path, monkeypatch, speculative_type
+):
+    # The respawn's second card has room for the DSpark drafter the one-card load dropped
+    # for ngram-mod; Auto must not add it there, a user-chosen drafter stays.
+    backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
+    intent = GgufLoadIntent(
+        gguf_path = str(gguf),
+        model_identifier = "test",
+        n_ctx = 0,
+        dspark_draft_path = h.sidecar(tmp_path),
+        speculative_type = speculative_type,
+    )
+    first, first_mask, respawn, mask = _strike_and_respawn(backend, intent)
+    if speculative_type is None:
+        assert first_mask == "0"
+        assert h.last(first, "--spec-type") == "ngram-mod"
+        assert mask == "0,1"
+        assert "--model-draft" not in respawn
+        assert h.last(respawn, "--spec-type") == "ngram-mod"
+    else:
+        assert h.last(first, "--spec-type") == "draft-dspark"
+        assert h.last(respawn, "--spec-type") == "draft-dspark"
+        assert "--model-draft" in respawn
