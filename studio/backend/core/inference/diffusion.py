@@ -3262,21 +3262,16 @@ def _guard_condition_pixels(
     extra = max(0, int(extra_images or 0))
     if ref_resolution is not None:
         return int((1 + extra) * ref_resolution * ref_resolution * weight)
-    # FLUX.3 resizes every condition image to 1 MP itself (diffusion_flux3.resize_reference).
     if is_flux3_family(fam) and has_source:
         return int((1 + extra) * FLUX3_REFERENCE_AREA * weight)
-    # FLUX.2 Klein resizes every reference, the primary included, to at most 1 MP.
     area = int(getattr(fam, "reference_area", 0) or 0)
     if area and has_source:
         return int((1 + extra) * area * weight)
-    # A multi-image edit VAE-encodes each extra image at ~1 MP beside the source.
     return int(extra * EDIT_EXTRA_IMAGE_AREA * weight)
 
 
 def _area_reference_extra_mib(pipe: Any, extra_mib: int, verdict: Any, device: Any) -> int:
-    """MiB to stream for a ``reference_area`` request: the live shortfall of the guard's activation estimate (tiled when
-    the VAE can tile), capped at ``extra_mib``. ``verdict`` is read before any release, so its action may still be a
-    refusal the streaming then lifts; only its figures are used. ``extra_mib`` unchanged when overridden or unreadable."""
+    """Live shortfall of the guard's estimate, capped at ``extra_mib``; ``verdict`` predates the release, so only its figures are used."""
     if verdict is None or verdict.overridden:
         return extra_mib
     need = verdict.tiled_needed_mib if verdict.tiled_needed_mib is not None else verdict.needed_mib
@@ -3288,7 +3283,7 @@ def _area_reference_extra_mib(pipe: Any, extra_mib: int, verdict: Any, device: A
     if verdict.budget_mib is not None:
         from .diffusion_memory import DEFAULT_BASE_OVERHEAD_MIB
 
-        # the guard after the release admits ``need`` plus its fixed overhead against its budget: free that much too
+        # the post-release guard admits ``need`` + overhead against its budget
         short = max(int(short), int(need) + DEFAULT_BASE_OVERHEAD_MIB - int(verdict.budget_mib))
     return min(int(extra_mib), max(0, int(short)))
 
@@ -16187,8 +16182,7 @@ class DiffusionBackend:
                         and not layer_count
                         and getattr(fam, "reference_area", 0)
                     ):
-                        # area-priced references: stream only what the guard's own estimate (the one it admits the
-                        # request on) lacks in free memory now, not the placement's flat shortfall
+                        # stream only what the guard's own estimate lacks now, not the placement's flat shortfall
                         extra_mib = _area_reference_extra_mib(
                             state.pipe,
                             extra_mib,

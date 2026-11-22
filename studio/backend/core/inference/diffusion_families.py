@@ -194,8 +194,7 @@ class DiffusionFamily:
     checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
-    # Pixels each condition image (the primary reference included) is resized down to before its latents join the
-    # denoiser's sequence; non-zero lets the request guard price every reference at this area (0: unpriced primary).
+    # Area each reference (primary included) is resized to; non-zero makes the guard price every reference at it.
     reference_area: int = 0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
@@ -694,13 +693,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference" workflow atop
         # text-to-image. Inpaint but no img2img.
         reference = True,
-        # Flux2KleinPipeline resizes every reference above 1 MP to 1 MP (4096 tokens each, beside the target's).
         reference_area = 1024 * 1024,
-        # Reference tokens only lengthen the denoise sequence (never decoded): the measured flux.2-klein denoise grows
-        # 905 MiB per megapixel of tokens from 1024^2 to 2048^2 (1_160 -> 3_876, _MEASURED_IMAGE_ACTIVATION_MIB);
-        # with the 1.2 activation margin that is 1_086 MiB per 1 MP reference, about 0.133 of the estimator's
-        # 8192 MiB per output megapixel. L4 int8 9B, 2048^2 plus four 1 MP references: see
-        # test_diffusion_reference_token_estimate for the measured resident peaks this covers.
+        # References are denoised, never decoded: measured denoise slope x 1.2 margin / 8192 MiB per MP ~= 0.133.
         condition_pixel_weight = 0.135,
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.

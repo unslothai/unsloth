@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reference tokens are priced at the denoise rate they cost, not at the flat whole-render rate.
-
-FLUX.2 Klein reference images never pass through the VAE decoder: each is resized to at most 1 MP and its 4096 latent
-tokens only lengthen the denoiser's sequence. The request guard charged every extra reference at the flat estimator's
-8192 MiB per megapixel (``condition_pixel_weight`` 1.0, the untiled-decode rate) and left the primary one unpriced, so a
-2048^2 edit with four references on a 24 GB L4 read 30 GB needed (tiled) against 16.5 GB usable and was refused, or with
-allow_oversized streamed the whole transformer from the flat 57 GB untiled figure, while it runs resident.
-
-The tables below are measured points; every priced figure must cover its measured peak, and every non-reference
-estimate is pinned to the numbers before the change.
-"""
+"""FLUX.2 Klein references are priced at their denoise cost; non-reference estimates stay pinned."""
 
 from __future__ import annotations
 
@@ -56,8 +46,7 @@ def _verdict(
     )
 
 
-# ---------------------------------------------------------------- non-reference estimates are unchanged
-# (flat, tiled, verdict on a 16_865 MiB L4 budget) at 1024^2, 2048^2, 1536x1024, recorded before the change.
+# (flat, tiled, verdict on a 16_865 MiB L4 budget) per _SIZES, recorded before the change.
 T2I_PINS = {
     "flux.1": [(8192, 8192, "run"), (32768, 8192, "tile"), (12288, 8192, "run")],
     "flux.1 schnell": [(6963, 6963, "run"), (27852, 6963, "tile"), (10444, 6963, "run")],
@@ -101,7 +90,6 @@ def test_txt2img_estimates_are_pinned(hint):
 
 @pytest.mark.parametrize("name", sorted(_FAM))
 def test_txt2img_charges_no_condition_pixels(name):
-    # no source image: every family's guard charge is zero, so its txt2img verdict is the pinned one above
     assert diff._guard_condition_pixels(_FAM[name], False, 0, None) == 0
 
 
@@ -154,7 +142,6 @@ def test_generate_marks_area_priced_references_priced():
 
 
 def test_flux2_weight_covers_its_measured_denoise_slope():
-    # flux.2-klein's measured denoise (max tier): 1_205 MiB at 1024^2, 3_924 at 2048^2 -> MiB per MP of tokens
     lo, hi = (
         dm._MEASURED_IMAGE_ACTIVATION_MIB["flux.2-klein"][1][1],
         dm._MEASURED_IMAGE_ACTIVATION_MIB["flux.2-klein"][1][4],
@@ -164,7 +151,6 @@ def test_flux2_weight_covers_its_measured_denoise_slope():
     assert per_ref >= slope * dm._ACTIVATION_MARGIN
 
 
-# ---------------------------------------------------------------- streaming credit for area-priced references
 def _v(
     action,
     needed = 37_191,
@@ -184,21 +170,15 @@ def _v(
 @pytest.mark.parametrize(
     "verdict, short, extra, want, asked",
     [
-        # the tiled estimate is what must fit now; 0 short streams nothing
         (_v(dm.ACTIVATION_TILE), 0, 14_303, 0, 8_519),
         (_v(dm.ACTIVATION_TILE), 4_000, 14_303, 4_000, 8_519),
-        # read before the release: a refusal there (resident groups still held) is priced the same way
         (_v(dm.ACTIVATION_REFUSE), 4_945, 14_303, 4_945, 8_519),
-        # never more than the placement's own shortfall
         (_v(dm.ACTIVATION_TILE), 20_000, 14_303, 14_303, 8_519),
-        # no VAE tiling: the untiled estimate
         (_v(dm.ACTIVATION_RUN, needed = 9_000, tiled = None), 100, 5_000, 100, 9_000),
-        # overridden or unreadable: unchanged
         (_v(dm.ACTIVATION_TILE, overridden = True), 0, 14_303, 14_303, None),
         (_v(dm.ACTIVATION_TILE), None, 14_303, 14_303, 8_519),
         (_v(dm.ACTIVATION_TILE, needed = None, tiled = None), 0, 14_303, 14_303, None),
         (None, 0, 14_303, 14_303, None),
-        # the guard after the release wants need + 2 GiB overhead inside its budget (L4 read 4_700 before the release)
         (_v(dm.ACTIVATION_REFUSE, budget = 4_700), 4_945, 14_303, 8_519 + 2_048 - 4_700, 8_519),
         (_v(dm.ACTIVATION_TILE, budget = 30_000), 0, 14_303, 0, 8_519),
     ],
@@ -235,7 +215,6 @@ def test_generate_credits_live_memory_only_for_area_priced_references():
         'getattr(fam, "reference_area", 0)',
     ):
         assert part in gate, part
-    # before the release, after the measured / reference pricing
     assert (
         src.index("extra_mib = split_aware_request_extra(")
         < at
@@ -243,21 +222,13 @@ def test_generate_credits_live_memory_only_for_area_priced_references():
     )
 
 
-# ---------------------------------------------------------------- measured points
-# (card, family hint, condition images, measured MiB above the resident weights at the render's highest phase, card
-# total MiB, free MiB the guard read). 2048^2 output, every reference 1 MP; Colab, Studio defaults (int8 auto tier).
-# FLUX.2 rows: this change's head, resident (A100) or streamed (T4: the peak includes the streamed-group window, an
-# upper bound). FLUX.3 rows: origin/main with allow_oversized (pricing unchanged here, kept as a regression floor).
+# (card, hint, condition images, measured MiB above resident weights, total MiB, free MiB); 2048^2, 1 MP refs, int8.
 MEASURED = [
-    # FLUX.2 klein 9B int8, A100-40: denoise 23.686 GiB alloc over 19.834 resident (transformer + bf16 encoder)
+    # klein 9B, 9B base (CFG), 4B on A100; 9B streamed on T4
     ("a100", "flux.2-klein", 4, 3_944, 40_442, 16_343),
-    # FLUX.2 klein base 9B int8 (CFG 4.0, branches not batched): 23.706 over 19.834
     ("a100", "flux.2-klein", 4, 3_965, 40_442, 16_327),
-    # FLUX.2 klein 4B int8, A100-40: decode 13.052 / denoise 12.780 over 9.865
     ("a100", "flux.2-klein", 4, 3_263, 40_442, 27_365),
-    # FLUX.2 klein 9B int8, T4 fp16, transformer streamed: denoise 6.945 over 0.193
     ("t4", "flux.2-klein", 4, 6_913, 14_912, 14_458),
-    # FLUX.3 klein int8, L4, 4 and 6 references: decode 13.994 / 14.885 over 10.822 / 10.545 (the eager arm)
     ("l4", "flux.3-klein", 4, 3_248, L4_TOTAL, 9_288),
     ("l4", "flux.3-klein", 6, 4_444, L4_TOTAL, 7_782),
 ]
@@ -291,5 +262,4 @@ def test_flux2_reference_requests_that_ran_are_admitted(card, hint, refs, measur
     before = _verdict(free = free, total = total, family = hint, cond = 3 * EDIT_EXTRA_IMAGE_AREA)
     after = _verdict(free = free, total = total, family = hint, cond = cond)
     assert after.action != dm.ACTIVATION_REFUSE, after.message
-    # the pre-change charge (three extra images at 8192 MiB/MP, the primary unpriced) needed 28_672 MiB tiled
     assert before.tiled_needed_mib == 28_672 and after.tiled_needed_mib == 8_519
