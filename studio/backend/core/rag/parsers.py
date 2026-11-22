@@ -1611,11 +1611,34 @@ def _docx_number_lists(document) -> None:
             p_pr.addnext(run)
 
 
+# Word allows 63 columns; a declared span past this is never real layout, only a memory bomb.
+_DOCX_GRID_MAX = 1000
+_DOCX_GRID_TAGS = (_W + "gridSpan", _W + "gridBefore", _W + "gridAfter")
+
+
+def _docx_clamp_grid(tbl) -> None:
+    """Clamp declared grid widths in place, so a few bytes of XML cannot expand into a giant row."""
+    for tr in tbl.iter(_W + "tr"):
+        # One budget per row, nested tables included: real rows stay far below it.
+        budget = _DOCX_GRID_MAX
+        for el in tr.iter(*_DOCX_GRID_TAGS):
+            try:
+                value = int(el.get(_W + "val"))
+            except (TypeError, ValueError):
+                continue
+            floor = 1 if el.tag == _W + "gridSpan" else 0
+            clamped = min(value, max(budget, floor))
+            if clamped != value:
+                el.set(_W + "val", str(clamped))
+            budget = max(0, budget - max(clamped, 0))
+
+
 def _docx_table_rows(table) -> list[str]:
     """Cells joined by pipes, aligned to the layout grid; the locator splits anchors on pipes."""
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
+    _docx_clamp_grid(table._tbl)
     rows: list[str] = []
     seen: set = set()
     for row in table.rows:
