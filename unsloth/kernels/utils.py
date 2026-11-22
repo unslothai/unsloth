@@ -722,6 +722,13 @@ _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
 _GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
+_ROCM_SKINNY_LINEAR = False
+if torch.version.hip is not None and os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0":
+    try:
+        from .rocm_skinny_linear import skinny_decode_linear as _rocm_skinny_decode_linear
+        _ROCM_SKINNY_LINEAR = True
+    except Exception:
+        pass
 _current_device = torch.cuda.current_device
 if (
     DEVICE_TYPE in ("cuda", "hip")
@@ -1855,6 +1862,18 @@ def fast_linear_forward(
         return matmul_lora(
             X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
         )
+
+    if W_quant is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
+        # gfx11 ROCm: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs are slow there).
+        if lora_A is not None:
+            A, B = _fast_lora_weights(lora_A, lora_B, X.dtype)
+        else:
+            A = B = None
+        fused = _rocm_skinny_decode_linear(X, W, A, B, lora_S, out)
+        if fused is not None:
+            if bias is not None:
+                fused += bias
+            return fused
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
