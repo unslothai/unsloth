@@ -1124,6 +1124,7 @@
       "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
       "_KIMI_ID_RE": "'^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$' flags=32",
       "_LEADING_JSON_FENCE_RE": "'^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n' flags=32",
+      "_LFM_CALL_NAME_RE": "'[A-Za-z_][\\\\w.\\\\-]*(?=\\\\s*\\\\()' flags=32",
       "_LLAMA3_CALL_CHAIN_RE": "'\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_KEY_RE": "'\\\\w+' flags=32",
       "_LLAMA3_LIT_RE": "'true|false|null' flags=32",
@@ -1214,6 +1215,7 @@
       "re.compile('<tool_call>\\\\s*\\\\{')": 1,
       "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
       "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('[A-Za-z_][\\\\w.\\\\-]*(?=\\\\s*\\\\()')": 1,
       "re.compile('[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*')": 1,
       "re.compile('[`<>\\\\[\\\\]{}]')": 1,
       "re.compile('\\\\A\\\\s*\\\\{\\\\s*\"name\"\\\\s*:\\\\s*\"([\\\\w.\\\\-]+)\"\\\\s*,\\\\s*\"(?:arguments|parameters)\"\\\\s*:\\\\s*\\\\{\\\\s*\"([A-Za-z_][\\\\w\\\\-]*)\"\\\\s*:\\\\s*\"(.*)\"\\\\s*\\\\}\\\\s*\\\\}\\\\s*\\\\Z', re.DOTALL)": 1,
@@ -1238,7 +1240,6 @@
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '|' + re.escape(_KIMI_SECTION_BEGIN) + '|' + re.escape(_KIMI_CALL_BEGIN) + '|' + re.escape(_MINIMAX_BLOCK_OPEN) + '|' + re.escape(_LFM_CALL_START))": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1,
       "re.compile(_GEMMA_SLOT + '(\\\\d+)' + _GEMMA_SLOT)": 1,
-      "re.fullmatch('[A-Za-z_][\\\\w.\\\\-]*', name)": 1,
       "re.match('\\\\[\\\\s*\\\\{|\\\\{', body)": 1
     },
     "symbols": {
@@ -1506,6 +1507,9 @@
         "kind": "assign"
       },
       "_LENGTH_PROGRESS_TAIL_CHARS": {
+        "kind": "assign"
+      },
+      "_LFM_CALL_NAME_RE": {
         "kind": "assign"
       },
       "_LFM_CALL_START": {
@@ -1869,6 +1873,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "node: ast.AST"
+      },
+      "_lfm_mask_call_names": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
       },
       "_llama3_kv_value": {
         "decorators": [],

@@ -2321,12 +2321,17 @@ def parse_tool_calls_from_text(
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
         _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
         _lfm_pos = content.find(_LFM_CALL_START)
+        # Quoted in a leading promotable ``name[ARGS]{...}`` call, an LFM call is that call's data.
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
             (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
-            (_lfm_pos if _lfm_pos >= 0 else len(content), _parse_lfm_tool_calls),
         ]
+        # Quoted in a leading promotable ``name[ARGS]{...}`` call, an LFM call is that call's data.
+        if _lfm_pos >= 0 and not _inside_leading_markerless_body(
+            content, _lfm_pos, enabled_tool_names
+        ):
+            pre_pass.append((_lfm_pos, _parse_lfm_tool_calls))
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
             calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
@@ -4304,6 +4309,45 @@ def _lfm_literal(node: ast.AST) -> Any:
     return ast.literal_eval(node)
 
 
+_LFM_CALL_NAME_RE = re.compile(r"[A-Za-z_][\w.\-]*(?=\s*\()")
+
+
+def _lfm_mask_call_names(body: str) -> tuple[str, list]:
+    """Swap each top-level call name for a placeholder, so a hyphenated MCP name parses; values are untouched."""
+    out, names, depth, quote, i = [], [], 0, "", 0
+    head = True
+    while i < len(body):
+        ch = body[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\":
+                out.append(body[i + 1 : i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if head and depth <= 1 and not ch.isspace():
+            m = _LFM_CALL_NAME_RE.match(body, i)
+            if m:
+                out.append(f"_lfm_call_{len(names)}")
+                names.append(m.group(0))
+                i = m.end()
+                head = False
+                continue
+        head = depth == 0 and ch == "[" or depth == 1 and ch == "," or head and ch.isspace()
+        if ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        out.append(ch)
+        i += 1
+    return "".join(out), names
+
+
 def _lfm_body_calls(body: str) -> list[tuple[str, dict]]:
     """Parsed as literals only, never evaluated; any positional or non-literal argument rejects the body."""
     body = body.strip()
@@ -4327,23 +4371,26 @@ def _lfm_body_calls(body: str) -> list[tuple[str, dict]]:
                 return []
             calls.append((item["name"], args))
         return calls
+    masked, names = _lfm_mask_call_names(body)
     try:
-        node = ast.parse(body, mode = "eval").body
+        node = ast.parse(masked, mode = "eval").body
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
     elts = node.elts if isinstance(node, ast.List) else [node]
     calls = []
     for elt in elts:
-        if not isinstance(elt, ast.Call) or elt.args:
+        if not isinstance(elt, ast.Call) or elt.args or not isinstance(elt.func, ast.Name):
+            return []
+        index = elt.func.id.removeprefix("_lfm_call_")
+        if not index.isdigit() or int(index) >= len(names):
             return []
         try:
-            name = ast.unparse(elt.func)
             args = {kw.arg: _lfm_literal(kw.value) for kw in elt.keywords if kw.arg}
         except (ValueError, TypeError, SyntaxError, RecursionError):
             return []
-        if not re.fullmatch(r"[A-Za-z_][\w.\-]*", name) or len(args) != len(elt.keywords):
+        if len(args) != len(elt.keywords):
             return []
-        calls.append((name, args))
+        calls.append((names[int(index)], args))
     try:
         # Sets, bytes, complex and Ellipsis are literals but not JSON arguments.
         json.dumps([args for _, args in calls], allow_nan = False)

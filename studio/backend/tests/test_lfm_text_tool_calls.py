@@ -271,6 +271,15 @@ def _names_args(text, **kw):
             "<|tool_call_start|>[edit_file(path='x', edits=[{'old_string': 'a', 'replace_all': true}])]<|tool_call_end|>",
             [("edit_file", {"path": "x", "edits": [{"old_string": "a", "replace_all": True}]})],
         ),
+        (
+            "<|tool_call_start|>[mcp__srv__create-issue(title='Bug')]<|tool_call_end|>",
+            [("mcp__srv__create-issue", {"title": "Bug"})],
+        ),
+        (
+            "<|tool_call_start|>[web_search(query='a-b(c)'), web.fetch(url='u, x(y)')]<|tool_call_end|>",
+            [("web_search", {"query": "a-b(c)"}), ("web.fetch", {"url": "u, x(y)"})],
+        ),
+        ("<|tool_call_start|>[f(a=[g(x=1)])]<|tool_call_end|>", []),
         ("<|tool_call_start|>[f(a=[{**x}])]<|tool_call_end|>", []),
         ("<|tool_call_start|>[f(a=[open('x')])]<|tool_call_end|>", []),
         ("<|tool_call_start|>[web_search(query={1, 2})]<|tool_call_end|>", []),
@@ -325,3 +334,13 @@ def test_a_raw_lfm_call_in_a_tool_round_is_executed(monkeypatch):
 )
 def test_lfm_execution_calls_keep_their_arguments(text, expected):
     assert _names_args(text, enabled_tool_names = {"python", "terminal", "web_fetch"}) == expected
+
+
+def test_an_lfm_call_quoted_in_a_rehearsal_is_its_data():
+    text = (
+        'web_search[ARGS]{"query": "<|tool_call_start|>[terminal(command=\'echo x\')]'
+        '<|tool_call_end|>"}'
+    )
+    assert [n for n, _ in _names_args(text, enabled_tool_names = {"web_search", "terminal"})] == [
+        "web_search"
+    ]
