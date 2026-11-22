@@ -1032,6 +1032,11 @@ function toOpenAIImageEditReferenceMessage(
   return { role: "assistant", content };
 }
 
+function messageImportedFrom(message: RunMessage): unknown {
+  return (message as { metadata?: { custom?: Record<string, unknown> } }).metadata?.custom
+    ?.importedFrom;
+}
+
 // Use metadata, not spoofable text: Anthropic keeps refusing while refusals stay in context.
 function isAnthropicRefusalMessage(message: RunMessage): boolean {
   if (message.role !== "assistant") return false;
@@ -1238,6 +1243,7 @@ export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
 
 function serializeToolResultPart(
   part: ToolCallMessagePart,
+  importedFrom?: unknown,
 ): SerializedToolResult | null {
   const tc = part as ToolCallMessagePart;
   const result = (tc as { result?: unknown }).result;
@@ -1268,7 +1274,7 @@ function serializeToolResultPart(
     content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
     // Gated on the image tool name, not shape: a client tool may return {text, images}, and
     // appending the envelope would hand its bytes to the model as image input.
-    if (isMcpImageToolResult(result) && isImageToolName(tc.toolName)) {
+    if (isMcpImageToolResult(result) && isImageToolName(tc.toolName, importedFrom)) {
       content += mcpImagesEnvelope(result.images);
     } else if (isMcpToolName(tc.toolName)) {
       const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
@@ -1695,7 +1701,7 @@ function serializeAssistantReplayMessages(
       const toolCall = serializeAssistantToolCallPart(toolPart);
       if (!toolCall) continue;
 
-      const toolResult = serializeToolResultPart(toolPart);
+      const toolResult = serializeToolResultPart(toolPart, messageImportedFrom(message));
       if (!toolResult && !canReplayToolCallWithoutRoleTool(toolPart)) {
         continue;
       }
@@ -2148,7 +2154,7 @@ function boundMcpImageResults(
     const byExchange = new Map<number, Carrier[]>();
     toolParts.forEach(({ index, part }, k) => {
       const tc = part as { toolName?: string; result?: unknown };
-      if (!isMcpImageToolResult(tc.result) || !isImageToolName(tc.toolName)) return;
+      if (!isMcpImageToolResult(tc.result) || !isImageToolName(tc.toolName, messageImportedFrom(message))) return;
       const carrier = { message: m, part: index, images: tc.result.images };
       const batch = byExchange.get(exchanges[k]) ?? [];
       batch.push(carrier);
