@@ -1956,7 +1956,8 @@ def _gemma4_object_arguments(conversations):
                     continue
                 try:
                     parsed = json.loads(arguments)
-                except ValueError:
+                # RecursionError: deeply nested input; keep the string as before.
+                except (ValueError, RecursionError):
                     continue
                 if not isinstance(parsed, dict):
                     continue

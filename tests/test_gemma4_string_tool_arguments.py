@@ -110,7 +110,9 @@ def test_batched_render_and_input_untouched(fixed):
     assert conversation == before
 
 
-@pytest.mark.parametrize("arguments", ["not-json", "[1, 2]", '{"city": '])
+@pytest.mark.parametrize(
+    "arguments", ["not-json", "[1, 2]", '{"city": ', "[" * 100000 + "]" * 100000]
+)
 def test_non_object_strings_render_as_before(fixed, arguments):
     template = _gemma4_templates()["gemma4_template"]
     patched = _render(template, arguments)
