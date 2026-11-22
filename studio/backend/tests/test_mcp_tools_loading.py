@@ -233,20 +233,23 @@ def _media_studio(
 
 # No variant named: the default is used, and the hf_token argument reaches the (gated) lookup.
 @pytest.mark.parametrize(
-    "extra,filename",
+    "extra,filename,suffix",
     [
-        ({"variant": "Q8_0"}, "flux1-schnell-Q8_0.gguf"),
-        ({"hf_token": "hf_arg"}, "flux1-schnell-Q4_K_S.gguf"),
+        ({"variant": "Q8_0"}, "flux1-schnell-Q8_0.gguf", ""),
+        ({"hf_token": "hf_arg"}, "flux1-schnell-Q4_K_S.gguf", ""),
+        ({}, "flux1-schnell-Q8_0.gguf", ":Q8_0"),
     ],
 )
-def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extra, filename):
+def test_a_gguf_image_repo_sends_its_gguf_filename(
+    monkeypatch, fast_polls, extra, filename, suffix
+):
     studio = _media_studio(
         "image",
         progress = [{"phase": "downloading", "bytes_downloaded": 1, "bytes_total": 2}, READY],
         statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "gguf_filename": filename}],
     )
     result, _studio = run_tool(
-        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF + suffix, "kind": "image", **extra}
     )
     loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, **SETTLED, "display_name": None}
     loaded.update(placement = None, alongside_applied = None)

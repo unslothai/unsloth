@@ -444,6 +444,18 @@ async def _refuse_certain_chat_unload(
     raise ToolError(chat_kept_refusal(kind, model, "off").detail)
 
 
+async def _refuse_llm_kind_for_media(model: str, catalog: Any) -> None:
+    """An llm load of a catalog image, video or speech-to-text model would fail only after unloading models;
+    tts and audio rows do load through the llm route."""
+    found = await catalog()
+    if found in ("image", "video", "stt"):
+        noun = problems.WHAT.get(found, "model")
+        raise ToolError(
+            f"'{model}' is {'an' if noun[0] in 'aeiou' else 'a'} {noun} in the Unsloth Studio catalog, not a "
+            f"chat model: call load_model(model='{model}', kind='{found}'), or leave kind out."
+        )
+
+
 # Arguments left out of a chat's schema; checkpoint, export and hf_token are also refused.
 _CHAT_HIDDEN = {
     "load_model": (
@@ -666,14 +678,7 @@ async def load_model(
         refused = {"checkpoint": checkpoint, "export": export, "hf_token": hf_token},
     )
     if kind == "llm" and model and not (checkpoint or export):
-        # Would fail only after unloading models; tts and audio rows do load through the llm route.
-        found = await catalog()
-        if found in ("image", "video", "stt"):
-            noun = problems.WHAT.get(found, "model")
-            raise ToolError(
-                f"'{model}' is {'an' if noun[0] in 'aeiou' else 'a'} {noun} in the Unsloth Studio catalog, not a "
-                f"chat model: call load_model(model='{model}', kind='{found}'), or leave kind out."
-            )
+        await _refuse_llm_kind_for_media(model, catalog)
     deadline = loading.deadline_after(wait_s)
     trained = await trained_models.resolve_by(
         deadline,
@@ -726,6 +731,9 @@ async def load_model(
             hub_token = hf_token,
         )
     if kind in loading.MEDIA_ROUTES:
+        # The media routes take the GGUF variant apart, as plan_load and download_model read "repo:variant".
+        if model:
+            model, variant = model_downloads._split(model, variant)
         if caller.profile.catalog_only:
             await _refuse_certain_chat_unload(kind, model)
             # Download first so the load can be sized; an unsized load would unload the chat model.
@@ -833,6 +841,8 @@ async def plan_load(
         model = await _full_id(model, catalog)
         resolved = kind if kind is not None else await _inferred_kind(caller, model, catalog)
         await _chat_may_load(caller, resolved, model, catalog, refused = {"hf_token": hf_token})
+        if resolved == "llm":
+            await _refuse_llm_kind_for_media(model, catalog)
         return await placement.plan_load(
             caller,
             model = model,

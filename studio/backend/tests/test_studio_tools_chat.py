@@ -736,6 +736,19 @@ def test_only_a_chats_still_running_video_is_watched(
     assert not out.startswith("Error") and seen == ([turn] if watched else []), out
 
 
+@pytest.mark.parametrize("status, stopped", [("loading", True), ("loaded", False)])
+def test_a_chat_load_still_loading_at_its_deadline_is_reported_stopped(
+    server_loop, monkeypatch, status, stopped
+):
+    async def answer(caller, tool, args, *_rest, **_kw):
+        return SimpleNamespace(content = [], structured_content = {"job_id": "l1", "status": status})
+
+    studio(monkeypatch, RUN_PAYLOADS)
+    monkeypatch.setattr(studio_tools_mcp, "_call", answer)
+    out = bridge(OWNER, "load_model", {"model": FLUX})
+    assert out.startswith("Error: MCP tool 'load_model' did not finish") is stopped, out
+
+
 # A chat loads and unloads only image, video and speech-to-text catalog models.
 FLUX = "unsloth/FLUX.2-klein-4B"
 CATALOG = {

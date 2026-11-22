@@ -569,3 +569,13 @@ def test_plan_load_infers_an_image_kind_from_the_media_catalog(monkeypatch, fast
     assert result["structuredContent"]["kind"] == "image", result
     (body,) = bodies(studio, "/api/inference/images/download-plan")
     assert body["model_path"] == FLUX2
+
+
+def test_plan_load_refuses_an_llm_kind_for_a_catalog_image_model_as_load_model_does(monkeypatch):
+    from .test_mcp_tools_loading import CATALOGS, FLUX2
+
+    world = {**_world("off", []), **CATALOGS}
+    args = {"model": FLUX2, "kind": "llm"}
+    result, _studio = run_tool(monkeypatch, world, "plan_load", args, fallback = {})
+    assert result["isError"] is True
+    assert f"call load_model(model='{FLUX2}', kind='image')" in result["content"][0]["text"]

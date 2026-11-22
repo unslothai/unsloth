@@ -223,23 +223,34 @@ def _cached_pick(repo: str, filename: Optional[str]) -> Optional[str]:
     return None
 
 
-def _prequant_transformer_sizes(fam: Any, request: Any, dirs: list) -> Optional[dict[str, int]]:
-    """The cached transformer files of the prequantized repo an int8 or fp8 load seeds from, for a base pipeline
-    without its own transformer. None when the load reads the base transformer (bf16, a LoRA) or either side
-    is not on disk."""
-    from core.inference.diffusion import DiffusionBackend as DB
+def _pipeline_complete(
+    fam: Any,
+    root: Any,
+    *,
+    without_transformer: bool = False,
+) -> bool:
+    """The loader's own completeness check, with the family's manifest (FLUX.3 and Anima ship a modular one)."""
+    from core.inference.diffusion import _base_manifest_name, _fixed_component_folders
     from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    return local_pipeline_components_are_complete(
+        root,
+        _base_manifest_name(fam),
+        excluded_components = ("transformer",) if without_transformer else (),
+        fixed_component_folders = _fixed_component_folders(fam),
+    )
+
+
+def _prequant_transformer_bytes(fam: Any, request: Any, dirs: list) -> Optional[int]:
+    """Bytes of the cached prequantized transformer an int8 or fp8 load seeds from, for a base pipeline without
+    its own transformer. None when the load reads the base transformer (bf16, a LoRA) or either side is not on disk."""
+    from core.inference.diffusion import DiffusionBackend as DB
 
     quant = str(getattr(request, "transformer_quant", None) or "auto").strip().lower()
     repos = dict(getattr(fam, "prequant_repos", ()) or ())
     if quant not in ("auto", "int8", "fp8") or not repos or getattr(request, "loras", None):
         return None
-    if not any(
-        local_pipeline_components_are_complete(
-            d, "model_index.json", excluded_components = ("transformer",)
-        )
-        for d in dirs
-    ):
+    if not any(_pipeline_complete(fam, d, without_transformer = True) for d in dirs):
         return None
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
 
@@ -260,16 +271,17 @@ def _prequant_transformer_sizes(fam: Any, request: Any, dirs: list) -> Optional[
 
     def grab(d):
         found = {
-            (rel if rel.startswith("transformer/") else f"transformer/{rel}"): size
+            rel: size
             for rel, size in DB._local_dir_weight_sizes(d, exclude_transformer = False).items()
             if rel.split("/", 1)[0] == "transformer" or rel in names
         }
-        sizes.update(found)
+        for rel, size in found.items():
+            sizes[rel] = max(sizes.get(rel, 0), size)
         return found
 
     if location:
         DB._union_over_cached_revs(location, grab)
-    return sizes or None
+    return sum(sizes.values()) or None
 
 
 def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int, int]]:
@@ -288,7 +300,6 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     )
     from core.inference.diffusion_families import (
         detect_family_for_pick,
-        local_pipeline_components_are_complete,
         named_variant_base,
         prefer_ungated_mirror,
         resolve_base_repo,
@@ -340,12 +351,16 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
 
         DB._union_over_cached_revs(prefer_ungated_mirror(repo), grab)
         # A partial download would be priced as the whole pipeline.
-        if not any(local_pipeline_components_are_complete(d, "model_index.json") for d in dirs):
-            prequant = _prequant_transformer_sizes(fam, request, dirs)
+        prequant = 0
+        if not any(_pipeline_complete(fam, d) for d in dirs):
+            prequant = _prequant_transformer_bytes(fam, request, dirs)
             if prequant is None:
                 return None
-            files.update(prequant)
-        weights = (resident_bytes_from_declared(repo, files.items()) or 0) // mib
+            # Already at load width: never widened by the base's float32 factor.
+            files = {rel: size for rel, size in files.items() if not rel.startswith("transformer/")}
+        weights = (
+            resident_bytes_from_declared(repo, files.items(), prequant_bytes = prequant) or 0
+        ) // mib
     else:
         path = _cached_pick(repo, name)
         if path is None:

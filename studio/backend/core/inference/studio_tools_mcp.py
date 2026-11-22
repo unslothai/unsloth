@@ -377,6 +377,16 @@ def call(
             return f"Error: MCP tool '{name}' failed: {exc}"
         if name == "generate_video" and cancel_event is not None and _still_running(result):
             _watch_turn(cancel_event, ticket)
+        if (
+            name == "load_model"
+            and (getattr(result, "structured_content", None) or {}).get("status") == "loading"
+        ):
+            # Its job is stopped with the key below, so a job reference would never complete.
+            return (
+                f"Error: MCP tool 'load_model' did not finish within {limit:g}s, so this call stopped it. "
+                "A download it started keeps running; call load_model again to load the model "
+                "(list_models shows what is loaded)."
+            )
         return _flatten_result(_without_nulls(result), ui_resource_uri)
     finally:
         # Here, not on the loop: a cancelled or timed-out call still loses its key at once.
