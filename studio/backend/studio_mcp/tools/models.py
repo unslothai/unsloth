@@ -287,12 +287,12 @@ async def _listed(caller: Caller, path: str) -> list[dict[str, Any]]:
 async def _catalog_row(caller: Caller, model: str) -> Optional[tuple[str, str]]:
     """(id, kind) of the catalog row for ``model``: its exact id, else, for a bare name such as
     "Z-Image-Turbo", the one row whose repo name it is."""
-    rows = [
-        (row["id"], row["kind"])
-        for row in await _listed(caller, "/api/inference/media/catalog")
-        if row.get("kind") in MEDIA_KINDS
-    ]
-    for row in await _listed(caller, "/api/inference/audio/catalog"):
+    media, audio = await asyncio.gather(
+        _listed(caller, "/api/inference/media/catalog"),
+        _listed(caller, "/api/inference/audio/catalog"),
+    )
+    rows = [(row["id"], row["kind"]) for row in media if row.get("kind") in MEDIA_KINDS]
+    for row in audio:
         # An unsupported row can't be loaded.
         if not row.get("unsupported_reason"):
             task = row.get("task")

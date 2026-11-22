@@ -382,5 +382,6 @@ def call(
     finally:
         # Here, not on the loop: a cancelled or timed-out call still loses its key at once.
         forget_counted_parent(row["id"])
-        _stop_scoped_loads(loop, key)
+        if name == "load_model":
+            _stop_scoped_loads(loop, key)
         _revoke(row["id"])
