@@ -4,6 +4,7 @@
 The tests exercise the real LlamaCppBackend method with bounded input probes;
 they do not require a 97 GiB GGUF or mutate any device/driver configuration.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -36,8 +37,17 @@ def apu_preflight(tmp_path, monkeypatch):
     backend._available_system_memory_mib = lambda: 20_000
     backend._cgroup_available_memory_mib = lambda: None
     argv = [
-        "llama-server", "-m", str(gguf), "--load-mode", "none",
-        "--lazy-mode", "on-direct", "-ngl", "49", "--fit", "off",
+        "llama-server",
+        "-m",
+        str(gguf),
+        "--load-mode",
+        "none",
+        "--lazy-mode",
+        "on-direct",
+        "-ngl",
+        "49",
+        "--fit",
+        "off",
     ]
     return backend, argv
 
@@ -47,12 +57,19 @@ def test_verified_carveout_prevents_false_shortfall(apu_preflight):
     backend, argv = apu_preflight
     calls = []
     backend._windows_rocm_apu_carve_out_credit = lambda size, **kw: (
-        calls.append((size, kw)), 61 * _GiB
+        calls.append((size, kw)),
+        61 * _GiB,
     )[1]
     before = argv.copy()
-    assert backend._launch_host_shortfall_message(
-        argv, [(0, 19_000, 96 * 1024)], env = {}, avail_mib = 20_000,
-    ) is None
+    assert (
+        backend._launch_host_shortfall_message(
+            argv,
+            [(0, 19_000, 96 * 1024)],
+            env = {},
+            avail_mib = 20_000,
+        )
+        is None
+    )
     assert argv == before
     assert len(calls) == 1
     assert calls[0][0] == int(97.12 * _GiB)
@@ -64,22 +81,35 @@ def test_carveout_is_max_not_sum(apu_preflight):
     """A verified 35 GiB pool plus 19,000 MiB reading must not be added."""
     backend, argv = apu_preflight
     backend._windows_rocm_apu_carve_out_credit = lambda *a, **kw: 35 * _GiB
-    assert backend._launch_host_shortfall_message(
-        argv, [(0, 19_000, 96 * 1024)], env = {}, avail_mib = 20_000,
-    ) == "host shortfall"
+    assert (
+        backend._launch_host_shortfall_message(
+            argv,
+            [(0, 19_000, 96 * 1024)],
+            env = {},
+            avail_mib = 20_000,
+        )
+        == "host shortfall"
+    )
 
 
-@pytest.mark.parametrize("case", [
-    "linux", "two_gpu", "shared_vulkan", "integrated_cuda",
-    "cpu_child", "not_rocm_apu",
-])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "linux",
+        "two_gpu",
+        "shared_vulkan",
+        "integrated_cuda",
+        "cpu_child",
+        "not_rocm_apu",
+    ],
+)
 def test_ineligible_launch_never_uses_carveout(apu_preflight, monkeypatch, case):
     """No carve-out credit when GPU ownership cannot be verified."""
     backend, argv = apu_preflight
     probes = []
-    backend._windows_rocm_apu_carve_out_credit = lambda *a, **kw: (
-        probes.append(True), 61 * _GiB
-    )[1]
+    backend._windows_rocm_apu_carve_out_credit = lambda *a, **kw: (probes.append(True), 61 * _GiB)[
+        1
+    ]
     kwargs = {"env": {}, "avail_mib": 20_000}
     gpus = [(0, 19_000, 96 * 1024)]
     if case == "linux":
@@ -106,6 +136,12 @@ def test_failed_verification_keeps_host_guard(apu_preflight):
         raise RuntimeError("carve-out telemetry unavailable")
 
     backend._windows_rocm_apu_carve_out_credit = unavailable
-    assert backend._launch_host_shortfall_message(
-        argv, [(0, 19_000, 96 * 1024)], env = {}, avail_mib = 20_000,
-    ) == "host shortfall"
+    assert (
+        backend._launch_host_shortfall_message(
+            argv,
+            [(0, 19_000, 96 * 1024)],
+            env = {},
+            avail_mib = 20_000,
+        )
+        == "host shortfall"
+    )
