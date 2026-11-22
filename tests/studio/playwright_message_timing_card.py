@@ -81,6 +81,27 @@ async def check(url, engine):
             await page.mouse.move(890, 50, steps = 6)
             await page.wait_for_timeout(300)
             assert await older.locator(TRIGGER).count() == 1, "focused reply lost its bar"
+            # Already focused (a click in the reply), then drag-select inside the card: the blur must not
+            # unmount it mid-selection.
+            await page.mouse.click(890, 50)
+            await older.focus()
+            await page.mouse.move(box["x"] + 20, box["y"] + 40, steps = 3)
+            t = await older.locator(TRIGGER).bounding_box()
+            await page.mouse.move(x, t["y"] + t["height"] / 2, steps = 3)
+            await card.wait_for()
+            c = await card.bounding_box()
+            await page.mouse.move(x, c["y"] + c["height"] / 2, steps = 8)
+            row = await card.locator("div.grid > div").first.bounding_box()
+            await page.mouse.move(row["x"] + 2, row["y"] + row["height"] / 2)
+            await page.mouse.down()
+            await page.mouse.move(
+                row["x"] + row["width"] - 2, row["y"] + row["height"] / 2, steps = 6
+            )
+            await page.mouse.up()
+            await page.wait_for_timeout(300)
+            assert await card.count() == 1, "focused reply's card closed mid-selection"
+            selected = await page.evaluate("() => String(window.getSelection())")
+            assert "457ms" in selected, f"focused reply: selected {selected!r}"
             assert not errors, errors
             print(
                 f"PASS {engine}: both replies keep the stats card open and selectable", flush = True

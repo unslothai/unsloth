@@ -25,6 +25,7 @@ export function useActionBarFocusReveal() {
   const focusWithinRef = useRef(false);
   const clearFrameRef = useRef<number | null>(null);
   const popupObserverRef = useRef<MutationObserver | null>(null);
+  const onCardRef = useRef(false);
 
   // The More menu is portaled outside the message, so focus in it counts as engaged. Scoped to the
   // action bar: open disclosures also carry aria-expanded and would hold the bar every frame.
@@ -95,7 +96,7 @@ export function useActionBarFocusReveal() {
           return;
         }
         focusWithinRef.current = false;
-        if (!el.matches(":hover")) {
+        if (!el.matches(":hover") && !onCardRef.current) {
           aui.message().setIsHovering(false);
         }
       };
@@ -136,18 +137,19 @@ export function useActionBarFocusReveal() {
     const stopRelease = () => {
       if (release) document.removeEventListener("pointermove", release, true);
       release = null;
+      onCardRef.current = false;
     };
     const reassert = (event: MouseEvent) => {
-      if (focusWithinRef.current && isEngaged()) {
-        aui.message().setIsHovering(true);
-        return;
-      }
       // A hoverable tooltip card (the reply stats) is portaled out of the message: keep the bar
       // mounted while the pointer is on it, then clear once the pointer lands outside both.
       const into = event.relatedTarget as Element | null;
-      if (!into?.closest?.(TOOLTIP_CONTENT)) return;
+      if (!into?.closest?.(TOOLTIP_CONTENT)) {
+        if (focusWithinRef.current && isEngaged()) aui.message().setIsHovering(true);
+        return;
+      }
       aui.message().setIsHovering(true);
       stopRelease();
+      onCardRef.current = true;
       release = (move) => {
         const target = move.target as Element | null;
         if (target?.closest?.(TOOLTIP_CONTENT)) return;
