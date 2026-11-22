@@ -5961,6 +5961,10 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	overflow-anchor: none;
 }
 
+:root.client-windows .aui-thread-viewport {
+	overscroll-behavior-y: none;
+}
+
 @supports selector(::-webkit-scrollbar) {
 	:root.client-windows .aui-thread-viewport {
 		scrollbar-width: thin;

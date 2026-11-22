@@ -122,7 +122,21 @@ def test_auto_arms_only_the_measured_cuda_cards(monkeypatch):
         assert st._fold_on(fake) is want, cap  # noqa: SLF001
     monkeypatch.setattr(torch.version, "hip", "6.4")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda d: (8, 0))
-    assert not st._fold_on(fake)  # noqa: SLF001 - ROCm (MIOpen) unmeasured
+    for arch, want in (
+        ("gfx1151", True),
+        ("gfx1151:sramecc-:xnack-", True),
+        ("gfx942", False),
+        ("gfx1100", False),
+        ("", False),
+    ):
+        props = type("P", (), {"gcnArchName": arch})()
+        monkeypatch.setattr(torch.cuda, "get_device_properties", lambda d, p = props: p)
+        assert st._fold_on(fake) is want, arch  # noqa: SLF001 - ROCm: only the measured MIOpen arch
+    monkeypatch.setenv(st.UPSAMPLE_FOLD_ENV, "0")
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda d: type("P", (), {"gcnArchName": "gfx1151"})()
+    )
+    assert not st._fold_on(fake)  # noqa: SLF001 - the kill switch still wins
 
 
 def test_non_3x3_or_dtype_mismatch_keeps_the_2x_path(monkeypatch):

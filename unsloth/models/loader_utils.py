@@ -4402,6 +4402,10 @@ def _index_weight_map(path):
 
 
 def _bin_dtypes(path):
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    # torch < 2.6 can run code from the pickle even with weights_only (CVE-2025-32434).
+    refuse_pickle_checkpoint_on_old_torch(path)
     # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
     state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
     return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}

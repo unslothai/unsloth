@@ -356,6 +356,36 @@ def test_float_leaf_refuses_without_capturing(stub_torch):
     assert module.calls == 1
 
 
+def test_prefix_kv_extract_call_runs_eager_and_leaves_plain_calls_capturable(stub_torch):
+    """FLUX.2 klein KV's step 0 returns (noise, cache): it must never reach a capture, which would fail on the cache
+    and poison the wrapper for every later plain call."""
+
+    class _KVDiT(_FakeDiT):
+        def forward(
+            self,
+            hidden_states,
+            timestep = None,
+            return_dict = True,
+            kv_cache_mode = None,
+            num_ref_tokens = 0,
+        ):
+            self.calls += 1
+            out = _FakeTensor((1, 4), value = ("out", self.calls), tag = "out")
+            return (out, object()) if kv_cache_mode == "extract" else (out,)
+
+    module = _KVDiT()
+    handle = _armed(module)
+    for _ in range(4):
+        out = handle(
+            _t(), timestep = _t((1,)), return_dict = False, kv_cache_mode = "extract", num_ref_tokens = 8
+        )
+        assert len(out) == 2
+    assert handle.stats["refused_object"] == 4
+    assert handle.stats["captures"] == 0
+    assert handle.poisoned is False
+    assert module.calls == 4
+
+
 def test_unknown_object_in_the_tree_refuses_without_capturing(stub_torch):
     class Weird:
         pass

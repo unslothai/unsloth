@@ -946,3 +946,79 @@ def test_after_a_capture_no_plan_races_or_moves_a_route(monkeypatch):
     fresh = _deciding_plan(I.MODE_RACE)
     races = []
     assert I._choose_path(fresh, race = lambda: races.append(1) or True)[0] is True and races == [1]
+
+
+def test_a_raced_route_does_not_keep_an_unloaded_pipeline_alive(card):
+    """Routes outlive an unload; a strong module ref there kept the attention weights on the card."""
+    import gc
+    import weakref
+
+    I.forget_plans()
+    pipe = _pipe()
+    assert I.install_auto(pipe, _TARGET) == 3
+    assert len(I._ROUTES) == 3
+    refs = [weakref.ref(m) for m in pipe.transformer.blocks]
+    procs = [weakref.ref(m.processor) for m in pipe.transformer.blocks]
+    card.strided.clear()  # the faked strided-processor install records the pipe
+    del pipe
+    gc.collect()
+    assert all(r() is None for r in refs + procs)
+    I._prune_routes()
+    assert I._ROUTES == []
+
+
+def test_a_weak_route_still_restores_the_stock_processor_or_raises_the_floor():
+    import gc
+
+    stock = _Processor()
+    proc = _Processor()
+    proc._unsloth_stock = stock
+    module = _Attention(2, 128)
+    module.processor = proc
+    raise_floor = I._raise_processor_floor(proc, module)
+    assert raise_floor.alive() and raise_floor(4096) is True
+    assert module.processor is stock
+    other = _Processor()
+    floor_only = I._raise_processor_floor(other)
+    assert floor_only(2048) is False and other._unsloth_int8_min_tokens == 2048
+    del proc, other
+    gc.collect()
+    assert not raise_floor.alive() and not floor_only.alive()
+    assert raise_floor(8192) is False and module.processor is stock
+
+
+def test_register_route_prunes_dead_routes_and_keeps_live_ones():
+    import gc
+
+    I.forget_plans()
+    keep, gone = _Processor(), _Processor()
+    I.register_route(0, 128, I._raise_processor_floor(keep))
+    I.register_route(0, 128, I._raise_processor_floor(gone))
+    plain = lambda tokens: False  # noqa: E731 - no ``alive``: never pruned
+    I.register_route(0, 64, plain)
+    del gone
+    gc.collect()
+    I._prune_routes()
+    assert [r[2].alive() if hasattr(r[2], "alive") else r[2] for r in I._ROUTES] == [True, plain]
+    I.forget_plans()
+
+
+def test_a_register_on_another_thread_during_a_prune_is_kept(monkeypatch):
+    import threading
+
+    late = lambda tokens: False  # noqa: E731
+    live = lambda tokens: False  # noqa: E731
+    racer: list = []
+
+    class _Routes(list):
+        def __setitem__(self, key, value):
+            if isinstance(key, slice) and not racer:
+                racer.append(threading.Thread(target = I.register_route, args = (0, 64, late)))
+                racer[0].start()
+                racer[0].join(0.5)
+            super().__setitem__(key, value)
+
+    monkeypatch.setattr(I, "_ROUTES", _Routes([(0, 128, live)]))
+    I._prune_routes()
+    racer[0].join(5)
+    assert [route[2] for route in I._ROUTES] == [live, late]

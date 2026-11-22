@@ -47,6 +47,7 @@ from __future__ import annotations
 import math
 import os
 import threading
+import weakref
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable, Optional
@@ -684,17 +685,38 @@ def _sink_unsafe() -> set:
 _GRAPHED = [False]
 # (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
 _ROUTES: list = []
+# A prune is read-filter-write: unlocked, a register on another thread could be dropped
+_ROUTES_LOCK = threading.Lock()
+
+
+def _route_alive(raise_floor: Callable) -> bool:
+    alive = getattr(raise_floor, "alive", None)
+    return alive is None or bool(alive())
+
+
+def _prune_locked() -> None:
+    _ROUTES[:] = [route for route in _ROUTES if _route_alive(route[2])]
+
+
+def _prune_routes() -> None:
+    with _ROUTES_LOCK:
+        _prune_locked()
 
 
 def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
-    _ROUTES.append((int(index), int(head_dim), raise_floor))
+    with _ROUTES_LOCK:
+        _prune_locked()
+        _ROUTES.append((int(index), int(head_dim), raise_floor))
 
 
 def _drop_routes(plan: dict) -> None:
     _, Sq, Sk, _, D = plan["shape"]
     floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
     restored = raised = 0
-    for index, head_dim, raise_floor in list(_ROUTES):
+    with _ROUTES_LOCK:
+        _prune_locked()
+        routes = list(_ROUTES)
+    for index, head_dim, raise_floor in routes:
         if index == plan["index"] and head_dim == D:
             if raise_floor(floor):
                 restored += 1
@@ -713,11 +735,24 @@ def _drop_routes(plan: dict) -> None:
         )
 
 
+def _weak(obj: Any) -> Callable:
+    try:
+        return weakref.ref(obj)
+    except TypeError:
+        return lambda: obj
+
+
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
-    its calls compile as they did before the install; any other raises its token floor."""
+    its calls compile as they did before the install; any other raises its token floor. Held weakly: a
+    strong ref in ``_ROUTES`` kept unloaded attention weights (1.7 GB on FLUX.3 klein INT8) on the card."""
+    proc_ref, module_ref = _weak(proc), _weak(module) if module is not None else None
 
     def raise_floor(tokens: int) -> bool:
+        proc = proc_ref()
+        if proc is None:
+            return False
+        module = module_ref() if module_ref is not None else None
         stock = getattr(proc, "_unsloth_stock", None)
         if stock is not None and module is not None and getattr(module, "processor", None) is proc:
             module.processor = stock
@@ -727,6 +762,7 @@ def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
         )
         return False
 
+    raise_floor.alive = lambda: proc_ref() is not None
     return raise_floor
 
 
@@ -940,7 +976,8 @@ def forget_plans() -> None:
     _plans().clear()
     _decisions().clear()
     _sink_unsafe().clear()
-    _ROUTES.clear()
+    with _ROUTES_LOCK:
+        _ROUTES.clear()
     _GRAPHED[0] = False
 
 

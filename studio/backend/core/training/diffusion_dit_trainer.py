@@ -4589,9 +4589,13 @@ def _train_dit(
     # Host copies of the step's inputs and RNG states, only while a budgeted step could still need a rerun.
     replay = StepReplay(device) if gc_budget is not None else None
     fp8_backward = None
-    if base_precision == "fp8" and gc_budget is not None:
-        from core.training.diffusion_frozen_fp8 import BACKWARD_WEIGHTS, fp8_backward_vram_handler
+    if (base_precision == "fp8" or w8a8_on) and gc_budget is not None:
+        from core.training.diffusion_frozen_fp8 import fp8_backward_vram_handler
 
+        if base_precision == "fp8":
+            from core.training.diffusion_frozen_fp8 import BACKWARD_WEIGHTS
+        else:  # the W8A8 int8 base keeps its column-major weights the same way, in its own module-keyed cache
+            from core.training.diffusion_frozen_int8 import BACKWARD_WEIGHTS
         fp8_backward = BACKWARD_WEIGHTS
         fp8_backward.clear()
         fp8_backward.active = fp8_backward.enabled()
@@ -4821,7 +4825,7 @@ def _train_dit(
     if fp8_backward is not None:
         import logging
 
-        logging.getLogger(__name__).info("fp8 backward weights: %s", fp8_backward.stats())
+        logging.getLogger(__name__).info("frozen backward weights: %s", fp8_backward.stats())
         if dequant_cache is None:
             set_vram_request_handler(None)
         fp8_backward.clear()

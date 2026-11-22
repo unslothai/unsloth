@@ -103,12 +103,19 @@ def _grads(weights, attend):
     return loss.detach(), [w.grad.clone() for w in weights], counter.n
 
 
-def test_replay_reuses_the_attention_output(monkeypatch, checkpointing):
-    weights = _weights()
-    full = _grads(weights, _attend())
+def _force_saved_attention(monkeypatch):
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
     monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
     monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    # A ROCm build keeps the explicit setting off (its GPU SDPA kernels are not intercepted); these tests
+    # run the CPU kernel, which is intercepted on every build.
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+
+
+def test_replay_reuses_the_attention_output(monkeypatch, checkpointing):
+    weights = _weights()
+    full = _grads(weights, _attend())
+    _force_saved_attention(monkeypatch)
     saved = _grads(weights, _attend())
     torch.testing.assert_close(saved[0], full[0])
     for a, b in zip(saved[1], full[1]):
@@ -134,9 +141,7 @@ def test_inference_and_unset_flag_take_the_plain_call(monkeypatch, checkpointing
 def test_a_traced_caller_keeps_its_traced_backend_choice(monkeypatch, checkpointing):
     """Under compile, plain causal xformers calls take SDPA; the saving call graph breaks into eager code,
     which must still take SDPA (xformers' grad layout has no kernel on some GPUs, none on CPU)."""
-    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
-    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
-    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    _force_saved_attention(monkeypatch)
     seen = []
     original = ad._run_attention
 
