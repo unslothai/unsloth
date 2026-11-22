@@ -409,6 +409,7 @@ def _summed_tool_loop_stats(total, turn):
 
 # Attribute naming ((mode, size), png_base64) on a decoded picture whose PNG is already known.
 # Pillow's copy() and convert() drop it, so only the exact object it was set on reuses it.
+# Valid only while nothing edits the image in place (paste, ImageDraw, putalpha): those keep mode and size.
 PNG_B64_STAMP = "_studio_png_b64"
 
 

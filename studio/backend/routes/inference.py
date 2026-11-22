@@ -23137,7 +23137,8 @@ def _decode_and_resize_image(backend, encoded: str):
     if _history_image_memo_side(backend) != side:
         return image
     kept = image.copy()
-    size = len(png_b64) + len(kept.getbands()) * kept.size[0] * kept.size[1]
+    # Pillow keeps RGB / RGBA / CMYK rasters at 4 bytes per pixel, 1-band modes at 1 to 4 (I;16, I, F).
+    size = len(png_b64) + 4 * kept.size[0] * kept.size[1]
     with _history_image_memo_lock:
         if key not in _HISTORY_IMAGE_MEMO and size <= _HISTORY_IMAGE_MEMO_MAX_BYTES:
             _HISTORY_IMAGE_MEMO[key] = (kept, png_b64, size)
