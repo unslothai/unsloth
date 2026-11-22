@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional, get_args
 from urllib.parse import quote
 
@@ -357,6 +358,14 @@ async def _inferred_kind(
     return "llm"
 
 
+# The catalog and model-list reads a load does before its job exists stay within wait_s, but never under this.
+_LOOKUP_FLOOR_S = 2.0
+
+
+def _lookup_s(deadline: float) -> float:
+    return max(_LOOKUP_FLOOR_S, deadline - time.monotonic())
+
+
 _CHAT_ONLY_CATALOG = "This chat loads and downloads only models in the Unsloth Studio catalog (list_models(source='catalog'))"
 
 
@@ -666,17 +675,25 @@ async def load_model(
     Calling load_model again with the same arguments while that load runs follows it instead of starting another, and so does a call (without ``variant``) for a chat model Unsloth Studio is already loading.
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
-    # From entry: wait_s also bounds the kind lookup.
     deadline = loading.deadline_after(wait_s)
     catalog = _catalog_lookup(caller, model or "")
     if model and not (checkpoint or export):
-        model = await _full_id(model, catalog)
-    if kind is None:
-        kind = (
-            "llm"
-            if checkpoint or export or not model
-            else await _inferred_kind(caller, model, catalog)
-        )
+        try:
+            model = await asyncio.wait_for(_full_id(model, catalog), _lookup_s(deadline))
+        except asyncio.TimeoutError:
+            pass  # loaded as named, as before kind inference
+    if kind is None and (checkpoint or export or not model):
+        kind = "llm"
+    elif kind is None:
+        try:
+            kind = await asyncio.wait_for(
+                _inferred_kind(caller, model, catalog), _lookup_s(deadline)
+            )
+        except asyncio.TimeoutError:
+            raise ToolError(
+                f"Unsloth Studio could not tell the kind of '{model}' within wait_s; pass kind "
+                "('llm', 'image', 'video' or 'stt'), or a longer wait_s."
+            ) from None
     await _chat_may_load(
         caller,
         kind,

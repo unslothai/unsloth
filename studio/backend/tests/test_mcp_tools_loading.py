@@ -1637,3 +1637,15 @@ def test_a_bare_catalog_name_keeps_a_variant_that_holds_a_slash(asked, full):
             return "org/Moonshine-Streaming-GGUF:small/Q8_0"
 
     assert asyncio.run(tools._full_id(asked, Catalog())) == full
+
+
+def test_a_slow_kind_lookup_answers_within_wait_s_and_asks_for_the_kind(monkeypatch, fast_polls):
+    slow_reads = {route: slow(answer, 6.0) for route, answer in CATALOGS.items()}
+    slow_reads[("GET", "/v1/models")] = slow({"data": []}, 6.0)
+    studio = fake_studio({**PAYLOADS, STATUS_ROUTE: EMPTY_STATUS, **slow_reads})
+    with session(monkeypatch, studio) as call:
+        started = time.monotonic()
+        result = call("load_model", {"model": "org/model", "wait_s": 0})
+        assert time.monotonic() - started < 5
+    assert result["isError"] is True and "pass kind" in result["content"][0]["text"], result
+    assert bodies(studio, "/api/inference/load") == []
