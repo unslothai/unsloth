@@ -71,7 +71,7 @@ def nvidia(monkeypatch):
 
 
 def test_ltx25_carries_the_rdna_explicit_w8a8_evidence():
-    assert "16.17 vs 18.89 s/clip" in str(tq._FAMILY_RDNA_EXPLICIT_W8A8.get("ltx-2.5"))
+    assert "16.01 vs 18.61 s/clip" in str(tq._FAMILY_RDNA_EXPLICIT_W8A8.get("ltx-2.5"))
     # AUTO is untouched: no AUTO W8A8 row, so gfx1151 AUTO keeps bf16.
     assert "ltx-2.5" not in tq._FAMILY_RDNA_AUTO_W8A8
 

@@ -668,10 +668,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             # The split single-file repo next to the Diffusers pack (safetensors, no remote code).
             trusted_repos = ("lightricks/ltx-2.5",),
             # An explicit int8 pick on gfx1151 (ROCm 7.13, 512x320x17, 8 steps, 4 repeats) runs W8A8 read from the
-            # hosted ConvRot file; AUTO keeps bf16 there. Weight-only quantised at load measured 18.89 s/clip.
+            # hosted ConvRot file; AUTO keeps bf16 (15.11 s/clip). Weight-only quantised at load measured 18.61 s/clip.
             rdna_explicit_w8a8 = (
-                "int8 W8A8 measured 16.17 vs 18.89 s/clip against weight-only int8 on gfx1151 (512x320x17, "
-                "8 steps), LPIPS 0.126 vs 0.138 against bf16"
+                "hosted int8 W8A8 measured 16.01 vs 18.61 s/clip against weight-only int8 on gfx1151 (512x320x17, "
+                "8 steps), LPIPS 0.102 vs 0.164 against bf16"
             ),
         ),
         pipeline_class = "LTX2Pipeline",
