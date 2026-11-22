@@ -14761,6 +14761,11 @@ def _mcp_project_server_ids(session_id: str | None) -> frozenset[str] | None:
     return frozenset(selected) if selected is not None else None
 
 
+def mcp_project_excludes(server_id: str, session_id: str | None) -> bool:
+    selected = _mcp_project_server_ids(session_id)
+    return selected is not None and server_id not in selected
+
+
 async def set_mcp_project_scope(session_id: str | None) -> None:
     selected = (
         await asyncio.to_thread(_mcp_project_server_ids, session_id)

@@ -889,6 +889,12 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
     return server
 
 
+async def _ui_project_gate(server_id: str, session_id: Optional[str]) -> None:
+    from core.inference.tools import mcp_project_excludes
+    if await asyncio.to_thread(mcp_project_excludes, server_id, session_id):
+        raise HTTPException(status_code = 400, detail = "MCP server is not enabled for this project")
+
+
 def _row_still_matches(server_id: str, server: dict) -> bool:
     current = mcp_servers_db.get_server(server_id)
     return current is not None and all(
@@ -951,6 +957,7 @@ async def read_mcp_ui_resource(
     via_api_key: ViaApiKey = False,
 ):
     server = _ui_server_or_404(server_id, via_api_key)
+    await _ui_project_gate(server_id, session_id)
     uri = (uri or "").strip()
     # Any ui:// resource (widgets read their own assets), no other scheme: a filesystem server maps file:// onto the host.
     if not uri.startswith(UI_RESOURCE_SCHEME):
@@ -998,6 +1005,7 @@ async def call_mcp_ui_tool(
     if get_tool_policy() is False:
         raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
     server = _ui_server_or_404(server_id, via_api_key)
+    await _ui_project_gate(server_id, payload.session_id)
     tool_name = (payload.tool_name or "").strip()
     if not tool_name:
         raise HTTPException(status_code = 400, detail = "tool_name must not be empty")

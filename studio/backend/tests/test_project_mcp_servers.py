@@ -69,3 +69,39 @@ def test_chat_uses_its_projects_saved_mcp_servers(monkeypatch):
         await list_chat(beta_session, [beta])
 
     asyncio.run(switch_chats())
+
+
+def test_mcp_app_endpoints_honour_the_project_selection(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+
+    from models.mcp_servers import McpUiToolCallRequest
+    from routes import mcp_servers as routes
+
+    monkeypatch.setattr(routes, "get_tool_policy", lambda: True, raising = False)
+    kept, dropped = "d" * 16, "e" * 16
+    for server_id in (kept, dropped):
+        mcp_servers_db.create_server(
+            id = server_id, display_name = server_id, url = "https://example.invalid/mcp", is_enabled = True
+        )
+    studio_db.upsert_chat_project({"id": "gamma", "name": "gamma", "createdAt": 1, "updatedAt": 2})
+    patch_project("gamma", ChatProjectPatch(mcpServerIds = [kept]), "owner")
+    session = tools.project_session_id("gamma")
+
+    async def blocked():
+        with pytest.raises(HTTPException) as read:
+            await routes.read_mcp_ui_resource(
+                dropped, uri = "ui://w", session_id = session, current_subject = "owner"
+            )
+        with pytest.raises(HTTPException) as call:
+            await routes.call_mcp_ui_tool(
+                dropped,
+                McpUiToolCallRequest(tool_name = "echo", session_id = session),
+                current_subject = "owner",
+            )
+        return read.value, call.value
+
+    for exc in asyncio.run(blocked()):
+        assert exc.status_code == 400 and "not enabled for this project" in exc.detail
+    assert not tools.mcp_project_excludes(kept, session)
+    assert not tools.mcp_project_excludes(dropped, "unfiled-thread")
