@@ -360,7 +360,8 @@ def test_wrapper_subclass_weights_keep_their_own_matmul(monkeypatch):
     ran = []
     monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
     monkeypatch.setattr(mod, "routed", lambda n, k: True)
-    monkeypatch.setattr(mod, "skinny_linear", lambda *a, **k: ran.append(1))
+    for name in ("skinny_linear", "_launch"):
+        monkeypatch.setattr(mod, name, lambda *a, **k: ran.append(1), raising = False)
     if mod.triton is None:
         monkeypatch.setattr(mod, "triton", object())
     X = torch.randn(2, 1, 8, dtype = torch.bfloat16)
@@ -377,7 +378,8 @@ def _gated(monkeypatch):
     mod = _load()
     ran = []
     monkeypatch.setattr(mod, "skinny_linear_supported", lambda device: True)
-    monkeypatch.setattr(mod, "skinny_linear", lambda *a, **k: ran.append(a))
+    for name in ("skinny_linear", "_launch"):
+        monkeypatch.setattr(mod, name, lambda *a, **k: ran.append(a), raising = False)
     if mod.triton is None:
         monkeypatch.setattr(mod, "triton", object())
     return mod, ran
@@ -513,7 +515,8 @@ def test_launch_failure_falls_back_and_stays_off(monkeypatch):
         calls.append(1)
         raise RuntimeError("PassManager::run failed")
 
-    monkeypatch.setattr(mod, "skinny_linear", boom)
+    for name in ("skinny_linear", "_launch"):
+        monkeypatch.setattr(mod, name, boom, raising = False)
     X, W, A, B = _operands()
     with torch.no_grad():
         assert mod.skinny_decode_linear(X, W, A, B, 2.0, None) is None

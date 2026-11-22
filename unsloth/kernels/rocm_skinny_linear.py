@@ -13,7 +13,6 @@
 import os
 
 import torch
-from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 __all__ = [
     "skinny_linear",
@@ -235,6 +234,20 @@ def skinny_linear(
         raise ValueError("skinny_linear: A must be [R, K] and B [N, R]")
     if out is not None and tuple(out.shape) != (M, N):
         raise ValueError(f"skinny_linear: out must be [{M}, {N}]")
+    return _launch(X, W, A, B, scale, out, config)
+
+
+def _launch(
+    X,
+    W,
+    A,
+    B,
+    scale,
+    out,
+    config = None,
+):
+    M, K = X.shape
+    N = W.shape[0]
     if out is None:
         out = torch.empty((M, N), dtype = X.dtype, device = X.device)
     config = config or pick_config(N, K)
@@ -302,51 +315,10 @@ def skinny_linear(
 
 _INT32 = 2**31
 _BROKEN = []
-_is_functorch_wrapped = getattr(
-    getattr(torch._C, "_functorch", None), "is_functorch_wrapped_tensor", None
-)
+_PLAIN = (torch.Tensor, torch.nn.Parameter)
+_STRIDED = torch.strided
 _functorch_active = getattr(torch._C, "_are_functorch_transforms_active", lambda: False)
-
-
-def _forward_ad_active():
-    return getattr(torch.autograd.forward_ad, "_current_level", -1) >= 0
-
-
-def _raw(t):
-    """A dense strided tensor the kernel can read through its pointer. A wrapper subclass (TorchAO NF4Tensor, ...)
-    reports a float dtype and a 2D shape over packed storage and only dequantizes through its own dispatch; sparse
-    and functorch-wrapped (vmap / jvp) tensors have no plain storage."""
-    return (
-        type(t) in (torch.Tensor, torch.nn.Parameter)
-        and t.layout == torch.strided
-        and not is_traceable_wrapper_subclass(t)
-        and not (_is_functorch_wrapped is not None and _is_functorch_wrapped(t))
-    )
-
-
-def _span(t):
-    # Elements from the first to one past the last addressed element (strides are never negative).
-    return 1 + sum((size - 1) * stride for size, stride in zip(t.shape, t.stride()))
-
-
-def _self_overlap(out):
-    # The [M, N] view writes some element twice (expanded / as_strided): exact for 2D, no "too hard" case.
-    (m, n), (a, b) = out.shape, out.stride()
-    if (m > 1 and a == 0) or (n > 1 and b == 0):
-        return True
-    return m > 1 and n > 1 and a < n * b and b < m * a
-
-
-def _overlaps(out, *tensors):
-    # Byte ranges, conservative for interleaved views: the kernel reads X / W / A / B while it writes out.
-    start = out.data_ptr()
-    end = start + _span(out) * out.element_size()
-    for t in tensors:
-        if t is not None:
-            t_start = t.data_ptr()
-            if t_start < end and start < t_start + _span(t) * t.element_size():
-                return True
-    return False
+_forward_ad = torch.autograd.forward_ad
 
 
 def _autocast_changes(dtype):
@@ -359,7 +331,13 @@ def _autocast_changes(dtype):
 
 def skinny_decode_linear(X, W, A, B, scale, out):
     """fast_linear_forward's 16-bit decode step (X [bsz, 1, K]) through skinny_linear, or None when
-    it does not apply: the caller then runs the rocBLAS path. Never raises for a rejected call."""
+    it does not apply: the caller then runs the rocBLAS path. Never raises for a rejected call.
+
+    The kernel reads X / W / A / B through raw pointers with int32 offsets, so every operand must be a plain
+    dense tensor (the exact type: a wrapper subclass such as TorchAO's NF4Tensor reports a float dtype and a
+    2D shape over packed storage and only dequantizes through its own dispatch), and out must not overlap
+    itself or any operand. Forward-mode AD, torch.func transforms and a different autocast dtype need the
+    dispatched ops. This runs per projection per token in eager decode, so the checks stay arithmetic."""
     if triton is None or _BROKEN:
         return None
     if type(X) is not torch.Tensor or X.dim() != 3 or X.shape[1] != 1:
@@ -368,67 +346,96 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     if not (1 <= bsz <= MAX_ROWS):
         return None
     dtype = X.dtype
-    if dtype not in (torch.bfloat16, torch.float16) or W.dtype != dtype or W.dim() != 2:
+    if dtype not in (torch.bfloat16, torch.float16) or type(W) not in _PLAIN or W.dim() != 2:
         return None
     N = W.shape[0]
-    if K < 1 or N < 1 or W.shape[1] != K or N * MAX_ROWS * 64 >= _INT32:
+    if W.dtype != dtype or K < 1 or N < 1 or W.shape[1] != K or N * MAX_ROWS * 64 >= _INT32:
         return None
-    if not _raw(X) or not _raw(W):
+    if X.layout != _STRIDED or W.layout != _STRIDED:
         return None
     if not routed(N, K):
         return None
-    if W.device != X.device or not skinny_linear_supported(X.device):
+    device = X.device
+    if W.device != device or not skinny_linear_supported(device):
         return None
-    if X.device.index is not None and X.device.index != torch.cuda.current_device():
+    if device.index is not None and device.index != torch.cuda.current_device():
         return None
     grad = torch.is_grad_enabled()
     if grad and (X.requires_grad or W.requires_grad):
         return None
-    # Forward-mode AD and torch.func transforms need the dispatched ops (tangents, batching rules).
-    if _forward_ad_active() or _functorch_active() or _autocast_changes(dtype):
+    if (
+        getattr(_forward_ad, "_current_level", -1) >= 0
+        or _functorch_active()
+        or _autocast_changes(dtype)
+    ):
         return None
+    xs0, _, xs1 = X.stride()
+    ws0, ws1 = W.stride()
+    # [first, last + 1) element spans; strides are never negative.
+    spans = [(X, (bsz - 1) * xs0 + (K - 1) * xs1 + 1), (W, (N - 1) * ws0 + (K - 1) * ws1 + 1)]
     if A is None:
         # No active LoRA (a base layer, or an adapter folded for this generate()): lora_S is None.
         B, scale = None, 1.0
     else:
         if (
-            B is None
+            type(A) not in _PLAIN
+            or type(B) not in _PLAIN
             or type(scale) not in (int, float)
-            or not _raw(A)
-            or not _raw(B)
             or A.dtype != dtype
             or B.dtype != dtype
-            or A.device != X.device
-            or B.device != X.device
             or A.dim() != 2
             or B.dim() != 2
-            or A.shape[1] != K
-            or B.shape[0] != N
-            or B.shape[1] != A.shape[0]
-            or not 1 <= A.shape[0] <= 128
+            or A.layout != _STRIDED
+            or B.layout != _STRIDED
+            or A.device != device
+            or B.device != device
         ):
+            return None
+        R = A.shape[0]
+        if A.shape[1] != K or B.shape[0] != N or B.shape[1] != R or not 1 <= R <= 128:
             return None
         if grad and (A.requires_grad or B.requires_grad):
             return None
+        as0, as1 = A.stride()
+        bs0, bs1 = B.stride()
+        spans.append((A, (R - 1) * as0 + (K - 1) * as1 + 1))
+        spans.append((B, (N - 1) * bs0 + (R - 1) * bs1 + 1))
     if out is None:
-        out = torch.empty((bsz, 1, N), dtype = dtype, device = X.device)
-    elif (
-        type(out) is not torch.Tensor
-        or out.layout != torch.strided
-        or out.shape != (bsz, 1, N)
-        or out.dtype != dtype
-        or out.device != X.device
-        or (grad and out.requires_grad)
-        or (out.is_inference() and not torch.is_inference_mode_enabled())
-        or _self_overlap(out[:, 0, :])
-        or _overlaps(out, X, W, A, B)
-    ):
-        return None
-    if any(_span(t) >= _INT32 for t in (X, W, A, B, out) if t is not None):
-        # The kernel's pointer offsets are int32.
-        return None
+        out = torch.empty((bsz, 1, N), dtype = dtype, device = device)
+    else:
+        if (
+            type(out) is not torch.Tensor
+            or out.shape != (bsz, 1, N)
+            or out.dtype != dtype
+            or out.layout != _STRIDED
+            or out.device != device
+            or (grad and out.requires_grad)
+            or (out.is_inference() and not torch.is_inference_mode_enabled())
+        ):
+            return None
+        os0, _, os1 = out.stride()
+        # out[:, 0, :] must not write an element twice (expanded / as_strided views).
+        if (bsz > 1 and os0 == 0) or (N > 1 and os1 == 0):
+            return None
+        if bsz > 1 and N > 1 and os0 < N * os1 and os1 < bsz * os0:
+            return None
+        o_span = (bsz - 1) * os0 + (N - 1) * os1 + 1
+        if o_span >= _INT32:
+            return None
+        # Byte ranges, conservative for interleaved views: the kernel reads the operands while it writes out.
+        size = X.element_size()
+        o_start = out.data_ptr()
+        o_end = o_start + o_span * size
+        for t, span in spans:
+            t_start = t.data_ptr()
+            if t_start < o_end and o_start < t_start + span * size:
+                return None
+    for _, span in spans:
+        if span >= _INT32:
+            # The kernel's pointer offsets are int32.
+            return None
     try:
-        skinny_linear(X[:, 0, :], W, A, B, scale, out[:, 0, :])
+        _launch(X[:, 0, :], W, A, B, scale, out[:, 0, :])
     except torch.cuda.OutOfMemoryError:
         return None
     except Exception:
