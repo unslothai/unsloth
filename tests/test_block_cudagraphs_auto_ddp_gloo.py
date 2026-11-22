@@ -133,7 +133,9 @@ def _worker(rank, world, port, out):
     try:
         bc = _load()
         bc._CUDAGRAPH_MODE = "auto"
-        # CPU tensors: every static rule runs except "not a CUDA tensor"
+        # CPU tensors: every static rule runs except "not a CUDA tensor" and the platform gate (torch < 2.13 or a
+        # ROCm build would turn graphs off before the DDP agreement this test is about).
+        bc._auto_platform_reason = lambda: None
         static = bc._auto_static_reason
         bc._auto_static_reason = lambda layer, hs: static(layer, _LooksCuda())
         res = {}
