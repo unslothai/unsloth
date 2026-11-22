@@ -339,7 +339,7 @@ export function EditProjectDialog({
           />
         </div>
         <ProjectMcpServers
-          key={project.id}
+          key={`mcp-${project.id}`}
           value={mcpServerIds}
           onChange={setMcpServerIds}
           disabled={busy || folderBusy}
