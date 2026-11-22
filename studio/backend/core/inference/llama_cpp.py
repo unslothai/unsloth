@@ -16149,9 +16149,8 @@ class LlamaCppBackend:
 
         free_bytes = free_vram_mib * 1024 * 1024
         message = shortfall(free_bytes)
-        # A Windows ROCm APU's free reading is capped by Windows-visible RAM; its verified
-        # carve-out is the same GPU, so take the max, never the sum (#18805). The verifier reads
-        # WDDM counters out of process (seconds), so only a load that would warn pays for it.
+        # Windows ROCm APU: verified carve-out and free reading are the same pool, so max, never
+        # sum (#18805). The verifier is slow (WDDM counters), so only a warning load pays for it.
         if (
             message
             and sys.platform == "win32"
