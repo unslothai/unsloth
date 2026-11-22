@@ -2581,6 +2581,19 @@ _ANSWER_PIVOT = re.compile(
 )
 
 
+# LFM2 / LFM2.5 tool-call opener, one special token in their vocabularies.
+_LFM_CALL_OPENER = "<|tool_call_start|>"
+
+
+def _with_banned_token(logit_bias, token_id: int):
+    """``logit_bias`` (llama-server takes a ``[[id, bias]]`` list or an ``{id: bias}`` object) plus a ban on ``token_id``."""
+    if isinstance(logit_bias, dict) and logit_bias:
+        return {**logit_bias, str(token_id): False}
+    if isinstance(logit_bias, list) and logit_bias:
+        return [*logit_bias, [token_id, False]]
+    return [[token_id, False]]
+
+
 def _gguf_active_tool_names(active_tools: list[dict]) -> list[str]:
     names = [
         (tool.get("function") or {}).get("name")
@@ -9261,6 +9274,39 @@ class LlamaCppBackend:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._port}"
+
+    def _final_pass_call_opener_id(self) -> Optional[int]:
+        """Single-token LFM call opener id to ban on the tool_choice "none" final pass (#18802), else None."""
+        template = (
+            getattr(self, "_chat_template_override", None)
+            or getattr(self, "_chat_template", None)
+            or ""
+        )
+        if _LFM_CALL_OPENER not in template:
+            return None
+        cached = getattr(self, "_final_pass_opener_cache", None)
+        if cached is not None and cached[0] is template:
+            return cached[1]
+        token_id: Optional[int] = None
+        try:
+            with httpx.Client(
+                timeout = httpx.Timeout(10.0),
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                r = client.post(
+                    f"{self.base_url}/tokenize",
+                    json = {"content": _LFM_CALL_OPENER, "add_special": False, "parse_special": True},
+                )
+            tokens = r.json().get("tokens") if r.status_code == 200 else None
+            if isinstance(tokens, list) and len(tokens) == 1 and isinstance(tokens[0], int):
+                token_id = tokens[0]
+        except Exception as exc:  # noqa: BLE001 -- the ban is an aid; the answer pass runs without it
+            logger.debug("Could not look up the LFM call opener token: %s", exc)
+            return None
+        self._final_pass_opener_cache = (template, token_id)
+        return token_id
 
     @property
     def _auth_headers(self) -> "Optional[dict[str, str]]":
@@ -43029,9 +43075,14 @@ class LlamaCppBackend:
                 raise
 
         # ── Tool iteration cap reached -- synthesize final answer ──
+        # LFM2 / LFM2.5 write a call as content under tool_choice "none" (#18802): ban its opener on this pass.
+        _final_opener_id = self._final_pass_call_opener_id() if _last_sent_tools else None
         # Cap reached with no final text: nudge the final streaming pass to answer rather than request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
-            if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
+            # Banned opener: nudge as a user turn; in the tool result LFM writes almost nothing.
+            if _final_opener_id is not None or not _attach_internal_feedback_to_tool_result(
+                BUDGET_EXHAUSTED_NUDGE
+            ):
                 # Ride the trailing user turn (over-cap notice or promoted image): two in a row break Gemma.
                 if conversation[-1].get("role") == "user":
                     conversation[-1] = {
@@ -43192,6 +43243,8 @@ class LlamaCppBackend:
         if _final_tools:
             stream_payload["tools"] = llama_grammar_tools(_final_tools)
             stream_payload["tool_choice"] = "none"
+            if _final_opener_id is not None:
+                stream_payload["logit_bias"] = _with_banned_token(logit_bias, _final_opener_id)
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         if thinking_budget_tokens is not None:

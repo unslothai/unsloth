@@ -82,6 +82,8 @@ _CONTROL_MARKUP = re.compile(
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
     # Kimi K2 / Moonshot wrap history in a section and begin/end call pairs; none is the short tool_call spelling, so a paste could fabricate a call.
     r"|tool_calls?(?:_section)?_(?:begin|end)|tool_call_argument_begin"
+    # LFM2 / LFM2.5 open a call list with this; its closer is the Kimi tool_call_end above.
+    r"|tool_call_start"
     r"|end(?:_of_(?:turn|text))?"
     # Document boundaries from reserved vocabulary: a pasted copy is split back to the real token id and becomes a document break.
     r"|begin_of_text|endoftext"
