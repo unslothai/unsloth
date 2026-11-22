@@ -4,6 +4,7 @@
 """Build-root files keep their name across builds: index.html versions its boot scripts, everything else
 gets an explicit policy plus working conditional requests."""
 
+import mimetypes
 import os
 import re
 import sys
@@ -92,7 +93,8 @@ def test_versioned_boot_script_is_immutable_and_unversioned_revalidates(tmp_path
     assert versioned.status_code == 200
     assert versioned.text == "window.__theme = 'v1';"
     assert versioned.headers["cache-control"] == IMMUTABLE
-    assert versioned.headers["content-type"].startswith("text/javascript")
+    # MIME types come from the platform registry (Windows maps .js to application/javascript), as on main.
+    assert versioned.headers["content-type"].startswith(mimetypes.guess_type("x.js")[0])
 
     for url in ("/theme-boot.js", "/theme-boot.js?v=000000000000"):
         response = client.get(url)
@@ -119,7 +121,9 @@ def test_other_root_files_cache_for_a_day_and_answer_304(tmp_path, main_module, 
     first = client.get(path)
     assert first.status_code == 200
     assert first.headers["cache-control"] == ONE_DAY
-    assert first.headers["content-type"].startswith(media_type)
+    assert first.headers["content-type"].startswith(
+        mimetypes.guess_type(path)[0] or "application/octet-stream"
+    )
     for conditional in (
         {"If-None-Match": first.headers["etag"]},
         {"If-Modified-Since": first.headers["last-modified"]},
@@ -152,6 +156,9 @@ def test_an_updated_boot_script_gets_a_new_url_on_the_next_page_load(tmp_path, m
     assert revalidated.status_code == 200 and "v2" in revalidated.text
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "Windows st_ctime is the creation time, not the change time"
+)
 def test_a_same_size_copy_with_its_mtime_restored_still_gets_a_new_url(tmp_path, main_module):
     """cp -p / rsync -a keep size and mtime; the file's ctime still moves, so the old immutable URL is retired."""
     dist = _dist(tmp_path)
@@ -166,6 +173,26 @@ def test_a_same_size_copy_with_its_mtime_restored_still_gets_a_new_url(tmp_path,
         os.stat(boot).st_size == before.st_size and os.stat(boot).st_mtime_ns == before.st_mtime_ns
     )
     assert _boot_url(client) != old_url
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "Windows st_ctime is the creation time, not the change time"
+)
+def test_a_same_size_mtime_preserving_font_replacement_stops_answering_304(tmp_path, main_module):
+    """Unversioned root files revalidate on their ETag; a cp -p style swap must not keep the old bytes alive."""
+    dist = _dist(tmp_path)
+    client = _client(main_module, dist)
+    font = dist / "fonts" / "Hellix-Regular.woff2"
+    before = os.stat(font)
+    first = client.get("/fonts/Hellix-Regular.woff2")
+    body = font.read_bytes()
+    font.write_bytes(bytes(b ^ 1 for b in body[:1]) + body[1:])
+    os.utime(font, ns = (before.st_atime_ns, before.st_mtime_ns))
+    again = client.get(
+        "/fonts/Hellix-Regular.woff2", headers = {"If-None-Match": first.headers["etag"]}
+    )
+    assert again.status_code == 200
+    assert again.content != first.content
 
 
 def test_bootstrap_injection_and_its_nonce_survive_the_rewrite(tmp_path, main_module, monkeypatch):

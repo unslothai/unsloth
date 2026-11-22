@@ -432,7 +432,8 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from starlette.staticfiles import NotModifiedResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
@@ -3842,7 +3843,12 @@ def setup_frontend(
 
         if file_path.is_file():
             stat_result = file_path.stat()
-            response = root_files.file_response(file_path, stat_result, request.scope)
+            response = FileResponse(file_path, stat_result = stat_result)
+            # Starlette's ETag is size + mtime only; use the identity digest so a same-size, mtime-preserving
+            # replacement (cp -p, rsync -a) stops matching the old validator instead of answering 304 forever.
+            response.headers["etag"] = f'"{_root_file_version(stat_result)}"'
+            if root_files.is_not_modified(response.headers, request.headers):
+                response = NotModifiedResponse(response.headers)
             response.headers["Cache-Control"] = _root_file_cache_control(
                 file_path, stat_result, request.query_params.get("v")
             )
