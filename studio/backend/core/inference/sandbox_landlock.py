@@ -151,3 +151,15 @@ def with_abstract_scope(preexec_fn: "Callable[[], None] | None") -> "Callable[[]
         apply_abstract_scope()
 
     return preexec
+
+
+def scoped_preexec(preexec_fn: "Callable[[], None] | None") -> "Callable[[], None] | None":
+    """with_abstract_scope where this kernel has the scope, else *preexec_fn* itself.
+
+    Below ABI 6 apply_abstract_scope is a no-op (the scoped attr gets E2BIG, or Landlock is absent), and the wrapper
+    only stops a plain _sandbox_preexec from taking the vfork shim path. Keyed on the live ABI query, never the cached
+    probe: a probe timeout reports False on a kernel that does apply the scope.
+    """
+    if not _abi_reports_scope():
+        return preexec_fn
+    return with_abstract_scope(preexec_fn)
