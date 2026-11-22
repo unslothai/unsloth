@@ -726,7 +726,6 @@ def select_attention_backend(
         alias = ATTN_AUTO
         speed_active = True
     if alias == "aiter" and _is_cuda_rocm(target) and not _diffusers_aiter_usable():
-        # A dead alias (diffusers >= 0.41 has only the hub kernel): Studio's auto pick, never slower than the default.
         alias = ATTN_AUTO
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
@@ -757,8 +756,7 @@ def select_attention_backend(
 
 
 def _diffusers_aiter_usable() -> bool:
-    """Whether this diffusers build has the local ``aiter`` backend with its package importable. 0.41+ dropped it for
-    ``aiter_fa2_hub``, a hub-downloaded kernel Studio does not fetch. Never raises."""
+    """Local diffusers ``aiter`` backend present and importable (0.41+ has only the unfetched hub kernel)."""
     try:
         from diffusers.models import attention_dispatch as dispatch
         names = {getattr(m, "value", None) for m in getattr(dispatch, "AttentionBackendName", ())}

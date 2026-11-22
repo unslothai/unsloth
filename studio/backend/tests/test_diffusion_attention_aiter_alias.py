@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``aiter`` on ROCm with a diffusers build that lacks the local AITER backend (0.41+ ships only the hub kernel
-``aiter_fa2_hub``) runs Studio's auto pick and says so, instead of silently dropping to native SDPA. Every other
-pick, and ``aiter`` where it can engage, is unchanged. Hermetic, CPU only."""
+"""ROCm ``aiter`` without diffusers' local AITER backend (0.41+) runs the auto pick, not native SDPA; all else unchanged."""
 
 from __future__ import annotations
 
@@ -99,7 +97,7 @@ def test_aiter_off_rocm_unchanged(monkeypatch, names, can_use):
     assert att.explicit_attention_decline(_target("mps"), "aiter")[1] == "unsupported"
 
 
-# origin/main answers, (speed on, speed off, decline status), with flash verified on ROCm and an SM90 NVIDIA card.
+# origin/main answers: (speed on, speed off, decline status).
 _C = att.ROCM_FLASH_CANDIDATE
 _U = "unsupported"
 _FROZEN = {
