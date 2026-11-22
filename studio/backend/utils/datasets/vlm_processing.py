@@ -12,8 +12,9 @@ def generate_smart_vlm_instruction(
     text_column = "text",
     image_column = "image",
     dataset_name = None,
+    fallback_instruction = None,
 ):
-    """selects a VLM instruction from explicit columns, heuristics, an LLM, or the default."""
+    """selects a VLM instruction from explicit columns, heuristics, an LLM, or the default. fallback_instruction, when set, replaces everything after the explicit question-column scan."""
     sample = next(iter(dataset))
     column_names = set(sample.keys())
 
@@ -45,6 +46,16 @@ def generate_smart_vlm_instruction(
                     "uses_dynamic_instruction": True,
                     "confidence": 1.0,
                 }
+
+    # Per-row questions win; only a split without them takes the caller's prompt (the training one, for eval).
+    if fallback_instruction is not None:
+        return {
+            "instruction": fallback_instruction,
+            "instruction_column": None,
+            "instruction_type": "inherited",
+            "uses_dynamic_instruction": False,
+            "confidence": 1.0,
+        }
 
     text_col_lower = text_column.lower()
 

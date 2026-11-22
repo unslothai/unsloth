@@ -29,7 +29,7 @@ def _helper_writes_one_sentence(monkeypatch):
 def _format(
     captions,
     dataset_name,
-    vlm_instruction = None,
+    vlm_fallback_instruction = None,
 ):
     ds = Dataset.from_dict(
         {"image": [Image.new("RGB", (8, 8))] * len(captions), "caption": captions}
@@ -40,7 +40,11 @@ def _format(
         tokenizer = None,
         is_vlm = True,
         dataset_name = dataset_name,
-        vlm_instruction = vlm_instruction,
+        **(
+            {}
+            if vlm_fallback_instruction is None
+            else {"vlm_fallback_instruction": vlm_fallback_instruction}
+        ),
     )
     assert info["success"], info["errors"]
     return info
@@ -58,7 +62,7 @@ def test_eval_split_reuses_the_train_instruction():
     eval_ = _format(
         ["Sagittal view of the spine.", "Coronal slice of the wrist."],
         "org/scans",
-        vlm_instruction = train.get("vlm_instruction"),
+        vlm_fallback_instruction = train.get("vlm_instruction"),
     )
 
     assert _prompts(train) == {MEDICAL}
@@ -94,10 +98,7 @@ def test_question_column_rows_report_no_fixed_instruction():
     assert _prompts(info) == {"What bone is this?", "Is it broken?"}
 
 
-@pytest.mark.parametrize(
-    "module, train_result", [("trainer.py", "dataset_info"), ("worker.py", "vlm_info")]
-)
-def test_training_formats_the_eval_split_with_the_train_instruction(module, train_result):
+def _eval_split_calls(module):
     source = Path(__file__).resolve().parents[1] / "core" / "training" / module
     calls = [
         node
@@ -110,11 +111,54 @@ def test_training_formats_the_eval_split_with_the_train_instruction(module, trai
         )
     ]
     assert calls
-    for call in calls:
+    return calls
+
+
+TRAINING_MODULES = [("trainer.py", "dataset_info"), ("worker.py", "vlm_info")]
+
+
+@pytest.mark.parametrize("module, train_result", TRAINING_MODULES)
+def test_training_formats_the_eval_split_with_the_train_instruction(module, train_result):
+    for call in _eval_split_calls(module):
         keywords = {k.arg: k.value for k in call.keywords}
-        assert "vlm_instruction" in keywords
-        names = {n.id for n in ast.walk(keywords["vlm_instruction"]) if isinstance(n, ast.Name)}
+        assert "vlm_fallback_instruction" in keywords
+        names = {
+            n.id for n in ast.walk(keywords["vlm_fallback_instruction"]) if isinstance(n, ast.Name)
+        }
         assert train_result in names
+
+
+@pytest.mark.parametrize("module, train_result", TRAINING_MODULES)
+def test_eval_split_questions_survive_a_caption_only_train_split(module, train_result):
+    # Caption-only train infers a fixed prompt; an eval split with its own questions must keep them.
+    train = _format(["Radiograph shows a lytic lesion.", "Axial view of the knee."], "org/scans")
+    assert train["vlm_instruction"] == MEDICAL
+    eval_ds = Dataset.from_dict(
+        {
+            "image": [Image.new("RGB", (8, 8))] * 2,
+            "question": ["What bone is this?", "Is it broken?"],
+            "answer": ["Femur.", "No."],
+        }
+    )
+    for call in _eval_split_calls(module):
+        # Replay the call site's keywords that read the training result, against the real formatter.
+        replayed = {
+            k.arg: eval(compile(ast.Expression(k.value), module, "eval"), {train_result: train})
+            for k in call.keywords
+            if k.arg
+            and train_result in {n.id for n in ast.walk(k.value) if isinstance(n, ast.Name)}
+        }
+        assert replayed
+        info = format_and_template_dataset(
+            eval_ds,
+            model_name = "unsloth/Qwen2.5-VL-3B-Instruct",
+            tokenizer = None,
+            is_vlm = True,
+            dataset_name = "org/scans",
+            **replayed,
+        )
+        assert info["success"], info["errors"]
+        assert _prompts(info) == {"What bone is this?", "Is it broken?"}
 
 
 def test_content_hint_scan_does_not_decode_the_images(monkeypatch):

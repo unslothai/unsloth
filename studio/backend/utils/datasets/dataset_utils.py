@@ -905,12 +905,23 @@ def _tokenizer_adds_bos(tokenizer) -> bool:
     return len(input_ids) > 0 and input_ids[0] == bos_token_id
 
 
-def _split_vlm_instruction(dataset, instruction, text_column, image_column, dataset_name):
+def _split_vlm_instruction(
+    dataset,
+    instruction,
+    text_column,
+    image_column,
+    dataset_name,
+    fallback_instruction = None,
+):
     """The fixed instruction this split trains on, reported so a separate eval split gets the same one; None keeps per-row questions."""
     if instruction is not None:
         return instruction
     info = generate_smart_vlm_instruction(
-        dataset, text_column = text_column, image_column = image_column, dataset_name = dataset_name
+        dataset,
+        text_column = text_column,
+        image_column = image_column,
+        dataset_name = dataset_name,
+        fallback_instruction = fallback_instruction,
     )
     if info["instruction"] is not None:
         logger.info(f"📝 Using {info['instruction_type']} instruction: '{info['instruction']}'")
@@ -952,8 +963,9 @@ def format_and_template_dataset(
     split_name = None,
     raw_text_column = None,
     dataset_revision = None,
+    vlm_fallback_instruction = None,
 ):
-    """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
+    """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. vlm_instruction overrides every row's prompt; vlm_fallback_instruction is used only when the split has no per-row question column (a separate eval split passes the training prompt there). Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
     from .tokenizer_fingerprint import install_tokenizer_fingerprint
 
     install_tokenizer_fingerprint()
@@ -1067,6 +1079,7 @@ def format_and_template_dataset(
                         user_vlm_text_column,
                         user_vlm_image_column,
                         dataset_name,
+                        fallback_instruction = vlm_fallback_instruction,
                     )
                     dataset = convert_to_vlm_format(
                         dataset,
@@ -1269,7 +1282,12 @@ def format_and_template_dataset(
 
             try:
                 instruction = _split_vlm_instruction(
-                    dataset, vlm_instruction, vlm_text_column, vlm_image_column, dataset_name
+                    dataset,
+                    vlm_instruction,
+                    vlm_text_column,
+                    vlm_image_column,
+                    dataset_name,
+                    fallback_instruction = vlm_fallback_instruction,
                 )
                 dataset = convert_to_vlm_format(
                     dataset,
