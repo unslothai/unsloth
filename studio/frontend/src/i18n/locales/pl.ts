@@ -6287,7 +6287,7 @@ export const pl = {
     checking: "Sprawdzanie...",
     installPrompt: "Aby zainstalować Unsloth, kliknij Rozpocznij.",
     getStarted: "Rozpocznij",
-    chatOnly: "Tylko czat (GGUF): mniejsza instalacja, bez trenowania",
+    chatOnly: "Tylko czat: mniejsza instalacja, bez trenowania",
     installLocation: "Lokalizacja instalacji:",
     changeLocation: "Zmień",
     useDefaultLocation: "Użyj domyślnej",

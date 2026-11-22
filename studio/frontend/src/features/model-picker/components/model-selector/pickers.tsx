@@ -251,6 +251,7 @@ import {
 import {
   type CuratedBudget,
   type FormatFilter,
+  cachedRepoIsMlx,
   coerceFormatFilter,
   curatedBudget,
   curatedBudgetText,
@@ -260,6 +261,7 @@ import {
   hfModelFitsDevice,
   isMlxId,
   isCapableCheckpointQuant,
+  localRowIsMlx,
   isMobileVariant,
   isRecommendableFormat,
   loadScopedGpu,
@@ -3754,7 +3756,7 @@ function cachedRepoHasMlxTag(c: CachedModelRepo): boolean {
 
 /** MLX runs on Mac only, so callers gate visibility on the host. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
-  return isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "");
+  return localRowIsMlx(m);
 }
 
 function localModelMatchesFormat(
@@ -3765,6 +3767,7 @@ function localModelMatchesFormat(
     m.model_id ?? m.display_name ?? m.id,
     localModelIsGguf(m),
     filter,
+    localModelIsMlx(m),
   );
 }
 
@@ -4467,6 +4470,8 @@ export function HubModelPicker({
   );
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  // null is an older backend.
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
   const hostClass = useHostClass();
@@ -5389,7 +5394,7 @@ export function HubModelPicker({
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
-              (isMac && localModelIsMlx(m))) &&
+              (isMac && mlxInference !== false && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m) &&
             (!rowFilter ||
@@ -5412,6 +5417,7 @@ export function HubModelPicker({
       loadTimes,
       localQuery,
       chatOnly,
+      mlxInference,
       task,
       catalog,
       activeCatalogArtifactIds,
@@ -5620,7 +5626,12 @@ export function HubModelPicker({
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
   // Empty-state logic must use this or the picker can go blank.
-  const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
+  const visibleCachedModelRows =
+    chatOnly && !task
+      ? isMac && mlxInference === true
+        ? visibleCachedModels.filter(cachedRepoIsMlx)
+        : []
+      : visibleCachedModels;
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
     const alreadyListed = new Set(

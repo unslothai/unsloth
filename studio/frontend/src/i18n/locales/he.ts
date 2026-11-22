@@ -5930,7 +5930,7 @@ export const he = {
     checking: "בודק...",
     installPrompt: "כדי להתקין את Unsloth, לחץ על \"התחל\".",
     getStarted: "התחל",
-    chatOnly: "צ'אט בלבד (GGUF): התקנה קטנה יותר, ללא אימון",
+    chatOnly: "צ'אט בלבד: התקנה קטנה יותר, ללא אימון",
     installLocation: "מיקום ההתקנה:",
     changeLocation: "שנה",
     useDefaultLocation: "השתמש בברירת המחדל",

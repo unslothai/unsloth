@@ -25,7 +25,12 @@ import {
   type curatedArtifactFit,
 } from "./model-catalog.ts";
 
-export { hasMlxCardTag, isMlxId } from "../../../hub/lib/format-filters.ts";
+export {
+  cachedRepoIsMlx,
+  hasMlxCardTag,
+  isMlxId,
+  localRowIsMlx,
+} from "../../../hub/lib/format-filters.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 

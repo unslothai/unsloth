@@ -5860,7 +5860,7 @@ export const ptBR = {
     checking: "Verificando...",
     installPrompt: "Para instalar o Unsloth, clique em Começar.",
     getStarted: "Começar",
-    chatOnly: "Somente chat (GGUF): instalação menor, sem treinamento",
+    chatOnly: "Somente chat: instalação menor, sem treinamento",
     installLocation: "Local de instalação:",
     changeLocation: "Alterar",
     useDefaultLocation: "Usar padrão",

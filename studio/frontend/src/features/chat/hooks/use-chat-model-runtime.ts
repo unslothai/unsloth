@@ -1590,6 +1590,7 @@ export function useChatModelRuntime() {
                   residentIsGguf,
                   platform.deviceType,
                   platform.chatOnlyReason,
+                  platform.mlxInference,
                 ),
                 pinnedMaxSeqLength: normalizeMaxSeqLength(
                   pendingConfig
@@ -2059,6 +2060,7 @@ export function useChatModelRuntime() {
             platform.deviceType,
             platform.chatOnlyReason,
             rollbackState.loadedIsMlx,
+            platform.mlxInference,
           );
           // What the outgoing model loaded with, not an unapplied control value.
           const previousPin = rollbackState.loadedCustomContextLength;
@@ -2298,6 +2300,7 @@ export function useChatModelRuntime() {
               isGguf,
               platform.deviceType,
               platform.chatOnlyReason,
+              platform.mlxInference,
             );
             // Only a same-model reload without a staged config reuses the resident's settings; otherwise the
             // drafter is this model's own and a standing mode goes through the resolver.

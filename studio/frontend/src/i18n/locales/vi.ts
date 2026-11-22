@@ -6236,7 +6236,7 @@ export const vi = {
     checking: "Đang kiểm tra...",
     installPrompt: "Để cài đặt Unsloth, hãy nhấp vào Bắt đầu.",
     getStarted: "Bắt đầu",
-    chatOnly: "Chỉ trò chuyện (GGUF): bản cài đặt nhỏ hơn, không có huấn luyện",
+    chatOnly: "Chỉ trò chuyện: bản cài đặt nhỏ hơn, không có huấn luyện",
     installLocation: "Vị trí cài đặt:",
     changeLocation: "Thay đổi",
     useDefaultLocation: "Dùng mặc định",

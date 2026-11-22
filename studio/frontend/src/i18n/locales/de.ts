@@ -5905,7 +5905,7 @@ export const de = {
     checking: "Wird geprüft...",
     installPrompt: "Klicken Sie auf „Los geht’s“, um Unsloth zu installieren.",
     getStarted: "Los geht’s",
-    chatOnly: "Nur Chat (GGUF): kleinere Installation, kein Training",
+    chatOnly: "Nur Chat: kleinere Installation, kein Training",
     installLocation: "Installationsort:",
     changeLocation: "Ändern",
     useDefaultLocation: "Standard verwenden",

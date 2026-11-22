@@ -6231,7 +6231,7 @@ export const tr = {
     checking: "Denetleniyor...",
     installPrompt: "Unsloth'u kurmak için Başlayın'a tıklayın.",
     getStarted: "Başlayın",
-    chatOnly: "Yalnızca sohbet (GGUF): daha küçük kurulum, eğitim yok",
+    chatOnly: "Yalnızca sohbet: daha küçük kurulum, eğitim yok",
     installLocation: "Kurulum konumu:",
     changeLocation: "Değiştir",
     useDefaultLocation: "Varsayılanı kullan",

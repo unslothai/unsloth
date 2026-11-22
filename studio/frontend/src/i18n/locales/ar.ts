@@ -5831,7 +5831,7 @@ export const ar = {
     checking: "جارٍ التحقق...",
     installPrompt: "لتثبيت Unsloth، انقر على ابدأ.",
     getStarted: "ابدأ",
-    chatOnly: "الدردشة فقط (GGUF): تثبيت أصغر، بدون تدريب",
+    chatOnly: "الدردشة فقط: تثبيت أصغر، بدون تدريب",
     installLocation: "موقع التثبيت:",
     changeLocation: "تغيير",
     useDefaultLocation: "استخدام الافتراضي",

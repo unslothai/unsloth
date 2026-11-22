@@ -5820,7 +5820,7 @@ export const ko = {
     checking: "확인 중...",
     installPrompt: "Unsloth를 설치하려면 시작하기를 클릭하세요.",
     getStarted: "시작하기",
-    chatOnly: "채팅 전용 (GGUF): 더 작은 설치 용량, 학습 기능 없음",
+    chatOnly: "채팅 전용: 더 작은 설치 용량, 학습 기능 없음",
     installLocation: "설치 위치:",
     changeLocation: "변경",
     useDefaultLocation: "기본값 사용",

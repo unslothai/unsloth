@@ -6259,7 +6259,7 @@ export const cs = {
     checking: "Kontrola...",
     installPrompt: "Chcete-li nainstalovat Unsloth, klikněte na Začít.",
     getStarted: "Začít",
-    chatOnly: "Pouze chat (GGUF): menší instalace, bez trénování",
+    chatOnly: "Pouze chat: menší instalace, bez trénování",
     installLocation: "Umístění instalace:",
     changeLocation: "Změnit",
     useDefaultLocation: "Použít výchozí",
