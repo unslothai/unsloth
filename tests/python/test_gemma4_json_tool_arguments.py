@@ -87,6 +87,19 @@ def test_empty_thought_template_uses_the_same_argument_form():
     assert gemma4_empty_thought_template != CHAT_TEMPLATES["gemma-4-thinking"][0]
 
 
-def test_invalid_json_arguments_fail_instead_of_being_pasted():
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "not-json",
+        '{"a": "\\u12.4"}',
+        '{"a": "\\u12GG"}',
+        '{"a": "\\uZZZZ"}',
+        '{"a": "Par\nis"}',
+        '{"ci\ty": "Paris"}',
+        "\u00a0{\"a\": 1}",
+        "{\"a\": 1}\x0b",
+    ],
+)
+def test_invalid_json_arguments_fail_instead_of_being_pasted(arguments):
     with pytest.raises(Exception, match = "Gemma 4 tool call arguments must be a JSON object"):
-        _render("gemma-4", "not-json")
+        _render("gemma-4", arguments)
