@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import os
 import threading
+import weakref
 from functools import lru_cache
 from typing import Any, Optional
 
 from . import diffusion_vae_fused as fused
+from .rocm_bf16 import is_rocm_torch
 
 STRIPS_ENV = "UNSLOTH_FLUX_VAE_STRIPS"
 FULL_MAP_ENV = "UNSLOTH_FLUX_VAE_FULL_MAP"
@@ -601,6 +603,108 @@ def _up_rows(
         )  # fmt: skip
 
 
+# Nearest 2x + conv3x3(p1) as one ConvTranspose2d(k4, s2, p1) whose taps are the 3x3 taps summed in fp32 (rounded once
+# to the conv dtype): 2.25x fewer MACs and the 2x map is never written. Rounding-level only (1024 px decode vs the 2x
+# path: LPIPS 7e-5 bf16, 1e-6 fp16 T4; PSNR vs fp32 -0.04 to -0.28 dB). Measured on the FLUX.1 / Z-Image / FLUX.2 VAEs
+# (strip decode, cuDNN 9.24), 1024 / 2048 px: T4 fp16 1.11-1.14x, A100 1.06-1.12x, L4 1.05-1.11x, RTX PRO 6000
+# 1.07-1.13x per decode. ``UNSLOTH_VAE_UPSAMPLE_FOLD``: ``0`` off, ``1`` on any device (CUDA, ROCm, MPS, CPU); unset:
+# the measured CUDA cards only (MIOpen / MPS transposed convs unmeasured).
+UPSAMPLE_FOLD_ENV = "UNSLOTH_VAE_UPSAMPLE_FOLD"
+_FOLD_CAPS = frozenset({(7, 5), (8, 0), (8, 9), (12, 0)})
+# Output elements up to which one transposed conv covers the whole map (the measured shape: FLUX.1 1024 px's last
+# upsample is 2^28); larger maps fold strip by strip (bounded workspace, one copy into the output).
+FOLD_FULL_MAX_ELEMS = 1 << 28
+_FOLD_TAPS = {0: (2,), 1: (1, 2), 2: (0, 1), 3: (0,)}
+# conv -> ((data_ptr, dtype, device, shape, version), folded): dies with the conv, and a ``.data`` swap (Studio's fp32
+# retry, module.to) changes the key, which weight identity + version alone miss.
+_FOLD_CACHE: Any = weakref.WeakKeyDictionary()
+_FOLD_CALLS = [0]
+
+
+def _fold_mode() -> str:
+    raw = os.environ.get(UPSAMPLE_FOLD_ENV, "").strip().lower()
+    if raw in fused._FALSE:
+        return "off"
+    return "force" if raw in ("1", "on", "true", "yes", "force") else "auto"
+
+
+def _fold_on(x: Any) -> bool:
+    mode = _fold_mode()
+    if mode == "off":
+        return False
+    if mode == "force":
+        return True
+    torch = fused._torch()
+    if not x.is_cuda or is_rocm_torch(torch):
+        return False
+    try:
+        return tuple(torch.cuda.get_device_capability(x.device)) in _FOLD_CAPS
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def folded_upsample_weight(conv: Any) -> Any:
+    """The ConvTranspose2d(k4, s2, p1) kernel equal to nearest_2x then ``conv`` (3x3, p1): taps summed in fp32, one
+    rounding to the conv dtype, channels-last like the conv. Cached per conv while its weight tensor and version hold."""
+    torch = fused._torch()
+    w = conv.weight
+    key = (w.data_ptr(), w.dtype, w.device, tuple(w.shape), w._version)
+    hit = _FOLD_CACHE.get(conv)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    wf = w.detach().float()
+    cout, cin = wf.shape[:2]
+    wt = wf.new_zeros(cin, cout, 4, 4)
+    for a in range(4):
+        for b in range(4):
+            acc = wf.new_zeros(cout, cin)
+            for i in _FOLD_TAPS[a]:
+                for j in _FOLD_TAPS[b]:
+                    acc += wf[:, :, i, j]
+            wt[:, :, a, b] = acc.t()
+    wt = wt.to(w.dtype).contiguous(memory_format = torch.channels_last)
+    _FOLD_CACHE[conv] = (key, wt)
+    return wt
+
+
+def _fold_ok(conv: Any, x: Any) -> bool:
+    return (
+        tuple(conv.kernel_size) == (3, 3)
+        and tuple(conv.stride) == (1, 1)
+        and tuple(conv.padding) == (1, 1)
+        and tuple(conv.dilation) == (1, 1)
+        and conv.groups == 1
+        and conv.padding_mode == "zeros"
+        and x.dim() == 4
+        and x.dtype == conv.weight.dtype
+    )
+
+
+def _fold_upsample(
+    conv: Any,
+    x: Any,
+    bias: Any,
+    full_max: Optional[int] = None,
+) -> Any:
+    """conv(nearest_2x(x)) (+ ``bias``) via the folded transposed conv: one call over the map up to ``full_max`` output
+    elements, else per strip of input rows with a one-row halo (rows [a - 1, b + 1) give output rows [2a, 2b))."""
+    F = fused._torch().nn.functional
+    wt = folded_upsample_weight(conv)
+    _FOLD_CALLS[0] += 1
+    _, _, h, w = x.shape
+    elems = conv.out_channels * 4 * h * w
+    if elems <= (FOLD_FULL_MAX_ELEMS if full_max is None else full_max):
+        return _owned_cl(F.conv_transpose2d(x, wt, bias, stride = 2, padding = 1))
+    out = _empty_cl(conv.out_channels, 2 * h, 2 * w, x)
+    for a, b in _strips(h, elems):
+        lo, hi = max(0, a - 1), min(h, b + 1)
+        # padding 0 on rows: strip output row o' is full output row 2 lo + o' - 1
+        ys = F.conv_transpose2d(x.narrow(2, lo, hi - lo), wt, bias, stride = 2, padding = (0, 1))
+        first = 2 * (a - lo) + 1
+        out.narrow(2, 2 * a, 2 * (b - a)).copy_(ys.narrow(2, first, 2 * (b - a)))
+    return out
+
+
 def _upsample(
     up: Any,
     x: Any,
@@ -608,8 +712,12 @@ def _upsample(
 ) -> tuple:
     """(conv(nearest_2x(x)) in strips of input rows, the conv bias still to add). The 2x rows are written straight
     into the padded strip; ``defer_bias``: cuDNN writes the bias-free conv into the output and the bias is returned
-    for the next stage to fold in, else the bias is added here."""
+    for the next stage to fold in, else the bias is added here. On the fold's cards one transposed conv replaces both
+    (``UPSAMPLE_FOLD_ENV``)."""
     conv = up.conv
+    if _fold_on(x) and _fold_ok(conv, x):
+        out = _fold_upsample(conv, x, None if defer_bias else conv.bias)
+        return out, (conv.bias if defer_bias else None)
     _, c, h, w = x.shape
     out = _empty_cl(conv.out_channels, 2 * h, 2 * w, x)
     for a, b in _strips(h, out.numel()):

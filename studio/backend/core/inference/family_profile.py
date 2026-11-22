@@ -99,6 +99,10 @@ class FamilyProfile:
     # Measured auto static step skip, keyed by the lowercased UPSTREAM repo id so unmeasured siblings never match:
     # (repo, ((tier or "steps", value), ...)). See diffusion_cache.AUTO_STATIC_SKIP.
     auto_static_skip: tuple[tuple[str, tuple[tuple[str, int], ...]], ...] = ()
+    # Measured per-step compute masks for the auto static skip ("1" compute, "0" skip; length = the step count it
+    # was measured at, other step counts keep the interval): (repo, ((tier, mask), ...)), same repo keys as
+    # ``auto_static_skip``. See diffusion_cache.AUTO_STATIC_SKIP_MASKS.
+    auto_static_skip_masks: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     # Lowercased vendor repos trusted for a full (non-GGUF) load on top of the ones the registry row already names
     # (base_repo, named_variant_bases, train_base_repos, prequant_variant_repos bases). Exact match, safetensors-only,
     # no remote code.

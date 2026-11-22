@@ -3089,7 +3089,19 @@ def _torch_get_physical_gpu_count() -> Optional[int]:
 
 def rocm_windows_free_is_untrusted() -> bool:
     """Whether ``mem_get_info``'s FREE half must be treated as an over-report. AMD documents it: on Windows the free memory only accounts for this process's allocations, because WDDM virtualises video memory, so a fresh process sees free at or near total whatever else is resident (ROCm/librocdxg#57 measured 24410 of 24560 MiB free on a filled card; ROCm/TheRock#3724 is the same symptom). Near ``total``, not equal, so callers cap rather than test a sentinel. The TOTAL half is fine, and WSL is deliberately left alone: sys.platform is "linux" there and free tracks physical residency."""
-    return sys.platform == "win32" and IS_ROCM
+    if sys.platform != "win32":
+        return False
+    if IS_ROCM:
+        return True
+    # A spawned child that never ran detect_hardware() (the diffusion trainer) keeps IS_ROCM False: until detection
+    # has answered, the torch build already imported here decides. Never imports torch.
+    if DEVICE is not None:
+        return False
+    mod = sys.modules.get("torch")
+    return mod is not None and bool(
+        getattr(getattr(mod, "version", None), "hip", None)
+        or "rocm" in str(getattr(mod, "__version__", "")).lower()
+    )
 
 
 def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:

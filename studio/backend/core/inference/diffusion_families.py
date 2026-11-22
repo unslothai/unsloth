@@ -1062,6 +1062,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
+        # Qwen-Image-Flash was distilled on its shipped static shift-3 grid (sigmas 1, .9, .75, .5): keep it.
+        comfy_flow_shift_variants = (("qwen-image-flash", None),),
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
@@ -1079,6 +1081,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Policy ``qwen2512_m120_attn8_v1``, 2512 only: Qwen/Qwen-Image keeps its nvfp4 deny.
             ("qwen/qwen-image-2512", "nvfp4", "unsloth/Qwen-Image-2512-NVFP4"),
         ),
+        # A distilled student: the base's artifacts hold the teacher's weights, so it quantizes its own.
+        prequant_excluded_bases = ("nvidia/qwen-image-flash",),
+        named_variant_bases = ("nvidia/Qwen-Image-Flash",),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         # int8 ConvRot by default: ComfyUI loads qwen_2.5_vl_7b_fp8_scaled, but our layerwise fp8
@@ -1620,7 +1625,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "sdxl",
         textual_inversion = "sdxl",
         label = "SDXL",
-        profile = FamilyProfile(preview_factors = "sdxl"),
+        profile = FamilyProfile(
+            preview_factors = "sdxl",
+            # The static skip on the whole U-Net output (taylor1), measured on a T4, fp16, 1024^2, CFG 7, 8 prompts:
+            # every-2 at 25 steps mean LPIPS 0.059 vs the full render at 1.49x (every-3: 0.115 at 1.77x, over the
+            # max bar; 13 plain steps: 0.303 at 1.77x). Base checkpoint only: sdxl-turbo runs 1 step.
+            auto_static_skip = (
+                ("stabilityai/stable-diffusion-xl-base-1.0", (("max", 2), ("steps", 25))),
+            ),
+        ),
         # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
         cudnn_benchmark = False,
         pipeline_class = "StableDiffusionXLPipeline",
@@ -2374,6 +2387,8 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("qwen-image-edit-2509", 20, 4.0),
     ("qwen-image-edit", 40, 4.0),
     ("qwen-image-2512", 50, 4.0),
+    # NVIDIA's DMD2 student: 4 steps at CFG 1 (its teacher's CFG 4 is distilled in), on its shipped shift-3 grid.
+    ("qwen-image-flash", 4, 1.0),
     ("qwen-image", 20, 4.0),
     # diffusers Z-Image g = ComfyUI cfg - 1 (pos + g * (pos - neg)).
     ("z-image", 25, 3.0),
