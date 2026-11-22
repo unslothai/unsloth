@@ -922,12 +922,60 @@ def is_ggml_unsupported_op_abort(message: str) -> bool:
     return all(marker in text for marker in _GGML_UNSUPPORTED_OP_MARKERS)
 
 
+# Bare --vae-tiling on the CPU VAE = 256 px tiles (49 for 1024 px, ~3x slower, per-tile colour shift); take the
+# largest tile spare host RAM holds. FLUX.2 klein 4B 1024 px decode: 185 s at 256, 138 s at 512, 68 s whole.
+CPU_VAE_TILE_ENV = "UNSLOTH_SD_CPP_VAE_TILE"
+CPU_VAE_TILE_SIZES = (1024, 768, 512)
+# Qwen-Image 2.1 measured 3889 MiB per 1024 px tile (worst family) + 30%.
+CPU_VAE_DECODE_MIB_PER_MPX = 5120
+# Older builds count latent cells (1024 = untiled).
+VAE_TILE_PIXELS_HELP = "tile size for vae encode and decode in image pixels"
+
+
+def cpu_vae_tile_size(spare_mib: Optional[int], env: Optional[dict] = None) -> Optional[int]:
+    """Tile edge (px) for the CPU VAE, None = 256 px. Env 0/off keeps 256, a number pins it."""
+    import os
+
+    forced = ((env if env is not None else os.environ).get(CPU_VAE_TILE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return None
+    if forced.isdigit() and int(forced) >= 64:
+        return int(forced)
+    if spare_mib is None:
+        return None
+    for size in CPU_VAE_TILE_SIZES:
+        if CPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= spare_mib:
+            return size
+    return None
+
+
+def sd_cpp_vae_tile_size_in_pixels(binary: Optional[str]) -> bool:
+    """Fails closed."""
+    import os
+
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _vae_tile_pixels_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _vae_tile_pixels_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and VAE_TILE_PIXELS_HELP in " ".join(text.split())
+
+
 def offload_flags(
     policy: str,
     *,
     vae_tiling: bool = False,
     diffusion_fa: bool = False,
     vae_on_cpu: bool = True,
+    vae_tile_size: Optional[int] = None,
 ) -> list[str]:
     """vae_on_cpu=False drops only --vae-on-cpu, for families whose VAE cannot run on the CPU path."""
     flags: list[str] = []
@@ -952,6 +1000,9 @@ def offload_flags(
         if f not in seen:
             seen.add(f)
             out.append(f)
+    # A GPU VAE keeps 256 px and sd.cpp's halving retry on OOM.
+    if tile and vae_tile_size and "--vae-on-cpu" in out:
+        out += ["--vae-tile-size", str(int(vae_tile_size))]
     return out
 
 
