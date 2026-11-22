@@ -69,7 +69,13 @@ const safeStorage = createJSONStorage(() => ({
       // Kept in memory for this session.
     }
   },
-  removeItem: (name: string) => localStorage.removeItem(name),
+  removeItem: (name: string) => {
+    try {
+      localStorage.removeItem(name);
+    } catch {
+      // Same as a failed write.
+    }
+  },
 }));
 
 export const useModelCustomizationsStore = create<ModelCustomizationsState>()(

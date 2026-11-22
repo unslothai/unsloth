@@ -181,6 +181,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.tools.foldIntoThinking",
     "settings.chat.webSearch.images",
     "settings.chat.showLinkPreviews",
+    "settings.chat.showResponseModelHeader",
     "settings.chat.inlineEditResponse",
     "settings.chat.showReplyTimes",
     "settings.chat.showGenerationDetails",
@@ -543,6 +544,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
   "settings.chat.replyNotification": "settings.chat.replyNotificationKeywords",
   "settings.chat.showLinkPreviews": "settings.chat.showLinkPreviewsDescription",
+  "settings.chat.showResponseModelHeader":
+    "settings.chat.showResponseModelHeaderDescription",
   "settings.chat.showReplyTimes": "settings.chat.showReplyTimesKeywords",
   "settings.chat.showGenerationDetails": "settings.chat.showGenerationDetailsKeywords",
   "settings.chat.generationStatsUpdates": "settings.chat.generationStatsUpdatesKeywords",

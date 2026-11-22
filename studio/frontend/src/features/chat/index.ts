@@ -717,3 +717,10 @@ export { chatLocalModelOptions } from "./local-model-options";
 export { readLastLocalModelLoad } from "./utils/last-local-model-load";
 export { decideAutoRead } from "./utils/auto-read-aloud";
 export { wantsDownloadManagerStaging } from "./utils/model-download-staging";
+export {
+  MODEL_CUSTOM_NAME_MAX,
+  imageFileToIconDataUrl,
+  modelCustomizationKey,
+  useModelCustomization,
+  useModelCustomizationsStore,
+} from "./model-customizations";

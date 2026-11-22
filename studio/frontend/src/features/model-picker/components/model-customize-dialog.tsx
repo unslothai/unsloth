@@ -16,7 +16,7 @@ import {
   imageFileToIconDataUrl,
   useModelCustomization,
   useModelCustomizationsStore,
-} from "@/features/chat/model-customizations";
+} from "@/features/chat";
 import { useRef, useState } from "react";
 
 export function ModelCustomizeDialog({
@@ -57,17 +57,29 @@ function ModelCustomizeForm({
   const [name, setName] = useState(saved?.name ?? "");
   const [icon, setIcon] = useState(saved?.icon);
   const [error, setError] = useState<string | null>(null);
+  const [decoding, setDecoding] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  // Only the newest pick may land: a slow decode must not undo a later pick or Remove.
+  const pick = useRef(0);
 
   const chooseIcon = async (file: File | undefined) => {
     if (!file) return;
+    const current = ++pick.current;
     setError(null);
+    setDecoding(true);
     try {
-      setIcon(await imageFileToIconDataUrl(file));
+      const next = await imageFileToIconDataUrl(file);
+      if (current === pick.current) setIcon(next);
     } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : "Could not read this image.",
-      );
+      if (current === pick.current) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Could not read this image.",
+        );
+      }
+    } finally {
+      if (current === pick.current) setDecoding(false);
     }
   };
 
@@ -76,6 +88,7 @@ function ModelCustomizeForm({
       className="grid gap-5"
       onSubmit={(event) => {
         event.preventDefault();
+        if (decoding) return;
         setCustomization(modelId, { name, icon });
         onClose();
       }}
@@ -106,7 +119,12 @@ function ModelCustomizeForm({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => setIcon(undefined)}
+              onClick={() => {
+                pick.current += 1;
+                setDecoding(false);
+                setError(null);
+                setIcon(undefined);
+              }}
             >
               Remove icon
             </Button>
@@ -142,7 +160,9 @@ function ModelCustomizeForm({
         <Button type="button" variant="ghost" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit">Save</Button>
+        <Button type="submit" disabled={decoding}>
+          Save
+        </Button>
       </DialogFooter>
     </form>
   );

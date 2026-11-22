@@ -1675,6 +1675,9 @@ export function ComposerModelPicker({
       setConnectedSettings(null);
     }
   }, [pageActive]);
+  useEffect(() => {
+    if (!pageActive) setCustomizing(null);
+  }, [pageActive]);
   const providers = useExternalProvidersStore((s) => s.providers);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
@@ -2643,7 +2646,7 @@ export function ComposerModelPicker({
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
-      ? { kind: "external" }
+      ? { kind: "external", id: checkpoint }
       : checkpoint
         ? { kind: "loaded", id: checkpoint }
         : undefined);
@@ -2781,12 +2784,15 @@ export function ComposerModelPicker({
       hubQuery !== "" &&
       hubQuery === query.trim() &&
       hubResults.length > 0;
-    const found = filterRows(
-      rows,
-      viewed,
-      query,
-      isFavorite,
-      hubAnswered ? (row) => row.kind === "hub" : undefined,
+    const q = query.trim().toLowerCase();
+    const found = filterRows(rows, viewed, query, isFavorite, (row) =>
+      (hubAnswered && row.kind === "hub") ||
+      Boolean(
+        q &&
+          customizations[modelCustomizationKey(row.id)]?.name
+            ?.toLowerCase()
+            .includes(q),
+      ),
     );
     if (viewed === RECOMMENDED_TAB) {
       return found.filter((row) => {
@@ -2847,6 +2853,7 @@ export function ComposerModelPicker({
     hubCheckpointFit,
     noGpu,
     chosenId,
+    customizations,
   ]);
   const [collapsedSections, setCollapsedSections] = useState<
     ReadonlySet<string>
@@ -4367,6 +4374,7 @@ export function ComposerModelPicker({
           row.npu ? npuCatalog : null,
           paramLabel,
           sizeLabel,
+          customizations[modelCustomizationKey(row.id)],
         ]}
         render={() => (
           <div

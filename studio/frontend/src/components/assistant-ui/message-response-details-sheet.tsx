@@ -18,14 +18,14 @@ import {
   useChatPreferencesStore,
   useChatRuntimeStore,
   useExternalProvidersStore,
+  useModelCustomization,
   formatMcpToolName,
   mcpServerFromProvenance,
   mcpToolFromProvenance,
 } from "@/features/chat";
 import { ModelMark } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
-import { useModelCustomization } from "@/features/chat/model-customizations";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import { modelDisplayName } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
@@ -366,12 +366,17 @@ export const MessageResponseModelHeader: FC = () => {
 const ResponseModelHeader: FC = () => {
   const liveCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const models = useChatRuntimeStore((s) => s.models);
+  const providers = useExternalProvidersStore((s) => s.providers);
   const { message, modelLabel, selectedModelId, providerType } =
     useResponseModelDisplay();
-  // Details are recorded when the reply finishes; until then it is the selected model's.
-  const modelId =
-    selectedModelId ??
-    (message.status?.type === "running" ? liveCheckpoint : undefined);
+  // Details are recorded when the reply finishes: until then, the model selected when it started.
+  const [startedWith] = useState(() =>
+    message.status?.type === "running" ? liveCheckpoint : null,
+  );
+  const modelId = selectedModelId ?? startedWith ?? undefined;
+  const provider = providers.find(
+    (candidate) => candidate.id === parseExternalModelId(modelId)?.providerId,
+  );
   const customName = useModelCustomization(modelId)?.name;
   if (!modelId) return null;
   const label =
@@ -390,7 +395,8 @@ const ResponseModelHeader: FC = () => {
       <ModelMark
         modelId={modelId}
         label={label}
-        providerType={providerType}
+        providerType={providerType ?? provider?.providerType}
+        providerName={provider?.name}
       />
       <span className="min-w-0 truncate">{label}</span>
     </div>

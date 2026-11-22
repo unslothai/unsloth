@@ -189,6 +189,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_models_fit_on_device_only",
   "unsloth_composer_picker_expand_loaded",
   "unsloth_composer_picker_monochrome_icons",
+  "unsloth_model_customizations",
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
   "unsloth_chat_system_prompts",
