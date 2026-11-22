@@ -21,7 +21,13 @@ const reply = (id: string, promptMs: number): ThreadMessageLike => ({
   content: `Reply ${id}`,
   status: { type: "complete", reason: "stop" },
   metadata: {
-    timing: { totalStreamTime: 1234, firstTokenTime: 120 },
+    timing: {
+      streamStartTime: 0,
+      totalStreamTime: 1234,
+      firstTokenTime: 120,
+      totalChunks: 50,
+      toolCallCount: 0,
+    },
     custom: {
       serverTimings: {
         prompt_n: 457,
