@@ -267,13 +267,16 @@ if _IS_MLX:
             fix_transformers_chat_template_path_traversal as _fix_template_names,
             fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
             fix_transformers_mistral_regex_hub_error as _fix_mistral_hub,
+            fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
         _fix_vocab_paths()
         _fix_mistral_hub()
+        _fix_gemma4_tool_args()
         del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths, _fix_mistral_hub
+        del _fix_gemma4_tool_args
     except Exception:
         pass
     try:
@@ -2291,6 +2294,12 @@ else:
         from .import_fixes import fix_transformers_deepseek_v41_native as _fix_dsv41
         _fix_dsv41()
         del _fix_dsv41
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_gemma4_string_tool_arguments as _fix_gemma4_tool_args
+        _fix_gemma4_tool_args()
+        del _fix_gemma4_tool_args
     except Exception:
         pass
 

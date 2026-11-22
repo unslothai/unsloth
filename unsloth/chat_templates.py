@@ -1105,279 +1105,6 @@ DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None
 CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None
 
-def _with_gemma4_argument_parser(template):
-    # JSON-string tool arguments are the OpenAI on-disk form. Parse them in the
-    # template so a saved tokenizer still renders the trained call syntax.
-    needle = "{%- macro strip_thinking(text) -%}"
-    if template.count(needle) != 1:
-        raise RuntimeError("Gemma 4 template is missing its strip_thinking macro")
-    return template.replace(needle, _GEMMA4_ARGUMENT_PARSER + needle, 1)
-
-_GEMMA4_ARGUMENT_PARSER = r'''
-{%- macro emit_sorted_arguments(arguments) -%}
-    {%- set ns_args = namespace(found_first=false) -%}
-    {%- for key, value in arguments | dictsort -%}
-        {%- if ns_args.found_first %},{% endif -%}
-        {%- set ns_args.found_first = true -%}
-        {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
-    {%- endfor -%}
-{%- endmacro -%}
-{%- macro json_skip(ns) -%}
-    {%- for _ in range(ns.s | length) -%}
-        {%- if ns.err == '' and ns.i < (ns.s | length) and ns.s[ns.i] in [' ', '\n', '\r', '\t'] -%}
-            {%- set ns.i = ns.i + 1 -%}
-        {%- endif -%}
-    {%- endfor -%}
-{%- endmacro -%}
-{%- macro json_parse_string(ns) -%}
-    {%- set ns.i = ns.i + 1 -%}
-    {%- set buf = namespace(s='', done=false) -%}
-    {%- for _ in range(ns.s | length) -%}
-        {%- if ns.err == '' and not buf.done and ns.i < (ns.s | length) -%}
-            {%- set c = ns.s[ns.i] -%}
-            {%- if c == '"' -%}
-                {%- set ns.i = ns.i + 1 -%}
-                {%- set buf.done = true -%}
-            {%- elif c == '\\' -%}
-                {%- set ns.i = ns.i + 1 -%}
-                {%- if ns.i >= (ns.s | length) -%}
-                    {%- set ns.err = 'bad escape' -%}
-                {%- else -%}
-                    {%- set e = ns.s[ns.i] -%}
-                    {%- set ns.i = ns.i + 1 -%}
-                    {%- if e == '"' or e == '\\' or e == '/' -%}
-                        {%- set buf.s = buf.s ~ e -%}
-                    {%- elif e == 'b' -%}
-                        {%- set buf.s = buf.s ~ '\b' -%}
-                    {%- elif e == 'f' -%}
-                        {%- set buf.s = buf.s ~ '\f' -%}
-                    {%- elif e == 'n' -%}
-                        {%- set buf.s = buf.s ~ '\n' -%}
-                    {%- elif e == 'r' -%}
-                        {%- set buf.s = buf.s ~ '\r' -%}
-                    {%- elif e == 't' -%}
-                        {%- set buf.s = buf.s ~ '\t' -%}
-                    {%- elif e == 'u' -%}
-                        {%- if ns.i + 4 > (ns.s | length) -%}
-                            {%- set ns.err = 'bad unicode' -%}
-                        {%- else -%}
-                            {#- Jinja int keeps a leading number and returns 0 for other bad text. -#}
-                            {%- set code = ns.s[ns.i:ns.i + 4] -%}
-                            {%- set hex = namespace(ok=true) -%}
-                            {%- for digit in code -%}
-                                {%- if digit not in '0123456789abcdefABCDEF' -%}
-                                    {%- set hex.ok = false -%}
-                                {%- endif -%}
-                            {%- endfor -%}
-                            {%- if not hex.ok -%}
-                                {%- set ns.err = 'bad unicode' -%}
-                            {%- else -%}
-                                {%- set point = namespace(v=code | int(base=16)) -%}
-                                {%- set ns.i = ns.i + 4 -%}
-                                {%- if point.v >= 55296 and point.v <= 56319 and ns.i + 6 <= (ns.s | length) and ns.s[ns.i] == '\\' and ns.s[ns.i + 1] == 'u' -%}
-                                    {%- set lowcode = ns.s[ns.i + 2:ns.i + 6] -%}
-                                    {%- set lowhex = namespace(ok=true) -%}
-                                    {%- for digit in lowcode -%}
-                                        {%- if digit not in '0123456789abcdefABCDEF' -%}
-                                            {%- set lowhex.ok = false -%}
-                                        {%- endif -%}
-                                    {%- endfor -%}
-                                    {%- if lowhex.ok -%}
-                                        {%- set low = lowcode | int(base=16) -%}
-                                        {%- if low >= 56320 and low <= 57343 -%}
-                                            {%- set point.v = 65536 + (point.v - 55296) * 1024 + (low - 56320) -%}
-                                            {%- set ns.i = ns.i + 6 -%}
-                                        {%- endif -%}
-                                    {%- endif -%}
-                                {%- endif -%}
-                                {%- set buf.s = buf.s ~ ('%c' | format(point.v)) -%}
-                            {%- endif -%}
-                        {%- endif -%}
-                    {%- else -%}
-                        {%- set ns.err = 'bad escape' -%}
-                    {%- endif -%}
-                {%- endif -%}
-            {%- elif c < ' ' -%}
-                {%- set ns.err = 'bad control' -%}
-            {%- else -%}
-                {%- set buf.s = buf.s ~ c -%}
-                {%- set ns.i = ns.i + 1 -%}
-            {%- endif -%}
-        {%- endif -%}
-    {%- endfor -%}
-    {%- if ns.err == '' and not buf.done -%}
-        {%- set ns.err = 'unterminated string' -%}
-    {%- elif ns.err == '' -%}
-        {%- set ns.value = buf.s -%}
-    {%- endif -%}
-{%- endmacro -%}
-{%- macro json_parse_number(ns) -%}
-    {%- set start = ns.i -%}
-    {%- if ns.s[ns.i] == '-' -%}
-        {%- set ns.i = ns.i + 1 -%}
-    {%- endif -%}
-    {%- set int_start = ns.i -%}
-    {%- set saw_digit = namespace(v=false) -%}
-    {%- for _ in range(ns.s | length) -%}
-        {%- if ns.i < (ns.s | length) and ns.s[ns.i] >= '0' and ns.s[ns.i] <= '9' -%}
-            {%- set saw_digit.v = true -%}
-            {%- set ns.i = ns.i + 1 -%}
-        {%- endif -%}
-    {%- endfor -%}
-    {%- if saw_digit.v and ns.s[int_start] == '0' and ns.i > int_start + 1 -%}
-        {%- set ns.err = 'bad number' -%}
-    {%- endif -%}
-    {%- set is_float = namespace(v=false) -%}
-    {%- if ns.err == '' and ns.i < (ns.s | length) and ns.s[ns.i] == '.' -%}
-        {%- set is_float.v = true -%}
-        {%- set ns.i = ns.i + 1 -%}
-        {%- set frac = namespace(v=false) -%}
-        {%- for _ in range(ns.s | length) -%}
-            {%- if ns.i < (ns.s | length) and ns.s[ns.i] >= '0' and ns.s[ns.i] <= '9' -%}
-                {%- set frac.v = true -%}
-                {%- set ns.i = ns.i + 1 -%}
-            {%- endif -%}
-        {%- endfor -%}
-        {%- if not frac.v -%}
-            {%- set ns.err = 'bad number' -%}
-        {%- endif -%}
-    {%- endif -%}
-    {%- if ns.err == '' and ns.i < (ns.s | length) and (ns.s[ns.i] == 'e' or ns.s[ns.i] == 'E') -%}
-        {%- set is_float.v = true -%}
-        {%- set ns.i = ns.i + 1 -%}
-        {%- if ns.i < (ns.s | length) and (ns.s[ns.i] == '+' or ns.s[ns.i] == '-') -%}
-            {%- set ns.i = ns.i + 1 -%}
-        {%- endif -%}
-        {%- set exp = namespace(v=false) -%}
-        {%- for _ in range(ns.s | length) -%}
-            {%- if ns.i < (ns.s | length) and ns.s[ns.i] >= '0' and ns.s[ns.i] <= '9' -%}
-                {%- set exp.v = true -%}
-                {%- set ns.i = ns.i + 1 -%}
-            {%- endif -%}
-        {%- endfor -%}
-        {%- if not exp.v -%}
-            {%- set ns.err = 'bad number' -%}
-        {%- endif -%}
-    {%- endif -%}
-    {%- if ns.err == '' and not saw_digit.v -%}
-        {%- set ns.err = 'bad number' -%}
-    {%- elif ns.err == '' -%}
-        {%- set raw = ns.s[start:ns.i] -%}
-        {%- if is_float.v -%}
-            {%- set ns.value = raw | float -%}
-        {%- else -%}
-            {%- set ns.value = raw | int -%}
-        {%- endif -%}
-    {%- endif -%}
-{%- endmacro -%}
-{%- macro json_parse_value(ns) -%}
-    {%- set _ = json_skip(ns) -%}
-    {%- if ns.err != '' or ns.i >= (ns.s | length) -%}
-        {%- if ns.err == '' -%}{%- set ns.err = 'unexpected end' -%}{%- endif -%}
-    {%- else -%}
-        {%- set c = ns.s[ns.i] -%}
-        {%- if c == '"' -%}
-            {%- set _ = json_parse_string(ns) -%}
-        {%- elif c == '{' -%}
-            {%- set _ = json_parse_object(ns) -%}
-        {%- elif c == '[' -%}
-            {%- set _ = json_parse_array(ns) -%}
-        {%- elif c == 't' and ns.s[ns.i:ns.i + 4] == 'true' -%}
-            {%- set ns.value = true -%}
-            {%- set ns.i = ns.i + 4 -%}
-        {%- elif c == 'f' and ns.s[ns.i:ns.i + 5] == 'false' -%}
-            {%- set ns.value = false -%}
-            {%- set ns.i = ns.i + 5 -%}
-        {%- elif c == 'n' and ns.s[ns.i:ns.i + 4] == 'null' -%}
-            {%- set ns.value = none -%}
-            {%- set ns.i = ns.i + 4 -%}
-        {%- elif c == '-' or (c >= '0' and c <= '9') -%}
-            {%- set _ = json_parse_number(ns) -%}
-        {%- else -%}
-            {%- set ns.err = 'bad value' -%}
-        {%- endif -%}
-    {%- endif -%}
-{%- endmacro -%}
-{%- macro json_parse_array(ns) -%}
-    {%- set ns.i = ns.i + 1 -%}
-    {%- set arr = namespace(v=[], closed=false) -%}
-    {%- set _ = json_skip(ns) -%}
-    {%- if ns.i < (ns.s | length) and ns.s[ns.i] == ']' -%}
-        {%- set ns.i = ns.i + 1 -%}
-        {%- set arr.closed = true -%}
-        {%- set ns.value = arr.v -%}
-    {%- else -%}
-        {%- for _ in range(ns.s | length) -%}
-            {%- if ns.err == '' and not arr.closed -%}
-                {%- set _ = json_parse_value(ns) -%}
-                {%- if ns.err == '' -%}
-                    {%- set arr.v = arr.v + [ns.value] -%}
-                    {%- set _ = json_skip(ns) -%}
-                    {%- if ns.i < (ns.s | length) and ns.s[ns.i] == ',' -%}
-                        {%- set ns.i = ns.i + 1 -%}
-                        {%- set _ = json_skip(ns) -%}
-                    {%- elif ns.i < (ns.s | length) and ns.s[ns.i] == ']' -%}
-                        {%- set ns.i = ns.i + 1 -%}
-                        {%- set arr.closed = true -%}
-                        {%- set ns.value = arr.v -%}
-                    {%- else -%}
-                        {%- set ns.err = 'bad array' -%}
-                    {%- endif -%}
-                {%- endif -%}
-            {%- endif -%}
-        {%- endfor -%}
-    {%- endif -%}
-    {%- if ns.err == '' and not arr.closed -%}
-        {%- set ns.err = 'unclosed array' -%}
-    {%- endif -%}
-{%- endmacro -%}
-{%- macro json_parse_object(ns) -%}
-    {%- set ns.i = ns.i + 1 -%}
-    {%- set obj = namespace(v={}, closed=false) -%}
-    {%- set _ = json_skip(ns) -%}
-    {%- if ns.i < (ns.s | length) and ns.s[ns.i] == '}' -%}
-        {%- set ns.i = ns.i + 1 -%}
-        {%- set obj.closed = true -%}
-        {%- set ns.value = obj.v -%}
-    {%- else -%}
-        {%- for _ in range(ns.s | length) -%}
-            {%- if ns.err == '' and not obj.closed -%}
-                {%- set _ = json_skip(ns) -%}
-                {%- if ns.i >= (ns.s | length) or ns.s[ns.i] != '"' -%}
-                    {%- set ns.err = 'bad key' -%}
-                {%- else -%}
-                    {%- set _ = json_parse_string(ns) -%}
-                    {%- set key = ns.value -%}
-                    {%- set _ = json_skip(ns) -%}
-                    {%- if ns.err == '' and ns.i < (ns.s | length) and ns.s[ns.i] == ':' -%}
-                        {%- set ns.i = ns.i + 1 -%}
-                        {%- set _ = json_parse_value(ns) -%}
-                        {%- if ns.err == '' -%}
-                            {%- set obj.v = dict(obj.v, **{key: ns.value}) -%}
-                            {%- set _ = json_skip(ns) -%}
-                            {%- if ns.i < (ns.s | length) and ns.s[ns.i] == ',' -%}
-                                {%- set ns.i = ns.i + 1 -%}
-                            {%- elif ns.i < (ns.s | length) and ns.s[ns.i] == '}' -%}
-                                {%- set ns.i = ns.i + 1 -%}
-                                {%- set obj.closed = true -%}
-                                {%- set ns.value = obj.v -%}
-                            {%- else -%}
-                                {%- set ns.err = 'bad object' -%}
-                            {%- endif -%}
-                        {%- endif -%}
-                    {%- elif ns.err == '' -%}
-                        {%- set ns.err = 'bad object' -%}
-                    {%- endif -%}
-                {%- endif -%}
-            {%- endif -%}
-        {%- endfor -%}
-    {%- endif -%}
-    {%- if ns.err == '' and not obj.closed -%}
-        {%- set ns.err = 'unclosed object' -%}
-    {%- endif -%}
-{%- endmacro -%}
-'''
-
 # Gemma-4 uses <|turn>role\n...<turn|>\n format
 # =========================================== Gemma-4
 gemma4_template = \
@@ -1609,15 +1336,18 @@ gemma4_template = \
             {%- set function = tool_call['function'] -%}
             {{- '<|tool_call>call:' + function['name'] + '{' -}}
             {%- if function['arguments'] is mapping -%}
-                {{- emit_sorted_arguments(function['arguments']) -}}
+                {%- set ns_args = namespace(found_first=false) -%}
+                {%- for key, value in function['arguments'] | dictsort -%}
+                    {%- if ns_args.found_first %},{% endif -%}
+                    {%- set ns_args.found_first = true -%}
+                    {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+                {%- endfor -%}
             {%- elif function['arguments'] is string -%}
-                {%- set parsed = namespace(s=function['arguments'], i=0, value=none, err='') -%}
-                {%- set _ = json_parse_value(parsed) -%}
-                {%- set _ = json_skip(parsed) -%}
-                {%- if parsed.err or parsed.i != (parsed.s | length) or parsed.value is not mapping -%}
-                    {{ raise_exception('Gemma 4 tool call arguments must be a JSON object') }}
+                {%- set argstr = function['arguments'] | trim -%}
+                {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                    {{- argstr[1:-1] -}}
                 {%- else -%}
-                    {{- emit_sorted_arguments(parsed.value) -}}
+                    {{- function['arguments'] -}}
                 {%- endif -%}
             {%- endif -%}
             {{- '}<tool_call|>' -}}
@@ -1712,8 +1442,6 @@ gemma4_template = \
     {%- endif -%}
 {%- endif -%}
 """
-
-gemma4_template = _with_gemma4_argument_parser(gemma4_template)
 
 try:
     gemma4_ollama = _ollama_template("gemma-4")
@@ -1956,15 +1684,18 @@ gemma4_thinking_template = \
             {%- set function = tool_call['function'] -%}
             {{- '<|tool_call>call:' + function['name'] + '{' -}}
             {%- if function['arguments'] is mapping -%}
-                {{- emit_sorted_arguments(function['arguments']) -}}
+                {%- set ns_args = namespace(found_first=false) -%}
+                {%- for key, value in function['arguments'] | dictsort -%}
+                    {%- if ns_args.found_first %},{% endif -%}
+                    {%- set ns_args.found_first = true -%}
+                    {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+                {%- endfor -%}
             {%- elif function['arguments'] is string -%}
-                {%- set parsed = namespace(s=function['arguments'], i=0, value=none, err='') -%}
-                {%- set _ = json_parse_value(parsed) -%}
-                {%- set _ = json_skip(parsed) -%}
-                {%- if parsed.err or parsed.i != (parsed.s | length) or parsed.value is not mapping -%}
-                    {{ raise_exception('Gemma 4 tool call arguments must be a JSON object') }}
+                {%- set argstr = function['arguments'] | trim -%}
+                {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                    {{- argstr[1:-1] -}}
                 {%- else -%}
-                    {{- emit_sorted_arguments(parsed.value) -}}
+                    {{- function['arguments'] -}}
                 {%- endif -%}
             {%- endif -%}
             {{- '}<tool_call|>' -}}
@@ -2063,7 +1794,6 @@ gemma4_thinking_template = \
 {%- endif -%}
 """
 
-gemma4_thinking_template = _with_gemma4_argument_parser(gemma4_thinking_template)
 CHAT_TEMPLATES["gemma-4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 
