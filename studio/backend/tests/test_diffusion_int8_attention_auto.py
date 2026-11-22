@@ -952,9 +952,7 @@ def test_after_a_capture_no_plan_races_or_moves_a_route(monkeypatch):
 
 
 def test_a_raced_route_does_not_keep_an_unloaded_pipeline_alive(card):
-    """The routes outlive an unload in ``_ROUTES`` (only the next load's ``forget_plans`` cleared them): a strong
-    module reference there kept every routed attention module and its weights (1.7 GB of FLUX.3 klein INT8) on the
-    card. Weak now: dropping the pipe frees the modules, and the dead routes are pruned."""
+    """Routes outlive an unload; a strong module ref there kept the attention weights on the card."""
     import gc
     import weakref
 
@@ -973,8 +971,6 @@ def test_a_raced_route_does_not_keep_an_unloaded_pipeline_alive(card):
 
 
 def test_a_weak_route_still_restores_the_stock_processor_or_raises_the_floor():
-    """Alive, the route acts as before: a swapped-in processor gives the module its stock one back, any other raises
-    its token floor; once the processor is gone it is a no-op and the route counts as dead."""
     import gc
 
     stock = _Processor()
@@ -1001,7 +997,7 @@ def test_register_route_prunes_dead_routes_and_keeps_live_ones():
     keep, gone = _Processor(), _Processor()
     I.register_route(0, 128, I._raise_processor_floor(keep))
     I.register_route(0, 128, I._raise_processor_floor(gone))
-    plain = lambda tokens: False  # noqa: E731 - a route without ``alive`` (the dispatch route) is never pruned
+    plain = lambda tokens: False  # noqa: E731 - no ``alive``: never pruned
     I.register_route(0, 64, plain)
     del gone
     gc.collect()
@@ -1011,8 +1007,6 @@ def test_register_route_prunes_dead_routes_and_keeps_live_ones():
 
 
 def test_a_register_on_another_thread_during_a_prune_is_kept(monkeypatch):
-    """A prune rewrites ``_ROUTES`` (read, filter, write back): a register on another thread (a video load during an
-    image render) that lands between the read and the write must survive the write."""
     import threading
 
     late = lambda tokens: False  # noqa: E731
@@ -1022,7 +1016,6 @@ def test_a_register_on_another_thread_during_a_prune_is_kept(monkeypatch):
     class _Routes(list):
         def __setitem__(self, key, value):
             if isinstance(key, slice) and not racer:
-                # the other thread's register, scheduled right before the write; it waits only if a lock holds it
                 racer.append(threading.Thread(target = I.register_route, args = (0, 64, late)))
                 racer[0].start()
                 racer[0].join(0.5)

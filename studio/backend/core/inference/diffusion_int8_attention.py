@@ -657,8 +657,7 @@ def _sink_unsafe() -> set:
 _GRAPHED = [False]
 # (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
 _ROUTES: list = []
-# A prune rewrites the list: without it a register on another thread (a video load during an image render) could land
-# between the read and the write and be dropped.
+# A prune is read-filter-write: unlocked, a register on another thread could be dropped
 _ROUTES_LOCK = threading.Lock()
 
 
@@ -672,7 +671,6 @@ def _prune_locked() -> None:
 
 
 def _prune_routes() -> None:
-    """Drop the routes of processors that are gone (an unloaded pipeline's)."""
     with _ROUTES_LOCK:
         _prune_locked()
 
@@ -712,15 +710,14 @@ def _drop_routes(plan: dict) -> None:
 def _weak(obj: Any) -> Callable:
     try:
         return weakref.ref(obj)
-    except TypeError:  # not weak-referenceable: held as before
+    except TypeError:
         return lambda: obj
 
 
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
-    its calls compile as they did before the install; any other raises its token floor. Holds both weakly: the
-    route outlives an unload in ``_ROUTES``, and a strong module reference there kept the whole attention module (its
-    Q / K / V weights, 1.7 GB on FLUX.3 klein INT8) on the card until the next load."""
+    its calls compile as they did before the install; any other raises its token floor. Held weakly: a
+    strong ref in ``_ROUTES`` kept unloaded attention weights (1.7 GB on FLUX.3 klein INT8) on the card."""
     proc_ref, module_ref = _weak(proc), _weak(module) if module is not None else None
 
     def raise_floor(tokens: int) -> bool:
