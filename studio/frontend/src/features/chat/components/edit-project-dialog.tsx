@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -111,12 +112,11 @@ function ProjectMcpServers({
         MCP servers
       </legend>
       <label className="flex items-center gap-2 text-ui-13">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={value !== null}
           disabled={value === null && servers === null}
-          onChange={(event) => {
-            if (!event.target.checked) onChange(null);
+          onCheckedChange={(checked) => {
+            if (checked !== true) onChange(null);
             else if (servers) onChange(servers.map((server) => server.id));
           }}
         />
@@ -141,12 +141,11 @@ function ProjectMcpServers({
                 key={server.id}
                 className="flex items-center gap-2 text-ui-13"
               >
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={value.includes(server.id)}
-                  onChange={(event) =>
+                  onCheckedChange={(checked) =>
                     onChange(
-                      event.target.checked
+                      checked === true
                         ? [...value, server.id]
                         : value.filter((id) => id !== server.id),
                     )
