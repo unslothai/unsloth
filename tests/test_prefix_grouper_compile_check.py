@@ -250,6 +250,48 @@ def test_backward_compile_failure_is_caught(mods, monkeypatch):
     assert pg.prefix_grouper_enabled() is False
 
 
+def test_failed_check_backward_frees_its_input_copies(mods, monkeypatch):
+    """The check's pack hook returned its input, so an op that saves its own output formed a cycle gc
+    cannot break: a backward that failed (out of resource retry, compile failure) kept the Q / K / V
+    copies and the check's graph alive."""
+    import gc
+    import weakref
+
+    pg, kernel, calls = mods
+    refs = []
+
+    def fwd_ok_bwd_broken(
+        *args,
+        kernel_options = None,
+        **kwargs,
+    ):
+        out = _cpu_flex(*args, **kwargs)
+        if not args[0].requires_grad:
+            return out
+        # sigmoid saves its own output for backward, as the flex kernel saves out / logsumexp.
+        saved = torch.sigmoid(out + 0 * args[0].sum())
+        refs.extend(weakref.ref(x) for x in (*args[:3], saved))
+        return _BackwardFails.apply(saved)
+
+    monkeypatch.setattr(kernel, "_flex_attention_compiled", fwd_ok_bwd_broken)
+    seg = _seg(kernel)
+    with pytest.raises(kernel.PrefixGrouperCompileError):
+        kernel.flex_shared_prefix_attention(*_qkv(seg.T), seg)
+    gc.collect()
+    assert refs, "the check's forward did not run"
+    assert all(ref() is None for ref in refs), "the failed check's graph outlived it"
+
+
+class _BackwardFails(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad):
+        raise RuntimeError("backward kernel failed to compile")
+
+
 def test_real_dynamo_failure_is_silent_without_the_check(mods, monkeypatch):
     """A backend failure is swallowed by suppress_errors on a plain call but caught by the check."""
     pg, kernel, calls = mods

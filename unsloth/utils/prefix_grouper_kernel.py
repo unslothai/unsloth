@@ -503,6 +503,12 @@ def _keep_saved(tensor):
     return tensor
 
 
+def _detach_saved(tensor):
+    # Returning the input saves an op's output on its own node, a cycle gc cannot break: a probe whose
+    # backward fails (out of resource retry, compile failure) would keep its Q / K / V copies alive.
+    return tensor.detach()
+
+
 def _record_compile_failure(key, reason):
     global _COMPILE_FAILURE
     _COMPILE_CHECKED[key] = False
@@ -543,7 +549,7 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
                 block_mask = get_block_mask(seg, q.device, compile_mask = True)
             out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
             # Else inside a non-reentrant checkpoint the backward unpacks through it and stops recompute.
-            own_hooks = torch.autograd.graph.saved_tensors_hooks(_keep_saved, _keep_saved)
+            own_hooks = torch.autograd.graph.saved_tensors_hooks(_detach_saved, _keep_saved)
             with torch.inference_mode(False), torch.enable_grad(), own_hooks:
                 qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
                 oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
