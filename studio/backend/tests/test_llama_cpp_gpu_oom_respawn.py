@@ -162,6 +162,8 @@ def test_mixed_cards_keep_their_own_margins_plus_the_headroom(tmp_path, monkeypa
     monkeypatch.setattr(B, "_SMI_MIG_INDICES", frozenset())
     monkeypatch.setattr(B, "_host_torch_is_rocm", staticmethod(lambda: False))
     monkeypatch.setattr(llama_cpp, "_active_vram_fraction", lambda: 0.8)
+    # Discrete cards, answered without a CUDA device query.
+    monkeypatch.setattr(B, "_cuda_device_info", staticmethod(lambda: []))
     memory = ((0, 80_000, 80_000), (1, 8_000, 8_000))
     backend, gguf = h.cards(tmp_path, memory = memory)
     intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
