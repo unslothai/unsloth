@@ -299,7 +299,6 @@ async def _catalog_row(caller: Caller, model: str) -> Optional[tuple[str, str]]:
     )
     rows = [(row["id"], row["kind"]) for row in media if row.get("kind") in MEDIA_KINDS]
     for row in audio:
-        # An unsupported row can't be loaded.
         if not row.get("unsupported_reason"):
             task = row.get("task")
             rows.append((row["id"], AUDIO_KIND.get(task if isinstance(task, str) else "", "audio")))
@@ -752,7 +751,6 @@ async def load_model(
             hub_token = hf_token,
         )
     if kind in loading.MEDIA_ROUTES:
-        # The media routes take the GGUF variant apart, as plan_load and download_model read "repo:variant".
         if model:
             model, variant = model_downloads._split(model, variant)
         if caller.profile.catalog_only:

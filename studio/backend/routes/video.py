@@ -578,7 +578,6 @@ async def load_video_model_gated(
             from core.inference.ensure_model import chat_kept_refusal, media_load_spares_chat
             from core.inference.gpu_arbiter import GpuOwnerBusyError
 
-            # A chat's own tools key loads beside the chat model, never in its place.
             spare_chat = await asyncio.to_thread(
                 media_load_spares_chat, VIDEO, "video", request.model_path, multi_model_mode
             )

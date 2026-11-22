@@ -187,7 +187,6 @@ class StudioMcpGate:
 
         if not await run_in_threadpool(is_mcp_enabled):
             if await _may_see_off_hint(scope):
-                # Also a JSON-RPC error, for clients that only read that envelope.
                 body = {
                     "jsonrpc": "2.0",
                     "id": None,
