@@ -31153,6 +31153,9 @@ async def _proxy_to_external_provider(
         managed is None
         and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
         and _effective_max_tokens(payload) is None
+        # OpenRouter models publish output caps below the window; only Studio's Max (which knows
+        # them and sends a number where one applies) opts into the window there.
+        and (provider_type != "openrouter" or _ui_stream_events_enabled(request))
     ):
         from routes.providers import cached_catalog_model_context
 

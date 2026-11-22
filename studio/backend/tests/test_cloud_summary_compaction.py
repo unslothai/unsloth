@@ -967,7 +967,8 @@ def test_max_asks_for_the_room_the_window_leaves_after_the_prompt():
 
 
 @pytest.mark.parametrize("provider_type", ["custom", "openrouter"])
-def test_a_request_without_max_tokens_gets_the_windows_room(provider_type):
+def test_a_request_without_max_tokens_gets_the_windows_room(provider_type, monkeypatch):
+    monkeypatch.setattr(ri, "_ui_stream_events_enabled", lambda request: True)
     chat = [{"role": "user", "content": "hello"}]
     _, sent = _proxy(provider_type, chat, max_tokens = None, context_window = 64_000)
     assert 64_000 - 2_000 - 200 < sent["max_tokens"] < 64_000 - 2_000
@@ -1004,3 +1005,9 @@ def test_studio_max_on_a_custom_responses_connection_keeps_the_old_ceiling(monke
     chat = [{"role": "user", "content": "hello"}]
     _proxy("custom", chat, max_tokens = None, context_window = 64_000, provider_api_type = "responses")
     assert seen == {"max_tokens": ri._UNKNOWN_WINDOW_MAX_TOKENS, "api_type": "responses"}
+
+
+def test_an_openrouter_api_caller_without_max_tokens_keeps_the_provider_default():
+    chat = [{"role": "user", "content": "hello"}]
+    _, sent = _proxy("openrouter", chat, max_tokens = None, context_window = 1_000_000)
+    assert "max_tokens" not in sent
