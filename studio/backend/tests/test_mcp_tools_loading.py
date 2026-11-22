@@ -1574,6 +1574,19 @@ def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_loa
     assert bodies(studio, "/api/inference/load") == []
 
 
+def test_a_zero_wait_llm_load_of_a_catalog_image_model_still_never_reaches_the_llm_route(
+    monkeypatch, fast_polls
+):
+    studio = fake_studio({**PAYLOADS, **CATALOGS})
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": FLUX2, "kind": "llm", "wait_s": 0})
+        job_id = (early.get("structuredContent") or {}).get("job_id")
+        if job_id:
+            job = call("get_job", {"kind": "load", "id": job_id, "wait_s": 30})
+            assert job["structuredContent"]["status"] == "failed", job
+    assert bodies(studio, "/api/inference/load") == []
+
+
 # An explicit llm load of a tts row goes through; a bare name keeps its variant.
 @pytest.mark.parametrize(
     "model, kind, sent",

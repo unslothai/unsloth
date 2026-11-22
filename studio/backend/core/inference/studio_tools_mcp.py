@@ -386,9 +386,9 @@ def call(
         if name == "load_model" and _load_still_running(result):
             # Its job is stopped with the key below, so a job reference would never complete.
             return (
-                f"Error: MCP tool 'load_model' did not finish within {limit:g}s, so this call stopped it. "
-                "A download it started keeps running; call load_model again to load the model "
-                "(list_models shows what is loaded)."
+                f"Error: MCP tool 'load_model' did not finish within {limit:g}s, so this call stopped waiting. "
+                "A download it started keeps running, and an image or video load already under way may still "
+                "finish; check list_models(loaded_only=true) before calling load_model again."
             )
         return _flatten_result(_without_nulls(result), ui_resource_uri)
     finally:

@@ -408,6 +408,7 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
+    precheck: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -429,6 +430,8 @@ async def load_llm(
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
         # The GGUF listing and status reads run inside the job, so a slow one never holds the call
         # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
+        if precheck is not None:
+            await precheck()
         gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
         body.update(
             place.llm_fields(

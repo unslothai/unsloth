@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional, get_args
 from urllib.parse import quote
 
@@ -445,20 +444,10 @@ async def _refuse_certain_chat_unload(
     raise ToolError(chat_kept_refusal(kind, model, "off").detail)
 
 
-async def _refuse_llm_kind_for_media(
-    model: str,
-    catalog: Any,
-    *,
-    deadline: Optional[float] = None,
-) -> None:
+async def _refuse_llm_kind_for_media(model: str, catalog: Any) -> None:
     """An llm load of a catalog image, video or speech-to-text model would fail only after unloading models;
-    tts and audio rows do load through the llm route. A catalog slower than ``deadline`` lets the load go on."""
-    try:
-        found = await asyncio.wait_for(
-            catalog(), None if deadline is None else max(0.0, deadline - time.monotonic())
-        )
-    except asyncio.TimeoutError:
-        return
+    tts and audio rows do load through the llm route."""
+    found = await catalog()
     if found in ("image", "video", "stt"):
         noun = problems.WHAT.get(found, "model")
         raise ToolError(
@@ -690,8 +679,6 @@ async def load_model(
         catalog,
         refused = {"checkpoint": checkpoint, "export": export, "hf_token": hf_token},
     )
-    if kind == "llm" and model and not (checkpoint or export):
-        await _refuse_llm_kind_for_media(model, catalog, deadline = deadline)
     trained = await trained_models.resolve_by(
         deadline,
         caller,
@@ -773,6 +760,8 @@ async def load_model(
         kind = kind,
         is_lora = trained.is_lora if trained else False,
         deadline = deadline,
+        # In the job, before the POST: a slow catalog never holds the call past wait_s.
+        precheck = None if trained else (lambda: _refuse_llm_kind_for_media(model, catalog)),
         **where,
     )
     # The route echoes the minted ref; the agent gets the name it asked for.
