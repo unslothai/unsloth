@@ -319,3 +319,19 @@ def test_shards_without_any_model_metadata_fail_unless_opted_out(tmp_path, monke
     monkeypatch.setenv("UNSLOTH_GGUF_ALLOW_UNSCALED_ROPE", "1")
     record(model, [second])
     assert Path(second).read_bytes() == raw
+
+
+def test_a_near_limit_gguf_filename_is_edited_under_a_short_sibling_name(tmp_path):
+    """A valid 244-byte basename must not overflow a 255-byte filename limit while it is edited."""
+    pytest.importorskip("gguf")
+    record = _load("_record_gemma_linear_rope_in_gguf")["_record_gemma_linear_rope_in_gguf"]
+    name = "g" * (244 - len(".gguf")) + ".gguf"
+    assert len(name.encode()) == 244
+    path = tmp_path / name
+    _tiny_gguf(path, "gemma")
+
+    record(_config(tmp_path / "model", "gemma", _LINEAR["rope_scaling"]), [str(path)])
+
+    fields, _ = _read(path)
+    assert fields["gemma.rope.scaling.type"] == "linear"
+    assert sorted(os.listdir(tmp_path)) == sorted(["model", name])

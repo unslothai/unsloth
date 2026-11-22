@@ -2881,7 +2881,10 @@ def _record_gemma_linear_rope_in_gguf(
         if plan is None:
             continue
         # Edited under another name, so an interrupted edit never leaves a broken file at `path`.
-        staged = path + ".rope_scaling.tmp"
+        # A short sibling name: appending to a near-limit basename (255 bytes, or Windows MAX_PATH) overflows it.
+        staged = os.path.join(
+            os.path.dirname(os.path.abspath(path)), f".unsloth_rope_{os.getpid()}_{id(plan):x}.tmp"
+        )
         os.replace(path, staged)
         try:
             _insert_linear_rope(gguf, staged, plan)
