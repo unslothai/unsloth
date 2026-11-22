@@ -1621,3 +1621,19 @@ def test_a_slow_catalog_does_not_hold_an_explicit_llm_load_past_wait_s(monkeypat
         early = call("load_model", {"model": LLM, "kind": "llm", "wait_s": 0})
         assert time.monotonic() - started < 1.5
     assert early["structuredContent"]["status"] == "loading", early
+
+
+@pytest.mark.parametrize(
+    "asked, full",
+    [
+        ("Moonshine-Streaming-GGUF:small/Q8_0", "org/Moonshine-Streaming-GGUF:small/Q8_0"),
+        ("other/Moonshine-Streaming-GGUF", "other/Moonshine-Streaming-GGUF"),
+    ],
+)
+def test_a_bare_catalog_name_keeps_a_variant_that_holds_a_slash(asked, full):
+    from studio_mcp.tools import models as tools
+    class Catalog:
+        async def catalog_id(self):
+            return "org/Moonshine-Streaming-GGUF:small/Q8_0"
+
+    assert asyncio.run(tools._full_id(asked, Catalog())) == full

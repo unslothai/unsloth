@@ -281,7 +281,9 @@ def _prequant_transformer_bytes(fam: Any, request: Any, dirs: list) -> Optional[
 
     if location:
         DB._union_over_cached_revs(location, grab)
-    return sum(sizes.values()) or None
+    folder = sum(size for rel, size in sizes.items() if rel.startswith("transformer/"))
+    # The loader reads one root checkpoint (a .pt and its .safetensors successor may both be cached).
+    return folder or max((size for rel, size in sizes.items() if rel in names), default = 0) or None
 
 
 def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int, int]]:

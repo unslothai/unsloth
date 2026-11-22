@@ -284,6 +284,11 @@ async def _listed(caller: Caller, path: str) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict) and opt_text(row.get("id"))]
 
 
+def _bare(model: str) -> bool:
+    # A GGUF variant may hold a slash ("small/Q8_0"); only the part before ":" names an org.
+    return "/" not in model.split(":", 1)[0]
+
+
 async def _catalog_row(caller: Caller, model: str) -> Optional[tuple[str, str]]:
     """(id, kind) of the catalog row for ``model``: its exact id, else, for a bare name such as
     "Z-Image-Turbo", the one row whose repo name it is."""
@@ -300,7 +305,7 @@ async def _catalog_row(caller: Caller, model: str) -> Optional[tuple[str, str]]:
     for row in rows:
         if _same_model_id(row[0], model):
             return row
-    if "/" in model:
+    if not _bare(model):
         return None
     name = model.split(":", 1)[0].lower()
     named = [row for row in rows if row[0].rsplit("/", 1)[-1].lower() == name]
@@ -335,7 +340,7 @@ def _catalog_lookup(caller: Caller, model: str) -> Any:
 
 async def _full_id(model: str, catalog: Any) -> str:
     """A bare catalog name ("FLUX.2-klein-4B") as its row's full id; any other id as given."""
-    return model if "/" in model else (await catalog.catalog_id() or model)
+    return (await catalog.catalog_id() or model) if _bare(model) else model
 
 
 async def _inferred_kind(

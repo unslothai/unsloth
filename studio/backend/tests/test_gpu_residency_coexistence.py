@@ -526,8 +526,12 @@ class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(self._need())
         quant = Path(self._tmp.name) / "z-int8"
         _sparse(quant / "transformer_int8.pt", 6000)
+        # An older checkpoint beside its successor: the loader reads one.
+        _sparse(quant / "transformer_int8.safetensors", 5000)
         source = SimpleNamespace(
-            kind = "repo", location = str(quant), candidate_filenames = ("transformer_int8.pt",)
+            kind = "repo",
+            location = str(quant),
+            candidate_filenames = ("transformer_int8.safetensors", "transformer_int8.pt"),
         )
         fam = SimpleNamespace(name = "z-image", prequant_repos = (("int8", str(quant)),))
         with (
@@ -545,6 +549,7 @@ class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNotNone(need)
         # The fp32 base's halving applies to base files only, never to the int8 checkpoint.
         self.assertGreaterEqual(need.weights_mib, 6000 + 8000)
+        self.assertLess(need.weights_mib, 6000 + 5000 + 8000)
 
     def test_a_flux3_pipeline_is_checked_against_its_modular_manifest(self):
         from core.inference.diffusion_flux3 import (
