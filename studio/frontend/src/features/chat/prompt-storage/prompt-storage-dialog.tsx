@@ -96,6 +96,7 @@ import type { ThreadRecord, MessageRecord } from "../types";
 import {
   buildNamedConversationsMarkdown,
   conversationExportBasename,
+  conversationModelLabel,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
@@ -621,7 +622,7 @@ async function loadConversationForHtml(
       : undefined;
   return {
     title: title ?? (thread?.title?.trim() || "Conversation"),
-    model: format === "pdf" ? thread?.modelId : undefined,
+    model: format === "pdf" ? conversationModelLabel(thread?.modelId) || undefined : undefined,
     messages: await Promise.all(messages.map(async (msg) => {
       const images: string[] = [];
       const rest = {
