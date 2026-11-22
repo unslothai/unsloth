@@ -25,6 +25,10 @@ __all__ = [
     "patch_inkling2_model",
     "inkling2_lora_target_modules",
     "raise_if_merging_inkling2",
+    "raise_if_inkling2_parallel_unsupported",
+    "INKLING2_TP_REASON",
+    "INKLING2_PP_REASON",
+    "INKLING2_PARALLEL_ALTERNATIVE",
 ]
 
 INKLING2_MODEL_TYPES = frozenset(
@@ -97,6 +101,59 @@ def raise_if_merging_inkling2(model, save_method):
         "merge cannot place the LoRA weights and would write the base model unchanged.\n"
         'Save the LoRA adapter instead (`model.save_pretrained(...)` or `save_method = "lora"`): it reloads with '
         "Unsloth, and with transformers through `peft.PeftModel.from_pretrained`."
+    )
+
+
+INKLING2_TP_REASON = (
+    "its attention projections are wrapper modules (q / k / v / o hold the Linear beside scaled L2 clips, short "
+    "convolutions over the key / value channels and a sigmoid output gate), next to per-head attention sink and "
+    "hidden-state-conditioned relative position bias projections, and tensor parallel has no sharding rule for them"
+)
+INKLING2_PP_REASON = (
+    "its decoder carries a stack of block states (block attention residuals: every layer and the final norm read "
+    "learned queries over the block outputs) beside hidden_states, and Inkling-2-Mini also runs layers 6-17 three "
+    "times per forward with message gates feeding pass k-1 into pass k, so a pipeline stage boundary would cut "
+    "state the pipeline does not carry"
+)
+INKLING2_PARALLEL_ALTERNATIVE = (
+    'train data parallel instead: UNSLOTH_PARALLEL="dp=N" (DDP, the whole model on every GPU) or '
+    'UNSLOTH_PARALLEL="fsdp=1" (native FSDP2) under torchrun, or split the model over the GPUs of one process '
+    'with device_map = "balanced"'
+)
+
+
+def raise_if_inkling2_parallel_unsupported(config, model_types = ()) -> None:
+    """Tensor / pipeline parallel (UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE, which UNSLOTH_PARALLEL tp= / pp= and
+    unsloth.parallelize set) on Inkling 2, refused from the config before any weight loads. Left alone, tensor
+    parallel stops at the first wrapper projection and pipeline parallel at the residual modules, both after a full
+    load on every rank when quantizing on load (the Mini checkpoint is 14.4 GB in 4-bit)."""
+    types = {str(t).lower() for t in (model_types or ())}
+    if not (is_inkling2_config(config) or types & INKLING2_MODEL_TYPES):
+        return
+    import os
+
+    def size(name):
+        try:
+            return int(str(os.environ.get(name) or "1").strip())
+        except ValueError:
+            return 1  # parallel_env reports the malformed value itself
+
+    tp, pp = size("UNSLOTH_TP_SIZE"), size("UNSLOTH_PP_SIZE")
+    asked = [
+        (f"tensor parallel (UNSLOTH_TP_SIZE={tp})", INKLING2_TP_REASON) if tp > 1 else None,
+        (f"pipeline parallel (UNSLOTH_PP_SIZE={pp})", INKLING2_PP_REASON) if pp > 1 else None,
+    ]
+    asked = [x for x in asked if x is not None]
+    if not asked:
+        return
+    raise NotImplementedError(
+        "Unsloth: "
+        + "; ".join(f"{what} does not support Inkling 2 yet: {why}" for what, why in asked)
+        + ". Expert parallel is not supported either. Unset "
+        + " / ".join(what.split("(")[1].split("=")[0] for what, _ in asked)
+        + " (or drop tp / pp from UNSLOTH_PARALLEL) and "
+        + INKLING2_PARALLEL_ALTERNATIVE
+        + "."
     )
 
 
