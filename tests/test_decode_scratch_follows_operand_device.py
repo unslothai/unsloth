@@ -169,3 +169,24 @@ def test_falcon_h1_decode_buffers_follow_embeddings(monkeypatch):
 
     assert len(devices) == 4, devices
     assert devices == [META] * 4, f"scratch allocated on {devices}"
+
+
+def test_gemma2_static_masks_are_built_on_the_embeddings_device():
+    """The static sliding-window and global masks were built on the bare device type, which is
+    the current device (cuda:0) for a model placed on cuda:1. Read from source: building them
+    needs a whole model forward."""
+    import ast
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "llama.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    devices = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_causal_4d"
+        ):
+            devices += [ast.unparse(k.value) for k in node.keywords if k.arg == "device"]
+    assert len(devices) == 2, devices
+    assert devices == ["inputs_embeds.device"] * 2, devices
