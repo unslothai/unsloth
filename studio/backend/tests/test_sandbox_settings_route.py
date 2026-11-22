@@ -27,6 +27,7 @@ from core.inference import (
     mxc_read_grants,
     mxc_runtime,
     os_sandbox,
+    sandbox_probe,  # noqa: F401 - imported under the real platform: `posix` would load libc on Windows
     tools,
 )
 from utils import client_ip, mxc_isolation_settings
