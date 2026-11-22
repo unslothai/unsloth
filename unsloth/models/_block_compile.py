@@ -323,6 +323,15 @@ def _same(tensor):
     return tensor
 
 
+def _detached(tensor):
+    # Pack hook of the non-reentrant trial. Nothing backpropagates the trial graph, so it is only freed
+    # when its output dies; a pack hook returning its input saves an op's output on that op's own node,
+    # a cycle through the C++ graph that gc cannot see (torch's saved_tensors_hooks warning). Each
+    # block's first non-reentrant call then kept its whole trial forward until exit (Qwen3-30B-A3B
+    # shape, 4 layers, 32K tokens, aux loss on: 14 GiB between steps).
+    return tensor.detach()
+
+
 @contextlib.contextmanager
 def _no_output_capture(layer):
     """Hide the trial forward from transformers output recording (an extra router_logits entry skews the aux loss)."""
@@ -2234,10 +2243,11 @@ def _wrap(
         )
         if (bit == 1 or nonreentrant) and not checked & trial_bit:
             # Grad-mode trial runs first (RNG forked); a checkpoint recompute must not demote below
-            # this call. Non-reentrant: identity saved-tensor hooks keep a failed trial graph out
+            # this call. Non-reentrant: our own saved-tensor hooks keep the trial graph out of the
+            # checkpoint frame (detaching pack, see _detached)
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             hooks = (
-                torch.autograd.graph.saved_tensors_hooks(_same, _same)
+                torch.autograd.graph.saved_tensors_hooks(_detached, _same)
                 if nonreentrant
                 else contextlib.nullcontext()
             )
