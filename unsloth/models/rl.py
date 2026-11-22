@@ -48,6 +48,7 @@ from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from . import _decode_graphs
 from .rl_replacements import (
     _class_source,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_get_model_config,
     _unsloth_text_configs,
     RL_EXTRA_ARGS,
@@ -1991,7 +1992,8 @@ def _model_supports_unsloth_return_hidden_states(model):
             return True
         if getattr(type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
             return True
-    return False
+    # A fast CausalLM forward that registered itself, on the module the wrapper would replace; the scorer reads the same.
+    return _unsloth_forward_returns_hidden_states(model)
 
 
 def _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs):
@@ -2257,8 +2259,24 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         hidden_states = hidden_states[-1]
         if divisor is not None:
             hidden_states = hidden_states / divisor
+        # A forward that honours UNSLOTH_RETURN_HIDDEN_STATES itself, behind a wrapper the capability check does not
+        # know, already returns the head input as .logits: nothing to verify, and with a square head the check below
+        # would compare hidden states with hidden states, call the input unsafe and degrade every later call.
+        native = getattr(outputs, "logits", None)
+        returned_head_input = (
+            isinstance(native, torch.Tensor)
+            and native.ndim == hidden_states.ndim
+            and native.shape[-1] == hidden_states.shape[-1]
+            and native.shape[-2] >= 1
+            and torch.equal(
+                native[..., -1:, :], hidden_states[..., -1:, :].to(device = native.device)
+            )
+        )
         # Once per model: a head input we do not reproduce (another pre-head transform) would silently train a different objective.
-        if getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None) is None:
+        if (
+            not returned_head_input
+            and getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None) is None
+        ):
             verdict = _grpo_hidden_states_reproduce_logits(
                 target_model, hidden_states, getattr(outputs, "logits", None)
             )
@@ -4866,6 +4884,8 @@ def patch_trl_fused_lm_head_devices():
                     outputs[key] = value.to(device)
             return outputs
 
+        # Without fused_lm_head it hands fused_forward's output back untouched (_unsloth_forward_returns_hidden_states).
+        forward._unsloth_forward_delegate = (forward, fused_forward)
         model.forward = forward
         return result
 
