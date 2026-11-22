@@ -993,6 +993,27 @@ def test_mhtml_saved_by_chrome_keeps_non_ascii_text(tmp_path):
     assert "Café 東京 “quoted”" in _text(path)
 
 
+@pytest.mark.parametrize(
+    "content_type, body, expected",
+    [
+        (b"text/plain", "Café 東京".encode(), "Café 東京"),
+        (b"text/plain", "Café résumé naïve".encode("cp1252"), "Café résumé naïve"),
+        (b"text/plain; charset=x-bogus", "Café 東京".encode(), "Café 東京"),
+        (b"text/html; charset=x-bogus", "<p>Café 東京</p>".encode(), "Café 東京"),
+    ],
+)
+def test_eml_without_a_usable_charset_sniffs_the_bytes(tmp_path, content_type, body, expected):
+    path = tmp_path / "mail.eml"
+    path.write_bytes(
+        b"Subject: Hi\r\nMIME-Version: 1.0\r\nContent-Type: "
+        + content_type
+        + b"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+        + body
+        + b"\r\n"
+    )
+    assert expected in _text(path)
+
+
 def test_xhtml_reads_visible_text(tmp_path):
     text = _text(build_xhtml(tmp_path / "page.xhtml"))
     assert "Zebramarker résumé" in text and "p{}" not in text

@@ -1034,16 +1034,22 @@ def _email_parts(part, html_text) -> list[str]:
         return []
     if part.get_content_type() not in ("text/plain", "text/html"):
         return []
-    if part.get_content_subtype() == "html" and part.get_content_charset() is None:
-        return [html_text(part.get_payload(decode = True) or b"")]
-    try:
-        content = part.get_content()
-    except (LookupError, ValueError):
-        content = part.get_payload(decode = True) or b""
-        content = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
-    if part.get_content_subtype() == "html":
-        return [html_text(content.encode("utf-8") if isinstance(content, str) else content)]
-    return [content]
+    is_html = part.get_content_subtype() == "html"
+    content = None
+    # The stdlib reads an undeclared charset as ASCII (Chrome MHTML omits it), so sniff the bytes.
+    if part.get_content_charset() is not None:
+        try:
+            content = part.get_content()
+        except (LookupError, ValueError):
+            pass
+    if not isinstance(content, str):
+        raw = part.get_payload(decode = True) or b""
+        if is_html:
+            return [html_text(raw)]
+        from .parsers import _decode_text
+
+        return [_decode_text(raw)]
+    return [html_text(content.encode("utf-8")) if is_html else content]
 
 
 def _email_text(message, html_text) -> str:
