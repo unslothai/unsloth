@@ -37,6 +37,40 @@ def fused(pipe: Any) -> bool:
     return bool(getattr(pipe, _FUSED_ATTR, None))
 
 
+def _moves_with_hooks(module: Any) -> bool:
+    """An accelerate hook or a diffusers offload hook on ``module`` or any submodule moves its weights per forward."""
+    for sub in module.modules():
+        if getattr(sub, "_hf_hook", None) is not None:
+            return True
+        hooks = getattr(getattr(sub, "_diffusers_hook", None), "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+    return False
+
+
+def _on_card(module: Any) -> bool:
+    """Every parameter and buffer of ``module`` sits on one accelerator (not host, not meta)."""
+    devices = {t.device for t in (*module.parameters(), *module.buffers())}
+    return len(devices) == 1 and next(iter(devices)).type not in ("cpu", "meta")
+
+
+def denoisers_resident(offload_policy: Any, memory_mode: Any, denoisers: list) -> bool:
+    """Whether the denoisers stay on the card between renders, so their folded weights do not move.
+
+    No offload: always (the existing rule). Group offload: only when it grouped other components (text encoders, VAE)
+    and left every denoiser whole on the card with no offload hook on it; a streamed, partly pinned or demoted
+    transformer carries group hooks. Model, streaming and sequential offload move the denoiser every render."""
+    from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE, keeps_denoiser_streamed
+
+    if offload_policy == OFFLOAD_NONE:
+        return True
+    if offload_policy != OFFLOAD_GROUP or not denoisers:
+        return False
+    if keeps_denoiser_streamed(memory_mode):
+        return False
+    return all(not _moves_with_hooks(m) and _on_card(m) for m in denoisers)
+
+
 def _lora_layers(module: Any) -> list:
     return [
         m

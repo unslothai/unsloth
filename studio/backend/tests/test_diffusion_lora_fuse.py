@@ -369,3 +369,80 @@ def test_power_of_two_packing_kill_switch_keeps_the_exact_slabs(monkeypatch):
     assert charged == sum(
         lf._layout([-(-r * c * 2 // 64) * 64 for r, c in _FLUX_LIKE], pow2 = False)[1]
     )
+
+
+def _hooked(module, kind):
+    if kind == "accelerate":
+        module._hf_hook = object()
+    elif kind == "group":
+        module._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": object()})
+    elif kind == "block_group":
+        child = next(module.children())
+        child._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": object()})
+    elif kind == "cache":
+        module._diffusers_hook = types.SimpleNamespace(hooks = {"first_block_cache": object()})
+    return module
+
+
+@pytest.mark.parametrize(
+    "policy, memory_mode, hook, on_card, expected",
+    [
+        ("none", "auto", None, False, True),  # the existing rule, unchanged
+        ("group", "auto", None, True, True),  # text encoder grouped, denoiser whole on the card
+        ("group", "auto", "cache", True, True),  # a non-offload hook does not move weights
+        ("group", "auto", "group", True, False),  # streamed (or pinned-group) transformer
+        ("group", "auto", "block_group", True, False),  # a hook on one block is enough
+        ("group", "auto", "accelerate", True, False),
+        ("group", "auto", None, False, False),  # demoted to host or split
+        ("group", "low_vram", None, True, False),  # low_vram keeps the denoiser streamed
+        ("model", "auto", None, True, False),
+        ("streaming", "auto", None, True, False),
+        ("sequential", "auto", None, True, False),
+        (None, "auto", None, True, False),
+    ],
+)
+def test_fold_gate_needs_a_resident_denoiser(
+    monkeypatch, policy, memory_mode, hook, on_card, expected
+):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    monkeypatch.setattr(lora_fuse, "_on_card", lambda module: on_card)
+    denoiser = _hooked(torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)), hook)
+    assert lora_fuse.denoisers_resident(policy, memory_mode, [denoiser]) is expected
+
+
+def test_on_card_refuses_host_and_meta():
+    from core.inference import diffusion_lora_fuse as lora_fuse
+    assert not lora_fuse._on_card(torch.nn.Linear(4, 4))
+    assert not lora_fuse._on_card(torch.nn.Linear(4, 4, device = "meta"))
+
+
+def test_group_policy_with_a_resident_denoiser_folds(engine, monkeypatch):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
+    engine.state.offload_policy = dmod.OFFLOAD_GROUP
+    engine.state.memory_mode = "auto"
+    x = _inputs()
+    with torch.no_grad():
+        unfused = engine.unet(*x).sample
+    before = _base_weights(engine.unet)
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) > 0
+    with torch.no_grad():
+        folded = engine.unet(*x).sample
+    torch.testing.assert_close(folded, unfused, rtol = 1e-4, atol = 1e-5)
+    engine.apply(0.5)  # a change unfolds bit-exactly, as with no offload
+    assert _merged_layers(engine.unet) == 0
+    assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
+
+
+def test_group_policy_with_a_streamed_denoiser_is_not_folded(engine, monkeypatch):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    monkeypatch.setattr(lora_fuse, "_on_card", lambda module: True)
+    engine.state.offload_policy = dmod.OFFLOAD_GROUP
+    engine.state.memory_mode = "auto"
+    _hooked(engine.unet, "block_group")
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) == 0

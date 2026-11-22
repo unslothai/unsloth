@@ -14907,14 +14907,16 @@ class DiffusionBackend:
 
         if not lora_fuse.enabled() or lora_fuse.fused(pipe):
             return
-        if getattr(state, "offload_policy", None) != OFFLOAD_NONE or getattr(
-            pipe, "_unsloth_loras_baked", False
-        ):
-            return  # offloaded weights move every render; quantised bakes keep their own path
+        if getattr(pipe, "_unsloth_loras_baked", False):
+            return  # quantised bakes keep their own path
         denoisers = [
             m for m in (getattr(pipe, "unet", None), *_lora_fuse_dits(pipe)) if m is not None
         ]
         denoisers = list({id(m): m for m in denoisers}.values())
+        if not lora_fuse.denoisers_resident(
+            getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
+        ):
+            return  # offloaded or streamed denoiser weights move every render
         if denoisers and lora_fuse.fuse(pipe, denoisers, logger):
             # graphs recorded the unfused forward; a CFG replica copied the unfused weights
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
