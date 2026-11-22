@@ -75,16 +75,11 @@ def _new_cudagraph_state():
 
 # Auto mode: phase "probe" (graphs off, watching), "on" or "off" (final). first: the layer whose
 # call starts a forward pass; passes: forward passes seen, all with batch shape `shape` on `device`.
-# round: numbers the decision (one per patched model, the same sequence on every rank); agree: the
-# store every DDP rank publishes its verdict to (None on one process).
-_AUTO_ROUND = [0]
-
-
+# ddp: None until a block runs inside a DDP forward, then that run's agreement session (False: the
+# run can never enroll, so graphs stay off), see _auto_ddp_enroll.
 def _new_auto_state():
-    _AUTO_ROUND[0] += 1
     return {
-        "round": _AUTO_ROUND[0],
-        "agree": None,
+        "ddp": None,
         "phase": "probe",
         "first": None,
         "shape": None,
@@ -587,79 +582,267 @@ def _auto_off(auto, why):
     auto["phase"] = "off"
     auto["why"] = why
     auto["first"] = None
-    _auto_publish(auto, f"off:{why}")
     _auto_note(f"Unsloth: block CUDA graphs stay off ({why}).")
 
 
-# DDP: every rank decides from its own probe and publishes the verdict to the process group's store
-# (no collective, so a rank that went off early or never probes cannot hang the others). A rank
-# turns graphs on only once every rank published "on"; any "off", or no full set within the timeout,
-# keeps them off everywhere. Graphs on some ranks only would still be correct, just not faster.
-try:
-    _AUTO_AGREE_TIMEOUT_S = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AGREE_TIMEOUT", "120"))
-except ValueError:
-    _AUTO_AGREE_TIMEOUT_S = 120.0
+# DDP: each rank probes alone but never turns graphs on alone. The first eager block call inside a DDP
+# forward enrolls the run: a forward pre-hook on that DDP wrapper then runs one all_reduce(MIN) of every
+# rank's local verdict (0 off, 1 still probing, 2 ready) at the start of grad-synced forwards, the
+# forwards DDP already needs every rank to run (no_sync() and no-grad forwards skip it), eagerly, never
+# under Dynamo. Graphs go on in the forward where every rank reported ready, and any rank's veto turns
+# them off everywhere in that same forward. After graphs are on the hook asks again every
+# _AUTO_DDP_RECHECK synced forwards (1, 2, 4, ... up to it), so a later rank-local fallback (packed rows,
+# the shape cap, a failed graph compile, a block outside the DDP module) turns them off on that rank at
+# once and on the others at the next check. UNSLOTH_BLOCK_CUDAGRAPHS_DDP=0 keeps graphs off under DDP.
+_AUTO_DDP = os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_DDP", "1").strip() != "0"
+_AUTO_DDP_RECHECK = 64
+_AUTO_DDP_MAX_PROBES = 64  # synced forwards a rank may still be probing before graphs stay off
+_AUTO_DDP_NOTE = "Unsloth: block CUDA graphs turned off on every DDP rank ({})."
+_DISABLE_DYNAMO = getattr(torch, "_disable_dynamo", None) or torch._dynamo.disable
 
 
-def _auto_join(auto):
-    """Under an initialized process group with world > 1: the store, rank and world, else None."""
+def _auto_world():
     try:
         import torch.distributed as dist
-
-        if not (dist.is_available() and dist.is_initialized()):
-            return None
-        world = dist.get_world_size()
-        if world <= 1:
-            return None
-        from torch.distributed import distributed_c10d
-
-        store = distributed_c10d._get_default_store()
-        agree = {
-            "store": store,
-            "rank": dist.get_rank(),
-            "world": world,
-            "prefix": f"unsloth_block_cudagraphs/{auto['round']}",
-            "published": None,
-            "deadline": None,
-        }
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_world_size()
     except Exception:
-        auto["agree"] = False
+        return 2  # unreadable: treat as distributed (graphs stay off)
+    return 1
+
+
+def _auto_is_cuda(hidden_states):
+    return hidden_states.is_cuda
+
+
+def _dynamo_callback_active():
+    """A torch.compile around the model: its block calls run traced or under the compiler's frame
+    callback, so whether a rank reaches them eagerly can differ by rank (recompile fallbacks)."""
+    try:
+        from torch._C._dynamo import eval_frame
+        return eval_frame.get_eval_frame_callback() not in (None, False)
+    except Exception:
         return False
-    auto["agree"] = agree
-    return agree
 
 
-def _auto_publish(auto, verdict):
-    agree = auto.get("agree")
-    if not agree or (agree["published"] or "").startswith("off"):
+def _dtensor_type():
+    try:
+        from torch.distributed.tensor import DTensor
+    except Exception:
+        from torch.distributed._tensor import DTensor
+    return DTensor
+
+
+def _fsdp2_type():
+    try:
+        from torch.distributed.fsdp import FSDPModule
+    except Exception:
+        try:
+            from torch.distributed._composable.fsdp import FSDPModule
+        except Exception:
+            return ()
+    return FSDPModule
+
+
+def _auto_cp_reason():
+    """Unsloth's context-parallel manager, or torch's native context_parallel() dispatch: collectives
+    inside attention."""
+    cp = sys.modules.get("unsloth.context_parallel")
+    if cp is not None and getattr(cp, "get_cp_manager", lambda: None)() is not None:
+        return "context parallel"
+    for name in (
+        "torch.distributed.tensor.experimental._context_parallel._attention",
+        "torch.distributed.tensor.experimental._attention",
+    ):
+        native = sys.modules.get(name)
+        if native is None:
+            continue
+        if torch.nn.functional.scaled_dot_product_attention in getattr(
+            native, "_replaced_functions", ()
+        ):
+            return "context parallel"
+        ops = getattr(native, "custom_ops", None)
+        if ops:
+            dispatcher = getattr(_dtensor_type(), "_op_dispatcher", None)
+            handlers = getattr(dispatcher, "_custom_op_handlers", None) or {}
+            if any(op in handlers for op in ops):
+                return "context parallel"
+    return None
+
+
+def _auto_ddp_layout_reason(ddp, world):
+    """Model-level rules, read once at enrollment: DDP over a sub-group (pipeline / tensor x data),
+    FSDP2 modules, DTensor weights (FSDP2 / tensor parallel)."""
+    group = getattr(ddp, "process_group", None)
+    if group is None or group.size() != world:
+        return "DDP over part of the ranks"
+    fsdp2 = _fsdp2_type()
+    if fsdp2 and any(isinstance(m, fsdp2) for m in ddp.module.modules()):
+        return "FSDP2 module"
+    dtensor = _dtensor_type()
+    if any(isinstance(p, dtensor) for p in ddp.module.parameters()):
+        return "DTensor weights (FSDP2 / tensor parallel)"
+    return None
+
+
+def _auto_ddp_enroll(hidden_states):
+    """At every eager block call until this run has a session: inside a DDP forward (training or not,
+    the same first forward on every rank), attach the agreement hook to that wrapper."""
+    auto = _CUDAGRAPH_STATE["auto"]
+    if auto["ddp"] is not None or _DDP is None or _IN_TRIAL[0]:
+        return
+    ddp = _DDP._get_active_ddp_module()
+    if ddp is None or torch._C._current_graph_task_id() != -1 or _auto_world() <= 1:
+        return
+    why = None
+    if not _AUTO_DDP:
+        why = "UNSLOTH_BLOCK_CUDAGRAPHS_DDP=0"
+    elif not _auto_is_cuda(hidden_states):
+        why = "not a CUDA tensor"
+    else:
+        why = _auto_platform_reason()
+    if why is None and _dynamo_callback_active():
+        why = "torch.compile around the DDP model"
+    if why is not None:
+        # The same on every rank (environment, build, device, compile setup): no vote needed.
+        auto["ddp"] = False
+        _auto_ddp_veto(auto, why)
         return
     try:
-        agree["store"].set(f"{agree['prefix']}/{agree['rank']}", verdict)
-        agree["published"] = verdict
+        session = {
+            "owner": weakref.ref(ddp),
+            "members": weakref.WeakSet(ddp.module.modules()),
+            "admitted": weakref.WeakSet(),
+            "why": _auto_ddp_layout_reason(ddp, _auto_world()),
+            "count": 0,
+            "next": 1,
+            "interval": 1,
+            "done": False,
+        }
     except Exception:
-        pass
+        session = None
+    if session is None:
+        auto["ddp"] = False
+        _auto_ddp_veto(auto, "distributed")
+        return
+    if auto["phase"] == "on":
+        # Graphs went on in one process before the process group came up.
+        _auto_ddp_veto(auto, "process group started after graphs went on")
+    elif auto["first"] is not None and auto["phase"] == "probe":
+        # A probe started in one process: start again inside DDP.
+        auto.update(first = None, shape = None, device = None, passes = 0, decision = None)
+        auto["host"].clear()
+        auto["gpu"].clear()
+
+    @_DISABLE_DYNAMO
+    def hook(module, args):
+        # Never removed (removing a hook while its module runs hooks is not safe on every torch):
+        # a decided session, or one a newer model's run replaced, only returns.
+        if session["done"] or _CUDAGRAPH_STATE["auto"].get("ddp") is not session:
+            return
+        if not (torch.is_grad_enabled() and module.require_backward_grad_sync):
+            return
+        session["count"] += 1
+        if session["count"] >= session["next"]:
+            _auto_ddp_agree(_CUDAGRAPH_STATE["auto"], session, module)
+
+    ddp.register_forward_pre_hook(hook)
+    auto["ddp"] = session
 
 
-def _auto_agreed(auto):
-    """ "on" once every rank published "on", None while some rank has not published, else why off."""
-    agree = auto.get("agree")
-    if not agree:
-        return "on"
-    keys = [f"{agree['prefix']}/{rank}" for rank in range(agree["world"])]
+def _auto_ddp_veto(auto, why):
+    """This rank's graphs off now; the other ranks follow at the next agreement."""
+    if auto["phase"] == "on":
+        auto["why"] = auto["why"] or why
+        _graphs_off("ddp", _AUTO_DDP_NOTE.format(why))  # the run path releases the pool
+    elif auto["phase"] != "off":
+        _auto_off(auto, why)
+
+
+def _auto_ddp_agree(auto, session, ddp):
+    import torch.distributed as dist
+
+    if getattr(getattr(ddp, "_join_config", None), "enable", False):
+        # Under DDP.join() a rank that ran out of inputs shadows only DDP's own collectives, so no
+        # vote can be taken; join() is entered by every rank, so every rank ends up here.
+        _auto_ddp_veto(auto, "DDP join (uneven inputs)")
+        session["done"] = True
+        return
+    count = session["count"]
     try:
-        if not agree["store"].check(keys):
-            if agree["deadline"] is None:
-                agree["deadline"] = time.monotonic() + _AUTO_AGREE_TIMEOUT_S
-            if time.monotonic() > agree["deadline"]:
-                return "ranks did not agree in time"
-            return None
-        verdicts = [agree["store"].get(key).decode() for key in keys]
+        why = session["why"] or _auto_cp_reason()
+        if why is not None:
+            _auto_ddp_veto(auto, why)
     except Exception:
-        return "rank verdicts unreadable"
-    for rank, verdict in enumerate(verdicts):
-        if verdict != "on":
-            return f"rank {rank}: {verdict[4:] if verdict.startswith('off:') else verdict}"
-    return "on"
+        # Every enrolled rank has to reach the collective: a local failure is a veto, not a skip.
+        _auto_ddp_veto(auto, "distributed")
+    if auto["phase"] == "off" or _CUDAGRAPH_STATE["off"] is not None:
+        flag = 0
+    elif auto["phase"] == "on" or auto["decision"] == "on":
+        flag = 2
+    else:
+        flag = 1
+    try:
+        group = ddp.process_group
+        world, rank = group.size(), dist.get_rank(group)
+        device = "cpu"
+        if dist.get_backend(group) != "gloo":
+            index = ddp.device_ids[0] if ddp.device_ids else torch.cuda.current_device()
+            device = torch.device("cuda", index)
+        vote = torch.tensor([flag * world + rank, count, -count], dtype = torch.int64, device = device)
+        dist.all_reduce(vote, op = dist.ReduceOp.MIN, group = group)
+        low, lowest, negative_highest = vote.tolist()
+    except Exception:
+        _auto_ddp_veto(auto, "DDP agreement failed")
+        session["done"] = True
+        return
+    agreed, vetoing = divmod(low, world)
+    if lowest != -negative_highest:
+        agreed, why = 0, "ranks enrolled in different forwards"
+    elif agreed == 0:
+        if vetoing == rank:
+            why = auto["why"] or f"graphs off here: {_CUDAGRAPH_STATE['off']}"
+        else:
+            why = f"rank {vetoing}: graphs off there"
+    elif agreed == 1 and count >= _AUTO_DDP_MAX_PROBES:
+        agreed, why = 0, f"a rank still probing after {count} forwards"
+    if agreed == 0:
+        _auto_ddp_veto(auto, why)
+        session["done"] = True
+        return
+    if agreed == 2 and auto["phase"] == "probe":
+        auto["phase"] = "on"
+        auto["first"] = None
+        _rank0_note(
+            "auto", auto.get("note", "Unsloth: block CUDA graphs on.") + " (every DDP rank agreed)"
+        )
+    if auto["phase"] == "on":
+        session["next"] = count + session["interval"]
+        session["interval"] = min(session["interval"] * 2, max(1, _AUTO_DDP_RECHECK))
+    else:
+        session["next"] = count + 1
+
+
+_NOT_OURS = object()
+
+
+def _auto_ddp_call_reason(session, layer):
+    """Per block call of an enrolled run, on every path: None (this call may take part), why it
+    vetoes graphs, or _NOT_OURS (plain for this call only: outside the owning DDP forward)."""
+    owner = session["owner"]()
+    if owner is not None and _DDP._get_active_ddp_module() is owner:
+        if layer not in session["admitted"]:
+            if layer not in session["members"]:
+                return "block outside the DDP module"
+            dtensor = _dtensor_type()
+            if any(isinstance(p, dtensor) for p in layer.parameters()):
+                return "DTensor weights (FSDP2 / tensor parallel)"
+            session["admitted"].add(layer)
+        return _auto_cp_reason()
+    # A checkpoint recompute replays an admitted block in backward, after the DDP forward ended.
+    if torch._C._current_graph_task_id() != -1 and layer in session["admitted"]:
+        return _auto_cp_reason()
+    return _NOT_OURS
 
 
 def _auto_platform_reason():
@@ -675,7 +858,7 @@ def _auto_platform_reason():
 
 def _auto_static_reason(layer, hidden_states):
     """Why auto mode never turns graphs on for this run (None: it may)."""
-    if not hidden_states.is_cuda:
+    if not _auto_is_cuda(hidden_states):
         return "not a CUDA tensor"
     why = _auto_platform_reason()
     if why is not None:
@@ -695,38 +878,15 @@ def _auto_static_reason(layer, hidden_states):
 
 
 def _auto_distributed_reason(layer):
-    """None on one process or under plain DDP over every rank (block weights replicated, no
-    collective inside a block); any other multi-process layout keeps graphs off: native FSDP2 / tensor
-    parallel (DTensor weights), DDP over a sub-group (pipeline / tensor x data), context parallel
-    (collectives inside attention), or no DDP forward around the block."""
-    try:
-        import torch.distributed as dist
-
-        if not (dist.is_available() and dist.is_initialized()):
-            return None
-        world = dist.get_world_size()
-        if world <= 1:
-            return None
-        ddp = _DDP._get_active_ddp_module() if _DDP is not None else None
-        if ddp is None:
-            return "distributed, not DDP"
-        group = getattr(ddp, "process_group", None)
-        if group is None or group.size() != world:
-            return "DDP over part of the ranks"
-        cp = sys.modules.get("unsloth.context_parallel")
-        if cp is not None and getattr(cp, "get_cp_manager", lambda: None)() is not None:
-            return "context parallel"
-        try:
-            from torch.distributed.tensor import DTensor
-        except Exception:
-            from torch.distributed._tensor import DTensor
-        if any(isinstance(p, DTensor) for p in layer.parameters()):
-            return "DTensor weights (FSDP2 / tensor parallel)"
-        if not any(m is layer for m in ddp.module.modules()):
-            return "block outside the DDP module"
-    except Exception:
-        return "distributed"
-    return None
+    """None on one process or in a DDP run enrolled for agreement (its layout rules are read there);
+    any other multi-process layout keeps graphs off: FSDP / tensor parallel without DDP, or no DDP
+    forward around the block."""
+    if _auto_world() <= 1:
+        return None
+    session = _CUDAGRAPH_STATE["auto"]["ddp"]
+    if not session:
+        return "distributed, not DDP"
+    return session["why"]
 
 
 def _auto_call_reason(layer, hidden_states, args, kwargs):
@@ -753,17 +913,25 @@ def _auto_observe(layer, hidden_states, args, kwargs):
     auto = _CUDAGRAPH_STATE["auto"]
     if auto["phase"] == "off":
         return "plain"
+    session = auto["ddp"]
+    if session:
+        # DDP: ownership, DTensor and context parallel on every call, graphs on or not.
+        why = _auto_ddp_call_reason(session, layer)
+        if why is _NOT_OURS:
+            return "plain"
+        if why is not None:
+            _auto_ddp_veto(auto, why)
+            return "plain"
     if auto["phase"] == "on":
+        if not session and _auto_world() > 1:
+            # Graphs went on in one process, then a process group came up without a DDP forward.
+            _auto_ddp_veto(auto, "distributed, not DDP")
         return "graphs"
     outside = _IN_TRIAL[0] or torch._C._current_graph_task_id() != -1
     if auto["first"] is None:
         if outside:
             return "plain"  # the trial / a recompute before any forward pass was seen
-        if auto["agree"] is None:
-            _auto_join(auto)
         why = _auto_static_reason(layer, hidden_states)
-        if why is None and auto["agree"] is False:
-            why = "no process group store"
         if why is not None:
             _auto_off(auto, why)
             return "plain"
@@ -783,16 +951,10 @@ def _auto_observe(layer, hidden_states, args, kwargs):
         return "plain"
     if auto["first"]() is layer:  # a new forward pass
         if auto["decision"] == "on":
-            agreed = _auto_agreed(auto)
-            if agreed is None:
-                return "plain"  # another rank has not decided yet: ask again next pass
-            if agreed != "on":
-                _auto_off(auto, agreed)
-                return "plain"
+            if session:
+                return "plain"  # the DDP hook turns graphs on, in one forward for every rank
             auto["phase"] = "on"
             auto["first"] = None
-            if auto["agree"]:
-                _rank0_note("auto", auto["note"] + " (every rank agreed)")
             return "graphs"
         auto["passes"] += 1
     if auto["passes"] > _AUTO_WARMUP_PASSES and len(auto["host"]) < _AUTO_MEASURE_CALLS:
@@ -822,10 +984,8 @@ def _auto_decide(auto, device):
         f"Unsloth: block CUDA graphs on (one batch shape, {detail}). "
         "UNSLOTH_BLOCK_CUDAGRAPHS=0 keeps them off."
     )
-    if auto["agree"]:
-        _auto_publish(auto, "on")  # the note waits for every rank's verdict
-    else:
-        _rank0_note("auto", auto["note"])
+    if not auto["ddp"]:
+        _rank0_note("auto", auto["note"])  # DDP: noted once every rank agreed
 
 
 def _auto_time(call, device):
@@ -2248,27 +2408,44 @@ def _wrap(
                         _release_graph_pool()
                     return plain(self, hidden_states, *args, **kwargs)
                 if use_graphs:
-                    _param_grads_out_of_pool(self)
-                    device = hidden_states.device.index
-                    if _pool_outputs_stay_valid(self, hidden_states):
-                        if _input_grad_must_leave_pool(hidden_states):
-                            # A leaf's .grad outlives the generation (trainable inputs_embeds); a
-                            # checkpoint's backward recomputes (a new generation) before reading it.
-                            hidden_states = _CloneGrad.apply(hidden_states)
-                        return _graphed_call(
-                            graphed(), device, self, hidden_states, *args, **kwargs
+                    try:
+                        return _graphs_run(self, hidden_states, args, kwargs)
+                    except Exception as e:
+                        # Auto: a graph variant that fails to compile (its own first compile, after
+                        # the plain variant already passed the checked bit) falls back to plain.
+                        inner = getattr(e, "inner_exception", None)
+                        if (
+                            not auto
+                            or type(e).__name__ != "BackendCompilerFailed"
+                            or isinstance(inner, torch.OutOfMemoryError)
+                        ):
+                            raise
+                        _graphs_off(
+                            "graph compile",
+                            "Unsloth: block CUDA graph compile failed; blocks run without CUDA graphs.",
                         )
-                    if hidden_states.requires_grad and torch.is_grad_enabled():
-                        hidden_states = _CloneGrad.apply(hidden_states)
-                    return _clone_outputs(
-                        _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
-                    )
+                        return plain(self, hidden_states, *args, **kwargs)
                 return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
             _IN_COMPILED_REGION[0] = False
             packed[0] = packed_previous
+
+    def _graphs_run(self, hidden_states, args, kwargs):
+        _param_grads_out_of_pool(self)
+        device = hidden_states.device.index
+        if _pool_outputs_stay_valid(self, hidden_states):
+            if _input_grad_must_leave_pool(hidden_states):
+                # A leaf's .grad outlives the generation (trainable inputs_embeds); a
+                # checkpoint's backward recomputes (a new generation) before reading it.
+                hidden_states = _CloneGrad.apply(hidden_states)
+            return _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
+        if hidden_states.requires_grad and torch.is_grad_enabled():
+            hidden_states = _CloneGrad.apply(hidden_states)
+        return _clone_outputs(
+            _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
+        )
 
     def _inline(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -2283,6 +2460,9 @@ def _wrap(
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
         tracing = torch.compiler.is_compiling()
+        if auto and not tracing and _CUDAGRAPH_STATE["auto"]["ddp"] is None:
+            # Before any data-dependent branch: every rank enrolls in the same DDP forward.
+            _auto_ddp_enroll(hidden_states)
         mode = self.__dict__.get("_unsloth_block_mode")
         if mode is None:
             mode = state["start"].get(_layer_kind(self), _FIRST_MODE)
@@ -2308,9 +2488,12 @@ def _wrap(
             else:
                 kwargs = prepared
         if stock:
-            phase = _CUDAGRAPH_STATE["auto"]["phase"] if auto else None
+            # Traced: the enclosing graph owns the call (no state change, no print under Dynamo);
+            # the next eager call sees the same rows.
+            phase = _CUDAGRAPH_STATE["auto"]["phase"] if auto and not tracing else None
             if (
                 (graphs or phase == "on")
+                and not tracing
                 and self.training
                 and _CUDAGRAPH_STATE["off"] is None
                 and _packed_kwargs(kwargs)
