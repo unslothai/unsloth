@@ -10275,10 +10275,13 @@ def _microscaling_qat_filter(
         candidates = lambda m, fqn, _c = candidates, _bad = frozenset(bad_widths): (
             _c(m, fqn) and m.out_features not in _bad
         )
+    # Only a trainable bias needs the backward's bias gradient. LoRA freezes the base bias (bias = "none"),
+    # and skipping those layers left Qwen2-style q / k / v projections out of QAT while the export still
+    # quantizes them.
     biased = [
         name
         for name, module in model.named_modules()
-        if not _is_lora_adapter_name(name) and candidates(module, name) and module.bias is not None
+        if not _is_lora_adapter_name(name) and candidates(module, name) and _trainable_bias(module)
     ]
     if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
         warnings.warn(
@@ -10288,8 +10291,13 @@ def _microscaling_qat_filter(
             + (f", ... ({len(biased) - 8} more)" if len(biased) > 8 else ""),
             stacklevel = 3,
         )
-        return lambda m, fqn, _c = candidates: _c(m, fqn) and m.bias is None
+        return lambda m, fqn, _c = candidates: _c(m, fqn) and not _trainable_bias(m)
     return candidates
+
+
+def _trainable_bias(module) -> bool:
+    bias = getattr(module, "bias", None)
+    return isinstance(bias, torch.Tensor) and bias.requires_grad
 
 
 def _mx_autocast_forward(self, x):
