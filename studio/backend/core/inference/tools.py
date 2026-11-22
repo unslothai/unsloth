@@ -10082,19 +10082,25 @@ def _darwin_footprint_bytes(pid: int) -> int:
     return int(info[9])
 
 
-def _tree_memory_bytes(pid: int) -> int:
+def _tree_processes(pid: int) -> list:
     import psutil
-
     try:
         root = psutil.Process(pid)
-        processes = [root, *root.children(recursive = True)]
+        return [root, *root.children(recursive = True)]
     except psutil.Error:
-        return 0
+        return []
+
+
+def _tree_memory_bytes(processes: list) -> int:
+    import psutil
+
     total = 0
     for process in processes:
         used = 0
         try:
-            used = process.memory_info().rss
+            info = process.memory_info()
+            # Windows vms is the commit charge, what a job memory limit counts; untouched pages miss rss.
+            used = max(info.rss, info.vms) if sys.platform == "win32" else info.rss
         except psutil.Error:
             pass
         if sys.platform == "darwin":
@@ -10114,8 +10120,15 @@ def _memory_watchdog(
 ) -> None:
     try:
         while proc.poll() is None:
-            if _tree_memory_bytes(proc.pid) > limit_bytes:
+            processes = _tree_processes(proc.pid)
+            if _tree_memory_bytes(processes) > limit_bytes:
                 proc._unsloth_memory_exceeded = limit_bytes
+                # A descendant in its own session is outside the group, so kill what was measured too.
+                for process in reversed(processes[1:]):
+                    try:
+                        process.kill()
+                    except Exception:  # noqa: BLE001 - already gone, or a pid psutil saw reused
+                        pass
                 _killpg_captured(pgid)
                 _kill_process_tree(proc)
                 return

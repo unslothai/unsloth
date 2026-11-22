@@ -17,6 +17,7 @@ import subprocess
 import sys
 import sysconfig
 import textwrap
+import types
 import time
 import zipfile
 
@@ -2622,6 +2623,41 @@ def test_the_memory_watchdog_stops_a_tree_over_the_limit():
 
 
 @pytest.mark.skipif(os.name != "posix", reason = "the watchdog is the POSIX path")
+def test_the_memory_watchdog_also_stops_a_child_in_its_own_session(tmp_path):
+    import psutil
+
+    pid_file = tmp_path / "child.pid"
+    child = "import os, time; held = os.urandom(300 * 1024 * 1024); time.sleep(60)"
+    parent = (
+        "import subprocess, sys, pathlib\n"
+        f"p = subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session = True)\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid))\n"
+        "p.wait()\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", parent], start_new_session = True)
+    try:
+        tools._memory_watchdog(proc, 100 * 1024 * 1024, tools._capture_process_group(proc), 0.1)
+        proc.wait(timeout = 20)
+        child_pid = int(pid_file.read_text())
+        deadline = time.time() + 10
+        while psutil.pid_exists(child_pid) and time.time() < deadline:
+            if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
+                break
+            time.sleep(0.1)
+        assert not psutil.pid_exists(child_pid) or (
+            psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+        )
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        if pid_file.exists():
+            try:
+                psutil.Process(int(pid_file.read_text())).kill()
+            except psutil.Error:
+                pass
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "the watchdog is the POSIX path")
 def test_the_memory_watchdog_leaves_a_small_tree_alone():
     proc = subprocess.Popen([sys.executable, "-c", "print(1)"], start_new_session = True)
     tools._memory_watchdog(proc, 1024**3, tools._capture_process_group(proc), 0.05)
@@ -2655,6 +2691,19 @@ def test_windows_falls_back_to_the_watchdog_without_a_job_memory_limit(monkeypat
     monkeypatch.setattr(tools.threading, "Thread", _Thread)
     tools._cap_tool_memory(object(), pgid, True)
     assert [target for target, _ in started] == [tools._memory_watchdog]
+
+
+def test_the_windows_watchdog_counts_committed_memory(monkeypatch):
+    class _Process:
+        pid = 1
+
+        def memory_info(self):
+            return types.SimpleNamespace(rss = 50 * 1024**2, vms = 3 * 1024**3)
+
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    assert tools._tree_memory_bytes([_Process()]) == 3 * 1024**3
+    monkeypatch.setattr(tools.sys, "platform", "linux")
+    assert tools._tree_memory_bytes([_Process()]) == 50 * 1024**2
 
 
 def test_a_memory_watchdog_kill_is_not_a_finished_run():
