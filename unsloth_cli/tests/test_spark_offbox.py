@@ -808,8 +808,21 @@ def test_provision_paths_unchanged_without_studio_home(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     venv, _ = sc.provision_paths()[0]
     assert venv == str(Path.home() / ".unsloth" / "studio" / "unsloth_studio")
+
+
+def test_provision_paths_follow_unsloth_home(monkeypatch, tmp_path) -> None:
+    sc = _load("studio/spark_cluster.py")
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
+    assert sc.provision_paths()[0][0] == str(tmp_path / "portable" / "studio" / "unsloth_studio")
+    assert sc.config_path() == tmp_path / "portable" / "studio" / "spark_cluster.json"
+    # An explicit Studio home still wins.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "pinned"))
+    assert sc.provision_paths()[0][0] == str(tmp_path / "pinned" / "unsloth_studio")
 
 
 def test_peer_activate_stays_home_relative_by_default(monkeypatch) -> None:
@@ -817,6 +830,7 @@ def test_peer_activate_stays_home_relative_by_default(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     assert sc.venv_activate() == "$HOME/.unsloth/studio/unsloth_studio/bin/activate"
 
 
@@ -1065,6 +1079,7 @@ def test_provision_paths_include_the_llama_bundle(monkeypatch) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     paths = dict((label, path) for path, label in sc.provision_paths())
     assert paths["llama.cpp prebuilt"] == str(Path.home() / ".unsloth" / "llama.cpp")
@@ -1380,6 +1395,7 @@ def test_bundle_dir_defaults_to_the_legacy_location(monkeypatch, tmp_path) -> No
     sc = _load("studio/spark_cluster.py")
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     assert sc.llama_bundle_dir() == Path.home() / ".unsloth" / "llama.cpp"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(Path.home() / ".unsloth" / "studio"))
