@@ -125,34 +125,42 @@ const SENTENCES: Record<string, string[]> = {
   am: [
     "በጣም የቅርቡ የባቡር ጣቢያ የት ነው? ትኬት መግዛት እፈልጋለሁ።",
     "አመሰግናለሁ",
+    "የሰው ልጅ ሁሉ ሲወለድ ነጻና በክብርና በመብትም እኩልነት ያለው ነው።",
   ],
   sw: [
     "Kituo cha treni cha karibu kiko wapi? Mimi nataka kununua tiketi kwa safari yangu.",
     "Habari yako, asante sana.",
+    "Ninapenda kusoma vitabu na kusikiliza muziki jioni.",
   ],
   ha: [
     "Ina tashar jirgin ƙasa mafi kusa? Ina so in sayi tikiti domin tafiya zuwa gida.",
     "Sannu, barka da zuwa, mun gode sosai.",
+    "Sunana Musa kuma ina zaune a Kano.",
   ],
   yo: [
     "Nibo ni ibudo ọkọ oju-irin ti o sunmọ julọ wa? Mo fẹ ra tikẹti kan lati lọ si ile.",
     "Ẹ ku ọjọ meta, a dupẹ pupọ.",
+    "Orúkọ mi ni Adé, mo sì ń gbé ní Èkó.",
   ],
   ig: [
     "Ebee ka ọdụ ụgbọ oloko kacha nso dị? Achọrọ m ịzụta tiketi maka njem anyị.",
     "Kedu ka ị mere? Daalụ nke ukwuu.",
+    "Aha m bụ Chinedu, a na m ebi n'Enugu.",
   ],
   zu: [
     "Kuphi isiteshi sesitimela esiseduze? Mina ngifuna ukuthenga ithikithi futhi ngihambe.",
     "Sawubona, ngiyabonga kakhulu.",
+    "Igama lami nguThandi, ngihlala eGoli.",
   ],
   af: [
     "Waar is die naaste treinstasie? Ek wil graag hierdie kaartjie vir ons koop.",
     "Goeiedag, baie dankie vir julle hulp.",
+    "Ek het die boek gelees en dit was baie goed.",
   ],
   so: [
     "Xaggee ayuu ku yaalaa saldhigga tareenka ugu dhow? Waxaan rabaa inaan iibsado tigidh.",
     "Aad iyo aad ayaad u mahadsanid, sidee tahay maanta?",
+    "Waxaan jeclahay inaan buugaag akhriyo.",
   ],
 };
 
@@ -197,4 +205,19 @@ test("decomposed accents and uppercase links read like any other text", () => {
 test("only the start of a long text is read", () => {
   const long = `${"Ich habe keine Zeit. ".repeat(200)}${"Hello there, how are you? ".repeat(400)}`;
   assert.equal(detectTranslateLanguage(long), "de");
+});
+
+test("Vietnamese keeps its short phrases while Yoruba and Igbo dot-below vowels are not Vietnamese", () => {
+  for (const text of ["Mẹ ơi", "Chị ơi", "Cụ ạ", "Đẹp"])
+    assert.equal(detectTranslateLanguage(text), "vi", text);
+  assert.equal(detectTranslateLanguage("Mo fẹ́ jẹun"), "yo");
+  assert.equal(detectTranslateLanguage("Achọrọ m ịga ahịa echi n'ụtụtụ."), "ig");
+});
+
+test("Dutch and Afrikaans are told apart by the words they do not share", () => {
+  assert.equal(
+    detectTranslateLanguage("Ik heb het boek gelezen en het was heel goed."),
+    "nl",
+  );
+  assert.equal(detectTranslateLanguage("Ek is nie seker nie."), "af");
 });

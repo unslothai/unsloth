@@ -26,7 +26,8 @@ const tokensOf = (text: string) =>
   text.split(/[^\p{L}\p{M}]+/u).filter(Boolean);
 const hits = (tokens: readonly string[], known: ReadonlySet<string>) =>
   tokens.filter((token) => known.has(token)).length;
-const words = (list: string): ReadonlySet<string> => new Set(list.split(" "));
+const words = (list: string): ReadonlySet<string> =>
+  new Set(list.normalize("NFC").split(" "));
 
 /** The best code, or null when it does not clearly beat the runner-up. */
 function clearWinner(
@@ -94,8 +95,12 @@ function devanagari(text: string): string | null {
   return marathi > hindi ? "mr" : "hi";
 }
 
-// Common function words, then letters only that language uses among these.
-const LATIN: Record<string, [ReadonlySet<string>, string]> = {
+// Dutch and Afrikaans share these, so only the words the other lacks tell them apart.
+const DUTCH_AFRIKAANS =
+  "die en van is in te het dat om op met wat of aan ons kan maar ook nog al hier daar uit na tot was gaan kom toe dit waar hoe alle geen niks iets iemand mens goed moet word wanneer omdat haar jou onder net";
+
+// Common function words, letters only that language uses among these, then a word shape for languages that glue words together.
+const LATIN: Record<string, [ReadonlySet<string>, string, RegExp?]> = {
   en: [
     words(
       "the and is are of to in it you that this for was with have not what my your be do can will at on we they he she a an from by or as which their has had were but hello thanks please",
@@ -110,7 +115,7 @@ const LATIN: Record<string, [ReadonlySet<string>, string]> = {
   ],
   nl: [
     words(
-      "de het een en van is niet ik dat je op te zijn met voor wat maar er ook wij jij hoe die om of als ze door aan worden naar deze werd bij kunnen uit wordt dit hij heeft zich hebben dan tot veel dank jullie",
+      `de een niet ik je zijn voor er wij jij als ze door worden naar deze werd bij kunnen wordt hij heeft zich hebben dan veel dank jullie ${DUTCH_AFRIKAANS}`,
     ),
     "",
   ],
@@ -182,60 +187,68 @@ const LATIN: Record<string, [ReadonlySet<string>, string]> = {
   ],
   sw: [
     words(
-      "kwa katika kuwa hii hiyo huyo kama lakini pia sana kutoka kwenye hata kila wake wao wetu yako yangu mimi wewe yeye sisi ninyi wapi lini nini habari asante karibu nataka kununua kituo treni tiketi",
+      "na ya wa kwa ni za katika kuwa cha vya hii hiyo huo hizo pia lakini kama au ili kwamba sana tu bado kila wote yote zote mimi wewe yeye sisi ninyi wao yangu yako yake yetu yenu yao wangu wako wake zao langu lako lake nini gani wapi lini vipi nani je hapa kutoka hadi mpaka baada kabla kuna hakuna ndiyo hapana habari asante karibu sasa leo kesho jana mtu watu siku zaidi bila pamoja juu chini ndani nje kati hivyo yoyote",
     ),
     "",
+    // Infinitives, then subject and tense prefixes.
+    /^ku[a-z]{3,}a$|^(?:ni|tu|wa|m|ki|vi)(?:na|li|ta|me)[a-z]{2,}a$/,
   ],
   ha: [
     words(
-      "domin kuma amma cikin daga tare wannan wancan yanzu sosai lokaci mutane gida wajen tashar jirgin kasa tikiti godiya sannu barka lafiya nawa yaya zuwa bayan kafin saboda",
+      "da kuma cikin daga wannan waɗannan amma domin saboda shi ita mu ku sun za ne ce duk kowa yi ko ga wani wata wasu akwai babu haka kamar sai tun har bayan kafin yanzu gobe jiya yau mutane mutum abin inda lokacin zuwa game kan wajen sannu nagode godiya barka lafiya yaya suna yana tana muna kuna sosai kawai dai ba ya na a ta ina zai aka ake yan kowane kowace",
     ),
-    "ɓɗƙ",
+    "ɓɗƙƴ",
   ],
   yo: [
     words(
-      "ninu lati pẹlu ṣugbọn nitori gbogbo ọjọ ọkọ ibudo tikẹti fẹ nibo bawo daadaa ile awọn rẹ wọn yii naa dupẹ pupọ",
+      "ni ti si àti ó wọ́n mo kí ní láti fún pẹ̀lú gbogbo ṣùgbọ́n nítorí tàbí jẹ́ kò yìí náà rẹ̀ mi wa wọn sì bí ń yóò máa kan ọ̀kan ènìyàn ẹni lórí sí inú èyí kankan ẹ dupẹ pupọ ọjọ",
     ),
-    "ẹọṣ",
+    "ẹṣ",
   ],
   ig: [
     words(
-      "nke maka site nwere chọrọ ịzụta tiketi ọdụ ụgbọ oloko ebee dị anyị unu nkeji daalụ kedu ọma ukwuu",
+      "na nke ya ka ha m ị ọ anyị unu ndị niile nile bụ dị nwere maka site ma mana ebe mgbe gị onye ihe bụla ga ike ikike ụfọdụ ahụ kwa nwee",
     ),
     "ịụṅ",
   ],
   zu: [
     words(
-      "ukuthi lapho khona kodwa futhi ngoba phezu phansi phakathi kwaso lesi leyo mina wena yena thina nina bona ngifuna ukuthenga ithikithi isiteshi kuphi sawubona ngiyabonga kakhulu kuhle",
+      "futhi ukuthi kodwa ngoba uma noma kakhulu lapho khona kanye yonke wonke bonke zonke konke lokho lokhu leli lesi labo lezi kule kulo kuze ngakho nje kahle manje namuhla yebo mina wena yena thina nina bona yini kanjani unjani ngubani sawubona ngiyabonga abantu umuntu izinto ukuba ngokuthi ngaphandle phakathi ngaphansi ngaphezu ukuze kwa akukho lami lakho lakhe wami yami sami bami zami",
     ),
     "",
+    // Noun-class and verb prefixes.
+    /^(?:ngi|nge|ngo|uku|oku|kwe|ezi|isi|izi|umu|ubu)[a-z]{3,}$/,
   ],
   af: [
-    words(
-      "ek jy ons hulle julle vir baie hierdie daardie stasie treinstasie kaartjie naaste dankie goeiedag asseblief hoekom watter graag koop",
-    ),
-    "",
+    words(`${DUTCH_AFRIKAANS} nie ek jy hy sy hulle julle vir baie sal mekaar hul sê hoekom mense dankie asseblief hom n sodat teen elkeen kry dis my`),
+    "ê",
   ],
   so: [
     words(
-      "waxaan rabaa inaan iibsado tigidh saldhigga tareenka ugu dhow xaggee ayuu yaalaa mahadsanid aad iyo wanaagsan sidee tahay maanta halkan kaas",
+      "iyo ee ka ku u la ay waa oo ah ayaa wax waxaa waxay wuxuu kale kasta ama haddii laakiin sida markii inuu inay inaan aan uu loo lagu laga si dad dadka qof qofka kuwa mid hal aad badan wanaagsan maanta berri halkan halkaas sidee maxaa xagee haa maya nabad iska isku ugu dhammaan ahaan leh jira mahadsanid waxaan waxaad ayuu ayay ayaan iyada isaga anigu adiga waan",
     ),
     "",
+    // Long vowels with x, q or dh.
+    /^(?=[a-z]*(?:aa|ee|ii|oo|uu))[a-z]*(?:x|q|dh)[a-z]*$/,
   ],
 };
 
-const MALAY = new Set(["id", "ms"]);
+const CLOSE = [new Set(["id", "ms"]), new Set(["nl", "af"])];
 
 function latin(text: string): string | null {
-  if (count(text, /(?![ẹịọụ])[ơưđăạ-ỹ]/gu) >= 2) return "vi";
+  // Yoruba and Igbo write ẹ ị ọ ụ too, but none of Vietnamese's other letters.
+  const vietnamese = count(text, /(?![ẹịọụ])[ơưđăạ-ỹ]/gu);
+  if (vietnamese > 0 && vietnamese + countOf(text, "ẹịọụ") >= 2) return "vi";
   // Elisions split too: French "l'homme" counts "l".
   const tokens = tokensOf(text);
   return clearWinner(
-    Object.entries(LATIN).map(([code, [known, letters]]) => [
+    Object.entries(LATIN).map(([code, [known, letters, shape]]) => [
       code,
-      hits(tokens, known) + (letters ? countOf(text, letters) : 0),
+      hits(tokens, known) +
+        (letters ? countOf(text, letters) : 0) +
+        (shape ? tokens.filter((token) => shape.test(token)).length : 0),
     ]),
-    (a, b) => MALAY.has(a) && MALAY.has(b),
+    (a, b) => CLOSE.some((pair) => pair.has(a) && pair.has(b)),
   );
 }
 

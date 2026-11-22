@@ -260,12 +260,18 @@ test("the first target is the first browser language the model knows", () => {
   assert.equal(suggestedTargetLanguage([]), "en");
   // Hy-MT2, the default model, does not translate Hmong.
   assert.equal(suggestedTargetLanguage(["hmn", "fr-FR"]), "fr");
+  assert.equal(suggestedTargetLanguage(["sw-KE", "af-ZA"]), "en");
 });
 
 test("Hy-MT2 is offered only the languages on its model card", () => {
   const hyMt2 = translateLanguagesFor(true).map((language) => language.code);
   assert.equal(hyMt2.length, 38);
-  assert.ok(!hyMt2.includes("hmn"));
+  assert.deepEqual(
+    TRANSLATE_LANGUAGES.filter((language) => language.chatOnly).map(
+      (language) => language.code,
+    ),
+    ["hmn", "am", "sw", "ha", "yo", "ig", "zu", "af", "so"],
+  );
   assert.equal(translateLanguagesFor(false), TRANSLATE_LANGUAGES);
   assert.ok(translatesLanguage("hmn", false));
   assert.ok(!translatesLanguage("hmn", true));
