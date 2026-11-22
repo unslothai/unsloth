@@ -3500,6 +3500,9 @@ export const tr = {
       showResponseModel: "Yanıt modeli",
       showResponseModelDescription:
         "Asistan yanıtlarında model ayrıntılarını gösterin.",
+      showResponseModelHeader: "Model adı ve simgesi",
+      showResponseModelHeaderDescription:
+        "Her yanıtın üstünde modelin simgesini ve adını göster.",
       showReplyTimes: "Yanıt saatleri",
       showReplyTimesDescription:
         "Her yanıtın ne zaman tamamlandığını yanıtın altında gösterin.",

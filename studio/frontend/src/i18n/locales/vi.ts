@@ -3501,6 +3501,9 @@ export const vi = {
       showResponseModel: "Mô hình trả lời",
       showResponseModelDescription:
         "Hiển thị thông tin mô hình trong câu trả lời của trợ lý.",
+      showResponseModelHeader: "Tên và biểu tượng mô hình",
+      showResponseModelHeaderDescription:
+        "Hiển thị biểu tượng và tên mô hình phía trên mỗi câu trả lời.",
       showReplyTimes: "Thời điểm trả lời",
       showReplyTimesDescription:
         "Hiển thị thời điểm mỗi câu trả lời hoàn tất, bên dưới câu trả lời.",

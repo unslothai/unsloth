@@ -3348,6 +3348,9 @@ export const zhTW = {
       showLinkPreviewsDescription: "將滑鼠游標停留在來源連結上時顯示預覽。",
       showResponseModel: "回應模型",
       showResponseModelDescription: "在助理回應中顯示模型詳細資料。",
+      showResponseModelHeader: "模型名稱與圖示",
+      showResponseModelHeaderDescription:
+        "在每則回覆上方顯示模型的圖示與名稱。",
       showReplyTimes: "回覆時間",
       showReplyTimesDescription: "在每則回覆下方顯示其完成時間。",
       showReplyTimesKeywords:

@@ -3255,6 +3255,9 @@ export const ar = {
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
+      showResponseModelHeader: "اسم النموذج وأيقونته",
+      showResponseModelHeaderDescription:
+        "إظهار أيقونة النموذج واسمه فوق كل رد.",
       showReplyTimes: "أوقات الردود",
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:

@@ -3269,6 +3269,9 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
+      showResponseModelHeader: "Nome e ícone do modelo",
+      showResponseModelHeaderDescription:
+        "Mostrar o ícone e o nome do modelo acima de cada resposta.",
       showReplyTimes: "Horário das respostas",
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:

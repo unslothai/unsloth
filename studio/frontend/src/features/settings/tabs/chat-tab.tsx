@@ -399,6 +399,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const showResponseModelHeader = useChatPreferencesStore(
+    (state) => state.showResponseModelHeader,
+  );
+  const setShowResponseModelHeader = useChatPreferencesStore(
+    (state) => state.setShowResponseModelHeader,
+  );
   const showLinkPreviews = useChatPreferencesStore(
     (state) => state.showLinkPreviews,
   );
@@ -874,6 +880,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.showResponseModelHeader")}
+          description={t("settings.chat.showResponseModelHeaderDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showResponseModelHeader")}
+            checked={showResponseModelHeader}
+            onCheckedChange={setShowResponseModelHeader}
           />
         </SettingsRow>
         <SettingsRow

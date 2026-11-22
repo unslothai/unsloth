@@ -3172,6 +3172,9 @@ export const it = {
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
+      showResponseModelHeader: "Nome e icona del modello",
+      showResponseModelHeaderDescription:
+        "Mostra l'icona e il nome del modello sopra ogni risposta.",
       showReplyTimes: "Orario delle risposte",
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:

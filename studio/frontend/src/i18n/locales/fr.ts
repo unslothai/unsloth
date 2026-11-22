@@ -3292,6 +3292,9 @@ export const fr = {
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
+      showResponseModelHeader: "Nom et icône du modèle",
+      showResponseModelHeaderDescription:
+        "Afficher l'icône et le nom du modèle au-dessus de chaque réponse.",
       showReplyTimes: "Heure des réponses",
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:

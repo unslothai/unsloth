@@ -3239,6 +3239,9 @@ export const ja = {
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
+      showResponseModelHeader: "モデル名とアイコン",
+      showResponseModelHeaderDescription:
+        "各返信の上にモデルのアイコンと名前を表示します。",
       showReplyTimes: "応答の時刻",
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:

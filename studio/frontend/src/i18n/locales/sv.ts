@@ -3416,6 +3416,9 @@ export const sv = {
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
+      showResponseModelHeader: "Modellnamn och ikon",
+      showResponseModelHeaderDescription:
+        "Visa modellens ikon och namn ovanför varje svar.",
       showReplyTimes: "Svarstider",
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:

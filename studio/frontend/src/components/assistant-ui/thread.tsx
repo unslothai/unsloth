@@ -51,6 +51,7 @@ import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-art
 import {
   MessageResponseDetailsSheet,
   MessageResponseModelBadge,
+  MessageResponseModelHeader,
 } from "@/components/assistant-ui/message-response-details-sheet";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
@@ -8575,6 +8576,7 @@ const AssistantMessage: FC = () => {
             <div className="pointer-events-none relative h-0 min-w-0">
               <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
             </div>
+            <MessageResponseModelHeader />
             {researchRunId ? (
               <ResearchMessage />
             ) : (

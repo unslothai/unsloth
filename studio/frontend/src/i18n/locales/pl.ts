@@ -3538,6 +3538,9 @@ export const pl = {
       showResponseModel: "Model odpowiedzi",
       showResponseModelDescription:
         "Pokazuj szczegóły modelu w odpowiedziach asystenta.",
+      showResponseModelHeader: "Nazwa i ikona modelu",
+      showResponseModelHeaderDescription:
+        "Pokazuj ikonę i nazwę modelu nad każdą odpowiedzią.",
       showReplyTimes: "Godziny odpowiedzi",
       showReplyTimesDescription:
         "Pokazuj pod odpowiedzią, kiedy się zakończyła.",

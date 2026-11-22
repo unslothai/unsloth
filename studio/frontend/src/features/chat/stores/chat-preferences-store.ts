@@ -43,6 +43,8 @@ export interface ChatPreferencesState {
   setAlwaysDeleteChatFiles: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showResponseModelHeader: boolean;
+  setShowResponseModelHeader: (value: boolean) => void;
   showLinkPreviews: boolean;
   setShowLinkPreviews: (value: boolean) => void;
   showReplyTimes: boolean;
@@ -115,6 +117,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ alwaysDeleteChatFiles }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
+      showResponseModelHeader: false,
+      setShowResponseModelHeader: (showResponseModelHeader) =>
+        set({ showResponseModelHeader }),
       showLinkPreviews: true,
       setShowLinkPreviews: (showLinkPreviews) => set({ showLinkPreviews }),
       showReplyTimes: false,
@@ -180,6 +185,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showResponseModelHeader: saved?.showResponseModelHeader === true,
           showLinkPreviews: saved?.showLinkPreviews !== false,
           showReplyTimes: saved?.showReplyTimes === true,
           showGenerationDetails: saved?.showGenerationDetails === true,

@@ -3264,6 +3264,9 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      showResponseModelHeader: "मॉडल का नाम और आइकन",
+      showResponseModelHeaderDescription:
+        "हर जवाब के ऊपर मॉडल का आइकन और नाम दिखाएं।",
       showReplyTimes: "जवाब का समय",
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:

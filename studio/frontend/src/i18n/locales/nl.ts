@@ -3543,6 +3543,9 @@ export const nl = {
       showResponseModel: "Antwoordmodel",
       showResponseModelDescription:
         "Modelgegevens tonen in antwoorden van de assistent.",
+      showResponseModelHeader: "Modelnaam en pictogram",
+      showResponseModelHeaderDescription:
+        "Toon het pictogram en de naam van het model boven elk antwoord.",
       showReplyTimes: "Antwoordtijden",
       showReplyTimesDescription:
         "Onder elk antwoord tonen wanneer het klaar was.",

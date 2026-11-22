@@ -3518,6 +3518,9 @@ export const cs = {
       showResponseModel: "Model odpovědi",
       showResponseModelDescription:
         "Zobrazovat v odpovědích asistenta podrobnosti o modelu.",
+      showResponseModelHeader: "Název a ikona modelu",
+      showResponseModelHeaderDescription:
+        "Zobrazit ikonu a název modelu nad každou odpovědí.",
       showReplyTimes: "Časy odpovědí",
       showReplyTimesDescription:
         "Pod každou odpovědí zobrazovat, kdy byla dokončena.",

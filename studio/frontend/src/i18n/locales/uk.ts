@@ -3528,6 +3528,9 @@ export const uk = {
       showResponseModel: "Модель відповіді",
       showResponseModelDescription:
         "Показувати відомості про модель у відповідях асистента.",
+      showResponseModelHeader: "Назва та значок моделі",
+      showResponseModelHeaderDescription:
+        "Показувати значок і назву моделі над кожною відповіддю.",
       showReplyTimes: "Час відповідей",
       showReplyTimesDescription:
         "Показувати під кожною відповіддю, коли її завершено.",

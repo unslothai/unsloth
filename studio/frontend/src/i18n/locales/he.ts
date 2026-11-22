@@ -3335,6 +3335,9 @@ export const he = {
       showLinkPreviewsDescription: "הצגת תצוגות מקדימות במעבר העכבר מעל קישורי מקורות.",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
+      showResponseModelHeader: "שם וסמל המודל",
+      showResponseModelHeaderDescription:
+        "הצגת הסמל והשם של המודל מעל כל תשובה.",
       showReplyTimes: "זמני תשובות",
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:

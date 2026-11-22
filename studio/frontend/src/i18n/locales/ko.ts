@@ -3246,6 +3246,9 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      showResponseModelHeader: "모델 이름 및 아이콘",
+      showResponseModelHeaderDescription:
+        "각 답변 위에 모델 아이콘과 이름을 표시합니다.",
       showReplyTimes: "응답 시간",
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
