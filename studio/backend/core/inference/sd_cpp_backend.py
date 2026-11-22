@@ -3297,6 +3297,51 @@ def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
     return size
 
 
+def _gpu_vae_tile_size(
+    files: Any, binary: Optional[str], klass: Optional[str], ordinal: Optional[int]
+) -> Optional[int]:
+    """Pixel tile edge for decoding the offload path's VAE on the CUDA card, or None to keep it on the CPU. The card's
+    free VRAM, less the card reserve (or a larger VRAM Budget reserve), must hold the VAE and one tile's decode buffer;
+    the offloaded weights sit in host RAM and sd.cpp evicts the denoiser's card copies for the decode. Other
+    accelerators, builds whose tile size is not in image pixels and an unread card keep the CPU VAE."""
+    if klass != "cuda" or not sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
+        return None
+    limit = vae = None
+    try:
+        from core.inference.diffusion_memory import _user_budget_reserve_mib
+        from core.inference.sd_cpp_multigpu import CARD_RESERVE_MIB, file_mib
+
+        free, total = _unmeasured_card_free_mib("cuda", None, ordinal)
+        if free is not None:
+            reserve = max(CARD_RESERVE_MIB, int(_user_budget_reserve_mib(total or free) or 0))
+            limit = int(free) - reserve
+        vae = file_mib(getattr(files, "vae", None))
+    except Exception as exc:  # noqa: BLE001 -- a failed reading keeps the CPU VAE
+        logger.debug("sd_cpp.vae_gpu: card unreadable: %s", exc)
+        limit = None
+    size = sd_cpp_args_mod.gpu_vae_tile_size(limit, vae)
+    logger.info(
+        "sd_cpp.vae_gpu: offload VAE on %s (card free after reserve %s MiB, VAE %s MiB)",
+        f"the card, {size} px tiles" if size else "the CPU",
+        limit,
+        vae,
+    )
+    return size
+
+
+def _offload_vae_flags(
+    policy: str, files: Any, binary: Optional[str], klass: Optional[str], ordinal: Optional[int]
+) -> list[str]:
+    """Offload flags with the VAE placed: on the card when it holds the tiled decode, else the CPU with a RAM-sized
+    tile."""
+    if policy not in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
+        return offload_flags(policy)
+    gpu_tile = _gpu_vae_tile_size(files, binary, klass, ordinal)
+    if gpu_tile:
+        return offload_flags(policy, vae_on_cpu = False, vae_tile_size = gpu_tile)
+    return offload_flags(policy, vae_tile_size = _cpu_vae_tile_size(files, binary))
+
+
 def _native_speed_for(speed_mode: Optional[str]) -> str:
     mode = (speed_mode or "off").strip().lower()
     return mode if mode in ("default", "max") else "off"
@@ -4130,13 +4175,12 @@ class SdCppDiffusionBackend:
                     unmeasured = False
                 policy = _memory_policy(memory_mode, cpu_offload or unmeasured)
                 return placed, tuple(
-                    offload_flags(
+                    _offload_vae_flags(
                         policy,
-                        vae_tile_size = (
-                            _cpu_vae_tile_size(files, binary)
-                            if policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL)
-                            else None
-                        ),
+                        files,
+                        binary,
+                        klass or placed,
+                        gpu_ordinal,
                     )
                 )
 
