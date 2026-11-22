@@ -422,7 +422,7 @@ def _saved_bytes_and_grads(model, ids):
     return float(out.loss), saved[0], grads
 
 
-def test_loop_message_input_is_checkpointed_under_gradient_checkpointing():
+def test_loop_message_input_is_checkpointed_under_gradient_checkpointing(monkeypatch):
     """The loop message residual runs between the checkpointed layers: without its own checkpoint everything its
     fp32 attention saves stays on the GPU for the whole step (1.4 GB on Inkling-2-Mini at 1024 tokens)."""
     m = _inkling2()
@@ -440,6 +440,13 @@ def test_loop_message_input_is_checkpointed_under_gradient_checkpointing():
         assert torch.equal(grads0[n], grads1[n]), n
     # 2 passes x 6 loop layers -> 6 message calls; each saved its fp32 norm, queries, keys and values before.
     assert saved1 < saved0
+    # The opt-out restores the stock residual exactly.
+    monkeypatch.setenv("UNSLOTH_INKLING2_MESSAGE_CHECKPOINT", "0")
+    loss2, saved2, grads2 = _saved_bytes_and_grads(model, ids)
+    assert loss2 == loss0 and saved2 == saved0
+    for n in grads0:
+        assert torch.equal(grads0[n], grads2[n]), n
+    monkeypatch.delenv("UNSLOTH_INKLING2_MESSAGE_CHECKPOINT")
     # Without gradient checkpointing (or in eval) the wrapper is a pass-through.
     model.gradient_checkpointing_disable()
     _, saved_off, grads_off = _saved_bytes_and_grads(model, ids)
