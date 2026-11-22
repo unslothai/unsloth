@@ -12073,6 +12073,21 @@ class VideoBackend:
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
             install_frame_pad_fix(pipe, target, logger = logger)
+            if vae_tiling and target.device == "cuda":
+                # Tiled Wan decodes share their spatial tiles with the selection's second card (bitwise the stock tiles).
+                try:
+                    from .diffusion_multigpu import current_selection
+                    from .video_vae_multigpu import install as install_vae_multigpu
+
+                    selection = current_selection()
+                    if (
+                        selection is not None
+                        and selection.secondaries
+                        and install_vae_multigpu(pipe, int(selection.secondaries[0]), logger = logger)
+                    ):
+                        speed_optims += ("vae_multigpu_tiles",)
+                except Exception as exc:  # noqa: BLE001 - the decode stays on one card
+                    logger.warning("video.vae_multigpu: not installed: %s", exc)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_vae_sync(pipe, target, logger = logger)
             if _video_denoiser_hooked(pipe):

@@ -174,3 +174,153 @@ def test_mixed_cards_keep_their_own_margins_plus_the_headroom(tmp_path, monkeypa
         after = h.margins(_spawn_cmd(backend, intent))
     assert len(before) == 2
     assert after == [m + 1024 for m in before]
+
+
+def _planned_ctx_backend(tmp_path):
+    backend, gguf = h.cuda_backend(tmp_path, memory = ((0, 23_857, 24_122),))
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **kw: n_ctx * 32 * 1024
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, **kw: 0
+    backend._context_length = 1048576
+    return backend, gguf
+
+
+def _ctx(cmd):
+    return int(h.last(cmd, "-c"))
+
+
+def test_respawn_of_a_studio_planned_context_shrinks_it_by_the_headroom(tmp_path):
+    # #18757: --fit off respawn must shrink Studio's own context plan.
+    backend, gguf = _planned_ctx_backend(tmp_path)
+    intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 0)
+    first = _spawn_cmd(backend, intent)
+    assert h.last(first, "--fit") == "off"
+
+    backend, gguf = _planned_ctx_backend(tmp_path)
+    backend._model_identifier = "test"
+    backend._note_gpu_oom_strike(intent)
+    with llama_cpp._automatic_recovery_load():
+        respawn = _spawn_cmd(backend, intent)
+    assert h.last(respawn, "--fit") == "off"
+    freed_mib = (_ctx(first) - _ctx(respawn)) * 32 / 1024
+    assert freed_mib >= llama_cpp._GPU_OOM_HEADROOM_STEP_MIB * 0.9
+
+
+def _two_card_backend(tmp_path, monkeypatch, weights_mib):
+    # The simulation's 2x24 GiB host: a model that just fits one card at a small Auto context.
+    B = LlamaCppBackend
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    for k in ("CUDA_VISIBLE_DEVICES", "LLAMA_ARG_DEVICE", "LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_RPC"):
+        monkeypatch.delenv(k, raising = False)
+    monkeypatch.setattr(llama_cpp, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(B, "_smi_uuid_mask_order", staticmethod(lambda: None))
+    monkeypatch.setattr(B, "_visibility_mask_is_unmappable", staticmethod(lambda: False))
+    monkeypatch.setattr(B, "_SMI_MIG_INDICES", frozenset())
+    monkeypatch.setattr(B, "_host_torch_is_rocm", staticmethod(lambda: False))
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    memory = [(0, 23_857, 24_122), (1, 23_857, 24_122)]
+    backend, gguf = h.placement._backend(tmp_path, vulkan = False, memory = memory)
+    backend._arch_gate_survivors = lambda binary = None: []
+    backend.probe_server_capabilities = lambda _binary = None: {
+        **h.CAPS,
+        "supports_ngram_mod": True,
+    }
+    backend._apple_metal_memory_budget_bytes = lambda: 0
+    backend._get_gguf_size_bytes = lambda path: (
+        h.GIB if "dspark" in str(path) else weights_mib * h.MIB
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **kw: n_ctx * 32 * 1024
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, **kw: 0
+    backend._context_length = 1048576
+    return backend, gguf
+
+
+def _spawn(backend, intent):
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return h.placement._REAL_POPEN(cmd, **kwargs)
+        captured["cmd"] = list(cmd)
+        captured["env"] = kwargs.get("env") or {}
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 2**31 - 1,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(intent)
+    return captured["cmd"], captured["env"].get("CUDA_VISIBLE_DEVICES")
+
+
+def test_oom_respawn_never_grows_the_auto_context_onto_more_cards(tmp_path, monkeypatch):
+    # Headroom pushes the plan onto both cards; it must not grow the context there.
+    backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
+    intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 0)
+    first, first_mask = _spawn(backend, intent)
+    assert first_mask == "0"
+    backend._process.poll = lambda: 1
+    backend._healthy = False
+    backend._note_gpu_oom_strike(intent)
+    with llama_cpp._automatic_recovery_load():
+        respawn, mask = _spawn(backend, intent)
+    assert mask == "0,1"
+    assert _ctx(respawn) <= _ctx(first)
+
+    backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
+    fixed = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 65536)
+    first, _ = _spawn(backend, fixed)
+    backend._process.poll = lambda: 1
+    backend._healthy = False
+    backend._note_gpu_oom_strike(fixed)
+    with llama_cpp._automatic_recovery_load():
+        respawn, _ = _spawn(backend, fixed)
+    assert _ctx(respawn) == _ctx(first) == 65536
+
+
+def _strike_and_respawn(backend, intent):
+    first, first_mask = _spawn(backend, intent)
+    backend._process.poll = lambda: 1
+    backend._healthy = False
+    backend._note_gpu_oom_strike(intent)
+    with llama_cpp._automatic_recovery_load():
+        respawn, mask = _spawn(backend, intent)
+    return first, first_mask, respawn, mask
+
+
+@pytest.mark.parametrize("speculative_type", [None, "dspark"], ids = ["auto", "forced-dspark"])
+def test_oom_respawn_adds_no_drafter_the_crashed_load_lacked(
+    tmp_path, monkeypatch, speculative_type
+):
+    # Auto must not add the drafter the one-card load dropped; a user-chosen one stays.
+    backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
+    intent = GgufLoadIntent(
+        gguf_path = str(gguf),
+        model_identifier = "test",
+        n_ctx = 0,
+        dspark_draft_path = h.sidecar(tmp_path),
+        speculative_type = speculative_type,
+    )
+    first, first_mask, respawn, mask = _strike_and_respawn(backend, intent)
+    if speculative_type is None:
+        assert first_mask == "0"
+        assert h.last(first, "--spec-type") == "ngram-mod"
+        assert mask == "0,1"
+        assert "--model-draft" not in respawn
+        assert h.last(respawn, "--spec-type") == "ngram-mod"
+    else:
+        assert h.last(first, "--spec-type") == "draft-dspark"
+        assert h.last(respawn, "--spec-type") == "draft-dspark"
+        assert "--model-draft" in respawn
