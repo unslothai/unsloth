@@ -82,7 +82,7 @@ LOG2E = 1.4426950408889634
 # qkw / pvw / spread pick the order the products and the tile copies are issued in (see the kernel source): they
 # move no output bit, so they are per card too.
 # native_p 1 rounds and packs the probabilities with conversion instructions (sm89 on; the same bits, see the kernel
-# source); below sm89 the MAGIC_F path stays.
+# source; ``NATIVE_P_ENV=0`` drops it); below sm89 the MAGIC_F path stays.
 # long_keys / long: overrides from that many keys on (select_config). A card runs one block per SM, so a call of a
 # few thousand tokens is a handful of blocks per SM and the last round leaves SMs idle: smaller blocks waste less of
 # it, and bigger ones copy each tile for more rows on long calls.
@@ -237,6 +237,7 @@ def _library_versions() -> dict:
         "diffusers": _version("diffusers"),
         "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
         "nvrtc": nvrtc,
+        "native_p": native_p_enabled(),
     }
 
 
@@ -269,11 +270,21 @@ def sink_order_enabled() -> bool:
     return (os.environ.get(SINK_ORDER_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
+NATIVE_P_ENV = "UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_P"
+
+
+def native_p_enabled() -> bool:
+    """Whether a config's ``native_p`` reaches the kernel (``NATIVE_P_ENV``; off = the MAGIC_F path, same bits)."""
+    return (os.environ.get(NATIVE_P_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
 def kernel_variant(config: dict, sinks: bool) -> dict:
     """The plain config one compiled kernel is named by: ``select_config(config, 0)`` without the ``sinks`` entry,
-    with its orderings applied for the sink-path kernel."""
+    with its orderings applied for the sink-path kernel, and without ``native_p`` when ``NATIVE_P_ENV`` is off."""
     chosen = select_config(config, 0)
     override = chosen.pop("sinks", None)
+    if not native_p_enabled():
+        chosen.pop("native_p", None)
     if sinks and override and sink_order_enabled():
         chosen.update({key: value for key, value in override.items() if key in SINK_ORDER_KEYS})
     return chosen

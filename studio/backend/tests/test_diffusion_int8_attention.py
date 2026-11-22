@@ -666,6 +666,35 @@ def test_native_p_reaches_the_kernel_as_a_define():
                     assert "native_p" not in config, (capability, head_dim)
 
 
+@pytest.mark.parametrize("off", ("0", "off", "false", "no", " NO "))
+def test_native_p_kill_switch_compiles_the_magic_path(monkeypatch, off):
+    """``UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_P=0`` drops native_p from the compiled kernel's config: no NATIVE_P
+    define, another kernel key, and the race namespace records it."""
+    monkeypatch.delenv(I.NATIVE_P_ENV, raising = False)
+    cfg = I.kernel_config((8, 9), 128)
+    assert cfg.get("native_p") == 1 and I.native_p_enabled()
+    on = I.kernel_variant(cfg, False)
+    assert I.kernel_defines(128, on)["NATIVE_P"] == 1
+    monkeypatch.setenv(I.NATIVE_P_ENV, off)
+    assert not I.native_p_enabled()
+    for sinks in (False, True):
+        variant = I.kernel_variant(cfg, sinks)
+        assert "native_p" not in variant and "NATIVE_P" not in I.kernel_defines(128, variant)
+    assert I._config_key(I.kernel_variant(cfg, False)) != I._config_key(on)
+    assert cfg.get("native_p") == 1  # the table entry itself is untouched
+    for keep in ("1", "", "on"):
+        monkeypatch.setenv(I.NATIVE_P_ENV, keep)
+        assert I.kernel_variant(cfg, False) == on
+
+
+def test_native_p_switch_is_part_of_the_race_namespace(monkeypatch):
+    """A race decided with native_p on is not reused with it off (the persisted namespace carries the switch)."""
+    monkeypatch.delenv(I.NATIVE_P_ENV, raising = False)
+    assert I._library_versions()["native_p"] is True
+    monkeypatch.setenv(I.NATIVE_P_ENV, "0")
+    assert I._library_versions()["native_p"] is False
+
+
 @pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
 def test_native_p_keeps_the_products_and_converts_each_probability_once():
     """NATIVE_P 1 / 2 move only the rounding and packing of P: the same products and copies, one round-to-nearest
