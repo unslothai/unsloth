@@ -231,3 +231,22 @@ test("Dutch and Afrikaans are told apart by the words they do not share", () => 
   );
   assert.equal(detectTranslateLanguage("Ek is nie seker nie."), "af");
 });
+
+test("the chat-only languages never take a verdict from a Hy-MT2 language", () => {
+  const kept: [string, string][] = [
+    ["en", "My name is John."],
+    ["en", "My word is good."],
+    ["en", "The queen squeezed sixteen textbooks into the boxwood chest."],
+    ["nl", "Dat is goed."],
+    ["nl", "Het weer is mooi vandaag."],
+    ["fr", "Bête, fenêtre, tête"],
+    ["it", "Dove si trova la stazione?"],
+    ["pt", "Você vai na conferência na sexta?"],
+    ["tl", "Kumusta ka? Kumain na tayo sa kusina."],
+    ["vi", "Chị bị ho hôm qua."],
+    ["vi", "Em hẹn mẹ ngày mai."],
+  ];
+  for (const [code, text] of kept)
+    assert.equal(detectTranslateLanguage(text), code, text);
+  assert.equal(detectTranslateLanguage("OK ፩፪፫"), null);
+});
