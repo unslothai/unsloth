@@ -270,6 +270,10 @@ def _studio_site() -> list[str]:
 _studio_seen: tuple[tuple, dict[str, str]] | None = None
 
 
+def _studio_site_key(sites: list[str]) -> tuple:
+    return tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+
+
 def _studio_packages() -> dict[str, str]:
     """Distributions in Studio's own site-packages, excluding sidecars on sys.path. Status polls
     read this several times; the scan is redone only when an install changes a site directory."""
@@ -277,7 +281,7 @@ def _studio_packages() -> dict[str, str]:
     import importlib.metadata as metadata
 
     sites = _studio_site()
-    key = tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+    key = _studio_site_key(sites)
     if _studio_seen is None or _studio_seen[0] != key:
         _studio_seen = (
             key,
@@ -338,16 +342,62 @@ def _compat(engine: str) -> dict[str, list[str]]:
     return _compat_file(engine).get("requires", {})
 
 
+def _file_identity(path: Path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+
+
+# Status polls price an install of every engine that is not current; the plan only changes with
+# the lock, Studio's own packages or an engine job, so it is reused until one of those moves.
+_priced_plans: dict[str, tuple[tuple, dict | None, frozenset[str]]] = {}
+
+
+def _forget_priced_plans() -> None:
+    with _lock:
+        _priced_plans.clear()
+
+
+def _priced_plan(engine: str) -> tuple[dict | None, frozenset[str]]:
+    """The lock's wheel sizes and the names Studio provides, as download_bytes prices them."""
+    lock = requirements(engine)
+    sites = _studio_site()
+    key = (
+        str(lock),
+        _file_identity(lock),
+        _file_identity(lock.with_suffix(".compat.json")),
+        _studio_site_key(sites),
+        tuple(sorted(_studio_packages().items())),
+        repr(profile(engine)),
+        sys.implementation.name,
+        tuple(sys.version_info[:2]),
+    )
+    with _lock:
+        seen = _priced_plans.get(engine)
+    if seen is not None and seen[0] == key:
+        return seen[1], seen[2]
+    sizes = _compat_file(engine).get("sizes")
+    provided = frozenset(install_plan(engine)["provided"]) if sizes else frozenset()
+    with _lock:
+        _priced_plans[engine] = (key, sizes, provided)
+    return sizes, provided
+
+
 def download_bytes(engine: str) -> int | None:
     """Wheel bytes an install of the selected release downloads: the lock minus what Studio provides."""
     from . import wsl_host
 
-    sizes = _compat_file(engine).get("sizes")
+    wsl = wsl_host.active()
+    if wsl:
+        sizes = _compat_file(engine).get("sizes")
+        provided: frozenset[str] | dict = {}
+    else:
+        sizes, provided = _priced_plan(engine)
     if not sizes:
         return None
-    wsl = wsl_host.active()
     # A WSL engine is always a complete environment, plus the distro and uv on first setup.
-    provided = {} if wsl else install_plan(engine)["provided"]
     omit = set(profile(engine).get("omit", ()))
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
@@ -1118,6 +1168,9 @@ def _safe_download_bytes(engine: str) -> int | None:
 
 
 def _update(engine: str, **values) -> None:
+    if "state" in values:
+        # An install, cancel or failure may have changed what Studio provides.
+        _forget_priced_plans()
     with _lock:
         job = _jobs.setdefault(engine, {})
         if "phase" in values and values["phase"] != job.get("phase"):
@@ -1857,6 +1910,7 @@ def cancel_install(engine: str) -> dict:
 
 
 def remove(engine: str) -> dict:
+    _forget_priced_plans()
     with engine_lease(engine, exclusive = True):
         root = engine_root() / engine
         if root.is_symlink():
@@ -1886,6 +1940,7 @@ def remove(engine: str) -> dict:
             _jobs.pop(engine, None)
         (engine_root() / f"{engine}.job.json").unlink(missing_ok = True)
         (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
+    _forget_priced_plans()
     _record_manifest(engine)
     return status(engine)
 
@@ -1914,6 +1969,7 @@ def remove_wsl_environment() -> list[dict]:
 
 
 def rollback(engine: str) -> dict:
+    _forget_priced_plans()
     with engine_lease(engine, exclusive = True):
         info = installed(engine)
         previous = info.get("previous") if info else None
