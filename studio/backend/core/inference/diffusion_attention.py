@@ -740,10 +740,15 @@ _ROCM_CONTIGUOUS_QKV_TRAIN: dict[
 
 
 def _rocm_contiguous_qkv_wanted(query: Any, key: Any, value: Any) -> bool:
-    """Training on gfx1151: q and k both at least the token floor (self / joint attention, not short cross-attention)."""
+    """Training on gfx1151: grad on (the measured fwd+bwd; sample renders keep their path), q and k both at least the
+    token floor (self / joint attention, not short cross-attention)."""
     if not _ROCM_CONTIGUOUS_QKV_TRAIN:
         return False
     try:
+        import torch
+
+        if not torch.is_grad_enabled():
+            return False
         floor = _ROCM_CONTIGUOUS_QKV_TRAIN.get(query.device.index)
         if floor is None or query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
             return False

@@ -119,6 +119,10 @@ def test_threshold_keeps_short_and_cross_attention_on_the_current_path(monkeypat
     )  # a 1,024 px Wan still (1,024 tokens), a 512 px FLUX.2 (1,536)
     assert not da._rocm_contiguous_qkv_wanted(at, text, text)  # cross-attention to a short text
     assert not da._rocm_contiguous_qkv_wanted(at.flatten(2), at, at)
+    with torch.no_grad():
+        assert not da._rocm_contiguous_qkv_wanted(
+            at, at, at
+        )  # sample renders inside a run keep their path
     monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_QKV_TRAIN", {5: floor})
     assert not da._rocm_contiguous_qkv_wanted(
         at, at, at
