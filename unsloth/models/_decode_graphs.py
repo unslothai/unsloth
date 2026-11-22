@@ -1330,6 +1330,7 @@ def decode_step(
         except Exception as error:
             state.disabled = f"capture failed: {type(error).__name__}: {error}"
             state.clear()
+            _reset_rng_capture_flag(device)
             if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
                 raise
             return None
@@ -1435,6 +1436,36 @@ def _capture(
         # Also after a failed warmup / capture: the eager fallback must not race the side stream.
         torch.cuda.current_stream().wait_stream(stream)
         st.mask = None
+
+
+def _reset_rng_capture_flag(device):
+    """torch marks the CUDA RNG as capturing in capture_begin and clears it only in a capture_end that
+    succeeds, so a capture that fails in between leaves every later random op (sampling, dropout,
+    vLLM's sampler) raising "Offset increment outside graph capture encountered unexpectedly".
+    A tiny capture that ends cleanly clears the flag again. It is tried outside inference mode first,
+    then inside it: when another library (vLLM) captured first under inference mode, the RNG's graph
+    state tensors are inference tensors, and capture_begin can only refill them in inference mode
+    (that refill is also what makes our own capture fail in that case)."""
+    if torch.cuda.is_current_stream_capturing():
+        return
+    for inference in (False, True):
+        try:
+            with torch.cuda.device(device):
+                x = torch.zeros(1, device = device)
+                stream = torch.cuda.Stream()
+                stream.wait_stream(torch.cuda.current_stream())
+                graph = torch.cuda.CUDAGraph()
+                with torch.inference_mode(inference), torch.cuda.stream(stream):
+                    graph.capture_begin(capture_error_mode = "thread_local")
+                    try:
+                        x.add_(1)
+                    finally:
+                        graph.capture_end()
+                torch.cuda.current_stream().wait_stream(stream)
+                del graph
+            return
+        except Exception:
+            continue
 
 
 def _begin(graph, pool):
