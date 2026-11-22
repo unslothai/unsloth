@@ -90,6 +90,7 @@ def build_memory_estimate(
             if isinstance(compute_bytes, _Unset)
             else int(compute_bytes or 0)
         ),
+        compute_dense_fallback = bool(getattr(breakdown, "compute_dense_fallback", False)),
         drafter_runtime_bytes = int(getattr(breakdown, "drafter_runtime_bytes", 0) or 0),
         drafter_runtime_gpu_bytes = int(getattr(breakdown, "drafter_runtime_gpu_bytes", 0) or 0),
         projector_runtime_bytes = int(getattr(breakdown, "projector_runtime_bytes", 0) or 0),
@@ -149,6 +150,7 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         "kv_bytes": estimate.kv_bytes,
         "kv_checkpoint_bytes": estimate.kv_checkpoint_bytes,
         "compute_bytes": estimate.compute_bytes,
+        "compute_dense_fallback": estimate.compute_dense_fallback,
         "drafter_runtime_bytes": estimate.drafter_runtime_bytes,
         "drafter_runtime_gpu_bytes": estimate.drafter_runtime_gpu_bytes,
         "projector_runtime_bytes": estimate.projector_runtime_bytes,

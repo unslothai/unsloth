@@ -13846,6 +13846,8 @@ class _GgufRuntimeBytes(NamedTuple):
     n_ubatch: Optional[int] = None
     # Host-heap checkpoint share of kv_bytes (bounded by --cache-ram); never reaches the GPU.
     kv_checkpoint_bytes: int = 0
+    # Quantized KV on Inkling turns off banded attention, so compute_bytes is the larger dense scratch.
+    compute_dense_fallback: bool = False
 
 
 _GGUF_RUNTIME_UNKNOWN = _GgufRuntimeBytes(0, 0, False, 0, None, 1)
@@ -14203,6 +14205,11 @@ def _gguf_runtime_bytes(
             swa_full = swa_full,
             kv_unified = kv_unified,
             n_ubatch = effective_ubatch,
+            compute_dense_fallback = bool(
+                getattr(probe, "_quantized_kv_dense_bias_fallback", lambda _c: False)(
+                    cache_type_for_scratch
+                )
+            ),
         )
         # the load reserves ubatch-scaled compute buffers, so they count against training too
         if is_diffusion:
@@ -14783,6 +14790,7 @@ class _GgufMemoryBreakdown(NamedTuple):
     kv_checkpoint_bytes: int = 0
     lookup_table_bytes: int = 0
     lookup_table_on_disk: bool = False
+    compute_dense_fallback: bool = False
 
 
 def _gguf_offloaded_layer_fraction(
@@ -15899,6 +15907,7 @@ def _gguf_memory_breakdown(
         kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
         lookup_table_bytes = lookup_table_bytes,
         lookup_table_on_disk = lookup_table_on_disk,
+        compute_dense_fallback = runtime.compute_dense_fallback,
     )
 
 
