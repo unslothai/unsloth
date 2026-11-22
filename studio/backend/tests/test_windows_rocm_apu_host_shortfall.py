@@ -1,18 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Windows ROCm APU carve-out credit at the second host-shortfall preflight.
-
-The tests exercise the real LlamaCppBackend method with bounded input probes;
-they do not require a 97 GiB GGUF or mutate any device/driver configuration.
-"""
+"""Windows ROCm APU carve-out credit at the launch-time host-shortfall preflight (#18805)."""
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import core.inference.llama_cpp as llama_cpp_module
-from test_llama_cpp_placement import _backend, _restore_host_guard
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
+import core.inference.llama_cpp as llama_cpp_module  # noqa: E402
+from test_llama_cpp_placement import _backend, _restore_host_guard  # noqa: E402
 
 _GiB = 1024**3
 

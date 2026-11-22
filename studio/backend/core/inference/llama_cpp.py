@@ -16102,9 +16102,7 @@ class LlamaCppBackend:
         except Exception:
             return None
         gpus = [] if child_has_no_gpu else list(detected_gpus or ())
-        # The carve-out verifier requires the complete GGUF size, not the later
-        # lazy-read-discounted size.
-        original_model_bytes = model_bytes
+        original_model_bytes = model_bytes  # the carve-out verifier prices the whole file
         # _get_gpu_memory returns [] on a failed probe, which looks like a GPU-less host.
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
@@ -16136,10 +16134,8 @@ class LlamaCppBackend:
             logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
-        # The single Windows ROCm APU's BIOS carve-out may exceed free memory
-        # reported through Windows-visible RAM. The two readings describe the
-        # SAME GPU, so use their maximum, never their sum. The existing helper
-        # must verify whole-GPU placement and reject ambiguous/managed memory.
+        # A Windows ROCm APU's free reading is capped by Windows-visible RAM; its verified
+        # carve-out is the same GPU, so take the max, never the sum (#18805).
         device_credit_bytes = free_vram_mib * 1024 * 1024
         if (
             sys.platform == "win32"
@@ -16160,7 +16156,6 @@ class LlamaCppBackend:
                 )
                 device_credit_bytes = max(device_credit_bytes, int(verified_carveout_bytes))
             except Exception:
-                # Fail closed: retain the original admission safeguard.
                 logger.debug("Windows APU carve-out credit unavailable.", exc_info = True)
         offload_bytes = model_bytes - device_credit_bytes
         # Skip card-resident loads so a cgroup budget never applies to a nonpositive need.
