@@ -2321,7 +2321,6 @@ def parse_tool_calls_from_text(
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
         _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
         _lfm_pos = content.find(_LFM_CALL_START)
-        # Quoted in a leading promotable ``name[ARGS]{...}`` call, an LFM call is that call's data.
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
