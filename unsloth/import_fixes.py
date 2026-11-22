@@ -1999,15 +1999,18 @@ def fix_gemma4_string_tool_arguments():
 
     setattr(render_jinja_template, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, True)
     # Tokenizers and processors call the name they imported, not the module attribute.
-    for module_name in (
-        "transformers.utils.chat_template_utils",
-        "transformers.tokenization_utils_base",
-        "transformers.processing_utils",
-    ):
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:
-            continue
+    modules = [chat_template_utils]
+    try:
+        from transformers import tokenization_utils_base
+        modules.append(tokenization_utils_base)
+    except Exception:
+        pass
+    try:
+        from transformers import processing_utils
+        modules.append(processing_utils)
+    except Exception:
+        pass
+    for module in modules:
         if getattr(module, "render_jinja_template", None) is original:
             module.render_jinja_template = render_jinja_template
 
