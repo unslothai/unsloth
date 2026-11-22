@@ -11989,7 +11989,7 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_vae_sync(pipe, target, logger = logger)
-            # Placed, not yet compiled or graph-captured: activations from here map expandable segments.
+            # Before compile / graph capture, so activations map expandable segments.
             _engage_video_expandable(target)
             if _video_denoiser_hooked(pipe):
                 # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split

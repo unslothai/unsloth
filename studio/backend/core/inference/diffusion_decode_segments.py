@@ -34,7 +34,7 @@ _usable: Optional[bool] = None
 _restore: Optional[str] = None
 # settings restored by release_streamed; None = not engaged
 _streamed: Optional[str] = None
-# backends holding the streamed engagement (image, video): the last release restores the settings
+# owners of the streamed engagement; the last release restores the settings
 _owners: set = set()
 STATS = {"engaged": 0, "skipped": 0, "streamed": 0}
 
