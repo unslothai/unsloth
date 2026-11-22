@@ -155,3 +155,23 @@ def test_peft_untouched_on_new_torch(monkeypatch, tmp_path, restore_peft_torch_l
     from peft.utils import load_peft_weights
 
     assert "base_model.model.x.lora_A.weight" in load_peft_weights(folder, device = "cpu")
+
+
+def test_peft_guard_installed_after_peft_import_shims():
+    # The guard returns silently when peft.utils.save_and_load cannot import, so it must run after the shims that
+    # make PEFT importable on older transformers.
+    import pathlib
+
+    calls = [
+        line.strip()
+        for line in (pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "_gpu_init.py")
+        .read_text()
+        .splitlines()
+        if line.strip().endswith("()") and not line.startswith((" ", "\t", "#"))
+    ]
+    guard = calls.index("patch_peft_bin_load_old_torch()")
+    for shim in (
+        "fix_peft_transformers_tensor_parallel_import_compat()",
+        "fix_peft_transformers_weight_conversion_import()",
+    ):
+        assert calls.index(shim) < guard, shim
