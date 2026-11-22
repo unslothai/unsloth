@@ -4322,6 +4322,22 @@ _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 _IGPU_PAGED_FIT_HEADROOM_MIB = 15360
 
 
+def _auto_fit_target_trim_mib(total_mib: Optional[float], frac: float) -> float:
+    """How far below today's Auto --fit margin a card's own budget reserve sits (<= 0).
+
+    Auto hands an offloaded load to llama.cpp's fitter, which keeps 1024 MiB free (plus the
+    budget slider's delta) while Studio's own budget keeps max((1 - frac) * total, 512) MiB.
+    On a card under ~34 GB that left up to 512 MiB more idle than the budget asks, which on
+    an 8 GB card is two to three MoE layers kept in host RAM. Never raises the margin, so
+    large cards keep today's value.
+    """
+    if not total_mib or total_mib <= 0:
+        return 0.0
+    today = _LLAMA_FIT_TARGET_DEFAULT_MIB + (_CTX_FIT_VRAM_FRACTION - frac) * total_mib
+    reserve = max((1.0 - frac) * total_mib, _VRAM_FLOOR_RESERVE_MIB)
+    return min(0.0, reserve - today)
+
+
 def _paged_load_needs_fit_headroom() -> bool:
     """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``."""
     return sys.platform == "win32"
@@ -5071,6 +5087,17 @@ def _visual_server_splits_gpus(visual_bin: Optional[str]) -> bool:
 
 
 @functools.lru_cache(maxsize = 16)
+def _binary_has_any_marker(path: str, _mtime_ns: int, _size: int, markers: tuple) -> bool:
+    """One read of ``path`` for several markers."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+    return any(marker in data for marker in markers)
+
+
+@functools.lru_cache(maxsize = 16)
 def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> bool:
     try:
         with open(path, "rb") as f:
@@ -5079,14 +5106,21 @@ def _binary_has_marker(path: str, _mtime_ns: int, _size: int, marker: bytes) -> 
         return False
 
 
-# No --help flag or build number announces it: read the trace string the new fit path compiles in.
-_FIT_MEASURES_BORROWED_DRAFT_MARKER = (
-    b"measuring the extra model next to an allocation-free target context"
+# No --help flag or build number announces it: read what the new fit path compiles in. The
+# first fork version logged this trace string; the one shipped since (b12588 and later)
+# measures every borrowed draft up front in common_fit_draft_target, which logs nothing of
+# its own, so its symbol name in the common library is the only trace.
+_FIT_MEASURES_BORROWED_DRAFT_MARKERS = (
+    b"measuring the extra model next to an allocation-free target context",
+    b"common_fit_draft_target",
 )
 _LLAMA_COMMON_LIB_NAMES = (
     "libllama-common.so.0",
+    # The soname moved to 1 with the shared-library version bump the prebuilds ship.
+    "libllama-common.so.1",
     "libllama-common.so",
     "libllama-common.0.dylib",
+    "libllama-common.1.dylib",
     "libllama-common.dylib",
     "llama-common.dll",
 )
@@ -5245,8 +5279,8 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
             st = candidate.stat()
         except OSError:
             continue
-        if _binary_has_marker(
-            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKER
+        if _binary_has_any_marker(
+            str(candidate), st.st_mtime_ns, st.st_size, _FIT_MEASURES_BORROWED_DRAFT_MARKERS
         ):
             return True
     return False
@@ -5658,6 +5692,12 @@ _TARGET_ROLLBACK_SPEC_TYPES = frozenset(
 
 # Mirrors llama.cpp is_recr_impl for SSM headers with no full_attention_interval.
 _SSM_EVERY_LAYER_ARCHS = frozenset({"mamba", "mamba2", "falcon-h1"})
+# The looped Inkling 2 layout in llama.cpp: physical layers in block_count, cache slots expanded at load.
+_LOOP_SLOT_ARCHS = frozenset({"inkling2_loop"})
+# The visit-indexed Inkling 2 layout: block_count counts visits, the file stores only the physical layers.
+_LOOP_VISIT_ARCHS = frozenset({"inkling2"})
+# Both GGUF layouts of Inkling 2 run the same relative-bias attention graph.
+_INKLING2_ARCHS = frozenset({"inkling2", "inkling2_loop"})
 # Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
 _SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 
@@ -7492,6 +7532,38 @@ def _moe_spill_batch_ubatch(
     return n_batch, _MOE_SPILL_N_UBATCH
 
 
+# Inkling 2 with every expert on the GPU: prompt processing is bound by the MoE GEMM tile,
+# so a larger micro-batch gives each expert more rows. B200 llama-bench, ub 512 -> 1024:
+# +21% at 4K, +14% at 32K (2048 loses ground at 32K, 4096 loses outright). KLD vs ub 512 is
+# 0.002, rounding-order noise. Costs ~225 MiB + 1.2 MiB per 1K context of compute buffer.
+_INKLING_RESIDENT_N_UBATCH = 1024
+# Free VRAM the raised launch must still leave, on top of the occupancy cap.
+_INKLING_UBATCH_MIN_FREE_MIB = 256
+# "on" = raise without the headroom gate, "off" = never raise, else auto.
+_INKLING_UBATCH_ENV = "UNSLOTH_INKLING_UBATCH"
+
+
+def _inkling_resident_batch_ubatch(
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    *,
+    architecture: Optional[str],
+    experts_resident: bool,
+    user_named_batch: bool,
+) -> tuple[Optional[int], Optional[int]]:
+    """The raised pair for an all-GPU Inkling 2 load; a user-set batch always wins."""
+    if user_named_batch or not experts_resident or architecture not in _INKLING2_ARCHS:
+        return n_batch, n_ubatch
+    current = _DEFAULT_LLAMA_N_UBATCH if n_ubatch is None else int(n_ubatch)
+    if current >= _INKLING_RESIDENT_N_UBATCH:
+        return n_batch, n_ubatch
+    # llama.cpp caps the micro-batch at the batch, so keep batch >= micro-batch.
+    batch = _DEFAULT_LLAMA_N_BATCH if n_batch is None else int(n_batch)
+    if batch < _INKLING_RESIDENT_N_UBATCH:
+        n_batch = _INKLING_RESIDENT_N_UBATCH
+    return n_batch, _INKLING_RESIDENT_N_UBATCH
+
+
 def _override_targets_host(value: str) -> bool:
     """Whether an ``--override-tensor`` value sends any tensor to host memory
     (``CPU``, ``CPU_REPACK``, ``CUDA_Host``, ...), not only to GPUs."""
@@ -8867,6 +8939,12 @@ class LlamaCppBackend:
         # head_count array; _n_heads stays unset so other estimates keep their fallbacks.
         self._n_heads_by_layer: Optional[list[int]] = None
         self._attn_res_block_size: Optional[int] = None
+        # inkling2_loop: physical loop core [start, end) run `count` times, one cache slot per visit.
+        self._loop_start: Optional[int] = None
+        self._loop_end: Optional[int] = None
+        self._loop_count: Optional[int] = None
+        # Looped layouts: physical layers, the unit of -ngl / -ts / --n-cpu-moe; None means _n_layers.
+        self._n_weight_layers: Optional[int] = None
         self._embedding_length: Optional[int] = None
         # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
         self._pooling_type: Optional[int] = None
@@ -10189,8 +10267,8 @@ class LlamaCppBackend:
 
     @property
     def n_layers(self) -> Optional[int]:
-        """Model layer count (GGUF block_count), or None if unknown."""
-        return self._n_layers
+        """The -ngl unit: GGUF block_count, or a looped GGUF's physical layers; None if unknown."""
+        return self.n_weight_layers
 
     @property
     def n_moe_layers(self) -> int:
@@ -10198,7 +10276,7 @@ class LlamaCppBackend:
         experts."""
         if not self._n_experts or not self._n_layers:
             return 0
-        return max(0, self._n_layers - (self._leading_dense_block_count or 0))
+        return max(0, self.n_weight_layers - (self._leading_dense_block_count or 0))
 
     _EMBEDDING_POOLING_TYPES = frozenset({1, 2, 3})  # llama_pooling_type MEAN, CLS, LAST
 
@@ -10389,6 +10467,14 @@ class LlamaCppBackend:
         n_blocks = len(layout.blocks)
         kv_total = int(spill_inputs["kv_cache_bytes"] or 0)
         kv_weights = list(spill_inputs.get("kv_layer_weights") or ())
+        slot_rows = getattr(layout, "cache_slot_rows", ())
+        if slot_rows and len(kv_weights) == len(slot_rows):
+            # A looped GGUF's rows are its physical layers; each cache slot's share follows its layer.
+            folded = [0] * n_blocks
+            for slot_row, weight in zip(slot_rows, kv_weights):
+                if slot_row < n_blocks:
+                    folded[slot_row] += weight
+            kv_weights = folded
         if len(kv_weights) != n_blocks or sum(kv_weights) <= 0:
             # MLA, hybrid recurrent and an unpriced sliding window are uneven (_kv_layer_weights).
             if kv_total and (
@@ -18838,6 +18924,57 @@ class LlamaCppBackend:
         context = getattr(self, "_context_length", None) or 0
         return window if not context or window < context else 0
 
+    def _expand_loop_slots(self) -> None:
+        """Expand a looped GGUF's physical layers to the cache slots llama.cpp allocates.
+
+        The file stores each physical layer once; the core [start, end) runs `count` times and every run after
+        the first gets its own slots after the physical ones (slot n_phys + k maps to start + k % (end - start)).
+        Weights stay counted once (the file size); KV and state follow the slots, as for the visit-indexed layout.
+        """
+        start, end, count = self._loop_start, self._loop_end, self._loop_count
+        n_phys = self._n_layers
+        if not (
+            n_phys
+            and count
+            and count > 1
+            and start is not None
+            and end
+            and 0 <= start < end <= n_phys
+        ):
+            return
+        span = end - start
+        phys = list(range(n_phys)) + [start + k % span for k in range((count - 1) * span)]
+        for attr in (
+            "_n_kv_heads_by_layer",
+            "_n_heads_by_layer",
+            "_feed_forward_length_by_layer",
+            "_sliding_window_pattern",
+        ):
+            values = getattr(self, attr, None)
+            if values is not None and len(values) == n_phys:
+                setattr(self, attr, [values[p] for p in phys])
+        self._n_layers = len(phys)
+        self._n_weight_layers = n_phys
+
+    def _count_loop_weight_layers(self) -> None:
+        """A visit-indexed looped GGUF: block_count is the cache slots, the physical layers are fewer.
+
+        llama.cpp counts -ngl, -ts and --n-cpu-moe in physical layers (llama_model_n_layer_weights), so the
+        offload unit drops the (count - 1) repeat passes over the core [start, end); KV keeps the slots.
+        """
+        start, end, count = self._loop_start, self._loop_end, self._loop_count
+        n_slots = self._n_layers
+        if not (n_slots and count and count > 1 and start is not None and end and 0 <= start < end):
+            return
+        n_phys = n_slots - (count - 1) * (end - start)
+        if end <= n_phys:
+            self._n_weight_layers = n_phys
+
+    @property
+    def n_weight_layers(self) -> Optional[int]:
+        """Layers -ngl / -ts / --n-cpu-moe count: the physical layers of a looped GGUF, else block_count."""
+        return getattr(self, "_n_weight_layers", None) or self._n_layers
+
     def _inkling2_bias_heads(self) -> int:
         """Query heads of the widest full-attention layer, the layers whose bias spans the context."""
         by_layer = getattr(self, "_n_heads_by_layer", None) or []
@@ -18930,7 +19067,7 @@ class LlamaCppBackend:
                 rate = self._INKLING_CTX_COMPUTE_BYTES_PER_TOK
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
-        if getattr(self, "_architecture", None) == "inkling2":
+        if getattr(self, "_architecture", None) in _INKLING2_ARCHS:
             # Sliding layers' smaller bias reuses this allocation; no dequant copy on either path.
             n_head = self._inkling2_bias_heads()
             head_dim = getattr(self, "_kv_key_length", None) or 128
@@ -19849,6 +19986,10 @@ class LlamaCppBackend:
         self._n_heads = None
         self._n_heads_by_layer = None
         self._attn_res_block_size = None
+        self._loop_start = None
+        self._loop_end = None
+        self._loop_count = None
+        self._n_weight_layers = None
         self._embedding_length = None
         self._pooling_type = None
         self._gguf_path = gguf_path
@@ -20007,6 +20148,12 @@ class LlamaCppBackend:
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
                                         f"{arch}.attn_res.block_size": "attn_res_block_size",
+                                        f"{arch}.loop.start": "loop_start",
+                                        f"{arch}.loop.end": "loop_end",
+                                        f"{arch}.loop.count": "loop_count",
+                                        f"{arch}.loop.core_start": "loop_start",
+                                        f"{arch}.loop.core_end": "loop_end",
+                                        f"{arch}.num_loops": "loop_count",
                                     }
                                 elif key == "tokenizer.chat_template":
                                     self._chat_template = val_s
@@ -20103,6 +20250,11 @@ class LlamaCppBackend:
                 self._sliding_window_pattern = [
                     (i + 1) % sliding_window_pattern_period != 0 for i in range(self._n_layers)
                 ]
+
+            if arch in _LOOP_SLOT_ARCHS:
+                self._expand_loop_slots()
+            elif arch in _LOOP_VISIT_ARCHS:
+                self._count_loop_weight_layers()
 
             # Diffusion models skip the resolver: no SWA pattern, and it can raise for them.
             if (
@@ -25443,7 +25595,7 @@ class LlamaCppBackend:
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
                 )
                 _pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
-                    extra_args, n_layers = self._n_layers
+                    extra_args, n_layers = self.n_weight_layers
                 )
                 cache_override = parse_cache_override(extra_args)
                 # Budget the heavier of asymmetric K/V extras; this only affects the reserve.
@@ -26029,6 +26181,55 @@ class LlamaCppBackend:
                                 * (_total if _total and _total > 0 else _free)
                                 for _idx, _free, _total in _gpu_mem
                             }
+
+                    # Auto keeps llama.cpp's 1024 MiB fitter margin, more than the budget
+                    # reserve on a small card: trim it to that reserve. Discrete cards only,
+                    # and not where WDDM spills an overrun to host RAM instead of failing.
+                    if (
+                        gpus
+                        and not (gpu_memory_mode == "manual" and gpu_layers < 0)
+                        and not self._sysmem_fallback_risk(binary)
+                        and not self._fit_trim_host_has_shared_memory_gpu(
+                            binary,
+                            is_vulkan_backend = is_vulkan_backend,
+                            gpu_indices = [int(_idx) for _idx, _free in gpus],
+                            planner_integrated = _integrated_gpus,
+                        )
+                    ):
+                        _base_delta_by_idx = {
+                            int(_idx): (_fit_target_delta_by_idx or {}).get(
+                                int(_idx), _fit_target_delta_mib
+                            )
+                            for _idx, _free in gpus
+                        }
+                        _trimmed_by_idx = {
+                            int(_idx): _base_delta_by_idx[int(_idx)]
+                            + (
+                                0.0
+                                if _idx in _integrated_gpus or _idx in _shared_pool_gpus
+                                # Free stands in for an unreported total, as for the slider.
+                                else _auto_fit_target_trim_mib(
+                                    total_by_idx.get(_idx) or _free, _vram_frac
+                                )
+                            )
+                            for _idx, _free in gpus
+                        }
+                        if any(
+                            _trimmed_by_idx[i] != _base_delta_by_idx[i] for i in _trimmed_by_idx
+                        ):
+                            # A single broadcast value must hold every card's margin.
+                            _fit_target_delta_mib = max(_trimmed_by_idx.values())
+                            if _fit_target_delta_by_idx:
+                                _fit_target_delta_by_idx = {
+                                    **_fit_target_delta_by_idx,
+                                    **_trimmed_by_idx,
+                                }
+                            elif len(_trimmed_by_idx) > 1 and self._fit_target_per_device_ok(
+                                is_vulkan_backend = is_vulkan_backend,
+                                extra_args = extra_args,
+                                env = os.environ,
+                            ):
+                                _fit_target_delta_by_idx = dict(_trimmed_by_idx)
 
                     # Each card keeps its own margin plus the headroom a mid-session OOM earned.
                     _oom_headroom_mib = self._gpu_oom_headroom_mib(intent)
@@ -28788,6 +28989,129 @@ class LlamaCppBackend:
                                 100 * (_share_after or 0.0),
                             )
 
+                    # Inkling 2 with every expert on the GPU: raise the micro-batch to 1024 for
+                    # prompt processing (see _INKLING_RESIDENT_N_UBATCH). After the spill raise,
+                    # which wins when experts sit in host RAM. Only a pinned all-GPU placement
+                    # (--fit off) counts as resident; the raise is repriced on the chosen cards
+                    # as the placement priced the default micro-batch, and kept only when the
+                    # launch stays under the occupancy cap with 256 MiB still free.
+                    _inkling_ub_switch = _moe_switch(_INKLING_UBATCH_ENV)
+                    _inkling_resident = bool(
+                        gpus
+                        and not use_fit
+                        and not tensor_parallel
+                        and self._moe_spill_batch_restore is None
+                        and not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                        and not intent.cpu_fallback
+                        and not _device_selection_is_cpu(extra_args, os.environ)
+                        and not _expert_spill_places_tensors_on_cpu(extra_args, os.environ)
+                        and (not is_vulkan_backend or _inkling_ub_switch == "on")
+                        and self._discrete_gpu_for_expert_spill(
+                            gpu_indices, _detected_gpus, _shared_gpu_ids
+                        )
+                    )
+                    _ink_n_batch, _ink_n_ubatch = _inkling_resident_batch_ubatch(
+                        n_batch,
+                        n_ubatch,
+                        architecture = getattr(self, "_architecture", None),
+                        experts_resident = _inkling_resident,
+                        user_named_batch = _user_named_batch,
+                    )
+                    if _ink_n_ubatch != n_ubatch and _inkling_ub_switch != "off":
+                        _ink_on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
+                        _ink_n = max(1, len(_ink_on))
+
+                        def _ink_footprint_mib(cb_delta: int) -> float:
+                            # The placement's footprint (_auto_fit) on the chosen cards; the KV
+                            # and context-linear compute terms read _effective_ubatch.
+                            return (
+                                model_size_fit
+                                + cb_delta
+                                + (_ink_n - 1) * _pipeline_overhead_bytes
+                                - _discrete_host_only(_ink_on)
+                                + _kv_bytes(effective_ctx)
+                                + _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                                + _cc_bytes(effective_ctx, _ink_n)
+                            ) / (1024 * 1024)
+
+                        _ink_before_mib = _ink_footprint_mib(0)
+                        _pre_raise = (
+                            n_batch,
+                            n_ubatch,
+                            _effective_ubatch,
+                            _compute_buffer_pipeline,
+                            _compute_buffer_tensor,
+                        )
+                        n_batch, n_ubatch = _ink_n_batch, _ink_n_ubatch
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = False,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = True,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _ink_need_mib = _ink_footprint_mib(_compute_buffer_pipeline - _pre_raise[3])
+                        # Compute buffer, its context-linear term and the SWA window.
+                        _ink_cost_mib = _ink_need_mib - _ink_before_mib
+                        _ink_budget_mib = _pool_budget_mib(_ink_on, _pin_fraction)
+                        _ink_free_mib = sum(max(0.0, float(f)) for _i, f in _ink_on)
+                        _ink_fits = bool(
+                            _ink_on
+                            and effective_ctx > 0
+                            and self._can_estimate_kv()
+                            and _ink_need_mib <= _ink_budget_mib
+                            and _ink_free_mib - _ink_need_mib >= _INKLING_UBATCH_MIN_FREE_MIB
+                            and (
+                                _ink_n == 1
+                                or self._every_gpu_holds_reserve(
+                                    [_gpu_usable(g, _pin_fraction) for g in _ink_on],
+                                    _pipeline_overhead_bytes
+                                    + _cc_bytes(effective_ctx, _ink_n) // _ink_n,
+                                )
+                            )
+                        )
+                        _ink_from = (
+                            _pre_raise[1] if _pre_raise[1] is not None else _DEFAULT_LLAMA_N_UBATCH
+                        )
+                        # A context below the target caps the micro-batch: nothing to gain.
+                        _ink_grows = int(_effective_ubatch or 0) > int(
+                            _pre_raise[2] or _DEFAULT_LLAMA_N_UBATCH
+                        )
+                        if _ink_grows and (_ink_fits or _inkling_ub_switch == "on"):
+                            logger.info(
+                                "Inkling 2 on GPU: raising --ubatch-size %s -> %s for faster "
+                                "prompt processing (+%.0f MiB compute buffer).",
+                                _ink_from,
+                                _effective_ubatch,
+                                _ink_cost_mib,
+                            )
+                            # A CPU replay hands back the pair as it was (see the spill raise).
+                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
+                        else:
+                            (
+                                n_batch,
+                                n_ubatch,
+                                _effective_ubatch,
+                                _compute_buffer_pipeline,
+                                _compute_buffer_tensor,
+                            ) = _pre_raise
+                            if _ink_grows:
+                                logger.info(
+                                    "Inkling 2 on GPU: keeping --ubatch-size %s; %s (+%.0f MiB "
+                                    "compute buffer) would need %.0f MiB of a %.0f MiB GPU budget "
+                                    "and %d MiB must stay free.",
+                                    _ink_from,
+                                    _ink_n_ubatch,
+                                    _ink_cost_mib,
+                                    _ink_need_mib,
+                                    _ink_budget_mib,
+                                    _INKLING_UBATCH_MIN_FREE_MIB,
+                                )
+
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,
                         gpu_memory_mode = gpu_memory_mode,
@@ -30214,6 +30538,7 @@ class LlamaCppBackend:
                 _integrity_flags = self._ctx_integrity_flags(
                     *_integrity_args,
                     fit_target_delta_mib = _fit_target_delta_mib,
+                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                 )
                 # From the flags, not the inputs: --fit off, an older server without
                 # the capability and a budget at the default all leave the child
@@ -30236,6 +30561,7 @@ class LlamaCppBackend:
                     _integrity_flags = self._ctx_integrity_flags(
                         *_integrity_args,
                         fit_target_delta_mib = _fit_target_delta_mib,
+                        fit_target_delta_by_idx = _fit_target_delta_by_idx,
                         fit_target_floor_mib = _metal_fit_target_floor_mib,
                         # The reserve rides on the spawn's trailing pair, which retry cleanup must
                         # tell apart from a user's value.
@@ -32119,6 +32445,7 @@ class LlamaCppBackend:
                                 self._ctx_integrity_flags(
                                     *_integrity_args,
                                     fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
@@ -32269,7 +32596,8 @@ class LlamaCppBackend:
                                     _t_layers = (
                                         _layers
                                         if _sidecar_owns_output
-                                        else int(getattr(self, "_n_layers", 0) or 0) or _layers
+                                        else int(getattr(self, "n_weight_layers", 0) or 0)
+                                        or _layers
                                     )
                                     if _t_layers > 0:
                                         _spawn_output_dev = min(
@@ -33707,6 +34035,7 @@ class LlamaCppBackend:
                                 self._ctx_integrity_flags(
                                     *_integrity_args,
                                     fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_delta_by_idx = _fit_target_delta_by_idx,
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
@@ -33917,6 +34246,7 @@ class LlamaCppBackend:
                         _fb_integrity = self._ctx_integrity_flags(
                             *_integrity_args,
                             fit_target_delta_mib = _fit_target_delta_mib,
+                            fit_target_delta_by_idx = _fit_target_delta_by_idx,
                             fit_target_floor_mib = _metal_fit_target_floor_mib,
                         )
                         fallback_cmd = _drop_sidecar_margins(
@@ -35487,6 +35817,10 @@ class LlamaCppBackend:
             self._n_heads = None
             self._n_heads_by_layer = None
             self._attn_res_block_size = None
+            self._loop_start = None
+            self._loop_end = None
+            self._loop_count = None
+            self._n_weight_layers = None
             self._embedding_length = None
             self._pooling_type = None
             self._kv_key_length = None
@@ -37525,6 +37859,41 @@ class LlamaCppBackend:
         }
 
     @staticmethod
+    def _fit_trim_host_has_shared_memory_gpu(
+        binary: Optional[str],
+        *,
+        is_vulkan_backend: bool,
+        gpu_indices: Iterable[int],
+        planner_integrated: Iterable[int] = (),
+    ) -> bool:
+        """Whether the Auto fit-margin trim must stay off because a card may be host RAM.
+
+        The discrete-first planner only classifies integrated devices on unpinned
+        multi-GPU loads, so a lone Jetson, an AMD APU or an explicitly picked iGPU
+        is checked here directly. Any integrated device on the host counts, since
+        its ids may not line up with the probed rows: a missed trim only keeps
+        today's margin.
+        """
+        if any(True for _ in planner_integrated):
+            return True
+        try:
+            if LlamaCppBackend._rocm_unified_memory_gpu_ids():
+                return True
+            # The CUDA memory probe already filled this for the mask; a Vulkan load never
+            # ran it, so it reads only a settled answer instead of initialising CUDA here.
+            if (
+                not is_vulkan_backend or LlamaCppBackend._integrated_cuda_probe_is_free()
+            ) and LlamaCppBackend._integrated_cuda_gpu_ids():
+                return True
+            if is_vulkan_backend and LlamaCppBackend._vulkan_targets_are_igpus(
+                binary, list(gpu_indices) or None
+            ):
+                return True
+        except Exception:
+            return True
+        return False
+
+    @staticmethod
     def _fit_target_per_device_ok(
         *,
         is_vulkan_backend: bool,
@@ -37696,10 +38065,12 @@ class LlamaCppBackend:
         fit_target_delta_mib: float = 0.0,
         fit_target_floor_mib: float = 0.0,
         fit_target_reserve_mib: int = 0,
+        fit_target_delta_by_idx: Optional[Mapping[int, float]] = None,
     ) -> list[str]:
         """Explicit --parallel drops the --kv-unified default and splits -c per slot; restore the
         shared pool. ``fit_target_reserve_mib`` is added on top for a sidecar the fitter cannot
-        measure."""
+        measure. Per-card deltas that differ always emit the flag, even when the broadcast
+        value restates the default, so the spawn can spell it per device."""
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
             flags.append("--kv-unified")
@@ -37721,7 +38092,10 @@ class LlamaCppBackend:
             _target += max(0, fit_target_reserve_mib)
             # The legacy path stays silent when it would only restate llama.cpp's
             # own default, so an untouched slider leaves the command unchanged.
-            if auto_fit or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
+            _per_device = bool(fit_target_delta_by_idx) and (
+                len({float(v) for v in fit_target_delta_by_idx.values()}) > 1
+            )
+            if auto_fit or _per_device or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
                 flags.extend(["--fit-target", str(int(_target))])
         return flags
 

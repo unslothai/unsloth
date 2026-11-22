@@ -326,6 +326,11 @@ export interface DiffusionLoraInfo {
   size_bytes: number;
   weight_default: number;
   fine_tuned?: boolean;
+  /** Step-distilled adapters: the publisher's steps / guidance, applied when the adapter is picked. */
+  recommended_steps?: number | null;
+  recommended_guidance?: number | null;
+  /** A two-expert pair (high- and low-noise files) for a two-expert video model. */
+  expert_pair?: boolean;
 }
 
 export interface GalleryImage {

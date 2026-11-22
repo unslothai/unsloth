@@ -78,6 +78,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("enable_tf32", "TF32 matmuls"),
     # Batch, accumulation and clip norm all change the trajectory the restored moments were produced on.
     ("train_batch_size", "batch size"),
+    # Every rank draws train_batch_size images: the GPU count scales the global batch and the sampler's stream.
+    ("world_size", "GPU count"),
     ("gradient_accumulation_steps", "gradient accumulation"),
     ("max_grad_norm", "gradient clipping"),
     # Trainers crop to this before the restored sampler sees anything; a 1024 bundle could finish at 768.
@@ -112,6 +114,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "bucketing",
         "enable_tf32",
         "train_batch_size",
+        "world_size",
         "gradient_accumulation_steps",
         "max_grad_norm",
         # Known only to the DiT trainer; unknown means cannot-tell, leaving route preflight and SDXL alone.
@@ -121,7 +124,8 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
     }
 )
 # Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
-_LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
+# A bundle from before world_size was recorded trained on one GPU.
+_LEGACY_IDENTITY_DEFAULTS: dict[str, Any] = {"bucketing": "off", "world_size": 1}
 
 
 def _revision_is_comparable(value: Any) -> bool:
@@ -175,6 +179,8 @@ class CheckpointIdentity:
     bucketing: Optional[str] = None
     enable_tf32: Optional[str] = None
     train_batch_size: Optional[int] = None
+    # Data-parallel GPU count; set by the DiT trainer once the world is planned, None elsewhere (cannot tell).
+    world_size: Optional[int] = None
     gradient_accumulation_steps: Optional[int] = None
     # Text, so 0.0 (clipping disabled) is a value and None stays "not recorded".
     max_grad_norm: Optional[str] = None
@@ -217,6 +223,7 @@ class CheckpointIdentity:
             "bucketing": self.bucketing,
             "enable_tf32": self.enable_tf32,
             "train_batch_size": self.train_batch_size,
+            "world_size": self.world_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "max_grad_norm": self.max_grad_norm,
             "ema_decay": self.ema_decay,
@@ -259,6 +266,7 @@ class CheckpointIdentity:
                 bucketing = _optional_str(data.get("bucketing")),
                 enable_tf32 = _optional_str(data.get("enable_tf32")),
                 train_batch_size = _optional_int(data.get("train_batch_size")),
+                world_size = _optional_int(data.get("world_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
                 ema_decay = _optional_str(data.get("ema_decay")),
@@ -437,6 +445,11 @@ def _resolve_lora_targets(cfg: Any) -> tuple[str, ...]:
 def with_cache_mode(identity: "CheckpointIdentity", used_cache: bool) -> "CheckpointIdentity":
     """Records the cache path actually taken, since cached and in-loop runs draw different RNG streams."""
     return replace(identity, cache_mode = "cached" if used_cache else "in-loop")
+
+
+def with_world_size(identity: "CheckpointIdentity", world: Any) -> "CheckpointIdentity":
+    """Records the data-parallel GPU count after its fallbacks; a resume at another count changes the global batch."""
+    return replace(identity, world_size = max(1, int(world or 1)))
 
 
 def with_resolved_base_precision(
@@ -1635,6 +1648,22 @@ def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
     except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
         pass
     return None
+
+
+def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
+    """(found, precision): whether a resume would continue a readable bundle, and the base precision that bundle
+    actually trained on (None when it predates the field). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None:
+                return True, saved.base_precision_effective
+    except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
+        pass
+    return False, None
 
 
 def recorded_bucketing(path_value: str) -> bool:

@@ -1521,9 +1521,11 @@ def _flux_single_eligible(module: Any) -> bool:
 def _flux_single_class_is_arch_patched(module: Any) -> bool:
     try:
         from . import diffusion_arch_patches as ap
-        return getattr(type(module), "forward", None) is getattr(
-            ap, "_flux_single_forward", object()
-        )
+
+        fwd = getattr(type(module), "forward", None)
+        # the ConvRot GELU wrapper (diffusion_flux_convrot_fused) keeps the forward it wraps
+        fwd = getattr(fwd, "_unsloth_stock", fwd)
+        return fwd is getattr(ap, "_flux_single_forward", object())
     except Exception:  # noqa: BLE001
         return False
 
