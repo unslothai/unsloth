@@ -19,6 +19,16 @@ from typing import Callable, Optional, Union
 import torch
 import torch.nn as nn
 
+
+def _resume_torch_load(path, **kwargs):
+    """torch.load for a resume checkpoint, refused on torch < 2.6 like the Trainer's own
+    check_torch_load_is_safe (weights_only=True is bypassable there, CVE-2025-32434)."""
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    refuse_pickle_checkpoint_on_old_torch(path)
+    return torch.load(path, weights_only = True, **kwargs)
+
+
 __all__ = [
     "FSDP2Config",
     "STORAGE_DTYPE",
@@ -3098,7 +3108,7 @@ def native_load_optimizer(model, optimizer, path_or_state):
     if isinstance(state, (str, os.PathLike)) and _is_dcp_dir(state):
         return native_load_optimizer_sharded(model, optimizer, state)
     if not isinstance(state, dict):
-        state = torch.load(state, map_location = "cpu", weights_only = True)
+        state = _resume_torch_load(state, map_location = "cpu")
     from .fsdp2_bnb_optim import rename_optimizer_state_for
 
     # A checkpoint from torch's AdamW resumed into a local-shard bitsandbytes Adam, or back.
@@ -3550,7 +3560,7 @@ def _read_checkpoint_weights(checkpoint):
         if path.endswith(".safetensors"):
             from safetensors.torch import load_file
             return load_file(path, device = "cpu")
-        return torch.load(path, map_location = "cpu", weights_only = True)
+        return _resume_torch_load(path, map_location = "cpu")
 
     for name in _WEIGHT_FILES:
         path = os.path.join(checkpoint, name)
@@ -4105,7 +4115,7 @@ def _install_trainer_hooks():
             os.path.join(checkpoint, _OPTIMIZER_DCP_DIR if sharded else _OPTIMIZER_NAME),
         )
         self.lr_scheduler.load_state_dict(
-            torch.load(os.path.join(checkpoint, _SCHEDULER_NAME), weights_only = True)
+            _resume_torch_load(os.path.join(checkpoint, _SCHEDULER_NAME))
         )
 
     original_load_from_checkpoint = Trainer._load_from_checkpoint
