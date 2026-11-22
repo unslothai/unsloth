@@ -10,7 +10,13 @@ import pytest
 F8 = pytest.importorskip("unsloth.kernels.fp8")
 
 
-def _install(monkeypatch, attr):
+def _install(
+    monkeypatch,
+    attr,
+    kernel_attr = None,
+):
+    """``attr`` under the prototype path, ``kernel_attr`` (default: the same) under torchao.kernel."""
+    kernel_attr = attr if kernel_attr is None else kernel_attr
     for name in (
         "torchao",
         "torchao.prototype",
@@ -22,7 +28,7 @@ def _install(monkeypatch, attr):
         mod = types.ModuleType(name)
         mod.__path__ = []
         if name.endswith("blockwise_quantization"):
-            mod.blockwise_fp8_gemm = attr
+            mod.blockwise_fp8_gemm = kernel_attr if name.startswith("torchao.kernel") else attr
         monkeypatch.setitem(sys.modules, name, mod)
 
 
@@ -55,3 +61,29 @@ def test_the_zoo_sentinel_itself_is_refused(monkeypatch):
         utils._rocm_make_sentinel("blockwise_fp8_gemm", "torchao.kernel.blockwise_quantization"),
     )
     assert F8._import_torchao_blockwise_gemm() is None
+
+
+def test_a_stubbed_prototype_falls_through_to_the_real_kernel(monkeypatch):
+    def blockwise_fp8_gemm(
+        a,
+        a_s,
+        b,
+        b_s,
+        block_size = 128,
+    ):
+        return a
+
+    _install(monkeypatch, type("blockwise_fp8_gemm", (), {}), blockwise_fp8_gemm)
+    assert F8._import_torchao_blockwise_gemm() is blockwise_fp8_gemm
+
+
+def test_qat_filter_ignores_a_stubbed_is_linear(monkeypatch):
+    torch = pytest.importorskip("torch")
+    U = pytest.importorskip("unsloth.models._utils")
+    for name in ("torchao", "torchao.quantization", "torchao.quantization.quant_api"):
+        mod = types.ModuleType(name)
+        mod.__path__ = []
+        monkeypatch.setitem(sys.modules, name, mod)
+    sys.modules["torchao.quantization.quant_api"]._is_linear = type("_is_linear", (), {})
+    assert U._default_qat_linear_filter(torch.nn.Linear(4, 4), "x") is True
+    assert U._default_qat_linear_filter(torch.nn.Conv1d(4, 4, 1), "x") is False
