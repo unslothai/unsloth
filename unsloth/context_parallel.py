@@ -2250,6 +2250,21 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     return args, kwargs
 
 
+# Depth of last_hidden_state_only() scopes: the caller reads only hidden_states[-1].
+_LAST_HIDDEN_ONLY = [0]
+
+
+@contextlib.contextmanager
+def last_hidden_state_only() -> Iterator[None]:
+    """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
+    forward): the decoder hook then gathers that state alone, not all L + 1 layers to full length."""
+    _LAST_HIDDEN_ONLY[0] += 1
+    try:
+        yield
+    finally:
+        _LAST_HIDDEN_ONLY[0] -= 1
+
+
 def _rl_decoder_post_hook(module, args, kwargs, output):
     seq_len = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
     if seq_len is None:
@@ -2272,8 +2287,10 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
             )
         return (hidden, *output[1:])
     output[next(iter(output.keys()))] = hidden
-    if layers is not None:
-        # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
+    if layers is not None and _LAST_HIDDEN_ONLY[0] and len(layers):
+        # Only the last state is read: every other layer would be one more all-gather and a full-length copy.
+        output["hidden_states"] = (hidden if layers[-1] is last else _full(layers[-1]),)
+    elif layers is not None:
         output["hidden_states"] = tuple(
             hidden if layer is last else _full(layer) for layer in layers
         )

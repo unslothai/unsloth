@@ -149,6 +149,73 @@ def test_decoder_shard_gather_matches_full_sequence_with_grads():
     assert results == {0: "ok", 1: "ok"}, results
 
 
+def _last_hidden_worker(rank, world, init_file, queue):
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = world)
+    try:
+        from unsloth.models import rl as rl_module
+
+        torch.manual_seed(1)
+        ids = torch.randint(1, 50, (2, 7))
+        positions = torch.arange(7).expand(2, 7)
+        full = _Decoder()(input_ids = ids, position_ids = positions, output_hidden_states = True)
+
+        model = _Decoder()
+        manager = _manager(rank, world)
+        cp.attach_rl_hooks(manager, torch.nn.ModuleDict({"model": model}))
+        calls = []
+        gather = cp.gather_sequence
+
+        def counting(x, m):
+            calls.append(x.shape)
+            return gather(x, m)
+
+        cp.gather_sequence = counting
+        try:
+            with cp._manager_scope(manager):
+                every = model(input_ids = ids, output_hidden_states = True)
+                every_calls = len(calls)
+                del calls[:]
+                # What GRPO's hidden-state forward wrapper enters around its forward.
+                with rl_module._cp_last_hidden_state_only():
+                    last = model(input_ids = ids, output_hidden_states = True)
+                last_calls = len(calls)
+        finally:
+            cp.gather_sequence = gather
+        # The decoder's own gather (stand-in attention) plus one per hidden state vs the last state only.
+        assert every_calls == 3 and last_calls == 2, (every_calls, last_calls)
+        assert len(every.hidden_states) == 2 and len(last.hidden_states) == 1
+        assert last.hidden_states[-1] is last.last_hidden_state
+        assert torch.equal(last.last_hidden_state, every.last_hidden_state)
+        torch.testing.assert_close(
+            last.hidden_states[-1], full.hidden_states[-1], rtol = 1e-5, atol = 1e-6
+        )
+        assert cp._LAST_HIDDEN_ONLY == [0]
+        queue.put((rank, "ok"))
+    except BaseException:  # pragma: no cover - reported to the parent
+        import traceback
+        queue.put((rank, traceback.format_exc()))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_grpo_hidden_state_forward_gathers_only_the_last_state():
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("needs fork")
+    ctx = mp.get_context("fork")
+    queue = ctx.Queue()
+    with tempfile.TemporaryDirectory() as tmp:
+        init_file = os.path.join(tmp, "init")
+        procs = [
+            ctx.Process(target = _last_hidden_worker, args = (r, 2, init_file, queue)) for r in range(2)
+        ]
+        for p in procs:
+            p.start()
+        results = dict(queue.get(timeout = 120) for _ in procs)
+        for p in procs:
+            p.join(30)
+    assert results == {0: "ok", 1: "ok"}, results
+
+
 def test_decoder_hook_refuses_cache_and_prefix_grouper():
     model = _Decoder()
     manager = _manager(0)

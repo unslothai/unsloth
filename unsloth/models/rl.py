@@ -2170,6 +2170,16 @@ def _grpo_hidden_states_reproduce_logits(model, hidden_states, logits):
         return bool(float((got - want).abs().max()) <= tolerance)
 
 
+def _cp_last_hidden_state_only():
+    # Context parallelism gathers each requested hidden state to full length; this caller keeps the last only.
+    import sys
+    from contextlib import nullcontext
+
+    module = sys.modules.get("unsloth.context_parallel")
+    scope = getattr(module, "last_hidden_state_only", None)
+    return scope() if scope is not None else nullcontext()
+
+
 def _install_grpo_hidden_states_forward_wrapper(model):
     if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
         return False
@@ -2222,7 +2232,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
 
         # TRL 0.26+: Config may be in a separate *_config.py module, or reachable by walking the Trainer's MRO to the real implementation module (trl.experimental.bco).
         try:
-            outputs = original_forward(*args, **forward_kwargs)
+            with _cp_last_hidden_state_only():
+                outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
             message = str(error)
             if logits_kwarg is None or logits_kwarg not in message:
@@ -2233,7 +2244,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             forward_kwargs.pop(logits_kwarg, None)
             logits_kwarg = None
             try:
-                outputs = original_forward(*args, **forward_kwargs)
+                with _cp_last_hidden_state_only():
+                    outputs = original_forward(*args, **forward_kwargs)
             except TypeError as retry_error:
                 if not rejected_hidden_states(str(retry_error)):
                     raise
