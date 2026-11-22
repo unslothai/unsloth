@@ -15174,11 +15174,7 @@ def execute_tool(
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
             return f"Error: MCP server '{display}' is disabled"
-        selected = _MCP_PROJECT_SERVER_IDS.get()
-        if selected is None:
-            # Worker threads may not carry the request's context.
-            selected = _mcp_project_server_ids(session_id)
-        if selected is not None and server_id not in selected:
+        if mcp_project_excludes(server_id, session_id):
             return f"Error: MCP server '{display}' is not enabled for this project"
         if _runs_local_mcp(server) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"

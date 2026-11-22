@@ -103,5 +103,13 @@ def test_mcp_app_endpoints_honour_the_project_selection(monkeypatch):
 
     for exc in asyncio.run(blocked()):
         assert exc.status_code == 400 and "not enabled for this project" in exc.detail
+
+    async def deselected_mid_turn():
+        await tools.set_mcp_project_scope(session)
+        patch_project("gamma", ChatProjectPatch(mcpServerIds = []), "owner")
+        return tools.execute_mcp_tool(f"mcp__{kept}__echo", {}, session_id = session)
+
+    assert "not enabled for this project" in asyncio.run(deselected_mid_turn())
+    patch_project("gamma", ChatProjectPatch(mcpServerIds = [kept]), "owner")
     assert not tools.mcp_project_excludes(kept, session)
     assert not tools.mcp_project_excludes(dropped, "unfiled-thread")
