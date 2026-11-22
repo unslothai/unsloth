@@ -197,3 +197,20 @@ def test_native_hidden_states_and_logps_match_the_wrapper(family, grad):
         logps_wrapped.sum().backward()
         for (name, a), (_, b) in zip(fast.named_parameters(), stock.named_parameters()):
             assert torch.equal(a.grad, b.grad), name
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+def test_return_dict_false_still_returns_hidden_states(family):
+    # The wrapper used to force return_dict = True; without it, a model configured with return_dict = False must
+    # still hand GRPO its hidden states in .logits, the same ones as with return_dict = True.
+    _, fast = _pair(family)
+    ids = torch.randint(
+        0, _CONFIG["vocab_size"], (2, 12), generator = torch.Generator().manual_seed(2)
+    )
+    mask = torch.ones_like(ids)
+    with torch.no_grad(), _return_hidden_states("1"):
+        as_dict = fast(input_ids = ids, attention_mask = mask, logits_to_keep = 5).logits
+        fast.config.return_dict = False
+        as_tuple = fast(input_ids = ids, attention_mask = mask, logits_to_keep = 5).logits
+    assert as_tuple.shape == (2, 5, _CONFIG["hidden_size"])
+    assert torch.equal(as_tuple, as_dict)

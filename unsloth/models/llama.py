@@ -2194,9 +2194,10 @@ def CausalLM_fast_forward(fast_forward_inference):
             return CausalLMOutputWithPast(
                 loss = None,
                 logits = hidden_states,
-                past_key_values = outputs.past_key_values,
-                hidden_states = outputs.hidden_states,
-                attentions = outputs.attentions,
+                # return_dict = False hands back a tuple: the logits slot is all this branch promises.
+                past_key_values = getattr(outputs, "past_key_values", None),
+                hidden_states = getattr(outputs, "hidden_states", None),
+                attentions = getattr(outputs, "attentions", None),
             )
 
         if keep is not None:
