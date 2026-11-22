@@ -40222,6 +40222,7 @@ class LlamaCppBackend:
                             compaction_headroom_ratio = compaction_headroom_ratio,
                         )
                     )
+                    # Join before the fit: it cuts oversized attachments in place.
                     if _fit_count_prefetch is not None:
                         _fit_count_prefetch.join()
                     conversation, truncation = _fit_with_instruction_pins(
