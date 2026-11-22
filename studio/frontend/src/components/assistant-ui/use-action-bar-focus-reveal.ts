@@ -11,6 +11,8 @@ import {
 } from "react";
 import { isTouchClick } from "@/components/ui/touch-click";
 
+const TOOLTIP_CONTENT = '[data-slot="tooltip-content"]';
+
 /**
  * Mounts an autohidden action bar while focus is inside the message, via the same
  * `message.setIsHovering` flag the library's mouseenter/mouseleave writes. Two writers share one
@@ -130,14 +132,34 @@ export function useActionBarFocusReveal() {
     if (!el) return;
     // From an effect on purpose: it registers after the library's mouseleave, so both writes land in
     // one dispatch and React never renders the intermediate `false`.
-    const reassert = () => {
+    let release: ((event: PointerEvent) => void) | null = null;
+    const stopRelease = () => {
+      if (release) document.removeEventListener("pointermove", release, true);
+      release = null;
+    };
+    const reassert = (event: MouseEvent) => {
       if (focusWithinRef.current && isEngaged()) {
         aui.message().setIsHovering(true);
+        return;
       }
+      // A hoverable tooltip card (the reply stats) is portaled out of the message: keep the bar
+      // mounted while the pointer is on it, then clear once the pointer lands outside both.
+      const into = event.relatedTarget as Element | null;
+      if (!into?.closest?.(TOOLTIP_CONTENT)) return;
+      aui.message().setIsHovering(true);
+      stopRelease();
+      release = (move) => {
+        const target = move.target as Element | null;
+        if (target?.closest?.(TOOLTIP_CONTENT)) return;
+        stopRelease();
+        if (!target || !el.contains(target)) aui.message().setIsHovering(false);
+      };
+      document.addEventListener("pointermove", release, true);
     };
     el.addEventListener("mouseleave", reassert);
     return () => {
       el.removeEventListener("mouseleave", reassert);
+      stopRelease();
       cancelPendingClear();
     };
   }, [aui, isEngaged, cancelPendingClear]);

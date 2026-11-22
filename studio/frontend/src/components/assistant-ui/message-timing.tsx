@@ -122,7 +122,6 @@ export const MessageTiming: FC<{
       <TooltipContent
         side={side}
         sideOffset={8}
-        data-slot="message-timing-popover"
         variant="rich"
         className="[&_span>svg]:hidden!"
       >
