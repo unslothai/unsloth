@@ -75,6 +75,45 @@ test("quote anchors capture text, offsets, context, and occurrence", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(anchor)), anchor);
 });
 
+test("display-only preview text never affects matching or offsets", () => {
+  const index = fakeIndex("Name Value Alpha 1");
+  const anchor = createQuoteAnchor({
+    messageId: "message-1",
+    turn: 2,
+    text: "Name Value",
+    previewText: "Name | Value",
+    markdown: "Name Value",
+    index,
+    start: 0,
+    end: 10,
+  });
+  assert.ok(anchor);
+
+  assert.equal(anchor.text, "Name Value");
+  assert.equal(anchor.previewText, "Name | Value");
+  assert.equal(anchor.start, 0);
+  assert.equal(anchor.end, 10);
+  assert.deepEqual(resolveQuoteAnchor(index, anchor), {
+    start: 0,
+    end: 10,
+    status: "exact",
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(anchor)), anchor);
+
+  const blankPreview = createQuoteAnchor({
+    messageId: "message-1",
+    turn: 2,
+    text: "Name Value",
+    previewText: "   ",
+    markdown: "Name Value",
+    index,
+    start: 0,
+    end: 10,
+  });
+  assert.ok(blankPreview);
+  assert.equal(Object.hasOwn(blankPreview, "previewText"), false);
+});
+
 test("repeated passages store the right occurrence", () => {
   const anchor = anchorFor(fakeIndex("one two one"), "one", 8);
 

@@ -20,6 +20,8 @@ export type QuoteAnchor = {
   readonly turn: number;
   /** Visible selected text, used for the card and fallback search. */
   readonly text: string;
+  /** Compact display-only text for table selections; never used for matching. */
+  readonly previewText?: string;
   /** Markdown snapshot for a future collection insertion. */
   readonly markdown: string;
   /** Offset hints in the message's rendered text index at capture. */
@@ -50,6 +52,8 @@ export type QuoteAnchorInput = {
   readonly messageId: string;
   readonly turn: number;
   readonly text: string;
+  /** Display-only; omitted by non-table selections and never used for matching. */
+  readonly previewText?: string;
   readonly markdown: string;
   readonly index: FindTextIndex;
   readonly start: number;
@@ -196,10 +200,15 @@ export function createQuoteAnchor(
   if (span === null) {
     return null;
   }
+  const previewText =
+    input.previewText === undefined
+      ? ""
+      : normalizeQuoteText(input.previewText);
   return {
     messageId: input.messageId,
     turn: input.turn,
     text,
+    ...(previewText.length > 0 ? { previewText } : {}),
     markdown: input.markdown,
     start: span.start,
     end: span.end,

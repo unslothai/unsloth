@@ -381,7 +381,10 @@ const QuotePillRow: FC<{
           className={QUOTE_PREVIEW_CLASS}
           style={QUOTE_PREVIEW_STYLE}
         >
-          <QuotePreviewContent text={quote.anchor.text} source={source} />
+          <QuotePreviewContent
+            text={quote.anchor.previewText ?? quote.anchor.text}
+            source={source}
+          />
         </TooltipContent>
       </Tooltip>
       <button
@@ -1004,7 +1007,9 @@ export const MessageQuoteCollection: FC<MessageQuoteCollectionProps> = ({
                   style={QUOTE_PREVIEW_STYLE}
                 >
                   <QuotePreviewContent
-                    text={singleQuote.anchor.text}
+                    text={
+                      singleQuote.anchor.previewText ?? singleQuote.anchor.text
+                    }
                     source={singleSource}
                   />
                 </TooltipContent>

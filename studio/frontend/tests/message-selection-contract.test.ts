@@ -291,7 +291,7 @@ test("row previews show the full quote and source in a scrollable surface", () =
   assert.match(row, /QUOTE_PREVIEW_STYLE/);
   assert.match(
     row,
-    /<QuotePreviewContent text=\{quote\.anchor\.text\} source=\{source\} \/>/,
+    /<QuotePreviewContent\s+text=\{quote\.anchor\.previewText \?\? quote\.anchor\.text\}\s+source=\{source\}\s*\/>/,
   );
   assert.match(row, /quoteSourceLabel\(quote\.anchor\.turn/);
   assert.doesNotMatch(row, /line-clamp/);
@@ -319,7 +319,7 @@ test("single quotes preview on the pill without a duplicate dropdown row", () =>
   assert.match(COLLECTION, /side="top"/);
   assert.match(
     COLLECTION,
-    /<QuotePreviewContent\s+text=\{singleQuote\.anchor\.text\}\s+source=\{singleSource\}/,
+    /<QuotePreviewContent\s+text=\{\s*singleQuote\.anchor\.previewText \?\? singleQuote\.anchor\.text\s*\}\s+source=\{singleSource\}/,
   );
   assert.match(COLLECTION, /quoteSourceLabel\(singleQuote\.anchor\.turn/);
   assert.match(COLLECTION, /style=\{QUOTE_PREVIEW_STYLE\}/);

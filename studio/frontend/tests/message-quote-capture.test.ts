@@ -262,6 +262,21 @@ function codeBlock(language = "Python", code = "const alpha = 1;") {
   return { block, languageText, codeText };
 }
 
+function tableContent() {
+  const name = text("Name");
+  const value = text("Value");
+  const alpha = text("Alpha");
+  const one = text("1");
+  const head = element("tr", element("th", name), element("th", value));
+  const body = element("tr", element("td", alpha), element("td", one));
+  const table = element(
+    "table",
+    element("thead", head),
+    element("tbody", body),
+  );
+  return { table, name, value, alpha, one };
+}
+
 test("multi-paragraph selections store the indexed separator", () => {
   const first = text("alpha one");
   const second = text("beta two");
@@ -274,6 +289,7 @@ test("multi-paragraph selections store the indexed separator", () => {
   );
 
   assert.equal(anchor.text, "alpha one\nbeta two");
+  assert.equal(Object.hasOwn(anchor, "previewText"), false);
   assert.equal(anchor.start, 0);
   assert.equal(anchor.end, 18);
   assert.deepEqual(resolved, { start: 0, end: 18, status: "exact" });
@@ -321,6 +337,86 @@ test("multiple list items store each indexed separator", () => {
   );
 
   assert.equal(anchor.text, "one\ntwo\nthree");
+  assert.deepEqual(resolved, {
+    start: 0,
+    end: anchor.text.length,
+    status: "exact",
+  });
+});
+
+test("table capture keeps canonical text and adds a compact preview", () => {
+  const { table, name, one } = tableContent();
+  const content = element("div", table);
+  const { anchor, resolved } = captured(
+    content,
+    name,
+    one,
+    "NameValueAlpha1",
+    one.data.length,
+    0,
+    table,
+  );
+
+  assert.equal(anchor.text, "Name\nValue\nAlpha\n1");
+  assert.equal(anchor.markdown, "NameValueAlpha1");
+  assert.equal(anchor.previewText, "Name | Value\nAlpha | 1");
+  assert.equal(anchor.prefix, "");
+  assert.equal(anchor.suffix, "");
+  assert.equal(anchor.occurrence, 1);
+  assert.deepEqual(resolved, {
+    start: 0,
+    end: anchor.text.length,
+    status: "exact",
+  });
+});
+
+test("table capture recognizes bare cell siblings from a row clone", () => {
+  const { table, name, value } = tableContent();
+  const content = element("div", table);
+  const rowClone = element(
+    "div",
+    element("th", text("Name")),
+    element("th", text("Value")),
+  );
+  const { anchor, resolved } = captured(
+    content,
+    name,
+    value,
+    "NameValue",
+    value.data.length,
+    0,
+    rowClone,
+  );
+
+  assert.equal(anchor.text, "Name\nValue");
+  assert.equal(anchor.previewText, "Name | Value");
+  assert.deepEqual(resolved, {
+    start: 0,
+    end: anchor.text.length,
+    status: "exact",
+  });
+});
+
+test("mixed paragraph and table captures keep paragraph separation", () => {
+  const intro = text("Intro");
+  const outro = text("Outro");
+  const { table } = tableContent();
+  const first = element("p", intro);
+  const last = element("p", outro);
+  const content = element("div", first, table, last);
+  const selection = element("div", first, table, last);
+  const { anchor, resolved } = captured(
+    content,
+    intro,
+    outro,
+    "IntroNameValueAlpha1Outro",
+    outro.data.length,
+    0,
+    selection,
+  );
+
+  assert.equal(anchor.text, "Intro\nName\nValue\nAlpha\n1\nOutro");
+  assert.equal(anchor.previewText, "Intro\nName | Value\nAlpha | 1\nOutro");
   assert.deepEqual(resolved, {
     start: 0,
     end: anchor.text.length,

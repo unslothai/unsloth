@@ -5,17 +5,21 @@
 // Range or element references, so it survives message windowing and remounts.
 
 import {
-  buildTextIndex,
   type FindElementLike,
   type FindTextIndex,
+  buildTextIndex,
 } from "../../features/find-in-page/lib/find-text-index.ts";
 import {
+  type QuoteAnchor,
   canonicalQuoteText,
   createQuoteAnchor,
   normalizeQuoteText,
   quoteSearchIndex,
-  type QuoteAnchor,
 } from "./message-quote-model";
+import {
+  type QuotePreviewNode,
+  tableQuotePreview,
+} from "./message-quote-preview";
 import { QUOTE_PRUNE_SELECTOR } from "./message-selection-model";
 
 export type QuoteCaptureInput = {
@@ -26,17 +30,22 @@ export type QuoteCaptureInput = {
   readonly content: HTMLElement;
 };
 
-/** Rendered chrome that must not become the card's visible passage. */
-function quoteTextFromRange(range: Range): string {
+/** One clone per capture: chrome is removed before both text and preview use it. */
+function quoteHolderFromRange(range: Range): HTMLElement {
   const holder = document.createElement("div");
   holder.append(range.cloneContents());
-  holder
-    .querySelectorAll(QUOTE_PRUNE_SELECTOR)
-    .forEach((element) => element.remove());
+  for (const element of Array.from(
+    holder.querySelectorAll(QUOTE_PRUNE_SELECTOR),
+  )) {
+    element.remove();
+  }
+  return holder;
+}
+
+/** Preserve the captured-text fallback when the clone carries no usable text. */
+function quoteTextFromHolder(holder: HTMLElement, range: Range): string {
   const pruned = normalizeQuoteText(holder.textContent ?? "");
-  return pruned.length > 0
-    ? pruned
-    : normalizeQuoteText(range.toString());
+  return pruned.length > 0 ? pruned : normalizeQuoteText(range.toString());
 }
 
 function indexOffsetAtBoundary(
@@ -126,12 +135,17 @@ export function captureQuoteAnchor(
   if (start === null || end === null) {
     return null;
   }
-  const captured = quoteTextFromRange(input.range);
+  const holder = quoteHolderFromRange(input.range);
+  const captured = quoteTextFromHolder(holder, input.range);
   const spanText = quoteSearchIndex(index).text.slice(start, end);
+  const text = canonicalQuoteText(captured, spanText);
   return createQuoteAnchor({
     messageId: input.messageId,
     turn: input.turn,
-    text: canonicalQuoteText(captured, spanText),
+    text,
+    previewText:
+      tableQuotePreview(holder as unknown as QuotePreviewNode, text) ??
+      undefined,
     markdown: input.markdown,
     index,
     start,

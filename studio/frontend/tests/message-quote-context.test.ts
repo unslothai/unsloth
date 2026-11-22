@@ -106,6 +106,28 @@ test("collection snapshots preserve order, sources, markdown, and comments", () 
   assert.equal(built.quotes[1].comment, "");
 });
 
+test("model context never carries display-only preview text", () => {
+  const quote = quoteFor("q1", "message-1", "First passage", "Definition.");
+  const built = buildQuoteContextEnvelope(
+    [
+      {
+        ...quote,
+        anchor: { ...quote.anchor, previewText: "First | passage" },
+      },
+    ],
+    "ctx-preview",
+  );
+
+  assert.ok(built);
+  assert.equal(Object.hasOwn(built.quotes[0], "previewText"), false);
+  assert.equal(built.quotes[0].text, "First passage");
+  assert.equal(validTransport(built).text.includes("First | passage"), false);
+  assert.equal(
+    formatQuoteContextForModel(built).includes("First | passage"),
+    false,
+  );
+});
+
 test("quotes from the same assistant message keep separate identities", () => {
   const built = buildQuoteContextEnvelope(
     [
