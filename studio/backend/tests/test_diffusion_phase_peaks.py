@@ -23,6 +23,13 @@ import pytest
 import core.inference.diffusion_measured_peaks as mp
 import core.inference.diffusion_memory as dm
 
+
+@pytest.fixture(autouse = True)
+def _trusted_free_reading(monkeypatch):
+    """The wider encoder room reads free memory as a measurement; a Windows ROCm host (a ceiling) keeps the flat room."""
+    monkeypatch.setattr(dm, "_free_reading_untrusted", lambda: False, raising = False)
+
+
 QWEN_LOADED = {
     "transformer": (6922, "dit"),
     "text_encoder": (8917, "text_encoder"),

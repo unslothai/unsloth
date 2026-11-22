@@ -4240,14 +4240,25 @@ STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
 TE_RESIDENT_ROOM_ENV = "UNSLOTH_DIFFUSION_TE_RESIDENT_ROOM"
 
 
+def _free_reading_untrusted() -> bool:
+    """True where ``mem_get_info``'s free half over-reports (Windows ROCm, utils.hardware); False when unknown."""
+    try:
+        from utils.hardware import rocm_windows_free_is_untrusted
+        return bool(rocm_windows_free_is_untrusted())
+    except Exception:  # noqa: BLE001 - no hardware helper: the reading stands, as for every other placement
+        return False
+
+
 def _resident_te_room_mib(
     memory: Any, encoders_mib: int, dit_mib: int, headroom_mib: int, other_mib: int
 ) -> int:
     """Encoder MiB that stay resident beside a whole transformer: free memory less the resident slack, the measured
     whole-render peak, the non-encoder components and the transformer (no planner reserve or base overhead on top: the
-    free reading already has the CUDA context taken off, as for ``_resident_dit_fits``). 0 when off or unreadable."""
+    free reading already has the CUDA context taken off, as for ``_resident_dit_fits``). 0 when off or unreadable, and
+    on Windows ROCm, whose free reading is only a ceiling blind to other processes (``trusted_mem_get_info``): the
+    encoders keep the flat room there."""
     free = getattr(memory, "free_mib", None)
-    if free is None or _env_off(TE_RESIDENT_ROOM_ENV):
+    if free is None or _env_off(TE_RESIDENT_ROOM_ENV) or _free_reading_untrusted():
         return 0
     return min(
         int(encoders_mib),

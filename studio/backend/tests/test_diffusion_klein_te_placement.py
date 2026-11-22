@@ -20,6 +20,7 @@ KLEIN_LOADED = {
     "vae": (161, "other"),
 }
 KLEIN_FLAT = dict(model_dense_mib = 11105, companion_dense_mib = 5283, text_encoder_dense_mib = 5092)
+_REAL_FREE_GATE = dm._free_reading_untrusted
 # (free MiB a ballast leaves, simulated total MiB) per budget
 CARDS = {8: (7788, 8188), 12: (11888, 12288), 16: (15976, 16376), 24: (24176, 24576)}
 
@@ -35,6 +36,8 @@ def klein(monkeypatch):
         monkeypatch.delenv(env, raising = False)
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN_LOADED), raising = False)
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    # a measured free reading (not Windows ROCm, whose free half is a ceiling)
+    monkeypatch.setattr(dm, "_free_reading_untrusted", lambda: False)
     return types.SimpleNamespace()
 
 
@@ -108,6 +111,52 @@ def test_8gb_and_24gb_placements_do_not_move(klein, monkeypatch, gib):
     if gib == 8:
         # the whole transformer does not fit the slack: partial DiT, every encoder byte streams as before
         assert on[0] == dm.OFFLOAD_STREAMING and (on[3] or 0) < 6144 and on[4] is None
+
+
+@pytest.mark.parametrize("gib", [12, 16])
+def test_windows_rocm_keeps_the_flat_encoder_room(klein, monkeypatch, gib):
+    """Windows ROCm over-reports free memory (a ceiling blind to other processes): the encoders keep the flat room,
+    exactly the kill-switch placement, and the transformer placement does not move."""
+    import utils.hardware as hardware
+
+    wide = _plan(gib)
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    flat = _plan(gib)
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV)
+    # the real gate, reached through utils.hardware
+    monkeypatch.setattr(dm, "_free_reading_untrusted", _REAL_FREE_GATE)
+    monkeypatch.setattr(hardware, "rocm_windows_free_is_untrusted", lambda: True)
+    untrusted = _plan(gib)
+    assert _summary(untrusted) == _summary(flat) != _summary(wide)
+    assert untrusted.resident_transformer_mib == wide.resident_transformer_mib
+    assert "resident_te_slack_mib" not in untrusted.estimates
+
+
+def test_the_rocm_gate_reads_the_hardware_helper(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(dm, "_free_reading_untrusted", _REAL_FREE_GATE)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.sys, "platform", "win32")
+    assert dm._free_reading_untrusted() is True
+    monkeypatch.setattr(
+        hw.sys, "platform", "linux"
+    )  # ROCm on Linux reads free memory as a measurement
+    assert dm._free_reading_untrusted() is False
+
+
+def test_an_unimportable_hardware_helper_keeps_the_reading(monkeypatch):
+    import builtins
+
+    real = builtins.__import__
+
+    def refuse(name, *args, **kwargs):
+        if name == "utils.hardware":
+            raise ImportError(name)
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", refuse)
+    assert _REAL_FREE_GATE() is False
 
 
 def test_an_edit_priced_cut_or_a_decode_lend_keeps_the_flat_room():

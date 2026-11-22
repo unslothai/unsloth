@@ -11,6 +11,13 @@ import pytest
 
 import core.inference.diffusion_memory as dm
 
+
+@pytest.fixture(autouse = True)
+def _trusted_free_reading(monkeypatch):
+    """The wider encoder room reads free memory as a measurement; a Windows ROCm host (a ceiling) keeps the flat room."""
+    monkeypatch.setattr(dm, "_free_reading_untrusted", lambda: False, raising = False)
+
+
 # Loaded storage of Qwen-Image-2.1 auto (int8 DiT, fp8 text encoder, bf16 VAE), MiB.
 Q21_LOADED = {
     "transformer": (6922, "dit"),
