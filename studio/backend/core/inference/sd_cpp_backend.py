@@ -3268,14 +3268,22 @@ def _offload_would_exhaust_host_ram(
 def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
     """Pixel tile edge for the offload path's CPU VAE decode, from the host RAM the offloaded weights leave (they all
     sit in host RAM under --offload-to-cpu); None keeps the bare --vae-tiling (256 px). Builds whose tile size is not
-    in image pixels, and an unreadable host, keep 256 px."""
+    in image pixels, and an unreadable host, keep 256 px. On Windows the weights and the decode buffer are committed
+    memory, so a commit headroom below the physical reading caps it."""
     if not sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
         return None
     try:
-        from core.inference.diffusion_small_host import host_ram_mib, host_reserve_mib
+        from core.inference.diffusion_small_host import (
+            host_commit_mib,
+            host_ram_mib,
+            host_reserve_mib,
+        )
         from core.inference.sd_cpp_multigpu import TEXT_ENCODER_FIELDS, file_mib
 
         total, available = host_ram_mib()
+        commit = host_commit_mib()
+        if available is not None and commit is not None:
+            available = min(available, commit)
         if available is None:
             spare = None
         else:
