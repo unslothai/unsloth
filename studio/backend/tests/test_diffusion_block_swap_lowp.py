@@ -234,58 +234,63 @@ def test_host_lowp_weight_values_unchanged():
 
 
 def _ring_pair(seed = 0):
-    """Two same-shape frozen fp8 layers whose codes, like two swapped blocks, take turns in one ring-slot buffer."""
+    """Two same-shape frozen fp8 layers (two swapped blocks) and a two-slot ring, as zoo's BlockSwap streams them:
+    each weight is a frozen parameter whose .data is a slot view while resident and empty when evicted."""
     torch.manual_seed(seed)
     lins = [
         nn.Linear(64, 64, bias = False).to(torch.bfloat16).requires_grad_(False) for _ in range(2)
     ]
     layers = [f8.FrozenFp8Linear(lin) for lin in lins]
-    host = [ly.weight.clone() for ly in layers]
-    slot = torch.empty_like(host[0])
-    return layers, host, slot
+    for ly in layers:
+        ly._studio_lowp = "fp8"
+        bs.host_lowp_weight(ly)
+        ly.__dict__.pop(bs.SWAPPED_WEIGHT_ATTR)  # restored per test
+    host = [ly.weight.data.clone() for ly in layers]
+    slots = [torch.empty_like(host[0]) for _ in range(2)]
+    return layers, host, slots
 
 
-def _grad_through_slot(layers, host, slot, x):
-    grads = []
-    for ly, h in zip(layers, host):
-        slot.copy_(h)
-        ly.weight = slot  # the same storage for both layers, as zoo's p.data = slot view
-        xi = x.clone().requires_grad_(True)
-        ly(xi).float().sum().backward()
-        grads.append(xi.grad)
-    return grads
+def _fetch(ly, h, slot):
+    slot.copy_(h)
+    ly.weight.data = slot
 
 
-def _grad_resident(layers, host, x):
-    out = []
-    for ly, h in zip(layers, host):
-        ly.weight = h.clone()
-        xi = x.clone().requires_grad_(True)
-        ly(xi).float().sum().backward()
-        out.append(xi.grad)
-    return out
+def _grad(ly, x):
+    xi = x.clone().requires_grad_(True)
+    ly(xi).float().sum().backward()
+    return xi.grad
 
 
 @needs_fp8_mm
-def test_fp8_cache_never_serves_a_ring_slot_address():
+@pytest.mark.parametrize("bypass", [False, True])
+def test_fp8_cache_never_serves_a_ring_slot_address(bypass):
     if f8._grad_input_mm_uncached is None:
         pytest.skip("no torch.library.custom_op")
     f8.BACKWARD_WEIGHTS.active = True
     f8.BACKWARD_WEIGHTS.plan(GIB)
     torch.manual_seed(3)
     x = torch.randn(48, 64, dtype = torch.bfloat16)
-    layers, host, slot = _ring_pair()
-    ref = _grad_resident(layers, host, x)
+    (a, c), (ha, hc), (s0, s1) = _ring_pair()
+    ref = []
+    for ly, h in ((a, ha), (c, hc)):
+        _fetch(ly, h, torch.empty_like(h))
+        ref.append(_grad(ly, x))
     f8.BACKWARD_WEIGHTS.clear(keep_budget = True)
-    # Negative control: without the swapped mark the data_ptr cache returns layer 0's copy for layer 1.
-    bad = _grad_through_slot(layers, host, slot, x)
-    assert torch.equal(bad[0], ref[0]) and not torch.equal(bad[1], ref[1])
-    f8.BACKWARD_WEIGHTS.clear(keep_budget = True)
-    for ly in layers:
-        setattr(ly, bs.SWAPPED_WEIGHT_ATTR, True)
-    good = _grad_through_slot(layers, host, slot, x)
-    assert all(torch.equal(g, r) for g, r in zip(good, ref))
-    assert len(f8.BACKWARD_WEIGHTS.entries) == 0
+    if bypass:
+        for ly in (a, c):
+            setattr(ly, bs.SWAPPED_WEIGHT_ATTR, True)
+    # Step 1: block A runs from slot 0. Step 2: A is resident in slot 1 while block C reuses slot 0.
+    _fetch(a, ha, s0)
+    assert torch.equal(_grad(a, x), ref[0])
+    _fetch(a, ha, s1)
+    _fetch(c, hc, s0)
+    got_c = _grad(c, x)
+    if bypass:
+        assert torch.equal(got_c, ref[1]) and torch.equal(_grad(a, x), ref[0])
+        assert len(f8.BACKWARD_WEIGHTS.entries) == 0
+    else:
+        # The data_ptr key hands C block A's column-major copy: wrong dX, silently.
+        assert not torch.equal(got_c, ref[1])
 
 
 @needs_fp8_mm
