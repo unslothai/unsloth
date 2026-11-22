@@ -32,6 +32,8 @@ FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
 FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
+# Rows the Llama-family decode path adds to the KV cache past the prompt, and grows it by.
+KV_CACHE_INCREMENT = 512
 # T4 Qwen3-0.6B: 3-6 new tokens ran 5-58% slower graphed, 8 tokens 1.25x faster.
 CAPTURE_MIN_STEPS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_CAPTURE_MIN_STEPS", "6"))
 # Captured steps (one per batch size / autocast state) kept per model.
@@ -529,6 +531,23 @@ def register_attention(fn):
 
 def _round_up(n, m):
     return -(-n // m) * m
+
+
+def decode_cache_rows(
+    prompt,
+    new_tokens,
+    increment = KV_CACHE_INCREMENT,
+):
+    """Upper bound on the KV-cache rows per layer that alloc_decode_buffers / resize_decode_buffers hold
+    for one call of `prompt` + `new_tokens`: the first allocation (increment + prompt + 1, however few
+    tokens are generated), grown by `increment` until the last token fits, rounded up to the graph
+    BUCKET, plus one more increment for the growth step (resize_ holds the old and new cache at once)."""
+    prompt, new_tokens, increment = int(prompt), max(0, int(new_tokens)), int(increment)
+    rows = increment + prompt + 1
+    need = prompt + new_tokens + 1
+    if need > rows:
+        rows += _round_up(need - rows, increment)
+    return _round_up(rows, BUCKET) + increment
 
 
 class _StepStatics:

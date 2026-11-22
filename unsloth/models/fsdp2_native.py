@@ -2607,7 +2607,10 @@ def _forward_prefetch_depth(units):
 
 def _generate_request_bytes(model, args, kwargs):
     """Upper estimate of the device memory one generate call allocates besides the weights: the KV cache
-    for batch x (prompt + max_new_tokens), one decoder layer's prefill activations and the last-token
+    as Unsloth's decode allocator sizes it (KV_CACHE_INCREMENT rows past the prompt even for a short
+    generation, its growth steps and graph BUCKET rounding, plus one growth increment of headroom; this
+    also covers HF generate's prompt + max_new_tokens cache) and the per-layer attention score buffer
+    for batch x beams x return sequences, one decoder layer's prefill activations and the last-token
     logits, times 1.25. None when the request's shape or the model's dimensions are unknown."""
     try:
         ids = kwargs.get("input_ids")
@@ -2649,8 +2652,12 @@ def _generate_request_bytes(model, args, kwargs):
         inter = getattr(config, "intermediate_size", None) or 4 * hidden
         dtype = getattr(config, "torch_dtype", None) or getattr(config, "dtype", None)
         width = dtype.itemsize if isinstance(dtype, torch.dtype) else 4
-        tokens = batch * (prompt + int(new))
-        kv = 2 * layers * tokens * kv_heads * head_dim * width
+        from ._decode_graphs import decode_cache_rows
+
+        rows = decode_cache_rows(prompt, int(new))
+        # Per layer: the paged K / V cache [rows, 2, batch, kv_heads, head_dim] and the scores
+        # [batch, heads, 1, rows] alloc_decode_buffers allocates next to it.
+        kv = layers * batch * rows * (2 * kv_heads * head_dim + heads) * width
         act = batch * prompt * (4 * hidden + 3 * inter) * width
         logits = 2 * batch * vocab * 4
         return int(1.25 * (kv + act + logits))

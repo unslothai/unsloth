@@ -190,7 +190,8 @@ def test_request_estimate_reads_the_generate_call():
     )
     ids = torch.zeros(3, 10, dtype = torch.long)
     got = F._generate_request_bytes(model, (), {"input_ids": ids, "max_new_tokens": 90})
-    kv = 2 * 4 * 3 * 100 * 2 * 16 * 2
+    # Decode allocator rows: 512 past the 10-token prompt + 1, rounded to 768, + one 512 increment.
+    kv = 4 * 3 * (768 + 512) * (2 * 2 * 16 + 4) * 2
     act = 3 * 10 * (4 * 64 + 3 * 128) * 2
     assert got == int(1.25 * (kv + act + 2 * 3 * 1000 * 4))
     # More return sequences scale the batch; an unknown length gives no estimate.
@@ -199,6 +200,84 @@ def test_request_estimate_reads_the_generate_call():
     )
     assert more > got
     assert F._generate_request_bytes(model, (ids,), {}) is None
+
+
+def _decode_allocated_bytes(config, batch, prompt, new_tokens):
+    """Bytes alloc_decode_buffers (eager) + resize_decode_buffers really hold on CPU for one call."""
+    from unsloth.models import _decode_graphs as G
+
+    heads, kv_heads, head_dim = (
+        config.num_attention_heads,
+        config.num_key_value_heads,
+        config.head_dim,
+    )
+    attn = types.SimpleNamespace(config = types.SimpleNamespace(model_type = "not_graphed"))
+    K1 = torch.zeros(batch, kv_heads, prompt, head_dim, dtype = config.torch_dtype)
+    G.alloc_decode_buffers(
+        attn, K1, K1, batch, heads, kv_heads, head_dim, config.hidden_size,
+        config.torch_dtype, torch.device("cpu"), G.KV_CACHE_INCREMENT,
+    )  # fmt: skip
+    for kv_seq_len in range(prompt + 1, prompt + new_tokens + 1):
+        if kv_seq_len >= attn.paged_attention.shape[0]:
+            G.resize_decode_buffers(attn, G.KV_CACHE_INCREMENT, batch, heads, kv_heads, head_dim)
+    per_layer = sum(
+        t.untyped_storage().nbytes()
+        for t in (attn.paged_attention, attn.attention, attn.temp_QA, attn.temp_KV, attn.RH_Q)
+    )
+    return config.num_hidden_layers * per_layer
+
+
+@pytest.mark.parametrize("prompt,new_tokens", [(16, 4), (40, 600), (300, 1200)])
+def test_request_estimate_covers_the_decode_allocator(monkeypatch, prompt, new_tokens):
+    """A short generation with a large batch: the decode allocator still holds KV_CACHE_INCREMENT rows
+    past the prompt in every layer (and grows by it), far more than batch x (prompt + max_new_tokens).
+    The estimate covers what alloc_decode_buffers really allocates, so the planner keeps fewer blocks
+    resident than a prompt + max_new_tokens estimate would."""
+    config = types.SimpleNamespace(
+        num_hidden_layers = 2,
+        hidden_size = 256,
+        num_attention_heads = 8,
+        num_key_value_heads = 8,
+        head_dim = 32,
+        intermediate_size = 512,
+        vocab_size = 1000,
+        torch_dtype = torch.bfloat16,
+    )
+    model = types.SimpleNamespace(config = config, generation_config = None)
+    batch = 64
+    ids = torch.zeros(batch, prompt, dtype = torch.long)
+    got = F._generate_request_bytes(model, (ids,), {"max_new_tokens": new_tokens})
+    assert got >= _decode_allocated_bytes(config, batch, prompt, new_tokens)
+
+    if (prompt, new_tokens) != (16, 4):
+        return
+    # Scaled to a real model (32 layers, batch 64, 32 x 128 heads): the cache alone is GiBs, while
+    # the old prompt + max_new_tokens estimate stayed near the 1 GiB floor.
+    big = types.SimpleNamespace(**{**vars(config), "num_hidden_layers": 32, "num_attention_heads": 32,
+                                    "num_key_value_heads": 32, "head_dim": 128, "hidden_size": 4096,
+                                    "intermediate_size": 11008})  # fmt: skip
+    request = F._generate_request_bytes(
+        types.SimpleNamespace(config = big, generation_config = None),
+        (ids,),
+        {"max_new_tokens": new_tokens},
+    )
+    width = 2
+    old = int(
+        1.25
+        * (
+            2 * 32 * batch * (prompt + new_tokens) * 32 * 128 * width
+            + batch * prompt * (4 * 4096 + 3 * 11008) * width
+            + 2 * batch * 1000 * 4
+        )
+    )
+    assert request > 4 * old
+    monkeypatch.delenv("UNSLOTH_FSDP2_GENERATE_RESIDENT", raising = False)
+    free = 12 * GIB
+    kw = dict(block = 400 * MIB, root = 1 * GIB, blocks = 32)
+    before = _plan(monkeypatch, free = free, request_bytes = old, **kw)
+    after = _plan(monkeypatch, free = free, request_bytes = request, **kw)
+    assert before[0] and after[0]
+    assert after[1] < before[1], (before, after)
 
 
 def test_offloaded_stream_does_not_advertise_device_weights():

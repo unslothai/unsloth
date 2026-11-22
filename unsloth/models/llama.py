@@ -276,7 +276,7 @@ def original_apply_o(self, X):
 
 from math import sqrt as math_sqrt
 
-KV_CACHE_INCREMENT = 512
+KV_CACHE_INCREMENT = _decode_graphs.KV_CACHE_INCREMENT
 torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally.
 SDPA_HAS_GQA = "enable_gqa" in (_torch_sdpa.__doc__ or "")
