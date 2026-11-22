@@ -355,9 +355,13 @@ def link_carrier_events(rails: Optional[List[Dict[str, Any]]] = None) -> Dict[st
 
 def _studio_root() -> Path:
     for var in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
-        value = os.environ.get(var)
+        value = (os.environ.get(var) or "").strip()
         if value:
             return Path(value).expanduser()
+    # An install made with only UNSLOTH_HOME keeps Studio at <UNSLOTH_HOME>/studio, as storage_roots resolves it.
+    master = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    if master:
+        return Path(master).expanduser() / "studio"
     return Path.home() / ".unsloth" / "studio"
 
 
