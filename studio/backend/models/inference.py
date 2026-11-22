@@ -5075,7 +5075,8 @@ class DiffusionLoadRequest(BaseModel):
         "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
         "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
         "friendly); unsloth_int8 is Studio's own INT8 attention kernel on the families with "
-        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "strided attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs "
+        "diffusers' local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An "
         "unavailable kernel falls back to the default.",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
@@ -7693,7 +7694,8 @@ class VideoLoadRequest(BaseModel):
         "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
         "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
         "attention; unsloth_int8 is Studio's own INT8 attention kernel on the families with strided "
-        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
+        "attention processors; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm (aiter needs diffusers' "
+        "local AITER backend, gone in 0.41+; without it ROCm runs the auto pick). An unavailable "
         "kernel falls back to the default.",
     )
     int8_attention: Optional[Literal["auto", "on", "off"]] = Field(
