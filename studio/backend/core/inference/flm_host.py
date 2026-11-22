@@ -72,11 +72,9 @@ def catalog_row(entry: dict[str, Any], models_dir: Optional[Path] = None) -> dic
 
 
 def json_object(output: str, key: str) -> Optional[dict[str, Any]]:
-    """The JSON object holding ``key`` in flm's output. ``Flm.run`` joins stdout and stderr,
-    so a line flm prints before or after the object is skipped instead of failing the parse."""
+    """The JSON object holding ``key``; ``Flm.run`` joins stdout and stderr, so skip text around it."""
     decoder = json.JSONDecoder()
     first = output.find("{")
-    # The object starts at the first brace or, after a status line, at the start of a line.
     starts = sorted({first, *(m.start() for m in re.finditer(r"^\{", output, re.M))} - {-1})
     for start in starts:
         try:
