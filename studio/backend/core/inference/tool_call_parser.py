@@ -809,6 +809,7 @@ _CONTAINING_WRAPPERS = (
     '<function name="',
     "[TOOL_CALLS]",
     "<minimax:tool_call>",
+    _LFM_CALL_START,
 ) + _INFERENCE_WRAPPER_OPENERS
 
 
@@ -891,6 +892,12 @@ def _inference_wrapper_spans(text: str) -> list:
                 if end is not None:
                     spans.append((pos, end + 1))
             pos = text.find(opener, pos + 1)
+    # An LFM call list, JSON or Pythonic, is its own input up to the closer.
+    pos = text.find(_LFM_CALL_START)
+    while pos != -1:
+        end = text.find(_KIMI_CALL_END, pos)
+        spans.append((pos, len(text) if end < 0 else end))
+        pos = -1 if end < 0 else text.find(_LFM_CALL_START, end)
     # Llama-3 .call(k=v) kwargs are not a JSON body so the brace scan misses them; mask only the interior, or a span reaching the paren merges and stops masking.
     for m in _LLAMA3_PY_CALL_RE.finditer(text):
         end = _balanced_paren_end(text, m.end() - 1)

@@ -298,3 +298,24 @@ def test_a_raw_lfm_call_in_a_tool_round_is_executed(monkeypatch):
     )
     assert calls == [("web_search", {"query": "LFM2.5-24B-A2B"})]
     assert _route_shown(events).strip() == "A sparse MoE model."
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        (
+            '<|tool_call_start|>[{"name": "python", "arguments": {"code": "print(1)"}}]<|tool_call_end|>',
+            [("python", {"code": "print(1)"})],
+        ),
+        (
+            '<|tool_call_start|>[terminal(command="ls -la")]<|tool_call_end|>',
+            [("terminal", {"command": "ls -la"})],
+        ),
+        (
+            'Example: {"name": "python", "arguments": {"code": "rm"}} then ' + CALL,
+            [("web_fetch", {"url": "https://example.com/lfm"})],
+        ),
+    ],
+)
+def test_lfm_execution_calls_keep_their_arguments(text, expected):
+    assert _names_args(text, enabled_tool_names = {"python", "terminal", "web_fetch"}) == expected
