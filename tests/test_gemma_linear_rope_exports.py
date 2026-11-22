@@ -267,3 +267,55 @@ def test_recording_the_scaling_never_holds_a_second_copy_of_the_weights(
     assert fields["gemma.rope.scaling.type"] == "linear"
     assert tensors == before_tensors
     assert sorted(os.listdir(path.parent)) == ["gemma.gguf"]
+
+
+@pytest.mark.parametrize("arch", ["gemma", "gemma2"])
+def test_a_split_gguf_records_the_scaling_in_the_first_shard_only(tmp_path, arch):
+    """Past the converter's shard limit (Gemma 2 27B at f16), only the first shard carries
+    general.architecture and the hparams; llama.cpp and llama-quantize read them from there."""
+    gguf = pytest.importorskip("gguf")
+    import numpy as np
+
+    record = _load("_record_gemma_linear_rope_in_gguf")["_record_gemma_linear_rope_in_gguf"]
+    writer = gguf.GGUFWriter(str(tmp_path / f"{arch}.gguf"), arch, split_max_tensors = 1)
+    writer.add_context_length(16384)
+    writer.add_block_count(1)
+    writer.add_tensor("token_embd.weight", np.arange(64, dtype = np.float32).reshape(2, 32))
+    writer.add_tensor("blk.0.attn_q.weight", np.ones((2, 32), dtype = np.float16))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    first, second = sorted(str(p) for p in tmp_path.glob(f"{arch}-*-of-*.gguf"))
+    before_first, before_second = _read(first), Path(second).read_bytes()
+    assert gguf.Keys.General.ARCHITECTURE not in _read(second)[0]
+
+    record(_config(tmp_path / "model", arch, _LINEAR["rope_scaling"]), [first, second])
+
+    fields, tensors = _read(first)
+    assert fields.pop(f"{arch}.rope.scaling.type") == "linear"
+    assert fields.pop(f"{arch}.rope.scaling.factor") == pytest.approx(2.0)
+    assert (fields, tensors) == before_first
+    assert Path(second).read_bytes() == before_second
+
+
+def test_shards_without_any_model_metadata_fail_unless_opted_out(tmp_path, monkeypatch):
+    gguf = pytest.importorskip("gguf")
+    import numpy as np
+
+    record = _load("_record_gemma_linear_rope_in_gguf")["_record_gemma_linear_rope_in_gguf"]
+    writer = gguf.GGUFWriter(str(tmp_path / "gemma.gguf"), "gemma", split_max_tensors = 1)
+    writer.add_tensor("token_embd.weight", np.zeros((2, 32), dtype = np.float32))
+    writer.add_tensor("blk.0.attn_q.weight", np.zeros((2, 32), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    second = str(sorted(tmp_path.glob("gemma-*-of-*.gguf"))[1])
+    raw = Path(second).read_bytes()
+    model = _config(tmp_path / "model", "gemma", _LINEAR["rope_scaling"])
+    with pytest.raises(RuntimeError, match = "general.architecture"):
+        record(model, [second])
+    monkeypatch.setenv("UNSLOTH_GGUF_ALLOW_UNSCALED_ROPE", "1")
+    record(model, [second])
+    assert Path(second).read_bytes() == raw

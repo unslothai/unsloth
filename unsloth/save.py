@@ -2786,12 +2786,18 @@ def _record_gemma_linear_rope_in_gguf(
     factor = float(factor)
     if factor == 1.0:
         return
+    _NO_METADATA = object()
 
     def _plan_insert(gguf, path):
         # Everything needed to rewrite the header, read before any byte changes; None when
-        # there is nothing to add. The reader's map is released on return.
+        # there is nothing to add, _NO_METADATA for a later shard of a split GGUF, which
+        # carries only split.* keys: llama.cpp reads every hparam (and llama-quantize copies
+        # every key) from the first shard alone. The reader's map is released on return.
         reader = gguf.GGUFReader(path, "r")
-        arch = reader.get_field(gguf.Keys.General.ARCHITECTURE).contents()
+        arch = reader.get_field(gguf.Keys.General.ARCHITECTURE)
+        if arch is None:
+            return _NO_METADATA
+        arch = arch.contents()
         if arch not in ("gemma", "gemma2") or f"{arch}.rope.scaling.type" in reader.fields:
             return None
         order = "<" if reader.endianess == gguf.GGUFEndian.LITTLE else ">"
@@ -2854,6 +2860,9 @@ def _record_gemma_linear_rope_in_gguf(
         with use_local_gguf():
             import gguf
             plans = [(path, _plan_insert(gguf, path)) for path in gguf_files]
+        plans = [(path, plan) for path, plan in plans if plan is not _NO_METADATA]
+        if not plans:
+            raise ValueError("no GGUF file carries general.architecture")
     except Exception as error:
         if os.environ.get("UNSLOTH_GGUF_ALLOW_UNSCALED_ROPE", "0") == "1":
             logger.warning(
