@@ -7004,13 +7004,14 @@ class _CastShardsOnWrite:
             v.device.type == "cuda"
             and torch.empty((), dtype = dtype).element_size() < v.element_size()
         ):
-            try:
-                narrowed = v.to(dtype = dtype)
-            except torch.OutOfMemoryError:
-                narrowed = None
             # Device casts may write a different NaN payload than the host cast; keep those tensors on the host.
             # A NaN anywhere makes the sum NaN (a scalar, unlike an isnan mask); a +inf / -inf pair just falls back.
-            if narrowed is not None and not bool(torch.isnan(narrowed.sum())):
+            try:
+                narrowed = v.to(dtype = dtype)
+                keep = not bool(torch.isnan(narrowed.sum()))
+            except torch.OutOfMemoryError:
+                narrowed, keep = None, False
+            if keep:
                 return narrowed.to(device = "cpu")
             del narrowed
         return v.to(device = "cpu", dtype = dtype)
