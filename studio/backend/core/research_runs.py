@@ -1051,7 +1051,6 @@ def _question_url(question: str, match: re.Match) -> str:
     scheme, rest = match.group(0).split(":", 1)
     url = f"{scheme.lower()}:{rest}"
     if opener.endswith("]("):
-        # A Markdown link destination ends at its balancing ')', whatever follows it.
         depth = 0
         for index, char in enumerate(url):
             depth += (char == "(") - (char == ")")
