@@ -4559,8 +4559,13 @@ def _lfm_string_end(text: str, pos: int, n: int) -> int:
     return -1
 
 
-def _lfm_block_close(text: str, body_start: int) -> int:
-    """Closer index for the block at ``body_start`` (quoted closers are data; unbalanced quotes: first), or -1."""
+def _lfm_block_close(
+    text: str,
+    body_start: int,
+    unclosed: dict | None = None,
+) -> int:
+    """Closer index for the block at ``body_start`` (quoted closers are data; unbalanced quotes: first), or -1.
+    ``unclosed`` maps a quote to where a string first failed to close, so later blocks never rescan past it."""
     first = text.find(_LFM_CALL_END, body_start)
     if first < 0:
         return -1
@@ -4569,8 +4574,12 @@ def _lfm_block_close(text: str, body_start: int) -> int:
     while j < n:
         c = text[j]
         if c in "'\"":
+            if unclosed is not None and c in unclosed and unclosed[c] < j:
+                return first
             end = _lfm_string_end(text, j, n)
             if end < 0:
+                if unclosed is not None:
+                    unclosed[c] = j
                 return first
             j = end
             continue
@@ -4583,13 +4592,14 @@ def _lfm_block_close(text: str, body_start: int) -> int:
 def _lfm_block_spans(text: str) -> list[tuple[int, int, bool]]:
     """``(start, end, closed)`` per ``<|tool_call_start|>`` block; an unclosed block runs to the end of the text."""
     spans: list[tuple[int, int, bool]] = []
+    unclosed: dict = {}
     pos = 0
     while True:
         start = text.find(_LFM_CALL_START, pos)
         if start < 0:
             return spans
         body_start = start + len(_LFM_CALL_START)
-        close = _lfm_block_close(text, body_start)
+        close = _lfm_block_close(text, body_start, unclosed)
         if close < 0:
             spans.append((start, len(text), False))
             return spans
