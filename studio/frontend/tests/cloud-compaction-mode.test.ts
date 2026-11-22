@@ -82,7 +82,7 @@ test("the connection's mode reaches the request and the saved connection", () =>
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
-    /\?\.contextLength,\s*compactionMode: externalProvider\.compactionMode,\s*autoCompactTokens: externalProvider\.autoCompactTokens,/,
+    /\?\.contextLength,\s*compactionMode: externalProvider\.compactionMode,\s*autoCompactTokens: autoCompactTokensForModel\(\s*externalProvider,\s*externalModelId,\s*\),/,
   );
   const sync = readSrc("features/chat/sync-external-providers.ts");
   assert.match(sync, /compactionMode: normalizeCompactionMode\(config\.compaction_mode\)/);

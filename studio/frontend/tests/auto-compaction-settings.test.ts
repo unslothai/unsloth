@@ -6,7 +6,13 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 import {
   apiCompactionRequestFields,
+  autoCompactSliderIndex,
+  autoCompactSliderLabel,
+  autoCompactSliderStops,
+  autoCompactTokensForModel,
   ggufCompactionRequestFields,
+  normalizeAutoCompactTokensByModel,
+  parseAutoCompactTokensByModel,
 } from "../src/features/chat/utils/auto-compaction.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -396,4 +402,62 @@ test("provider compaction replay stays on the tool-loop subturn that produced it
     adapter,
     /providerCompactionAfterToolCalls = toolCallParts\.filter\([\s\S]*toolCallPartSurvivesOpenAIReplay\(part\)[\s\S]*\)\.length/,
   );
+});
+
+test("the auto-compact slider starts on Default and follows the typed value", () => {
+  const stops = autoCompactSliderStops();
+  assert.equal(stops[0], 0);
+  assert.equal(autoCompactSliderIndex("", stops), 0);
+  assert.equal(autoCompactSliderIndex("abc", stops), 0);
+  assert.equal(stops[autoCompactSliderIndex("128,000", stops)], 128_000);
+  // Off-notch values sit on the nearest notch on a log scale.
+  assert.equal(stops[autoCompactSliderIndex("450000", stops)], 400_000);
+  assert.equal(stops[autoCompactSliderIndex("1000", stops)], 8_000);
+  assert.equal(autoCompactSliderLabel(0), "Default");
+  assert.equal(autoCompactSliderLabel(256_000), "256,000 tokens");
+  assert.equal(autoCompactSliderLabel(0, "Same as all models"), "Same as all models");
+});
+
+test("Claude's auto-compact slider starts at its 50,000 minimum", () => {
+  const stops = autoCompactSliderStops(50_000);
+  assert.equal(stops[0], 0);
+  assert.equal(stops[1], 64_000);
+});
+
+test("a model's known window ends its slider there", () => {
+  const stops = autoCompactSliderStops(undefined, 262_144);
+  assert.equal(stops[0], 0);
+  assert.equal(stops.at(-1), 262_144);
+  assert.ok(stops.every((tokens) => tokens <= 262_144));
+  assert.equal(autoCompactSliderStops().at(-1), 2_000_000);
+});
+
+test("a model's own auto-compact limit wins over the connection's", () => {
+  const provider = {
+    autoCompactTokens: 100_000,
+    autoCompactTokensByModel: { "qwen3:32b": 24_000 },
+  };
+  assert.equal(autoCompactTokensForModel(provider, "qwen3:32b"), 24_000);
+  assert.equal(autoCompactTokensForModel(provider, "gpt-oss:20b"), 100_000);
+  assert.equal(autoCompactTokensForModel({}, "qwen3:32b"), undefined);
+  assert.equal(autoCompactTokensForModel(provider, null), 100_000);
+});
+
+test("per-model drafts save only listed models and skip blanks", () => {
+  assert.deepEqual(
+    parseAutoCompactTokensByModel(
+      { a: "24,000", b: "", gone: "50000" },
+      ["a", "b"],
+    ),
+    { a: 24_000 },
+  );
+  assert.throws(
+    () => parseAutoCompactTokensByModel({ a: "12" }, ["a"]),
+    /^Error: a: Auto-compact after must be between/,
+  );
+  assert.deepEqual(
+    normalizeAutoCompactTokensByModel({ a: 24_000, b: 5, c: "x" }),
+    { a: 24_000 },
+  );
+  assert.equal(normalizeAutoCompactTokensByModel({ b: 5 }), undefined);
 });

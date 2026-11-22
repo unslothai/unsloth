@@ -64,6 +64,37 @@ export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   return value;
 }
 
+/** Model ID to tokens; drops entries out of range, and is undefined when none are left. */
+export function normalizeAutoCompactTokensByModel(
+  value: unknown,
+): Record<string, number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const limits: Record<string, number> = {};
+  for (const [model, tokens] of Object.entries(value)) {
+    const normalized = normalizeAutoCompactTokens(tokens);
+    if (model.trim() && normalized !== undefined) limits[model.trim()] = normalized;
+  }
+  return Object.keys(limits).length > 0 ? limits : undefined;
+}
+
+/** A model's own limit wins over the connection's. */
+export function autoCompactTokensForModel(
+  provider:
+    | {
+        autoCompactTokens?: number;
+        autoCompactTokensByModel?: Record<string, number>;
+      }
+    | null
+    | undefined,
+  modelId: string | null | undefined,
+): number | undefined {
+  const own =
+    modelId == null ? undefined : provider?.autoCompactTokensByModel?.[modelId];
+  return own ?? provider?.autoCompactTokens;
+}
+
 /** Unset is "summary"; "rolling" and "checkpoint" drop whole turns into the archive, no summary call. */
 export type ProviderCompactionMode = "summary" | "rolling" | "checkpoint";
 
@@ -89,6 +120,70 @@ export function parseAutoCompactTokens(input: string): number | null {
     );
   }
   return value;
+}
+
+// Slider notches; index 0 is Default (blank). The box beside it takes any value in range.
+const AUTO_COMPACT_SLIDER_TOKENS = [
+  8_000, 16_000, 32_000, 64_000, 100_000, 128_000, 200_000, 256_000, 400_000,
+  512_000, 1_000_000, 2_000_000,
+];
+
+/** A known window ends the slider there: past it the limit is capped anyway. */
+export function autoCompactSliderStops(
+  minimum = AUTO_COMPACT_TOKENS_MIN,
+  window?: number | null,
+): number[] {
+  const top =
+    window && window >= minimum
+      ? Math.min(window, AUTO_COMPACT_TOKENS_MAX)
+      : AUTO_COMPACT_TOKENS_MAX;
+  const stops = AUTO_COMPACT_SLIDER_TOKENS.filter(
+    (tokens) => tokens >= minimum && tokens < top,
+  );
+  return [0, ...stops, top];
+}
+
+/** The notch nearest the typed value (log scale); blank or unparsable sits on Default. */
+export function autoCompactSliderIndex(input: string, stops: number[]): number {
+  let value: number | null;
+  try {
+    value = parseAutoCompactTokens(input);
+  } catch {
+    return 0;
+  }
+  if (value === null) return 0;
+  const distance = (index: number) => Math.abs(Math.log(stops[index] / value));
+  let best = 1;
+  for (let index = 2; index < stops.length; index += 1) {
+    if (distance(index) < distance(best)) best = index;
+  }
+  return best;
+}
+
+export function autoCompactSliderLabel(
+  tokens: number,
+  unset = "Default",
+): string {
+  if (tokens === 0) return unset;
+  return `${tokens.toLocaleString()} tokens`;
+}
+
+/** Saves the per-model drafts of the listed models; blank ones fall back to the connection. */
+export function parseAutoCompactTokensByModel(
+  drafts: Record<string, string>,
+  models: readonly string[],
+): Record<string, number> {
+  const limits: Record<string, number> = {};
+  for (const model of models) {
+    let value: number | null;
+    try {
+      value = parseAutoCompactTokens(drafts[model] ?? "");
+    } catch (error) {
+      throw new Error(`${model}: ${(error as Error).message}`);
+    }
+    if (value !== null) limits[model] = value;
+  }
+  return limits;
 }
 
 /** The threshold a request carries: the connection's setting, else 75% of the catalogued window. */

@@ -200,7 +200,10 @@ import {
 } from "./components/chat-model-notice-switch";
 import { LiveContextUsageBar } from "./components/live-context-usage-bar";
 import { resolveModelCatalogEntry } from "./model-catalog";
-import { cloudCompactionTrigger } from "./utils/auto-compaction";
+import {
+  autoCompactTokensForModel,
+  cloudCompactionTrigger,
+} from "./utils/auto-compaction";
 import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -3268,7 +3271,10 @@ export function ChatPage({
       ? cloudCompactionTrigger({
           providerType: activeExternalProviderType,
           contextLength: cloudContextWindow,
-          autoCompactTokens: activeExternalProvider?.autoCompactTokens,
+          autoCompactTokens: autoCompactTokensForModel(
+            activeExternalProvider,
+            parseExternalModelId(inferenceCheckpoint)?.modelId,
+          ),
         })
       : null;
   const activeProviderCapabilities = useMemo(() => {

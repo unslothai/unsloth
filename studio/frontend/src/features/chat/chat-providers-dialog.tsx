@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -73,6 +74,7 @@ import {
 import {
   isOlderModel,
   modelCatalogVersion,
+  resolveModelCatalogEntry,
   subscribeModelCatalog,
 } from "./model-catalog";
 
@@ -158,8 +160,13 @@ import {
 } from "./sync-external-providers";
 import { extraHeadersToDraft, parseExtraHeadersDraft } from "./extra-headers";
 import {
+  autoCompactSliderIndex,
+  autoCompactSliderLabel,
+  autoCompactSliderStops,
+  normalizeAutoCompactTokensByModel,
   normalizeCompactionMode,
   parseAutoCompactTokens,
+  parseAutoCompactTokensByModel,
   type ProviderCompactionMode,
 } from "./utils/auto-compaction";
 import { SettingsSection } from "@/features/settings/components/settings-section";
@@ -311,6 +318,8 @@ type FormCheck =
 // Shorter than this is still being typed, not pasted.
 const MIN_AUTO_CHECK_KEY_LENGTH = 16;
 const AUTO_CHECK_DELAY_MS = 700;
+// Not a model ID any provider uses; Radix Select needs a non-empty value.
+const AUTO_COMPACT_ALL_MODELS = "\u0000all-models";
 const CONNECTION_CHECK_TTL_MS = 10 * 60 * 1000;
 const KEY_REJECTED_PATTERN = /rejected the API key|refused the API key/i;
 // Their /models answers without auth (backend _KEY_CHECKED_PROVIDERS), so listing proves nothing about a key.
@@ -396,6 +405,11 @@ export function ChatProvidersSettings({
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [autoCompactTokensDraft, setAutoCompactTokensDraft] = useState("");
+  const [autoCompactByModelDraft, setAutoCompactByModelDraft] = useState<
+    Record<string, string>
+  >({});
+  // Which model the slider edits; "" is the setting for all models.
+  const [autoCompactScope, setAutoCompactScope] = useState("");
   const [compactionModeDraft, setCompactionModeDraft] =
     useState<ProviderCompactionMode>("summary");
   const [extraHeadersDraft, setExtraHeadersDraft] = useState("");
@@ -464,6 +478,34 @@ export function ChatProvidersSettings({
   // ChatGPT sign-in runs through the Codex route, which has no compaction of its own.
   const supportsAutoCompactTokens =
     Boolean(providerType) && providerType !== "openai_codex" && !decisionsOnly;
+  const autoCompactModels = useMemo(
+    () => [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])],
+    [selectedModelIds, manualModelIds],
+  );
+  const autoCompactModel = autoCompactModels.includes(autoCompactScope)
+    ? autoCompactScope
+    : null;
+  const autoCompactModelWindow = autoCompactModel
+    ? (resolveModelCatalogEntry(providerType, autoCompactModel)?.contextLength ??
+      null)
+    : null;
+  const autoCompactStops = autoCompactSliderStops(
+    providerType === "anthropic" ? 50_000 : undefined,
+    autoCompactModelWindow,
+  );
+  const autoCompactDraft = autoCompactModel
+    ? (autoCompactByModelDraft[autoCompactModel] ?? "")
+    : autoCompactTokensDraft;
+  const setAutoCompactDraft = (value: string) =>
+    autoCompactModel
+      ? setAutoCompactByModelDraft((drafts) => ({
+          ...drafts,
+          [autoCompactModel]: value,
+        }))
+      : setAutoCompactTokensDraft(value);
+  const autoCompactOverrideCount = autoCompactModels.filter(
+    (model) => (autoCompactByModelDraft[model] ?? "").trim() !== "",
+  ).length;
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
   // Legacy OpenAI rows also appear as Custom in the UI, but must not gain this opt-in.
   const isCustomReasoningConnection =
@@ -737,6 +779,8 @@ export function ChatProvidersSettings({
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
     setAutoCompactTokensDraft("");
+    setAutoCompactByModelDraft({});
+    setAutoCompactScope("");
     setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
@@ -846,6 +890,8 @@ export function ChatProvidersSettings({
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
     setAutoCompactTokensDraft("");
+    setAutoCompactByModelDraft({});
+    setAutoCompactScope("");
     setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
     setApiType("chat_completions");
@@ -1337,6 +1383,9 @@ export function ChatProvidersSettings({
       const autoCompactTokens = supportsAutoCompactTokens
         ? parseAutoCompactTokens(autoCompactTokensDraft)
         : undefined;
+      const autoCompactTokensByModel = supportsAutoCompactTokens
+        ? parseAutoCompactTokensByModel(autoCompactByModelDraft, modelsToSave)
+        : {};
       const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const created = await createProviderConfig({
         providerType: backendProviderType,
@@ -1349,6 +1398,9 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
         autoCompactTokens: autoCompactTokens ?? undefined,
+        ...(Object.keys(autoCompactTokensByModel).length > 0
+          ? { autoCompactTokensByModel }
+          : {}),
         ...(supportsAutoCompactTokens && compactionModeDraft !== "summary"
           ? { compactionMode: compactionModeDraft }
           : {}),
@@ -1382,6 +1434,9 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
         autoCompactTokens: created.auto_compact_tokens ?? undefined,
+        autoCompactTokensByModel: normalizeAutoCompactTokensByModel(
+          created.auto_compact_tokens_by_model,
+        ),
         compactionMode: normalizeCompactionMode(created.compaction_mode),
         extraHeaders: created.extra_headers ?? extraHeaders,
         reasoningConfig: created.provider_type === "custom"
@@ -1528,6 +1583,12 @@ export function ChatProvidersSettings({
       const autoCompactTokens = supportsAutoCompactTokens
         ? parseAutoCompactTokens(autoCompactTokensDraft)
         : undefined;
+      const autoCompactTokensByModel = supportsAutoCompactTokens
+        ? parseAutoCompactTokensByModel(
+            autoCompactByModelDraft,
+            keepSavedModels ? existing.models : modelsToSave,
+          )
+        : undefined;
       const extraHeaders = parseExtraHeadersDraft(extraHeadersDraft);
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
@@ -1540,6 +1601,7 @@ export function ChatProvidersSettings({
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
         autoCompactTokens,
+        autoCompactTokensByModel,
         // null clears the column back to the default summary.
         compactionMode: supportsAutoCompactTokens
           ? (compactionModeDraft === "summary" ? null : compactionModeDraft)
@@ -1581,6 +1643,9 @@ export function ChatProvidersSettings({
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
         autoCompactTokens: updated.auto_compact_tokens ?? undefined,
+        autoCompactTokensByModel: normalizeAutoCompactTokensByModel(
+          updated.auto_compact_tokens_by_model,
+        ),
         compactionMode: normalizeCompactionMode(updated.compaction_mode),
         extraHeaders: updated.extra_headers ?? extraHeaders,
         reasoningConfig: updated.provider_type === "custom"
@@ -1769,6 +1834,14 @@ export function ChatProvidersSettings({
     setAutoCompactTokensDraft(
       provider.autoCompactTokens == null ? "" : provider.autoCompactTokens.toString(),
     );
+    setAutoCompactByModelDraft(
+      Object.fromEntries(
+        Object.entries(provider.autoCompactTokensByModel ?? {}).map(
+          ([model, tokens]) => [model, tokens.toString()],
+        ),
+      ),
+    );
+    setAutoCompactScope("");
     setCompactionModeDraft(provider.compactionMode ?? "summary");
     setExtraHeadersDraft(extraHeadersToDraft(provider.extraHeaders));
     setEditingBackendProviderType(provider.backendProviderType ?? null);
@@ -2371,7 +2444,7 @@ export function ChatProvidersSettings({
                   {compactionModeDraft !== "summary"
                     ? "Tokens before the oldest messages are dropped."
                     : "Tokens before older messages are summarized."}{" "}
-                  Blank uses 75% of
+                  Default uses 75% of
                   the model's context window
                   {providerType === "anthropic" || providerType === "openai"
                     ? ", up to 200,000"
@@ -2380,27 +2453,107 @@ export function ChatProvidersSettings({
                 </p>
               </div>
               <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
-                <Input
-                  id="provider-auto-compact-tokens"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={autoCompactTokensDraft}
-                  onChange={(event) =>
-                    setAutoCompactTokensDraft(event.target.value)
-                  }
-                  placeholder="Default"
-                  aria-describedby="provider-auto-compact-tokens-help provider-auto-compact-tokens-note"
-                  className="h-9 text-sm"
-                />
+                {autoCompactModels.length > 0 ? (
+                  <Select
+                    value={autoCompactModel ?? AUTO_COMPACT_ALL_MODELS}
+                    onValueChange={(value) =>
+                      setAutoCompactScope(
+                        value === AUTO_COMPACT_ALL_MODELS ? "" : value,
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      aria-label="Auto-compact limit for"
+                      className="h-9 w-full text-sm"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem
+                        value={AUTO_COMPACT_ALL_MODELS}
+                        className="rounded-full"
+                      >
+                        All models
+                      </SelectItem>
+                      {autoCompactModels.map((model) => {
+                        let own: number | null = null;
+                        try {
+                          own = parseAutoCompactTokens(
+                            autoCompactByModelDraft[model] ?? "",
+                          );
+                        } catch {
+                          // Mid-edit: the menu shows the bare model until it parses.
+                        }
+                        return (
+                          <SelectItem
+                            key={model}
+                            value={model}
+                            className="rounded-full"
+                          >
+                            {own ? `${model} (${own.toLocaleString()})` : model}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                ) : null}
+                <div className="flex min-w-0 items-center gap-3">
+                  <Slider
+                    min={0}
+                    max={autoCompactStops.length - 1}
+                    step={1}
+                    value={[
+                      autoCompactSliderIndex(autoCompactDraft, autoCompactStops),
+                    ]}
+                    onValueChange={([index]) =>
+                      setAutoCompactDraft(
+                        index ? autoCompactStops[index].toLocaleString() : "",
+                      )
+                    }
+                    aria-label="Auto-compact after"
+                    thumbValueText={(index) =>
+                      autoCompactSliderLabel(
+                        autoCompactStops[index] ?? 0,
+                        autoCompactModel ? "Same as all models" : "Default",
+                      )
+                    }
+                    className="min-w-0 flex-1"
+                  />
+                  <Input
+                    id="provider-auto-compact-tokens"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={autoCompactDraft}
+                    onChange={(event) => setAutoCompactDraft(event.target.value)}
+                    placeholder={
+                      autoCompactModel
+                        ? autoCompactTokensDraft.trim() || "Default"
+                        : "Default"
+                    }
+                    aria-describedby="provider-auto-compact-tokens-help provider-auto-compact-tokens-note"
+                    className="h-9 w-28 shrink-0 text-sm tabular-nums"
+                  />
+                </div>
                 <p
                   id="provider-auto-compact-tokens-note"
                   className="text-xs leading-snug text-muted-foreground"
                 >
-                  {providerType === "anthropic"
-                    ? "At least 50,000 for Claude. Capped at the model's context window."
-                    : "Capped at the model's context window."}
+                  {providerType === "anthropic" ? "At least 50,000 for Claude. " : ""}
+                  {autoCompactModel
+                    ? `Blank uses the setting for all models.${
+                        autoCompactModelWindow
+                          ? ` This model's context window is ${autoCompactModelWindow.toLocaleString()} tokens.`
+                          : " Capped at the model's context window."
+                      }`
+                    : `Capped at each model's context window.${
+                        autoCompactOverrideCount > 0
+                          ? ` ${autoCompactOverrideCount === 1 ? "1 model has its own limit" : `${autoCompactOverrideCount} models have their own limits`}.`
+                          : autoCompactModels.length > 0
+                            ? " Pick a model above to give it its own limit."
+                            : ""
+                      }`}
                 </p>
               </div>
             </div>

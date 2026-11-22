@@ -716,6 +716,41 @@ def test_the_connection_stores_its_auto_compact_trigger(tmp_path, monkeypatch):
             )
 
 
+def test_the_connection_stores_per_model_auto_compact_triggers(tmp_path, monkeypatch):
+    from models.providers import ProviderCreate, ProviderUpdate
+    from pydantic import ValidationError
+    from storage import providers_db
+
+    monkeypatch.setattr(providers_db, "studio_db_path", lambda: tmp_path / "studio.db")
+    monkeypatch.setattr(providers_db, "_schema_ready", set())
+    providers_db.create_provider(
+        id = "ollama",
+        provider_type = "ollama",
+        display_name = "Ollama",
+        base_url = "http://127.0.0.1:11434/v1",
+        auto_compact_tokens = 100_000,
+        auto_compact_tokens_by_model = {"qwen3:32b": 24_000},
+    )
+    row = providers_db.get_provider("ollama")
+    assert row["auto_compact_tokens"] == 100_000
+    assert row["auto_compact_tokens_by_model"] == {"qwen3:32b": 24_000}
+    assert providers_db.update_provider(id = "ollama", display_name = "Renamed")
+    assert providers_db.get_provider("ollama")["auto_compact_tokens_by_model"] == {
+        "qwen3:32b": 24_000
+    }
+    assert providers_db.update_provider(id = "ollama", auto_compact_tokens_by_model = {})
+    assert providers_db.get_provider("ollama")["auto_compact_tokens_by_model"] == {}
+
+    update = ProviderUpdate(auto_compact_tokens_by_model = {" gpt-oss:20b ": 64_000})
+    assert update.auto_compact_tokens_by_model == {"gpt-oss:20b": 64_000}
+    assert "auto_compact_tokens_by_model" not in ProviderUpdate(display_name = "x").model_fields_set
+    for rejected in ({"m": 999}, {"m": 2_000_001}, {"m": True}, {"": 5_000}, ["m"]):
+        with pytest.raises(ValidationError):
+            ProviderCreate(
+                provider_type = "ollama", display_name = "x", auto_compact_tokens_by_model = rejected
+            )
+
+
 def test_a_prompt_squeezed_by_fixed_overhead_summarises_up_to_the_newest_turn():
     from models.inference import ChatCompletionRequest
 

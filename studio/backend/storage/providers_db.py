@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 from models.providers import (
     ProviderReasoningConfig,
+    normalize_auto_compact_tokens_by_model,
     normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
 )
@@ -111,6 +112,20 @@ def _encode_extra_headers(headers) -> Optional[str]:
     return json.dumps(normalized)
 
 
+def _encode_auto_compact_by_model(limits) -> Optional[str]:
+    normalized = normalize_auto_compact_tokens_by_model(limits)
+    return json.dumps(normalized) if normalized else None
+
+
+def _decode_auto_compact_by_model(raw) -> dict[str, int]:
+    if not raw:
+        return {}
+    try:
+        return normalize_auto_compact_tokens_by_model(json.loads(raw))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
 def _decode_extra_headers(raw) -> dict[str, str]:
     if not raw:
         return {}
@@ -161,6 +176,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
     if "auto_compact_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN auto_compact_tokens INTEGER")
+    if "auto_compact_by_model_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN auto_compact_by_model_json TEXT")
     if "compaction_mode" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN compaction_mode TEXT")
     if "reasoning_config_json" not in existing_cols:
@@ -231,6 +248,7 @@ def create_provider(
     shared: bool = False,
     auto_compact_tokens: Optional[int] = None,
     compaction_mode: Optional[str] = None,
+    auto_compact_tokens_by_model: Optional[dict] = None,
 ) -> None:
     """Insert a new provider configuration."""
     reasoning_json = _encode_reasoning_config(reasoning_config)
@@ -244,9 +262,9 @@ def create_provider(
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
                 reasoning_config_json, extra_headers_json, shared, auto_compact_tokens,
-                compaction_mode, created_at, updated_at
+                compaction_mode, auto_compact_by_model_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -262,6 +280,7 @@ def create_provider(
                 1 if shared else 0,
                 auto_compact_tokens,
                 compaction_mode,
+                _encode_auto_compact_by_model(auto_compact_tokens_by_model),
                 now,
                 now,
             ),
@@ -287,6 +306,7 @@ def update_provider(
     shared: bool | None = None,
     auto_compact_tokens: int | None | object = _UNSET,
     compaction_mode: str | None | object = _UNSET,
+    auto_compact_tokens_by_model: dict | None | object = _UNSET,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -318,6 +338,9 @@ def update_provider(
     if compaction_mode is not _UNSET:
         updates.append("compaction_mode = ?")
         params.append(compaction_mode)
+    if auto_compact_tokens_by_model is not _UNSET:
+        updates.append("auto_compact_by_model_json = ?")
+        params.append(_encode_auto_compact_by_model(auto_compact_tokens_by_model))
     if reasoning_config is not _UNSET:
         updates.append("reasoning_config_json = ?")
         params.append(_encode_reasoning_config(reasoning_config))
@@ -363,6 +386,9 @@ def _row_to_provider(row: sqlite3.Row) -> dict:
     data = dict(row)
     data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
     data["extra_headers"] = _decode_extra_headers(data.pop("extra_headers_json", None))
+    data["auto_compact_tokens_by_model"] = _decode_auto_compact_by_model(
+        data.pop("auto_compact_by_model_json", None)
+    )
     models, available_models = _row_models(row)
     data["models"] = models
     data["available_models"] = available_models

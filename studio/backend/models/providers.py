@@ -103,6 +103,54 @@ def normalize_provider_extra_headers(value) -> dict[str, str]:
     return headers
 
 
+AUTO_COMPACT_TOKENS_MIN = 1_000
+AUTO_COMPACT_TOKENS_MAX = 2_000_000
+_MAX_AUTO_COMPACT_MODELS = 500
+
+
+def normalize_auto_compact_tokens_by_model(value) -> dict[str, int]:
+    """Per-model overrides of a connection's auto-compact trigger. Empty or absent becomes {}."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("auto_compact_tokens_by_model must be an object of model ID to tokens.")
+    if len(value) > _MAX_AUTO_COMPACT_MODELS:
+        raise ValueError(f"At most {_MAX_AUTO_COMPACT_MODELS} per-model limits are allowed.")
+    limits: dict[str, int] = {}
+    for raw_model, tokens in value.items():
+        model = raw_model.strip() if isinstance(raw_model, str) else ""
+        if not model or len(model) > 512:
+            raise ValueError(f"Invalid model ID: {raw_model!r}.")
+        if (
+            not isinstance(tokens, int)
+            or isinstance(tokens, bool)
+            or not AUTO_COMPACT_TOKENS_MIN <= tokens <= AUTO_COMPACT_TOKENS_MAX
+        ):
+            raise ValueError(
+                f"The auto-compact limit for {model!r} must be a whole number between "
+                f"{AUTO_COMPACT_TOKENS_MIN:,} and {AUTO_COMPACT_TOKENS_MAX:,}."
+            )
+        limits[model] = tokens
+    return limits
+
+
+class AutoCompactByModelMixin(BaseModel):
+    auto_compact_tokens_by_model: Optional[dict[str, int]] = Field(
+        default = None,
+        description = (
+            "Optional per-model auto-compact triggers, in tokens, keyed by model ID; a model "
+            "without one uses auto_compact_tokens"
+        ),
+    )
+
+    @field_validator("auto_compact_tokens_by_model", mode = "before")
+    @classmethod
+    def _validate_auto_compact_tokens_by_model(cls, value):
+        if value is None:
+            return None
+        return normalize_auto_compact_tokens_by_model(value)
+
+
 def render_provider_extra_headers(
     headers: dict[str, str] | None, variables: dict[str, str] | None = None
 ) -> dict[str, str]:
@@ -176,7 +224,7 @@ class ExtraHeadersMixin(BaseModel):
         return normalize_provider_extra_headers(value)
 
 
-class ProviderCreate(ExtraHeadersMixin):
+class ProviderCreate(ExtraHeadersMixin, AutoCompactByModelMixin):
     """Request to create a saved provider configuration."""
 
     api_type: ProviderApiType = "chat_completions"
@@ -234,7 +282,7 @@ class ProviderCreate(ExtraHeadersMixin):
     )
 
 
-class ProviderUpdate(ExtraHeadersMixin):
+class ProviderUpdate(ExtraHeadersMixin, AutoCompactByModelMixin):
     """Request to update a saved provider configuration."""
 
     api_type: Optional[ProviderApiType] = None
@@ -331,6 +379,10 @@ class ProviderResponse(BaseModel):
     auto_compact_tokens: Optional[int] = Field(
         None,
         description = "Configured auto-compact trigger for this connection, in tokens",
+    )
+    auto_compact_tokens_by_model: dict[str, int] = Field(
+        default_factory = dict,
+        description = "Configured per-model auto-compact triggers, in tokens, keyed by model ID",
     )
     compaction_mode: Optional[ProviderCompactionMode] = Field(
         None,

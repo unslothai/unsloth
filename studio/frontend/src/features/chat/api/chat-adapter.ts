@@ -146,6 +146,7 @@ import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context
 import { contextUsageReasoningKey } from "../utils/context-usage-reasoning";
 import {
   apiCompactionRequestFields,
+  autoCompactTokensForModel,
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
@@ -7081,7 +7082,10 @@ export function createOpenAIStreamAdapter(
                   externalModelId,
                 )?.contextLength,
                 compactionMode: externalProvider.compactionMode,
-                autoCompactTokens: externalProvider.autoCompactTokens,
+                autoCompactTokens: autoCompactTokensForModel(
+                  externalProvider,
+                  externalModelId,
+                ),
                 compactNow,
               }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
