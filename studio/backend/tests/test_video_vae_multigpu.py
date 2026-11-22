@@ -214,3 +214,73 @@ def test_split_tiles_keep_the_callers_autocast_on_two_cards():
         out = vm.split_tiled_decode(vae, z, torch.device("cuda:1"))
     assert out.dtype == ref.dtype
     assert torch.equal(out, ref)
+
+
+def test_partner_tiles_never_run_the_sources_patched_forwards():
+    # Speed paths give blocks instance-level forwards that close over the block (and wrap its stock bound method);
+    # a deepcopy keeps those closures, so the partner would run the load card's modules. They must be rebuilt
+    # against the copy, and the output must still be the stock tiled decode.
+    import threading
+
+    vae = _vae()
+    z = _latents(vae)
+    with torch.no_grad():
+        ref = vae.tiled_decode(z, return_dict = False)[0]
+    ran = []
+
+    def patch(block):
+        stock = type(block).forward.__get__(block)
+
+        def fast(
+            *args,
+            _block = block,
+            **kwargs,
+        ):
+            ran.append((threading.current_thread().name, id(_block)))
+            return stock(*args, **kwargs)
+
+        def forward(*args, **kwargs):
+            return fast(*args, **kwargs)
+
+        block.forward = forward
+
+    blocks = [m for m in vae.decoder.modules() if type(m).__name__.endswith("ResidualBlock")]
+    assert blocks
+    for block in blocks:
+        patch(block)
+    source = {id(b) for b in blocks}
+    with torch.no_grad():
+        out = vm.split_tiled_decode(vae, z, torch.device("cpu"))
+    partner = [i for name, i in ran if name == "unsloth-vae-split"]
+    assert partner and not (set(partner) & source)
+    assert torch.equal(out, ref)
+
+
+def test_a_copy_whose_forward_reaches_the_source_is_detected():
+    from core.inference.diffusion_multigpu import build_replica
+
+    vae = _vae()
+    block = next(m for m in vae.decoder.modules() if type(m).__name__.endswith("ResidualBlock"))
+    block.forward = lambda x, *a, _b = block, **k: type(_b).forward(_b, x, *a, **k)
+    copy = build_replica(vae, torch.device("cpu"))
+    assert any("captured" in s for s in vm._stray_tensors(copy, torch.device("cpu")))
+    assert vm._rebind_forwards(vae, copy) >= 1
+    assert vm._stray_tensors(copy, torch.device("cpu")) == []
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason = "needs two CUDA cards"
+)
+def test_split_tiles_with_the_fused_wan_forwards_on_two_cards():
+    # The default speed tier installs fused Wan forwards (closures over the load card's blocks) before the split:
+    # the partner must run its own copies, and the result is the fused one-card tiled decode.
+    from core.inference import diffusion_vae_fused as fused
+
+    vae = _vae().to("cuda:0")
+    if not fused.install_wan_vae(vae, encoder = False):
+        pytest.skip("fused Wan VAE path unavailable here")
+    z = _latents(vae).to("cuda:0")
+    with torch.no_grad():
+        ref = vae.tiled_decode(z, return_dict = False)[0]
+        out = vm.split_tiled_decode(vae, z, torch.device("cuda:1"))
+    assert torch.equal(out, ref)

@@ -204,6 +204,143 @@ def _cuda_autocast_state() -> tuple:
         return torch.is_autocast_enabled(), torch.get_autocast_gpu_dtype()
 
 
+def _source_map(src: Any, copy: Any) -> dict:
+    """id(source module / parameter / buffer) -> the copy's counterpart, matched by name."""
+    out = {}
+    copies = dict(copy.named_modules())
+    for name, module in src.named_modules():
+        if name in copies:
+            out[id(module)] = copies[name]
+    for named in ("named_parameters", "named_buffers"):
+        copies = dict(getattr(copy, named)())
+        for name, tensor in getattr(src, named)():
+            if name in copies:
+                out[id(tensor)] = copies[name]
+    return out
+
+
+def _rebound(value: Any, mapping: dict, seen: dict) -> Any:
+    """``value`` with every source module / tensor it captures (closure cells, defaults, partial arguments, a bound
+    method's self) swapped for the copy's, recursing into captured functions. ``value`` itself when nothing moves."""
+    import functools as _ft
+
+    key = id(value)
+    if key in mapping:
+        return mapping[key]
+    if key in seen:
+        return seen[key]
+    seen[key] = value
+    if isinstance(value, types.MethodType):
+        self_, func = (
+            _rebound(value.__self__, mapping, seen),
+            _rebound(value.__func__, mapping, seen),
+        )
+        out = (
+            value
+            if (self_ is value.__self__ and func is value.__func__)
+            else types.MethodType(func, self_)
+        )
+    elif isinstance(value, _ft.partial):
+        func = _rebound(value.func, mapping, seen)
+        args = tuple(_rebound(a, mapping, seen) for a in value.args)
+        kw = {k: _rebound(v, mapping, seen) for k, v in value.keywords.items()}
+        same = (
+            func is value.func
+            and all(a is b for a, b in zip(args, value.args))
+            and all(kw[k] is value.keywords[k] for k in kw)
+        )
+        out = value if same else _ft.partial(func, *args, **kw)
+    elif isinstance(value, types.FunctionType):
+        cells = value.__closure__ or ()
+        contents = []
+        for cell in cells:
+            try:
+                contents.append(cell.cell_contents)
+            except ValueError:  # an empty cell
+                contents.append(cell)
+        new = [
+            c if isinstance(c, types.CellType) and c in cells else _rebound(c, mapping, seen)
+            for c in contents
+        ]
+        defaults = tuple(_rebound(d, mapping, seen) for d in (value.__defaults__ or ()))
+        kwdefaults = {
+            k: _rebound(v, mapping, seen) for k, v in (value.__kwdefaults__ or {}).items()
+        }
+        if (
+            all(a is b for a, b in zip(new, contents))
+            and all(a is b for a, b in zip(defaults, value.__defaults__ or ()))
+            and all(kwdefaults[k] is v for k, v in (value.__kwdefaults__ or {}).items())
+        ):
+            out = value
+        else:
+            closure = (
+                tuple(
+                    c if isinstance(c, types.CellType) and c in cells else types.CellType(c)
+                    for c in new
+                )
+                or None
+            )
+            out = types.FunctionType(
+                value.__code__, value.__globals__, value.__name__, defaults or None, closure
+            )
+            out.__kwdefaults__ = kwdefaults or None
+            out.__dict__.update(value.__dict__)
+            out.__qualname__ = value.__qualname__
+    else:
+        out = value
+    seen[key] = out
+    return out
+
+
+def _rebind_forwards(src: Any, copy: Any) -> int:
+    """Speed paths install instance-level forwards that close over the source's modules (the fused Wan residual
+    blocks, the RMS norm + activation); a deepcopy keeps those function objects, so the copy's forwards would
+    still read the load card's weights. Rebuild them against the copy's own modules. Returns how many moved."""
+    mapping = _source_map(src, copy)
+    seen: dict = {}
+    moved = 0
+    for module in copy.modules():
+        for key, value in list(module.__dict__.items()):
+            if callable(value) and not isinstance(value, (type, torch_module_type())):
+                new = _rebound(value, mapping, seen)
+                if new is not value:
+                    module.__dict__[key] = new
+                    moved += 1
+    return moved
+
+
+def torch_module_type() -> Any:
+    import torch
+    return torch.nn.Module
+
+
+def _captured(value: Any, seen: set) -> list:
+    """Modules and tensors a callable reaches through closure cells, defaults, partial arguments and bound self."""
+    import functools as _ft
+
+    if id(value) in seen:
+        return []
+    seen.add(id(value))
+    if isinstance(value, types.MethodType):
+        return [value.__self__] + _captured(value.__func__, seen)
+    if isinstance(value, _ft.partial):
+        inner = [value.func, *value.args, *value.keywords.values()]
+    elif isinstance(value, types.FunctionType):
+        inner = [*(value.__defaults__ or ()), *(value.__kwdefaults__ or {}).values()]
+        for cell in value.__closure__ or ():
+            try:
+                inner.append(cell.cell_contents)
+            except ValueError:
+                pass
+    else:
+        return []
+    out = []
+    for item in inner:
+        out.append(item)
+        out += _captured(item, seen)
+    return out
+
+
 def _stray_tensors(module: Any, device: Any) -> list:
     """Tensors the copy holds on another CUDA card (parameters, buffers and plain tensor attributes)."""
     import torch
@@ -222,6 +359,20 @@ def _stray_tensors(module: Any, device: Any) -> list:
         for n, t in (*module.named_parameters(), *module.named_buffers())
         if t.device.type == "cuda" and t.device != device
     ]
+    # Instance-level forwards (speed paths) that still reach another module tree or another card's tensors.
+    own = {id(m) for m in module.modules()}
+    for name, sub in module.named_modules():
+        for key, value in list(sub.__dict__.items()):
+            if not callable(value) or isinstance(value, (type, torch.nn.Module)):
+                continue
+            for item in _captured(value, set()):
+                if (isinstance(item, torch.nn.Module) and id(item) not in own) or (
+                    isinstance(item, torch.Tensor)
+                    and item.device.type == "cuda"
+                    and item.device != device
+                ):
+                    out.append(f"{name}.{key} (captured {type(item).__name__})")
+                    break
     return out
 
 
@@ -365,6 +516,7 @@ def split_tiled_decode(
                     from .diffusion_multigpu import build_replica
                     with _without_hooks(vae):
                         copy = build_replica(vae, partner)
+                _rebind_forwards(vae, copy)
                 stray = _stray_tensors(copy, partner)
                 if stray:
                     raise RuntimeError(
