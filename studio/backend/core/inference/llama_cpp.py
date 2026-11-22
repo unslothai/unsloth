@@ -9183,11 +9183,7 @@ class LlamaCppBackend:
         return f"http://127.0.0.1:{self._port}"
 
     def _final_pass_call_opener_id(self) -> Optional[int]:
-        """Token id of the LFM2 / LFM2.5 call opener when the loaded template uses it, else None.
-
-        The final answer pass sends tool_choice "none" with the tools still listed, and llama.cpp's LFM2 parser then
-        returns any call as content (#18802); banning the one opener token keeps the answer prose. Cached per
-        template; a template without the opener, a multi-token opener or a failed lookup bans nothing."""
+        """Single-token LFM call opener id to ban on the tool_choice "none" final pass (#18802), else None."""
         template = (
             getattr(self, "_chat_template_override", None)
             or getattr(self, "_chat_template", None)
@@ -42814,8 +42810,7 @@ class LlamaCppBackend:
         _final_opener_id = self._final_pass_call_opener_id() if _last_sent_tools else None
         # Cap reached with no final text: nudge the final streaming pass to answer rather than request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
-            # With the opener banned, LFM answers from a user-turn nudge; folded into the tool result it still
-            # tries to call and, unable to, writes almost nothing.
+            # Banned opener: nudge as a user turn; in the tool result LFM writes almost nothing.
             if _final_opener_id is not None or not _attach_internal_feedback_to_tool_result(
                 BUDGET_EXHAUSTED_NUDGE
             ):

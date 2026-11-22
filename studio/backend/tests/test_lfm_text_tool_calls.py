@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LFM2 / LFM2.5 ``<|tool_call_start|>[name(key='value')]<|tool_call_end|>`` calls that reach Studio as text
-(#18802): llama-server's LFM2 parser leaves the block in content whenever it is not armed (tool_choice "none",
-the final answer pass). Also the page-read names (``web_fetch``) these models call for web_search's url mode.
-
-The block texts below are real llama-server outputs: LFM2.5-1.2B-Thinking Q4_K_M on the b12588 build Studio
-bundles, tool_choice "none", seed 3407 (the last one is the reporter's LFM2.5-24B-A2B output)."""
+"""LFM2 / LFM2.5 text tool calls (#18802). Blocks are real llama-server b12588 outputs (LFM2.5-1.2B-Thinking
+Q4_K_M, tool_choice "none", seed 3407; the last is the reporter's LFM2.5-24B-A2B)."""
 
 import json
 import sys
@@ -337,14 +333,12 @@ def test_a_page_read_call_runs_as_web_search_on_its_url(name):
 
 def test_a_page_read_call_otherwise_stays_an_unknown_tool():
     url = {"url": "https://example.com"}
-    # No URL to read.
     assert _decide("web_fetch", {"query": "lfm"}).action == "disabled"
     # Auto-Heal off: names run exactly as sent.
     assert _decide("web_fetch", url, auto_heal = False).action == "disabled"
     # Search is off for this request.
     python_tool = {"type": "function", "function": {"name": "python", "parameters": {}}}
     assert _decide("web_fetch", url, tools = (python_tool,)).action == "disabled"
-    # Some other name.
     assert _decide("open_browser", url).action == "disabled"
     # A real web_fetch tool (an MCP server's, say) wins over the alias.
     web_fetch_tool = {"type": "function", "function": {"name": "web_fetch", "parameters": {}}}
@@ -360,8 +354,7 @@ def _content_snapshots(events):
 
 
 def test_a_web_fetch_call_keeps_the_research_going(monkeypatch):
-    """#18802: llama-server's LFM2 parser accepts undeclared names, so web_fetch arrived as a structured call;
-    as an unknown tool it ended the loop and the tool_choice "none" final pass then showed the raw block."""
+    """#18802: an undeclared web_fetch call ended the loop and the final pass showed the raw block."""
     url = "https://www.liquid.ai/blog/lfm2-5-24b-a2b"
     streams = [
         [
@@ -459,8 +452,7 @@ def test_malformed_text_in_a_tool_round_stays_the_answer(monkeypatch):
 
 
 def _client_view(events, strip):
-    """What the GGUF streaming route sends: each cumulative event goes through the display strip and only the
-    growth is forwarded; an empty status or a tool_start starts a new turn."""
+    """Mimics the GGUF streaming route: strip each cumulative event, forward growth; status/tool_start resets."""
     shown, prev = "", ""
     for event in events:
         if event.get("type") == "tool_start" or (
