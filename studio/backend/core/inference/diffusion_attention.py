@@ -728,11 +728,12 @@ def install_rocm_contiguous_kv(target: Any) -> bool:
     return _install_contiguous_native()
 
 
-# Training (forward + backward) copies q as well: gfx1151, torch 2.11 + AOTriton 0.11.2, 24 heads x 128, bf16,
-# fwd+bwd 1.27x at 4,096 tokens, 1.31x at 5,070, 2.6x at 27,280, but 11% slower at 1,024, hence the token floor.
-# Bit-identical outputs and gradients. 0 disables; a positive integer moves the floor.
+# Training (forward + backward) copies q as well: on gfx1151 (torch 2.11 + AOTriton 0.11.2, 24 heads x 128, bf16) q/k/v
+# fwd+bwd is 1.10x at 2,560 tokens, 1.26x at 4,096 and 1.36x at 8,192, where k/v alone gains 0.97x / 1.02x / 1.08x;
+# at 1,024 tokens it is 7% slower, at 2,048 even, hence the token floor. Bit-identical outputs and gradients.
+# 0 disables; a positive integer moves the floor.
 ROCM_CONTIGUOUS_QKV_TRAIN_ENV = "UNSLOTH_DIFFUSION_ROCM_TRAIN_CONTIGUOUS_QKV"
-ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS = 4096
+ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS = 2560
 _ROCM_CONTIGUOUS_QKV_TRAIN: dict[
     int, int
 ] = {}  # device index -> token floor, gfx1151 cards of a training run only

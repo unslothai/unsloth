@@ -100,24 +100,26 @@ def test_kill_switch(registry, monkeypatch, off):
     assert registry[AttentionBackendName.NATIVE] is native
 
 
-@pytest.mark.parametrize("raw, floor", [("", 4096), ("auto", 4096), ("8192", 8192), ("1", 1)])
+@pytest.mark.parametrize("raw, floor", [("", 2560), ("auto", 2560), ("8192", 8192), ("1", 1)])
 def test_env_moves_the_token_floor(registry, monkeypatch, raw, floor):
     _fake_cards(monkeypatch)
     monkeypatch.setenv(da.ROCM_CONTIGUOUS_QKV_TRAIN_ENV, raw)
     assert da.install_rocm_contiguous_qkv_training() == (0,)
     assert da._ROCM_CONTIGUOUS_QKV_TRAIN == {0: floor}
+    assert da.ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS == 2560
 
 
 def test_threshold_keeps_short_and_cross_attention_on_the_current_path(monkeypatch):
-    monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_QKV_TRAIN", {None: 4096})
-    at, below, text = (torch.zeros(1, s, 2, 8) for s in (4096, 4095, 512))
+    floor = da.ROCM_CONTIGUOUS_QKV_TRAIN_MIN_TOKENS
+    monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_QKV_TRAIN", {None: floor})
+    at, below, text = (torch.zeros(1, s, 2, 8) for s in (floor, floor - 1, 512))
     assert da._rocm_contiguous_qkv_wanted(at, at, at)
     assert not da._rocm_contiguous_qkv_wanted(
         below, below, below
-    )  # a 1,024 px still: 1,024 to 4,095 tokens
+    )  # a 1,024 px Wan still (1,024 tokens), a 512 px FLUX.2 (1,536)
     assert not da._rocm_contiguous_qkv_wanted(at, text, text)  # cross-attention to a short text
     assert not da._rocm_contiguous_qkv_wanted(at.flatten(2), at, at)
-    monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_QKV_TRAIN", {5: 4096})
+    monkeypatch.setattr(da, "_ROCM_CONTIGUOUS_QKV_TRAIN", {5: floor})
     assert not da._rocm_contiguous_qkv_wanted(
         at, at, at
     )  # the tensor's card is not a covered gfx1151
