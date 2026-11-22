@@ -62,6 +62,8 @@ import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
 import { ConnectionGallery, buildConnectionGallery } from "./connection-gallery";
 import { ConnectionModelList } from "./connection-model-list";
+import { DeepInfraModelSelectionPanel } from "./deepinfra-model-selection-panel";
+import { parseModelIds } from "./deepinfra-model-catalog";
 import { ConnectionRow, ConnectionStatusLine } from "./connection-row";
 import {
   type ConnectionCheck,
@@ -2917,6 +2919,20 @@ export function ChatProvidersSettings({
                         className="min-h-[calc(100px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                       />
                     </div>
+                  </div>
+                ) : providerType === "deepinfra" ? (
+                  <div className="py-3">
+                    <DeepInfraModelSelectionPanel
+                      value={
+                        manualModelIds.length > 0
+                          ? manualModelIds
+                          : selectedModelIds.join(", ")
+                      }
+                      onChange={(newValue: string) => {
+                        setManualModelIds(newValue);
+                        setSelectedModelIds(parseModelIds(newValue));
+                      }}
+                    />
                   </div>
                 ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
                   <div className="space-y-3 py-3">
