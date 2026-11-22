@@ -87,6 +87,47 @@ let _datasetCheckController: AbortController | null = null;
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
+// In memory only, so a page reload asks again: what the last applied defaults answer was asked with.
+type ModelDefaultsRequestKey = {
+  modelName: string;
+  knownCached: boolean;
+  localPath: string | null;
+  asDecision: boolean;
+  hfToken: string;
+};
+let _appliedModelDefaultsKey: ModelDefaultsRequestKey | null = null;
+
+function modelDefaultsRequestKey(
+  state: Pick<
+    TrainingConfigState,
+    "selectedModel" | "modelKnownCached" | "modelLocalPath" | "trainAsDecision"
+  >,
+  modelName: string,
+): ModelDefaultsRequestKey {
+  const selected = state.selectedModel === modelName;
+  return {
+    modelName,
+    knownCached: selected && state.modelKnownCached,
+    localPath: selected ? state.modelLocalPath : null,
+    asDecision: state.trainAsDecision,
+    hfToken: getHfToken(),
+  };
+}
+
+function modelDefaultsRequestKeysEqual(
+  a: ModelDefaultsRequestKey | null,
+  b: ModelDefaultsRequestKey,
+): boolean {
+  return (
+    a !== null &&
+    a.modelName === b.modelName &&
+    a.knownCached === b.knownCached &&
+    a.localPath === b.localPath &&
+    a.asDecision === b.asDecision &&
+    a.hfToken === b.hfToken
+  );
+}
+
 let _trainOnCompletionsManuallySet = false;
 // Model whose completions value the user set (toggle or import); CPT entry captures it even while
 // defaults are pending.
@@ -230,9 +271,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       ) => {
         const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
         _modelConfigController?.abort();
+        _appliedModelDefaultsKey = null;
         const controller = new AbortController();
         const trainingMethodEditGeneration = _trainingMethodEditGeneration;
         const requestState = get();
+        const requestKey = modelDefaultsRequestKey(requestState, modelName);
         const requestedModelDefaultsEditGeneration =
           _modelDefaultsEditGeneration;
         const requestedTargetModulesEditGeneration =
@@ -282,7 +325,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         void getModelConfig(
           modelName,
           controller.signal,
-          getHfToken() || undefined,
+          requestKey.hfToken || undefined,
           {
             preferLocalCache,
             localPath: preferLocalCache ? requestedLocalPath : null,
@@ -294,6 +337,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (!requestMatchesSelection()) return;
             // Answered for the other side of the decision switch.
             if (get().trainAsDecision !== requestedAsDecision) return;
+            // A probe that could not read the repo (gated, offline) is asked again on the next visit.
+            if (modelDetails.audio_type_known !== false) {
+              _appliedModelDefaultsKey = requestKey;
+            }
 
             const isDecision = modelDetails.model_type === "decision";
             const settingsBeforeDecision = get().settingsBeforeDecision;
@@ -1253,6 +1300,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const state = get();
           if (!state.selectedModel) return;
           if (state.isLoadingModelDefaults) return;
+          // Already answered for this exact request in this page session: revisiting Train keeps it.
+          if (
+            state.modelDefaultsAppliedFor === state.selectedModel &&
+            state.modelDefaultsError === null &&
+            modelDefaultsRequestKeysEqual(
+              _appliedModelDefaultsKey,
+              modelDefaultsRequestKey(state, state.selectedModel),
+            )
+          ) {
+            return;
+          }
           const defaultsAlreadyApplied =
             state.modelDefaultsAppliedFor === state.selectedModel;
           void loadAndApplyModelDefaults(state.selectedModel, {
@@ -1706,6 +1764,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             _loraParamEditGenerations[key] += 1;
           }
           _modelDefaultsEditBaseline = null;
+          _appliedModelDefaultsKey = null;
           setUserEdit(initialTrainingConfigState);
         },
         resetToModelDefaults: () => {
