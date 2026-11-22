@@ -2217,10 +2217,11 @@ def _inside_any_markerless_body(
             body, end = m.end() - 1, _gemma_body_brace_end(content, m.end() - 1)
         else:
             body, end = m.end(), _tool_healing._balanced_json_span(content, m.end())
+        # An unclosed body runs to EOF: its quoted marker is still data.
         if (
             _markerless_promotable(m.group(1), enabled_tool_names)
-            and end is not None
-            and body < signal <= end
+            and body < signal
+            and (end is None or signal <= end)
         ):
             return True
         cursor = m.end() if end is None or end < m.end() else end
