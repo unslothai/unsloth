@@ -5706,6 +5706,16 @@ class FastBaseModel:
             return model
         transformers_set_seed(random_state)
 
+        # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
+        _audio_explicitly_requested = bool(finetune_audio_layers)
+        # "all-linear" means every family, before any remap: the remap hooks below read these flags.
+        if target_modules == "all-linear":
+            finetune_vision_layers = True
+            finetune_language_layers = True
+            finetune_attention_modules = True
+            finetune_mlp_modules = True
+            finetune_audio_layers = True
+
         # Models with their own projection names (native DeepSeek-V4.1) map the standard aliases to real Linears.
         _remap_targets = getattr(model, "unsloth_lora_target_modules", None)
         _targets_remapped = False
@@ -5789,8 +5799,6 @@ class FastBaseModel:
                     # Full paths carry the family choice; get_peft_regex would reject them.
                     finetune_attention_modules = finetune_mlp_modules = True
 
-        # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
-        _audio_explicitly_requested = bool(finetune_audio_layers)
         if target_modules == "all-linear":
             finetune_vision_layers = True
             finetune_language_layers = True

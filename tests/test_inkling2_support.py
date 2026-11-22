@@ -303,3 +303,35 @@ def test_fastmodel_keeps_inkling2_eager_unless_told_otherwise():
         r'os\.environ\["UNSLOTH_COMPILE_DISABLE"\] = "partial"',
         body,
     )
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        dict(finetune_vision_layers = False),
+        dict(finetune_vision_layers = False, finetune_mlp_modules = False),
+        dict(finetune_attention_modules = False),
+    ],
+)
+def test_all_linear_trains_every_family_through_the_remap(monkeypatch, flags):
+    # "all-linear" turns every family flag on; the Inkling remap must see those flags, not the caller's, or it
+    # returns a narrower list and get_peft_model's own all-linear handling never runs.
+    import unsloth  # noqa: F401
+    import unsloth.models.vision as vision
+    from unsloth.models.inkling2 import patch_inkling2_model
+
+    monkeypatch.setattr(vision, "clean_gpu_cache", lambda: None)
+    monkeypatch.setattr(
+        vision.FastBaseModel, "post_patch_model", staticmethod(lambda model, **kwargs: model)
+    )
+    model = _tiny(loop = True)
+    assert patch_inkling2_model(model)
+    model.max_seq_length = 64
+    out = vision.FastBaseModel.get_peft_model(
+        model, r = 4, target_modules = "all-linear", use_gradient_checkpointing = False, **flags
+    )
+    wrapped = {n.rsplit(".lora_A", 1)[0] for n, _ in out.named_parameters() if ".lora_A." in n}
+    assert any("vision_tower" in n for n in wrapped), sorted(wrapped)[:5]
+    assert any(n.endswith("self_attn.q_proj.linear") and "language_model" in n for n in wrapped)
+    params = list(out.peft_config["default"].target_parameters or [])
+    assert any(p.endswith("experts.gate_up_proj") for p in params), params
