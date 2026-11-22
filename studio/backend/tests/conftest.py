@@ -97,6 +97,41 @@ def _skills_home_root(tmp_path_factory):
 _skills_home_counter = itertools.count()
 
 
+@pytest.fixture(scope = "session", autouse = True)
+def _plain_structlog_tracebacks():
+    """Render logged exceptions as plain tracebacks instead of rich ones.
+
+    A test process that never runs LogConfig.setup_logging keeps structlog's default ConsoleRenderer,
+    whose rich formatter shows locals and syntax-highlights each frame's file from line 1. A frame in
+    core/inference/llama_cpp.py (over 2 MB) costs seconds per logged exception, so the tool-loop tests,
+    whose stub backend fails every strict token count, spent most of their time formatting tracebacks.
+    Levels, events and exception text are unchanged; only the traceback layout differs.
+    """
+    try:
+        import structlog
+        from structlog import _config as structlog_config
+    except ImportError:
+        yield
+        return
+    renderer_cls = structlog.dev.ConsoleRenderer
+    plain = structlog.dev.plain_traceback
+    # The builtin list too: reset_defaults() copies it shallowly, so its renderer comes back.
+    candidates = [
+        *getattr(structlog_config, "_BUILTIN_DEFAULT_PROCESSORS", ()),
+        *structlog.get_config()["processors"],
+    ]
+    renderers = list({id(p): p for p in candidates if isinstance(p, renderer_cls)}.values())
+    previous = [(renderer, renderer.exception_formatter) for renderer in renderers]
+    for renderer in renderers:
+        renderer.exception_formatter = plain
+
+    try:
+        yield
+    finally:
+        for renderer, formatter in previous:
+            renderer.exception_formatter = formatter
+
+
 @pytest.fixture(autouse = True)
 def _no_vae_structural_verdict_cache(monkeypatch):
     """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
