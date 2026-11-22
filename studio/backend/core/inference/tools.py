@@ -15229,6 +15229,7 @@ def execute_tool(
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
                 and _image_still_approved(row)
+                and not mcp_project_excludes(server_id, session_id)
             )
 
         if tool_name == MCP_RESOURCE_TOOL and _mcp_listed_resources(server):

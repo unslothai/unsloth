@@ -113,3 +113,25 @@ def test_mcp_app_endpoints_honour_the_project_selection(monkeypatch):
     patch_project("gamma", ChatProjectPatch(mcpServerIds = [kept]), "owner")
     assert not tools.mcp_project_excludes(kept, session)
     assert not tools.mcp_project_excludes(dropped, "unfiled-thread")
+
+
+def test_queued_mcp_call_rechecks_the_project_before_dispatch(monkeypatch):
+    server_id = "f" * 16
+    mcp_servers_db.create_server(
+        id = server_id, display_name = server_id, url = "https://example.invalid/mcp", is_enabled = True
+    )
+    mcp_client.cache_tools(server_id, [{"name": "echo"}])
+    studio_db.upsert_chat_project({"id": "delta", "name": "delta", "createdAt": 1, "updatedAt": 2})
+    patch_project("delta", ChatProjectPatch(mcpServerIds = [server_id]), "owner")
+    session = tools.project_session_id("delta")
+    seen = []
+
+    def dispatch(*_args, config_check, **_kwargs):
+        seen.append(config_check())
+        patch_project("delta", ChatProjectPatch(mcpServerIds = []), "owner")
+        seen.append(config_check())
+        return "sent"
+
+    monkeypatch.setattr(tools, "call_tool_sync", dispatch)
+    tools.execute_mcp_tool(f"mcp__{server_id}__echo", {}, session_id = session)
+    assert seen == [True, False]
