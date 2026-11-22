@@ -12,6 +12,7 @@ import types
 import urllib.error
 import urllib.parse
 import urllib.request
+import weakref
 from pathlib import Path
 
 import pytest
@@ -1355,7 +1356,7 @@ def test_trl_lora_sync_hands_the_adapter_over_as_tensors(monkeypatch, tmp_path):
     spec.loader.exec_module(patch_tests)
     rl = patch_tests._load()
     server, llm, model, built = _tensor_served(monkeypatch)
-    rl["_ASYNC_GRPO_TENSOR_SERVERS"][model] = server
+    rl["_ASYNC_GRPO_TENSOR_SERVERS"][model] = weakref.ref(server)
     trl_saves = []
     monkeypatch.setattr(
         module, "save_lora_adapter", rl["_async_grpo_tensor_save"](lambda *a: trl_saves.append(a))

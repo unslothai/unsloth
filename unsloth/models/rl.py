@@ -5680,7 +5680,9 @@ def _dataset_has_images(dataset):
 _ASYNC_GRPO_SERVER_URLS = set()
 
 
-# Model -> the in-process server serving it, for the adapter hand-off at each weight sync.
+# Model -> weakref to the in-process server serving it, for the adapter hand-off at each weight sync. The value is
+# weak too: the server's engine holds the model (`load_lora` is bound to it), so a strong value would keep its own
+# key alive and leak every discarded model with its GPU memory.
 _ASYNC_GRPO_TENSOR_SERVERS = weakref.WeakKeyDictionary()
 
 
@@ -5693,6 +5695,10 @@ def _async_grpo_tensor_save(save_lora_adapter):
             server = _ASYNC_GRPO_TENSOR_SERVERS.get(model)
         except TypeError:  # not weak-referenceable, so never registered
             server = None
+        if server is not None:
+            server = (
+                server()
+            )  # None once the trainer that owned it is gone: TRL's files then carry the sync
         if (
             server is not None
             and not args
@@ -6067,7 +6073,7 @@ def patch_trl_async_grpo():
         if server is not None:
             self._unsloth_vllm_server = server
             try:
-                _ASYNC_GRPO_TENSOR_SERVERS[model] = server
+                _ASYNC_GRPO_TENSOR_SERVERS[model] = weakref.ref(server)
             except TypeError:  # not weak-referenceable: TRL's files then carry every sync
                 pass
             weakref.finalize(self, server.stop)

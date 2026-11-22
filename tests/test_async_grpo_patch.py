@@ -25,6 +25,7 @@ import os
 import sys
 import types
 import warnings
+import weakref
 
 import pytest
 import torch
@@ -949,7 +950,7 @@ def test_weight_sync_hands_the_adapter_to_the_in_process_server(fast_inference_t
     peft = _fast_inference_peft(CausalLM(FastBackbone()))
     mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
     (server,) = _FakeServer.started
-    assert ns["_ASYNC_GRPO_TENSOR_SERVERS"][peft] is server
+    assert ns["_ASYNC_GRPO_TENSOR_SERVERS"][peft]() is server
     mod.save_lora_adapter(peft, _accelerator(), "default", "/o/.vllm_lora/policy-v1")
     assert server.staged == (peft, "default", "/o/.vllm_lora/policy-v1")
     assert (
@@ -970,6 +971,49 @@ def test_weight_sync_falls_back_to_trl_files(fast_inference_trl):
     server.stage_result = False
     mod.save_lora_adapter(peft, _accelerator(), "default", "/d3")  # the server declined
     assert [call[-1] for call in mod._calls["save"]] == ["/d1", "/d2", "/d3"]
+
+
+class _ModelHoldingServer(_FakeServer):
+    # Like the real server, whose engine's `load_lora` is a partial bound to the model.
+    def __init__(self, model):
+        super().__init__(model)
+        self.load_lora = functools.partial(lambda m, *a: None, model)
+
+
+def test_tensor_server_registry_does_not_keep_discarded_models_alive(fast_inference_trl):
+    import gc
+
+    mod, ns = fast_inference_trl
+    ns["_start_async_grpo_vllm_server"] = _ModelHoldingServer
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    assert peft in ns["_ASYNC_GRPO_TENSOR_SERVERS"]
+    model_ref = weakref.ref(peft)
+    del trainer, peft
+    _FakeServer.started.clear()
+    mod._calls["init"].clear()  # the fake TRL trainer records its arguments
+    gc.collect()
+    assert (
+        model_ref() is None
+    ), "the tensor-sync registry kept a discarded model (and its GPU memory) alive"
+    assert len(ns["_ASYNC_GRPO_TENSOR_SERVERS"]) == 0
+
+
+def test_weight_sync_falls_back_to_files_once_the_server_is_gone(fast_inference_trl):
+    import gc
+
+    mod, ns = fast_inference_trl
+    peft = _fast_inference_peft(CausalLM(FastBackbone()))
+    trainer = mod.AsyncGRPOTrainer(peft, None, args = mod.AsyncGRPOConfig("o"))
+    server = trainer._unsloth_vllm_server
+    mod.save_lora_adapter(peft, _accelerator(), "default", "/d1")
+    assert server.staged[-1] == "/d1" and mod._calls["save"] == []
+    del trainer, server
+    _FakeServer.started.clear()
+    gc.collect()
+    assert ns["_ASYNC_GRPO_TENSOR_SERVERS"][peft]() is None
+    mod.save_lora_adapter(peft, _accelerator(), "default", "/d2")
+    assert [call[-1] for call in mod._calls["save"]] == ["/d2"]
 
 
 def test_tensor_save_wraps_once():
