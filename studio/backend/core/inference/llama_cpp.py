@@ -25,6 +25,7 @@ import itertools
 import json
 import logging
 import math
+import mmap
 import os
 import re
 import struct
@@ -5286,6 +5287,64 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     return False
 
 
+# The banded relative-bias kernel instantiated for a q8_0 K/V tile (ggml_type 8). Only builds with
+# unslothai/llama.cpp#399 (#378 / #386 repinned) carry it, and the same change lets Inkling 2 run a
+# quantized cache on the banded path and shares one banded mask per graph. Builds before it name the
+# kernel without a type. Matched in the kernel registration string, which survives strip and is the
+# device (Itanium) name on every OS.
+_INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E")
+_GGML_GPU_LIB_GLOBS = {
+    "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
+    "hip": ("libggml-hip.so*", "ggml-hip.dll"),
+}
+
+
+@functools.lru_cache(maxsize = 16)
+def _lib_matches(path: str, _mtime_ns: int, _size: int, pattern: "re.Pattern[bytes]") -> bool:
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as data:
+            return pattern.search(data) is not None
+    except (OSError, ValueError):
+        return False
+
+
+def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
+    """Whether the ggml CUDA / HIP library beside llama-server has the quantized banded kernel; fails closed."""
+    for pattern in _GGML_GPU_LIB_GLOBS.get(backend, ()):
+        try:
+            candidates = sorted(lib_dir.glob(pattern))
+        except OSError:
+            continue
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                st = resolved.stat()
+            except OSError:
+                continue
+            if resolved.is_file() and _lib_matches(
+                str(resolved), st.st_mtime_ns, st.st_size, _INKLING2_BANDED_QUANT_KV_RE
+            ):
+                return True
+    return False
+
+
+class _Inkling2BandedSupport(NamedTuple):
+    """What the llama.cpp build does with Inkling 2's relative bias.
+
+    backend: the ggml GPU backend ("cuda", "hip", "metal", "vulkan", "sycl", "cpu"), None if unknown.
+    quant_kv: the build runs a quantized K/V on the banded path and shares the banded mask.
+    """
+
+    backend: Optional[str] = None
+    quant_kv: bool = False
+
+
+# Unknown build: the estimate the shipped prebuilts before unslothai/llama.cpp#399 need.
+_INKLING2_BANDED_LEGACY = _Inkling2BandedSupport()
+# Backends with a FLASH_ATTN_EXT_BANDED kernel; Metal, Vulkan and SYCL take the dense bias.
+_INKLING2_BANDED_BACKENDS = frozenset({"cuda", "hip", "cpu"})
+
+
 def _swa_full_from_args_or_env(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -8962,6 +9021,8 @@ class LlamaCppBackend:
         self._vocab_size: Optional[int] = None
         # Set from reserves_micro_batch_outputs() by the callers that know the binary.
         self._reserves_micro_batch_outputs: bool = False
+        # Set from inkling2_banded_support() at load; None resolves the installed build on first use.
+        self._inkling2_banded_support: Optional[_Inkling2BandedSupport] = None
         self._resumes_thoughts: bool = True
         # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
@@ -10809,6 +10870,35 @@ class LlamaCppBackend:
         except Exception:
             return False
         return build is not None and build < cls._OUTPUT_ROWS_CAPPED_BUILD
+
+    @classmethod
+    def inkling2_banded_support(cls, binary: Optional[str] = None) -> "_Inkling2BandedSupport":
+        """The GPU backend and quantized banded K/V support of this llama.cpp build; unknown is legacy."""
+        try:
+            binary = binary or cls._find_llama_server_binary()
+            if not binary:
+                return _INKLING2_BANDED_LEGACY
+            if cls._build_has_metal(binary):
+                return _Inkling2BandedSupport("metal", False)
+            backends = cls._installed_ggml_backends(binary)
+            backend = next(
+                (b for b in ("cuda", "hip", "vulkan", "sycl") if b in backends),
+                "cpu" if "cpu" in backends else None,
+            )
+            quant_kv = backend in ("cuda", "hip") and _gpu_lib_has_banded_quant_kv(
+                _llama_lib_dir(binary), backend
+            )
+            return _Inkling2BandedSupport(backend, quant_kv)
+        except Exception as exc:  # noqa: BLE001 -- an unreadable build prices as legacy
+            logger.debug("Inkling 2 banded probe failed: %s", exc)
+            return _INKLING2_BANDED_LEGACY
+
+    def _inkling2_banded(self) -> "_Inkling2BandedSupport":
+        """The build the estimate prices: set at load, else the installed one (__init__ leaves None)."""
+        support = getattr(self, "_inkling2_banded_support", _INKLING2_BANDED_LEGACY)
+        if support is None:
+            support = self._inkling2_banded_support = self.inkling2_banded_support()
+        return support
 
     # ggml-org/llama.cpp#23089 added continuation inside an unfinished reasoning block.
     _THOUGHT_CONTINUATION_BUILD = 9200
@@ -18833,6 +18923,22 @@ class LlamaCppBackend:
     _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
     _INKLING2_REL_INDEX_BYTES = 4
     _INKLING2_BANDED_MIN_UBATCH = 33
+    # unslothai/llama.cpp#399 (#378 / #386 repinned): one banded mask per graph, and q4_0, q4_1,
+    # q5_0, q5_1 and q8_0 K/V on the banded path (iq4_nl has no f16 converter). CUDA dequantizes
+    # q8_0 / q4_0 tiles in the kernel; HIP and the other types read an f16 copy of K/V.
+    _INKLING2_BANDED_QUANT_TYPES = frozenset({"q8_0", "q4_0", "q4_1", "q5_0", "q5_1"})
+    _INKLING2_BANDED_TILE_TYPES = frozenset({"q8_0", "q4_0"})
+    # The prompt's graphs reallocate the banded compute buffer above the load-time reserve. Measured
+    # at exit, Inkling-2-Mini, 4 slots, --kv-unified, B200, slot 0 filled to 0.9 n_ctx (MiB):
+    #   per-layer masks, ub 1024: 1117 -> 1722 at 32K, 2749 -> 3093 at 128K; ub 512: 541 -> 812 at
+    #     32K, 1497 at 128K, no growth at 162K (the reserve already holds it). Slope 14.3 * ub.
+    #   shared mask (#399), ub 1024: 513 -> 1594 at 32K, 717 -> 1768 at 128K, 2052 at 256K; ub 512:
+    #     258 -> 748 at 32K, 382 -> 837 at 128K, 885 at 150K. Slope 1.8 * ub, alike for f16 / q8_0 / q4_0.
+    # Flat bytes per ub token beyond the activation estimate, and the regrown per-cell rates.
+    _INKLING2_BANDED_RUNTIME_BYTES = 15
+    _INKLING2_RUNTIME_BYTES_PER_UB = 800 * 1024
+    _INKLING2_BANDED_SHARED_BYTES = 2
+    _INKLING2_SHARED_RUNTIME_BYTES_PER_UB = 1200 * 1024
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -19068,18 +19174,45 @@ class LlamaCppBackend:
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
         if getattr(self, "_architecture", None) in _INKLING2_ARCHS:
-            # Sliding layers' smaller bias reuses this allocation; no dequant copy on either path.
+            # Sliding layers' smaller bias reuses this allocation.
             n_head = self._inkling2_bias_heads()
             head_dim = getattr(self, "_kv_key_length", None) or 128
+            kv_type = (cache_type_kv or "f16").strip().lower()
+            build = self._inkling2_banded()
+            quantized = _kv_bytes_per_elem(kv_type) < 2.0
+            if quantized:
+                # Older builds send every quantized cache to the dense bias.
+                type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
+            else:
+                type_ok = kv_type in ("f16", "bf16", "f32")
             banded = (
                 flash_attn
-                and (cache_type_kv or "f16").strip().lower() in ("f16", "bf16", "f32")
+                and type_ok
+                # Metal, Vulkan and SYCL have no banded kernel; unknown keeps the CUDA pricing.
+                and (build.backend is None or build.backend in _INKLING2_BANDED_BACKENDS)
                 and head_dim in (64, 128)
                 and ub >= self._INKLING2_BANDED_MIN_UBATCH
             )
             if banded:
-                per_tok = self._INKLING2_BANDED_BYTES * ub + split_extra
-                return int(per_tok * n_ctx + 4 * n_head * ub * ub)
+                block = 4 * n_head * ub * ub
+                if not build.quant_kv:
+                    # Per-layer masks: the reserve, or the regrown buffer when that is larger.
+                    reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx + block
+                    regrown = (
+                        (self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra) * n_ctx
+                        + block
+                        + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
+                    )
+                    return int(max(reserve, regrown))
+                per_tok = self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
+                if quantized and not (
+                    build.backend == "cuda" and kv_type in self._INKLING2_BANDED_TILE_TYPES
+                ):
+                    # HIP, and the types without an in-tile dequant, read K/V through an f16 copy.
+                    per_tok += self._attention_dequant_width() * 2
+                return int(
+                    per_tok * n_ctx + block + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
+                )
             per_tok = (
                 mask_rate
                 + split_extra
@@ -25515,6 +25648,8 @@ class LlamaCppBackend:
 
             server_caps = _launch_caps(binary)
             self._reserves_micro_batch_outputs = self.reserves_micro_batch_outputs(binary)
+            if self._architecture in _INKLING2_ARCHS:
+                self._inkling2_banded_support = self.inkling2_banded_support(binary)
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside self._lock so /unload, /cancel, /status aren't blocked.
