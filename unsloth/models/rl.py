@@ -2974,7 +2974,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "            args.max_length = 1024\n"
             )
             # TRL >= 1.0.0 refuses padding-free without packing while max_length is set, and Unsloth auto-enables padding-free, so move the resolved length to where it is enforced: max_seq_length when prep tokenizes, else padding-free off. Unconditional copy, since no TRL from 0.22.2 to 1.9.2 declares max_seq_length on SFTConfig and a hasattr() gate would skip every pristine config. Must be None, not 0: TRL's guard reads `args.max_length is not None`.
-            if "`max_length` is not enforced" in old_RLTrainer_source:
+            # TRL >= 1.18 dropped that refusal: its own _prepare_dataset truncates, but Zoo's prep replaces it and leaves
+            # pre-tokenized rows alone, so the cap is still applied here.
+            if "`max_length` is not enforced" in old_RLTrainer_source or trl_version >= Version(
+                "1.18.0"
+            ):
                 max_length_check += (
                     "if getattr(args, 'padding_free', False) is True and not getattr(args, 'packing', False) "
                     "and getattr(args, 'max_length', None) is not None:\n"
@@ -3670,11 +3674,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += num_proc_check
 
+    # TRL >= 1.16 defaults pad_to_multiple_of to "auto" (None off Neuron after __post_init__), so it counts as unset.
     if "pad_to_multiple_of" in call_args:
         pad_to_multiple_of = (
             "if os.environ.get('UNSLOTH_ENABLE_FLEX_ATTENTION', '0') == '1':\n"
             "    from unsloth_zoo.flex_attention import HAS_FLEX_ATTENTION\n"
-            "    if HAS_FLEX_ATTENTION and pad_to_multiple_of is None:\n"
+            "    if HAS_FLEX_ATTENTION and (pad_to_multiple_of is None or pad_to_multiple_of == 'auto'):\n"
             "        from unsloth_zoo.flex_attention import FLEX_ATTENTION_BLOCK_SIZE\n"
             "        pad_to_multiple_of = FLEX_ATTENTION_BLOCK_SIZE\n"
             "\n"
@@ -5274,8 +5279,30 @@ def _tree_attention_eligible(model, device):
         return False
 
 
+def _async_grpo_tree_segment_parents(tree):
+    # TRL >= 1.17 sends tree_segment_parents; TRL 1.16 packs the same trie without it. Each segment's K/V path is its
+    # parent's path plus its own tokens, so the parent is the segment holding the path's last token before its own.
+    parents = tree.get("tree_segment_parents")
+    if parents is not None:
+        return parents
+    cu_q = tree["tree_cu_seqlens_q"].long()
+    cu_k = tree["tree_cu_seqlens_k"].long()
+    kv_index = tree["tree_kv_index"].long()
+    own = cu_q[1:] - cu_q[:-1]
+    has_parent = (cu_k[1:] - cu_k[:-1]) > own
+    before = kv_index[(cu_k[1:] - own - 1).clamp(min = 0).to(kv_index.device)]
+    parents = torch.searchsorted(cu_q.to(before.device), before, right = True) - 1
+    parents = torch.where(has_parent.to(parents.device), parents, torch.full_like(parents, -1))
+    return parents.to(torch.int32)
+
+
 def _async_grpo_tree_seg_info(model, f_kwargs):
     parents = f_kwargs.get("tree_segment_parents")
+    if parents is None and "tree_kv_index" in f_kwargs:
+        try:
+            parents = _async_grpo_tree_segment_parents(f_kwargs)
+        except Exception:
+            parents = None
     position_ids = f_kwargs.get("position_ids")
     if (
         parents is None
@@ -5333,7 +5360,7 @@ def _forward_tree_unrolled(head_forward, f_args, f_kwargs):
     # Unroll each root-to-leaf path into its own packed sequence; read each trie position back from one copy.
     tree = {key: f_kwargs.pop(key) for key in list(f_kwargs) if key.startswith("tree_")}
     position_ids = f_kwargs.get("position_ids")
-    parents = tree["tree_segment_parents"]
+    parents = _async_grpo_tree_segment_parents(tree)
     cu_seqlens_k = tree["tree_cu_seqlens_k"].long()
     path_lengths = cu_seqlens_k[1:] - cu_seqlens_k[:-1]
     if bool((parents < 0).all()):
