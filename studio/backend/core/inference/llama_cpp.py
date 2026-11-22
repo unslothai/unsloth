@@ -792,6 +792,9 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
+    # What the CALLER asked for, kept beside the resolved identifier rather than derived.
+    requested_identifier: Optional[str] = None
+    requested_variant: Optional[str] = None
     # A cached file and every shard's byte count, already verified for this repo and variant.
     verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
@@ -6812,6 +6815,19 @@ def _extra_args_device(
     return value
 
 
+def _pipeline_groups_slot_step(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> int:
+    """The ``--pipeline-groups`` count, else 1; ``--parallel`` must be a multiple of it."""
+    raw = _extra_args_device(extra_args, {"--pipeline-groups"})
+    if raw is None:
+        raw = (env or {}).get("LLAMA_ARG_PIPELINE_GROUPS")
+    try:
+        return max(1, int(str(raw).strip())) if raw is not None else 1
+    except ValueError:
+        return 1
+
+
 def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last explicit main-device value, if any."""
     return _extra_args_device(extra_args, {"--device", "-dev"})
@@ -8797,6 +8813,7 @@ class LlamaCppBackend:
         # Extras as REQUESTED, before launch-time rewrites, for duplicate-load checks.
         self._requested_extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
+        self._extra_args_requested_source: Optional[tuple[Optional[str], Optional[str]]] = None
         self._requested_n_ctx: int = 0
         # Last healthy caller intent for crash recovery. Memory-only and never logged.
         self._last_load_intent: Optional[GgufLoadIntent] = None
@@ -8966,6 +8983,11 @@ class LlamaCppBackend:
 
     @property
     def base_url(self) -> str:
+        from core.inference.rpc_serving import route_base_url
+
+        routed = route_base_url(self)
+        if routed is not None:
+            return routed
         return f"http://127.0.0.1:{self._port}"
 
     @property
@@ -9118,6 +9140,17 @@ class LlamaCppBackend:
         ``None`` if no extras have ever been recorded. Used by the route
         to refuse cross-model inheritance (#5401)."""
         return self._extra_args_source
+
+    @property
+    def extra_args_requested_source(self) -> Optional[tuple[Optional[str], Optional[str]]]:
+        """(requested_identifier, requested_variant) the stored extra_args came from, as typed."""
+        return self._extra_args_requested_source
+
+    @property
+    def launched_env(self) -> Optional[dict[str, str]]:
+        """The env the running llama-server was spawned with, or ``None`` before any spawn."""
+        env = getattr(self, "_launched_env", None)
+        return dict(env) if env else None
 
     @property
     def context_length(self) -> Optional[int]:
@@ -18669,6 +18702,7 @@ class LlamaCppBackend:
         prefer_discrete: bool = True,
         discount_prefixes: frozenset = frozenset(),
         shared_gpu_ids: Optional[Iterable[int]] = None,
+        slot_step: int = 1,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -18702,6 +18736,8 @@ class LlamaCppBackend:
         fits could be rejected and the load kept --fit. ``split_extra_for_slots(slots)``
         re-prices the split step, whose sliding-window masks also scale with slots."""
         for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
+            if slots % max(1, slot_step):
+                continue  # --pipeline-groups refuses a slot count it cannot divide
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
                 n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
@@ -20323,6 +20359,8 @@ class LlamaCppBackend:
                 # No spec block to drop, so launched equals requested; rebind so a record from a prior GGUF load cannot outlive it.
                 self._requested_extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
+                # Cleared with its pair: both are written together at the GGUF commit point.
+                self._extra_args_requested_source = None
             # The visual server logs MAXTOK=<N>, the context it resolved; read it back for the UI.
             chosen = maxtok
             try:
@@ -24127,6 +24165,7 @@ class LlamaCppBackend:
                 self._close_attempt_log()
                 self._health_wait_cancelled = True
                 return False
+            self._launched_env = dict(env)
             # PDEATHSIG follows the forking thread; the MTP-crash reload's thread exits.
             _spawned = _spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
@@ -26868,7 +26907,10 @@ class LlamaCppBackend:
                         # An extras --parallel wins at launch, so it is kept; the env twin is scrubbed.
                         if _target_fits_somewhere and not _both_fit_somewhere and _slots_reducible:
                             _mtp_slots = _mtp_slots_ctx = 0
+                            _mtp_step = _pipeline_groups_slot_step(extra_args, os.environ)
                             for _s in range(n_parallel - 1, 0, -1):
+                                if _s % _mtp_step:
+                                    continue  # --pipeline-groups refuses it
                                 _keep = 1 - (
                                     _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
                                 )
@@ -28058,6 +28100,7 @@ class LlamaCppBackend:
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _placement_ctx_checkpoints,
+                            slot_step = _pipeline_groups_slot_step(extra_args, os.environ),
                             # An explicit device pick skips the discrete tier; host-only accounting still applies.
                             integrated = _integrated_gpus,
                             prefer_discrete = bool(_tier_gpus),
@@ -29370,6 +29413,14 @@ class LlamaCppBackend:
                         f"Requested Vulkan GPU ordinal(s) {_vulkan_requested_ids} not "
                         f"present. Available Vulkan devices: {_vulkan_available_ordinals}."
                     )
+
+                # A pass-through --rpc split names local devices unmasked: a fit-chosen mask would renumber them.
+                if (
+                    not gpu_ids
+                    and gpu_indices is not None
+                    and (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+                ):
+                    gpu_indices = None
 
                 # Pin the whole picked set so the model can't spill onto an unpicked GPU.
                 if gpu_ids:
@@ -32014,6 +32065,7 @@ class LlamaCppBackend:
                                 self._close_attempt_log()
                                 self._health_wait_cancelled = True
                                 return False
+                            self._launched_env = dict(env)
                             _spawned = _spawn_on_lifetime_thread(
                                 lambda: subprocess.Popen(
                                     run_cmd,
@@ -34017,6 +34069,10 @@ class LlamaCppBackend:
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
+                    self._extra_args_requested_source = (
+                        intent.requested_identifier,
+                        intent.requested_variant,
+                    )
                 # A re-fit replay records what launched, which is what the client replays next.
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
@@ -38204,6 +38260,11 @@ class LlamaCppBackend:
             or slot < 0
         ):
             return False
+        from core.inference.rpc_serving import route_base_url
+
+        if route_base_url(self) is not None:
+            # Behind the router slot N may be the peer's: erasing it would clear another chat's cache.
+            return False
         try:
             response = httpx.post(
                 f"{base_url}/slots/{slot}",
@@ -38294,6 +38355,9 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+        from core.inference.rpc_serving import tag_conversation
+
+        tag_conversation(payload, thread_id)
         retry_messages = messages
         retry_image_b64 = image_b64
         retry_max_tokens = max_tokens
@@ -39450,6 +39514,10 @@ class LlamaCppBackend:
                 "presence_penalty": presence_penalty,
                 "frequency_penalty": frequency_penalty,
             }
+
+            from core.inference.rpc_serving import tag_conversation
+
+            tag_conversation(payload, thread_id)
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
@@ -42096,6 +42164,10 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+
+        from core.inference.rpc_serving import tag_conversation
+
+        tag_conversation(stream_payload, thread_id)
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
         if _final_tools:

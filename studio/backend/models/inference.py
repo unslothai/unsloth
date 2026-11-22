@@ -2579,6 +2579,14 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "here. None on a backend too old to report it."
         ),
     )
+    spark_topology: Optional[str] = Field(
+        None,
+        description = (
+            "How a GGUF is being served across machines: single (this machine only) or "
+            "layer_split (other machines' ggml-rpc-server hold part of the model). None when "
+            "no machines are configured. GET /api/inference/spark/status has the per-node detail."
+        ),
+    )
     audio_probe_pending: bool = Field(
         False,
         description = (
