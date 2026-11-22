@@ -1,0 +1,133 @@
+# The cluster tailcat helper (studio/cluster_link/tailcat_helper): reproducible builds checked against the pins, native smoke, release.
+name: unsloth-link
+
+on:
+  pull_request:
+    paths:
+      - 'studio/cluster_link/tailcat_helper/**'
+      - 'studio/cluster_link/tailnet.py'
+      - 'studio/install_unsloth_link.py'
+      - 'studio/unsloth_link_pins.json'
+      - '.github/workflows/unsloth-link.yml'
+  push:
+    tags:
+      - 'unsloth-link-v*'
+    paths:
+      - 'studio/cluster_link/tailcat_helper/**'
+      - 'studio/cluster_link/tailnet.py'
+      - 'studio/install_unsloth_link.py'
+      - 'studio/unsloth_link_pins.json'
+      - '.github/workflows/unsloth-link.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'upload the archives to the release named by the pins tag'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unsloth-link-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: studio/cluster_link/tailcat_helper/go.mod
+          cache-dependency-path: studio/cluster_link/tailcat_helper/go.sum
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Vet
+        working-directory: studio/cluster_link/tailcat_helper
+        env:
+          GOTOOLCHAIN: local
+        run: go vet -tags "$(tr -d '[:space:]' < build-tags.txt)" ./...
+      - name: Build and pack
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          bash studio/cluster_link/tailcat_helper/build.sh "$RUNNER_TEMP/dist"
+          python studio/cluster_link/tailcat_helper/package.py "$RUNNER_TEMP/dist" release
+      # The pins are the installer's only trust anchor; on a mismatch regenerate them with update_pins.py.
+      - name: Archives match the pins
+        working-directory: studio/cluster_link/tailcat_helper
+        run: python update_pins.py "$GITHUB_WORKSPACE/release" --check
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: unsloth-link
+          path: release
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: unsloth-link
+          path: release
+      - name: Install through the pinned installer, then tunnel 1 MiB both ways
+        shell: bash
+        run: |
+          set -euo pipefail
+          export UNSLOTH_STUDIO_HOME="$RUNNER_TEMP/studio"
+          export UNSLOTH_LINK_RELEASE_BASE="$(python -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' release)"
+          binary="$(python studio/install_unsloth_link.py | tail -n 1)"
+          python -I studio/cluster_link/tailcat_helper/smoke.py "$binary"
+
+  publish:
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/unsloth-link-v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: unsloth-link
+          path: release
+      - name: Publish to the pinned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          tag="$(python3 -c 'import json; print(json.load(open("studio/unsloth_link_pins.json"))["tag"])')"
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "$tag" ]; then
+            echo "tag $REF_NAME is not the pinned tag $tag" >&2
+            exit 1
+          fi
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$tag" --latest=false \
+              --target "$GITHUB_SHA" \
+              --notes "unsloth-link, the tailcat helper for Studio clusters across networks. Built from studio/cluster_link/tailcat_helper; tailcat is BSD-3-Clause (LICENSE.tailcat)."
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber release/*
