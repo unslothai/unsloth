@@ -373,3 +373,12 @@ test("an abort signal is passed through to the transport", async () => {
   await fetchMemoryEstimate(REQUEST, controller.signal);
   assert.equal(seen, controller.signal);
 });
+
+test("compute_dense_fallback is read when present and false when absent", async () => {
+  answer(() => json({ ...FULL, compute_dense_fallback: true }));
+  assert.equal((await fetchMemoryEstimate(REQUEST)).computeDenseFallback, true);
+  answer(() => json(FULL));
+  assert.equal((await fetchMemoryEstimate(REQUEST)).computeDenseFallback, false);
+  answer(() => json({ ...FULL, compute_dense_fallback: "true" }));
+  assert.equal((await fetchMemoryEstimate(REQUEST)).computeDenseFallback, false);
+});

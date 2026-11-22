@@ -1393,6 +1393,11 @@ class EstimateMemoryResponse(BaseModel):
         "excluded from gpu_bytes.",
     )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    compute_dense_fallback: bool = Field(
+        False,
+        description = "Quantized KV on Inkling turns off banded attention, so compute_bytes is "
+        "the larger dense scratch.",
+    )
     drafter_runtime_bytes: int = Field(
         0,
         description = "A separate drafter's own KV cache and rollback state, on top of "
@@ -1538,6 +1543,11 @@ class MemoryEstimate(BaseModel):
         0, description = "The host-RAM part of kv_bytes: per-slot context checkpoints"
     )
     compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    compute_dense_fallback: bool = Field(
+        False,
+        description = "Quantized KV on Inkling turns off banded attention, so compute_bytes is "
+        "the larger dense scratch.",
+    )
     drafter_runtime_bytes: int = Field(
         0, description = "A separate drafter's own KV cache and rollback state"
     )

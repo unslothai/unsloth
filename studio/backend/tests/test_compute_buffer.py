@@ -1676,3 +1676,41 @@ class TestComputeBufferInkling2:
         with_blocks = b._compute_activation_width()
         b._attn_res_block_size = None
         assert with_blocks - b._compute_activation_width() == 8 * 2304
+
+
+class TestQuantizedKvDenseBiasFallback:
+    """Quantized KV turns off Inkling's banded attention; the estimate flags it for the UI."""
+
+    @pytest.mark.parametrize("arch", ["inkling", "inkling2", "inkling2_loop"])
+    @pytest.mark.parametrize("cache", ["q8_0", "q4_0", "iq4_nl"])
+    def test_inkling_quantized_is_flagged(self, arch, cache):
+        assert _backend(arch = arch)._quantized_kv_dense_bias_fallback(cache) is True
+
+    @pytest.mark.parametrize("arch", ["inkling", "inkling2"])
+    @pytest.mark.parametrize("cache", ["f16", "bf16", "f32", None])
+    def test_inkling_full_precision_is_not_flagged(self, arch, cache):
+        assert _backend(arch = arch)._quantized_kv_dense_bias_fallback(cache) is False
+
+    @pytest.mark.parametrize("arch", [None, "qwen3", "deepseek4"])
+    def test_other_architectures_are_not_flagged(self, arch):
+        assert _backend(arch = arch)._quantized_kv_dense_bias_fallback("q8_0") is False
+
+    def test_backend_without_architecture_does_not_crash(self):
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        assert b._quantized_kv_dense_bias_fallback("q8_0") is False
+
+    def test_flag_reaches_the_estimate_response(self):
+        from core.inference.memory_contract import (
+            build_memory_estimate,
+            project_estimate_memory_response,
+        )
+
+        class _Breakdown:
+            compute_dense_fallback = True
+
+        on = project_estimate_memory_response(
+            build_memory_estimate(_Breakdown(), quant_file_bytes = 0)
+        )
+        off = project_estimate_memory_response(build_memory_estimate(object(), quant_file_bytes = 0))
+        assert on["compute_dense_fallback"] is True
+        assert off["compute_dense_fallback"] is False

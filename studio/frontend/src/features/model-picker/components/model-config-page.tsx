@@ -2243,7 +2243,8 @@ function GgufAdvancedSettings({
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
             Lower KV cache precision to save VRAM, at some cost to quality. f16
-            is the default; q8_0 through iq4_nl are quantized.
+            is the default; q8_0 through iq4_nl are quantized. Exception:
+            Inkling, where quantized KV enlarges the compute buffer.
           </InfoHint>
         </div>
         <Select

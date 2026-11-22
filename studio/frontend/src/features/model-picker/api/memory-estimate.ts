@@ -21,6 +21,8 @@ export interface MemoryEstimate {
   kvBytes: number;
   kvCheckpointBytes: number;
   computeBytes: number;
+  /** Quantized KV on Inkling turns off banded attention, so `computeBytes` is the larger dense scratch. */
+  computeDenseFallback?: boolean;
   drafterRuntimeBytes: number;
   /** Under MTP the target and draft halves can be placed differently. */
   drafterRuntimeGpuBytes: number;
@@ -95,6 +97,7 @@ const UNAVAILABLE: MemoryEstimate = {
   kvBytes: 0,
   kvCheckpointBytes: 0,
   computeBytes: 0,
+  computeDenseFallback: false,
   drafterRuntimeBytes: 0,
   drafterRuntimeGpuBytes: 0,
   projectorRuntimeBytes: 0,
@@ -126,6 +129,7 @@ interface ApiEstimateResponse {
   kv_bytes: number;
   kv_checkpoint_bytes?: number;
   compute_bytes: number;
+  compute_dense_fallback?: boolean;
   drafter_runtime_bytes: number;
   drafter_runtime_gpu_bytes: number;
   projector_runtime_bytes: number;
@@ -243,6 +247,7 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
       finiteBytes(body.kv_checkpoint_bytes, 0),
     ),
     computeBytes: finiteBytes(body.compute_bytes, 0),
+    computeDenseFallback: flag(body.compute_dense_fallback, false),
     drafterRuntimeBytes,
     // Absent on an older backend: charge the whole term to the GPU rather than inventing a zero.
     drafterRuntimeGpuBytes: finiteBytes(

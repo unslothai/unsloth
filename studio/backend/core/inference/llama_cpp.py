@@ -19009,6 +19009,15 @@ class LlamaCppBackend:
                 widest = max(widest, heads)
         return (widest or n_kv or 1) * (key_len + val_len)
 
+    def _quantized_kv_dense_bias_fallback(self, cache_type_kv: Optional[str]) -> bool:
+        """Inkling's banded attention only runs for f16/bf16/f32 KV; a quantized cache falls back to
+        the dense relative-bias scratch, which can outweigh the KV savings. Cache type only: Inkling 2
+        also goes dense for f16 without flash attention or at a tiny ubatch, which this does not flag."""
+        arch = getattr(self, "_architecture", None)
+        if arch != "inkling" and arch not in _INKLING2_ARCHS:
+            return False
+        return bool(cache_type_kv) and _kv_bytes_per_elem(cache_type_kv) < 2.0
+
     def _compute_buffer_ctx_bytes(
         self,
         n_ctx: int,
@@ -19060,7 +19069,7 @@ class LlamaCppBackend:
         if getattr(self, "_architecture", None) == "inkling":
             ub_scale = ub / self._DEFAULT_N_UBATCH
             # A quantized KV forces the dense fallback (~402 KiB/tok); size for it so the server loads.
-            if cache_type_kv and _kv_bytes_per_elem(cache_type_kv) < 2.0:
+            if self._quantized_kv_dense_bias_fallback(cache_type_kv):
                 rate = self._INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK
             else:
                 # Banded flash path (see constants): linear, ub-scaled.

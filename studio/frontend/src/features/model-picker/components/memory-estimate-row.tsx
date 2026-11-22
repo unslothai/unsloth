@@ -372,6 +372,11 @@ export function MemoryEstimateRow({
         <MemoryBreakdownLine
           label="Compute buffers"
           value={formatMemoryGb(estimate.computeBytes)}
+          note={
+            estimate.computeDenseFallback
+              ? "Quantized KV turns off Inkling's banded attention, so this scratch is larger. f16 or bf16 KV usually uses less total memory."
+              : undefined
+          }
         />
         {estimate.projectorRuntimeBytes > 0 && (
           <MemoryBreakdownLine
