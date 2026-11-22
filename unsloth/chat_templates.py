@@ -1193,6 +1193,7 @@ _GEMMA4_ARGUMENT_PARSER = r'''
     {%- if ns.s[ns.i] == '-' -%}
         {%- set ns.i = ns.i + 1 -%}
     {%- endif -%}
+    {%- set int_start = ns.i -%}
     {%- set saw_digit = namespace(v=false) -%}
     {%- for _ in range(ns.s | length) -%}
         {%- if ns.i < (ns.s | length) and ns.s[ns.i] >= '0' and ns.s[ns.i] <= '9' -%}
@@ -1200,32 +1201,44 @@ _GEMMA4_ARGUMENT_PARSER = r'''
             {%- set ns.i = ns.i + 1 -%}
         {%- endif -%}
     {%- endfor -%}
+    {%- if saw_digit.v and ns.s[int_start] == '0' and ns.i > int_start + 1 -%}
+        {%- set ns.err = 'bad number' -%}
+    {%- endif -%}
     {%- set is_float = namespace(v=false) -%}
-    {%- if ns.i < (ns.s | length) and ns.s[ns.i] == '.' -%}
+    {%- if ns.err == '' and ns.i < (ns.s | length) and ns.s[ns.i] == '.' -%}
         {%- set is_float.v = true -%}
         {%- set ns.i = ns.i + 1 -%}
+        {%- set frac = namespace(v=false) -%}
         {%- for _ in range(ns.s | length) -%}
             {%- if ns.i < (ns.s | length) and ns.s[ns.i] >= '0' and ns.s[ns.i] <= '9' -%}
-                {%- set saw_digit.v = true -%}
+                {%- set frac.v = true -%}
                 {%- set ns.i = ns.i + 1 -%}
             {%- endif -%}
         {%- endfor -%}
+        {%- if not frac.v -%}
+            {%- set ns.err = 'bad number' -%}
+        {%- endif -%}
     {%- endif -%}
-    {%- if ns.i < (ns.s | length) and (ns.s[ns.i] == 'e' or ns.s[ns.i] == 'E') -%}
+    {%- if ns.err == '' and ns.i < (ns.s | length) and (ns.s[ns.i] == 'e' or ns.s[ns.i] == 'E') -%}
         {%- set is_float.v = true -%}
         {%- set ns.i = ns.i + 1 -%}
         {%- if ns.i < (ns.s | length) and (ns.s[ns.i] == '+' or ns.s[ns.i] == '-') -%}
             {%- set ns.i = ns.i + 1 -%}
         {%- endif -%}
+        {%- set exp = namespace(v=false) -%}
         {%- for _ in range(ns.s | length) -%}
             {%- if ns.i < (ns.s | length) and ns.s[ns.i] >= '0' and ns.s[ns.i] <= '9' -%}
+                {%- set exp.v = true -%}
                 {%- set ns.i = ns.i + 1 -%}
             {%- endif -%}
         {%- endfor -%}
+        {%- if not exp.v -%}
+            {%- set ns.err = 'bad number' -%}
+        {%- endif -%}
     {%- endif -%}
-    {%- if not saw_digit.v -%}
+    {%- if ns.err == '' and not saw_digit.v -%}
         {%- set ns.err = 'bad number' -%}
-    {%- else -%}
+    {%- elif ns.err == '' -%}
         {%- set raw = ns.s[start:ns.i] -%}
         {%- if is_float.v -%}
             {%- set ns.value = raw | float -%}
