@@ -127,6 +127,8 @@ def test_replay_reuses_the_attention_output(monkeypatch, checkpointing):
 
 def test_inference_and_unset_flag_take_the_plain_call(monkeypatch, checkpointing):
     calls = []
+    # The explicit route outside a frame (on ROCm a frameless call stays plain: tested below).
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", False)
     monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
     q = torch.randn(1, H, S, D)
     k = torch.randn(1, KV, S, D)
