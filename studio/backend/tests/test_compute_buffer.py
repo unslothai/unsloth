@@ -1711,8 +1711,6 @@ class TestQuantizedKvDenseBiasFallback:
         on = project_estimate_memory_response(
             build_memory_estimate(_Breakdown(), quant_file_bytes = 0)
         )
-        off = project_estimate_memory_response(
-            build_memory_estimate(object(), quant_file_bytes = 0)
-        )
+        off = project_estimate_memory_response(build_memory_estimate(object(), quant_file_bytes = 0))
         assert on["compute_dense_fallback"] is True
         assert off["compute_dense_fallback"] is False
