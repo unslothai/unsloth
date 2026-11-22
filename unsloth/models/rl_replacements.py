@@ -5381,6 +5381,118 @@ def _unsloth_pref_returns_hidden_states(model, tensor, lm_head):
     return _unsloth_grpo_hidden_states_signal(model) is True
 
 
+def _unsloth_forward_returns_hidden_states(model):
+    """Whether ``model``'s forward is one of Unsloth's fast CausalLM forwards, which honour ``UNSLOTH_RETURN_HIDDEN_STATES`` themselves, so GRPO's fallback wrapper must not wrap it. Read by both the installer (``unsloth/models/rl.py``) and ``_unsloth_grpo_hidden_states_signal``.
+
+    The fast forward registers itself: its ``__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__`` is the function object, so a replacement that copied the attribute with ``functools.wraps`` does not count. The forward is followed only through wrappers known to call it unchanged, by their code object rather than copied metadata: pre_patch's gate (only on an instance marked ``_unsloth_fast_path``, else it runs the stock forward), TRL's ``add_fused_lm_head`` (which GRPO installs on every model, and which calls the forward it replaced unless ``fused_lm_head = True``), Accelerate's device hook (its live ``_old_forward``), Accelerate's mixed-precision ``convert_outputs_to_fp32`` over torch's autocast decorator, and an Unsloth wrapper naming its delegate in ``_unsloth_forward_delegate``. The checked module is the one the fallback wrapper would replace, behind the parallel wrappers that run their ``.module``."""
+    import functools
+    import sys
+
+    import torch
+
+    def _made_by(function, factory):
+        code = getattr(function, "__code__", None)
+        outer = getattr(getattr(factory, "__func__", factory), "__code__", None)
+        return code is not None and outer is not None and any(code is c for c in outer.co_consts)
+
+    def _closure(function, name):
+        try:
+            return function.__closure__[function.__code__.co_freevars.index(name)].cell_contents
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return None
+
+    parallel = [torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel]
+    for module_name, class_name in (
+        ("torch.distributed.fsdp.fully_sharded_data_parallel", "FullyShardedDataParallel"),
+        ("deepspeed.runtime.engine", "DeepSpeedEngine"),
+    ):
+        cls = getattr(sys.modules.get(module_name), class_name, None)
+        if isinstance(cls, type):
+            parallel.append(cls)
+    target = model
+    for _ in range(8):
+        if not isinstance(target, tuple(parallel)) or "forward" in vars(target):
+            break
+        target = getattr(target, "module", None)
+    if target is None:
+        return False
+    # The head owner, as _grpo_hidden_states_wrap_target picks it: a PEFT base model, else a .base_model / .model
+    # child that still owns the head (a bare *ForCausalLM's .model is its decoder body).
+    get_base_model = getattr(target, "get_base_model", None)
+    base_model = None
+    if callable(get_base_model):
+        try:
+            base_model = get_base_model()
+        except Exception:
+            base_model = None
+    if base_model is not None and base_model is not target:
+        target = base_model
+    else:
+        for attr in ("base_model", "model"):
+            child = getattr(target, attr, None)
+            if child is None or child is target or not hasattr(child, "forward"):
+                continue
+            try:
+                owns_head = child.get_output_embeddings() is not None
+            except Exception:
+                owns_head = False
+            if owns_head:
+                target = child
+                break
+
+    marker = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
+    gate = getattr(sys.modules.get("unsloth.models.llama"), "_gated_method", None)
+    hooks = sys.modules.get("accelerate.hooks")
+    operations = sys.modules.get("accelerate.utils.operations")
+    autocast = sys.modules.get("torch.amp.autocast_mode")
+    owner = target
+    forward = getattr(target, "forward", None)
+    for _ in range(8):
+        if hasattr(forward, "__func__") and getattr(forward, "__self__", None) is not None:
+            owner = forward.__self__
+            forward = forward.__func__
+        if forward is None or getattr(
+            forward, "_unsloth_grpo_hidden_states_forward_wrapped", False
+        ):
+            return False
+        if getattr(forward, marker, None) is forward:
+            return True
+        # An Unsloth wrapper that calls one forward unchanged names it, keyed on itself so a copy does not count.
+        delegate = getattr(forward, "_unsloth_forward_delegate", None)
+        code = getattr(forward, "__code__", None)
+        if isinstance(delegate, tuple) and len(delegate) == 2 and delegate[0] is forward:
+            forward = delegate[1]
+        elif (
+            code is not None
+            and code.co_name == "_fused_forward"
+            and "original_forward" in code.co_freevars
+            and code.co_filename.replace("\\", "/").endswith("trl/trainer/utils.py")
+        ):
+            # TRL >= 1.15 add_fused_lm_head: without fused_lm_head = True it calls the forward it replaced.
+            forward = _closure(forward, "original_forward")
+        elif gate is not None and _made_by(forward, gate):
+            if not getattr(owner, "_unsloth_fast_path", False):
+                return False
+            forward = _closure(forward, "fast")
+        elif (
+            isinstance(forward, functools.partial)
+            and forward.args
+            and _made_by(forward.func, getattr(hooks, "add_hook_to_module", None))
+        ):
+            owner = forward.args[0]
+            forward = getattr(owner, "_old_forward", None)
+        elif _made_by(forward, getattr(operations, "convert_outputs_to_fp32", None)):
+            converter = _closure(forward, "model_forward")
+            if type(converter) is not getattr(operations, "ConvertOutputsToFp32", None):
+                return False
+            forward = converter.model_forward
+        elif _made_by(forward, getattr(autocast, "autocast_decorator", None)):
+            forward = _closure(forward, "func")
+        else:
+            return False
+    return False
+
+
 def _unsloth_grpo_hidden_states_signal(model):
     """``True``/``False`` if the forward honours ``UNSLOTH_RETURN_HIDDEN_STATES``, ``None`` when neither marker is present. See ``_unsloth_grpo_returns_hidden_states`` for where each marker is set. Walks the wrapper chain because the markers are set on whichever object the trainer saw, which may be the DDP module or the PEFT base model rather than the object handed to the logprob loop."""
     candidates = []
@@ -5405,12 +5517,6 @@ def _unsloth_grpo_hidden_states_signal(model):
             return True
         if getattr(type(candidate), "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", False):
             return True
-        # The fast CausalLM forwards carry the marker on the function itself; the fallback wrapper is then not installed.
-        _forward = getattr(candidate, "forward", None)
-        if getattr(_forward, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", False) and not getattr(
-            _forward, "_unsloth_grpo_hidden_states_forward_wrapped", False
-        ):
-            return True
     if any(
         getattr(candidate, "_unsloth_grpo_hidden_states_forward_wrapped", False)
         for candidate in candidates
@@ -5428,6 +5534,10 @@ def _unsloth_grpo_hidden_states_signal(model):
             getattr(candidate, "_unsloth_grpo_hidden_states_warning_issued", False)
             for candidate in candidates
         )
+    # After the wrapper's per-call status, and only for the module the wrapper would have replaced: a marked
+    # descendant elsewhere in the chain says nothing about the forward that just ran.
+    if _unsloth_forward_returns_hidden_states(model):
+        return True
     return None
 
 
@@ -5991,6 +6101,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_s
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_resolve_logit_scales))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidden_states))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_head_hooked))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_forward_returns_hidden_states))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
@@ -7765,6 +7876,7 @@ for _gkd_item in (
     _unsloth_get_final_logit_softcapping,
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_gkd_canonical,
     _unsloth_gkd_jsd_supported,
@@ -8124,6 +8236,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_get_final_logit_softcapping,
         _unsloth_resolve_logit_scales,
         _unsloth_grpo_returns_hidden_states,
+        _unsloth_forward_returns_hidden_states,
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
@@ -8630,6 +8743,7 @@ for _dpo_item in (
     _unsloth_get_final_logit_softcapping,
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
@@ -8855,6 +8969,7 @@ for _kto_item in (
     _unsloth_get_final_logit_softcapping,
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
+    _unsloth_forward_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
@@ -9784,6 +9899,7 @@ for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_
         _unsloth_get_final_logit_softcapping,
         _unsloth_resolve_logit_scales,
         _unsloth_grpo_returns_hidden_states,
+        _unsloth_forward_returns_hidden_states,
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,

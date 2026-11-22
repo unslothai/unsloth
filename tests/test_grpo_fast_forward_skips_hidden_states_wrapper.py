@@ -27,7 +27,11 @@ from unsloth.models.llama import (  # noqa: E402
     LlamaModel_fast_forward_inference,
 )
 from unsloth.models.mistral import MistralForCausalLM_fast_forward  # noqa: E402
-from unsloth.models.rl_replacements import _unsloth_grpo_hidden_states_signal  # noqa: E402
+from unsloth.models.rl_replacements import (  # noqa: E402
+    _unsloth_grpo_hidden_states_signal,
+    _unsloth_grpo_returns_hidden_states,
+    _unsloth_pref_returns_hidden_states,
+)
 
 _WRAPPED = "_unsloth_grpo_hidden_states_forward_wrapped"
 _CONFIG = dict(
@@ -99,13 +103,12 @@ def _logps(hidden, head, ids, logits_to_keep):
 
 
 def test_fast_forward_functions_carry_the_marker():
-    assert getattr(
-        CausalLM_fast_forward(LlamaModel_fast_forward_inference),
-        "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__",
-        False,
-    )
-    assert getattr(
-        MistralForCausalLM_fast_forward, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", False
+    # The marker is the function itself, so functools.wraps copies of it are told apart by identity.
+    fast_forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+    assert getattr(fast_forward, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", None) is fast_forward
+    assert (
+        getattr(MistralForCausalLM_fast_forward, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", None)
+        is MistralForCausalLM_fast_forward
     )
 
 
@@ -214,3 +217,270 @@ def test_return_dict_false_still_returns_hidden_states(family):
         as_tuple = fast(input_ids = ids, attention_mask = mask, logits_to_keep = 5).logits
     assert as_tuple.shape == (2, 5, _CONFIG["hidden_size"])
     assert torch.equal(as_tuple, as_dict)
+
+
+def _square_pair(family = "qwen2"):
+    """A square head (vocab_size == hidden_size): only the capability signal can tell hidden states from logits."""
+    stock_cls, fast_factory, config_cls = FAMILIES[family]
+    config = config_cls(**{**_CONFIG, "vocab_size": _CONFIG["hidden_size"]})
+    if family == "mistral":
+        config.sliding_window = None
+    torch.manual_seed(0)
+    stock = stock_cls(config).eval()
+    fast = fast_factory()(config).eval()
+    fast.load_state_dict(stock.state_dict())
+    return stock, fast
+
+
+def _gated_cls(family = "qwen2"):
+    """The class shape pre_patch leaves behind: the fast forward behind the _unsloth_fast_path gate."""
+    from unsloth.models.llama import _gated_method
+
+    stock_cls, fast_factory, _ = FAMILIES[family]
+    cls = type(f"Gated{stock_cls.__name__}", (stock_cls,), {})
+    cls.forward = _gated_method(cls, "forward", vars(fast_factory())["forward"], stock_cls.forward)
+    return cls
+
+
+def _amp_prepare(model):
+    """What Accelerator.prepare_model does for native AMP (accelerate/accelerator.py): autocast, then fp32 outputs."""
+    from types import MethodType
+
+    from accelerate.utils.operations import convert_outputs_to_fp32
+
+    model._original_forward = model.forward
+    autocast_context = torch.autocast(device_type = "cpu", dtype = torch.bfloat16)
+    model.forward = MethodType(autocast_context(model.forward.__func__), model)
+    model.forward = MethodType(convert_outputs_to_fp32(model.forward.__func__), model)
+    return model
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+def test_decorated_logits_forward_does_not_inherit_capability(family):
+    """functools.wraps copies the marker onto a replacement that returns real logits: it must still be wrapped."""
+    from functools import wraps
+
+    stock, fast = _square_pair(family)
+
+    @wraps(type(fast).forward)
+    def logits_forward(*args, **kwargs):
+        kwargs["output_hidden_states"] = False
+        return stock(*args, **kwargs)
+
+    fast.forward = logits_forward
+    assert rl._model_supports_unsloth_return_hidden_states(fast) is False
+    assert rl._install_grpo_hidden_states_forward_wrapper(fast) is True
+    ids = torch.arange(8).unsqueeze(0)
+    with torch.no_grad(), _return_hidden_states("1"):
+        actual = fast(input_ids = ids).logits
+    # The fallback could not get hidden states (output_hidden_states forced off), so it says this call is logits.
+    assert _unsloth_grpo_hidden_states_signal(fast) is False
+    with torch.no_grad(), _return_hidden_states("0"):
+        expected = stock(input_ids = ids).logits
+    torch.testing.assert_close(actual, expected, rtol = 0, atol = 0)
+
+
+def test_marked_descendant_does_not_override_the_wrappers_call_status():
+    """A fast forward on an auxiliary child must not outvote the installed fallback's per-call degradation."""
+    stock, fast = _square_pair()
+    assert rl._install_grpo_hidden_states_forward_wrapper(stock) is True
+    stock.module = fast  # an auxiliary .module that the signal's chain walk visits
+    stock._unsloth_grpo_hidden_states_degraded = True
+    assert _unsloth_grpo_hidden_states_signal(stock) is False
+    stock._unsloth_grpo_hidden_states_degraded = False
+    assert _unsloth_grpo_hidden_states_signal(stock) is True
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+def test_loader_gate_counts_only_on_fast_path_instances(family):
+    """pre_patch's gate runs the stock forward on an instance not marked _unsloth_fast_path."""
+    from unsloth.models.llama import mark_unsloth_fast_path
+
+    _, _, config_cls = FAMILIES[family]
+    config = config_cls(**{**_CONFIG, "vocab_size": _CONFIG["hidden_size"]})
+    if family == "mistral":
+        config.sliding_window = None
+    cls = _gated_cls(family)
+    torch.manual_seed(0)
+    plain = cls(config).eval()
+    marked = cls(config).eval()
+    marked.load_state_dict(plain.state_dict())
+    mark_unsloth_fast_path(marked)
+
+    assert rl._model_supports_unsloth_return_hidden_states(plain) is False
+    assert _unsloth_grpo_hidden_states_signal(plain) is None
+    assert rl._install_grpo_hidden_states_forward_wrapper(plain) is True
+
+    assert rl._model_supports_unsloth_return_hidden_states(marked) is True
+    assert rl._install_grpo_hidden_states_forward_wrapper(marked) is False
+    assert _unsloth_grpo_hidden_states_signal(marked) is True
+
+    ids = torch.arange(10).unsqueeze(0)
+    with torch.no_grad(), _return_hidden_states("1"):
+        from_plain = plain(input_ids = ids, logits_to_keep = 5).logits
+        from_marked = marked(input_ids = ids, logits_to_keep = 5).logits
+    assert _unsloth_grpo_hidden_states_signal(plain) is True
+    assert torch.equal(from_plain, from_marked)
+
+
+def test_amp_prepared_fast_forward_keeps_the_bypass():
+    """Accelerate's AMP prepare hides the marker behind convert_outputs_to_fp32 and autocast; both pass through."""
+    pytest.importorskip("accelerate")
+    _, fast = _square_pair()
+    _amp_prepare(fast)
+    assert rl._model_supports_unsloth_return_hidden_states(fast) is True
+    assert rl._install_grpo_hidden_states_forward_wrapper(fast) is False
+    assert _unsloth_grpo_hidden_states_signal(fast) is True
+    ids = torch.arange(8).unsqueeze(0)
+    with torch.no_grad(), _return_hidden_states("1"):
+        hidden = fast(input_ids = ids, logits_to_keep = 5).logits
+        head = fast.get_output_embeddings().weight
+        assert _unsloth_pref_returns_hidden_states(fast, hidden, head) is True
+    assert hidden.shape == (1, 5, _CONFIG["hidden_size"])
+
+
+def test_amp_prepared_logits_forward_is_still_wrapped():
+    """The AMP wrappers are followed only to what they really call: a functools.wraps copy under them, or a stock
+    instance behind the gate, still gets the fallback."""
+    from functools import wraps
+
+    pytest.importorskip("accelerate")
+    stock, fast = _square_pair()
+
+    @wraps(type(fast).forward)
+    def logits_forward(self, *args, **kwargs):
+        return stock(*args, **kwargs)
+
+    fast.forward = logits_forward.__get__(fast)
+    _amp_prepare(fast)
+    assert rl._model_supports_unsloth_return_hidden_states(fast) is False
+
+    config = Qwen2Config(**{**_CONFIG, "vocab_size": _CONFIG["hidden_size"]})
+    plain = _amp_prepare(_gated_cls()(config).eval())
+    assert rl._model_supports_unsloth_return_hidden_states(plain) is False
+
+
+def test_device_hook_follows_the_live_delegate():
+    """Accelerate's device hook copies the marker onto its partial; only its current _old_forward counts."""
+    hooks = pytest.importorskip("accelerate.hooks")
+    stock, fast = _square_pair()
+    hooks.add_hook_to_module(
+        fast, hooks.AlignDevicesHook(execution_device = "cpu", io_same_device = True)
+    )
+    assert rl._model_supports_unsloth_return_hidden_states(fast) is True
+    assert _unsloth_grpo_hidden_states_signal(fast) is True
+
+    _, stale = _square_pair()
+    hooks.add_hook_to_module(
+        stale, hooks.AlignDevicesHook(execution_device = "cpu", io_same_device = True)
+    )
+    stale._old_forward = stock.forward  # the hook now delegates to a forward that returns logits
+    assert rl._model_supports_unsloth_return_hidden_states(stale) is False
+    assert _unsloth_grpo_hidden_states_signal(stale) is None
+    assert rl._install_grpo_hidden_states_forward_wrapper(stale) is True
+
+
+def test_data_parallel_wrapper_reaches_the_fast_forward():
+    """DataParallel runs its .module: the installer and the scorer both look through it."""
+    _, fast = _square_pair()
+    parallel = torch.nn.DataParallel(fast)
+    assert rl._model_supports_unsloth_return_hidden_states(parallel) is True
+    assert rl._install_grpo_hidden_states_forward_wrapper(parallel) is False
+    assert _unsloth_grpo_hidden_states_signal(parallel) is True
+
+
+@pytest.mark.parametrize("device_hook", [False, True])
+def test_square_head_scoring_dispatch(device_hook):
+    """Square head end to end: the signal routes the native hidden states into the head exactly once."""
+    _, fast = _square_pair()
+    if device_hook:
+        hooks = pytest.importorskip("accelerate.hooks")
+        hooks.add_hook_to_module(
+            fast, hooks.AlignDevicesHook(execution_device = "cpu", io_same_device = True)
+        )
+    assert rl._install_grpo_hidden_states_forward_wrapper(fast) is False
+    ids = torch.arange(8).unsqueeze(0)
+    with torch.no_grad(), _return_hidden_states("1"):
+        hidden = fast(input_ids = ids, logits_to_keep = 5).logits
+        head = fast.get_output_embeddings()
+        assert _unsloth_grpo_returns_hidden_states(fast, hidden, head.weight) is True
+        assert _unsloth_pref_returns_hidden_states(fast, hidden, head.weight) is True
+        actual = _logps(hidden, head, ids, 4)
+    with torch.no_grad(), _return_hidden_states("0"):
+        logits = fast(input_ids = ids, logits_to_keep = 5).logits
+    expected = logits[:, :-1].float().log_softmax(-1)
+    expected = expected.gather(-1, ids[:, -4:, None]).squeeze(-1)
+    torch.testing.assert_close(actual, expected, rtol = 0, atol = 1e-6)
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+def test_scoring_does_not_collect_the_layer_history(family):
+    """config.output_hidden_states = True must not make the decoder keep every layer's state while scoring."""
+    _, fast = _pair(family)
+    fast.config.output_hidden_states = True
+    requested = []
+    fast.model.register_forward_pre_hook(
+        lambda module, args, kwargs: requested.append(kwargs.get("output_hidden_states")),
+        with_kwargs = True,
+    )
+    ids = torch.arange(10).unsqueeze(0)
+    with torch.no_grad(), _return_hidden_states("1"):
+        out = fast(input_ids = ids, logits_to_keep = 5)
+    assert requested == [False]
+    assert out.hidden_states is None
+    with torch.no_grad(), _return_hidden_states("0"):
+        assert len(fast(input_ids = ids).hidden_states) == _CONFIG["num_hidden_layers"] + 1
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+@pytest.mark.parametrize("name", ["logits_to_keep", "num_logits_to_keep"])
+def test_none_logits_to_keep_means_every_position(family, name):
+    _, fast = _pair(family)
+    ids = torch.arange(6).unsqueeze(0)
+    with torch.no_grad(), _return_hidden_states("1"):
+        hidden = fast(input_ids = ids, **{name: None}).logits
+    assert hidden.shape == (1, 6, _CONFIG["hidden_size"])
+    with torch.no_grad(), _return_hidden_states("0"):
+        assert fast(input_ids = ids, **{name: None}).logits.shape == (1, 6, _CONFIG["vocab_size"])
+
+
+def test_unsloth_delegate_wrapper_counts_only_for_itself():
+    """A wrapper naming its delegate in _unsloth_forward_delegate passes through; a functools.wraps copy does not."""
+    from functools import wraps
+
+    stock, fast = _square_pair()
+    delegate = fast.forward
+
+    def forward(*args, **kwargs):
+        return delegate(*args, **kwargs)
+
+    forward._unsloth_forward_delegate = (forward, delegate)
+    fast.forward = forward
+    assert rl._model_supports_unsloth_return_hidden_states(fast) is True
+
+    @wraps(forward)
+    def copied(*args, **kwargs):
+        return stock(*args, **kwargs)
+
+    fast.forward = copied
+    assert rl._model_supports_unsloth_return_hidden_states(fast) is False
+
+
+def test_trl_fused_lm_head_passes_through_to_the_fast_forward():
+    """TRL >= 1.15 GRPO puts add_fused_lm_head's forward on every model, copying type(model).forward's metadata."""
+    trl_utils = pytest.importorskip("trl.trainer.utils")
+    if not hasattr(trl_utils, "add_fused_lm_head"):
+        pytest.skip("TRL < 1.15 has no add_fused_lm_head")
+    from unsloth.models.llama import mark_unsloth_fast_path
+
+    config = Qwen2Config(**{**_CONFIG, "vocab_size": _CONFIG["hidden_size"]})
+    cls = _gated_cls()
+    marked, plain = cls(config).eval(), cls(config).eval()
+    mark_unsloth_fast_path(marked)
+    for model in (marked, plain):
+        trl_utils.add_fused_lm_head(model)
+        assert "forward" in vars(model)
+    assert rl._model_supports_unsloth_return_hidden_states(marked) is True
+    assert rl._install_grpo_hidden_states_forward_wrapper(marked) is False
+    assert _unsloth_grpo_hidden_states_signal(marked) is True
+    assert rl._model_supports_unsloth_return_hidden_states(plain) is False

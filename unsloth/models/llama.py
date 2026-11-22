@@ -2048,9 +2048,12 @@ def _run_backbone(self, **kwargs):
     # caller (output_hidden_states, or as .logits under UNSLOTH_RETURN_HIDDEN_STATES) let the
     # caller own or share that grad, so they keep the norm's own buffer.
     model = self.model
+    returns_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1"
+    if returns_hidden_states:
+        # Scoring reads only the head input: a per-layer history would stay alive until the forward returns.
+        kwargs["output_hidden_states"] = False
     model._unsloth_head_reads_final_norm = (
-        not kwargs.get("output_hidden_states")
-        and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1"
+        not kwargs.get("output_hidden_states") and not returns_hidden_states
     )
     try:
         return model(**kwargs)
@@ -2177,7 +2180,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
             num_logits_to_keep = 0
         else:
-            num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+            num_logits_to_keep = max(num_logits_to_keep or 0, logits_to_keep or 0)
 
         hidden_states = hidden_states.to(lm_head_device)
         if labels is not None:
@@ -2336,8 +2339,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         )
 
     # The UNSLOTH_RETURN_HIDDEN_STATES branch above hands back the head's own input, so GRPO's
-    # hidden-state fallback wrapper (unsloth/models/rl.py) must not wrap this forward.
-    _CausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = True
+    # hidden-state fallback wrapper (unsloth/models/rl.py) must not wrap this forward. The marker is the
+    # function itself: a replacement that copied it with functools.wraps does not inherit the capability.
+    _CausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = _CausalLM_fast_forward
     return _CausalLM_fast_forward
 
 

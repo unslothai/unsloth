@@ -361,7 +361,7 @@ def MistralForCausalLM_fast_forward(
     if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
         num_logits_to_keep = 0
     else:
-        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+        num_logits_to_keep = max(num_logits_to_keep or 0, logits_to_keep or 0)
 
     # In GRPO mode, return raw hidden states.
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
@@ -487,8 +487,11 @@ def MistralForCausalLM_fast_forward(
     )
 
 
-# Honours UNSLOTH_RETURN_HIDDEN_STATES itself, so GRPO's hidden-state fallback wrapper must not wrap it.
-MistralForCausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = True
+# Honours UNSLOTH_RETURN_HIDDEN_STATES itself, so GRPO's hidden-state fallback wrapper must not wrap it. The marker
+# is the function itself, so a replacement that copied it with functools.wraps does not inherit the capability.
+MistralForCausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = (
+    MistralForCausalLM_fast_forward
+)
 
 
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
