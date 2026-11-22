@@ -160,6 +160,11 @@ export function autoCompactSliderIndex(input: string, stops: number[]): number {
   return best;
 }
 
+/** What the slider writes into the box: en-US grouping, which parseAutoCompactTokens strips in any locale. */
+export function formatAutoCompactDraft(tokens: number): string {
+  return tokens.toLocaleString("en-US");
+}
+
 export function autoCompactSliderLabel(
   tokens: number,
   unset = "Default",

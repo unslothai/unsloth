@@ -163,6 +163,7 @@ import {
   autoCompactSliderIndex,
   autoCompactSliderLabel,
   autoCompactSliderStops,
+  formatAutoCompactDraft,
   normalizeAutoCompactTokensByModel,
   normalizeCompactionMode,
   parseAutoCompactTokens,
@@ -2507,7 +2508,7 @@ export function ChatProvidersSettings({
                     ]}
                     onValueChange={([index]) =>
                       setAutoCompactDraft(
-                        index ? autoCompactStops[index].toLocaleString() : "",
+                        index ? formatAutoCompactDraft(autoCompactStops[index]) : "",
                       )
                     }
                     aria-label="Auto-compact after"

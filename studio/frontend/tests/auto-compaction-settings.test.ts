@@ -10,8 +10,10 @@ import {
   autoCompactSliderLabel,
   autoCompactSliderStops,
   autoCompactTokensForModel,
+  formatAutoCompactDraft,
   ggufCompactionRequestFields,
   normalizeAutoCompactTokensByModel,
+  parseAutoCompactTokens,
   parseAutoCompactTokensByModel,
 } from "../src/features/chat/utils/auto-compaction.ts";
 
@@ -460,4 +462,12 @@ test("per-model drafts save only listed models and skip blanks", () => {
     { a: 24_000 },
   );
   assert.equal(normalizeAutoCompactTokensByModel({ b: 5 }), undefined);
+});
+
+test("a slider-written value parses back whatever the browser locale", () => {
+  // de-DE would group 128000 as "128.000", which the parser rejects.
+  assert.throws(() => parseAutoCompactTokens((128_000).toLocaleString("de-DE")));
+  for (const tokens of autoCompactSliderStops().slice(1)) {
+    assert.equal(parseAutoCompactTokens(formatAutoCompactDraft(tokens)), tokens);
+  }
 });
