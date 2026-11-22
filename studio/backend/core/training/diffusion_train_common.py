@@ -2129,6 +2129,12 @@ def _apply_perf_flags(
                     cuda_backends.enable_cudnn_sdp(False)
     except Exception:  # noqa: BLE001 -- perf flags are never fatal
         pass
+    try:
+        # gfx1151: diffusers' native backend hands SDPA strided q/k/v; long sequences train faster on contiguous copies.
+        from core.inference.diffusion_attention import install_rocm_contiguous_qkv_training
+        snap["rocm_contiguous_qkv"] = install_rocm_contiguous_qkv_training()
+    except Exception:  # noqa: BLE001 -- perf only
+        pass
     return snap
 
 
@@ -2140,6 +2146,12 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
     from core.inference.diffusion_speed import restore_backend_flags
 
     restore_backend_flags(snap.get("flags"))
+    if snap.get("rocm_contiguous_qkv"):
+        try:
+            from core.inference.diffusion_attention import uninstall_rocm_contiguous_qkv_training
+            uninstall_rocm_contiguous_qkv_training(snap["rocm_contiguous_qkv"])
+        except Exception:  # noqa: BLE001 -- best-effort restore
+            pass
     try:
         import torch
 
