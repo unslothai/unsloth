@@ -3266,10 +3266,7 @@ def _offload_would_exhaust_host_ram(
 
 
 def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
-    """Pixel tile edge for the offload path's CPU VAE decode, from the host RAM the offloaded weights leave (they all
-    sit in host RAM under --offload-to-cpu); None keeps the bare --vae-tiling (256 px). Builds whose tile size is not
-    in image pixels, and an unreadable host, keep 256 px. On Windows the weights and the decode buffer are committed
-    memory, so a commit headroom below the physical reading caps it."""
+    """CPU VAE tile from host RAM left by the offloaded weights; None = 256 px. Windows: commit headroom caps it."""
     if not sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
         return None
     try:
@@ -3292,7 +3289,7 @@ def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
                 for f in ("diffusion_model", "vae", *TEXT_ENCODER_FIELDS)
             )
             spare = available - weights - host_reserve_mib(total)
-    except Exception as exc:  # noqa: BLE001 -- a failed reading keeps the 256 px default
+    except Exception as exc:  # noqa: BLE001
         logger.debug("sd_cpp.vae_tile: host RAM unreadable: %s", exc)
         spare = None
     size = sd_cpp_args_mod.cpu_vae_tile_size(spare)

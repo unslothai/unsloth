@@ -36,7 +36,6 @@ PIXEL_HELP = (
     "  --vae-tile-size                          tile size for vae encode and decode in image pixels, format [W]x[H] or [S]\n"
     "                                           (default: 256x256; requires --vae-tiling)\n"
 )
-# Wrapped differently by another build: the check joins whitespace.
 PIXEL_HELP_WRAPPED = "  --vae-tile-size   tile size for vae encode and decode in image\n      pixels, format [W]x[H]\n"
 LATENT_HELP = "  --vae-tile-size                    tile size for vae tiling, format [X]x[Y] (default: 32x32)\n"
 
@@ -71,7 +70,6 @@ def test_kill_switch_keeps_256(value):
 
 def test_env_pins_a_size_even_without_a_ram_reading():
     assert cpu_vae_tile_size(None, env = {CPU_VAE_TILE_ENV: "640"}) == 640
-    # Nonsense or tiny values fall back to the RAM rule.
     assert cpu_vae_tile_size(10**7, env = {CPU_VAE_TILE_ENV: "12"}) == 1024
     assert cpu_vae_tile_size(10**7, env = {CPU_VAE_TILE_ENV: "big"}) == 1024
 
@@ -81,9 +79,7 @@ def test_offload_flags_carry_the_size_only_for_the_cpu_vae():
         flags = offload_flags(policy, vae_tile_size = 1024)
         assert flags[-2:] == ["--vae-tile-size", "1024"]
         assert flags.count("--vae-tiling") == 1 and "--vae-on-cpu" in flags
-        # Without a size the flags are exactly today's.
         assert offload_flags(policy, vae_tile_size = None) == flags[:-2]
-        # A GPU VAE keeps 256 px and sd.cpp's halving retry.
         assert "--vae-tile-size" not in offload_flags(policy, vae_on_cpu = False, vae_tile_size = 1024)
     for policy in (OFFLOAD_NONE, OFFLOAD_GROUP):
         assert "--vae-tile-size" not in offload_flags(policy, vae_tile_size = 1024)
@@ -107,7 +103,7 @@ def test_cli_and_server_argv_keep_the_pair_and_user_args_win(tmp_path):
     )
     i = cli.index("--vae-tile-size")
     assert cli[i + 1] == "768"
-    # sd.cpp's parser is last-wins and user args go last, so an explicit setting is kept.
+    # sd.cpp is last-wins and user args go last.
     assert cli[len(cli) - 1 - cli[::-1].index("--vae-tile-size") + 1] == "256"
     server = build_sd_cpp_server_command(
         "/bin/sd-server",
@@ -173,14 +169,12 @@ def test_backend_subtracts_offloaded_weights_and_reserve(tmp_path, monkeypatch):
     assert with_available(weights + reserve + _need(512)) == 512
     assert with_available(weights + reserve) is None
     assert with_available(None) is None
-    # A latent-unit build keeps 256 px whatever the RAM.
     monkeypatch.setattr(args_mod, "sd_cpp_vae_tile_size_in_pixels", lambda b: False)
     assert with_available(10**7) is None
 
 
 def test_windows_commit_headroom_caps_the_tile(tmp_path, monkeypatch):
-    """Windows: the offloaded weights and the decode buffer are committed memory, so a commit headroom below the
-    physical available RAM (small or no page file) sizes the tile. Elsewhere host_commit_mib() is None."""
+    """Windows: commit headroom below physical available RAM sizes the tile."""
     from core.inference import diffusion_small_host
 
     files = SimpleNamespace(
@@ -217,7 +211,6 @@ def test_backend_unreadable_host_keeps_256(tmp_path, monkeypatch):
 
 
 def test_real_pinned_help_is_pixel_units():
-    """The pinned prebuilt's help, when one is on this machine (SD_CLI_PATH)."""
     binary = os.environ.get("SD_CLI_PATH")
     if not binary or not os.path.exists(binary):
         pytest.skip(reason = "no sd-cli binary on this machine (SD_CLI_PATH unset or missing)")
@@ -225,8 +218,6 @@ def test_real_pinned_help_is_pixel_units():
 
 
 class _HoldingServer:
-    """sd-server stand-in whose offloaded weights occupy host RAM until it is stopped."""
-
     running: list = []
 
     def __init__(self, binary):
@@ -248,9 +239,7 @@ class _HoldingServer:
 def test_a_model_switch_sizes_the_tile_after_the_outgoing_server_frees_its_weights(
     tmp_path, monkeypatch
 ):
-    """The first placement of a load runs while the outgoing sd-server still holds its offloaded weights in host RAM.
-    The running server defers the install, so placement runs again after the teardown: the second load of the same
-    model gets the same tile (the same pixels) as the first."""
+    """Placement reruns after the outgoing server frees its RAM, so a reload gets the same tile."""
     import types
 
     from core.inference import diffusion_small_host
@@ -272,7 +261,7 @@ def test_a_model_switch_sizes_the_tile_after_the_outgoing_server_frees_its_weigh
     monkeypatch.setattr(diffusion_small_host, "host_commit_mib", lambda: None)
     monkeypatch.setattr(args_mod, "sd_cpp_vae_tile_size_in_pixels", lambda b: True)
     monkeypatch.delenv(CPU_VAE_TILE_ENV, raising = False)
-    # CPU torch on the Vulkan build: the card is unmeasured, so auto offloads with the model policy.
+    # Vulkan build with CPU torch: unmeasured card, auto offloads.
     monkeypatch.setattr(backend_mod, "_installed_accelerator_of", lambda binary: "vulkan")
     monkeypatch.setattr(backend_mod, "find_sd_server_binary", lambda: "/x/sd-server")
     monkeypatch.setattr(backend_mod, "_server_binary_runnable", lambda *_a, **_k: True)
