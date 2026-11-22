@@ -32,7 +32,7 @@ import math
 import os
 import random
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -102,6 +102,7 @@ from core.training.diffusion_checkpoint import (
     identity_for_config,
     with_cache_mode,
     with_resolved_base_precision,
+    with_world_size,
     with_resolved_dit,
     with_resolved_revision,
     preflight_resume,
@@ -121,6 +122,7 @@ from core.training.diffusion_train_extras import (
     accumulate_loss,
     cover_resize_dims,
     loss_value,
+    oriented_image_size,
     PersistentConditioningCache,
     save_ema_adapter,
 )
@@ -3106,6 +3108,51 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
     return _to_unit_tensor(img)
 
 
+def _precision_agreement_warning(own, agreed, picks) -> Optional[str]:
+    """Data parallel: every rank trains the base the tightest card resolved. Say so when that is not this card's pick
+    (another card was busier, so Auto settled lower), naming every rank's pick."""
+    if not picks or len(set(picks)) == 1:
+        return None
+    per_rank = ", ".join(f"GPU {i}: {p}" for i, p in enumerate(picks))
+    if own == agreed:
+        return f"multi-GPU: the cards resolved different base precisions ({per_rank}); every GPU trains {agreed}."
+    return (
+        f"multi-GPU: this GPU resolved base_precision {own}, but another card has less free memory, so every GPU "
+        f"trains {agreed} ({per_rank}). Free the other card for {own}."
+    )
+
+
+def _skip_pixel_draws(path, resolution, center_crop, random_flip, rng):
+    """Advance ``rng`` exactly as ``_load_pixel_tensor`` would, from the image header alone: a data-parallel rank
+    skips decoding the images outside its slice and every rank's stream stays in step."""
+    if center_crop and not random_flip:
+        return
+    cw, ch = _canvas(resolution)
+    if not center_crop:
+        rw, rh = cover_resize_dims(*oriented_image_size(path), cw, ch)
+        rng.randint(0, max(0, rw - cw))
+        rng.randint(0, max(0, rh - ch))
+    if random_flip:
+        rng.random()
+
+
+@contextmanager
+def _rank_private_rng(device, seed):
+    """Run the block on a private generator seeded ``seed``; the shared stream every rank draws from is left as it was."""
+    import torch
+
+    dev = torch.device(device)
+    if dev.type == "cuda":
+        index = dev.index if dev.index is not None else torch.cuda.current_device()
+        with torch.random.fork_rng(devices = [index]), torch.cuda.device(index):
+            torch.cuda.manual_seed(seed)
+            yield
+    else:
+        with torch.random.fork_rng(devices = []):
+            torch.manual_seed(seed)
+            yield
+
+
 def _load_pixel_tensor_planned(
     path,
     resolution,
@@ -3634,10 +3681,22 @@ def run_dit_lora_training(
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
+    # num_gpus > 1: plan the world (after its fallbacks) before resolving epochs, since every micro-step draws
+    # train_batch_size images per rank. A started rank already received the resolved step count (num_epochs = 0).
+    from core.training import diffusion_ddp
+
+    ddp = diffusion_ddp.current()
+    world, world_why = 1, None
+    if ddp is None and int(getattr(cfg, "num_gpus", 1) or 1) > 1:
+        world, world_why = diffusion_ddp.plan_world(cfg, device)
     # Resolve num_epochs to train_steps now the size is known; rebind cfg so all reads agree.
     cfg = replace(
         cfg,
-        train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
+        train_steps = resolve_train_steps(
+            replace(cfg, train_batch_size = max(1, cfg.train_batch_size) * max(1, world)),
+            len(pairs),
+            [p for p, _ in pairs],
+        ),
         num_epochs = 0,
     )
     # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
@@ -3647,6 +3706,7 @@ def run_dit_lora_training(
         dataset_pairs = pairs,
         resolved_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets),
     )
+    identity = with_world_size(identity, ddp.world if ddp is not None else world)
     if cfg.resume_from_checkpoint:
         preflight_resume(
             cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
@@ -3672,10 +3732,22 @@ def run_dit_lora_training(
         )
         return str(out_dir)
 
+    # num_gpus > 1: this process is rank 0 of a data-parallel run (diffusion_ddp); a started rank finds its context.
+    launched = None
+    if ddp is None and int(getattr(cfg, "num_gpus", 1) or 1) > 1:
+        if world_why:
+            _emit(on_event, "warning", message = world_why)
+        if world > 1:
+            launched = ddp = diffusion_ddp.launch(
+                cfg,
+                world,
+                on_failure = lambda msg: _emit(on_event, "error", message = msg, error = msg),
+            )
     # Restore TF32 / cudnn.benchmark on exit, so in-process callers see no lasting change.
     perf_snap = _apply_perf_flags(cfg, device)
+    failed = True
     try:
-        return _train_dit(
+        out = _train_dit(
             cfg,
             spec,
             pairs,
@@ -3687,9 +3759,14 @@ def run_dit_lora_training(
             lambda: save_on_stop,
             identity,
             fp16_amp = fp16_amp,
+            **({"ddp": ddp} if ddp is not None else {}),
         )
+        failed = False
+        return out
     finally:
         _restore_perf_flags(perf_snap)
+        if launched is not None:
+            launched.close(failed = failed)
 
 
 def _train_dit(
@@ -3704,9 +3781,10 @@ def _train_dit(
     _save_on_stop,
     identity,
     fp16_amp = False,
+    ddp = None,
 ):
     """The body of ``run_dit_lora_training``, split out so the backend perf flags are
-    snapshot/restored around it in exactly one place."""
+    snapshot/restored around it in exactly one place. ``ddp``: this rank's diffusion_ddp context (None = one device)."""
     import torch
     import torch.nn.functional as F
     from diffusers import FlowMatchEulerDiscreteScheduler
@@ -3736,6 +3814,10 @@ def _train_dit(
     to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
     # Own dict: caption_embeds sizes the qwen compile pad bucket, which a long preview prompt must not grow.
     sample_plan = plan_samples(cfg, spec.family, captions) if spec.decode_latents else None
+    if ddp is not None and not ddp.is_main:
+        # Previews are rank 0's; the conditioning is read warm once rank 0 has written it and loaded its base.
+        sample_plan = None
+        ddp.wait_for("conditioning")
     sample_texts = sample_plan.encode_texts if sample_plan is not None else []
     sample_embeds: dict = {}
     # Kept past a failed round (which drops sample_plan) so a discard still removes what was written.
@@ -3884,12 +3966,24 @@ def _train_dit(
     variant_rng = random.Random(cfg.seed + 1)
     caption_embeds = _pin_caption_embeds(caption_embeds, device)
 
+    if ddp is not None:
+        ddp.release("conditioning")
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
     base_precision = "nf4" if fp16_amp else _resolve_base_precision(cfg, spec, device)
+    if ddp is not None:
+        own = base_precision
+        base_precision = ddp.agree_precision(base_precision)
+        message = _precision_agreement_warning(
+            own, base_precision, getattr(ddp, "precision_picks", None)
+        )
+        if message and ddp.is_main:
+            _emit(on_event, "warning", message = message)
+        ddp.wait_for("transformer")
     swap_request = block_swap_request(cfg)
     # auto's int8 band: bf16 with as many blocks swapped as needed (often none) trains faster at bf16 accuracy.
     auto_swap = (
         swap_request is None
+        and ddp is None
         and not block_swap_explicit_off(cfg)
         and _auto_block_swap_wanted(cfg, base_precision, device, spec)
     )
@@ -3917,6 +4011,8 @@ def _train_dit(
         transformer = spec.load_transformer(
             fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
         )
+    if ddp is not None:
+        ddp.release("transformer")
     base_is_bnb = base_precision == "nf4"
     fp16_report = None
     if fp16_amp:
@@ -4029,6 +4125,9 @@ def _train_dit(
         transformer, on_event, cfg.resolved_family
     ):
         base_precision = "bf16"
+    if ddp is not None:
+        # Same seed, so already equal; the broadcast makes the replicas identical whatever the load consumed.
+        ddp.broadcast_params(lora_params)
 
     # LoRA EMA shadows ONLY the trainable adapter params; initialised after the precision conversions so it tracks the final fp32 objects.
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
@@ -4404,6 +4503,13 @@ def _train_dit(
     train_peak = TrainingPeakMemory(device)
     compile_watch = _dynamo_compile_counters() if compiled else None
     consecutive_skips = 0
+    # Data parallel: every rank draws the global batch from the same streams and trains its own slice.
+    draw_size = batch_size * (ddp.world if ddp is not None else 1)
+    if ddp is not None:
+        # A stop seen during the opening preview (rank 0 only) must end every rank together.
+        stop_latched = ddp.any_flag(stop_latched)
+        # A resume restored each card's generator from rank 0's save; the noise stream must continue from rank 0's.
+        ddp.sync_rng()
     # while, not range: an fp16 overflow step applies no update and is not counted.
     opt_step = resumed
     while opt_step < cfg.train_steps:
@@ -4415,31 +4521,50 @@ def _train_dit(
         if replay is not None:
             replay.clear()
         for _ in range(cfg.gradient_accumulation_steps):
-            idxs = index_sampler.next_batch(batch_size)
+            idxs = index_sampler.next_batch(draw_size)
             if canvases is not None:
                 idxs = idxs[1]
             if latent_cache is not None:
                 latents = _sample_cached_latents(
                     latent_cache, idxs, variant_rng, device, weight_dtype
                 )
+                if ddp is not None:
+                    latents = latents[ddp.batch_slice(batch_size)]
             else:
-                px = torch.stack(
-                    [
-                        _load_pixel_tensor(
+                # Data parallel: only this rank's slice is decoded and encoded; the rest only advance the crop / flip
+                # stream, which every rank shares.
+                own = (
+                    range(len(idxs))
+                    if ddp is None
+                    else range(len(idxs))[ddp.batch_slice(batch_size)]
+                )
+                px = []
+                for j, i in enumerate(idxs):
+                    load = _load_pixel_tensor if j in own else _skip_pixel_draws
+                    px.append(
+                        load(
                             image_paths[i],
                             cfg.resolution if canvases is None else canvases[i],
                             cfg.center_crop,
                             cfg.random_flip,
                             rng,
                         )
-                        for i in idxs
-                    ]
-                ).to(device)
-                latents = spec.encode_latents(vae, px).to(weight_dtype)
+                    )
+                px = torch.stack([px[j] for j in own]).to(device)
+                if ddp is None:
+                    latents = spec.encode_latents(vae, px).to(weight_dtype)
+                else:
+                    # The posterior sample draws a rank-private stream, so the shared one (noise, timesteps) stays in
+                    # step across ranks and no two ranks reuse one posterior draw.
+                    with _rank_private_rng(device, rng.getrandbits(62) + ddp.rank):
+                        latents = spec.encode_latents(vae, px).to(weight_dtype)
 
-            noise = torch.randn_like(latents)
+            # Noise and timesteps are drawn for the whole global batch (1 GPU: the batch), then sliced to this rank.
+            noise = torch.randn(
+                (draw_size, *latents.shape[1:]), dtype = latents.dtype, device = latents.device
+            )
             timesteps, t_indices = _sample_timesteps(
-                scheduler, latents.shape[0], device, spec.timestep_density
+                scheduler, draw_size, device, spec.timestep_density
             )
             sigmas = _gather_sigmas(sigma_table, t_indices, device, weight_dtype, latents.ndim)
             if shift_active:
@@ -4451,15 +4576,19 @@ def _train_dit(
                     .flatten()
                     * num_train_ts
                 )
+            picked = [
+                caption_embeds[""]
+                if cfg_dropout > 0 and rng.random() < cfg_dropout
+                else caption_embeds[captions[i]]
+                for i in idxs
+            ]
+            if ddp is not None:
+                mine = ddp.batch_slice(batch_size)
+                noise, timesteps, sigmas = (t[mine] for t in (noise, timesteps, sigmas))
+                picked = picked[mine]
             noisy = (1.0 - sigmas) * latents + sigmas * noise
-
             embeds = spec.collate(
-                [
-                    caption_embeds[""]
-                    if cfg_dropout > 0 and rng.random() < cfg_dropout
-                    else caption_embeds[captions[i]]
-                    for i in idxs
-                ],
+                picked,
                 device,
                 weight_dtype,
                 pad_to = qwen_pad_to,
@@ -4486,6 +4615,9 @@ def _train_dit(
             else:
                 step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
+        if ddp is not None:
+            # Before unscale / clip: every rank then sees the same averaged (still loss-scaled) gradients.
+            step_acc = ddp.all_reduce_grads(lora_params, step_acc)
         if fp16_amp:
             scaler.unscale_(optimizer)
         grad_norm = None
@@ -4503,7 +4635,10 @@ def _train_dit(
             consecutive_skips += 1
             if consecutive_skips >= FP16_MAX_CONSECUTIVE_SKIPS:
                 raise RuntimeError(_fp16_overflow_message(spec, consecutive_skips, step_loss))
-            if _check_stop():
+            stop_skip = _check_stop()
+            if ddp is not None:
+                stop_skip = ddp.any_flag(stop_skip)
+            if stop_skip:
                 stopped = True
                 break
             continue
@@ -4539,7 +4674,7 @@ def _train_dit(
                 compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
             peak_gb = train_peak.gb()
-            per_step = batch_size * cfg.gradient_accumulation_steps
+            per_step = draw_size * cfg.gradient_accumulation_steps
             if t_steady is not None and ran_here > 1:
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
             else:
@@ -4568,9 +4703,14 @@ def _train_dit(
             _sample(done)
             train_peak.resume()
             stop_now = stop_latched
-        # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
+        if ddp is not None:
+            stop_now = ddp.any_flag(stop_now)
+        # Skipped on the final step and when stopping, since the stop path writes one at the exact step. Data
+        # parallel: rank 0 alone saves. Its RNG state is every rank's (all ranks draw the global batch from the same
+        # streams), so a resume restores it on every rank and ddp.sync_rng() hands rank 0's card generator to the rest.
         if (
             not stop_now
+            and (ddp is None or ddp.is_main)
             and cfg.save_steps
             and done % cfg.save_steps == 0
             and done < cfg.train_steps
@@ -4599,6 +4739,29 @@ def _train_dit(
             handle.remove()
         # Saving and any later reuse of this transformer see PEFT's own modules again.
         uninstall_fast_lora(transformer)
+
+    ddp_report = None
+    if ddp is not None:
+        # Every rank leaves the loop at the same step; the checksum proves the replicas never drifted apart.
+        rows = ddp.gather(
+            {
+                "rank": ddp.rank,
+                "steps": done,
+                "peak_gib": train_peak.gb() or None,
+                "max_alloc_gib": round(torch.cuda.max_memory_allocated() / (1 << 30), 3)
+                if device == "cuda"
+                else None,
+                "lora_checksum": ddp.params_checksum(lora_params),
+            }
+        )
+        ddp.finished = True
+        if not ddp.is_main:
+            return str(out_dir)
+        ddp_report = {
+            **ddp.stats(),
+            "ranks": rows,
+            "params_in_sync": len({r["lora_checksum"] for r in rows}) == 1,
+        }
 
     lora_path: Optional[str] = None
     catalog_path: Optional[str] = None
@@ -4650,6 +4813,7 @@ def _train_dit(
         wall_seconds = round(time.time() - t_start, 1),
         resumed_from_step = resumed or None,
         **({"mixed_precision": "fp16", "skipped_steps": skipped_steps} if fp16_amp else {}),
+        **({"multi_gpu": ddp_report} if ddp_report is not None else {}),
         # Stop without saving discards the run, so its periodic checkpoints must not keep offering a resume.
         discarded = bool(stopped and not _save_on_stop()),
     )
