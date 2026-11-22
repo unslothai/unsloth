@@ -361,3 +361,37 @@ def test_an_lfm_call_quoted_in_a_later_rehearsal_is_its_data():
     )
     names = [n for n, _ in _names_args(text, enabled_tool_names = {"web_search", "terminal"})]
     assert names == ["web_search", "web_search"]
+
+
+def test_a_call_only_answer_with_no_budget_left_says_so(monkeypatch):
+    def usage(n):
+        return (
+            "data: "
+            + json.dumps({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": n}})
+            + "\n"
+        )
+
+    first = _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({"query": "q"})},
+                }
+            ]
+        }
+    )
+    streams = [[first, usage(48), _done()], [_sse({"content": CALL}), usage(24), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tokens = 64,
+    )
+    assert len(payloads) == 2
+    shown = _route_shown(events)
+    assert "tool call limit" in shown and "tool_call_start" not in shown, shown

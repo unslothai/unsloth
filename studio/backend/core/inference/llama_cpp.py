@@ -43457,11 +43457,10 @@ class LlamaCppBackend:
                         yield {"type": "status", "text": "", "new_pass": True}
                     else:
                         if (
-                            _final_call_retried
-                            and answer_text.strip()
+                            answer_text.strip()
                             and not _strip_tool_markup(answer_text, final = True).strip()
                         ):
-                            # The retry asked for a tool too: an empty bubble is not actionable.
+                            # Call-only and not retried (or retried again): an empty bubble is not actionable.
                             _last_emitted = f"{_last_emitted.rstrip()}\n\n{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}".lstrip()
                             yield {"type": "content", "text": _last_emitted}
                         _cut = _quote_cut_event(
