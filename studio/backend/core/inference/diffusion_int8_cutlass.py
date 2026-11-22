@@ -467,6 +467,17 @@ def _stored_tiles(index: int, fam: int) -> Optional[tuple]:
         return None
 
 
+def _alloc_failures(index: int) -> Optional[int]:
+    """The caching allocator's out-of-memory count on ``index`` after a sync; None when the context cannot answer
+    (a sticky launch error). Never raises."""
+    try:
+        import torch
+        torch.cuda.synchronize(index)
+        return int(torch.cuda.memory_stats(index).get("num_ooms", 0))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _store_tiles(index: int, fam: int, ok: tuple) -> None:
     try:
         _probe_store().put(
@@ -489,10 +500,16 @@ def probed_tiles(index: int) -> tuple:
                 ok = stored
             else:
                 pairs = _scale_dtypes(fam)
+                ooms = _alloc_failures(index)
                 ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
                 failed = [t for t in range(len(tiles(fam))) if t not in ok]
-                # a failure persists only when it repeats: one transient error must not drop a tile for good
-                if not any(_probe_tile(index, fam, t, pairs) for t in failed):
+                # a failure persists only when it repeats and nothing around it failed: one transient error, an
+                # out-of-memory on a full card or a broken context must not drop a tile for good
+                if (
+                    not any(_probe_tile(index, fam, t, pairs) for t in failed)
+                    and ooms is not None
+                    and _alloc_failures(index) == ooms
+                ):
                     _store_tiles(index, fam, ok)
     except Exception:  # noqa: BLE001
         ok = ()

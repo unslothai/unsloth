@@ -37,6 +37,7 @@ def env(monkeypatch):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 9))
     monkeypatch.setattr(cut, "library", lambda: object())
     monkeypatch.setattr(cut, "tiles", lambda fam: tuple(range(4)))
+    monkeypatch.setattr(cut, "_alloc_failures", lambda index: 0)
     probes = []
     verdict = {0: True, 1: False, 2: True, 3: True}
     monkeypatch.setattr(cut, "_probe_tile", lambda i, fam, t, pairs: probes.append(t) or verdict[t])
@@ -68,6 +69,28 @@ def test_a_flapping_failure_is_not_persisted(env):
     cut._probe_tile = flaky  # monkeypatch fixture restores via its own setattr record
     assert cut.probed_tiles(0) == (0, 2, 3)  # this process keeps the conservative verdict
     assert store.table == {}
+
+
+@pytest.mark.parametrize(
+    "counts", [[0, 1], [0, None], [None, None]], ids = ["oom", "sticky", "unreadable"]
+)
+def test_an_oom_or_a_broken_context_during_the_probe_is_not_persisted(env, monkeypatch, counts):
+    """A full card (out-of-memory inside the probe) or a sticky launch error fails tiles for this process only."""
+    store, probes, _ = env
+    seen = iter(counts)
+    monkeypatch.setattr(cut, "_alloc_failures", lambda index: next(seen))
+    assert cut.probed_tiles(0) == (0, 2, 3)  # this process keeps the conservative verdict
+    assert store.table == {}
+    cut._PROBED.clear()
+    probes.clear()
+    monkeypatch.setattr(cut, "_alloc_failures", lambda index: 0)
+    assert cut.probed_tiles(0) == (0, 2, 3) and probes[:4] == [
+        0,
+        1,
+        2,
+        3,
+    ]  # probed again, then persisted
+    assert store.table[("cuda:0", "tiles|80")] == {"n": 4, "ok": [0, 2, 3]}
 
 
 def test_stale_or_malformed_verdicts_probe_again(env, monkeypatch):
