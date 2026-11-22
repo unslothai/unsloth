@@ -922,14 +922,115 @@ def is_ggml_unsupported_op_abort(message: str) -> bool:
     return all(marker in text for marker in _GGML_UNSUPPORTED_OP_MARKERS)
 
 
+# Bare --vae-tiling on the CPU VAE = 256 px tiles (49 for 1024 px, ~3x slower, per-tile colour shift); take the
+# largest tile spare host RAM holds. FLUX.2 klein 4B 1024 px decode: 185 s at 256, 138 s at 512, 68 s whole.
+CPU_VAE_TILE_ENV = "UNSLOTH_SD_CPP_VAE_TILE"
+CPU_VAE_TILE_SIZES = (1024, 768, 512)
+# Qwen-Image 2.1 measured 3889 MiB per 1024 px tile (worst family) + 30%.
+CPU_VAE_DECODE_MIB_PER_MPX = 5120
+# Older builds count latent cells (1024 = untiled).
+VAE_TILE_PIXELS_HELP = "tile size for vae encode and decode in image pixels"
+
+
+def cpu_vae_tile_size(spare_mib: Optional[int], env: Optional[dict] = None) -> Optional[int]:
+    """Tile edge (px) for the CPU VAE, None = 256 px. Env 0/off keeps 256, a number pins it."""
+    import os
+
+    forced = ((env if env is not None else os.environ).get(CPU_VAE_TILE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return None
+    if forced.isdigit() and int(forced) >= 64:
+        return int(forced)
+    if spare_mib is None:
+        return None
+    for size in CPU_VAE_TILE_SIZES:
+        if CPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= spare_mib:
+            return size
+    return None
+
+
+# The offload path can decode on the card instead when it has the room. --offload-to-cpu keeps every weight in host
+# RAM and copies a model's weights to the card only while it runs; the denoiser's copies are evicted (least recently
+# used first) when the decode asks for more than is free, and the copies are dropped when the request ends, so the
+# decode has the card's free VRAM. Measured on an L4 (12 vCPU), 1024 px: the whole CUDA decode takes 1.2 s (FLUX.2
+# klein 4B) / 2.5 s (Qwen-Image 2.1) against 66 / 109 s for the whole CPU decode, the render's peak VRAM is unchanged
+# (the denoiser's peak is higher), and the idle server keeps about 0.5 GB more in its CUDA buffer cache.
+GPU_VAE_ENV = "UNSLOTH_SD_CPP_VAE_GPU"
+GPU_VAE_TILE_SIZES = (1024, 768, 512, 256)
+# MiB of CUDA decode buffer per 1024x1024 tile (direct conv), from whole-decode minus 512 px-tile peaks: Qwen-Image 2.1
+# 4459, FLUX.2 3315; + 25%.
+GPU_VAE_DECODE_MIB_PER_MPX = 5632
+
+
+def gpu_vae_tile_size(
+    free_mib: Optional[int],
+    vae_mib: Optional[int],
+    env: Optional[dict] = None,
+) -> Optional[int]:
+    """Tile edge (px) for decoding the offload path's VAE on the card, or None to keep it on the CPU.
+
+    ``free_mib``: card VRAM free after the card reserve (None = unread, keeps the CPU). ``vae_mib``: the VAE file,
+    counted twice (its weights may be widened to f32 on the card). Takes the largest tile whose decode buffer fits
+    beside them; sd.cpp still halves the tile if an allocation fails. ``UNSLOTH_SD_CPP_VAE_GPU``: 0 / off keeps the
+    VAE on the CPU."""
+    forced = ((env if env is not None else os.environ).get(GPU_VAE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no") or free_mib is None:
+        return None
+    room = int(free_mib) - 2 * max(int(vae_mib or 0), 0)
+    for size in GPU_VAE_TILE_SIZES:
+        if GPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= room:
+            return size
+    return None
+
+
+# The text encoder follows the VAE onto the card when the card has room: its weights stay in host RAM and sd.cpp
+# segments the encoder to the live free VRAM (prefetching the next segment), then evicts it for the denoiser. On a
+# 2 vCPU T4 the 7.7 GB BF16 Qwen3-4B encoder of FLUX.2 klein took the request from 133 to 56 s; with 7.6 GB free it
+# ran in segments at a 6.2 GB peak. Below this much free VRAM (after the card reserve) the encoder stays on the CPU.
+GPU_TE_ENV = "UNSLOTH_SD_CPP_TE_GPU"
+GPU_TE_MIN_FREE_MIB = 6000
+
+
+def gpu_te_fits(free_mib: Optional[int], env: Optional[dict] = None) -> bool:
+    """True when the offload path's text encoder may run on the card: ``free_mib`` (card free after the reserve, None =
+    unread) is at least ``GPU_TE_MIN_FREE_MIB``. ``UNSLOTH_SD_CPP_TE_GPU``: 0 / off keeps it on the CPU."""
+    forced = ((env if env is not None else os.environ).get(GPU_TE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no") or free_mib is None:
+        return False
+    return int(free_mib) >= GPU_TE_MIN_FREE_MIB
+
+
+def sd_cpp_vae_tile_size_in_pixels(binary: Optional[str]) -> bool:
+    """Fails closed."""
+    import os
+
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _vae_tile_pixels_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _vae_tile_pixels_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and VAE_TILE_PIXELS_HELP in " ".join(text.split())
+
+
 def offload_flags(
     policy: str,
     *,
     vae_tiling: bool = False,
     diffusion_fa: bool = False,
     vae_on_cpu: bool = True,
+    vae_tile_size: Optional[int] = None,
+    te_on_cpu: bool = True,
 ) -> list[str]:
-    """vae_on_cpu=False drops only --vae-on-cpu, for families whose VAE cannot run on the CPU path."""
+    """vae_on_cpu=False drops only --vae-on-cpu: families whose VAE cannot run on the CPU path, and an offload load
+    whose card holds the decode (``gpu_vae_tile_size``). te_on_cpu=False drops --clip-on-cpu (``gpu_te_fits``)."""
     flags: list[str] = []
     fa = diffusion_fa
     tile = vae_tiling
@@ -937,7 +1038,8 @@ def offload_flags(
         flags.append("--offload-to-cpu")
         fa = True
     if policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
-        flags.append("--clip-on-cpu")
+        if te_on_cpu:
+            flags.append("--clip-on-cpu")
         if vae_on_cpu:
             flags.append("--vae-on-cpu")
         tile = True
@@ -952,6 +1054,9 @@ def offload_flags(
         if f not in seen:
             seen.add(f)
             out.append(f)
+    # A GPU VAE keeps sd.cpp's halving retry on OOM whatever the starting tile.
+    if tile and vae_tile_size:
+        out += ["--vae-tile-size", str(int(vae_tile_size))]
     return out
 
 

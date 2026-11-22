@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 import math
 import os
-import socket
 import subprocess
 import sys
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,10 +27,10 @@ FAMILY = "qwen-image-2.1"
 TINY_PIPE = "hf-internal-testing/tiny-qwenimage21-pipe"
 
 
-def _port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _store_file() -> str:
+    # A FileStore rendezvous, not a TCPStore on a port picked up front: under xdist another worker can bind that port
+    # before rank 0 does, rank 1 then waits out its whole store timeout and the test dies on pytest-timeout.
+    return os.path.join(tempfile.mkdtemp(prefix = "ddp_store_"), "store")
 
 
 def _spawn(
@@ -39,14 +39,14 @@ def _spawn(
     *args: str,
     timeout: int = 600,
 ) -> None:
-    port = str(_port())
+    store = _store_file()
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join([str(BACKEND), os.environ.get("PYTHONPATH", "")]),
     }
     procs = [
         subprocess.Popen(
-            [sys.executable, __file__, mode, str(rank), str(world), port, *args],
+            [sys.executable, __file__, mode, str(rank), str(world), store, *args],
             cwd = str(BACKEND),
             env = env,
         )
@@ -56,12 +56,11 @@ def _spawn(
     assert codes == [0] * world, codes
 
 
-def _init(rank: int, world: int, port: int):
+def _init(rank: int, world: int, store_file: str):
     import torch.distributed as dist
 
-    store = dist.TCPStore(
-        "127.0.0.1", port, world, is_master = rank == 0, timeout = timedelta(seconds = 300)
-    )
+    store = dist.FileStore(store_file, world)
+    store.set_timeout(timedelta(seconds = 300))
     dist.init_process_group("gloo", store = store, rank = rank, world_size = world)
     return diffusion_ddp.activate_for_tests(rank, world, store)
 
@@ -69,8 +68,8 @@ def _init(rank: int, world: int, port: int):
 # ---- child entry points -------------------------------------------------------------------------------------
 
 
-def _child_grads(rank: int, world: int, port: int, out: str) -> None:
-    ctx = _init(rank, world, port)
+def _child_grads(rank: int, world: int, store_file: str, out: str) -> None:
+    ctx = _init(rank, world, store_file)
     torch.manual_seed(rank)
     a = torch.nn.Parameter(torch.zeros(3, 4))
     b = torch.nn.Parameter(torch.zeros(5))
@@ -120,7 +119,7 @@ def _cpu_patches(dit, precision = "bf16"):
 def _child_train(
     rank: int,
     world: int,
-    port: int,
+    store_file: str,
     out: str,
     pipe: str,
     data: str,
@@ -143,7 +142,7 @@ def _child_train(
         dit._load_fp8_prequant_transformer = lambda *a, **k: None
         dit._apply_fp8_training = lambda *a, **k: True
     if world > 1:
-        _init(rank, world, port)
+        _init(rank, world, store_file)
     spec = dit._SPECS[FAMILY]
     load, load_cond = spec.load_transformer, spec.load_conditioners
     seen = {"transformer": None, "conditioners": 0}
@@ -663,9 +662,9 @@ def test_the_trainer_checks_the_resume_at_the_planned_gpu_count(monkeypatch, tmp
 
 
 if __name__ == "__main__":
-    mode, rank, world, port, *rest = sys.argv[1:]
+    mode, rank, world, store_file, *rest = sys.argv[1:]
     fn = {"grads": _child_grads, "train": _child_train}[mode]
-    fn(int(rank), int(world), int(port), *rest)
+    fn(int(rank), int(world), store_file, *rest)
 
 
 def test_worker_ranks_start_in_the_callers_directory(monkeypatch, tmp_path):

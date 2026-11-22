@@ -108,11 +108,12 @@ class Fp8BackwardWeights:
         self.hits = 0
         self.misses = 0
 
-    @staticmethod
-    def enabled() -> bool:
-        return (
-            os.environ.get("UNSLOTH_DIFFUSION_FP8_BWD_CACHE", "") or "1"
-        ).strip().lower() not in (
+    ENV = "UNSLOTH_DIFFUSION_FP8_BWD_CACHE"
+    STAT_PREFIX = "fp8_bwd"
+
+    @classmethod
+    def enabled(cls) -> bool:
+        return (os.environ.get(cls.ENV, "") or "1").strip().lower() not in (
             "0",
             "false",
             "off",
@@ -144,12 +145,13 @@ class Fp8BackwardWeights:
         return qcm
 
     def stats(self) -> dict:
+        p = self.STAT_PREFIX
         return {
-            "fp8_bwd_cached_gib": round(self.used / (1 << 30), 3),
-            "fp8_bwd_budget_gib": round(self.budget / (1 << 30), 3),
-            "fp8_bwd_layers": len(self.entries),
-            "fp8_bwd_hits": self.hits,
-            "fp8_bwd_misses": self.misses,
+            f"{p}_cached_gib": round(self.used / (1 << 30), 3),
+            f"{p}_budget_gib": round(self.budget / (1 << 30), 3),
+            f"{p}_layers": len(self.entries),
+            f"{p}_hits": self.hits,
+            f"{p}_misses": self.misses,
         }
 
 
