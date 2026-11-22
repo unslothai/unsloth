@@ -510,9 +510,8 @@ _OMNI_AUTO_CLASS_NAMES = (
 
 
 def _refuse_network_share_adapter_base(model_name, peft_config):
-    """A Hub adapter names its own base model: on Windows a UNC base would make the load
-    probe a host the repo chose (SMB, leaking the user's NTLM hash). Local adapter folders
-    are the user's own and are left alone."""
+    """On Windows a Hub adapter's UNC base would probe a host the repo chose (SMB, NTLM leak).
+    Local adapter folders are the user's own and are left alone."""
     base = getattr(peft_config, "base_model_name_or_path", None)
     if not isinstance(base, str) or not base or os.path.isdir(model_name):
         return
