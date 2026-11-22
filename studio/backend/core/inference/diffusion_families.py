@@ -2533,7 +2533,13 @@ def _first_checkpoint_variant(
 def transformer_variant_differs_from_base(
     fam: Any, base: Optional[str], *identifiers: Optional[str]
 ) -> bool:
-    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown."""
+    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown. A checkpoint that
+    runs its own pipeline class (``pipeline_class_variants``: klein 9B KV) differs from any base that does not, even
+    when it borrows that base's companions: its DiT is another model and must never be replaced by the base's."""
+    if getattr(fam, "pipeline_class_variants", ()) and family_pipeline_class(
+        fam, *identifiers
+    ) != family_pipeline_class(fam, base):
+        return True
     keys = getattr(fam, "checkpoint_variants", ())
     if keys:
         base_key = _first_checkpoint_variant(keys, (base,))

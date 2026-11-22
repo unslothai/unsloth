@@ -349,3 +349,44 @@ def test_a_kv_gguf_whose_card_tags_the_gated_kv_repo_takes_its_companions_from_t
         df.family_pipeline_class(fam, base, "QuantStack/FLUX.2-Klein-9B-KV-GGUF", gguf)
         == "Flux2KleinKVPipeline"
     )
+
+
+def test_a_kv_file_never_counts_as_the_stock_9b_transformer():
+    """KV files borrow the 9B's companions, but their DiT is another model: the dense / INT8 build must never read
+    the base's transformer/ for them (Codex P1 on the routing change)."""
+    fam = _klein()
+    stock_base = "black-forest-labs/FLUX.2-klein-9B"
+    kv_ids = ("Flux-2-Klein-9B-KV-Q8_0.gguf", None, "QuantStack/FLUX.2-Klein-9B-KV-GGUF")
+    assert df.transformer_variant_differs_from_base(fam, stock_base, *kv_ids)
+    # a local base dir names no variant: still not the KV model's DiT
+    assert df.transformer_variant_differs_from_base(fam, "/models/klein", *kv_ids)
+    # the stock 9B GGUF on its own base, and a KV file on the KV repo itself, are unchanged
+    assert not df.transformer_variant_differs_from_base(
+        fam, stock_base, "flux-2-klein-9b-Q8_0.gguf", None, "unsloth/FLUX.2-klein-9B-GGUF"
+    )
+    assert not df.transformer_variant_differs_from_base(fam, KV_REPO, *kv_ids)
+
+
+def test_preflight_refuses_a_kv_pick_on_a_diffusers_without_the_kv_pipeline(monkeypatch):
+    """diffusers 0.37.x ships Flux2KleinPipeline but not Flux2KleinKVPipeline: the family reads as buildable, so the
+    KV class must be checked on its own, before anything is evicted (Codex P2)."""
+    import sys
+
+    from core.inference import diffusion as d
+
+    old = types.ModuleType("diffusers")
+    old.__version__ = "0.37.1"
+    old.Flux2KleinPipeline = type("Flux2KleinPipeline", (), {})
+    monkeypatch.setitem(sys.modules, "diffusers", old)
+    be = d.DiffusionBackend()
+    with pytest.raises(ValueError, match = r"0\.38\.0"):
+        be.validate_load_request(
+            "QuantStack/FLUX.2-Klein-9B-KV-GGUF",
+            gguf_filename = "Flux-2-Klein-9B-KV-Q8_0.gguf",
+            model_kind = "gguf",
+        )
+    # the stock 9B GGUF still passes the same preflight on that diffusers
+    fam = be.validate_load_request(
+        "unsloth/FLUX.2-klein-9B-GGUF", gguf_filename = "flux-2-klein-9b-Q8_0.gguf", model_kind = "gguf"
+    )
+    assert fam.name == "flux.2-klein"

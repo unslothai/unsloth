@@ -5730,10 +5730,13 @@ class DiffusionBackend:
                 f"diffusers engine loads the full pipeline repo. Select the pipeline repo, or a GGUF with the native "
                 f"engine available."
             )
-        if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
-            assert_pipeline_class_available(
-                family_pipeline_class(fam, base_repo, repo_id, gguf_filename), fam.name
-            )
+        pick_pipeline_class = family_pipeline_class(fam, base_repo, repo_id, gguf_filename)
+        if pick_pipeline_class and pick_pipeline_class != fam.pipeline_class:
+            # A checkpoint with its own pipeline (klein 9B KV) runs only on diffusers, and only on one that ships that
+            # class: the family's buildability answers for the default class, so check this one before eviction.
+            assert_pipeline_class_available(pick_pipeline_class, fam.name)
+        elif not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
+            assert_pipeline_class_available(pick_pipeline_class, fam.name)
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
         if (
             kind == "gguf"
