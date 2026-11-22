@@ -87,7 +87,9 @@ def _local_commit(repo_id: str, cache_dir: Optional[str], revision: str) -> Opti
 
 
 def _listing(repo_id: str, cache_dir: Optional[str], commit: str) -> list:
-    """Every file (and recorded absence) the cache holds for ``commit``, relative, sorted."""
+    """Every file (and recorded absence) the cache holds for ``commit``, relative, sorted. A link whose blob is gone
+    is not held: a cache-only read of it can come back without the file (transformers 4.57.6 and 5.17 load a
+    processor without its chat template, no error), while a revalidating read fetches it again."""
     root = _repo_root(repo_id, cache_dir)
     out = []
     for base, tag in (
@@ -97,7 +99,7 @@ def _listing(repo_id: str, cache_dir: Optional[str], commit: str) -> list:
         if not base.is_dir():
             continue
         for path in base.rglob("*"):
-            if path.is_file() or path.is_symlink():
+            if path.is_file():
                 out.append(tag + path.relative_to(base).as_posix())
     return sorted(out)
 

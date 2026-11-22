@@ -120,6 +120,23 @@ def test_a_file_added_or_gone_since_the_record_revalidates(env):
     assert hs.current_snapshot(REPO, COMP, cache_dir = env.cache, api = _Api(C1)) is None
 
 
+def test_a_link_whose_blob_is_gone_revalidates(env):
+    import os
+
+    snap = env.cache_path / "models--org--model" / "snapshots" / C1
+    blob = env.cache_path / "models--org--model" / "blobs" / "e1"
+    blob.parent.mkdir(parents = True)
+    blob.write_text("{% chat %}")
+    try:
+        os.symlink(blob, snap / "text_encoder" / "chat_template.jinja")
+    except (OSError, NotImplementedError):
+        pytest.skip("no symlinks on this host")
+    hs.note_validated(REPO, COMP, cache_dir = env.cache, api = _Api(C1))
+    assert hs.current_snapshot(REPO, COMP, cache_dir = env.cache, api = _Api(C1)) == C1
+    blob.unlink()  # the snapshot keeps a dangling link: not cached, so no cache-only read
+    assert hs.current_snapshot(REPO, COMP, cache_dir = env.cache, api = _Api(C1)) is None
+
+
 def test_local_dirs_and_the_switch(env, monkeypatch, tmp_path):
     hs.note_validated(REPO, COMP, cache_dir = env.cache, api = _Api(C1))
     assert hs.current_snapshot(str(tmp_path), COMP, cache_dir = env.cache, api = _Api(C1)) is None
