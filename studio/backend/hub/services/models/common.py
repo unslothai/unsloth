@@ -887,6 +887,14 @@ def _classify_local_path(
     partial: bool = False,
     active_cache: Optional[bool] = None,
 ) -> list[LocalModelInfo]:
+    # A loose GGUF companion can be paired with weights, but has no standalone inventory row.
+    if (
+        _is_gguf_filename(scan_path.name)
+        and not _is_main_gguf_filename(scan_path.name)
+        and scan_path.is_file()
+    ):
+        return []
+
     load_path = load_path or scan_path
     files = (
         _iter_hf_cache_model_files(scan_path)
