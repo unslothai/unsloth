@@ -1862,6 +1862,8 @@ class _LlamaStreamKeepalive:
 
 
 _LLAMA_STREAM_KEEPALIVE = _LlamaStreamKeepalive()
+# Yielded once by stream_response(announce_dispatch = True) right after the request is sent.
+_LLAMA_STREAM_DISPATCHED = object()
 # Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
 _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 # Paired with the above: the slot is ours, so a suspended client clock starts now.
@@ -5493,6 +5495,8 @@ async def _passthrough_retry_url(
 
 # Retain recovery tasks after their requests leave; asyncio holds only weak references.
 _LLAMA_RESPAWN_TASKS: set = set()
+# Strong refs: a message_start count outlives a response that never starts streaming.
+_PENDING_INPUT_TOKEN_COUNTS: set = set()
 
 
 class _LlamaUpstream:
@@ -5564,10 +5568,21 @@ class _LlamaUpstream:
     def dispatch_stream(self, client: httpx.AsyncClient, body, cancel_event, request, **kwargs):
         return asyncio.create_task(self.send_stream(client, body, cancel_event, request, **kwargs))
 
-    async def stream_response(self, client: httpx.AsyncClient, body, cancel_event, request):
-        """Yield recovery heartbeats, then the caller-owned response; close before the client."""
+    async def stream_response(
+        self,
+        client: httpx.AsyncClient,
+        body,
+        cancel_event,
+        request,
+        *,
+        announce_dispatch: bool = False,
+    ):
+        """Yield recovery heartbeats, then the caller-owned response; close before the client.
+        ``announce_dispatch`` first yields _LLAMA_STREAM_DISPATCHED once the send is under way."""
         send_task = self.dispatch_stream(client, body, cancel_event, request)
         try:
+            if announce_dispatch:
+                yield _LLAMA_STREAM_DISPATCHED
             while not send_task.done():
                 done, _ = await asyncio.wait(
                     {send_task}, timeout = _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S
@@ -48355,17 +48370,28 @@ async def _anthropic_passthrough_stream(
     )
 
     # count_chat_tokens blocks on HTTP, so off the loop; pass tools and reasoning kwargs so the
-    # count matches the rendered prompt.
-    input_tokens = await asyncio.to_thread(
-        lambda: llama_backend.count_chat_tokens(
-            openai_messages,
-            None,
-            _count_tools,
-            chat_template_kwargs = _reasoning_template_kwargs(
-                llama_backend, enable_thinking, reasoning_effort, preserve_thinking
-            ),
-        )
-    )
+    # count matches the rendered prompt. Started now and awaited only once the upstream request
+    # is sent, so the count overlaps prefill instead of delaying it; message_start still leads.
+    async def _count_input_tokens() -> int:
+        try:
+            return await asyncio.to_thread(
+                lambda: llama_backend.count_chat_tokens(
+                    openai_messages,
+                    None,
+                    _count_tools,
+                    chat_template_kwargs = _reasoning_template_kwargs(
+                        llama_backend, enable_thinking, reasoning_effort, preserve_thinking
+                    ),
+                )
+            )
+        except Exception:
+            # Non-strict, as count_chat_tokens itself: an uncounted prompt reports 0.
+            logger.debug("Prompt count for message_start failed", exc_info = True)
+            return 0
+
+    input_tokens_task = asyncio.ensure_future(_count_input_tokens())
+    _PENDING_INPUT_TOKEN_COUNTS.add(input_tokens_task)
+    input_tokens_task.add_done_callback(_PENDING_INPUT_TOKEN_COUNTS.discard)
 
     # cancel_id mirrors the OpenAI passthrough; registered so a reload cannot yank llama-server.
     _tracker = _TrackedCancel(
@@ -48401,13 +48427,13 @@ async def _anthropic_passthrough_stream(
                 _healing_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
-        # Outside the teardown try: a disconnect here would strand the tracker; __exit__ is idempotent.
-        try:
-            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-                yield line
-        except BaseException:
-            _tracker.__exit__(None, None, None)
-            raise
+        _started = False
+
+        async def _message_start_lines() -> list:
+            # Once, before any other event: right after dispatch, or ahead of a pre-dispatch error.
+            nonlocal _started
+            _started = True
+            return list(emitter.start(message_id, model_name, input_tokens = await input_tokens_task))
 
         # Manage the httpx client, response, AND the aiter_lines() async
         # generator MANUALLY -- no `async with`, no anonymous iterator.
@@ -48460,10 +48486,16 @@ async def _anthropic_passthrough_stream(
             upstream = _LlamaUpstream(llama_backend, "/v1/chat/completions")
             while True:
                 async with aclosing(
-                    upstream.stream_response(client, body, cancel_event, request)
+                    upstream.stream_response(
+                        client, body, cancel_event, request, announce_dispatch = True
+                    )
                 ) as opening:
                     async for opened in opening:
-                        if opened is _LLAMA_STREAM_KEEPALIVE:
+                        if opened is _LLAMA_STREAM_DISPATCHED:
+                            if not _started:
+                                for line in await _message_start_lines():
+                                    yield line
+                        elif opened is _LLAMA_STREAM_KEEPALIVE:
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         else:
                             resp = opened
@@ -48549,6 +48581,10 @@ async def _anthropic_passthrough_stream(
                 if failed:
                     return
         except Exception as e:
+            # A failure before dispatch still follows message_start, as when it was sent first.
+            if not _started:
+                for line in await _message_start_lines():
+                    yield line
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
