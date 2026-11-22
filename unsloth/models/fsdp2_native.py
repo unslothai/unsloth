@@ -21,8 +21,7 @@ import torch.nn as nn
 
 
 def _resume_torch_load(path, **kwargs):
-    """torch.load for a resume checkpoint, refused on torch < 2.6 like the Trainer's own
-    check_torch_load_is_safe (weights_only=True is bypassable there, CVE-2025-32434)."""
+    """Refused on torch < 2.6 like Trainer's check_torch_load_is_safe (CVE-2025-32434)."""
     from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
 
     refuse_pickle_checkpoint_on_old_torch(path)
