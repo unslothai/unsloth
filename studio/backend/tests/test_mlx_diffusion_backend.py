@@ -711,6 +711,23 @@ def test_decode_headroom_follows_the_decode_path(monkeypatch):
     assert mb.decode_headroom_bytes(_Tiles()) == mb.UNTILED_DECODE_HEADROOM_BYTES
 
 
+def test_decode_headroom_with_strip_decode_forced_off_reserves_the_whole_image_block_decode(
+    monkeypatch,
+):
+    class _Strips:
+        def vae_tiled(self):
+            return False
+
+        def decodes_in_strips(self):
+            return True
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", "0")
+    expected = max(mb.ACTIVATION_HEADROOM_BYTES, mb.full_decode_bytes(1024, 1024))
+    assert mb.decode_headroom_bytes(_Strips()) == expected
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING")
+    assert mb.decode_headroom_bytes(_Strips()) == mb.ACTIVATION_HEADROOM_BYTES
+
+
 def test_unquantizable_text_encoder_tensors_stay_full_size(monkeypatch, tmp_path):
     """Norms, biases and odd-width weights are not quantized by the runtime, so the plan keeps them at bf16."""
     _clear_quant_env(monkeypatch)
@@ -2003,6 +2020,73 @@ def test_the_renderer_sees_the_shared_pool_beside_a_chat_model(monkeypatch):
     assert gr.metal_media_priced()
     monkeypatch.setattr(gr, "media_held_mib", lambda: {})
     assert runtime.free_working_set_bytes() == 88 * _GIB
+
+
+def _fake_block_decoder(monkeypatch):
+    import sys
+    import types
+
+    class _VAEBlockDecoder:
+        LEGACY = "legacy"
+        LOW_MEMORY = "low_memory"
+        FULL_PRECISION = "full_precision"
+
+    module = types.ModuleType("mflux.models.common.vae.block_decoder")
+    module.VAEBlockDecoder = _VAEBlockDecoder
+    monkeypatch.setitem(sys.modules, "mflux.models.common.vae.block_decoder", module)
+    tiling = types.ModuleType("mflux.models.common.vae.tiling_config")
+    tiling.TilingConfig = None  # the strip path must not read it
+    monkeypatch.setitem(sys.modules, "mflux.models.common.vae.tiling_config", tiling)
+
+
+@pytest.mark.parametrize(
+    "side, free_gib, env, priced, mode",
+    [
+        (1024, 40.0, None, False, "full_precision"),
+        (1024, 2.0, None, False, "low_memory"),
+        (512, 2.0, None, False, "low_memory"),
+        (512, 4.0, None, False, "full_precision"),
+        (1024, 40.0, None, True, "low_memory"),
+        (512, 40.0, "1", False, "low_memory"),
+        (2048, 0.5, "0", False, "full_precision"),
+    ],
+)
+def test_mflux_024_picks_strips_or_the_whole_image_decode_instead_of_tiles(
+    monkeypatch, side, free_gib, env, priced, mode
+):
+    """mflux 0.24 ignores TilingConfig for Z-Image; Studio sets the VAE's decode_mode instead."""
+    import types
+
+    import core.inference.gpu_residency as gr
+
+    _fake_block_decoder(monkeypatch)
+    if env is None:
+        monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    else:
+        monkeypatch.setenv(mb.VAE_TILING_ENV, env)
+    monkeypatch.setattr(gr, "metal_media_priced", lambda: priced)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(runtime, "free_working_set_bytes", lambda: int(free_gib * _GIB))
+    model = types.SimpleNamespace(
+        tiling_config = "stale", vae = types.SimpleNamespace(decode_mode = "low_memory")
+    )
+    runtime._plan_vae_tiling(model, side, side)
+    assert model.vae.decode_mode == mode
+    assert model.tiling_config is None
+    assert runtime.vae_tiled() is (mode == "low_memory")
+
+
+# (side, full_precision GiB, low_memory GiB) above the weights, the largest of three runs: mflux 0.24 Z-Image VAE,
+# bf16, Apple M1 (Virtual) via Metal, macos-15.
+_MFLUX_024_DECODE_GIB = ((512, 2.07, 0.47), (768, 4.61, 0.79), (1024, 6.30, 1.34))
+
+
+def test_strip_and_whole_image_decode_estimates_match_the_metal_measurements():
+    for side, full_gib, strip_gib in _MFLUX_024_DECODE_GIB:
+        # The whole-image peak is not linear in pixels: the estimate bounds it, within 1 GiB.
+        assert full_gib <= mb.full_decode_bytes(side, side) / _GIB < full_gib + 1.0
+        assert abs(mb.strip_decode_bytes(side, side) / _GIB - strip_gib) < 0.05
+    assert mb.strip_decode_bytes(1024, 1024) <= mb.ACTIVATION_HEADROOM_BYTES
 
 
 @pytest.mark.parametrize("priced, free_gib, expected", [(True, 40.0, True), (False, 40.0, False)])
