@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional, get_args
 from urllib.parse import quote
 
@@ -444,10 +445,20 @@ async def _refuse_certain_chat_unload(
     raise ToolError(chat_kept_refusal(kind, model, "off").detail)
 
 
-async def _refuse_llm_kind_for_media(model: str, catalog: Any) -> None:
+async def _refuse_llm_kind_for_media(
+    model: str,
+    catalog: Any,
+    *,
+    deadline: Optional[float] = None,
+) -> None:
     """An llm load of a catalog image, video or speech-to-text model would fail only after unloading models;
-    tts and audio rows do load through the llm route."""
-    found = await catalog()
+    tts and audio rows do load through the llm route. A catalog slower than ``deadline`` lets the load go on."""
+    try:
+        found = await asyncio.wait_for(
+            catalog(), None if deadline is None else max(0.0, deadline - time.monotonic())
+        )
+    except asyncio.TimeoutError:
+        return
     if found in ("image", "video", "stt"):
         noun = problems.WHAT.get(found, "model")
         raise ToolError(
@@ -661,6 +672,8 @@ async def load_model(
     Calling load_model again with the same arguments while that load runs follows it instead of starting another, and so does a call (without ``variant``) for a chat model Unsloth Studio is already loading.
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
+    # From entry: wait_s also bounds the kind lookup.
+    deadline = loading.deadline_after(wait_s)
     catalog = _catalog_lookup(caller, model or "")
     if model and not (checkpoint or export):
         model = await _full_id(model, catalog)
@@ -678,8 +691,7 @@ async def load_model(
         refused = {"checkpoint": checkpoint, "export": export, "hf_token": hf_token},
     )
     if kind == "llm" and model and not (checkpoint or export):
-        await _refuse_llm_kind_for_media(model, catalog)
-    deadline = loading.deadline_after(wait_s)
+        await _refuse_llm_kind_for_media(model, catalog, deadline = deadline)
     trained = await trained_models.resolve_by(
         deadline,
         caller,

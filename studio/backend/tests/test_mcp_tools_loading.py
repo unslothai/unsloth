@@ -1596,3 +1596,15 @@ def test_an_autoconfig_failure_gets_the_kind_hint(monkeypatch):
         and "pass kind" in text
         and "list_models(source='catalog')" in text
     )
+
+
+def test_a_slow_catalog_does_not_hold_an_explicit_llm_load_past_wait_s(monkeypatch, fast_polls):
+    slow_catalogs = {route: slow(answer, 2.0) for route, answer in CATALOGS.items()}
+    studio = fake_studio(
+        {**PAYLOADS, LOAD: slow(LOADED, 1.0), STATUS_ROUTE: EMPTY_STATUS, **slow_catalogs}
+    )
+    with session(monkeypatch, studio) as call:
+        started = time.monotonic()
+        early = call("load_model", {"model": LLM, "kind": "llm", "wait_s": 0})
+        assert time.monotonic() - started < 1.5
+    assert early["structuredContent"]["status"] == "loading", early

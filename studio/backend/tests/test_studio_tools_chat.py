@@ -736,7 +736,9 @@ def test_only_a_chats_still_running_video_is_watched(
     assert not out.startswith("Error") and seen == ([turn] if watched else []), out
 
 
-@pytest.mark.parametrize("status, stopped", [("loading", True), ("loaded", False)])
+@pytest.mark.parametrize(
+    "status, stopped", [("loading", True), ("running", True), ("loaded", False)]
+)
 def test_a_chat_load_still_loading_at_its_deadline_is_reported_stopped(
     server_loop, monkeypatch, status, stopped
 ):

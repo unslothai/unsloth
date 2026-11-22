@@ -247,6 +247,12 @@ def _still_running(result: Any) -> bool:
     return isinstance(content, dict) and content.get("status") in RUNNING
 
 
+def _load_still_running(result: Any) -> bool:
+    from studio_mcp.jobs import RUNNING
+    content = getattr(result, "structured_content", None)
+    return isinstance(content, dict) and content.get("status") in RUNNING | {"loading"}
+
+
 def _watch_turn(cancel_event: Any, ticket: GenerationTicket) -> None:
     """Stops a still-rendering video when chat stops; only a Stop or aborted turn sets it."""
     if not callable(getattr(cancel_event, "wait", None)):
@@ -377,10 +383,7 @@ def call(
             return f"Error: MCP tool '{name}' failed: {exc}"
         if name == "generate_video" and cancel_event is not None and _still_running(result):
             _watch_turn(cancel_event, ticket)
-        if (
-            name == "load_model"
-            and (getattr(result, "structured_content", None) or {}).get("status") == "loading"
-        ):
+        if name == "load_model" and _load_still_running(result):
             # Its job is stopped with the key below, so a job reference would never complete.
             return (
                 f"Error: MCP tool 'load_model' did not finish within {limit:g}s, so this call stopped it. "
