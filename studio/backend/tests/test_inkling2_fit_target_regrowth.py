@@ -169,6 +169,18 @@ def test_unknown_context_takes_the_largest_growth():
     assert b._inkling2_fit_regrowth_mib(8192, 2048, "f16", n_ctx_max = 1048576) >= max(fixed)
 
 
+@pytest.mark.parametrize("ub", [512, 2048])
+def test_older_build_growth_does_not_rise_past_the_measured_trend(ub):
+    # Older builds measured 270 then 140 MiB of growth at 32K and 128K: the reserve outgrows the
+    # runtime, so long contexts must not keep a planner bound's surplus free as growth.
+    b = ink._inkling2_mini(ink.OLD_CUDA)
+    by_ctx = [b._inkling2_fit_regrowth_mib(c, ub, "f16") for c in (32768, 131072, 524288, 1048576)]
+    assert by_ctx == sorted(by_ctx, reverse = True)
+    assert b._inkling2_fit_regrowth_mib(
+        8192, ub, "f16", n_ctx_max = 1048576
+    ) == b._inkling2_fit_regrowth_mib(8192, ub, "f16")
+
+
 @pytest.mark.parametrize(
     "support, kv",
     [

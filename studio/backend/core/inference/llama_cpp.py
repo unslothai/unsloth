@@ -19268,11 +19268,20 @@ class LlamaCppBackend:
                     ctxs.add(knee)
 
         def growth(ctx: int) -> int:
-            runtime = max(
-                act
-                + self._compute_buffer_ctx_bytes(
+            if legacy:
+                # Older builds: #18919's 18 B/cell reserve is a planner bound that overtakes the
+                # 15 B/cell runtime rate at long contexts, as the measured reserve does (growth
+                # 270 -> 140 MiB from 32K to 128K), so only the runtime term can grow past it.
+                _, regrown, fixed = self._inkling2_banded_terms(
+                    ctx, ub, cache_type_kv, flash_attn = flash_attn
+                )
+                scratch = regrown + fixed
+            else:
+                scratch = self._compute_buffer_ctx_bytes(
                     ctx, ub, cache_type_kv, flash_attn = flash_attn, n_parallel = n_parallel
-                ),
+                )
+            runtime = max(
+                act + scratch,
                 self._INKLING2_FIT_RUNTIME_ACT * act
                 + self._INKLING2_FIT_RUNTIME_MASK_BYTES * ub * ctx,
             )
