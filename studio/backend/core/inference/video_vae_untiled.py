@@ -81,7 +81,10 @@ def _pair_frames_enabled(device: Any = None) -> bool:
         return False
     try:
         import torch
-        if getattr(torch.version, "hip", None):
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
             return False
         return tuple(torch.cuda.get_device_capability(device)) >= _PAIR_MIN_CAPABILITY
     except Exception:  # noqa: BLE001
