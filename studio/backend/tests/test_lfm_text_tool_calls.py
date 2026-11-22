@@ -149,12 +149,14 @@ def test_call_only_final_answer_is_retried_once(monkeypatch):
     call_only = [_sse({"content": CALL}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [[first, _done()], call_only, call_only])
     _record_tool_calls(monkeypatch, "result")
-    _run_tool_loop(
+    events = _run_tool_loop(
         backend,
         [{"role": "user", "content": "Research LFM2.5."}],
         [{"type": "function", "function": {"name": "web_search"}}],
     )
     assert len(payloads) == 3 and "tools" not in payloads[2]
+    shown = _route_shown(events)
+    assert "tool call limit" in shown and "tool_call_start" not in shown, shown
 
 
 def test_reasoning_then_call_final_answer_is_retried(monkeypatch):

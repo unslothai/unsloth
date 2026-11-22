@@ -2420,6 +2420,10 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
+_FINAL_ANSWER_TOOL_LIMIT_MESSAGE = (
+    "The model asked for another tool after reaching the tool call limit, so it gave no answer. "
+    "Raise Max Tool Calls Per Message or ask again."
+)
 _FINAL_ANSWER_RETRY_NUDGE = (
     "Tools are no longer available. Write your answer now from the results above, in plain text."
 )
@@ -43452,6 +43456,14 @@ class LlamaCppBackend:
                         _continue_final = True
                         yield {"type": "status", "text": "", "new_pass": True}
                     else:
+                        if (
+                            _final_call_retried
+                            and answer_text.strip()
+                            and not _strip_tool_markup(answer_text, final = True).strip()
+                        ):
+                            # The retry asked for a tool too: an empty bubble is not actionable.
+                            _last_emitted = f"{_last_emitted.rstrip()}\n\n{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}".lstrip()
+                            yield {"type": "content", "text": _last_emitted}
                         _cut = _quote_cut_event(
                             reasoning_text,
                             answer_text,
