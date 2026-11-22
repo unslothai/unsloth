@@ -63,14 +63,29 @@ def untiled_decode_bytes(
 
 
 # Wan's untiled decode runs two latent frames per decoder call (after the one-frame first call) when the second frame's
-# activations also fit: fewer, larger convs (A100 / L4 +2.6-3.3% on the 480p decode). "0" = one frame per call.
+# activations also fit: fewer, larger convs. Measured on the fused fp16 decode: A100 2.1-2.9% faster, T4 (sm75) 11%
+# slower, so NVIDIA sm80+ only. "0" = one frame per call everywhere; "force" = also off that range (CPU, ROCm, sm < 80).
 PAIR_FRAMES_ENV = "UNSLOTH_VIDEO_VAE_WAN_PAIR_FRAMES"
 _PAIR_LAYER = "wan_pair_frames"
 _PAIR_ATTR = "_unsloth_wan_pair_frames"
+_PAIR_MIN_CAPABILITY = (8, 0)
 
 
-def _pair_frames_enabled() -> bool:
-    return os.environ.get(PAIR_FRAMES_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+def _pair_frames_enabled(device: Any = None) -> bool:
+    raw = os.environ.get(PAIR_FRAMES_ENV, "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw == "force":
+        return True
+    if getattr(device, "type", device) != "cuda":
+        return False
+    try:
+        import torch
+        if getattr(torch.version, "hip", None):
+            return False
+        return tuple(torch.cuda.get_device_capability(device)) >= _PAIR_MIN_CAPABILITY
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def pair_frames_extra_bytes(
@@ -366,7 +381,11 @@ def install_untiled_decode(
         shape = tuple(getattr(z, "shape", ()))
         extra = (
             pair_frames_extra_bytes(family, shape, itemsize = _decoder_itemsize(vae))
-            if fits and pair_ready and _pair_frames_enabled() and len(shape) == 5 and shape[2] >= 3
+            if fits
+            and pair_ready
+            and len(shape) == 5
+            and shape[2] >= 3
+            and _pair_frames_enabled(_decode_device(vae, z))
             else None
         )
         pair = (

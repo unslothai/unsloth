@@ -4,6 +4,8 @@
 """Wan's untiled decode with two latent frames per decoder call: same frames as the one-frame loop, taken only when
 the second frame's activations fit, off under the kill switch, and back to one frame on OOM."""
 
+import os
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -58,6 +60,8 @@ def _gated(
     free_gib: float,
     kind: str = "wan2.1",
 ):
+    if U.PAIR_FRAMES_ENV not in os.environ:
+        monkeypatch.setenv(U.PAIR_FRAMES_ENV, "force")  # CPU: past the NVIDIA sm80+ default
     vae = _tiny_wan(kind)
     vae.enable_tiling()
 
@@ -166,3 +170,30 @@ def test_layer_is_installed_once_and_inert_when_tiled(monkeypatch):
     with torch.no_grad():
         vae._decode(torch.randn(1, 4, 3, 4, 6))
     assert not called
+
+
+def test_default_is_nvidia_sm80_plus_only(monkeypatch):
+    monkeypatch.delenv(U.PAIR_FRAMES_ENV, raising = False)
+    assert not U._pair_frames_enabled(torch.device("cpu"))
+    cap = [(7, 5)]
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: cap[0])
+    monkeypatch.setattr(torch.version, "hip", None)
+    cuda = torch.device("cuda", 0)
+    assert not U._pair_frames_enabled(cuda)  # T4: measured slower
+    for cap[0] in ((8, 0), (8, 9), (10, 0)):
+        assert U._pair_frames_enabled(cuda)
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    assert not U._pair_frames_enabled(cuda)
+    monkeypatch.setenv(U.PAIR_FRAMES_ENV, "force")
+    assert U._pair_frames_enabled(torch.device("cpu"))
+    monkeypatch.setenv(U.PAIR_FRAMES_ENV, "0")
+    cap[0] = (9, 0)
+    monkeypatch.setattr(torch.version, "hip", None)
+    assert not U._pair_frames_enabled(cuda)
+
+
+def test_cpu_default_keeps_one_frame(monkeypatch):
+    monkeypatch.setenv(U.PAIR_FRAMES_ENV, "")
+    vae, _ = _gated(monkeypatch, 1000)
+    _frames(vae, torch.randn(1, 4, 5, 4, 6))
+    assert vae._unsloth_untiled_stats["paired"] == 0

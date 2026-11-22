@@ -56,8 +56,8 @@ def _vae():
 
 def _stack(monkeypatch, pair = False):
     monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
-    if not pair:  # these pin the one-frame untiled path; two frames per call has its own tests
-        monkeypatch.setenv(U.PAIR_FRAMES_ENV, "0")
+    # the others pin the one-frame untiled path; two frames per call is forced past its NVIDIA sm80+ default
+    monkeypatch.setenv(U.PAIR_FRAMES_ENV, "force" if pair else "0")
     vae = _vae()
     pipe = types.SimpleNamespace(vae = vae, video_processor = VideoProcessor(vae_scale_factor = 8))
     assert U.install_untiled_decode(pipe, FAMILY)
