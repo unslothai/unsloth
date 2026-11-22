@@ -3,7 +3,6 @@
 
 import type { GalleryImage } from "../api";
 
-/** Return image IDs that follow a different known prompt in the current strip order. */
 export function promptBoundaryIds(images: readonly Pick<GalleryImage, "id" | "prompt">[]): Set<string> {
   const boundaries = new Set<string>();
   for (let index = 1; index < images.length; index++) {
