@@ -112,6 +112,7 @@ def load_native_from_hosted(
     base: Optional[str] = None,
     logger: Any = None,
     tag: str = "video.native_hosted",
+    keep_fp32: bool = False,
 ) -> Any:
     """The native ``component`` built from hosted ``path``, or None (the caller falls back to the dense build). Never
     raises. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes."""
@@ -254,11 +255,16 @@ def load_native_from_hosted(
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
             _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used", tag = tag)
             return None
-        # float32 only where a bf16 from_pretrained keeps it (``_keep_in_fp32_modules``, e.g. FLUX.3's norm_q / norm_k).
-        keep_fp32 = set(getattr(transformer_cls, "_keep_in_fp32_modules", None) or ())
+        # ``keep_fp32``: float32 also where a bf16 from_pretrained keeps it (``_keep_in_fp32_modules``, e.g. FLUX.3's
+        # norm_q / norm_k, which its hosted file stores as F32). Off for the video callers.
+        kept = (
+            set(getattr(transformer_cls, "_keep_in_fp32_modules", None) or ())
+            if keep_fp32
+            else set()
+        )
         if any(
             p.dtype != torch.bfloat16
-            and not (p.dtype == torch.float32 and keep_fp32 & set(name.split(".")))
+            and not (p.dtype == torch.float32 and kept & set(name.split(".")))
             for name, p in model.named_parameters()
             if p.is_floating_point()
         ):

@@ -107,7 +107,14 @@ def load_rocm_hosted_transformer(
             scheme = TQ_INT8,
             logger = logger,
         )
-        if path is None:
+        # The ConvRot safetensors build only: a plain or pickled int8 file is not the native W8A8 build.
+        base_name = os.path.basename(str(path or "")).lower()
+        if not base_name.endswith(".safetensors") or "convrot" not in base_name:
+            if path is not None and logger is not None:
+                logger.info(
+                    "diffusion.rocm_hosted_int8: %s is not an int8 ConvRot safetensors build",
+                    base_name,
+                )
             return None
         name = getattr(fam, "name", None)
         module = load_native_from_hosted(
@@ -126,6 +133,7 @@ def load_rocm_hosted_transformer(
             base = base_repo,
             logger = logger,
             tag = "diffusion.rocm_hosted_int8",
+            keep_fp32 = True,
         )
         if module is None:
             return None

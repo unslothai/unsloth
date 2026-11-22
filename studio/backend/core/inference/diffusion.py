@@ -7215,7 +7215,12 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
                 cache_dir = hub_cache_dir(),
             )
-            if source is None or _is_local_cache_entry(source):
+            # Hosted repos only (planning already checked their header against this base); never a local override.
+            if (
+                source is None
+                or getattr(source, "kind", None) != "repo"
+                or _is_local_cache_entry(source)
+            ):
                 return None
             memory = snapshot_device_memory(target)
             planned = self._seeded_pipeline_plan(
@@ -9338,9 +9343,22 @@ class DiffusionBackend:
                     if (
                         seeded_placement is not None
                         and not dense_transformer_supported(target)
-                        and not plan_keeps_transformer_resident(seeded_placement)
+                        and (
+                            not plan_keeps_transformer_resident(seeded_placement)
+                            or _rocm_hosted_int8_route_reason(
+                                fam,
+                                target,
+                                transformer_quant,
+                                kind = kind,
+                                speed_mode = speed_mode,
+                                memory_mode = memory_mode,
+                                cpu_offload = cpu_offload,
+                            )
+                            is None
+                        )
                     ):
-                        # The ROCm hosted int8 read is resident only (the compiled RDNA int8 tier).
+                        # The ROCm hosted int8 read is the compiled RDNA int8 tier's W8A8 build, resident only: re-asked
+                        # here, since a compile probe recorded after planning can turn that tier off.
                         seeded_placement = None
                     if seeded_placement is None:
                         # Live free memory can undercut the CAPACITY the plan settled this against.

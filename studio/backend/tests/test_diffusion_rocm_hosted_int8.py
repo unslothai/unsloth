@@ -226,6 +226,49 @@ def test_planner_keeps_the_dense_shards_when_the_plan_offloads(planner_host):
     assert _seed(planner) is None
 
 
+def test_planner_never_seeds_a_local_override(planner_host, monkeypatch):
+    local = types.SimpleNamespace(kind = "path", location = "/models/flux3-int8.safetensors")
+    monkeypatch.setattr(D, "denoiser_prequant_source", lambda *a, **k: local)
+    assert _seed(_Planner(types.SimpleNamespace(offload_policy = OFFLOAD_NONE))) is None
+
+
+@pytest.mark.parametrize(
+    "name", ["flux-3-image-klein-INT8.safetensors", "Z-Image-Turbo-INT8.pt", "x-INT8-ConvRot.pt"]
+)
+def test_reader_takes_only_a_convrot_safetensors_build(monkeypatch, tmp_path, name):
+    from core.inference import diffusion_prequant as pq
+
+    path = tmp_path / name
+    path.write_bytes(b"")
+    monkeypatch.setattr(pq, "_resolve_checkpoint_path", lambda *a, **k: str(path))
+    called = []
+    monkeypatch.setattr(NH, "load_native_from_hosted", lambda *a, **k: called.append(1))
+    source = types.SimpleNamespace(kind = "repo", location = "unsloth/flux-3-image-klein-FP8")
+    assert RH.load_rocm_hosted_transformer(_fam(), object, FLUX3[0], source) is None
+    assert called == []
+
+
+def test_reader_opts_into_the_keep_fp32_rule(monkeypatch, tmp_path):
+    from core.inference import diffusion_prequant as pq
+
+    path = tmp_path / "flux-3-image-klein-INT8-ConvRot.safetensors"
+    path.write_bytes(b"")
+    monkeypatch.setattr(pq, "_resolve_checkpoint_path", lambda *a, **k: str(path))
+    seen = {}
+    module = types.SimpleNamespace()
+
+    def reader(*a, **k):
+        seen.update(k)
+        return module
+
+    monkeypatch.setattr(NH, "load_native_from_hosted", reader)
+    source = types.SimpleNamespace(kind = "repo", location = "unsloth/flux-3-image-klein-FP8")
+    assert RH.load_rocm_hosted_transformer(_fam(), object, FLUX3[0], source) is module
+    assert seen["keep_fp32"] is True and seen["spec"]["act_int8"] is True
+    assert seen["tag"] == "diffusion.rocm_hosted_int8"
+    assert module._unsloth_prequant_path == str(path)
+
+
 def test_planner_keeps_the_dense_shards_without_a_hosted_source(planner_host, monkeypatch):
     monkeypatch.setattr(D, "denoiser_prequant_source", lambda *a, **k: None)
     assert _seed(_Planner(types.SimpleNamespace(offload_policy = OFFLOAD_NONE))) is None

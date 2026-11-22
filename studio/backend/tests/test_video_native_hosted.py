@@ -263,8 +263,15 @@ def test_keeps_float32_only_where_from_pretrained_does(tmp_path):
     class Kept(CLS):
         _keep_in_fp32_modules = ["scale_shift_table"]
 
+    # The video callers keep the strict bf16 rule; only the image caller opts in.
+    assert (
+        NH.load_native_from_hosted(
+            str(path), Kept, str(cfg_dir), spec = _spec(), family = FAMILY, logger = None
+        )
+        is None
+    )
     model = NH.load_native_from_hosted(
-        str(path), Kept, str(cfg_dir), spec = _spec(), family = FAMILY, logger = None
+        str(path), Kept, str(cfg_dir), spec = _spec(), family = FAMILY, logger = None, keep_fp32 = True
     )
     assert model is not None
     assert model.scale_shift_table.dtype == torch.float32
