@@ -779,6 +779,8 @@ class AnthropicStreamEmitter:
         elif etype == "status" and not event.get("text"):
             # A new cumulative segment can start without a tool_end (a rejected call).
             self._prev_text = ""
+            if event.get("new_pass"):
+                self._reset_turn()
             return []
         return []
 
@@ -1075,6 +1077,10 @@ class AnthropicStreamEmitter:
                     },
                 )
             )
+        self._reset_turn()
+        return events
+
+    def _reset_turn(self) -> None:
         # Reset per synthesis turn: a new turn may legitimately open with its own leading <think> block
         self._prev_text = ""
         self._tag_buf = ""
@@ -1085,7 +1091,6 @@ class AnthropicStreamEmitter:
         self._active_wrap = None
         self._wrap_chars = 0
         self._close_skip = 0
-        return events
 
     def _alloc_block_index(self) -> None:
         if self._block_index_used:

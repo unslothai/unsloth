@@ -193,6 +193,19 @@ def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
     assert '"signature": ""' in thinking_start
 
 
+def test_anthropic_emitter_new_pass_status_reopens_thinking():
+    # The final-answer retry (#18802) starts a fresh pass without a tool_end.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>First.</think>"})
+    events += emitter.feed({"type": "status", "text": "", "new_pass": True})
+    events += emitter.feed({"type": "content", "text": "<think>Second.</think>Answer."})
+    events += emitter.finish()
+
+    assert _emitter_client_thinking(events) == "First.Second."
+    assert _emitter_client_text(events) == "Answer."
+
+
 def test_anthropic_emitter_splits_think_from_answer():
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")

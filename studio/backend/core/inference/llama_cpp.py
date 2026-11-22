@@ -43423,7 +43423,7 @@ class LlamaCppBackend:
                         _final_reasoning_summary_emitted = False
                         _final_answer_stripper.reset()
                         _continue_final = True
-                        yield {"type": "status", "text": ""}
+                        yield {"type": "status", "text": "", "new_pass": True}
                     else:
                         _cut = _quote_cut_event(
                             reasoning_text,
