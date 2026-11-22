@@ -7281,3 +7281,20 @@ class TestInProcessMessages:
             assert body["usage"]["input_tokens"] == 9 and body["stop_reason"] == "end_turn"
         tool_blocks = ["server_tool_use", "web_search_tool_result"]
         assert kinds == ["thinking", "text", *tool_blocks, "thinking", "text"]
+
+
+def test_server_tool_end_then_blank_status_still_ends_the_turn():
+    from routes.inference import _AnthropicToolEventRules
+
+    emitter = AnthropicStreamEmitter()
+    lines = list(emitter.start("msg_1", "m"))
+    rules = _AnthropicToolEventRules(emitter, None, False, None)
+    for event in (
+        {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "c1", "arguments": {}},
+        {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": "r"},
+        {"type": "status", "text": ""},
+        {"type": "metadata", "usage": {}, "finish_reason": "stop"},
+    ):
+        lines.extend(rules.feed(event))
+    lines.extend(rules.finish())
+    assert '"stop_reason": "end_turn"' in "".join(lines)

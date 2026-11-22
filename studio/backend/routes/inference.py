@@ -47402,11 +47402,11 @@ class _AnthropicToolEventRules:
         elif etype == "tool_end":
             self._tool_blocks_emitted += 1
             self._span_guard.tool_end()
-        elif etype == "status" and event.get("new_pass"):
-            self._span_guard.tool_end()
             # Unsloth ran the tool server-side, so the response no longer ends on a pending
             # client action; otherwise stop_reason "tool_use" tells the client to run it again.
             self._ends_on_tool_use = False
+        elif etype == "status" and event.get("new_pass"):
+            self._span_guard.tool_end()
         elif etype == "content" and event.get("text"):
             self._ends_on_tool_use = False
         return released + self._emitter.feed(event)
