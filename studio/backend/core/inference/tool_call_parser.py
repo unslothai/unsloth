@@ -6,6 +6,7 @@
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations
 
+import ast
 import json
 import bisect
 import re
@@ -29,6 +30,7 @@ TOOL_XML_SIGNALS = (
     "<|python_tag|>",
     "[TOOL_CALLS]",
     "<|tool_call>",
+    "<|tool_call_start|>",
     # Bare rehearsal marker (``name[ARGS]{...}``): hold it so it is promoted, not leaked as prose.
     "[ARGS]",
     # DeepSeek R1 / V3 / V3.1 -- 5 opener variants llama.cpp keeps.
@@ -375,6 +377,10 @@ _KIMI_CALL_BEGIN = "<|tool_call_begin|>"
 _KIMI_ARG_BEGIN = "<|tool_call_argument_begin|>"
 _KIMI_CALL_END = "<|tool_call_end|>"
 _KIMI_ID_RE = re.compile(r"^(?:functions\.)?([\w\.\-]+)(?::(\d+))?$")
+
+# LFM2 / LFM2.5: ``<|tool_call_start|>[name(key="value"), ...]<|tool_call_end|>``, or a JSON list when asked for JSON.
+_LFM_CALL_START = "<|tool_call_start|>"
+_LFM_JSON_LITERALS = {"true": True, "false": False, "null": None}
 
 # MiniMax-M2 / M2.1: ``<minimax:tool_call><invoke name="NAME"><parameter name="KEY">VALUE</parameter></invoke></minimax:tool_call>``.
 _MINIMAX_BLOCK_OPEN = "<minimax:tool_call>"
@@ -2305,10 +2311,12 @@ def parse_tool_calls_from_text(
         _km_bare = content.find(_KIMI_CALL_BEGIN)
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
         _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
+        _lfm_pos = content.find(_LFM_CALL_START)
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
             (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
+            (_lfm_pos if _lfm_pos >= 0 else len(content), _parse_lfm_tool_calls),
         ]
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
@@ -4272,6 +4280,83 @@ def _parse_kimi_tool_calls(
                 content, id_offset = id_offset, allow_incomplete = allow_incomplete
             )
         )
+    return out
+
+
+def _lfm_literal(node: ast.AST) -> Any:
+    if isinstance(node, ast.Name) and node.id in _LFM_JSON_LITERALS:
+        return _LFM_JSON_LITERALS[node.id]
+    return ast.literal_eval(node)
+
+
+def _lfm_body_calls(body: str) -> list[tuple[str, dict]]:
+    """Parsed as literals only, never evaluated; any positional or non-literal argument rejects the body."""
+    body = body.strip()
+    if body.startswith("[{") or body.startswith("{"):
+        try:
+            items = json.loads(body)
+        except ValueError:
+            return []
+        items = items if isinstance(items, list) else [items]
+        calls = []
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                return []
+            args = item.get("arguments", item.get("parameters", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    return []
+            if not isinstance(args, dict):
+                return []
+            calls.append((item["name"], args))
+        return calls
+    try:
+        node = ast.parse(body, mode = "eval").body
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    elts = node.elts if isinstance(node, ast.List) else [node]
+    calls = []
+    for elt in elts:
+        if not isinstance(elt, ast.Call) or elt.args:
+            return []
+        try:
+            name = ast.unparse(elt.func)
+            args = {kw.arg: _lfm_literal(kw.value) for kw in elt.keywords if kw.arg}
+        except (ValueError, TypeError, SyntaxError, RecursionError):
+            return []
+        if not re.fullmatch(r"[A-Za-z_][\w.\-]*", name) or len(args) != len(elt.keywords):
+            return []
+        calls.append((name, args))
+    return calls
+
+
+def _parse_lfm_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    out: list[dict] = []
+    pos = 0
+    while (start := content.find(_LFM_CALL_START, pos)) >= 0:
+        body_start = start + len(_LFM_CALL_START)
+        end = content.find(_KIMI_CALL_END, body_start)
+        if end < 0 and not allow_incomplete:
+            break
+        body = content[body_start : end if end >= 0 else len(content)]
+        for name, args in _lfm_body_calls(body):
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                }
+            )
+        if end < 0:
+            break
+        pos = end + len(_KIMI_CALL_END)
     return out
 
 

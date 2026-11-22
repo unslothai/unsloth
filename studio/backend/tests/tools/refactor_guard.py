@@ -280,6 +280,8 @@ _TEXT_ADAPTERS = {
     "_gemma_arguments_to_json": lambda text: _gemma_argument_body(text),
     # The corpus holds no backticked tags; backtick each one so the spans vary with the text.
     "tag_mention_spans": lambda text: re.sub(r"<[^<>`\n]+>|\[/?TOOL_CALLS\]", r"`\g<0>`", text),
+    # The corpus holds no LFM envelopes; wrap each text so its bodies reach the parser.
+    "_parse_lfm_tool_calls": lambda text: f"<|tool_call_start|>{text}<|tool_call_end|>",
 }
 
 

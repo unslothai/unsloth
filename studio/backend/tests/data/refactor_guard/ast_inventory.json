@@ -1237,7 +1237,8 @@
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '.*?<｜tool▁calls▁end｜>', re.DOTALL)": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '|' + re.escape(_KIMI_SECTION_BEGIN) + '|' + re.escape(_KIMI_CALL_BEGIN) + '|' + re.escape(_MINIMAX_BLOCK_OPEN))": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1,
-      "re.compile(_GEMMA_SLOT + '(\\\\d+)' + _GEMMA_SLOT)": 1
+      "re.compile(_GEMMA_SLOT + '(\\\\d+)' + _GEMMA_SLOT)": 1,
+      "re.fullmatch('[A-Za-z_][\\\\w.\\\\-]*', name)": 1
     },
     "symbols": {
       "BUDGET_EXHAUSTED_NUDGE": {
@@ -1504,6 +1505,12 @@
         "kind": "assign"
       },
       "_LENGTH_PROGRESS_TAIL_CHARS": {
+        "kind": "assign"
+      },
+      "_LFM_CALL_START": {
+        "kind": "assign"
+      },
+      "_LFM_JSON_LITERALS": {
         "kind": "assign"
       },
       "_LLAMA3_BARE_JSON_SENTINELS": {
@@ -1852,6 +1859,16 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "_lfm_body_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
+      },
+      "_lfm_literal": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "node: ast.AST"
+      },
       "_llama3_kv_value": {
         "decorators": [],
         "kind": "def",
@@ -1962,6 +1979,11 @@
         "signature": "body: str, *, id_offset: int, allow_incomplete: bool=True"
       },
       "_parse_kimi_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_lfm_tool_calls": {
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"

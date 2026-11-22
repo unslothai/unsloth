@@ -18,6 +18,7 @@ for _entry in (_BACKEND_DIR, _TESTS_DIR):
 
 from core.inference.tool_call_parser import (  # noqa: E402
     StreamingMarkupStripper,
+    parse_tool_calls_from_text,
     strip_tool_markup,
 )
 from test_llama_cpp_tool_loop import (  # noqa: E402
@@ -233,3 +234,57 @@ def test_split_call_prefix_does_not_garble_the_retry(monkeypatch, parts):
     )
     assert len(payloads) == 3 and "tools" not in payloads[2]
     assert _route_shown(events).endswith("A sparse MoE model."), _route_shown(events)
+
+
+def _names_args(text, **kw):
+    return [
+        (c["function"]["name"], json.loads(c["function"]["arguments"]))
+        for c in parse_tool_calls_from_text(text, **kw)
+    ]
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        (CALL, [("web_fetch", {"url": "https://example.com/lfm"})]),
+        (
+            "Checking. <|tool_call_start|>[web_search(query='a', n=3), web_fetch(url=\"u\")]<|tool_call_end|>",
+            [("web_search", {"query": "a", "n": 3}), ("web_fetch", {"url": "u"})],
+        ),
+        (
+            '<|tool_call_start|>[{"name": "web_search", "arguments": {"query": "x"}}]<|tool_call_end|>',
+            [("web_search", {"query": "x"})],
+        ),
+        (
+            "<|tool_call_start|>[f(a=true, b=null)]<|tool_call_end|>",
+            [("f", {"a": True, "b": None})],
+        ),
+        ("<|tool_call_start|>[web_search(query='cut')]", [("web_search", {"query": "cut"})]),
+        ('<|tool_call_start|>[__import__("os").system("x")]<|tool_call_end|>', []),
+        ("<|tool_call_start|>[web_search('positional')]<|tool_call_end|>", []),
+        ("LFM wraps calls in <|tool_call_start|> and <|tool_call_end|> tokens.", []),
+    ],
+)
+def test_lfm_calls_parse_as_literals(text, expected):
+    assert _names_args(text) == expected
+
+
+def test_strict_mode_refuses_an_unclosed_lfm_call():
+    assert _names_args("<|tool_call_start|>[web_search(query='cut')]", allow_incomplete = False) == []
+
+
+def test_a_raw_lfm_call_in_a_tool_round_is_executed(monkeypatch):
+    raw = "<|tool_call_start|>[web_search(query='LFM2.5-24B-A2B')]<|tool_call_end|>"
+    streams = [
+        [_sse({"content": raw}), _done()],
+        [_sse({"content": "A sparse MoE model."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert calls == [("web_search", {"query": "LFM2.5-24B-A2B"})]
+    assert _route_shown(events).strip() == "A sparse MoE model."
