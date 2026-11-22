@@ -30892,10 +30892,17 @@ class LlamaCppBackend:
                         n_ctx_max = None if effective_ctx > 0 else self._context_length,
                     )
                     if _regrowth_mib:
-                        _fit_target_delta_mib += _regrowth_mib
+                        # On top of the margin the emitter would spell, not the raw delta: a
+                        # budget delta below the 512 MiB floor must not eat the growth.
+                        _min_delta = _VRAM_FLOOR_RESERVE_MIB - (
+                            _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
+                        )
+                        _fit_target_delta_mib = (
+                            max(_min_delta, _fit_target_delta_mib) + _regrowth_mib
+                        )
                         if _fit_target_delta_by_idx:
                             _fit_target_delta_by_idx = {
-                                _idx: _delta + _regrowth_mib
+                                _idx: max(_min_delta, _delta) + _regrowth_mib
                                 for _idx, _delta in _fit_target_delta_by_idx.items()
                             }
                         logger.info(

@@ -286,3 +286,51 @@ def test_other_models_launch_byte_identical(tmp_path, monkeypatch, arch):
     )
     assert _norm(before, tmp_path / "a") == _norm(after, tmp_path / "b")
     assert _flag(after, "--fit-target") is None
+
+
+def _margins_with_and_without_regrowth(tmp_path, monkeypatch, memory, fraction, per_device):
+    monkeypatch.setattr(lc, "_active_vram_fraction", lambda: fraction)
+    if per_device:
+        monkeypatch.setattr(B, "_fit_target_per_device_ok", lambda self, **_k: True)
+    b, cmd = _launch(
+        tmp_path / "with", monkeypatch, memory, ink.NEW_CUDA, n_ctx = 32768, cache_type_kv = "f16"
+    )
+    assert _flag(cmd, "--fit") == "on"
+    regrowth = b._inkling2_fit_regrowth_mib(32768, _ub(cmd), "f16")
+    with_growth = [int(v) for v in _flag(cmd, "--fit-target").split(",")]
+    monkeypatch.setattr(B, "_inkling2_fit_regrowth_mib", lambda self, *_a, **_k: 0)
+    _b, plain = _launch(
+        tmp_path / "plain", monkeypatch, memory, ink.NEW_CUDA, n_ctx = 32768, cache_type_kv = "f16"
+    )
+    target = _flag(plain, "--fit-target")
+    without = [int(v) for v in target.split(",")] if target else [1024] * len(with_growth)
+    return regrowth, with_growth, without
+
+
+def test_regrowth_sits_on_the_floored_margin_under_a_full_budget(tmp_path, monkeypatch):
+    # A 100% budget on a 48 GB card asks for a margin below the 512 MiB floor; the growth goes
+    # on top of the floored margin instead of being eaten by the negative balance.
+    regrowth, with_growth, without = _margins_with_and_without_regrowth(
+        tmp_path, monkeypatch, [(0, 48000, 49140)], 1.0, per_device = False
+    )
+    assert regrowth >= 2547 and without == [int(lc._VRAM_FLOOR_RESERVE_MIB)]
+    assert with_growth == [int(lc._VRAM_FLOOR_RESERVE_MIB) + regrowth]
+
+
+def test_regrowth_sits_on_each_floored_per_device_margin(tmp_path, monkeypatch):
+    # 98%: the 48 GB card stays above the floor (533 MiB), the 80 GB card hits it; little free
+    # memory keeps the load on llama.cpp's fitter.
+    regrowth, with_growth, without = _margins_with_and_without_regrowth(
+        tmp_path, monkeypatch, [(0, 20000, 49140), (1, 30000, 81559)], 0.98, per_device = True
+    )
+    assert len(without) == 2 and without[1] == int(lc._VRAM_FLOOR_RESERVE_MIB)
+    assert without[0] > int(lc._VRAM_FLOOR_RESERVE_MIB)
+    assert with_growth == [m + regrowth for m in without]
+
+
+def test_regrowth_above_the_floor_is_unchanged(tmp_path, monkeypatch):
+    regrowth, with_growth, without = _margins_with_and_without_regrowth(
+        tmp_path, monkeypatch, [(0, 48000, 49140)], lc._CTX_FIT_VRAM_FRACTION, per_device = False
+    )
+    assert without == [int(lc._LLAMA_FIT_TARGET_DEFAULT_MIB)]
+    assert with_growth == [int(lc._LLAMA_FIT_TARGET_DEFAULT_MIB) + regrowth]
