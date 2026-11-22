@@ -922,14 +922,71 @@ def is_ggml_unsupported_op_abort(message: str) -> bool:
     return all(marker in text for marker in _GGML_UNSUPPORTED_OP_MARKERS)
 
 
+# Model / sequential offload decodes the VAE on the CPU, where a bare --vae-tiling means 256 px tiles at half-tile
+# overlaps: 49 tiles for a 1024 px image (about 3x the work of one whole decode), and each tile normalizes on its own,
+# which shifts colour against a whole decode. The CPU decode buffer grows with the tile area (direct conv, 1024 px:
+# FLUX.2 VAE 2818 MiB, Qwen-Image 2.1 VAE 3889 MiB; a quarter of that at 512 px), so the offload path takes the largest
+# tile the host RAM left over by the offloaded weights holds. A 1024 px tile decodes a 1024 px image whole; larger
+# images still tile. Measured on an L4 host (12 vCPU), FLUX.2 klein 4B at 1024 px: decode 185 s at 256 px, 138 s at
+# 512, 68 s whole.
+CPU_VAE_TILE_ENV = "UNSLOTH_SD_CPP_VAE_TILE"
+CPU_VAE_TILE_SIZES = (1024, 768, 512)
+# MiB of CPU decode buffer per 1024x1024 tile: Qwen-Image 2.1 measured 3889 (the worst of the families timed), + 30%.
+CPU_VAE_DECODE_MIB_PER_MPX = 5120
+# Help text of builds whose --vae-tile-size counts image pixels (older ones count latent cells: 1024 = untiled).
+VAE_TILE_PIXELS_HELP = "tile size for vae encode and decode in image pixels"
+
+
+def cpu_vae_tile_size(spare_mib: Optional[int], env: Optional[dict] = None) -> Optional[int]:
+    """Tile edge (px) for a CPU VAE decode on the offload path, or None for the bare ``--vae-tiling`` (256 px).
+
+    ``spare_mib``: host RAM left after the offloaded weights and the host reserve (None = unknown, keeps 256).
+    ``UNSLOTH_SD_CPP_VAE_TILE``: 0 / off keeps 256 px, a number pins that tile size."""
+    import os
+
+    forced = ((env if env is not None else os.environ).get(CPU_VAE_TILE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return None
+    if forced.isdigit() and int(forced) >= 64:
+        return int(forced)
+    if spare_mib is None:
+        return None
+    for size in CPU_VAE_TILE_SIZES:
+        if CPU_VAE_DECODE_MIB_PER_MPX * (size / 1024) ** 2 <= spare_mib:
+            return size
+    return None
+
+
+def sd_cpp_vae_tile_size_in_pixels(binary: Optional[str]) -> bool:
+    """True when ``binary --help`` documents ``--vae-tile-size`` in image pixels. Fails closed."""
+    import os
+
+    if not binary:
+        return False
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _vae_tile_pixels_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _vae_tile_pixels_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and VAE_TILE_PIXELS_HELP in " ".join(text.split())
+
+
 def offload_flags(
     policy: str,
     *,
     vae_tiling: bool = False,
     diffusion_fa: bool = False,
     vae_on_cpu: bool = True,
+    vae_tile_size: Optional[int] = None,
 ) -> list[str]:
-    """vae_on_cpu=False drops only --vae-on-cpu, for families whose VAE cannot run on the CPU path."""
+    """vae_on_cpu=False drops only --vae-on-cpu, for families whose VAE cannot run on the CPU path.
+    ``vae_tile_size``: pixel tile edge sent with the CPU VAE's --vae-tiling (``cpu_vae_tile_size``); None = 256."""
     flags: list[str] = []
     fa = diffusion_fa
     tile = vae_tiling
@@ -952,6 +1009,9 @@ def offload_flags(
         if f not in seen:
             seen.add(f)
             out.append(f)
+    # Only for the CPU VAE: a GPU VAE keeps 256 px and sd.cpp's own halving retry on an allocation failure.
+    if tile and vae_tile_size and "--vae-on-cpu" in out:
+        out += ["--vae-tile-size", str(int(vae_tile_size))]
     return out
 
 

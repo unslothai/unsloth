@@ -3265,6 +3265,33 @@ def _offload_would_exhaust_host_ram(
     return True
 
 
+def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
+    """Pixel tile edge for the offload path's CPU VAE decode, from the host RAM the offloaded weights leave (they all
+    sit in host RAM under --offload-to-cpu); None keeps the bare --vae-tiling (256 px). Builds whose tile size is not
+    in image pixels, and an unreadable host, keep 256 px."""
+    if not sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
+        return None
+    try:
+        from core.inference.diffusion_small_host import host_ram_mib, host_reserve_mib
+        from core.inference.sd_cpp_multigpu import TEXT_ENCODER_FIELDS, file_mib
+
+        total, available = host_ram_mib()
+        if available is None:
+            spare = None
+        else:
+            weights = sum(
+                file_mib(getattr(files, f, None))
+                for f in ("diffusion_model", "vae", *TEXT_ENCODER_FIELDS)
+            )
+            spare = available - weights - host_reserve_mib(total)
+    except Exception as exc:  # noqa: BLE001 -- a failed reading keeps the 256 px default
+        logger.debug("sd_cpp.vae_tile: host RAM unreadable: %s", exc)
+        spare = None
+    size = sd_cpp_args_mod.cpu_vae_tile_size(spare)
+    logger.info("sd_cpp.vae_tile: CPU VAE tile %s px (spare host RAM %s MiB)", size or 256, spare)
+    return size
+
+
 def _native_speed_for(speed_mode: Optional[str]) -> str:
     mode = (speed_mode or "off").strip().lower()
     return mode if mode in ("default", "max") else "off"
@@ -4096,8 +4123,16 @@ class SdCppDiffusionBackend:
                     gpu_ordinal,
                 ):
                     unmeasured = False
+                policy = _memory_policy(memory_mode, cpu_offload or unmeasured)
                 return placed, tuple(
-                    offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
+                    offload_flags(
+                        policy,
+                        vae_tile_size = (
+                            _cpu_vae_tile_size(files, binary)
+                            if policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL)
+                            else None
+                        ),
+                    )
                 )
 
             device, offload = _placement(*_running())
