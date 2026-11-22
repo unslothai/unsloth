@@ -518,7 +518,9 @@ def test_rollout_scores_feed_the_subclass_objective(score_key, beta, honours_fla
     with torch.no_grad():
         current = trainer._get_per_token_logps_and_entropies(model, ids, mask, width)[0]
     cm = inputs["completion_mask"].bool()
-    assert torch.equal(current[cm], scored[cm])
+    # The scored pass ran in batches of 2 and this one in a single batch: float64 matmuls of different shapes may
+    # differ in the last bit on some CPUs, so exact equality is not the contract. A misaligned window is off by O(1).
+    torch.testing.assert_close(current[cm], scored[cm], rtol = 0, atol = 1e-12)
     if objective is not _user_compute_loss:
         # Ratio exactly 1 and KL exactly 0: GMPO's loss is -mean(A) / ga.
         want = -inputs["advantages"].mean() / 2
