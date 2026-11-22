@@ -746,8 +746,7 @@ def _native_cache_key(index: int) -> Optional[str]:
 
 
 def _native_cache_get(index: int, key: tuple) -> Optional[dict]:
-    """A complete earlier race for this card and shape, else None (race it). The race costs seconds per shape on a
-    T4 (sustained timings at 4096 rows) and runs on the first forward: a fresh process reads it back."""
+    """A complete earlier race for this card and shape (seconds per shape on a T4), else None."""
     try:
         from . import diffusion_int8_gemm as g8
 

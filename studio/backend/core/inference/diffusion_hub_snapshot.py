@@ -3,15 +3,10 @@
 
 """One Hub call in place of one per file when a repo's cached snapshot is already current.
 
-A ``from_pretrained`` that may download revalidates every file it opens against the Hub: a returning FLUX.3 load asks
-about 25 times (processor, tokenizer, video / image processor, chat templates, configs, index), about 8 s on a 330 ms
-link, to learn that nothing changed. Files under a snapshot are fixed by its commit, and the same loader code on the
-same library versions asks for the same files, each either fetched into the snapshot or recorded absent
-(``.no_exist``). So once a revalidating load of commit C has finished (``note_validated``), a later load of the same
-components with the same versions, whose Hub ``main`` still names C, reads from the cache exactly the files the
-revalidating load would (``current_snapshot``: one ``model_info`` call). Any other case (moved ref, new versions or
-loader code, a file gone from the cache, offline, unreachable) revalidates per file as before; so does a cache-only
-read that fails (``cache_first``). ``UNSLOTH_DIFFUSION_HUB_SNAPSHOT=0`` turns it off. Torch-free.
+Files under a snapshot are fixed by its commit, and the same loader code on the same library versions asks for the
+same files. So once a revalidating load of commit C finished (``note_validated``), a later load whose Hub ``main``
+still names C reads from the cache (``current_snapshot``). Anything else revalidates per file as before.
+``UNSLOTH_DIFFUSION_HUB_SNAPSHOT=0`` turns it off. Torch-free.
 """
 
 from __future__ import annotations
@@ -27,7 +22,6 @@ SNAPSHOT_ENV = "UNSLOTH_DIFFUSION_HUB_SNAPSHOT"
 _FILE_NAME = "diffusion_hub_snapshots.json"
 _FORMAT = 1
 _MAX_ENTRIES = 64
-# The loader code that decides which files a load asks for.
 _SOURCES = (
     "diffusion_flux3.py",
     "diffusion_small_host.py",
@@ -87,9 +81,8 @@ def _local_commit(repo_id: str, cache_dir: Optional[str], revision: str) -> Opti
 
 
 def _listing(repo_id: str, cache_dir: Optional[str], commit: str) -> list:
-    """Every file (and recorded absence) the cache holds for ``commit``, relative, sorted. A link whose blob is gone
-    is not held: a cache-only read of it can come back without the file (transformers 4.57.6 and 5.17 load a
-    processor without its chat template, no error), while a revalidating read fetches it again."""
+    """Cached files (and recorded absences) for ``commit``, sorted. A dangling link is not held: a cache-only read
+    silently drops it (e.g. a processor's chat template on transformers 4.57.6 / 5.17)."""
     root = _repo_root(repo_id, cache_dir)
     out = []
     for base, tag in (
@@ -184,9 +177,7 @@ def current_snapshot(
     logger: Any = None,
     api: Any = None,
 ) -> Optional[str]:
-    """The cached commit when a revalidating load of these ``components`` finished on it with today's versions and
-    loader code, its files are all still cached, and the Hub's ``revision`` still names it; else None. At most one
-    Hub call. Never raises."""
+    """The validated cached commit if still current on the Hub and fully cached, else None. Never raises."""
     try:
         if not enabled() or not _hub_id(repo_id):
             return None
@@ -222,9 +213,7 @@ def note_validated(
     revision: str = "main",
     api: Any = None,
 ) -> bool:
-    """Record that a revalidating load of ``components`` just finished on the cached commit, once the Hub confirms
-    that commit is still its ``revision`` (one call: a load that fell back to the cache while offline records
-    nothing). Never raises."""
+    """Record a finished revalidating load, only if the Hub confirms the commit (offline records nothing)."""
     try:
         if not enabled() or not _hub_id(repo_id):
             return False
