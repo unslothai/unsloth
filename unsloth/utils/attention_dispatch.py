@@ -29,6 +29,7 @@ import torch.nn.functional as F
 from packaging.version import Version
 
 from ..device_type import DEVICE_TYPE
+from ..import_fixes import _unmask_rows_attending_to_nothing
 from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
@@ -2192,8 +2193,19 @@ def _run_attention(
 
                 # Avoid NaNs from fully-masked rows, common with left padding.
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
-                    local_mask = local_mask | no_allowed
+                    if context.is_causal:
+                        # Causal: the row attends to its own key only. Every key would let a left pad
+                        # query, whose logits predict the first real token, read that token and later ones.
+                        if local_mask.shape[-2] != q_len_local:
+                            local_mask = local_mask.expand(
+                                *local_mask.shape[:-2], q_len_local, local_mask.shape[-1]
+                            )
+                        local_mask = _unmask_rows_attending_to_nothing(
+                            local_mask, q_offset = local_mask.shape[-1] - q_len_local
+                        )
+                    else:
+                        no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
+                        local_mask = local_mask | no_allowed
 
             if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
                 # SDPA's is_causal has no window, so build the windowed mask explicitly.
