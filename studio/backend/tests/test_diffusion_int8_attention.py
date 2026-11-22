@@ -647,11 +647,8 @@ def test_no_probability_is_packed_unclamped():
         and "pack4(ex2(" not in source
         and " ex2(fmaf(" not in source
     )
-    # the native P path: rounded, then saturated at 255 by the pack (cvt.pack.sat) or the conversion (cvt.rni.sat)
     assert source.count("prob_rn(fmaf(") == 8 and source.count("cvt.pack.sat.u8.s32.b32") == 2
     assert "cvt.rni.sat.u8.f32" in source
-    # an infinite score scale: the native path's offset becomes +inf, so its keys saturate to the 255 the clamp gives
-    # the NaN exponents of the MAGIC_F path, and padded keys stay 0
     assert "if (fa == inf) oa = inf;" in source and "if (fb == inf) ob = inf;" in source
 
 
@@ -671,8 +668,6 @@ def test_native_p_reaches_the_kernel_as_a_define():
 
 @pytest.mark.parametrize("off", ("0", "off", "false", "no", " NO "))
 def test_native_p_kill_switch_compiles_the_magic_path(monkeypatch, off):
-    """``UNSLOTH_DIFFUSION_INT8_ATTENTION_NATIVE_P=0`` drops native_p from the compiled kernel's config: no NATIVE_P
-    define, another kernel key, and the race namespace records it."""
     monkeypatch.delenv(I.NATIVE_P_ENV, raising = False)
     cfg = I.kernel_config((8, 9), 128)
     assert cfg.get("native_p") == 1 and I.native_p_enabled()
@@ -684,7 +679,7 @@ def test_native_p_kill_switch_compiles_the_magic_path(monkeypatch, off):
         variant = I.kernel_variant(cfg, sinks)
         assert "native_p" not in variant and "NATIVE_P" not in I.kernel_defines(128, variant)
     assert I._config_key(I.kernel_variant(cfg, False)) != I._config_key(on)
-    assert cfg.get("native_p") == 1  # the table entry itself is untouched
+    assert cfg.get("native_p") == 1
     for keep in ("1", "", "on"):
         monkeypatch.setenv(I.NATIVE_P_ENV, keep)
         assert I.kernel_variant(cfg, False) == on
@@ -700,8 +695,6 @@ def test_native_p_switch_is_part_of_the_race_namespace(monkeypatch):
 
 @pytest.mark.skipif(not _nvrtc_ok(), reason = "NVRTC ships with the CUDA builds of torch")
 def test_native_p_keeps_the_products_and_converts_each_probability_once():
-    """NATIVE_P 1 / 2 move only the rounding and packing of P: the same products and copies, one round-to-nearest
-    conversion per probability, and the MAGIC_F path (native_p 0) has no conversion in the kernel."""
     arch = max(a for a in _nvrtc_archs() if a in (80, 86, 89, 120))
     base = {"bn": 128, "wpc": 8, "nq": 1, "stages": 2}
 
@@ -752,9 +745,7 @@ extern "C" __global__ void p_sweep(unsigned long long* bad) {
 @needs_kernel
 @pytest.mark.parametrize("native_p", (1, 2))
 def test_native_p_packs_the_same_bytes_for_every_float(native_p):
-    """Every one of the 2^32 fp32 exponents x but NaN, in each byte slot of a word: the native P path packs the
-    bytes the MAGIC_F path packs (ties to even, the clamp at 255, negatives and infinities included). The same
-    sweep with truncation instead of rounding must disagree (the check can fail)."""
+    """All 2^32 fp32 inputs but NaN pack the MAGIC_F bytes; a truncating sweep must disagree (the check can fail)."""
     capability = torch.cuda.get_device_capability()
     stream = torch.cuda.current_stream().cuda_stream
     bad = {}
