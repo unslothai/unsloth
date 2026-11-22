@@ -177,6 +177,7 @@ EAGER_ORDER = [
     "install-kernels",
     "studio",
     "start",
+    "spark",
     "mcp",
     "connect",
 ]
