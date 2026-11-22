@@ -218,7 +218,6 @@ def _two_card_backend(tmp_path, monkeypatch, weights_mib):
     monkeypatch.setattr(B, "_visibility_mask_is_unmappable", staticmethod(lambda: False))
     monkeypatch.setattr(B, "_SMI_MIG_INDICES", frozenset())
     monkeypatch.setattr(B, "_host_torch_is_rocm", staticmethod(lambda: False))
-    # Two discrete cards; no torch device query from a CPU test.
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
@@ -267,13 +266,11 @@ def _spawn(backend, intent):
 
 
 def test_oom_respawn_never_grows_the_auto_context_onto_more_cards(tmp_path, monkeypatch):
-    # One card at a small Auto context; the 1 GiB headroom no longer fits it there, so the
-    # planner moves to both cards, but must not fill them with a far bigger context.
+    # Headroom pushes the plan onto both cards; it must not grow the context there.
     backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
     intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 0)
     first, first_mask = _spawn(backend, intent)
     assert first_mask == "0"
-    # The served child dies of the OOM; its own context is what the strike records.
     backend._process.poll = lambda: 1
     backend._healthy = False
     backend._note_gpu_oom_strike(intent)
@@ -282,7 +279,6 @@ def test_oom_respawn_never_grows_the_auto_context_onto_more_cards(tmp_path, monk
     assert mask == "0,1"
     assert _ctx(respawn) <= _ctx(first)
 
-    # A fixed context is the user's: the cap leaves it to the existing plan.
     backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
     fixed = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 65536)
     first, _ = _spawn(backend, fixed)
@@ -308,8 +304,7 @@ def _strike_and_respawn(backend, intent):
 def test_oom_respawn_adds_no_drafter_the_crashed_load_lacked(
     tmp_path, monkeypatch, speculative_type
 ):
-    # The respawn's second card has room for the DSpark drafter the one-card load dropped
-    # for ngram-mod; Auto must not add it there, a user-chosen drafter stays.
+    # Auto must not add the drafter the one-card load dropped; a user-chosen one stays.
     backend, gguf = _two_card_backend(tmp_path, monkeypatch, weights_mib = 17_000)
     intent = GgufLoadIntent(
         gguf_path = str(gguf),
