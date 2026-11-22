@@ -1010,6 +1010,8 @@ def _gdn_chunk_adapter(original):
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
+            # A prefix-trie row (TRL AsyncGRPO) scans along each sample's path, not the packed order.
+            and "tree_segment_parents" not in kwargs
             and kwargs.get("use_qk_l2norm_in_kernel") is True
             # Only the self-checked default; packed batches only if their self-check passed.
             and (cu_seqlens is None or (_GDN_VARLEN[0] and q.shape[0] == 1))
@@ -1122,6 +1124,7 @@ def _causal_conv1d_adapter(original, depthwise_conv):
             and weight.dim() == 2
             and activation in (None, "silu", "swish")
             and all(kwargs.get(key) is None for key in ("seq_idx", "cu_seqlens", "initial_states"))
+            and "tree_segment_parents" not in kwargs
             and not kwargs.get("return_final_states")
         ):
             out = depthwise_conv(hidden_states.to(weight.dtype), weight)
@@ -2544,6 +2547,21 @@ def _install_router_capture_hooks(model):
     return installed
 
 
+def _rebind_hooked_instances(model, cls, before):
+    """accelerate's device-map hooks (a model split over GPUs) call the forward bound at load, `_old_forward`, not
+    the class attribute. Left there, transformers' >= 5.23 checkpoint wrapper sees it is no longer the class forward
+    and runs the stock layer with neither checkpointing nor the compiled block: point them at the installed forward."""
+    rebound = 0
+    for module in model.modules():
+        if type(module) is not cls:
+            continue
+        old = module.__dict__.get("_old_forward")
+        if old is not None and getattr(old, "__func__", None) is before:
+            module._old_forward = types.MethodType(cls.forward, module)
+            rebound += 1
+    return rebound
+
+
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
     # getattr: PeftModel delegates. The env fills only unstamped layers, so a re-patch keeps the stamp.
@@ -2609,8 +2627,10 @@ def patch_block_compile(model):
     for cls in classes:
         if getattr(cls.forward, _MARK, False):
             continue
+        before = cls.forward
         _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
+        _rebind_hooked_instances(model, cls, before)
     for layer in compiled_layers:
         if not any(m.__dict__.get("_unsloth_fp8_lora") is not None for m in layer.modules()):
             continue

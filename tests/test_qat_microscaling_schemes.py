@@ -344,6 +344,38 @@ def test_nvfp4_biased_layers_need_bias_grad(monkeypatch, bias_grad, scheme):
     assert any("no bias" in str(w.message) for w in caught) is not bias_grad
 
 
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
+def test_frozen_bias_layers_are_fake_quantized_without_bias_grad(monkeypatch, scheme):
+    # LoRA freezes the base bias, so a backward without a bias gradient loses nothing: Qwen2 q / k / v
+    # must still be fake quantized, as the export quantizes them.
+    from peft import LoraConfig, get_peft_model
+
+    _probe_ok(monkeypatch, bias_grad = False)
+    linear_cls = _nvfp4_linear() if scheme == "nvfp4" else _mx_linear()
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(base, LoraConfig(r = 16, target_modules = ["q_proj", "down_proj"]))
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert not q_proj.base_layer.bias.requires_grad
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, scheme)
+    assert isinstance(q_proj.base_layer, linear_cls)
+    assert not any("no bias" in str(w.message) for w in caught)
+
+    # A trainable bias (LoRA bias = "all") still needs the gradient and stays in full precision.
+    base = _tiny_qwen3()
+    base.model.layers[0].self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
+    model = get_peft_model(base, LoraConfig(r = 16, target_modules = ["q_proj"], bias = "all"))
+    q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
+    assert q_proj.base_layer.bias.requires_grad
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, scheme)
+    assert not isinstance(q_proj.base_layer, linear_cls)
+    assert any("no bias" in str(w.message) for w in caught)
+
+
 def test_nvfp4_accepts_rank4_inputs(monkeypatch):
     linear_cls = _nvfp4_linear()
 

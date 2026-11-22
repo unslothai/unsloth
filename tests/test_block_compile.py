@@ -2812,3 +2812,34 @@ def test_opaque_gdn_op_takes_any_fla_return_length(monkeypatch, extra_fwd):
     torch.testing.assert_close(out[0], v.detach() * 0.5)
     out[0].sum().backward()
     assert torch.all(v.grad == 0.5) and torch.all(q.grad == 1) and torch.all(g.grad == 4)
+
+
+def test_block_keeps_checkpointing_under_accelerate_device_map_hooks(monkeypatch):
+    # A model split over GPUs: accelerate's hook calls `_old_forward`, bound at load to transformers' wrapper. After
+    # the block replaced the class forward that wrapper stopped checkpointing (and the block never ran), so every
+    # layer kept its activations: Inkling-2-Mini on 2x T4 grew ~0.45 GB per layer and ran out of memory.
+    hooks = pytest.importorskip("accelerate.hooks")
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    stock = cls.forward
+    cls.forward = _like_transformers_5_23(stock)
+    layer, calls = _checkpointed_layer(cls)
+    hooks.add_hook_to_module(layer, hooks.ModelHook())
+    before = cls.forward
+    M._wrap(cls, {})
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    layer(x)
+    assert calls == []  # the stale bound wrapper: no checkpoint
+    holder = torch.nn.Module()
+    holder.layer = layer
+    assert M._rebind_hooked_instances(holder, cls, before) == 1
+    out = layer(x)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [1]
+    # Unhooked instances and other classes are left alone.
+    plain, plain_calls = _checkpointed_layer(cls)
+    holder.plain = plain
+    assert M._rebind_hooked_instances(holder, cls, before) == 0
+    plain(x)
+    assert plain_calls == [1]

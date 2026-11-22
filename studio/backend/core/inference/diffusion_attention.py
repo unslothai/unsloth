@@ -4122,6 +4122,9 @@ def _apply_attention_backend_impl(
         except Exception as exc:
             _warn(logger, "ROCm fused SDPA check", exc)
         install_rocm_contiguous_kv(target)
+        if _target_device(target).split(":")[0] == "mps":
+            from core._mps_sdpa_guard import install_mps_large_attention_guard
+            install_mps_large_attention_guard(logger)
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))

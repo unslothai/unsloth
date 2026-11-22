@@ -4543,12 +4543,16 @@ def _tp_bnb_optim(args, cpu_shards):
     from .fsdp2_native import _BNB_OPTIMS
 
     name = _optim_name(args)
+    if cpu_shards:
+        from .fsdp2_native import _fused_cpu_adamw
+        if _fused_cpu_adamw(args, name, label = "tensor parallel"):
+            return True
     if _keeps_bnb(name, cpu_shards):
         return False
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
-    if target == "adamw_torch_fused" and (cpu_shards or not torch.cuda.is_available()):
+    if target == "adamw_torch_fused" and not cpu_shards and not torch.cuda.is_available():
         target = "adamw_torch"
     _print_rank0(
         f"Unsloth: tensor parallel parameters are DTensors, which this bitsandbytes optimizer cannot step "
