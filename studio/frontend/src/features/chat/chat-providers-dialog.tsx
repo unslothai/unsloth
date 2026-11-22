@@ -62,6 +62,8 @@ import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
 import { ConnectionGallery, buildConnectionGallery } from "./connection-gallery";
 import { ConnectionModelList } from "./connection-model-list";
+import { DeepInfraModelSelectionPanel } from "./deepinfra-model-selection-panel";
+import { parseModelIds } from "./deepinfra-model-catalog";
 import { ConnectionRow, ConnectionStatusLine } from "./connection-row";
 import {
   type ConnectionCheck,
@@ -101,6 +103,7 @@ import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import {
   externalMaxTokensUnboundedAtMax,
   getExternalMinOutputTokens,
+  providerSupportsServiceTier,
 } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
@@ -395,6 +398,9 @@ export function ChatProvidersSettings({
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [serviceTierDraft, setServiceTierDraft] = useState<
+    "default" | "priority" | "flex"
+  >("default");
   const [autoCompactTokensDraft, setAutoCompactTokensDraft] = useState("");
   const [compactionModeDraft, setCompactionModeDraft] =
     useState<ProviderCompactionMode>("summary");
@@ -736,6 +742,7 @@ export function ChatProvidersSettings({
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
+    setServiceTierDraft("default");
     setAutoCompactTokensDraft("");
     setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
@@ -845,6 +852,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
+    setServiceTierDraft("default");
     setAutoCompactTokensDraft("");
     setCompactionModeDraft("summary");
     setExtraHeadersDraft("");
@@ -1334,6 +1342,9 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const serviceTier = providerSupportsServiceTier(providerType)
+        ? serviceTierDraft
+        : undefined;
       const autoCompactTokens = supportsAutoCompactTokens
         ? parseAutoCompactTokens(autoCompactTokensDraft)
         : undefined;
@@ -1348,6 +1359,7 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
+        serviceTier,
         autoCompactTokens: autoCompactTokens ?? undefined,
         ...(supportsAutoCompactTokens && compactionModeDraft !== "summary"
           ? { compactionMode: compactionModeDraft }
@@ -1381,6 +1393,9 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        serviceTier: providerSupportsServiceTier(uiProviderType)
+          ? (created.service_tier ?? "default")
+          : undefined,
         autoCompactTokens: created.auto_compact_tokens ?? undefined,
         compactionMode: normalizeCompactionMode(created.compaction_mode),
         extraHeaders: created.extra_headers ?? extraHeaders,
@@ -1525,6 +1540,11 @@ export function ChatProvidersSettings({
       const maxOutputTokens = supportsMaxOutputTokens
         ? parseMaxOutputTokens(maxOutputTokensDraft)
         : undefined;
+      const serviceTier = providerSupportsServiceTier(
+        existing.providerType,
+      )
+        ? serviceTierDraft
+        : undefined;
       const autoCompactTokens = supportsAutoCompactTokens
         ? parseAutoCompactTokens(autoCompactTokensDraft)
         : undefined;
@@ -1539,6 +1559,7 @@ export function ChatProvidersSettings({
         models: keepSavedModels ? undefined : modelsToSave,
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
+        serviceTier,
         autoCompactTokens,
         // null clears the column back to the default summary.
         compactionMode: supportsAutoCompactTokens
@@ -1580,6 +1601,9 @@ export function ChatProvidersSettings({
           ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        serviceTier: providerSupportsServiceTier(existing.providerType)
+          ? (updated.service_tier ?? "default")
+          : undefined,
         autoCompactTokens: updated.auto_compact_tokens ?? undefined,
         compactionMode: normalizeCompactionMode(updated.compaction_mode),
         extraHeaders: updated.extra_headers ?? extraHeaders,
@@ -1766,6 +1790,7 @@ export function ChatProvidersSettings({
             getExternalMinOutputTokens(provider.providerType),
           ).toString(),
     );
+    setServiceTierDraft(provider.serviceTier ?? "default");
     setAutoCompactTokensDraft(
       provider.autoCompactTokens == null ? "" : provider.autoCompactTokens.toString(),
     );
@@ -2511,6 +2536,47 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
+              {providerSupportsServiceTier(providerType) ? (
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-service-tier"
+                      className="text-sm font-medium"
+                    >
+                      Service tier
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Flex trades speed for a 20% discount (best-effort
+                      scheduling); priority runs at a 50% premium. DeepInfra
+                      only. Unsupported models fall back to standard.
+                    </p>
+                  </div>
+                  <Select
+                    value={serviceTierDraft}
+                    onValueChange={(value) =>
+                      setServiceTierDraft(
+                        value as "default" | "priority" | "flex",
+                      )
+                    }
+                  >
+                    <SelectTrigger
+                      id="provider-service-tier"
+                      className="h-9 w-44 text-sm"
+                    >
+                      <SelectValue placeholder="Standard (default)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">
+                        Standard (default)
+                      </SelectItem>
+                      <SelectItem value="flex">Flex (20% discount)</SelectItem>
+                      <SelectItem value="priority">
+                        Priority (premium)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
               {providerType !== "openai_codex" ? (
                 <div className="grid grid-cols-[minmax(140px,1fr)_minmax(0,1fr)] items-start gap-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
@@ -2853,6 +2919,20 @@ export function ChatProvidersSettings({
                         className="min-h-[calc(100px*var(--ui-space-scale,1))] resize-y font-mono text-sm"
                       />
                     </div>
+                  </div>
+                ) : providerType === "deepinfra" ? (
+                  <div className="py-3">
+                    <DeepInfraModelSelectionPanel
+                      value={
+                        manualModelIds.length > 0
+                          ? manualModelIds
+                          : selectedModelIds.join(", ")
+                      }
+                      onChange={(newValue: string) => {
+                        setManualModelIds(newValue);
+                        setSelectedModelIds(parseModelIds(newValue));
+                      }}
+                    />
                   </div>
                 ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
                   <div className="space-y-3 py-3">

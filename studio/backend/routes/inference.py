@@ -10227,6 +10227,7 @@ _MIXED_CATALOG_PROVIDER_TYPES = frozenset(
         "qwen",
         "qwencloud",
         "zai",
+        "deepinfra",
         "opencode",
         "opencode_go",
         "xai",
@@ -10242,6 +10243,7 @@ _MIXED_CATALOG_PROVIDER_TYPES = frozenset(
 _CATALOG_VISION_NAMESPACES = {
     "qwencloud": "qwen",
     "zai": "zai",
+    "deepinfra": "deepinfra",
     "opencode": "opencode",
     "opencode_go": "opencode_go",
     "xai": "xai",
@@ -31480,6 +31482,7 @@ async def _proxy_to_external_provider(
             compaction_uncapped = _compaction_uncapped,
             compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
+            service_tier = payload.service_tier,
             response_format = _extract_response_format(payload),
             thread_id = payload.thread_id,
         )

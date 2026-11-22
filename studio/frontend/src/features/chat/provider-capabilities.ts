@@ -436,6 +436,16 @@ export function providerSupportsFastMode(
   );
 }
 
+const DEEPINFRA_SERVICE_TIER_PROVIDER_TYPES = new Set(["deepinfra"]);
+
+/** Whether the connection exposes DeepInfra's service-tier choice. */
+export function providerSupportsServiceTier(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType != null && DEEPINFRA_SERVICE_TIER_PROVIDER_TYPES.has(providerType)
+  );
+}
 const ANTHROPIC_CODE_EXECUTION_MODEL_PREFIXES = [
   "claude-opus-5",
   "claude-sonnet-5",
@@ -711,6 +721,7 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
+  deepinfra: OPENAI_COMPAT_BASE,
   // Fixed server-side; the backend omits them too.
   minimax: {
     temperature: false,
@@ -1129,6 +1140,66 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
   return withEnableThinkingStyle();
 }
 
+/**
+ * DeepInfra serves vendor-prefixed model ids (e.g. `deepseek-ai/DeepSeek-V4-Flash-0731`,
+ * `Qwen/Qwen3`, `meta-llama/Llama-4-Scout`). Its /v1/openai/models response is OpenAI-shaped and
+ * does not declare reasoning, and DeepInfra has no bundled model catalog namespace, so the
+ * catalog path (`resolveModelCatalogEntry("deepinfra", ...)`) never returns a reasoning entry.
+ *
+ * Reasoning is instead read off the model id's OWNER and family, mirroring how the DeepSeek /
+ * OpenAI / Anthropic providers declare theirs, so a DeepSeek-family model served through
+ * DeepInfra gets the same Think control it would on the DeepSeek connection.
+ *
+ * The backend forwards `reasoning_effort` through `_apply_passthrough_reasoning_effort`
+ * (`_REASONING_EFFORT_LEVELS` = minimal|low|medium|high|xhigh|max), so the ladder below stays
+ * inside what reaches the wire.
+ */
+function resolveDeepInfraReasoningCapabilities(
+  modelId: string,
+): ExternalReasoningCapabilities {
+  const normalized = modelId.trim().toLowerCase();
+  // Vendor prefix first, then the family in the rest of the id.
+  const org = normalized.split("/")[0] ?? "";
+  const rest = normalized.includes("/")
+    ? normalized.split("/").slice(1).join("/")
+    : normalized;
+
+  // DeepSeek-family models on DeepInfra reason through the same effort levels the DeepSeek
+  // provider publishes (low | high | max, plus an explicit off). DeepSeek-V4-Flash and the
+  // rest of the deepseek-ai/ line take a thinking on/off plus an effort ladder.
+  if (
+    org === "deepseek-ai" ||
+    org === "deepseek" ||
+    rest.startsWith("deepseek-")
+  ) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: ["none", "low", "high", "max"] as const,
+    });
+  }
+
+  // Qwen3 and Nemotron family reasoning models
+  if (rest.startsWith("qwen3") || rest.startsWith("nvidia-nemotron-3-")) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ] as const,
+    });
+  }
+
+  // Anything else has no recognised reasoning control through DeepInfra.
+  return withEnableThinkingStyle();
+}
+
 export interface ExternalReasoningResolveOptions {
   isReasoningProvider?: boolean;
   baseUrl?: string | null;
@@ -1205,6 +1276,7 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwen: { levels: [], off: "unified" },
   qwencloud: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
+  deepinfra: { levels: null, off: "unified" },
   xai: { levels: ["low", "medium", "high", "xhigh"], off: "unified" },
   cohere: { levels: [], off: "unified" },
   vercel: { levels: null, off: "unified" },
@@ -1372,6 +1444,14 @@ export function getExternalReasoningCapabilities(
         return table;
       }
       return catalogCapabilities("gemini", normalizedModel) ?? table;
+    }
+    case "deepinfra": {
+      // DeepInfra's /v1/openai/models does not declare reasoning and there is no bundled catalog
+      // namespace for it, so the hand-maintained table (keyed by vendor prefix / model family) is
+      // checked first. Fall through to the catalog for anything it does recognise, then default.
+      const table = resolveDeepInfraReasoningCapabilities(normalizedModel);
+      if (table.supportsReasoning) return table;
+      return catalogCapabilities("deepinfra", normalizedModel) ?? table;
     }
     case "ollama":
     case "deepseek":

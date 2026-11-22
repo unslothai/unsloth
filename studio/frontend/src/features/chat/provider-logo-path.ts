@@ -11,6 +11,7 @@ const HUB_PROVIDER_IDS = new Map([
   ["huggingface", "huggingface"],
   ["qwen", "qwen"],
   ["qwencloud", "qwen"],
+  ["deepinfra", "deepinfra"],
   ["minimax", "minimax"],
   ["xai", "xai-org"],
   ["nvidia", "nvidia"],

@@ -19,6 +19,7 @@ test("connections use the model hub's canonical provider images", () => {
     ["huggingface", "huggingface"],
     ["qwen", "qwen"],
     ["qwencloud", "qwen"],
+    ["deepinfra", "deepinfra"],
     ["minimax", "minimax"],
   ]) {
     const hubLogo = PROVIDER_LOGOS.find(({ id }) => id === hubId);
@@ -44,7 +45,7 @@ test("every supported connection resolves to an existing public asset", () => {
   for (const type of [
     "openai", "openai_codex", "deepseek", "mistral", "huggingface", "kimi",
     "qwen", "qwencloud", "gemini", "anthropic", "openrouter", "vllm", "ollama", "llama_cpp",
-    "liquid", "typesafe", "zai", "minimax", "opencode", "opencode_go",
+    "liquid", "typesafe", "zai", "deepinfra", "minimax", "opencode", "opencode_go",
   ]) {
     const path = providerLogoPath(type);
     assert.ok(path?.startsWith("/"), type);

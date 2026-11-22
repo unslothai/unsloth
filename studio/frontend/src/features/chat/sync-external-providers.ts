@@ -45,6 +45,7 @@ import {
   type NewModelCheckInterval,
   saveNewModelCheckAt,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  normalizeServiceTier,
   pruneExternalProviderApiKeys,
   removeExternalProviderApiKey,
 
@@ -349,6 +350,10 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        serviceTier:
+          uiProviderType === "deepinfra"
+            ? normalizeServiceTier(config.service_tier ?? "default")
+            : undefined,
         autoCompactTokens: config.auto_compact_tokens ?? undefined,
         compactionMode: normalizeCompactionMode(config.compaction_mode),
         extraHeaders: extraHeadersFromSaved(config.extra_headers),

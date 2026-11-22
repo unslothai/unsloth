@@ -165,6 +165,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN compaction_mode TEXT")
     if "reasoning_config_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
+    if "service_tier" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN service_tier TEXT")
     if "extra_headers_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN extra_headers_json TEXT")
     if "shared" not in existing_cols:
@@ -225,6 +227,7 @@ def create_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: Optional[int] = None,
+    service_tier: Optional[str] = None,
     api_type: str = "chat_completions",
     reasoning_config: Optional[dict] = None,
     extra_headers: Optional[dict] = None,
@@ -243,10 +246,10 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, extra_headers_json, shared, auto_compact_tokens,
+                reasoning_config_json, service_tier, extra_headers_json, shared, auto_compact_tokens,
                 compaction_mode, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -258,6 +261,7 @@ def create_provider(
                 max_output_tokens,
                 api_type,
                 reasoning_json,
+                service_tier,
                 extra_headers_json,
                 1 if shared else 0,
                 auto_compact_tokens,
@@ -279,6 +283,7 @@ def update_provider(
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
     max_output_tokens: int | None | object = _UNSET,
+    service_tier: str | None | object = _UNSET,
     *,
     connection: sqlite3.Connection | None = None,
     api_type: str | None = None,
@@ -312,6 +317,9 @@ def update_provider(
     if max_output_tokens is not _UNSET:
         updates.append("max_output_tokens = ?")
         params.append(max_output_tokens)
+    if service_tier is not _UNSET:
+        updates.append("service_tier = ?")
+        params.append(service_tier)
     if auto_compact_tokens is not _UNSET:
         updates.append("auto_compact_tokens = ?")
         params.append(auto_compact_tokens)
@@ -363,6 +371,7 @@ def _row_to_provider(row: sqlite3.Row) -> dict:
     data = dict(row)
     data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
     data["extra_headers"] = _decode_extra_headers(data.pop("extra_headers_json", None))
+    data["service_tier"] = data.pop("service_tier", None) or None
     models, available_models = _row_models(row)
     data["models"] = models
     data["available_models"] = available_models

@@ -59,6 +59,7 @@ export interface ProviderConfig {
   auto_compact_tokens?: number | null;
   compaction_mode?: ProviderCompactionMode | null;
   reasoning_config?: CustomReasoningConfig | null;
+  service_tier?: "default" | "priority" | "flex" | null;
   extra_headers?: Record<string, string>;
   shared?: boolean;
   shared_by_owner?: boolean;
@@ -252,6 +253,7 @@ export async function createProviderConfig(payload: {
   autoCompactTokens?: number | null;
   compactionMode?: ProviderCompactionMode | null;
   reasoningConfig?: CustomReasoningConfig | null;
+  serviceTier?: "default" | "priority" | "flex" | null;
   extraHeaders?: Record<string, string>;
   shared?: boolean;
   apiKey?: string;
@@ -279,6 +281,9 @@ export async function createProviderConfig(payload: {
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.serviceTier === undefined
+          ? {}
+          : { service_tier: payload.serviceTier }),
         ...(payload.extraHeaders === undefined
           ? {}
           : { extra_headers: payload.extraHeaders }),
@@ -317,6 +322,7 @@ export async function updateProviderConfig(
     autoCompactTokens?: number | null;
     compactionMode?: ProviderCompactionMode | null;
     reasoningConfig?: CustomReasoningConfig | null;
+    serviceTier?: "default" | "priority" | "flex" | null;
     extraHeaders?: Record<string, string>;
     shared?: boolean;
     apiKey?: string;
@@ -348,6 +354,9 @@ export async function updateProviderConfig(
         ...(payload.reasoningConfig === undefined
           ? {}
           : { reasoning_config: payload.reasoningConfig }),
+        ...(payload.serviceTier === undefined
+          ? {}
+          : { service_tier: payload.serviceTier }),
         ...(payload.extraHeaders === undefined
           ? {}
           : { extra_headers: payload.extraHeaders }),
@@ -459,6 +468,11 @@ export async function listProviderModels(payload: {
 export async function fetchModelCatalog(): Promise<ModelCatalogResponse> {
   const response = await authFetch("/api/providers/model-catalog");
   return parseJsonOrThrow<ModelCatalogResponse>(response);
+}
+
+export async function fetchDeepInfraModels(): Promise<any[]> {
+  const response = await authFetch("/api/providers/deepinfra-models");
+  return parseJsonOrThrow<any[]>(response);
 }
 
 export async function listProviderModelCapabilities(payload: {

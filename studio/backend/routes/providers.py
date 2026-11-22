@@ -201,6 +201,7 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
+        service_tier = row.get("service_tier"),
         # Header values can carry credentials; other accounts and API keys never read them.
         extra_headers = (
             {}
@@ -434,6 +435,7 @@ async def create_provider_config(
             models = payload.models,
             available_models = payload.available_models,
             max_output_tokens = payload.max_output_tokens,
+            service_tier = payload.service_tier,
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
             extra_headers = payload.extra_headers,
@@ -490,6 +492,7 @@ async def update_provider_config(
         max_output_tokens_requested,
         payload.max_output_tokens,
     )
+    service_tier_requested = "service_tier" in payload.model_fields_set
     persisted_models = list(existing.get("models") or [])
     # Single ownership read: a later lookup could name a different account.
     validated_account: str | None = None
@@ -540,6 +543,7 @@ async def update_provider_config(
         "models",
         "available_models",
         "max_output_tokens",
+        "service_tier",
         "auto_compact_tokens",
         "compaction_mode",
         "api_type",
@@ -580,6 +584,8 @@ async def update_provider_config(
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
+        if service_tier_requested:
+            metadata_updates["service_tier"] = payload.service_tier
         if "auto_compact_tokens" in payload.model_fields_set:
             metadata_updates["auto_compact_tokens"] = payload.auto_compact_tokens
         if "compaction_mode" in payload.model_fields_set:
@@ -601,6 +607,7 @@ async def update_provider_config(
         models = existing.get("models") or [],
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
+        service_tier = existing.get("service_tier"),
         auto_compact_tokens = existing.get("auto_compact_tokens"),
         compaction_mode = existing.get("compaction_mode"),
         api_type = existing.get("api_type", "chat_completions"),
@@ -629,6 +636,7 @@ async def update_provider_config(
             # Explicit null clears nullable overrides; elsewhere it means "not sent".
             if written is None and field not in {
                 "max_output_tokens",
+                "service_tier",
                 "auto_compact_tokens",
                 "compaction_mode",
                 "reasoning_config",
@@ -1338,6 +1346,46 @@ async def get_model_catalog(_current_subject: str = Depends(get_current_subject)
     _model_catalog_cache = fresh
     _write_model_catalog_file(fresh)
     return fresh
+
+
+_DEEPINFRA_MODELS_URL = "https://api.deepinfra.com/models/list"
+_cached_deepinfra_models: list[dict] | None = None
+_cached_deepinfra_models_at: float = 0.0
+_DEEPINFRA_CACHE_TTL_SECONDS = 3600.0
+
+
+@router.get("/deepinfra-models")
+async def get_deepinfra_models(_current_subject: str = Depends(get_current_subject)):
+    global _cached_deepinfra_models, _cached_deepinfra_models_at
+    now = time.time()
+    if (
+        _cached_deepinfra_models is not None
+        and (now - _cached_deepinfra_models_at) < _DEEPINFRA_CACHE_TTL_SECONDS
+    ):
+        return _cached_deepinfra_models
+    try:
+        async with httpx.AsyncClient(timeout = 10.0) as client:
+            resp = await client.get(
+                _DEEPINFRA_MODELS_URL,
+                headers = {"Accept": "application/json", "User-Agent": "unsloth-studio"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    filtered = [
+                        m
+                        for m in data
+                        if isinstance(m, dict)
+                        and not (m.get("model_name") or "").lower().startswith("anthropic/")
+                    ]
+                    _cached_deepinfra_models = filtered
+                    _cached_deepinfra_models_at = now
+                    return filtered
+    except Exception as exc:
+        logger.info("providers.deepinfra_models_fetch_failed", error = repr(exc))
+    if _cached_deepinfra_models is not None:
+        return _cached_deepinfra_models
+    raise HTTPException(status_code = 502, detail = "Failed to fetch models from DeepInfra.")
 
 
 @router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])

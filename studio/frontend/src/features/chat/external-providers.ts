@@ -33,6 +33,9 @@ export interface ExternalProviderConfig {
   /** The type as the backend stores it (may differ from providerType). Absent means unknown. */
   backendProviderType?: string;
   maxOutputTokens?: number;
+  /** DeepInfra only: the connection's service tier. "default" omits the wire
+   *  field; "flex" = 20% discount; "priority" = 50% premium. */
+  serviceTier?: "default" | "priority" | "flex";
   /** Tokens after which chats on this connection compact; unset uses 75% of the model's window. */
   autoCompactTokens?: number;
   compactionMode?: ProviderCompactionMode;
@@ -280,6 +283,7 @@ const MIXED_CATALOG_PROVIDER_TYPES = new Set([
   "qwen",
   "qwencloud",
   "zai",
+  "deepinfra",
   "opencode",
   "opencode_go",
   "xai",
@@ -292,6 +296,7 @@ const MIXED_CATALOG_PROVIDER_TYPES = new Set([
 const CATALOG_VISION_PROVIDER_TYPES = new Set([
   "qwencloud",
   "zai",
+  "deepinfra",
   "opencode",
   "opencode_go",
   "xai",
@@ -416,6 +421,19 @@ export function normalizeProviderMaxOutputTokens(
     return undefined;
   }
   return value;
+}
+
+const DEEPINFRA_SERVICE_TIERS = new Set(["default", "priority", "flex"]);
+
+/** Normalize a stored/typed service tier; junk becomes undefined (unknown). */
+export function normalizeServiceTier(
+  value: unknown,
+): "default" | "priority" | "flex" | undefined {
+  if (typeof value !== "string") return undefined;
+  const tier = value.trim().toLowerCase();
+  return DEEPINFRA_SERVICE_TIERS.has(tier as "default" | "priority" | "flex")
+    ? (tier as "default" | "priority" | "flex")
+    : undefined;
 }
 
 /** Copy saved headers into chat state. Validation lives in extra-headers.ts, loaded with Connections. */
@@ -603,6 +621,7 @@ export function isCustomProviderType(
   return providerType in CUSTOM_PROVIDER_LABELS;
 }
 
+
 const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   LEGACY_CUSTOM_PROVIDER_TYPE,
   "ollama",
@@ -627,11 +646,27 @@ export function customPresetSkipsApiKeyField(
   return providerType === "llama_cpp";
 }
 
+// REGISTRY connections that read a remote catalogue but still accept typed-in ids beside it.
+// Their /v1/models omits models the account can reach -- OpenRouter's newest slugs, DeepInfra's
+// private `deploy_id:` deployments -- so the catalogue not listing an id is not evidence against
+// it, and the dialog must keep its "Additional model IDs" box for them. Membership here also
+// stops the picker reporting such a model as "dropped" once its catalogue moves on.
+const MANUAL_MODEL_IDS_WITH_CATALOG_PROVIDER_TYPES = new Set([
+  "openrouter",
+  "deepinfra",
+]);
+
+/** Catalog load plus optional manual model IDs. */
 export function allowsManualModelIdsWithCatalog(
   providerType: string | null | undefined,
 ): boolean {
   if (!providerType) return false;
-  if (providerType === "openrouter" || DECISION_PROVIDER_TYPES.has(providerType)) return true;
+  if (
+    MANUAL_MODEL_IDS_WITH_CATALOG_PROVIDER_TYPES.has(providerType) ||
+    DECISION_PROVIDER_TYPES.has(providerType)
+  ) {
+    return true;
+  }
   return supportsRemoteModelCatalog(providerType);
 }
 
@@ -773,6 +808,10 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    serviceTier:
+      providerType === "deepinfra"
+        ? normalizeServiceTier(raw.serviceTier)
+        : undefined,
     autoCompactTokens: normalizeAutoCompactTokens(raw.autoCompactTokens),
     compactionMode: normalizeCompactionMode(raw.compactionMode),
     extraHeaders: extraHeadersFromSaved(raw.extraHeaders),

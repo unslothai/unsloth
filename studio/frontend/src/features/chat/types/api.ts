@@ -741,6 +741,9 @@ export interface OpenAIChatCompletionsRequest {
   anthropic_code_exec_container_id?: string | null;
   /** Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;
+  /** DeepInfra service tier: "flex" = 20% discount (best-effort scheduling),
+   *  "priority" = 50% premium. Omitted = standard. */
+  service_tier?: "default" | "priority" | "flex";
   /** The backend only emits the usage chunk when include_usage is set. */
   stream_options?: { include_usage?: boolean } | null;
 }
