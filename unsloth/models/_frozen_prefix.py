@@ -80,6 +80,13 @@ def _first_trainable(stack):
 
 def _plan(model, stacks, heads):
     """(stack, k) when the first k layers of one stack, and everything feeding them, hold nothing trainable."""
+    if any(
+        getattr(layer, "_unsloth_pipeline_stand_in", False) for stack in stacks for layer in stack
+    ):
+        # Pipeline parallel: a later stage's first layers are pass-throughs returning the previous stage's
+        # activations (cutting there trains no earlier stage), and a non-last stage exits its forward by raising,
+        # past the hooks' cleanup. Off on every stage and every stack.
+        return None
     for stack in stacks:
         # Runs on every training forward: a stack that trains its first layer (adapters everywhere) or
         # nothing (a frozen vision tower) is settled here, without walking the whole model's parameters.

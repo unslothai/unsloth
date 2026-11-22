@@ -9,7 +9,7 @@ card idle. Step 1 measures the first block of each class; afterwards free memory
 recompute (same kernels, same inputs, so loss and gradients are unchanged). An out-of-memory error halves the kept set
 (every block checkpointed once nothing is left) and reruns the step from the same inputs.
 
-``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA (not ROCm); ``plain`` checkpoints every block
+``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA and ROCm; ``plain`` checkpoints every block
 and ``partial`` every Nth, as before.
 
 The blocks that stay checkpointed keep their long attention outputs (a selective checkpoint policy), so the backward
@@ -25,6 +25,8 @@ import os
 from typing import Any, Optional
 
 GC_MODE_ENV = "UNSLOTH_DIFFUSION_GC_MODE"
+# Set on a block whose frozen weights block swap streams from host RAM (diffusion_block_swap).
+SWAPPED_ATTR = "_unsloth_block_swapped"
 # Free memory kept back after the plan: allocator fragmentation, the CUDA workspace, a preview round's VAE decode.
 _MARGIN_MIN_BYTES = 2 << 30
 _MARGIN_FRACTION = 0.10
@@ -35,6 +37,16 @@ _HEADROOM_SHARE = 0.85
 def gc_budget_mode() -> str:
     raw = (os.environ.get(GC_MODE_ENV, "") or "auto").strip().lower()
     return raw if raw in ("plain", "partial") else "auto"
+
+
+def _mem_get_info() -> tuple[int, int]:
+    """(free, total) for budgets: Studio's trusted reading (Windows ROCm's WDDM free over-report capped), else torch."""
+    try:
+        from utils.hardware import trusted_mem_get_info
+    except ImportError:  # the trainer outside Studio's backend
+        import torch
+        return torch.cuda.mem_get_info()
+    return trusted_mem_get_info()
 
 
 def _is_rocm() -> bool:
@@ -183,8 +195,14 @@ class _Checkpoint:
 class BudgetedCheckpoint:
     """``gradient_checkpointing_func`` for a diffusers model: checkpoints every block except those in ``keep``."""
 
-    def __init__(self, base: Optional[Any] = None):
+    def __init__(
+        self,
+        base: Optional[Any] = None,
+        swapped: Optional[Any] = None,
+    ):
         self.base = base or _Checkpoint(save_attention = True)
+        # Checkpoint for block-swapped blocks: every op recomputed, no selective policy.
+        self.swapped = swapped or _Checkpoint(save_attention = False)
         self.keep: frozenset = frozenset()
         self.probing = True
         self.planned = False
@@ -220,6 +238,12 @@ class BudgetedCheckpoint:
 
     def __call__(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         owner = _owner(function)
+        if getattr(owner, SWAPPED_ATTR, False):
+            # A block-swapped block streams its weights from host RAM: kept activations would hold them on the card
+            # until backward, so it is always checkpointed and never measured or planned. Plainly: its swap hooks
+            # copy the next block's weights inside the region, in the other direction during the recompute, which a
+            # selective checkpoint (saved attention) rejects as a mismatched op.
+            return self.swapped(function, *args, **kwargs)
         idx = self._block_index(owner)
         if self.probing and not self.disabled:
             cls = type(owner).__name__
@@ -299,7 +323,7 @@ class BudgetedCheckpoint:
             return 0
         try:
             import torch
-            free, _total = torch.cuda.mem_get_info()
+            free, _total = _mem_get_info()
             avail = int(free) + int(torch.cuda.memory_reserved())
         except Exception:  # noqa: BLE001 -- unknown: cache nothing
             return 0
@@ -455,7 +479,7 @@ def plan_from_device(
         # The optimizer's first step allocates its moments, which every later step carries.
         projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
         projected += max(0, int(held_bytes))
-        free, total = torch.cuda.mem_get_info()
+        free, total = _mem_get_info()
         kept = budget.plan(
             projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
         )
@@ -592,7 +616,7 @@ def is_out_of_memory(exc: BaseException) -> bool:
 def enable_budgeted_checkpointing(model: Any, device: str) -> Optional[BudgetedCheckpoint]:
     """Install the budgeted checkpoint on a diffusers model; None when the mode, device or model does not allow it
     (the caller then checkpoints every block as before)."""
-    if gc_budget_mode() != "auto" or device != "cuda" or _is_rocm():
+    if gc_budget_mode() != "auto" or device != "cuda":
         return None
     enable = getattr(model, "enable_gradient_checkpointing", None)
     if not callable(enable):

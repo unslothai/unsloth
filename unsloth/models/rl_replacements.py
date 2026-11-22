@@ -1730,8 +1730,9 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 
 
 # assistant_only_loss: TRL raises for chat templates it does not know (all Unsloth ones); fall back to Zoo's train_on_responses_only masks.
+# TRL >= 1.18 also passes require_prefix_preservation=False; any keyword arguments are kept as is.
 _SFT_TRAINING_TEMPLATE = re.compile(
-    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\(processing_class\)[ \t]*$",
+    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\((?P<call>processing_class(?:,[^()\n]*)?)\)[ \t]*$",
     flags = re.MULTILINE,
 )
 _SFT_STOP_TOKEN_CHECK = re.compile(
@@ -1758,7 +1759,7 @@ def sft_trainer_assistant_mask_fallback(function_name, function):
         i = match.group("indent")
         return (
             f"{i}try:\n"
-            f"{i}    self.chat_template = get_training_chat_template(processing_class)\n"
+            f"{i}    self.chat_template = get_training_chat_template({match.group('call')})\n"
             f"{i}except ValueError:\n"
             # Zoo's text preparation reads the flag; vision datasets and skip_prepare_dataset never reach it.
             f"{i}    if getattr(self, '_is_vision_dataset', False) or (getattr(args, 'dataset_kwargs', None) or {{}}).get('skip_prepare_dataset'): raise\n"
@@ -2280,11 +2281,31 @@ def _unsloth_grpo_split_videos_by_sample(batch):
     num_videos = [int(n) for n in num_videos]
     if sum(num_videos) != video_grid_thw.shape[0]:
         return batch
-    rows_per_sample = [
-        int(group.prod(dim = -1).sum()) for group in torch.split(video_grid_thw, num_videos)
-    ]
     split = dict(batch)
-    split["pixel_values_videos"] = list(torch.split(pixel_values_videos, rows_per_sample))
+    video_bank_rows = split.pop("video_bank_rows", None)
+    if video_bank_rows is not None and not isinstance(video_bank_rows, list):
+        # One bank copy per distinct prompt (_unsloth_grpo_video_inputs): each sample gets a view of its rows
+        # and its slice of the index, so the shuffled buffer still references the one copy.
+        video_bank_rows = torch.as_tensor(video_bank_rows).long().reshape(-1, 2)
+        per_sample, per_rows, offset = [], [], 0
+        for count in num_videos:
+            rows = video_bank_rows[offset : offset + count]
+            offset += count
+            ranges = rows.tolist()
+            if not ranges:
+                per_sample.append(pixel_values_videos[:0])
+            elif all(ranges[i][1] == ranges[i + 1][0] for i in range(len(ranges) - 1)):
+                per_sample.append(pixel_values_videos[ranges[0][0] : ranges[-1][1]])
+            else:
+                per_sample.append(torch.cat([pixel_values_videos[a:b] for a, b in ranges], dim = 0))
+            per_rows.append(rows)
+        split["pixel_values_videos"] = per_sample
+        split["video_bank_rows"] = per_rows
+    else:
+        rows_per_sample = [
+            int(group.prod(dim = -1).sum()) for group in torch.split(video_grid_thw, num_videos)
+        ]
+        split["pixel_values_videos"] = list(torch.split(pixel_values_videos, rows_per_sample))
     split["video_grid_thw"] = list(torch.split(video_grid_thw, num_videos))
     second_per_grid_ts = batch.get("second_per_grid_ts", None)
     if second_per_grid_ts is not None:
@@ -2430,17 +2451,31 @@ def _unsloth_grpo_video_inputs(
     video_index = torch.split(torch.arange(video_grid_thw.shape[0]), unique_counts)
     row_ends = video_grid_thw.prod(dim = -1).cumsum(0)
     row_starts = row_ends - video_grid_thw.prod(dim = -1)
-    videos, rows = [], []
-    for u in order:
-        for v in video_index[u].tolist():
-            videos.append(v)
-            rows.append(pixel_values_videos[int(row_starts[v]) : int(row_ends[v])])
+    videos = [v for u in order for v in video_index[u].tolist()]
     device = trainer.accelerator.device
-    out = {
-        "pixel_values_videos": torch.cat(rows, dim = 0).to(device),
-        "video_grid_thw": video_grid_thw[videos].to(device),
-        "num_videos": num_videos,
-    }
+    # GRPO repeats every prompt num_generations times. Keep one copy of each distinct prompt's videos plus the
+    # (start, end) rows of every per-sample video, which the zoo chunker and the buffer split read; a zoo that
+    # cannot read the index gets the flat layout (UNSLOTH_GRPO_VIDEO_BANK=0 forces it).
+    use_bank = len(unique) < len(prompts) and os.environ.get("UNSLOTH_GRPO_VIDEO_BANK", "1") != "0"
+    if use_bank:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_video_bank_supported
+            use_bank = bool(grpo_video_bank_supported())
+        except Exception:
+            use_bank = False
+    if use_bank:
+        out = {
+            "pixel_values_videos": pixel_values_videos.to(device),
+            "video_bank_rows": torch.stack([row_starts[videos], row_ends[videos]], dim = -1).long(),
+        }
+    else:
+        out = {
+            "pixel_values_videos": torch.cat(
+                [pixel_values_videos[int(row_starts[v]) : int(row_ends[v])] for v in videos], dim = 0
+            ).to(device),
+        }
+    out["video_grid_thw"] = video_grid_thw[videos].to(device)
+    out["num_videos"] = num_videos
     if second_per_grid_ts is not None:
         out["second_per_grid_ts"] = second_per_grid_ts[videos].to(device)
     return out
@@ -2451,6 +2486,47 @@ def _unsloth_grpo_unsplit_vision(batch):
     the forward sees the layout the processor produced. TRL's own unsplit merges only
     pixel_values before 1.1.0, and pixel_values plus the grid and position ids from 1.1.0."""
     merged = None
+    bank_rows = batch.get("video_bank_rows", None)
+    videos = batch.get("pixel_values_videos", None)
+    if isinstance(bank_rows, list) and isinstance(videos, list) and len(videos) == len(bank_rows):
+        # Views of the one deduplicated bank (_unsloth_grpo_split_videos_by_sample): hand the step the bank and
+        # its rows instead of a copy per sample, so the buffer of every step still holds one copy.
+        bank = videos[0]._base if len(videos) else None
+        ok = (
+            bank is not None
+            and bank.dim() == 2
+            and bank.is_contiguous()
+            and all(
+                v._base is bank
+                and v.dim() == 2
+                and v.stride() == bank.stride()
+                and (v.storage_offset() - bank.storage_offset()) % bank.stride(0) == 0
+                for v in videos
+            )
+        )
+        merged = dict(batch)
+        if ok:
+            rows = []
+            for v, r in zip(videos, bank_rows):
+                start = (v.storage_offset() - bank.storage_offset()) // bank.stride(0)
+                sizes = (r[:, 1] - r[:, 0]).tolist()
+                if sum(sizes) != v.shape[0]:
+                    ok = False
+                    break
+                ends = torch.tensor(sizes, dtype = torch.long).cumsum(0) + start
+                rows.append(
+                    torch.stack([ends - torch.tensor(sizes, dtype = torch.long), ends], dim = -1)
+                )
+        if ok:
+            merged["pixel_values_videos"] = bank
+            merged["video_bank_rows"] = (
+                torch.cat(rows, dim = 0) if rows else torch.zeros(0, 2, dtype = torch.long)
+            )
+        else:
+            merged["pixel_values_videos"] = torch.cat(videos, dim = 0)
+            merged.pop("video_bank_rows", None)
+        batch = merged
+        merged = None
     for key in (
         "pixel_values",
         "image_grid_thw",
@@ -2687,9 +2763,16 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
         prompt_lengths = [len(ids) for ids in prompt_ids]
     else:
         prompt_lengths = None
+    # Rows stopped by the opt-in rollout tail cut (UNSLOTH_ROLLOUT_TAIL_CUT) count as truncated.
+    tail_cut = None
+    if getattr(trainer, "_unsloth_tail_cut_rows", None):
+        from unsloth.models._rollout_tail_cut import cut_row_flags
+        tail_cut = cut_row_flags(trainer, completion_ids)
     is_truncated = []
     for i, ids in enumerate(completion_ids):
-        if ids[-1] in eos_and_pad:
+        if tail_cut is not None and tail_cut[i]:
+            is_truncated.append(True)
+        elif ids[-1] in eos_and_pad:
             is_truncated.append(False)
         elif limit is None or len(ids) >= limit:
             is_truncated.append(True)
@@ -2755,6 +2838,25 @@ def _unsloth_rollout_scope(trainer):
     return vllm_rollout_scope(llm)
 
 
+def _unsloth_tail_cut_scope(trainer):
+    """Opt-in GRPO rollout tail cut around a colocated vLLM `_generate` (UNSLOTH_ROLLOUT_TAIL_CUT=<k_min>)."""
+    import contextlib
+    import os
+
+    if os.environ.get("UNSLOTH_ROLLOUT_TAIL_CUT", "").strip().lower() in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        trainer._unsloth_tail_cut_rows = None
+        return contextlib.nullcontext()
+    from unsloth.models._rollout_tail_cut import rollout_tail_cut_scope
+
+    return rollout_tail_cut_scope(trainer)
+
+
 def _unsloth_wrap_generate_in_rollout_scope(function):
     """Rename `_generate` and add a `_generate` that runs it inside `_unsloth_rollout_scope`."""
     if "_unsloth_generate_in_scope" in function:
@@ -2765,7 +2867,7 @@ def _unsloth_wrap_generate_in_rollout_scope(function):
     indent = match.group("indent")
     wrapper = (
         f"{indent}def _generate(self, *args, **kwargs):\n"
-        f"{indent}    with _unsloth_rollout_scope(self):\n"
+        f"{indent}    with _unsloth_rollout_scope(self), _unsloth_tail_cut_scope(self):\n"
         f"{indent}        return self._unsloth_generate_in_scope(*args, **kwargs)\n\n"
     )
     start = match.start()
@@ -3323,7 +3425,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             + f"{_indent})\n"
             # Aligned generation under vLLM IS: pi_old is the policy the loss scores, so skip that forward.
             + f"{_indent}_unsloth_old_from_new = (not _unsloth_rollout_old) and _unsloth_grpo_old_logps_from_new(self)\n"
-            + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new:\n"
+            # num_iterations > 1, aligned: the first loss pass scores pi_old and keeps it for the later ones.
+            + f"{_indent}_unsloth_old_store = (not _unsloth_rollout_old) and (not _unsloth_old_from_new) and _unsloth_grpo_old_logps_store(self)\n"
+            + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new or _unsloth_old_store:\n"
             + f"{_indent}    old_per_token_logps = None\n"
             + f"{_indent}el"
             + function[_old_logps_if.start() + 1 + len(_indent) :]
@@ -3338,6 +3442,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             '            output["sampling_per_token_logps"] = _unsloth_rollout_logps\n'
             "        if _unsloth_old_from_new:\n"
             '            output["unsloth_old_logps_from_new"] = torch.ones(\n'
+            "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
+            "            )\n"
+            "        if _unsloth_old_store:\n"
+            '            output["unsloth_old_logps_store"] = torch.ones(\n'
             "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
             "            )\n",
         )
@@ -5636,6 +5744,43 @@ def _unsloth_grpo_old_logps_from_new(trainer):
     return supported
 
 
+def _unsloth_grpo_old_logps_store(trainer):
+    """num_iterations > 1, generation aligned to an optimizer step: the first loss pass of each micro-batch
+    scores the rollout policy (pi_old), so reuse it. Not with dropout or a zoo that cannot return logps."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
+        return False
+    try:
+        accumulation = int(trainer.args.gradient_accumulation_steps)
+        steps_per_generation = int(trainer.args.steps_per_generation)
+        generate_every = steps_per_generation * int(trainer.num_iterations)
+        if (
+            int(trainer.num_iterations) <= 1
+            or accumulation <= 0
+            or steps_per_generation > accumulation
+            or generate_every % accumulation != 0
+            or accumulation % generate_every == 0
+        ):
+            return False
+    except Exception:
+        return False
+    supported = getattr(trainer, "_unsloth_old_logps_store_ok", None)
+    if supported is None:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_old_logps_store  # noqa: F401
+            from unsloth_zoo.rl_replacements import grpo_policy_is_stochastic
+            supported = not grpo_policy_is_stochastic(getattr(trainer, "model", None))
+        except Exception:
+            supported = False
+        trainer._unsloth_old_logps_store_ok = supported
+    if supported:
+        trainer._unsloth_old_logps_store_batches = (
+            getattr(trainer, "_unsloth_old_logps_store_batches", 0) + 1
+        )
+    return supported
+
+
 def _unsloth_grpo_sample_weight_mode():
     import os
 
@@ -5845,6 +5990,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_truncated))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_rollout_scope))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_tail_cut_scope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
@@ -5855,6 +6001,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_defer_metric
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_from_new))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_store))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
@@ -5970,6 +6117,16 @@ def grpo_trainer_compute_loss(function_name, function):
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
         _old_logps_from_new = inputs.get("unsloth_old_logps_from_new", None) is not None
+        _old_logps_store = inputs.get("unsloth_old_logps_store", None)
+        _store_old_logps = False
+        _stored_old_logps = None
+        if _old_logps_store is not None and inputs.get("old_per_token_logps", None) is None:
+            if not bool(_old_logps_store.any()):
+                raise RuntimeError(
+                    "Unsloth: GRPO lost the old-policy logprobs kept from the first pass over this "
+                    "batch. Set UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 to score them separately."
+                )
+            _store_old_logps = True
         # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _unsloth_grpo_refuse_rank_local_forwards(self, model)
@@ -6070,8 +6227,10 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             if _rollout_logps_as_old:
                 old_logps, sampling_per_token_logps = sampling_per_token_logps, None
-            elif _old_logps_from_new and old_logps is None:
+            elif (_old_logps_from_new or _store_old_logps) and old_logps is None:
                 old_logps = per_token_logps.detach()
+                if _store_old_logps:
+                    _stored_old_logps = old_logps
             (
                 loss,
                 completion_length,
@@ -6197,6 +6356,10 @@ def grpo_trainer_compute_loss(function_name, function):
                 _grpo_accumulated_loss_kwargs["rollout_logps_as_old"] = True
             if _old_logps_from_new:
                 _grpo_accumulated_loss_kwargs["old_logps_from_new"] = True
+            if _store_old_logps:
+                _grpo_accumulated_loss_kwargs["old_logps_from_new"] = True
+                _grpo_accumulated_loss_kwargs["store_old_logps"] = True
+                self.__dict__.pop("_unsloth_grpo_stored_old_logps", None)
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -6253,6 +6416,17 @@ def grpo_trainer_compute_loss(function_name, function):
                     **_vision_inputs,
                     **_grpo_accumulated_loss_kwargs,
                 )
+        if _store_old_logps:
+            if _stored_old_logps is None:
+                _stored_old_logps = self.__dict__.pop("_unsloth_grpo_stored_old_logps", None)
+            if _stored_old_logps is None:
+                raise RuntimeError(
+                    "Unsloth: unsloth_zoo did not return the old-policy logprobs for the later GRPO "
+                    "iterations. Set UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 or upgrade unsloth_zoo."
+                )
+            inputs["old_per_token_logps"] = _stored_old_logps
+            _old_logps_store.zero_()
+            self._unsloth_old_logps_stored = getattr(self, "_unsloth_old_logps_stored", 0) + 1
         if "train" in self._metrics:
             # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
             mode = "train" if self.model.training else "eval"

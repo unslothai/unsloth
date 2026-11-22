@@ -66,10 +66,22 @@ test("only an image tool call carries the privileged envelope", () => {
   assert.equal(isMcpToolName(undefined), false);
   assert.match(
     adapter,
-    /if \(isMcpImageToolResult\(result\) && isImageToolName\(tc\.toolName\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
+    /if \(isMcpImageToolResult\(result\) && isImageToolName\(tc\.toolName, importedFrom\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
   );
   // The wrapper branch is not gated, or JSON.stringify replays base64 as prompt text.
   assert.match(adapter, /^\s*isMcpImageToolResult\(result\) \|\|$/m);
+});
+
+test("an imported Claude Code Read image replays to the model, a live Read does not", () => {
+  assert.equal(isImageToolName("Read", "claude"), true);
+  assert.equal(isImageToolName("Read"), false);
+  assert.equal(isImageToolName("Read", "codex"), false);
+  assert.equal(isImageToolName("read_file", "claude"), false);
+  assert.match(adapter, /serializeToolResultPart\(toolPart, messageImportedFrom\(message\)\)/);
+  assert.match(
+    adapter,
+    /!isImageToolName\(tc\.toolName, messageImportedFrom\(message\)\)\) return;/,
+  );
 });
 
 const shot = (n: number, name = "mcp__fs__screenshot") => ({

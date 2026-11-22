@@ -74,6 +74,8 @@ __all__ = [
     "tp_full_state_dict",
     "tp_trainer_setup",
     "save_tp_adapter",
+    "vocab_parallel_cross_entropy",
+    "is_vocab_parallel_head",
 ]
 
 _TP_FLAG = "_unsloth_tp"
@@ -191,6 +193,9 @@ class TPConfig:
     sync_trainable: bool = True
     # Host-serve a frozen untied input embedding >= this GPU fraction (0 = never); env UNSLOTH_TP_EMBED_ON_CPU forces.
     host_input_embedding: float = 0.15
+    # Shard the untied lm_head by vocab rows and compute the loss vocab-parallel (env UNSLOTH_TP_VOCAB_PARALLEL=1
+    # also turns it on): (tp - 1) / tp of the head per rank saved, and 1 / tp of its logits / matmuls per rank.
+    vocab_parallel_head: bool = False
 
 
 @dataclasses.dataclass
@@ -2799,6 +2804,254 @@ def _set_local_heads(module, region, tp):
         module.__dict__["config"] = local
 
 
+# Vocab-parallel output head (opt in: TPConfig(vocab_parallel_head = True) or UNSLOTH_TP_VOCAB_PARALLEL=1). The
+# untied lm_head's rows (and a LoRA lora_B's rows) shard over tp; lora_A stays replicated with its gradient summed.
+# lm_head(x) returns the whole logits (all-gather), so every caller stays correct; the loss path of
+# models/llama.py calls vocab_parallel_cross_entropy instead and never builds the whole-vocabulary logits.
+_VOCAB_PARALLEL_ENV = "UNSLOTH_TP_VOCAB_PARALLEL"
+_VOCAB_PARALLEL = "_unsloth_vocab_parallel"
+# Bytes of float32 logits per rank per chunk of the vocab-parallel cross entropy.
+_VOCAB_CHUNK_BYTES = 256 * 2**20
+# Engagement counters, read by tests: whole-logit gathers and vocab-parallel cross entropy calls.
+VOCAB_PARALLEL_CALLS = {"gather": 0, "cross_entropy": 0}
+
+
+def _vocab_parallel_requested(config):
+    import os
+    env = os.environ.get(_VOCAB_PARALLEL_ENV, "").strip().lower()
+    return bool(config.vocab_parallel_head) or env in ("1", "true", "yes", "on")
+
+
+def _all_reduce_max(tensor, group):
+    import torch.distributed._functional_collectives as funcol
+
+    out = funcol.all_reduce(tensor.contiguous(), "max", group)
+    wait = getattr(out, "wait", None)
+    return wait() if callable(wait) else out
+
+
+class _GatherVocabFromTP(torch.autograd.Function):
+    """All-gather the per-rank vocab slices along the last dim; backward keeps this rank's slice (every rank
+    computes the same loss from the same whole logits, so no reduction)."""
+
+    @staticmethod
+    def forward(ctx, y, group, rank, tp):
+        import torch.distributed._functional_collectives as funcol
+
+        ctx.rank, ctx.width = rank, y.shape[-1]
+        flat = y.reshape(-1, ctx.width).contiguous()
+        out = funcol.all_gather_tensor(flat, 0, group)
+        wait = getattr(out, "wait", None)
+        out = wait() if callable(wait) else out
+        out = (
+            out.view(tp, flat.shape[0], ctx.width)
+            .permute(1, 0, 2)
+            .reshape(*y.shape[:-1], tp * ctx.width)
+        )
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        return grad.narrow(-1, ctx.rank * ctx.width, ctx.width).contiguous(), None, None, None
+
+
+def is_vocab_parallel_head(module) -> bool:
+    return bool(module is not None and module.__dict__.get(_VOCAB_PARALLEL))
+
+
+def _vocab_head_refusal(model, head, embed, tp, chain):
+    """Why the output head cannot shard by vocab rows, or None."""
+    if any(level.__dict__.get("_unsloth_pp") is not None for level in chain):
+        return "pipeline parallelism (the head lives on the last stage only)"
+    if not isinstance(head, nn.Module):
+        return "the model has no output embedding (get_output_embeddings)"
+    if "original_module" in head._modules or "modules_to_save" in head._modules:
+        return "a PEFT modules_to_save copy of lm_head"
+    weight, base = _weight(head)
+    if not isinstance(base, nn.Linear) or weight is None or weight.ndim != 2:
+        return f"lm_head is {type(base).__name__}, not a dense nn.Linear"
+    if _is_dtensor(weight) or _is_params4bit(weight) or not weight.is_floating_point():
+        return "a quantized or already distributed lm_head"
+    if base.bias is not None:
+        return "an lm_head bias"
+    if any(
+        getattr(m, n, None) is not None
+        for m in head.modules()
+        for n in ("activation_fake_quantizer", "weight_fake_quantizer")
+    ):
+        return "QAT fake quantization on lm_head"
+    if embed is not None and any(
+        p is weight or p.data_ptr() == weight.data_ptr() for p in embed.parameters()
+    ):
+        return "tied input / output embeddings (the input embedding would have to shard too)"
+    if weight.shape[0] % tp:
+        return f"vocab size {weight.shape[0]} is not divisible by tp = {tp}"
+    if "lora_A" in head._modules:
+        try:
+            _refuse_adapter("lm_head", head)
+        except ValueError as e:
+            return str(e)
+        if getattr(head, "merged", False):
+            return "merged LoRA weights on lm_head"
+    elif "base_layer" in head._modules:
+        return f"a {type(head).__name__} adapter on lm_head"
+    inner = _unwrap(model)
+    try:
+        source = inspect.getsource(inspect.unwrap(type(inner).forward))
+    except (OSError, TypeError):
+        source = ""
+    if "lm_head.weight" in source and _VOCAB_PARALLEL not in source:
+        # A fused loss reading the whole weight directly (unsloth_zoo compiled forwards) would see one shard.
+        return f"{type(inner).__name__}.forward reads lm_head.weight directly"
+    return None
+
+
+def _vocab_head_check(model, tp, chain):
+    """The output head to shard by vocab rows; raises with the reason when it cannot."""
+    inner = _unwrap(model)
+    head = inner.get_output_embeddings() if hasattr(inner, "get_output_embeddings") else None
+    embed = inner.get_input_embeddings() if hasattr(inner, "get_input_embeddings") else None
+    reason = _vocab_head_refusal(model, head, embed, tp, chain)
+    if reason is not None:
+        raise ValueError(
+            f"Unsloth: vocab-parallel lm_head ({_VOCAB_PARALLEL_ENV}=1 / TPConfig.vocab_parallel_head) cannot "
+            f"shard this model's output head: {reason}. Leave it off to keep lm_head replicated."
+        )
+    return head
+
+
+def _shard_vocab_head(model, tp_mesh, rank, tp, chain):
+    """Shard the untied lm_head by vocab rows in place."""
+    head = _vocab_head_check(model, tp, chain)
+    weight, base = _weight(head)
+    vocab = weight.shape[0]
+    _set_dtensor(base, "weight", weight, tp_mesh, "shard", (vocab,), 0, rank, tp)
+    lora_A = head._modules.get("lora_A")
+    for adapter in lora_A.keys() if lora_A is not None else ():
+        A, B = lora_A[adapter], head.lora_B[adapter]
+        _set_dtensor(A, "weight", A.weight, tp_mesh, "replicate")
+        _set_dtensor(B, "weight", B.weight, tp_mesh, "shard", (vocab,), 0, rank, tp)
+    head.__dict__["_unsloth_tp_prior_forward"] = head.__dict__.get("forward", _MISSING)
+    head.__dict__["_unsloth_tp_group"] = tp_mesh.get_group()
+    head.__dict__["_unsloth_tp_coord"] = (rank, tp)
+    head.__dict__["_unsloth_vocab_rows"] = (rank * (vocab // tp), vocab // tp, vocab)
+    head.__dict__[_VOCAB_PARALLEL] = True
+    head.forward = types.MethodType(_vocab_head_forward, head)
+    return head
+
+
+def _vocab_head_local(head, x):
+    """This rank's logits slice [..., vocab / tp] (LoRA included), in the head's dtype."""
+    weight, base = _weight(head)
+    W = _local(weight)
+    y = F.linear(x.to(W.dtype), W)
+    if "lora_A" in head._modules and not getattr(head, "disable_adapters", False):
+        for adapter in head.active_adapters:
+            if adapter not in head.lora_A.keys():
+                continue
+            A = _local(head.lora_A[adapter].weight)
+            B = _local(head.lora_B[adapter].weight)
+            dropout = head.lora_dropout[adapter]
+            z = F.linear(F.linear(dropout(x.to(A.dtype)), A), B)
+            y = y + (z * head.scaling[adapter]).to(y.dtype)
+    return y
+
+
+def _vocab_head_forward(self, x, *args, **kwargs):
+    weight, _ = _weight(self)
+    if not _is_dtensor(weight):
+        # tp_replica swapped in the whole weight (generate / save): the one-GPU forward.
+        prior = self.__dict__.get("_unsloth_tp_prior_forward", _MISSING)
+        if prior is _MISSING:
+            return type(self).forward(self, x, *args, **kwargs)
+        return prior(x, *args, **kwargs)
+    group = self.__dict__["_unsloth_tp_group"]
+    rank, tp = self.__dict__["_unsloth_tp_coord"]
+    VOCAB_PARALLEL_CALLS["gather"] += 1
+    y = _vocab_head_local(self, copy_to_tp(x, group))
+    return _GatherVocabFromTP.apply(y, group, rank, tp)
+
+
+def _vocab_ce_chunk(head, x, labels, softcap, scale, group, lo, width):
+    """Summed cross entropy of one chunk of tokens from this rank's vocab slice (every rank gets the same)."""
+    logits = _vocab_head_local(head, x).float()
+    if scale:
+        logits = logits * scale
+    if softcap:
+        logits = softcap * torch.tanh(logits / softcap)
+    with torch.no_grad():
+        m = _all_reduce_max(logits.amax(-1), group)
+    sum_exp = reduce_from_tp(torch.exp(logits - m.unsqueeze(-1)).sum(-1), group)
+    lse = m + torch.log(sum_exp)
+    valid = labels != -100
+    local = labels - lo
+    owned = valid & (local >= 0) & (local < width)
+    picked = logits.gather(-1, torch.where(owned, local, 0).unsqueeze(-1)).squeeze(-1)
+    target = reduce_from_tp(torch.where(owned, picked, 0.0), group)
+    return torch.where(valid, lse - target, 0.0).sum()
+
+
+def vocab_parallel_active(head) -> bool:
+    """A vocab-parallel lm_head that still holds its shard (tp_replica may have swapped in the whole weight)."""
+    return bool(getattr(head, "_unsloth_vocab_parallel", False)) and _is_dtensor(_weight(head)[0])
+
+
+def vocab_parallel_cross_entropy(
+    head,
+    hidden_states,
+    labels,
+    n_items = None,
+    logit_softcapping = 0,
+    logit_scale_multiply = 0,
+    logit_scale_divide = 0,
+    shift = True,
+    chunk_tokens = None,
+):
+    """Causal LM cross entropy from a vocab-parallel lm_head, never building the whole-vocabulary logits.
+    Global max / log-sum-exp and the target logit come from all-reduces over tp; each chunk of tokens is
+    recomputed in backward (activation checkpointing), so a rank holds one chunk of its 1 / tp logits at a time.
+    Returns the sum over valid tokens / n_items (mean over valid tokens when n_items is None), the same on
+    every tp rank. hidden_states [..., hidden], labels [...] (shift = True: labels are the inputs, shifted here)."""
+    from torch.utils.checkpoint import checkpoint
+
+    group = head.__dict__["_unsloth_tp_group"]
+    lo, width, _ = head.__dict__["_unsloth_vocab_rows"]
+    VOCAB_PARALLEL_CALLS["cross_entropy"] += 1
+    labels = labels.to(hidden_states.device)
+    if shift:
+        shifted = torch.full_like(labels, -100)
+        shifted[..., :-1] = labels[..., 1:]
+        labels = shifted
+    x = copy_to_tp(hidden_states.reshape(-1, hidden_states.shape[-1]), group)
+    labels = labels.reshape(-1)
+    scale = logit_scale_multiply or 0
+    if logit_scale_divide:
+        scale = (scale or 1.0) / logit_scale_divide
+    if chunk_tokens is None:
+        chunk_tokens = max(1, _VOCAB_CHUNK_BYTES // (4 * width))
+    total = None
+    for start in range(0, x.shape[0], chunk_tokens):
+        xs, ls = x[start : start + chunk_tokens], labels[start : start + chunk_tokens]
+        part = checkpoint(
+            _vocab_ce_chunk,
+            head,
+            xs,
+            ls,
+            logit_softcapping or 0,
+            scale,
+            group,
+            lo,
+            width,
+            use_reentrant = False,
+        )
+        total = part if total is None else total + part
+    if n_items is None:
+        n_items = (labels != -100).sum().clamp_min(1)
+    if torch.is_tensor(n_items):
+        n_items = n_items.to(total.device)
+    return total / n_items
+
+
 def apply_tensor_parallel(
     model,
     tp_mesh = None,
@@ -2834,6 +3087,8 @@ def apply_tensor_parallel(
         # same mesh. Checked before any change.
         _check_pp_tp_composition(model, tp_mesh)
     tp_plan = derive_tp_plan(model, tp, plan)
+    if tp > 1 and _vocab_parallel_requested(config):
+        _vocab_head_check(model, tp, _tp_chain(model))  # refused before anything changes
     covered = set()
     for region in tp_plan.regions:
         for proj in region.projs:
@@ -2946,6 +3201,9 @@ def apply_tensor_parallel(
             tp_plan.moe_sharded.append(block)
         else:
             block.register_forward_hook(_moe_post_hook)
+    vocab_head = None
+    if tp > 1 and _vocab_parallel_requested(config):
+        vocab_head = _shard_vocab_head(model, tp_mesh, rank, tp, chain)
     # Unsloth decode paths bypass the regions: mark and guard every wrapper level.
     info = {"size": tp, "rank": rank, "regions": len(tp_plan.regions), "source": tp_plan.source}
     inner = _unwrap(model)
@@ -2964,10 +3222,12 @@ def apply_tensor_parallel(
         print(
             f"Unsloth: tensor parallel over {tp} ranks: {len(tp_plan.regions)} attention / MLP regions "
             f"({tp_plan.source} plan), "
+            + ("input embedding on CPU, " if host_embed is not None else "embeddings / ")
+            + ("norms replicated" if vocab_head is not None else "lm_head / norms replicated")
             + (
-                "input embedding on CPU, lm_head / norms replicated"
-                if host_embed is not None
-                else "embeddings / lm_head / norms replicated"
+                f", lm_head sharded by vocab rows ({_weight(vocab_head)[0].shape[0] // tp} per rank)"
+                if vocab_head is not None
+                else ""
             )
             + _linear_attention_note(tp_plan)
             + (
@@ -3174,6 +3434,13 @@ def check_tp_dp_composition(model, dp_mesh):
     if dp_mesh.ndim != 1:
         raise ValueError(
             "Unsloth: native FSDP2 over a tensor parallel model takes a 1-D dp mesh (mesh['dp'])."
+        )
+    inner = _unwrap(model)
+    head = inner.get_output_embeddings() if hasattr(inner, "get_output_embeddings") else None
+    if is_vocab_parallel_head(head):
+        raise ValueError(
+            "Unsloth: native FSDP2 over a tensor parallel model with a vocab-parallel lm_head is not supported "
+            f"yet; unset {_VOCAB_PARALLEL_ENV} / TPConfig.vocab_parallel_head for dp x tp."
         )
     dp_ranks, tp_ranks = set(dp_mesh.mesh.tolist()), set(tp_mesh.mesh.tolist())
     me = dist.get_rank()
@@ -4276,12 +4543,16 @@ def _tp_bnb_optim(args, cpu_shards):
     from .fsdp2_native import _BNB_OPTIMS
 
     name = _optim_name(args)
+    if cpu_shards:
+        from .fsdp2_native import _fused_cpu_adamw
+        if _fused_cpu_adamw(args, name, label = "tensor parallel"):
+            return True
     if _keeps_bnb(name, cpu_shards):
         return False
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
-    if target == "adamw_torch_fused" and (cpu_shards or not torch.cuda.is_available()):
+    if target == "adamw_torch_fused" and not cpu_shards and not torch.cuda.is_available():
         target = "adamw_torch"
     _print_rank0(
         f"Unsloth: tensor parallel parameters are DTensors, which this bitsandbytes optimizer cannot step "

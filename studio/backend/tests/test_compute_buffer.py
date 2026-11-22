@@ -878,7 +878,10 @@ class TestPipelineParallelPredicate:
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         compact = "".join(src.split())
-        assert "_pipeline_parallel_disabled_by_args(extra_args,n_layers=self._n_layers)" in compact
+        assert (
+            "_pipeline_parallel_disabled_by_args(extra_args,n_layers=self.n_weight_layers)"
+            in compact
+        )
         assert "layer_split = n_gpus > 1 and not _pipeline_parallel_off" in src
         assert src.index("_read_gguf_metadata(model_path)") < src.index(
             "_pipeline_parallel_disabled_by_args("

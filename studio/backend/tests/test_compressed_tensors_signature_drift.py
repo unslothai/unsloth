@@ -139,4 +139,7 @@ def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_f
     assert (
         "studio/backend/tests/test_compressed_tensors_signature_drift.py" in text
     ), "the modern-transformers matrix does not collect this file"
-    assert 'transformers_spec: "transformers>=5,<6"' in text
+    # Any 5.x floor counts: the latest leg's ceiling moves as releases are vetted.
+    assert re.search(
+        r'transformers_spec: "transformers>=5(?:,<[0-9.]+)?"', text
+    ), "no consolidated matrix leg installs transformers 5.x"

@@ -187,3 +187,62 @@ test("chats opened before settings hydrate still get the cap reconciled", async 
     assert.equal(cap(reloaded), mcpChat ? MAX : 12);
   }
 });
+
+test("a cap picked while MCP is on survives a reload", async (t) => {
+  const first = await boot(t);
+  const before = () => first.useChatRuntimeStore.getState();
+  before().setActiveThreadId("mcp-chat");
+  before().applyThreadScopedSettings("mcp-chat", null);
+  before().setMcpEnabledForChat(true);
+  before().setMaxToolCallsPerMessage(10);
+  await first.flushPendingChatSettings();
+
+  settingsHttp.settings = { ...settingsHttp.settings, maxToolCallsPerMessage: 10 };
+  settingsHttp.puts.length = 0;
+  const reloaded = (await import(
+    `${runtimeUrl}?scenario=${encodeURIComponent(`${t.name} reload`)}`
+  )) as RuntimeModule;
+  t.after(() => reloaded.flushPendingChatSettings());
+  const state = () => reloaded.useChatRuntimeStore.getState();
+  state().setActiveThreadId("mcp-chat");
+  state().applyThreadScopedSettings("mcp-chat", {
+    mcpEnabledForChat: true,
+  } as never);
+  await state().hydratePersistedSettings();
+  assert.equal(cap(reloaded), 10);
+  await reloaded.flushPendingChatSettings();
+  assert.ok(settingsHttp.puts.every((put) => put.maxToolCallsPerMessage !== MAX));
+});
+
+test("a cap picked while MCP is on survives a switch to another chat and back", async (t) => {
+  const runtime = await boot(t);
+  const state = () => runtime.useChatRuntimeStore.getState();
+  state().setActiveThreadId("mcp-chat");
+  state().applyThreadScopedSettings("mcp-chat", null);
+  state().setMcpEnabledForChat(true);
+  state().setMaxToolCallsPerMessage(10);
+  await runtime.awaitThreadScopedSettingsWrite("mcp-chat");
+  state().setActiveThreadId("plain-chat");
+  state().applyThreadScopedSettings("plain-chat", {
+    mcpEnabledForChat: false,
+  } as never);
+  assert.equal(cap(runtime), 10);
+  state().setActiveThreadId("mcp-chat");
+  state().applyThreadScopedSettings("mcp-chat", {
+    mcpEnabledForChat: true,
+  } as never);
+  assert.equal(cap(runtime), 10);
+});
+
+test("turning MCP off and on again lifts a cap picked while it was on", async (t) => {
+  const runtime = await boot(t);
+  const state = () => runtime.useChatRuntimeStore.getState();
+  state().setMcpEnabledForChat(true);
+  state().setMaxToolCallsPerMessage(10);
+  state().setMcpEnabledForChat(false);
+  assert.equal(cap(runtime), 10);
+  state().setMcpEnabledForChat(true);
+  assert.equal(cap(runtime), MAX);
+  state().setMcpEnabledForChat(false);
+  assert.equal(cap(runtime), 10);
+});

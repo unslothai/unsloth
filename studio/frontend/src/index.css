@@ -3051,11 +3051,11 @@ html[data-chat-font] .aui-root {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
-	/* Elevated cards sink the shared track; their buttons lift above it. */
-	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill {
+	/* Surfaces that sink the shared track (hub.css) lift their buttons above it. */
+	html.dark :is(.api-monitor-page .elevated-card, .section-box, .menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .btn-fill {
 		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}
-	html.dark :is(.api-monitor-page .elevated-card, .section-box) .btn-fill:hover {
+	html.dark :is(.api-monitor-page .elevated-card, .section-box, .menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .btn-fill:hover {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
@@ -3236,6 +3236,10 @@ html[data-chat-font] .aui-root {
 			display: none;
 		}
 
+		& .composer-pill-glyph {
+			display: inline-grid;
+		}
+
 		/* Too small for the circle, so show a bare x. */
 		& .composer-pill-x {
 			@apply size-[calc(15px*var(--ui-font-scale,1))] bg-transparent p-0 dark:bg-transparent;
@@ -3282,6 +3286,9 @@ html[data-chat-font] .aui-root {
 	}
 	.dark .composer-pill-btn.composer-pill-permissions {
 		color: var(--foreground);
+	}
+	.composer-pill-btn.composer-pill-permissions > .composer-pill-glyph {
+		display: none;
 	}
 
 	/* Fixed-width slot so labels line up regardless of icon size. */
@@ -5954,6 +5961,10 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	overflow-anchor: none;
 }
 
+:root.client-windows .aui-thread-viewport {
+	overscroll-behavior-y: none;
+}
+
 @supports selector(::-webkit-scrollbar) {
 	:root.client-windows .aui-thread-viewport {
 		scrollbar-width: thin;
@@ -6954,11 +6965,33 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* Fades out just under the composer's top edge (vars from ThreadComposerDock). */
+/* Masks the thread only inside the composer's rounded box; side strips and top-corner layers keep text beside it. */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
+  --clip: var(--thread-composer-clip, 0px);
+  --fade: var(--thread-composer-fade, 0px);
+  --radius: var(--thread-composer-radius, 0px);
+  --below: var(--thread-composer-bottom, 0px);
   mask-image:
-    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--thread-composer-clip, 0px)), rgb(0 0 0 / .15) calc(100% - var(--thread-composer-clip, 0px) + .3 * var(--thread-composer-fade, 0px)), transparent calc(100% - var(--thread-composer-clip, 0px) + var(--thread-composer-fade, 0px))),
-    linear-gradient(#000, #000);
+    linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem), #000 calc(100% - var(--clip)), transparent calc(100% - var(--clip) + var(--fade))),
+    linear-gradient(#000, #000),
+    linear-gradient(#000, #000),
+    linear-gradient(#000, #000),
+    radial-gradient(circle at 100% 100%, transparent var(--radius), #000 calc(var(--radius) + 1px)),
+    radial-gradient(circle at 0 100%, transparent var(--radius), #000 calc(var(--radius) + 1px));
+  mask-size:
+    100% 100%,
+    min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%,
+    var(--thread-composer-left, 0px) calc(var(--clip) - var(--below)),
+    var(--thread-composer-right, 0px) calc(var(--clip) - var(--below)),
+    var(--radius) var(--radius),
+    var(--radius) var(--radius);
+  mask-position:
+    0 0,
+    right,
+    left 0 bottom var(--below),
+    right 0 bottom var(--below),
+    left var(--thread-composer-left, 0px) bottom calc(var(--clip) - var(--radius)),
+    right var(--thread-composer-right, 0px) bottom calc(var(--clip) - var(--radius));
 }
 /* Compare's model bars take the wash; the page-colour pane fade would read as a band. */
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .compare-pane-header {
