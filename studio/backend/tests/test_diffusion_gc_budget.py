@@ -62,10 +62,22 @@ def test_kill_switch_keeps_the_old_path(mode, monkeypatch):
     assert model.func is None
 
 
-def test_rocm_keeps_the_old_path(monkeypatch):
+def test_rocm_uses_the_budget_too(monkeypatch):
+    # gfx1151 Linux + Windows: 1.40x / 2.18x bf16 klein LoRA steps, Linux losses bitwise equal to every block checkpointed
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
     monkeypatch.setattr(gb, "_is_rocm", lambda: True)
+    model = _Model()
+    budget = gb.enable_budgeted_checkpointing(model, "cuda")
+    assert isinstance(budget, gb.BudgetedCheckpoint) and model.func is budget
+    monkeypatch.setenv(gb.GC_MODE_ENV, "plain")
     assert gb.enable_budgeted_checkpointing(_Model(), "cuda") is None
+
+
+def test_budget_reads_trusted_free(monkeypatch):
+    # Windows ROCm's WDDM free over-report is capped (utils.hardware.trusted_mem_get_info) before any plan
+    import utils.hardware as hw
+    monkeypatch.setattr(hw, "trusted_mem_get_info", lambda *a, **k: (7, 9))
+    assert gb._mem_get_info() == (7, 9)
 
 
 def _planned(

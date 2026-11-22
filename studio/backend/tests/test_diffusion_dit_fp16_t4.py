@@ -570,9 +570,11 @@ def test_dequant_cache_stays_off_on_the_fp16_path(monkeypatch):
     assert not dit._dequant_cache_wanted(True, "xpu", False)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE", "0")
     assert not fl.dequant_cache_enabled() and not dit._dequant_cache_wanted(True, "cuda", False)
+    # ROCm keeps the cache too (gfx1151 nf4 klein LoRA 1.68x Linux / 1.63x Windows); the fp16 path still declines it
     monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_DEQUANT_CACHE")
-    assert not dit._dequant_cache_wanted(True, "cuda", False)
+    assert dit._dequant_cache_wanted(True, "cuda", False)
+    assert not dit._dequant_cache_wanted(True, "cuda", True)
 
 
 @pytest.mark.parametrize(
