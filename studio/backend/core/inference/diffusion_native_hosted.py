@@ -254,7 +254,14 @@ def load_native_from_hosted(
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
             _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used", tag = tag)
             return None
-        if any(p.dtype != torch.bfloat16 for p in model.parameters() if p.is_floating_point()):
+        # float32 only where a bf16 from_pretrained keeps it (``_keep_in_fp32_modules``, e.g. FLUX.3's norm_q / norm_k).
+        keep_fp32 = set(getattr(transformer_cls, "_keep_in_fp32_modules", None) or ())
+        if any(
+            p.dtype != torch.bfloat16
+            and not (p.dtype == torch.float32 and keep_fp32 & set(name.split(".")))
+            for name, p in model.named_parameters()
+            if p.is_floating_point()
+        ):
             _log(
                 logger, "info", "hosted int8 checkpoint not used (a non-bf16 dense tensor)", tag = tag
             )

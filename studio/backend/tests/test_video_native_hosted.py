@@ -251,6 +251,30 @@ def test_refuses_a_file_that_is_not_the_native_build(tmp_path, case):
     assert _load(path, cfg_dir) is None
 
 
+def test_keeps_float32_only_where_from_pretrained_does(tmp_path):
+    # FLUX.3 stores its _keep_in_fp32_modules (norm_q / norm_k) as F32, which a bf16 from_pretrained keeps too.
+    def widen(state):
+        state["scale_shift_table"] = state["scale_shift_table"].float()
+
+    path, cfg_dir, _ = _write_hosted(tmp_path, mutate = widen)
+    # Without a keep-list entry a float32 dense tensor is not the bf16 build: refused, as before.
+    assert _load(path, cfg_dir) is None
+
+    class Kept(CLS):
+        _keep_in_fp32_modules = ["scale_shift_table"]
+
+    model = NH.load_native_from_hosted(
+        str(path), Kept, str(cfg_dir), spec = _spec(), family = FAMILY, logger = None
+    )
+    assert model is not None
+    assert model.scale_shift_table.dtype == torch.float32
+    assert all(
+        p.dtype == torch.bfloat16
+        for n, p in model.named_parameters()
+        if p.is_floating_point() and n != "scale_shift_table"
+    )
+
+
 def test_refuses_a_weight_only_or_unrotated_native_build(tmp_path):
     path, cfg_dir, _ = _write_hosted(tmp_path)
     assert _load(path, cfg_dir, spec = native_spec("int8", FAMILY, act_int8 = False)) is None
