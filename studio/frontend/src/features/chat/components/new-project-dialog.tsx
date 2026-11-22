@@ -57,12 +57,14 @@ export function NewProjectDialog({
   onOpenChange,
   title = "Create project",
   submitLabel = "Create project",
+  parentId = null,
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title?: string;
   submitLabel?: string;
+  parentId?: string | null;
   onCreated?: (
     project: ProjectRecord,
     context: { stayedOnRoute: boolean },
@@ -171,7 +173,12 @@ export function NewProjectDialog({
     try {
       if (!project) {
         if (token) sentLeases.current.add(token);
-        project = await createChatProject(trimmed, token ?? undefined, projectId.current);
+        project = await createChatProject(
+          trimmed,
+          token ?? undefined,
+          projectId.current,
+          parentId,
+        );
         if (token && project.workingFolder) appliedLease.current = token;
         setCreatedProject(project);
       }

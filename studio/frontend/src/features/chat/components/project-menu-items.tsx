@@ -25,7 +25,7 @@ import {
   PlusSignIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
-import { FolderExportIcon } from "@/lib/folder-icons";
+import { FolderAddIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { type IconSvgElement, HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { useFileProjectInSection } from "../hooks/use-file-project-in-section";
@@ -59,6 +59,7 @@ export function ProjectMenuItems({
   project,
   chatCount,
   onNewChat,
+  onNewSubproject,
   onEdit,
   onDelete,
   onNewSection,
@@ -68,6 +69,7 @@ export function ProjectMenuItems({
   /** Off Export at 0; unknown (undefined) leaves it on. */
   chatCount?: number;
   onNewChat?: () => void;
+  onNewSubproject?: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onNewSection: () => void;
@@ -101,6 +103,11 @@ export function ProjectMenuItems({
           {onNewChat && (
             <Item icon={PencilEdit02Icon} onSelect={onNewChat}>
               {t("library.chats.menu.newChatInProject")}
+            </Item>
+          )}
+          {onNewSubproject && (
+            <Item icon={FolderAddIcon} onSelect={onNewSubproject}>
+              {t("projectsPage.newSubproject")}
             </Item>
           )}
           <OpenProjectFolderItem projectId={project.id} />

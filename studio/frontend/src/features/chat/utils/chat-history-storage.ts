@@ -959,17 +959,24 @@ export async function createStoredChatProject(
   name: string,
   nativePathLease?: string,
   id: string = crypto.randomUUID(),
-  options: SaveChatProjectOptions = {},
+  parentIdOrOptions: string | null | SaveChatProjectOptions = null,
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
     throw new Error("Project name is required.");
   }
+  const options =
+    typeof parentIdOrOptions === "object" && parentIdOrOptions !== null
+      ? parentIdOrOptions
+      : {};
+  const parentId =
+    typeof parentIdOrOptions === "string" ? parentIdOrOptions : null;
   const now = Date.now();
   return saveChatProject({
     id,
     name: trimmed,
     instructions: "",
+    parentId: parentId ?? null,
     archived: false,
     createdAt: now,
     updatedAt: now,

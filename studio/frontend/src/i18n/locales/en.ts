@@ -5713,6 +5713,7 @@ export const en = {
     combined: "Combined",
     perChat: "Per chat",
     newProject: "New project",
+    newSubproject: "New subproject",
     name: "Name",
     updated: "Updated",
     newestFirst: "Newest first",
