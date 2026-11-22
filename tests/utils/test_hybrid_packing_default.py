@@ -264,6 +264,48 @@ def test_probe_runs_in_eval_mode_and_keeps_the_rng(monkeypatch):
     assert mixer.training and mixer.dropout.training
 
 
+class SideStateLinear(torch.nn.Module):
+    """Int4PackedLinear's contract: train() keeps a cached copy of the mode outside the training flag."""
+
+    def __init__(self):
+        super().__init__()
+        self.cached_training = False
+
+    def train(self, mode = True):
+        self.cached_training = bool(mode)
+        return super().train(mode)
+
+    def forward(self, x):
+        return x
+
+
+class SideStateGatedDeltaNet(FakeGatedDeltaNet):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.proj = SideStateLinear()
+
+    def forward(
+        self,
+        hidden_states,
+        cache_params = None,
+        attention_mask = None,
+    ):
+        return super().forward(self.proj(hidden_states), cache_params, attention_mask)
+
+
+@pytest.mark.parametrize("conv,accepted", [(conv_exact, True), (conv_leaky, False)])
+def test_probe_restores_train_side_state_on_every_exit(monkeypatch, conv, accepted):
+    monkeypatch.delenv(ENV, raising = False)
+    mixer = SideStateGatedDeltaNet(conv = conv)
+    model = FakeHybrid(mixer)
+    model.train()
+    assert mixer.proj.cached_training is True
+    assert patch_hybrid_linear_attention_varlen(model) is accepted
+    assert mixer.proj.training is True
+    # The mode-synced state must follow the restored flag, accepted or rejected.
+    assert mixer.proj.cached_training is True
+
+
 def test_probe_failure_to_run_is_a_rejection(monkeypatch, caplog):
     monkeypatch.delenv(ENV, raising = False)
 
