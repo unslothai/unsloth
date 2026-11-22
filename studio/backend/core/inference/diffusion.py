@@ -236,6 +236,7 @@ from .diffusion_memory import (
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     flux3_conditioned_denoise_mib,
+    flux3_prompt_tokens,
     estimate_safetensors_dense_mib,
     file_size_mib,
     largest_streamable_companion_mib,
@@ -3311,6 +3312,7 @@ def _flux3_guard_denoise_mib(
     width: Any,
     height: Any,
     batch: int,
+    prompt_bytes: int = 0,
 ) -> Optional[int]:
     """FLUX.3 edit denoise MiB for the request guard, or None when token pricing does not apply."""
     if not is_flux3_family(fam) or not has_source or getattr(state, "kind", None) == "gguf":
@@ -3328,7 +3330,9 @@ def _flux3_guard_denoise_mib(
         if getattr(target, "device", None) != "cuda" or not torch.cuda.is_available():
             return None
         capability = tuple(torch.cuda.get_device_capability(device))
-        rocm = bool(getattr(torch.version, "hip", None))
+        from .rocm_bf16 import is_rocm_torch
+
+        rocm = is_rocm_torch(torch)
     except Exception:  # noqa: BLE001 - unknown device keeps the flat estimate
         return None
     return flux3_conditioned_denoise_mib(
@@ -3339,6 +3343,7 @@ def _flux3_guard_denoise_mib(
         dense = not quant,
         capability = capability,
         rocm = rocm,
+        text_tokens = flux3_prompt_tokens(prompt_bytes),
     )
 
 
@@ -16233,6 +16238,7 @@ class DiffusionBackend:
                         guard_width,
                         guard_height,
                         guard_batch,
+                        prompt_bytes = max((len(str(p).encode("utf-8")) for p, _ in jobs), default = 0),
                     )
                     guard_measured = placement_measured_activation(state.pipe)
                     if guard_measured is None and getattr(state, "calibrated_placement", False):

@@ -1760,10 +1760,17 @@ FLUX3_TOKEN_PRICED_ENV = "UNSLOTH_DIFFUSION_FLUX3_TOKEN_PRICED"
 # compiled, the only quantized tier measured): 62.9-75.6. B200 eager reads ~220 per 1k tokens: not covered.
 _FLUX3_SM8X_DENOISE_MIB_PER_KTOKEN = {"dense": 116.0, "quantized": 76.0}
 _FLUX3_TOKEN_MARGIN = 1.25
-# Always charged (L4 runs used 80; the encoder caps at 512).
+# Text tokens always charged; FLUX.3's window grows with the prompt (max_sequence_length 8192), so a longer prompt
+# is priced from its UTF-8 length: at most one token per 2 bytes plus 64 for the chat template (L4 runs used 80).
 _FLUX3_TEXT_TOKENS = 512
+
 _FLUX3_PATCH_PIXELS = 16
 _FLUX3_REFERENCE_TOKENS = (1024 // _FLUX3_PATCH_PIXELS) ** 2
+
+
+def flux3_prompt_tokens(prompt_bytes: Optional[int]) -> int:
+    """Conservative FLUX.3 text-token count for a prompt of ``prompt_bytes`` UTF-8 bytes, never under 512."""
+    return max(_FLUX3_TEXT_TOKENS, int(prompt_bytes or 0) // 2 + 64)
 
 
 def flux3_conditioned_denoise_mib(
@@ -1775,6 +1782,7 @@ def flux3_conditioned_denoise_mib(
     dense: bool,
     capability: Optional[tuple],
     rocm: bool = False,
+    text_tokens: Optional[int] = None,
 ) -> Optional[int]:
     """Token-priced FLUX.3 edit denoise MiB, margin included. None (flat estimate stands) without references, off CUDA
     8.x, on ROCm, or with ``UNSLOTH_DIFFUSION_FLUX3_TOKEN_PRICED=0``: the rate was measured on L4 / A100-40 only."""
@@ -1792,7 +1800,7 @@ def flux3_conditioned_denoise_mib(
         tokens = (
             (w // _FLUX3_PATCH_PIXELS) * (h // _FLUX3_PATCH_PIXELS)
             + refs * _FLUX3_REFERENCE_TOKENS
-            + _FLUX3_TEXT_TOKENS
+            + max(_FLUX3_TEXT_TOKENS, int(text_tokens or 0))
         )
         batch = max(1, int(batch_size or 1))
         return int(math.ceil(tokens / 1024.0 * rate * _FLUX3_TOKEN_MARGIN * batch))

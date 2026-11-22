@@ -237,3 +237,41 @@ def test_call_site_unmeasured_tiers_keep_the_flat_estimate(ada):
         diff._flux3_guard_denoise_mib(fam, _state("int8"), _Target(), False, 0, 2048, 2048, 1)
         is None
     )
+
+
+def test_long_prompts_are_priced_past_the_512_token_floor():
+    """FLUX.3's text window grows with the prompt (max_sequence_length 8192), so a long prompt adds tokens."""
+    assert dm.flux3_prompt_tokens(0) == dm.flux3_prompt_tokens(None) == 512
+    assert dm.flux3_prompt_tokens(400) == 512
+    assert dm.flux3_prompt_tokens(16_000) == 8064
+    short = dm.flux3_conditioned_denoise_mib(
+        width = 2048, height = 2048, references = 4, dense = True, capability = (8, 9), text_tokens = 512
+    )
+    assert short == _denoise(4, True)
+    long = dm.flux3_conditioned_denoise_mib(
+        width = 2048, height = 2048, references = 4, dense = True, capability = (8, 9), text_tokens = 8064
+    )
+    assert long == pytest.approx((16_384 + 4 * 4096 + 8064) / 1024 * 116 * 1.25, abs = 1)
+    # a count under the floor never lowers the estimate
+    assert (
+        dm.flux3_conditioned_denoise_mib(
+            width = 2048, height = 2048, references = 4, dense = True, capability = (8, 9), text_tokens = 10
+        )
+        == short
+    )
+
+
+def test_call_site_charges_the_longest_prompt(ada):
+    fam = _FAM["flux.3-klein-base"]
+    args = (_Target(), True, 3, 2048, 2048, 1)
+    base = diff._flux3_guard_denoise_mib(fam, _state(None, ()), *args)
+    assert diff._flux3_guard_denoise_mib(fam, _state(None, ()), *args, prompt_bytes = 300) == base
+    assert diff._flux3_guard_denoise_mib(fam, _state(None, ()), *args, prompt_bytes = 16_000) > base
+
+
+def test_call_site_rocm_wheel_without_version_hip_keeps_the_flat_estimate(ada, monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch, "__version__", "2.9.1+rocm7.1")
+    args = (_Target(), True, 3, 2048, 2048, 1)
+    assert diff._flux3_guard_denoise_mib(_FAM["flux.3-klein-base"], _state(None, ()), *args) is None
