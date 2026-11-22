@@ -280,7 +280,19 @@ def test_split_tiles_with_the_fused_wan_forwards_on_two_cards():
     if not fused.install_wan_vae(vae, encoder = False):
         pytest.skip("fused Wan VAE path unavailable here")
     z = _latents(vae).to("cuda:0")
+
+    def engaged():
+        return sum(fused.ENGAGED.values())
+
     with torch.no_grad():
+        before = engaged()
         ref = vae.tiled_decode(z, return_dict = False)[0]
+        one_card = engaged() - before
+        before = engaged()
         out = vm.split_tiled_decode(vae, z, torch.device("cuda:1"))
-    assert torch.equal(out, ref)
+        split = engaged() - before
+    # Every tile ran the fused path on both cards (a partner falling back to stock forwards would count fewer).
+    assert one_card > 0 and split == one_card
+    # One card repeats bitwise; the partner's cuDNN / Triton picks on its own card can differ by an ulp
+    # (Kaggle 2x T4: 4.5e-7 at scale 0.85 in fp32).
+    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 2e-6)
