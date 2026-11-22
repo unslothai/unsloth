@@ -25,6 +25,7 @@ import itertools
 import json
 import logging
 import math
+import mmap
 import os
 import re
 import struct
@@ -5322,6 +5323,58 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     return False
 
 
+# q8_0 banded kernel registration string (survives strip); only llama.cpp#399 builds have it.
+_INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E")
+_GGML_GPU_LIB_GLOBS = {
+    "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
+    "hip": ("libggml-hip.so*", "ggml-hip.dll"),
+}
+
+
+@functools.lru_cache(maxsize = 16)
+def _lib_matches(path: str, _mtime_ns: int, _size: int, pattern: "re.Pattern[bytes]") -> bool:
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as data:
+            return pattern.search(data) is not None
+    except (OSError, ValueError):
+        return False
+
+
+def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
+    """Whether the ggml CUDA / HIP library beside llama-server has the quantized banded kernel; fails closed."""
+    for pattern in _GGML_GPU_LIB_GLOBS.get(backend, ()):
+        try:
+            candidates = sorted(lib_dir.glob(pattern))
+        except OSError:
+            continue
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                st = resolved.stat()
+            except OSError:
+                continue
+            if resolved.is_file() and _lib_matches(
+                str(resolved), st.st_mtime_ns, st.st_size, _INKLING2_BANDED_QUANT_KV_RE
+            ):
+                return True
+    return False
+
+
+class _Inkling2BandedSupport(NamedTuple):
+    """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask;
+    tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA)."""
+
+    backend: Optional[str] = None
+    quant_kv: bool = False
+    tile_kv: bool = False
+
+
+# Unknown build prices as pre-#399.
+_INKLING2_BANDED_LEGACY = _Inkling2BandedSupport()
+# Backends with a FLASH_ATTN_EXT_BANDED kernel; Metal, Vulkan and SYCL take the dense bias.
+_INKLING2_BANDED_BACKENDS = frozenset({"cuda", "hip", "cpu"})
+
+
 def _swa_full_from_args_or_env(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -9000,6 +9053,8 @@ class LlamaCppBackend:
         self._vocab_size: Optional[int] = None
         # Set from reserves_micro_batch_outputs() by the callers that know the binary.
         self._reserves_micro_batch_outputs: bool = False
+        # None resolves the installed build on first use.
+        self._inkling2_banded_support: Optional[_Inkling2BandedSupport] = None
         self._resumes_thoughts: bool = True
         # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
@@ -10856,6 +10911,52 @@ class LlamaCppBackend:
         except Exception:
             return False
         return build is not None and build < cls._OUTPUT_ROWS_CAPPED_BUILD
+
+    @classmethod
+    def inkling2_banded_support(cls, binary: Optional[str] = None) -> "_Inkling2BandedSupport":
+        try:
+            binary = binary or cls._find_llama_server_binary()
+            if not binary:
+                return _INKLING2_BANDED_LEGACY
+            if cls._build_has_metal(binary):
+                return _Inkling2BandedSupport("metal", False)
+            backends = cls._installed_ggml_backends(binary)
+            backend = next(
+                (b for b in ("cuda", "hip", "vulkan", "sycl") if b in backends),
+                "cpu" if "cpu" in backends else None,
+            )
+            quant_kv = backend in ("cuda", "hip") and _gpu_lib_has_banded_quant_kv(
+                _llama_lib_dir(binary), backend
+            )
+            tile_kv = backend == "cuda" and quant_kv and cls._inkling2_cuda_tile_kv(binary)
+            return _Inkling2BandedSupport(backend, quant_kv, tile_kv)
+        except Exception as exc:  # noqa: BLE001 -- an unreadable build prices as legacy
+            logger.debug("Inkling 2 banded probe failed: %s", exc)
+            return _INKLING2_BANDED_LEGACY
+
+    # turing_mma_available: the banded MMA kernel, and its in-tile q8_0 / q4_0 dequant, need sm_75.
+    _INKLING2_BANDED_TILE_MIN_SM = 75
+
+    @classmethod
+    def _inkling2_cuda_tile_kv(cls, binary: Optional[str]) -> bool:
+        """Every visible card, and the arch the bundle runs on it, is Turing+; unknown: False."""
+        caps = cls._cuda_compute_caps()
+        if not caps:
+            return False
+        sms = cls._installed_llama_cuda_sms(binary)
+        floor = cls._INKLING2_BANDED_TILE_MIN_SM
+        for sm in caps.values():
+            # ggml_cuda_highest_compiled_arch: the highest compiled arch <= the card runs.
+            ran = max((s for s in sms if s <= sm), default = 0) if sms else sm
+            if ran < floor:
+                return False
+        return True
+
+    def _inkling2_banded(self) -> "_Inkling2BandedSupport":
+        support = getattr(self, "_inkling2_banded_support", _INKLING2_BANDED_LEGACY)
+        if support is None:
+            support = self._inkling2_banded_support = self.inkling2_banded_support()
+        return support
 
     # ggml-org/llama.cpp#23089 added continuation inside an unfinished reasoning block.
     _THOUGHT_CONTINUATION_BUILD = 9200
@@ -18880,6 +18981,16 @@ class LlamaCppBackend:
     _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
     _INKLING2_REL_INDEX_BYTES = 4
     _INKLING2_BANDED_MIN_UBATCH = 33
+    # #399: iq4_nl has no f16 converter; Turing+ CUDA dequantizes q8_0/q4_0 in-tile, else f16 copy.
+    _INKLING2_BANDED_QUANT_TYPES = frozenset({"q8_0", "q4_0", "q4_1", "q5_0", "q5_1"})
+    _INKLING2_BANDED_TILE_TYPES = frozenset({"q8_0", "q4_0"})
+    # Prompt graphs regrow the banded buffer past the reserve; fit to B200 Inkling-2-Mini at exit.
+    # #399 shared-mask reserve grows 4 B/cell per ub token and leads above ~600K cells.
+    _INKLING2_BANDED_RUNTIME_BYTES = 15
+    _INKLING2_RUNTIME_BYTES_PER_UB = 800 * 1024
+    _INKLING2_BANDED_SHARED_BYTES = 2
+    _INKLING2_BANDED_SHARED_RESERVE_BYTES = 4
+    _INKLING2_SHARED_RUNTIME_BYTES_PER_UB = 1200 * 1024
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -19115,18 +19226,44 @@ class LlamaCppBackend:
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
         if getattr(self, "_architecture", None) in _INKLING2_ARCHS:
-            # Sliding layers' smaller bias reuses this allocation; no dequant copy on either path.
+            # Sliding layers' smaller bias reuses this allocation.
             n_head = self._inkling2_bias_heads()
             head_dim = getattr(self, "_kv_key_length", None) or 128
+            kv_type = (cache_type_kv or "f16").strip().lower()
+            build = self._inkling2_banded()
+            quantized = _kv_bytes_per_elem(kv_type) < 2.0
+            if quantized:
+                type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
+            else:
+                type_ok = kv_type in ("f16", "bf16", "f32")
             banded = (
                 flash_attn
-                and (cache_type_kv or "f16").strip().lower() in ("f16", "bf16", "f32")
+                and type_ok
+                # Metal, Vulkan and SYCL have no banded kernel; unknown keeps the CUDA pricing.
+                and (build.backend is None or build.backend in _INKLING2_BANDED_BACKENDS)
                 and head_dim in (64, 128)
                 and ub >= self._INKLING2_BANDED_MIN_UBATCH
             )
             if banded:
-                per_tok = self._INKLING2_BANDED_BYTES * ub + split_extra
-                return int(per_tok * n_ctx + 4 * n_head * ub * ub)
+                block = 4 * n_head * ub * ub
+                if not build.quant_kv:
+                    reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx + block
+                    regrown = (
+                        (self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra) * n_ctx
+                        + block
+                        + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
+                    )
+                    return int(max(reserve, regrown))
+                copy = 0
+                if quantized and not (
+                    build.tile_kv and kv_type in self._INKLING2_BANDED_TILE_TYPES
+                ):
+                    copy = self._attention_dequant_width() * 2
+                reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx
+                regrown = (
+                    self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
+                ) * n_ctx + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
+                return int(max(reserve, regrown) + copy * n_ctx + block)
             per_tok = (
                 mask_rate
                 + split_extra
@@ -25594,6 +25731,8 @@ class LlamaCppBackend:
 
             server_caps = _launch_caps(binary)
             self._reserves_micro_batch_outputs = self.reserves_micro_batch_outputs(binary)
+            if self._architecture in _INKLING2_ARCHS:
+                self._inkling2_banded_support = self.inkling2_banded_support(binary)
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside self._lock so /unload, /cancel, /status aren't blocked.
