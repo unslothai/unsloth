@@ -3478,6 +3478,29 @@ def check_tp_dp_composition(model, dp_mesh):
     return tp_mesh
 
 
+# Gradient norms square-sum in slices of this many elements: a whole-tensor .float().square() holds 4x a
+# half-precision gradient's bytes (8x through float64), e.g. 3 GiB for a 3B model's embedding gradient.
+_SQUARE_SUM_CHUNK = 1 << 24
+
+
+def _square_sum(tensor, dtype = torch.float32):
+    """sum(tensor.to(dtype) ** 2) with a transient of at most _SQUARE_SUM_CHUNK elements of dtype.
+    A tensor of at most that many elements is reduced in one call exactly as before (bitwise unchanged);
+    a larger one adds its slices' square sums in dtype, in order (deterministic, within dtype rounding)."""
+    chunk = _SQUARE_SUM_CHUNK
+    if tensor.numel() <= chunk:
+        return tensor.to(dtype).square().sum()
+    total = None
+    for part in tensor.reshape(-1).split(chunk):
+        part = part.to(dtype)
+        # A cast is a fresh tensor and can be squared in place; an uncast slice is the gradient itself.
+        part = part.square_() if part.dtype != tensor.dtype else part.square()
+        sq = part.sum()
+        del part
+        total = sq if total is None else total + sq
+    return total
+
+
 def tp_clip_grad_norm_(
     parameters,
     max_norm,
@@ -3503,13 +3526,12 @@ def tp_clip_grad_norm_(
             if g is not p.grad:
                 p.grad = g
             group = g.device_mesh.get_group() if group is None else group
-            local = g.to_local().float()
-            sq = local.square().sum()
+            sq = _square_sum(g.to_local())
             if any(pl.is_shard() for pl in g.placements):
                 sharded = sq if sharded is None else sharded + sq
                 continue
         else:
-            sq = g.float().square().sum()
+            sq = _square_sum(g)
         replicated = sq if replicated is None else replicated + sq
     device = (
         params[0].grad.device
@@ -3537,7 +3559,12 @@ def _scale_grads_(params, total, max_norm, eps):
             c = coef.to(device = local.device, dtype = torch.float32)
             if local.dtype in (torch.float16, torch.bfloat16):
                 # A small coefficient rounds to 0 in fp16 (a device tensor is cast to the grad dtype).
-                local.copy_(local.float().mul_(c))
+                # Elementwise, so slicing a contiguous gradient keeps every value and bounds the fp32 copy.
+                parts = (
+                    local.view(-1).split(_SQUARE_SUM_CHUNK) if local.is_contiguous() else (local,)
+                )
+                for part in parts:
+                    part.copy_(part.float().mul_(c))
             else:
                 local.mul_(c.to(local.dtype))
 
@@ -3567,9 +3594,9 @@ def _clip_over_world(params, max_norm, eps):
             copies = math.prod(
                 mesh.size(i) for i, pl in enumerate(g.placements) if pl.is_replicate()
             ) * (world // mesh.size())
-            sq = g.to_local().float().square().sum() / copies
+            sq = _square_sum(g.to_local()) / copies
         else:
-            sq = g.float().square().sum() / world  # the same on every rank
+            sq = _square_sum(g) / world  # the same on every rank
         total = sq if total is None else total + sq
     dist.all_reduce(total)
     total = total.sqrt()
