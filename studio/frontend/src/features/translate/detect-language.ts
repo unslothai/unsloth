@@ -221,7 +221,7 @@ const LATIN: Record<string, [ReadonlySet<string>, string, RegExp?]> = {
   af: [
     // The shared words also on the Dutch list, then its own.
     words(
-      "het en van is dat op te met wat maar ook hoe die om of aan uit dit tot nie ek jy hy sy hulle julle vir baie sal mekaar hul sê hoekom mense dankie asseblief hom sodat elkeen kry dis hierdie daardie moenie gewees geword nou",
+      "het en van is dat op te met wat maar ook hoe die om of aan uit dit tot nie ek jy hy sy hulle julle vir baie sal mekaar hul sê hoekom mense dankie asseblief hom sodat elkeen kry dis hierdie daardie moenie gewees geword",
     ),
     "",
   ],
@@ -240,7 +240,12 @@ const VIETNAMESE = words(
   "tôi bạn anh chị em mẹ bố họ chúng ta mình nó bị gọi có không là và của các những một được này đó cho với để đã sẽ đang rất ngày hôm nay mai đi về làm biết muốn thì mà nhưng nhà người",
 );
 
-// A chat-only language needs a word no Hy-MT2 language scores, or its letters or word shape.
+// Words on the chat-only lists that Hy-MT2 languages also write, though not on their lists.
+const ELSEWHERE = words(
+  "tau ua pom lub cov zoo cas tom ces na ya ni za cha au tu je da shi mu ku sun ne ce yi ko ga har bayan game kan dai ba a ta aka ti si mo mi ka ha m maka site ma mana uma ee u la ay ah uu mid hal badan",
+);
+
+// A chat-only language needs a word only it writes, or its letters or word shape.
 const CHAT_ONLY = new Set(
   TRANSLATE_LANGUAGES.filter((language) => language.chatOnly).map(
     (language) => language.code,
@@ -277,7 +282,10 @@ function latin(text: string): string | null {
             !CHAT_ONLY.has(code) ||
             marks > 0 ||
             tokens.some(
-              (token) => known.has(token) && !HY_MT2_WORDS.has(token),
+              (token) =>
+                known.has(token) &&
+                !HY_MT2_WORDS.has(token) &&
+                !ELSEWHERE.has(token),
             );
           return [code, own ? hits(tokens, known) + marks : 0];
         },

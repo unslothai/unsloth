@@ -245,6 +245,8 @@ test("the chat-only languages never take a verdict from a Hy-MT2 language", () =
     ["tl", "Kumusta ka? Kumain na tayo sa kusina."],
     ["vi", "Chị bị ho hôm qua."],
     ["vi", "Em hẹn mẹ ngày mai."],
+    ["nl", "Hoe is het nou?"],
+    ["en", "A game with a ball and a stick."],
   ];
   for (const [code, text] of kept)
     assert.equal(detectTranslateLanguage(text), code, text);
