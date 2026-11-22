@@ -2121,6 +2121,12 @@ class GraphedCompiledCall(GraphedForward):
 
     def __init__(self, module: Any, **kwargs: Any) -> None:
         compiled = getattr(module, "_compiled_call_impl", None)
+        # A static skip already fronting the compiled call (front_compiled_call at compile): graph what it fronts.
+        from .diffusion_step_skip import fronting_skip
+
+        skip = fronting_skip(module)
+        if skip is not None:
+            compiled = skip.compiled_call
         if compiled is None:
             raise RuntimeError(f"{type(module).__name__} is not whole-module compiled")
         self.compiled = compiled
@@ -2128,11 +2134,18 @@ class GraphedCompiledCall(GraphedForward):
 
     def install(self) -> "GraphedCompiledCall":
         self.module._compiled_call_impl = self
+        # A static step skip in the forward slot would run inside the captured call: it goes in front instead.
+        from .diffusion_step_skip import front_compiled_call
+
+        front_compiled_call(self.module)
         return self
 
     def uninstall(self) -> "GraphedCompiledCall":
         if getattr(self.module, "_compiled_call_impl", None) is self:
             self.module._compiled_call_impl = self.compiled
+        else:
+            from .diffusion_step_skip import unfront_compiled_call
+            unfront_compiled_call(self.module, self, self.compiled)
         return self
 
 
