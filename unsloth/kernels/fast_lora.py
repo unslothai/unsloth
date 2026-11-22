@@ -493,10 +493,9 @@ def _may_overwrite_input(X):
     )
 
 
-# Skipping the down projection while a gradient checkpoint replays a decoder layer. The replay only rebuilds the
-# tensors LoRA_MLP saves (X, e, g); backward never reads h or the down output i, and the layer output they feed
-# (residual + i) is the checkpoint's output, whose value its nested backward never reads. A decoder layer arms this
-# (arm_mlp_output_unread) only when it is the whole checkpointed function; UNSLOTH_GC_SKIP_MLP_DOWN=0 disables.
+# Skips MLP down during checkpoint replay of a decoder layer: replay rebuilds only the tensors
+# LoRA_MLP saves (X, e, g), backward never reads h or output i; armed only when the layer is the
+# whole checkpointed function (arm_mlp_output_unread); UNSLOTH_GC_SKIP_MLP_DOWN=0 disables.
 _SKIP_DOWN_TLS = threading.local()
 MLP_DOWN_SKIP_STATS = collections.Counter()  # skipped: replays that did not run the down projection
 _SKIP_DOWN_ENABLED = os.environ.get("UNSLOTH_GC_SKIP_MLP_DOWN", "1") != "0"
@@ -534,10 +533,9 @@ def disarm_mlp_output_unread():
     _SKIP_DOWN_TLS.armed = None
 
 
-# Block compile (torch >= 2.11) traces the decoder layer, where the thread-local token above cannot be read.
-# The block's eager wrapper instead sets this plain global around a replay of a layer that qualifies
-# (block_skip_down_eligible); the traced LoRA_MLP reads it, so dynamo guards on it: the replay (grad mode)
-# graph is compiled with the skip and the forward (no grad) graph without, the same two graphs as before.
+# Block compile (torch >= 2.11) cannot read the thread-local, so eligible replays set this plain
+# global; traced LoRA_MLP reads it and dynamo guards on it: grad-mode replay graph has the skip,
+# no-grad forward graph does not (the same two graphs as before).
 _BLOCK_SKIP_DOWN = False
 
 
@@ -549,10 +547,9 @@ def set_block_skip_down(value):
 
 
 def block_skip_down_eligible(layer, layer_forward):
-    """True when a compiled replay of `layer` may skip its down projection: the layer runs a forward whose
-    MLP output only feeds `residual + mlp(x)`, its MLP's own `forward` is the fused SwiGLU LoRA (no
-    accelerate hook or tiled MLP around it), and no forward hook could read an output. The caller still
-    checks that the checkpoint replays exactly this layer (_replay_module)."""
+    """True when MLP output feeds only residual + mlp(x), its forward is fused SwiGLU LoRA (no
+    accelerate hook or tiled MLP), and no forward hook could read an output; caller still checks
+    the checkpoint replays exactly this layer (_replay_module)."""
     if not (_SKIP_DOWN_ENABLED and TRACE_LORA_FUNCTIONS):
         return False
     if not getattr(layer_forward, "_unsloth_mlp_output_unread", False):

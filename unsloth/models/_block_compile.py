@@ -2218,9 +2218,8 @@ def _wrap(
             _mark_packed_dynamic(kwargs)
             _precheck_band(self, hidden_states.shape[1], args, kwargs, hidden_states)
             _settle_mask_flags(self, kwargs)
-        # Grad-mode graphs: bit 2 runs every op, bit 4 skips the MLP down projection (a gradient checkpoint
-        # replay of exactly this layer, whose output value its backward never reads). A no-grad call (the
-        # checkpointed forward) of an eligible layer trials the graph its replay will use.
+        # Bit 2 runs every op; bit 4 skips the MLP down projection, since a checkpoint replay never
+        # reads this layer's output in backward; a no-grad call trials the graph replay uses.
         skip_down = _skip_down_eligible(self, original)
         if torch.is_grad_enabled():
             skip_down = skip_down and (_IN_TRIAL[0] is True or _replays(self))
