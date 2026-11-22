@@ -47,6 +47,7 @@ from __future__ import annotations
 import math
 import os
 import threading
+import weakref
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable, Optional
@@ -658,7 +659,18 @@ _GRAPHED = [False]
 _ROUTES: list = []
 
 
+def _route_alive(raise_floor: Callable) -> bool:
+    alive = getattr(raise_floor, "alive", None)
+    return alive is None or bool(alive())
+
+
+def _prune_routes() -> None:
+    """Drop the routes of processors that are gone (an unloaded pipeline's)."""
+    _ROUTES[:] = [route for route in _ROUTES if _route_alive(route[2])]
+
+
 def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
+    _prune_routes()
     _ROUTES.append((int(index), int(head_dim), raise_floor))
 
 
@@ -666,6 +678,7 @@ def _drop_routes(plan: dict) -> None:
     _, Sq, Sk, _, D = plan["shape"]
     floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
     restored = raised = 0
+    _prune_routes()
     for index, head_dim, raise_floor in list(_ROUTES):
         if index == plan["index"] and head_dim == D:
             if raise_floor(floor):
@@ -685,11 +698,25 @@ def _drop_routes(plan: dict) -> None:
         )
 
 
+def _weak(obj: Any) -> Callable:
+    try:
+        return weakref.ref(obj)
+    except TypeError:  # not weak-referenceable: held as before
+        return lambda: obj
+
+
 def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
     """A processor that replaced a stock one for the kernel (``_unsloth_stock``) gives the module that one back, so
-    its calls compile as they did before the install; any other raises its token floor."""
+    its calls compile as they did before the install; any other raises its token floor. Holds both weakly: the
+    route outlives an unload in ``_ROUTES``, and a strong module reference there kept the whole attention module (its
+    Q / K / V weights, 1.7 GB on FLUX.3 klein INT8) on the card until the next load."""
+    proc_ref, module_ref = _weak(proc), _weak(module) if module is not None else None
 
     def raise_floor(tokens: int) -> bool:
+        proc = proc_ref()
+        if proc is None:
+            return False
+        module = module_ref() if module_ref is not None else None
         stock = getattr(proc, "_unsloth_stock", None)
         if stock is not None and module is not None and getattr(module, "processor", None) is proc:
             module.processor = stock
@@ -699,6 +726,7 @@ def _raise_processor_floor(proc: Any, module: Any = None) -> Callable:
         )
         return False
 
+    raise_floor.alive = lambda: proc_ref() is not None
     return raise_floor
 
 
