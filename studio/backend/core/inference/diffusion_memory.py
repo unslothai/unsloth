@@ -1754,6 +1754,57 @@ def reference_kv_cache_mib(
         return 0
 
 
+FLUX3_TOKEN_PRICED_ENV = "UNSLOTH_DIFFUSION_FLUX3_TOKEN_PRICED"
+# FLUX.3 Klein / Klein base conditioned denoise on CUDA compute capability 8.x (Ampere, Ada): MiB of allocated peak
+# above the pre-render baseline per 1024 sequence tokens (the output canvas, 256 px per token, plus 4096 per reference,
+# which the pipeline resizes to 1 MP), worst over the off / default speed tiers and over L4 and A100-40, 2048x2048 with
+# 0 / 4 / 6 / 10 references. ``dense``: a bf16 / fp16 denoiser (speed "off" loads one), measured 105.6-115.7 on both
+# cards, the same per token with or without references; ``quantized``: int8 compiled (Studio's default tier, the only
+# one measured quantized), 62.9-75.6. B200's 1024x1024 eager figures read about 220 per 1k tokens: not covered here.
+_FLUX3_SM8X_DENOISE_MIB_PER_KTOKEN = {"dense": 116.0, "quantized": 76.0}
+_FLUX3_TOKEN_MARGIN = 1.25
+# Prompt window the estimate always charges beside the image tokens (the L4 runs used 80; the encoder caps at 512).
+_FLUX3_TEXT_TOKENS = 512
+_FLUX3_PATCH_PIXELS = 16
+_FLUX3_REFERENCE_TOKENS = (1024 // _FLUX3_PATCH_PIXELS) ** 2
+
+
+def flux3_conditioned_denoise_mib(
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    references: int,
+    batch_size: int = 1,
+    dense: bool,
+    capability: Optional[tuple],
+    rocm: bool = False,
+) -> Optional[int]:
+    """MiB a FLUX.3 Klein edit's denoise holds above the resident weights, priced by its token count from the measured
+    per-token rate, margin included. None (the flat estimate stands) without references, off CUDA capability 8.x,
+    on ROCm, or under ``UNSLOTH_DIFFUSION_FLUX3_TOKEN_PRICED=0``: the rate was measured on L4 and A100-40 only, and
+    B200's own 1024x1024 figures (``_MEASURED_IMAGE_ACTIVATION_MIB``) run about twice as high per token."""
+    try:
+        refs = int(references or 0)
+        if refs <= 0 or rocm or _env_off(FLUX3_TOKEN_PRICED_ENV):
+            return None
+        if not capability or int(capability[0]) != 8:
+            return None
+        rate = _FLUX3_SM8X_DENOISE_MIB_PER_KTOKEN["dense" if dense else "quantized"]
+        if rate <= 0:
+            return None
+        w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+        h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+        tokens = (
+            (w // _FLUX3_PATCH_PIXELS) * (h // _FLUX3_PATCH_PIXELS)
+            + refs * _FLUX3_REFERENCE_TOKENS
+            + _FLUX3_TEXT_TOKENS
+        )
+        batch = max(1, int(batch_size or 1))
+        return int(math.ceil(tokens / 1024.0 * rate * _FLUX3_TOKEN_MARGIN * batch))
+    except Exception:  # noqa: BLE001 - unknown keeps the flat estimate
+        return None
+
+
 def estimate_video_runtime_mib(
     *, width: Optional[int], height: Optional[int], num_frames: Optional[int]
 ) -> int:
@@ -9702,8 +9753,11 @@ def estimate_tiled_image_runtime_mib(
     tile_side: Optional[int] = None,
     vae_sliced: bool = False,
     measured: Optional["CalibratedImageActivation"] = None,
+    denoise_mib: Optional[int] = None,
 ) -> int:
     """Per-call MiB with the VAE tiled: max(one-tile decode, denoiser); unsliced tiles carry the whole batch.
+    ``denoise_mib``: a token-priced denoise for this request (``flux3_conditioned_denoise_mib``), which may only lower
+    the flat denoise term, never raise it.
     Invalid under the SDPA math fallback, whose score matrix grows with the square of the tokens. ``measured``: the
     family's measured row the placement was sized from; its tiled decode (taken at 1024x1024 with the family's measured
     tile side, scaled by tile area)
@@ -9729,6 +9783,8 @@ def estimate_tiled_image_runtime_mib(
         DENOISE_MIB_PER_MEGAPIXEL * (w * h / megapixel) * _family_activation_multiplier(family)
         + 8192 * (cond / megapixel)
     )
+    if denoise_mib is not None and int(denoise_mib) > 0:
+        denoise = min(denoise, int(denoise_mib))
     return max(1024, vae, int(denoise))
 
 
@@ -9797,11 +9853,14 @@ def image_activation_verdict(
     controlnet: bool = False,
     measured_activation: Optional["CalibratedImageActivation"] = None,
     persistent_mib: int = 0,
+    conditioned_denoise_mib: Optional[int] = None,
 ) -> ImageActivationVerdict:
     """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown.
     ``measured_activation``: the measured row a calibrated placement was sized from; it prices the tiled VAE decode.
     ``persistent_mib``: memory the denoise holds on top of its activations for the whole loop, whatever the decode
-    does (``reference_kv_cache_mib``); added to the untiled and the tiled need alike, since tiling cannot shrink it."""
+    does (``reference_kv_cache_mib``); added to the untiled and the tiled need alike, since tiling cannot shrink it.
+    ``conditioned_denoise_mib``: the token-priced denoise of a request with input images (``flux3_conditioned_denoise_mib``);
+    it caps the tiled estimate's flat denoise term and is ignored without input images, so text-to-image is unchanged."""
     override = bool(allow_oversized) or _oversized_generate_override()
     try:
         # Unified memory skips the check: 'free' moves with the OS, and load-time refusal already owns it.
@@ -9851,6 +9910,7 @@ def image_activation_verdict(
                 tile_side = vae_tile_side,
                 vae_sliced = vae_sliced,
                 measured = measured_activation if calibrated_placement else None,
+                denoise_mib = conditioned_denoise_mib if input_pixels > 0 else None,
             )
         held = max(0, int(persistent_mib or 0))
         if held:
@@ -9932,6 +9992,7 @@ def image_activation_shortfall_message(
     controlnet: bool = False,
     measured_activation: Optional["CalibratedImageActivation"] = None,
     persistent_mib: int = 0,
+    conditioned_denoise_mib: Optional[int] = None,
 ) -> Optional[str]:
     return image_activation_verdict(
         device_memory = device_memory,
@@ -9950,6 +10011,7 @@ def image_activation_shortfall_message(
         controlnet = controlnet,
         measured_activation = measured_activation,
         persistent_mib = persistent_mib,
+        conditioned_denoise_mib = conditioned_denoise_mib,
     ).message
 
 
@@ -9971,6 +10033,7 @@ def raise_on_image_activation_shortfall(
     controlnet: bool = False,
     measured_activation: Optional["CalibratedImageActivation"] = None,
     persistent_mib: int = 0,
+    conditioned_denoise_mib: Optional[int] = None,
     logger: Any = None,
 ) -> ImageActivationVerdict:
     """Raises ValueError so the route answers 400 with the reason; RuntimeError becomes an opaque 500."""
@@ -9991,6 +10054,7 @@ def raise_on_image_activation_shortfall(
         controlnet = controlnet,
         measured_activation = measured_activation,
         persistent_mib = persistent_mib,
+        conditioned_denoise_mib = conditioned_denoise_mib,
     )
     if verdict.action == ACTIVATION_REFUSE:
         if logger is not None:
