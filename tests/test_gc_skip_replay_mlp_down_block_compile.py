@@ -282,4 +282,4 @@ def test_only_the_tagged_forward_is_eligible():
         for fn_name, fn in vars(module).items():
             if inspect.isfunction(fn) and getattr(fn, "_unsloth_mlp_output_unread", False):
                 tagged.append(fn.__name__)
-    assert set(tagged) == {"LlamaDecoderLayer_fast_forward"}
+    assert set(tagged) == {"LlamaDecoderLayer_fast_forward", "GemmaDecoderLayer_fast_forward"}

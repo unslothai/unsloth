@@ -139,7 +139,12 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, gemma = True, save_output = True
         )
+        # residual + mlp(x) is this layer's output (no post-MLP norm, unlike Gemma 2), so a checkpoint
+        # replay of it can skip the down projection.
+        armed = arm_mlp_output_unread(self, self.mlp)
         hidden_states = self.mlp(hidden_states)
+        if armed:
+            disarm_mlp_output_unread()
         hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
@@ -148,6 +153,10 @@ def GemmaDecoderLayer_fast_forward(
     if use_cache:
         outputs += (present_key_value,)
     return outputs
+
+
+# Its training MLP output only feeds the layer output: block compile may skip the down projection in a replay.
+GemmaDecoderLayer_fast_forward._unsloth_mlp_output_unread = True
 
 
 from math import sqrt as math_sqrt

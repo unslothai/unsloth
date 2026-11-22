@@ -550,7 +550,7 @@ def set_block_skip_down(value):
 
 def block_skip_down_eligible(layer, layer_forward):
     """True when a compiled replay of `layer` may skip its down projection: the layer runs a forward whose
-    MLP output only feeds `residual + mlp(x)`, its MLP's own `forward` is the fused SwiGLU LoRA (no
+    MLP output only feeds `residual + mlp(x)`, its MLP's own `forward` is a fused SwiGLU / GEGLU LoRA (no
     accelerate hook or tiled MLP around it), and no forward hook could read an output. The caller still
     checks that the checkpoint replays exactly this layer (_replay_module)."""
     if not (_SKIP_DOWN_ENABLED and TRACE_LORA_FUNCTIONS):
@@ -561,7 +561,7 @@ def block_skip_down_eligible(layer, layer_forward):
     slots = getattr(mlp, "__dict__", {})
     if "_hf_hook" in slots or "_unsloth_forward" in slots:
         return False
-    if getattr(slots.get("forward"), "__func__", None) is not apply_lora_mlp_swiglu:
+    if getattr(slots.get("forward"), "__func__", None) not in _SKIP_DOWN_MLP_FUNCTIONS:
         return False
     # LoRA dropout / bias take LoRA_MLP's other branch, which always runs the down projection.
     return _no_forward_hooks(layer, mlp)
@@ -1019,30 +1019,37 @@ def apply_lora_mlp_geglu_exact(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        geglu_exact_forward_kernel,
-        geglu_exact_backward_kernel,
-        inplace,
-        dropout_p,
-        *biases,
-    )
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            geglu_exact_forward_kernel,
+            geglu_exact_backward_kernel,
+            inplace,
+            dropout_p,
+            *biases,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
 
 
@@ -1065,31 +1072,46 @@ def apply_lora_mlp_geglu_approx(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = _apply(
-        LoRA_MLP,
-        X,
-        gateW,
-        gateW_quant,
-        gateA,
-        gateB,
-        gateS,
-        upW,
-        upW_quant,
-        upA,
-        upB,
-        upS,
-        downW,
-        downW_quant,
-        downA,
-        downB,
-        downS,
-        geglu_approx_forward_kernel,
-        geglu_approx_backward_kernel,
-        True,
-        dropout_p,
-        *biases,
-    )
+    skip = _take_skip_down(self) and dropout_p is None and all(b is None for b in biases)
+    if skip:
+        _SKIP_DOWN_TLS.active = True
+    try:
+        out = _apply(
+            LoRA_MLP,
+            X,
+            gateW,
+            gateW_quant,
+            gateA,
+            gateB,
+            gateS,
+            upW,
+            upW_quant,
+            upA,
+            upB,
+            upS,
+            downW,
+            downW_quant,
+            downA,
+            downB,
+            downS,
+            geglu_approx_forward_kernel,
+            geglu_approx_backward_kernel,
+            True,
+            dropout_p,
+            *biases,
+        )
+    finally:
+        if skip:
+            _SKIP_DOWN_TLS.active = False
     return out
+
+
+# The fused MLP forwards that take the replay token (block_skip_down_eligible).
+_SKIP_DOWN_MLP_FUNCTIONS = (
+    apply_lora_mlp_swiglu,
+    apply_lora_mlp_geglu_exact,
+    apply_lora_mlp_geglu_approx,
+)
 
 
 class LoRA_QKV(torch.autograd.Function):
