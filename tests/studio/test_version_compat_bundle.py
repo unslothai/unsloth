@@ -32,6 +32,14 @@ CRON_ONLY = {
     "tests/version_compat/test_trl_vllm_generation_lora_patch.py",
 }
 
+# Need real torch, TRL and unsloth, so the pytest-only bundle would only skip them. On a PR they run in
+# consolidated-tests-ci.yml's full `tests/` sweep instead; the test below proves that sweep still reaches them.
+CORE_ZOO_WORKFLOW = REPO / ".github" / "workflows" / "consolidated-tests-ci.yml"
+CORE_ZOO_JOB = "consolidated-zoo"
+RUN_BY_CORE_ZOO = {
+    "tests/version_compat/test_sft_assistant_mask_fallback_trainer.py",
+}
+
 
 def _doc() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8")) or {}
@@ -79,7 +87,9 @@ def test_every_suite_still_runs_on_a_pull_request() -> None:
         if _runs_on_pull_request(job):
             pr_named |= _named_paths(job)
 
-    uncovered = sorted(s for s in _all_suites() - CRON_ONLY if not _covers(pr_named, s))
+    uncovered = sorted(
+        s for s in _all_suites() - CRON_ONLY - RUN_BY_CORE_ZOO if not _covers(pr_named, s)
+    )
     assert not uncovered, (
         f"these version-compat suites are not run by any pull_request job: {uncovered}. "
         f"Either a path was dropped from {BUNDLE_JOB}'s pytest line -- which removes a "
@@ -87,6 +97,52 @@ def test_every_suite_still_runs_on_a_pull_request() -> None:
         f"wired up. If a suite genuinely cannot run on a PR, add it to CRON_ONLY with the "
         f"reason."
     )
+
+
+def _core_zoo_sweep_misses(doc: dict) -> list[str]:
+    """Every RUN_BY_CORE_ZOO suite must be collected by a PR-triggered full `tests/` sweep in CORE_ZOO_JOB."""
+    on = doc.get("on", doc.get(True)) or {}
+    if "pull_request" not in on:
+        return sorted(RUN_BY_CORE_ZOO)
+    job = (doc.get("jobs") or {}).get(CORE_ZOO_JOB)
+    if job is None or not _runs_on_pull_request(job):
+        return sorted(RUN_BY_CORE_ZOO)
+    for step in job.get("steps") or []:
+        body = str(step.get("run", ""))
+        if not re.search(r"-m pytest\b[^\n]*\stests/(?:\s|\\|$)", body):
+            continue
+        ignored = re.findall(r"--ignore(?:-glob)?=['\"]?([^\s'\"\\]+)", body)
+        return sorted(
+            s
+            for s in RUN_BY_CORE_ZOO
+            if any(s == i or s.startswith(i.rstrip("/") + "/") or Path(s).match(i) for i in ignored)
+        )
+    return sorted(RUN_BY_CORE_ZOO)
+
+
+def test_suites_left_to_core_zoo_are_swept_there() -> None:
+    """RUN_BY_CORE_ZOO is a claim about another workflow, so check it rather than trust it."""
+    assert RUN_BY_CORE_ZOO.isdisjoint(CRON_ONLY)
+    assert RUN_BY_CORE_ZOO <= _all_suites(), sorted(RUN_BY_CORE_ZOO - _all_suites())
+    doc = yaml.safe_load(CORE_ZOO_WORKFLOW.read_text(encoding = "utf-8")) or {}
+    missed = _core_zoo_sweep_misses(doc)
+    assert not missed, (
+        f"{CORE_ZOO_JOB} no longer runs {missed} on a pull request (job gone, not PR-triggered, no full "
+        f"`tests/` sweep, or the file is --ignore'd). Name it in a PR job here or move it to CRON_ONLY."
+    )
+
+
+def test_the_core_zoo_check_catches_an_ignored_suite() -> None:
+    """The check above must fail when the sweep drops one of the suites, or it proves nothing."""
+    doc = yaml.safe_load(CORE_ZOO_WORKFLOW.read_text(encoding = "utf-8")) or {}
+    suite = sorted(RUN_BY_CORE_ZOO)[0]
+    for step in doc["jobs"][CORE_ZOO_JOB]["steps"]:
+        if re.search(r"-m pytest\b[^\n]*\stests/(?:\s|\\|$)", str(step.get("run", ""))):
+            step["run"] = step["run"].replace(" tests/ ", f" tests/ --ignore={suite} ", 1)
+            break
+    assert _core_zoo_sweep_misses(doc) == [suite]
+    doc["jobs"][CORE_ZOO_JOB]["if"] = "github.event_name == 'schedule'"
+    assert _core_zoo_sweep_misses(doc) == sorted(RUN_BY_CORE_ZOO)
 
 
 def test_the_bundle_exists_and_names_suites_explicitly() -> None:
