@@ -8603,20 +8603,27 @@ def _count_memo_key(backend, *parts) -> Optional[bytes]:
     return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).digest()
 
 
-def _count_memo(backend):
-    memo = vars(backend).get("_count_memo_state")
+_RENDER_COUNT_MEMO = ("_count_memo_state", _COUNT_MEMO_SIZE)
+# Native /input_tokens answers sit apart, so a tool round's fresh re-cost never evicts a render.
+_NATIVE_COUNT_MEMO = ("_native_count_memo_state", 2)
+
+
+def _count_memo(backend, slot = _RENDER_COUNT_MEMO):
+    memo = vars(backend).get(slot[0])
     if memo is None:
         with _COUNT_MEMO_INIT_LOCK:
-            memo = vars(backend).setdefault(
-                "_count_memo_state", (threading.Lock(), collections.OrderedDict())
-            )
+            memo = vars(backend).setdefault(slot[0], (threading.Lock(), collections.OrderedDict()))
     return memo
 
 
-def _count_memo_get(backend, key) -> Optional[int]:
+def _count_memo_get(
+    backend,
+    key,
+    slot = _RENDER_COUNT_MEMO,
+) -> Optional[int]:
     if key is None:
         return None
-    lock, memo = _count_memo(backend)
+    lock, memo = _count_memo(backend, slot)
     with lock:
         count = memo.get(key)
         if count is not None:
@@ -8624,14 +8631,19 @@ def _count_memo_get(backend, key) -> Optional[int]:
         return count
 
 
-def _count_memo_put(backend, key, count) -> None:
+def _count_memo_put(
+    backend,
+    key,
+    count,
+    slot = _RENDER_COUNT_MEMO,
+) -> None:
     if key is None or type(count) is not int or count <= 0:
         return
-    lock, memo = _count_memo(backend)
+    lock, memo = _count_memo(backend, slot)
     with lock:
         memo[key] = count
         memo.move_to_end(key)
-        while len(memo) > _COUNT_MEMO_SIZE:
+        while len(memo) > slot[1]:
             memo.popitem(last = False)
 
 
@@ -40050,31 +40062,9 @@ class LlamaCppBackend:
         _compacts_images = bool(
             context_overflow == "truncate_oldest" and self._effective_context_length
         )
-        while True:
-            iteration += 1
-            while _model_note_events:
-                yield _model_note_events.pop(0)
-            # Here rather than at each append: six sites grow the conversation and all of
-            # them pass through this one point before the cache must hold the result.
-            if on_conversation_grew is not None:
-                try:
-                    on_conversation_grew(conversation)
-                except Exception:  # accounting must never break a run in progress
-                    logger.debug("tool loop recost failed", exc_info = True)
-            if iteration >= max_tool_iterations + _extra + _continuation_credits:
-                break
-            if cancel_event is not None and cancel_event.is_set():
-                return
-            # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
-            _turn_executed_real_tool = False
-            # Set when a reasoning retry was refused because the CALLER's allowance was
-            # spent rather than the window. Per iteration: it describes this turn only.
-            _reasoning_cap_spent = False
 
-            active_tools = tool_controller.active_tools()
-            if not active_tools:
-                _append_budget_exhausted_nudge = False
-                break
+        def _round_tool_choice(active_tools):
+            """This round's prompt tools and tool choice, shared with the fit-count prefetch."""
             from core.inference.chat_template_helpers import (
                 neutralize_tool_descriptions,
                 reconciled_tool_choice,
@@ -40098,6 +40088,100 @@ class LlamaCppBackend:
                 if matching_tools:
                     safe_tools = matching_tools
                     requested_choice = "required"
+            return safe_tools, requested_choice, forced_name
+
+        def _round_reasoning_kw():
+            return _with_template_extras(
+                self._request_reasoning_kwargs(
+                    _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+                ),
+                chat_template_kwargs,
+            )
+
+        def _fit_count_tokens(fitted, safe_tools, reasoning_kw):
+            """The preflight fit's count; the prefetch below calls it with the same arguments."""
+            from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+            return self.count_chat_tokens(
+                neutralize_control_markup_in_messages(
+                    self._countable_messages(fitted),
+                    _markup_cache,
+                    self.markup_profile,
+                ),
+                None,
+                safe_tools,
+                strict = True,
+                chat_template_kwargs = reasoning_kw,
+                continue_final_message = bool(
+                    continue_final_message and trailing_assistant_resume_kind(fitted) is not None
+                ),
+                should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+            )
+
+        def _prefetch_fit_count(round_conversation, round_limit):
+            """Starts the fit's first count while the admission re-cost counts the same prompt.
+
+            It only fills the count memo: the fit still makes its own call, which reads the stored
+            number back, or counts as before when this one failed or priced something else.
+            """
+            if (
+                context_overflow != "truncate_oldest"
+                or not self._effective_context_length
+                or self._effective_context_length <= 1
+                or iteration >= round_limit
+                or (cancel_event is not None and cancel_event.is_set())
+            ):
+                return None
+            active_tools = tool_controller.active_tools()
+            if not active_tools:
+                return None
+            safe_tools = _round_tool_choice(active_tools)[0]
+            reasoning_kw = _round_reasoning_kw()
+
+            def _count() -> None:
+                try:
+                    _fit_count_tokens(list(round_conversation), safe_tools, reasoning_kw)
+                except Exception:  # the fit counts again and reports its own failure
+                    logger.debug("fit count prefetch failed", exc_info = True)
+
+            worker = threading.Thread(target = _count, name = "fit-count-prefetch", daemon = True)
+            worker.start()
+            return worker
+
+        while True:
+            iteration += 1
+            while _model_note_events:
+                yield _model_note_events.pop(0)
+            _fit_count_prefetch = None
+            # Here rather than at each append: six sites grow the conversation and all of
+            # them pass through this one point before the cache must hold the result.
+            if on_conversation_grew is not None:
+                try:
+                    _fit_count_prefetch = _prefetch_fit_count(
+                        conversation, max_tool_iterations + _extra + _continuation_credits
+                    )
+                except Exception:  # a warm-up must never break a run in progress
+                    logger.debug("fit count prefetch failed to start", exc_info = True)
+                try:
+                    on_conversation_grew(conversation)
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop recost failed", exc_info = True)
+            if iteration >= max_tool_iterations + _extra + _continuation_credits:
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
+            _turn_executed_real_tool = False
+            # Set when a reasoning retry was refused because the CALLER's allowance was
+            # spent rather than the window. Per iteration: it describes this turn only.
+            _reasoning_cap_spent = False
+
+            active_tools = tool_controller.active_tools()
+            if not active_tools:
+                _append_budget_exhausted_nudge = False
+                break
+            from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+            safe_tools, requested_choice, forced_name = _round_tool_choice(active_tools)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
@@ -40115,12 +40199,7 @@ class LlamaCppBackend:
                 neutralize_control_markup_in_messages,
             )
 
-            _reasoning_kw = _with_template_extras(
-                self._request_reasoning_kwargs(
-                    _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
-                ),
-                chat_template_kwargs,
-            )
+            _reasoning_kw = _round_reasoning_kw()
             # On a continuation only the remainder of the caller's cap; read before the payload.
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
@@ -40149,26 +40228,16 @@ class LlamaCppBackend:
                             compaction_headroom_ratio = compaction_headroom_ratio,
                         )
                     )
+                    # Before the fit: an oversized attachment is cut in place.
+                    if _fit_count_prefetch is not None:
+                        _fit_count_prefetch.join()
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
-                        count_tokens = lambda fitted: self.count_chat_tokens(
-                            neutralize_control_markup_in_messages(
-                                self._countable_messages(fitted),
-                                _markup_cache,
-                                self.markup_profile,
-                            ),
-                            None,
-                            safe_tools,
-                            strict = True,
-                            chat_template_kwargs = _reasoning_kw,
-                            continue_final_message = bool(
-                                continue_final_message
-                                and trailing_assistant_resume_kind(fitted) is not None
-                            ),
-                            should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+                        count_tokens = lambda fitted: _fit_count_tokens(
+                            fitted, safe_tools, _reasoning_kw
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
@@ -43703,6 +43772,12 @@ class LlamaCppBackend:
                         if prefer_native and on_prompt is None:
                             if should_abort is not None and should_abort():
                                 raise CountAborted()
+                            # The reservation and the tool loop's first re-cost send the same body; only a
+                            # native answer is kept, so a failed endpoint is asked again next time.
+                            native_key = _count_memo_key(self, "native-input-tokens", template_body)
+                            cached = _count_memo_get(self, native_key, _NATIVE_COUNT_MEMO)
+                            if cached is not None:
+                                return cached, False
                             try:
                                 native = client.post(
                                     f"{self.base_url}/v1/chat/completions/input_tokens",
@@ -43711,6 +43786,7 @@ class LlamaCppBackend:
                                 if native.status_code == 200:
                                     count = native.json().get("input_tokens")
                                     if type(count) is int and count > 0:
+                                        _count_memo_put(self, native_key, count, _NATIVE_COUNT_MEMO)
                                         return count, False
                             except Exception:
                                 pass
