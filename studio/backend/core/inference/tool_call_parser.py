@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import bisect
 import re
@@ -2360,7 +2361,12 @@ def parse_tool_calls_from_text(
             (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
         ]
         if _lfm_pos >= 0 and not _lfm_marker_is_quoted(content, _lfm_pos, enabled_tool_names):
-            pre_pass.append((_lfm_pos, _parse_lfm_tool_calls))
+            pre_pass.append(
+                (
+                    _lfm_pos,
+                    functools.partial(_parse_lfm_tool_calls, enabled_tool_names = enabled_tool_names),
+                )
+            )
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
             calls = parser(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
@@ -4433,6 +4439,7 @@ def _parse_lfm_tool_calls(
     *,
     id_offset: int,
     allow_incomplete: bool = True,
+    enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     out: list[dict] = []
     pos = 0
@@ -4442,7 +4449,9 @@ def _parse_lfm_tool_calls(
         if end < 0 and not allow_incomplete:
             break
         body = content[body_start : end if end >= 0 else len(content)]
-        for name, args in _lfm_body_calls(body):
+        # Each opener, not just the first: a later one may be quoted in another call's arguments.
+        quoted = _lfm_marker_is_quoted(content, start, enabled_tool_names)
+        for name, args in [] if quoted else _lfm_body_calls(body):
             out.append(
                 {
                     "id": f"call_{id_offset + len(out)}",

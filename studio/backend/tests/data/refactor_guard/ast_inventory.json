@@ -2006,7 +2006,7 @@
       "_parse_lfm_tool_calls": {
         "decorators": [],
         "kind": "def",
-        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
       },
       "_parse_llama3_bare_json": {
         "decorators": [],

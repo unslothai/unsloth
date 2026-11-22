@@ -43466,7 +43466,9 @@ class LlamaCppBackend:
                     else:
                         if _answer_is_call_only(answer_text):
                             # Call-only and not retried (or retried again): an empty bubble is not actionable.
-                            _last_emitted = f"{_last_emitted.rstrip()}\n\n{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}".lstrip()
+                            # Its own segment: the shown snapshot may still hold an unclosed call that would swallow it.
+                            yield {"type": "status", "text": "", "new_pass": True}
+                            _last_emitted = _FINAL_ANSWER_TOOL_LIMIT_MESSAGE
                             yield {"type": "content", "text": _last_emitted}
                         _cut = _quote_cut_event(
                             reasoning_text,
