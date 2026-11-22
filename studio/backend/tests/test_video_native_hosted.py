@@ -282,6 +282,36 @@ def test_keeps_float32_only_where_from_pretrained_does(tmp_path):
     )
 
 
+def test_refuses_a_hosted_file_baked_for_another_base(tmp_path, monkeypatch):
+    # The planning header probe can be off: the reader itself must refuse the official file for a fine-tune.
+    monkeypatch.setenv("UNSLOTH_PREQUANT_HEADER_PROBE", "0")
+    path, cfg_dir, _ = _write_hosted(tmp_path)
+
+    def load(base):
+        return NH.load_native_from_hosted(
+            str(path), CLS, str(cfg_dir), spec = _spec(), family = FAMILY, base = base, logger = None
+        )
+
+    assert load("someone/LTX-2.5-finetune") is None
+    assert load("Lightricks/LTX-2.5-Diffusers") is not None
+    assert load(None) is not None
+    unbased, cfg_unbased, _ = _write_hosted(
+        tmp_path / "unbased", meta_patch = {"base_model_id": None}
+    )
+    assert (
+        NH.load_native_from_hosted(
+            str(unbased),
+            CLS,
+            str(cfg_unbased),
+            spec = _spec(),
+            family = FAMILY,
+            base = "Lightricks/LTX-2.5-Diffusers",
+            logger = None,
+        )
+        is None
+    )
+
+
 def test_refuses_a_weight_only_or_unrotated_native_build(tmp_path):
     path, cfg_dir, _ = _write_hosted(tmp_path)
     assert _load(path, cfg_dir, spec = native_spec("int8", FAMILY, act_int8 = False)) is None

@@ -136,6 +136,13 @@ def load_native_from_hosted(
         t0 = time.perf_counter()
         meta = hosted_metadata(path)
         problem = metadata_refusal(meta, spec, family = family, component = component)
+        if not problem and base:
+            # A fine-tune's shapes load the family's official codes strict=True: refuse another base here, since
+            # the planning header probe that also checks it can be off (UNSLOTH_PREQUANT_HEADER_PROBE=0).
+            from .diffusion_prequant import _same_base_model
+            ckpt_base = meta.get("base_model_id")
+            if not ckpt_base or not _same_base_model(str(ckpt_base), str(base)):
+                problem = f"checkpoint base {ckpt_base!r}, not {base!r}"
         if problem:
             _log(logger, "info", f"hosted int8 checkpoint not used ({problem})", tag = tag)
             return None
