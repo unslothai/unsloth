@@ -164,7 +164,11 @@ def _inputs(mode, L):
 
 
 def _rel(a, b):
-    return float((a - b).norm() / b.norm().clamp_min(1e-300))
+    # In float64: some gradients are float32 (e.g. a loop gate that gets exactly zero on this input), where the
+    # 1e-300 floor rounds to 0 and 0 / 0 would put a NaN into the sorted error list.
+    a, b = a.double(), b.double()
+    diff = float((a - b).norm())
+    return 0.0 if diff == 0 else diff / max(float(b.norm()), 1e-300)
 
 
 def _assert_matches(flex_logits, eager_logits, flex_grads, eager_grads):
