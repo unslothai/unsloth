@@ -218,7 +218,24 @@ _INTERP = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(not _have_triton(), reason = "triton not installed")
+def _gfx1151():
+    if torch.version.hip is None or not torch.cuda.is_available():
+        return False
+    return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] == "gfx1151"
+
+
+def _interpreter_ok():
+    # Triton 3.6's interpreter cannot run the split-K loop bound (InterpreterError on a 1-element array);
+    # 3.8 can. GPU hosts run the compiled kernel tests below instead.
+    if not _have_triton() or _gfx1151():
+        return False
+    import triton
+    return tuple(int(x) for x in triton.__version__.split("+")[0].split(".")[:2]) >= (3, 8)
+
+
+@pytest.mark.skipif(
+    not _interpreter_ok(), reason = "needs the Triton >= 3.8 interpreter on a host without gfx1151"
+)
 def test_kernel_under_triton_interpreter(tmp_path):
     script = tmp_path / "interp.py"
     script.write_text(_INTERP, encoding = "utf-8")
@@ -232,12 +249,6 @@ def test_kernel_under_triton_interpreter(tmp_path):
         cwd = str(tmp_path),
     )
     assert p.returncode == 0 and "INTERP_OK" in p.stdout, (p.stdout[-2000:], p.stderr[-3000:])
-
-
-def _gfx1151():
-    if torch.version.hip is None or not torch.cuda.is_available():
-        return False
-    return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] == "gfx1151"
 
 
 gpu = pytest.mark.skipif(not _gfx1151(), reason = "needs a gfx1151 ROCm GPU")
