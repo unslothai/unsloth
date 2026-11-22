@@ -381,7 +381,7 @@ def _section_plan(tokens: list[tuple[str, str]]):
                 inserts[-1] = (digits, text + inserts[-1][1])
             else:
                 inserts.append((digits, text))
-        inserts.reverse()  # leftmost first, so right-counted offsets stay valid
+        inserts.reverse()  # leftmost first
         tokens = tokens[:first] + [token for token in span if token[0] == "ph"] + tokens[last + 1 :]
         last = first + digits - 1
     prefix = "".join(text for kind, text in tokens[:first] if kind == "lit")
@@ -459,9 +459,13 @@ def _apply_section(value: float, plan) -> str | None:
     int_part = "" if int_part == "0" and min_whole == 0 else int_part.zfill(min_whole)
     if grouped and int_part:
         int_part = _group(int_part)
-    for count, text in inserts:  # digits beyond the placeholders stay in the leftmost group
-        at = max(len(int_part) - count, 0)
-        int_part = int_part[:at] + text + int_part[at:]
+    if inserts:  # digits beyond the placeholders stay in the leftmost group
+        pieces, start = [], 0
+        for count, insert in inserts:
+            at = max(len(int_part) - count, 0)
+            pieces += [int_part[start:at], insert]
+            start = at
+        int_part = "".join(pieces) + int_part[start:]
     text = int_part + (dot + frac_part if dot else "")
     if sign_style:
         exp_sign = "-" if power < 0 else ("+" if sign_style == "+" else "")
