@@ -657,6 +657,9 @@ def _sink_unsafe() -> set:
 _GRAPHED = [False]
 # (card, head dim, raise_floor) per raced route; a torch verdict raises the floor so those calls leave the op
 _ROUTES: list = []
+# A prune rewrites the list: without it a register on another thread (a video load during an image render) could land
+# between the read and the write and be dropped.
+_ROUTES_LOCK = threading.Lock()
 
 
 def _route_alive(raise_floor: Callable) -> bool:
@@ -664,22 +667,30 @@ def _route_alive(raise_floor: Callable) -> bool:
     return alive is None or bool(alive())
 
 
-def _prune_routes() -> None:
-    """Drop the routes of processors that are gone (an unloaded pipeline's)."""
+def _prune_locked() -> None:
     _ROUTES[:] = [route for route in _ROUTES if _route_alive(route[2])]
 
 
+def _prune_routes() -> None:
+    """Drop the routes of processors that are gone (an unloaded pipeline's)."""
+    with _ROUTES_LOCK:
+        _prune_locked()
+
+
 def register_route(index: int, head_dim: int, raise_floor: Callable) -> None:
-    _prune_routes()
-    _ROUTES.append((int(index), int(head_dim), raise_floor))
+    with _ROUTES_LOCK:
+        _prune_locked()
+        _ROUTES.append((int(index), int(head_dim), raise_floor))
 
 
 def _drop_routes(plan: dict) -> None:
     _, Sq, Sk, _, D = plan["shape"]
     floor = (min(Sq, Sk) // DECIDE_BUCKET + 1) * DECIDE_BUCKET
     restored = raised = 0
-    _prune_routes()
-    for index, head_dim, raise_floor in list(_ROUTES):
+    with _ROUTES_LOCK:
+        _prune_locked()
+        routes = list(_ROUTES)
+    for index, head_dim, raise_floor in routes:
         if index == plan["index"] and head_dim == D:
             if raise_floor(floor):
                 restored += 1
@@ -939,7 +950,8 @@ def forget_plans() -> None:
     _plans().clear()
     _decisions().clear()
     _sink_unsafe().clear()
-    _ROUTES.clear()
+    with _ROUTES_LOCK:
+        _ROUTES.clear()
     _GRAPHED[0] = False
 
 
