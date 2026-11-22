@@ -740,6 +740,27 @@ def test_cursor_keeps_pasted_images(cursor_home):
     assert t.title == "Why does this button look broken?"
 
 
+def test_cursor_drops_the_placeholder_beside_an_image_only_paste(cursor_home):
+    project = cursor_home / "projects" / "p"
+    image = project / "assets" / "image-1.png"
+    image.parent.mkdir(parents = True)
+    image.write_bytes(base64.b64decode(PNG))
+    pasted = f"[Image]\n<image_files>\n1. {image}\n</image_files>\n<user_query>\n</user_query>"
+    path = _write(
+        project / "agent-transcripts" / "s1" / "s1.jsonl",
+        [
+            k_turn("user", pasted),
+            k_turn("assistant", "A button."),
+            k_turn("user", pasted.replace(str(image), str(project / "assets" / "gone.png"))),
+        ],
+    )
+    t = cursor.read_transcript(path, "t", "s1")
+
+    assert t.messages[0]["content"] == [{"type": "image", "image": f"data:image/png;base64,{PNG}"}]
+    # No image left to show: the turn keeps its text so later message ids do not shift.
+    assert len(t.messages) == 3 and t.messages[2]["content"][0]["type"] == "text"
+
+
 def test_codex_replays_events_not_the_injected_context(codex_home):
     t = codex.read_transcript(_rollout(codex_home), "t", "s1")
 

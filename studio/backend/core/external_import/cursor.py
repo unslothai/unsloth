@@ -34,6 +34,7 @@ _INJECTED = re.compile(rf"<({_INJECTED_TAGS})>.*?</\1>|</?(?:{_INJECTED_TAGS})\s
 _REDACTED = re.compile(r"^[ \t]*\[REDACTED\][ \t]*$", re.MULTILINE)
 _IMAGE_FILES = re.compile(r"<image_files>(.*?)</image_files>", re.DOTALL)
 _LISTED_FILE = re.compile(r"^\s*\d+\.\s+(.+?)\s*$", re.MULTILINE)
+_PLACEHOLDER = re.compile(r"^[ \t]*\[Image\][ \t]*$|</?user_query>", re.MULTILINE)
 
 
 def _sessions(state_dir: Path) -> list[Path]:
@@ -70,9 +71,13 @@ def list_projects(home: Path) -> list[SourceProject]:
     return projects
 
 
-def _user_text(text: str) -> str:
+def _user_text(text: str, pictured: bool) -> str:
     queries = [q.strip() for q in _USER_QUERY.findall(text) if q.strip()]
-    return clean_text("\n\n".join(queries) if queries else _INJECTED.sub("", text))
+    if queries:
+        return clean_text("\n\n".join(queries))
+    text = _INJECTED.sub("", text)
+    # Only beside a kept image: an emptied turn would shift every later message id.
+    return clean_text(_PLACEHOLDER.sub("", text) if pictured else text)
 
 
 def _images(text: str, assets: Path) -> list[dict]:
@@ -101,8 +106,11 @@ def _parts(role: str, content, message_id: str, assets: Path) -> list[dict]:
         text = block.get("text") if isinstance(block.get("text"), str) else ""
         if block.get("type") == "text":
             if role == "user":
-                parts.extend(_images(text, assets))
-            text = _user_text(text) if role == "user" else clean_text(_REDACTED.sub("", text))
+                images = _images(text, assets)
+                parts.extend(images)
+                text = _user_text(text, bool(images))
+            else:
+                text = clean_text(_REDACTED.sub("", text))
             if text:
                 parts.append({"type": "text", "text": text})
         elif block.get("type") == "tool_use" and role == "assistant":
