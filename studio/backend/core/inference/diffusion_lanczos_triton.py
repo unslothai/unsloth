@@ -7,6 +7,7 @@
 
 import math
 from functools import lru_cache
+from typing import Optional
 
 import numpy as np
 import torch
@@ -173,9 +174,9 @@ def lanczos_resize(
     height: int,
     width: int,
     *,
-    crop: tuple[int, int, int, int] | None = None,
-    mean: tuple[float, float, float] | None = None,
-    std: tuple[float, float, float] | None = None,
+    crop: Optional[tuple[int, int, int, int]] = None,
+    mean: Optional[tuple[float, float, float]] = None,
+    std: Optional[tuple[float, float, float]] = None,
     vertical_first: bool = False,
 ) -> torch.Tensor:
     """Resize CUDA uint8 HWC/NHWC RGB to ``height x width`` matching Pillow's Lanczos rounding.
