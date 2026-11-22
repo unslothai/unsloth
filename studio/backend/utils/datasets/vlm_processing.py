@@ -49,7 +49,14 @@ def generate_smart_vlm_instruction(
     text_col_lower = text_column.lower()
 
     # Hints read the rows the question scan reads, not row 0: a seeded row bound reorders train before formatting.
-    text_samples = [str(row.get(text_column, ""))[:500] for row in islice(dataset, 100)]
+    text_rows = dataset
+    if hasattr(dataset, "select_columns"):
+        try:
+            # Only the text column: full rows decode 100 images, about a second per split on Radiology_mini.
+            text_rows = dataset.select_columns([text_column])
+        except Exception:
+            text_rows = dataset
+    text_samples = [str(row.get(text_column, ""))[:500] for row in islice(text_rows, 100)]
 
     # Task-specific keywords and their instructions
     task_patterns = {

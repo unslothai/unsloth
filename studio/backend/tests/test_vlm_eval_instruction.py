@@ -115,3 +115,34 @@ def test_training_formats_the_eval_split_with_the_train_instruction(module, trai
         assert "vlm_instruction" in keywords
         names = {n.id for n in ast.walk(keywords["vlm_instruction"]) if isinstance(n, ast.Name)}
         assert train_result in names
+
+
+def test_content_hint_scan_does_not_decode_the_images(monkeypatch):
+    from datasets.features.image import Image as ImageFeature
+    from utils.datasets import generate_smart_vlm_instruction
+
+    ds = Dataset.from_dict(
+        {
+            "image": [Image.new("RGB", (8, 8))] * 50,
+            "caption": ["Radiograph shows a lytic lesion."] * 50,
+        }
+    )
+    decoded = []
+    real_decode = ImageFeature.decode_example
+
+    def counting_decode(
+        self,
+        value,
+        token_per_repo_id = None,
+    ):
+        decoded.append(1)
+        return real_decode(self, value, token_per_repo_id = token_per_repo_id)
+
+    monkeypatch.setattr(ImageFeature, "decode_example", counting_decode)
+    info = generate_smart_vlm_instruction(
+        ds, text_column = "caption", image_column = "image", dataset_name = "org/scans"
+    )
+
+    assert info["instruction"] == MEDICAL
+    # Row 0 is read whole for its column names; the 100-row hint scan reads captions only.
+    assert len(decoded) <= 1, len(decoded)
