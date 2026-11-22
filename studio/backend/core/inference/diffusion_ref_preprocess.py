@@ -164,7 +164,7 @@ def _probe(proc: Any, stock_area, stock_pre, device) -> bool:
 
     rng = np.random.default_rng(1234)
     target = 512 * 256
-    # A wide image (horizontal pass first) and a tall one (vertical first on Pillow >= 13).
+    # Wide + tall probe: both Pillow >= 13 pass orders.
     for shape in ((601, 1203, 3), (1203, 401, 3)):
         img = Image.fromarray(rng.integers(0, 256, size = shape, dtype = np.uint8), "RGB")
         ref_img = stock_area(img, target)
@@ -210,8 +210,7 @@ def install(pipe: Any, logger: Any = None) -> bool:
     stock_pre = proc.preprocess
 
     def _resize_to_target_area(image, target_area = 1024 * 1024):
-        # RGB only: Pillow resizes RGBA / LA premultiplied, P / 1 with NEAREST and CMYK / YCbCr in their own space, then
-        # preprocess converts, so convert-then-RGB-Lanczos would differ.
+        # RGB only: other modes resize in their own space (premultiplied / NEAREST) before converting.
         if not enabled() or _device_of(pipe) is None or not _is_pil(image) or image.mode != "RGB":
             return stock_area(image, target_area)
         return DeferredResize(image, *_target_size(image, target_area))
