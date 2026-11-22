@@ -2042,6 +2042,15 @@ def slice_hidden_to_keep(hidden_states, keep):
     return hidden_states[:, keep, :]
 
 
+def _scoring_output_hidden_states(config):
+    """The decoder's output_hidden_states when the caller passed none. Scoring (UNSLOTH_RETURN_HIDDEN_STATES=1) reads
+    only the head input, so config.output_hidden_states must not keep every layer's state alive until the forward
+    returns; an explicit request (GRPO's fallback wrapper, when it wraps this forward) is honoured as is."""
+    if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        return False
+    return config.output_hidden_states
+
+
 def _run_backbone(self, **kwargs):
     # The CausalLM forward feeds the final norm's output to lm_head or the fused CE loss, which
     # return a fresh grad, so the norm may write dX over it. Hidden states handed back to the
@@ -2049,9 +2058,6 @@ def _run_backbone(self, **kwargs):
     # caller own or share that grad, so they keep the norm's own buffer.
     model = self.model
     returns_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1"
-    if returns_hidden_states:
-        # Scoring reads only the head input: a per-layer history would stay alive until the forward returns.
-        kwargs["output_hidden_states"] = False
     model._unsloth_head_reads_final_norm = (
         not kwargs.get("output_hidden_states") and not returns_hidden_states
     )
@@ -2145,7 +2151,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             output_hidden_states = (
                 output_hidden_states
                 if output_hidden_states is not None
-                else self.config.output_hidden_states
+                else _scoring_output_hidden_states(self.config)
             )
             return_dict = (
                 return_dict if return_dict is not None else config_return_dict(self.config)

@@ -484,3 +484,25 @@ def test_trl_fused_lm_head_passes_through_to_the_fast_forward():
     assert rl._install_grpo_hidden_states_forward_wrapper(marked) is False
     assert _unsloth_grpo_hidden_states_signal(marked) is True
     assert rl._model_supports_unsloth_return_hidden_states(plain) is False
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+def test_fallback_over_an_unrecognised_wrapper_keeps_its_hidden_states(family):
+    """A fast forward behind a wrapper the predicate does not know gets the fallback, which asks for
+    output_hidden_states explicitly: scoring mode must honour that request, or every call degrades."""
+    _, fast = _square_pair(family)
+    original = fast.forward
+
+    def other_forward(*args, **kwargs):
+        return original(*args, **kwargs)
+
+    fast.forward = other_forward
+    assert rl._install_grpo_hidden_states_forward_wrapper(fast) is True
+    ids = torch.arange(10).unsqueeze(0)
+    with torch.no_grad(), _return_hidden_states("1"):
+        scored = fast(input_ids = ids, logits_to_keep = 5).logits
+        assert _unsloth_grpo_hidden_states_signal(fast) is True
+        native = original(input_ids = ids, logits_to_keep = 5).logits
+    assert getattr(fast, "_unsloth_grpo_hidden_states_warning_issued", False) is False
+    assert scored.shape == (1, 5, _CONFIG["hidden_size"])
+    assert torch.equal(scored, native)

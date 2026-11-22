@@ -44,6 +44,7 @@ from .llama import (
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
     _run_backbone,
+    _scoring_output_hidden_states,
     logits_to_keep_tensor,
     slice_hidden_to_keep,
     unsloth_fsdp_unshard,
@@ -305,7 +306,7 @@ def MistralForCausalLM_fast_forward(
     output_hidden_states = (
         output_hidden_states
         if output_hidden_states is not None
-        else self.config.output_hidden_states
+        else _scoring_output_hidden_states(self.config)
     )
     return_dict = return_dict if return_dict is not None else config_return_dict(self.config)
 
