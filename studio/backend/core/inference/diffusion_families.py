@@ -190,6 +190,9 @@ class DiffusionFamily:
     # (lowercased id substring, max_condition_images) for a family whose checkpoints take different counts; first
     # match wins, none keeps ``max_condition_images``.
     max_condition_images_variants: tuple[tuple[str, int], ...] = field(default_factory = tuple)
+    # (id substring with separators folded, pipeline class) for a checkpoint of this family that needs another
+    # diffusers pipeline than ``pipeline_class``; first match wins. See ``family_pipeline_class``.
+    pipeline_class_variants: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Same config, different weights: a GGUF of one must never get the base's transformer of another.
     checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
@@ -431,6 +434,7 @@ _SMALL_DIT_LARGE_BASES = frozenset(
     {
         "black-forest-labs/flux.2-klein-9b",
         "black-forest-labs/flux.2-klein-base-9b",
+        "black-forest-labs/flux.2-klein-9b-kv",
     }
 )
 
@@ -671,6 +675,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "black-forest-labs/FLUX.2-klein-base-9B",
             "black-forest-labs/FLUX.2-klein-base-4B",
         ),
+        # FLUX.2 klein 9B KV (same FLUX Non-Commercial licence and gate as klein 9B) is a different model, not a
+        # runtime mode: it was trained with reference tokens that attend only to themselves and are modulated at a
+        # fixed timestep 0, so their K/V do not change across steps and Flux2KleinKVPipeline computes them once, on
+        # step 0. Stock klein 4B / 9B reference tokens attend to the noisy image and take the step's timestep, so
+        # caching them there would change the model. Its weights through Flux2KleinPipeline would run the stock
+        # bidirectional path instead of the one it was trained for. A KV GGUF / single file keeps the 9B as its base on
+        # purpose: config, text encoder, VAE and scheduler are byte-identical, and the 9B's come from the ungated mirror
+        # while the KV repo is gated with no mirror; only the pipeline class follows the file.
+        pipeline_class_variants = (("klein9bkv", "Flux2KleinKVPipeline"),),
         # Train the undistilled bases, then preview their adapters on the matching 4-step models. Both vendor ids
         # resolve through the ungated mirrors at fetch time.
         trainable = True,
@@ -2434,6 +2447,21 @@ def _first_variant(rows: Any, identifiers: tuple[Optional[str], ...]) -> Optiona
     return None
 
 
+def family_pipeline_class(fam: Any, *identifiers: Optional[str]) -> Optional[str]:
+    """The diffusers pipeline class for the checkpoint ``identifiers`` name (repo id, resolved base, file name):
+    the first ``pipeline_class_variants`` key any of them spells with separators folded, else ``pipeline_class``."""
+    default = getattr(fam, "pipeline_class", None)
+    rows = getattr(fam, "pipeline_class_variants", ()) or ()
+    if not rows:
+        return default
+    for identifier in identifiers:
+        needle = "".join(c for c in (identifier or "").lower() if c.isalnum())
+        for key, pipeline_class in rows:
+            if key and key in needle:
+                return pipeline_class
+    return default
+
+
 def family_for_checkpoint(fam: Any, *identifiers: Optional[str]) -> Any:
     """``fam`` with the condition-image limit of the checkpoint ``identifiers`` name (``max_condition_images_variants``),
     so status, admission and both engines read the loaded checkpoint's limit off the family they hold."""
@@ -2638,6 +2666,8 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageControlNetPipeline": "0.36.0",
     "QwenImageEditPlusPipeline": "0.36.0",
     "Flux2KleinPipeline": "0.37.0",
+    # Absent from the 0.37.1 wheel's diffusers/__init__.py, exported by 0.38.0's.
+    "Flux2KleinKVPipeline": "0.38.0",
     "ZImageInpaintPipeline": "0.37.0",
     "LTX2Pipeline": "0.37.0",
     # Absent from the 0.36.0 wheel's diffusers/__init__.py, exported by 0.37.0's.
@@ -3584,6 +3614,7 @@ _FLUX2_BASE_INNER_DIM = {
     "black-forest-labs/flux.2-klein-base-4b": 3072,
     "black-forest-labs/flux.2-klein-9b": 4096,
     "black-forest-labs/flux.2-klein-base-9b": 4096,
+    "black-forest-labs/flux.2-klein-9b-kv": 4096,
     "black-forest-labs/flux.2-dev": 6144,
 }
 

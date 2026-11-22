@@ -99,6 +99,7 @@ from .diffusion_families import (
     resolve_local_gguf_child,
     supported_family_names,
     family_for_checkpoint,
+    family_pipeline_class,
     transformer_config_overrides_for,
     transformer_variant_differs_from_base,
 )
@@ -701,14 +702,31 @@ def _state_shift_node(state: Any) -> Optional[str]:
     )
 
 
+def _pipe_takes_kwarg(pipe: Any, name: str) -> bool:
+    """True unless ``pipe.__call__`` is inspectable and accepts neither ``name`` nor ``**kwargs``."""
+    try:
+        params = inspect.signature(pipe.__call__).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _flux2_klein_distilled(pipe: Any) -> bool:
+    """Flux2KleinPipeline reads ``is_distilled`` from its config; Flux2KleinKVPipeline (klein 9B KV, step-distilled)
+    takes no guidance at all and does not register the flag."""
+    if type(pipe).__name__ == "Flux2KleinKVPipeline":
+        return True
+    return bool(getattr(getattr(pipe, "config", None), "is_distilled", False))
+
+
 def _guidance_supported(state: Any) -> bool:
     """FLUX.2 klein base and distilled share a family; Flux2KleinPipeline turns guidance off on ``is_distilled``."""
     if not state.family.uses_guidance:
         return False
-    config = getattr(getattr(state, "pipe", None), "config", None)
-    return not (
-        state.family.name == "flux.2-klein" and bool(getattr(config, "is_distilled", False))
-    )
+    pipe = getattr(state, "pipe", None)
+    if pipe is not None and not _pipe_takes_kwarg(pipe, state.family.cfg_kwarg):
+        return False
+    return not (state.family.name == "flux.2-klein" and _flux2_klein_distilled(pipe))
 
 
 def _live_preview_available(state: Any) -> bool:
@@ -732,9 +750,7 @@ def _note_multigpu_default_request(
 ) -> None:
     try:
         steps, guidance = default_generation_params(*identifiers)
-        distilled = family.name == "flux.2-klein" and bool(
-            getattr(getattr(pipe, "config", None), "is_distilled", False)
-        )
+        distilled = family.name == "flux.2-klein" and _flux2_klein_distilled(pipe)
         own_negative = (
             family.name in _CFG_WITHOUT_NEGATIVE_PROMPT_FAMILIES and float(guidance) > 1.0
         )
@@ -5710,7 +5726,9 @@ class DiffusionBackend:
                 f"engine available."
             )
         if not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename):
-            assert_pipeline_class_available(fam.pipeline_class, fam.name)
+            assert_pipeline_class_available(
+                family_pipeline_class(fam, base_repo, repo_id, gguf_filename), fam.name
+            )
         # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
         if (
             kind == "gguf"
@@ -9083,7 +9101,10 @@ class DiffusionBackend:
                 # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
                 comfy_compile = False
                 transformer_cls = _family_model_class(diffusers, fam.transformer_class)
-                pipeline_cls = _family_model_class(diffusers, fam.pipeline_class)
+                # A checkpoint of the family that runs another pipeline (klein 9B KV) names it; else the family's.
+                pipeline_cls = _family_model_class(
+                    diffusers, family_pipeline_class(fam, base, repo_id, gguf_filename)
+                )
 
                 # Decide placement up front (weights still on CPU). Budgets the GGUF; dense is preflighted below.
                 plan = self._plan_memory(
@@ -15833,6 +15854,9 @@ class DiffusionBackend:
                             )
                         else:
                             kwargs["guidance_schedule"] = None
+                if not _pipe_takes_kwarg(pipe, state.family.cfg_kwarg):
+                    # A guidance-free pipeline (Flux2KleinKVPipeline) would raise on the kwarg.
+                    kwargs.pop(state.family.cfg_kwarg, None)
                 layer_count = int(getattr(fam, "layer_count", 0) or 0)
                 if layer_count:
                     if "layers" in call_params:
