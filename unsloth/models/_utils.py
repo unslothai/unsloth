@@ -3309,7 +3309,10 @@ def _adapter_fits_text_model(
             else:
                 import torch
 
-                # An adapter is small; weights_only never runs pickled code.
+                from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+                # weights_only is only safe on torch >= 2.6 (CVE-2025-32434).
+                refuse_pickle_checkpoint_on_old_torch(path)
                 names = list(torch.load(path, map_location = "cpu", weights_only = True))
             break
         except Exception:
