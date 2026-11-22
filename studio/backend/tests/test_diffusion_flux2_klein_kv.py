@@ -222,3 +222,104 @@ def test_cached_reference_kv_equals_recomputing_it_every_step():
             # ...and it is a different function from stock klein's bidirectional, per-step-modulated references:
             # caching cannot be a runtime switch on the stock checkpoints.
             assert (cached - stock(x, t)).abs().max().item() > 1e-2
+
+
+# --- the activation guard prices the reference K/V cache --------------------------------------------------------
+
+
+def _kv_pipe(name = "Flux2KleinKVPipeline", dtype = "bf16"):
+    """A pipe object with only what the estimate reads: class name, the 9B transformer config, dtype, VAE scale."""
+    torch = pytest.importorskip("torch")
+    config = types.SimpleNamespace(
+        num_layers = 8, num_single_layers = 24, num_attention_heads = 32, attention_head_dim = 128
+    )
+    transformer = types.SimpleNamespace(
+        config = config,
+        dtype = {"bf16": torch.bfloat16, "fp32": torch.float32, "u8": torch.uint8}[dtype],
+    )
+    return type(name, (), {"transformer": transformer, "vae_scale_factor": 8})()
+
+
+def _img(w, h):
+    return types.SimpleNamespace(size = (w, h))
+
+
+def test_kv_cache_estimate_is_2_kib_per_reference_pixel_in_bf16_with_the_measured_margin():
+    from core.inference import diffusion_memory as dm
+
+    pipe = _kv_pipe()
+    one = dm.reference_kv_cache_mib(pipe, [_img(1024, 1024)])
+    # 4096 tokens x 32 blocks x (K, V) x 4096 x 2 bytes = 2 GiB, x 1.2 margin
+    assert one == round(2048 * dm._REFERENCE_KV_MARGIN)
+    assert dm.reference_kv_cache_mib(pipe, [_img(1024, 1024)] * 4) == pytest.approx(4 * one, abs = 2)
+    # batch images each carry their own cache
+    assert dm.reference_kv_cache_mib(pipe, [_img(1024, 1024)], batch_size = 2) == pytest.approx(
+        2 * one, abs = 1
+    )
+    # the pipeline brings a reference over 1 MP down to 1 MP first
+    assert dm.reference_kv_cache_mib(pipe, [_img(2048, 2048)]) == pytest.approx(one, rel = 0.01)
+    # smaller references cost less, by area
+    assert dm.reference_kv_cache_mib(pipe, [_img(512, 512)]) == pytest.approx(one / 4, abs = 2)
+    # fp32 doubles it; quantized (non-float) weights still cache K/V in a 2-byte activation dtype
+    assert dm.reference_kv_cache_mib(_kv_pipe(dtype = "fp32"), [_img(1024, 1024)]) == pytest.approx(
+        2 * one, abs = 1
+    )
+    assert dm.reference_kv_cache_mib(_kv_pipe(dtype = "u8"), [_img(1024, 1024)]) == one
+
+
+def test_kv_cache_estimate_is_zero_off_the_kv_pipeline_or_without_references():
+    from core.inference import diffusion_memory as dm
+
+    assert dm.reference_kv_cache_mib(_kv_pipe("Flux2KleinPipeline"), [_img(1024, 1024)]) == 0
+    assert dm.reference_kv_cache_mib(_kv_pipe(), []) == 0
+    assert dm.reference_kv_cache_mib(_kv_pipe(), [object()]) == 0
+    assert dm.reference_kv_cache_mib(object(), [_img(1024, 1024)]) == 0
+
+
+def _verdict(
+    free_gib,
+    persistent_mib,
+    tile_side = 512,
+):
+    from core.inference import diffusion_memory as dm
+    total = 80 * 1024
+    return dm.image_activation_verdict(
+        device_memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", int(free_gib * 1024), total),
+        width = 1024,
+        height = 1024,
+        family = "flux.2-klein",
+        condition_pixels = 2 * 1024 * 1024,
+        vae_tile_side = tile_side,
+        vae_sliced = True,
+        persistent_mib = persistent_mib,
+    )
+
+
+def test_guard_runs_a_render_whose_kv_cache_fits_and_refuses_one_whose_cache_does_not():
+    """Same request, same free memory: the stock path fits, the KV cache on top does not, and tiling the decode cannot
+    help (the cache is held through the denoise), so the guard refuses with a reason instead of an OOM mid-render."""
+    from core.inference import diffusion_memory as dm
+
+    kv = dm.reference_kv_cache_mib(_kv_pipe(), [_img(1024, 1024)] * 2)
+    # the least free memory (in 256 MiB steps) at which the stock request runs
+    free_gib = next(
+        g / 4.0
+        for g in range(4, 4 * 78)
+        if _verdict(g / 4.0, 0, tile_side = None).action == dm.ACTIVATION_RUN
+    )
+    budget_fit = _verdict(free_gib, 0, tile_side = None)
+    refused = _verdict(free_gib, kv, tile_side = None)
+    assert refused.action == dm.ACTIVATION_REFUSE
+    assert refused.needed_mib == budget_fit.needed_mib + kv
+    assert "cached keys and values" in refused.message
+    # with the cache's room as well, it runs
+    roomy = _verdict(free_gib + (kv + 1024) / 1024.0, kv, tile_side = None)
+    assert roomy.action == dm.ACTIVATION_RUN
+
+
+def test_guard_adds_the_cache_to_the_tiled_need_too():
+    plain = _verdict(4, 0)
+    held = _verdict(4, 3000)
+    assert held.needed_mib == plain.needed_mib + 3000
+    if plain.tiled_needed_mib is not None:
+        assert held.tiled_needed_mib == plain.tiled_needed_mib + 3000

@@ -248,6 +248,7 @@ from .diffusion_memory import (
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
+    reference_kv_cache_mib,
     image_activation_verdict,
     ACTIVATION_REFUSE,
     raise_on_unified_memory_shortfall,
@@ -704,8 +705,11 @@ def _state_shift_node(state: Any) -> Optional[str]:
 
 def _pipe_takes_kwarg(pipe: Any, name: str) -> bool:
     """True unless ``pipe.__call__`` is inspectable and accepts neither ``name`` nor ``**kwargs``."""
+    call = getattr(pipe, "__call__", None)
+    if call is None:
+        return True
     try:
-        params = inspect.signature(pipe.__call__).parameters
+        params = inspect.signature(call).parameters
     except (TypeError, ValueError):
         return True
     return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
@@ -15998,6 +16002,7 @@ class DiffusionBackend:
                 guard_batch = 1
                 guard_condition_pixels = 0
                 guard_reference_pixels = 0
+                guard_kv_mib = 0
 
                 try:
                     # Forward dims, not sliders: conditioned workflows size from the input image; same derivation as the compile-cache registration below.
@@ -16006,6 +16011,18 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
+                    # A prefix-KV pipeline (klein 9B KV) holds every reference token's K/V through the whole denoise,
+                    # on top of what the activation estimate and any measured placement priced.
+                    if init_pil is not None:
+                        guard_kv_mib = reference_kv_cache_mib(
+                            pipe, [init_pil, *ref_extra], batch_size = guard_batch
+                        )
+                        if guard_kv_mib:
+                            logger.info(
+                                "diffusion.generate: pricing ~%d MiB of reference K/V cache (%d image(s))",
+                                guard_kv_mib,
+                                1 + len(ref_extra),
+                            )
                     guard_condition_pixels = (
                         int(
                             (1 + len(ref_extra))
@@ -16081,6 +16098,9 @@ class DiffusionBackend:
                         ),
                         step_cache = auto_step_cache_on,
                     )
+                    if guard_kv_mib and getattr(state.pipe, "_unsloth_measured_reserve", None):
+                        # the measured reserve never saw the cache: stream that much more of the denoiser
+                        extra_mib = int(extra_mib) + guard_kv_mib
                     if getattr(state.pipe, TIER_MOVED_ATTR, False):
                         extra_mib = _hold_captured_release(state, extra_mib)
                         guard_release_mib = extra_mib
@@ -16119,6 +16139,7 @@ class DiffusionBackend:
                             ),
                             controlnet = workflow == "controlnet" and control_pil is not None,
                             measured_activation = guard_measured,
+                            persistent_mib = guard_kv_mib,
                             logger = logger,
                         )
 

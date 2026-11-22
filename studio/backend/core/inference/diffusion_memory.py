@@ -1700,6 +1700,60 @@ def estimate_image_runtime_mib(
     return max(1024, int(8192 * max(0.25, pixel_scale) * _family_activation_multiplier(family)))
 
 
+# Pipelines whose denoiser prefills the reference images' K/V once and keeps them for every later step.
+_REFERENCE_KV_PIPELINES = frozenset({"Flux2KleinKVPipeline"})
+# Measured over the analytic size: A100-40 bf16, FLUX.2 klein 9B KV at 1024x1024 with 1 / 2 / 4 1024x1024 references
+# peaked 1.7 / 4.7 / 9.6 GiB over klein 9B on the same render, a slope of ~2.4 GiB per reference against 2.0 analytic.
+_REFERENCE_KV_MARGIN = 1.2
+# Flux2KleinKVPipeline brings a reference over 1 MP down to 1 MP before encoding it.
+_REFERENCE_KV_MAX_PIXELS = 1024 * 1024
+
+
+def reference_kv_cache_mib(
+    pipe: Any,
+    images: Any,
+    batch_size: int = 1,
+) -> int:
+    """MiB of the reference K/V cache a prefix-KV pipeline (FLUX.2 klein 9B KV) holds from step 0 to the end of the
+    denoise: every reference token's key and value in every double and single block, in the compute dtype, per
+    batch image. About 2 KiB per reference pixel in bf16 (32 blocks x 2 x 4096 x 2 bytes / 256 pixels per token).
+    0 for any other pipeline, no images, or an unreadable config (the guard then prices as before)."""
+    if type(pipe).__name__ not in _REFERENCE_KV_PIPELINES:
+        return 0
+    try:
+        config = getattr(getattr(pipe, "transformer", None), "config", None)
+        layers = int(getattr(config, "num_layers", 0) or 0) + int(
+            getattr(config, "num_single_layers", 0) or 0
+        )
+        inner = int(getattr(config, "num_attention_heads", 0) or 0) * int(
+            getattr(config, "attention_head_dim", 0) or 0
+        )
+        if layers <= 0 or inner <= 0:
+            return 0
+        side = max(1, int(getattr(pipe, "vae_scale_factor", 8) or 8)) * 2
+        tokens = 0
+        for image in images or ():
+            size = getattr(image, "size", None)
+            if not size or len(size) != 2:
+                continue
+            w, h = int(size[0]), int(size[1])
+            area = w * h
+            if area > _REFERENCE_KV_MAX_PIXELS:
+                scale = (_REFERENCE_KV_MAX_PIXELS / float(area)) ** 0.5
+                w, h = int(w * scale), int(h * scale)
+            tokens += (w // side) * (h // side)
+        if tokens <= 0:
+            return 0
+        dtype = getattr(getattr(pipe, "transformer", None), "dtype", None)
+        itemsize = int(getattr(dtype, "itemsize", 0) or 0)
+        # Quantized weights still compute (and cache) K/V in the activation dtype: never price under 2 bytes.
+        itemsize = max(2, itemsize) if getattr(dtype, "is_floating_point", True) else 2
+        cache_bytes = tokens * layers * 2 * inner * itemsize * max(1, int(batch_size or 1))
+        return int(cache_bytes * _REFERENCE_KV_MARGIN / float(1 << 20) + 0.5)
+    except Exception:  # noqa: BLE001 - a broken probe prices nothing extra, as before this term existed
+        return 0
+
+
 def estimate_video_runtime_mib(
     *, width: Optional[int], height: Optional[int], num_frames: Optional[int]
 ) -> int:
@@ -9603,9 +9657,12 @@ def image_activation_verdict(
     calibrated_placement: bool = False,
     controlnet: bool = False,
     measured_activation: Optional["CalibratedImageActivation"] = None,
+    persistent_mib: int = 0,
 ) -> ImageActivationVerdict:
     """Activations cannot be offloaded, so tile the VAE decode or refuse; refuse here, not in torch, since Windows WDDM spills silently; fail open when unknown.
-    ``measured_activation``: the measured row a calibrated placement was sized from; it prices the tiled VAE decode."""
+    ``measured_activation``: the measured row a calibrated placement was sized from; it prices the tiled VAE decode.
+    ``persistent_mib``: memory the denoise holds on top of its activations for the whole loop, whatever the decode
+    does (``reference_kv_cache_mib``); added to the untiled and the tiled need alike, since tiling cannot shrink it."""
     override = bool(allow_oversized) or _oversized_generate_override()
     try:
         # Unified memory skips the check: 'free' moves with the OS, and load-time refusal already owns it.
@@ -9656,6 +9713,11 @@ def image_activation_verdict(
                 vae_sliced = vae_sliced,
                 measured = measured_activation if calibrated_placement else None,
             )
+        held = max(0, int(persistent_mib or 0))
+        if held:
+            needed = int(needed) + held
+            if tiled is not None:
+                tiled = int(tiled) + held
     except Exception:  # noqa: BLE001 -- a broken probe must never block a generation
         return ImageActivationVerdict(ACTIVATION_RUN)
     overhead = max(0, int(base_overhead_mib))
@@ -9704,6 +9766,12 @@ def image_activation_verdict(
         controlnet = bool(controlnet),
         calibrated = conditioned,
     )
+    held = max(0, int(persistent_mib or 0))
+    if held:
+        message = (
+            f"{message} That includes about {held} MiB for the reference images' cached keys and values, which "
+            "this model holds for the whole render: fewer or smaller reference images lower it."
+        )
     return ImageActivationVerdict(ACTIVATION_REFUSE, message = message, **numbers)
 
 
@@ -9724,6 +9792,7 @@ def image_activation_shortfall_message(
     calibrated_placement: bool = False,
     controlnet: bool = False,
     measured_activation: Optional["CalibratedImageActivation"] = None,
+    persistent_mib: int = 0,
 ) -> Optional[str]:
     return image_activation_verdict(
         device_memory = device_memory,
@@ -9741,6 +9810,7 @@ def image_activation_shortfall_message(
         calibrated_placement = calibrated_placement,
         controlnet = controlnet,
         measured_activation = measured_activation,
+        persistent_mib = persistent_mib,
     ).message
 
 
@@ -9761,6 +9831,7 @@ def raise_on_image_activation_shortfall(
     calibrated_placement: bool = False,
     controlnet: bool = False,
     measured_activation: Optional["CalibratedImageActivation"] = None,
+    persistent_mib: int = 0,
     logger: Any = None,
 ) -> ImageActivationVerdict:
     """Raises ValueError so the route answers 400 with the reason; RuntimeError becomes an opaque 500."""
@@ -9780,6 +9851,7 @@ def raise_on_image_activation_shortfall(
         calibrated_placement = calibrated_placement,
         controlnet = controlnet,
         measured_activation = measured_activation,
+        persistent_mib = persistent_mib,
     )
     if verdict.action == ACTIVATION_REFUSE:
         if logger is not None:
