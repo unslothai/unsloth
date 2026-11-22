@@ -280,6 +280,7 @@ from .diffusion_memory import (
     without_cfg_off,
     live_vae_saver_tag,
     planned_vae_saver_tag,
+    encoder_window_pad_mib,
     stream_window_pad_mib,
     with_label_part,
     applied_plan,
@@ -3388,6 +3389,7 @@ def _start_peak_probe(state: Any) -> Any:
         if probe.device is None:
             return None
         probe.window_pad = window_pad
+        probe.encoder_pad = encoder_window_pad_mib(pipe)
         probe.failed_captures = cuda_graph.failed_capture_count()
         probe.conditioning_hits = _conditioning_cache_hits(pipe)
         return probe
@@ -3983,6 +3985,38 @@ def _conditioning_cache_hits(pipe: Any) -> int:
     return hits
 
 
+def _encoder_releases(pipe: Any) -> int:
+    """Times the per-render residency check streamed this pipe's encoders from the card (0 without one)."""
+    try:
+        return int(getattr(te_residency.of(pipe), "releases", 0) or 0)
+    except Exception:  # noqa: BLE001 - measurement only
+        return 0
+
+
+def _note_encoder_release(
+    probe: Any, residency_released: bool, releaser_was: bool, releaser_now: bool
+) -> None:
+    """A per-render residency release makes the render unrecordable; a whole-encoder release keeps the whole-render pad."""
+    if probe is None:
+        return
+    if residency_released:
+        probe.encoder_released = True
+    if releaser_now and not releaser_was:
+        probe.encode_peak = None
+
+
+def _padded_peak(probe: Any, peak: int, pad: int) -> int:
+    """The encoders' pad share goes only on the prompt-encode phase: on the denoise peak (a 1.2 GB embedding x 3 on
+    Qwen3-VL) it raised the next load's peak and streamed the encoder whole. No encode reading: the whole pad."""
+    parts = getattr(probe, "encoder_pad", None)
+    encode = getattr(probe, "encode_peak", None)
+    if not isinstance(parts, tuple) or len(parts) != 2 or encode is None:
+        return int(peak) + int(pad)
+    share = max(0, min(int(parts[0]), int(pad)))
+    window = max(0, int(parts[1]))
+    return max(int(peak), min(int(encode), int(peak)) + window) + int(pad) - share
+
+
 def _record_peak_probe(
     state: Any,
     probe: Any,
@@ -4015,6 +4049,9 @@ def _record_peak_probe(
             # the decode streamed lent groups out, so its peak is net of their bytes: a sample would under-size the
             # bucket (the placement that lent them already held a sample covering this decode)
             return
+        if getattr(probe, "encoder_released", False):
+            # encoders streamed out after the encode reading: a sample would under-size the bucket
+            return
         if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
             return
@@ -4038,14 +4075,14 @@ def _record_peak_probe(
         graphs = cuda_graph.live_graph_count(index)
         generation = cuda_graph.capture_generation(index)
         pad = int(getattr(probe, "window_pad", 0) or 0)
-        peak += pad
+        peak = _padded_peak(probe, peak, pad)
         split = getattr(probe, "phase_peaks", None) or {}
         phases = {}
         if PHASE_PRE_DECODE in split and PHASE_DECODE in split:
             pre, dec = int(split[PHASE_PRE_DECODE]), int(split[PHASE_DECODE])
             phases = {
-                PHASE_PRE_DECODE: pre + pad,
-                PHASE_DECODE: dec + pad,
+                PHASE_PRE_DECODE: _padded_peak(probe, pre, pad),
+                PHASE_DECODE: _padded_peak(probe, dec, pad),
                 PHASE_DECODE_UNPADDED: dec,
                 PHASE_UNPADDED: max(pre, dec),
             }
@@ -16477,11 +16514,23 @@ class DiffusionBackend:
                                 float_seeds.seed()
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
+                            if peak_probe is not None:
+                                peak_probe.mark_encode()
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
+                            releaser_was = releaser_now = False
                             if state.te_releaser is not None:
+                                releaser_was = bool(getattr(state.te_releaser, "released", False))
                                 state.te_releaser.release()
+                                releaser_now = bool(getattr(state.te_releaser, "released", False))
                             # resident encoders stream from the host when the rest of this render does not fit
+                            releases = _encoder_releases(state.pipe)
                             te_residency.after_encode(state.pipe, te_residency_need, logger = logger)
+                            _note_encoder_release(
+                                peak_probe,
+                                _encoder_releases(state.pipe) > releases,
+                                releaser_was,
+                                releaser_now,
+                            )
                             if whole_tier is not None and not whole_release:
                                 # pinned after the encode, released before the decode
                                 release = pin_denoiser_for_call(
