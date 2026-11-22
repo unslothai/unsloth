@@ -788,6 +788,32 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _lexical_scope_filter(conn: sqlite3.Connection, scopes: list[str], placeholders: str):
+    """(SQL, params) for the scope test on chunks_fts; (None, None) when no scope has a row.
+    Equivalent to scope IN (...) on the same snapshot, so rows, order and bm25 are unchanged: the rowid
+    range only skips doclist entries outside every scope, and the probe reads the scope index, not
+    the content row each match would otherwise load."""
+    if not rag_db.fts_scope_index_exists(conn):
+        return f"chunks_fts.scope IN ({placeholders})", scopes
+    lo = hi = None
+    for scope in scopes:
+        first, last = conn.execute(
+            "SELECT (SELECT min(id) FROM chunks_fts_content WHERE c2=?1), "
+            "(SELECT max(id) FROM chunks_fts_content WHERE c2=?1)",
+            (scope,),
+        ).fetchone()
+        if first is not None:
+            lo = first if lo is None else min(lo, first)
+            hi = last if hi is None else max(hi, last)
+    if lo is None:
+        return None, None
+    return (
+        f"chunks_fts.rowid BETWEEN ? AND ? AND EXISTS (SELECT 1 FROM chunks_fts_content x "
+        f"INDEXED BY {rag_db.FTS_SCOPE_INDEX} WHERE x.c2 IN ({placeholders}) "
+        f"AND x.id=chunks_fts.rowid)"
+    ), [lo, hi, *scopes]
+
+
 def search_lexical(
     conn: sqlite3.Connection,
     scope,
@@ -812,6 +838,9 @@ def search_lexical(
     if own_read_txn:
         conn.execute("BEGIN")
     try:
+        scope_filter, scope_params = _lexical_scope_filter(conn, scopes, placeholders)
+        if scope_filter is None:
+            return []
         # Subqueries run before LIMIT; skip them unless a folder is linked (linked_folder_rows_exist).
         if oldest_first:
             # Mirrors _conversation_order; uses document rowid since re-embeds rewrite chunk rows.
@@ -819,7 +848,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC, "
                 f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
@@ -829,7 +858,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC, "
                 f"d.created_at DESC, d.rowid DESC, c.chunk_index DESC LIMIT ?"
             )
@@ -838,7 +867,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"AND NOT EXISTS "
                 f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
                 f"AND (d.linked_folder_id IS NULL OR EXISTS "
@@ -847,11 +876,11 @@ def search_lexical(
             )
         else:
             sql = (
-                f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-                f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) "
+                f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s LIMIT ?"
             )
-        rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
+        rows = conn.execute(sql, (mq, *scope_params, k)).fetchall()
     finally:
         if own_read_txn:
             conn.commit()
