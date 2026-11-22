@@ -4263,9 +4263,13 @@ def _rocm_hosted_int8_route_reason(
     int8 gates (``rdna_explicit_int8``: explicit int8, pipeline, no forced offload, compiling speed tier) plus
     ``rocm_image_hosted_int8_reason``. Never raises."""
     try:
-        from .diffusion_rocm_hosted_int8 import rocm_image_hosted_int8_reason
+        from .diffusion_rocm_hosted_int8 import (
+            rocm_image_hosted_int8_enabled,
+            rocm_image_hosted_int8_reason,
+        )
 
-        if kind != "pipeline" or fam is None:
+        # The kill switch first: UNSLOTH_ROCM_IMAGE_HOSTED_INT8=0 asks nothing else of the host.
+        if not rocm_image_hosted_int8_enabled() or kind != "pipeline" or fam is None:
             return None
         if _memory_request_forces_offload(memory_mode, cpu_offload):
             return None
