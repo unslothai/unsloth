@@ -45,9 +45,14 @@ def native_hosted_pickle(fam: Any) -> bool:
     return bool(getattr(fam, "native_offload_hosted_int8_pickle", False))
 
 
-def _log(logger: Any, level: str, msg: str) -> None:
+def _log(
+    logger: Any,
+    level: str,
+    msg: str,
+    tag: str = "video.native_hosted",
+) -> None:
     if logger is not None:
-        getattr(logger, level)("video.native_hosted: %s", msg)
+        getattr(logger, level)("%s: %s", tag, msg)
 
 
 def hosted_metadata(path: str) -> Optional[dict]:
@@ -106,6 +111,7 @@ def load_native_from_hosted(
     config_kwargs: Optional[dict] = None,
     base: Optional[str] = None,
     logger: Any = None,
+    tag: str = "video.native_hosted",
 ) -> Any:
     """The native ``component`` built from hosted ``path``, or None (the caller falls back to the dense build). Never
     raises. Refuses unless the file holds exactly the layers, rotation and activation path the runtime build makes."""
@@ -130,7 +136,7 @@ def load_native_from_hosted(
         meta = hosted_metadata(path)
         problem = metadata_refusal(meta, spec, family = family, component = component)
         if problem:
-            _log(logger, "info", f"hosted int8 checkpoint not used ({problem})")
+            _log(logger, "info", f"hosted int8 checkpoint not used ({problem})", tag = tag)
             return None
         from accelerate import init_empty_weights
         from safetensors.torch import load_file
@@ -162,6 +168,7 @@ def load_native_from_hosted(
                 "info",
                 f"hosted int8 checkpoint not used ({len(quantised)} quantised layers, the native build makes "
                 f"{len(wanted)}; e.g. {sorted(quantised ^ wanted)[:2]})",
+                tag = tag,
             )
             return None
         if any(key.endswith(_ACT_PAYLOADS) for key in state):
@@ -169,6 +176,7 @@ def load_native_from_hosted(
                 logger,
                 "info",
                 "hosted int8 checkpoint not used (it carries static activation scales)",
+                tag = tag,
             )
             return None
         modules = dict(model.named_modules())
@@ -179,6 +187,7 @@ def load_native_from_hosted(
                 logger,
                 "info",
                 "hosted int8 checkpoint not used (its rotated layers differ from the native build's)",
+                tag = tag,
             )
             return None
         parts: dict = {}
@@ -199,6 +208,7 @@ def load_native_from_hosted(
                     logger,
                     "info",
                     f"hosted int8 checkpoint not used ({fqn}: unexpected payload layout)",
+                    tag = tag,
                 )
                 return None
             parts[fqn + ".weight"] = HostedInt8Parts(codes, scale, zero)
@@ -242,10 +252,12 @@ def load_native_from_hosted(
         model.load_state_dict(state, strict = True, assign = True)
         del state
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
-            _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used")
+            _log(logger, "warning", "hosted int8 checkpoint left meta tensors; not used", tag = tag)
             return None
         if any(p.dtype != torch.bfloat16 for p in model.parameters() if p.is_floating_point()):
-            _log(logger, "info", "hosted int8 checkpoint not used (a non-bf16 dense tensor)")
+            _log(
+                logger, "info", "hosted int8 checkpoint not used (a non-bf16 dense tensor)", tag = tag
+            )
             return None
         model.eval()
         try:
@@ -262,10 +274,16 @@ def load_native_from_hosted(
             "info",
             f"read {len(quantised)} int8 ConvRot layers of {component} from the hosted checkpoint as native "
             f"Linears in {time.perf_counter() - t0:.1f} s (no dense shards, no runtime quantise)",
+            tag = tag,
         )
         return model
     except Exception as exc:  # noqa: BLE001 - an unusable file falls back to the dense build
-        _log(logger, "warning", f"hosted int8 read failed: {type(exc).__name__}: {str(exc)[:200]}")
+        _log(
+            logger,
+            "warning",
+            f"hosted int8 read failed: {type(exc).__name__}: {str(exc)[:200]}",
+            tag = tag,
+        )
         return None
 
 
