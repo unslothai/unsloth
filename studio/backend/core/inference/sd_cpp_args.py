@@ -927,7 +927,7 @@ def is_ggml_unsupported_op_abort(message: str) -> bool:
 # which shifts colour against a whole decode. The CPU decode buffer grows with the tile area (direct conv, 1024 px:
 # FLUX.2 VAE 2818 MiB, Qwen-Image 2.1 VAE 3889 MiB; a quarter of that at 512 px), so the offload path takes the largest
 # tile the host RAM left over by the offloaded weights holds. A 1024 px tile decodes a 1024 px image whole; larger
-# images still tile. Measured on an L4 host (12 vCPU), FLUX.2 klein 4B at 1024 px: decode 185 s at 256 px, 138 s at
+# images still tile. Measured on a 12 vCPU host, FLUX.2 klein 4B at 1024 px: decode 185 s at 256 px, 138 s at
 # 512, 68 s whole.
 CPU_VAE_TILE_ENV = "UNSLOTH_SD_CPP_VAE_TILE"
 CPU_VAE_TILE_SIZES = (1024, 768, 512)
