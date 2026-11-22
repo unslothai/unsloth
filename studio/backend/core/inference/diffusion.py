@@ -3986,6 +3986,29 @@ def _conditioning_cache_hits(pipe: Any) -> int:
     return hits
 
 
+def _encoder_releases(pipe: Any) -> int:
+    """Times the per-render residency check streamed this pipe's encoders from the card (0 without one)."""
+    try:
+        return int(getattr(te_residency.of(pipe), "releases", 0) or 0)
+    except Exception:  # noqa: BLE001 - measurement only
+        return 0
+
+
+def _note_encoder_release(
+    probe: Any, residency_released: bool, releaser_was: bool, releaser_now: bool
+) -> None:
+    """After the prompt encode: mark ``probe`` when encoders left the card under its baseline. A per-render residency
+    release (``te_residency.after_encode`` streamed resident groups) makes the render unrecordable, as a decode lend's
+    release does; a whole-encoder release (``te_release``, unified memory) keeps the whole-render pad, as before the
+    encode phase was read."""
+    if probe is None:
+        return
+    if residency_released:
+        probe.encoder_released = True
+    if releaser_now and not releaser_was:
+        probe.encode_peak = None
+
+
 def _padded_peak(probe: Any, peak: int, pad: int) -> int:
     """``peak`` (MiB above the render's start) on the streamed baseline. The denoiser's share of ``pad`` sits beside
     every phase; the encoders' share only beside the prompt encode they stream in: a resident encoder's window added to
@@ -4031,6 +4054,10 @@ def _record_peak_probe(
         if getattr(probe, "decode_released", False):
             # the decode streamed lent groups out, so its peak is net of their bytes: a sample would under-size the
             # bucket (the placement that lent them already held a sample covering this decode)
+            return
+        if getattr(probe, "encoder_released", False):
+            # resident encoder groups streamed out after the encode reading: the denoise and decode ran net of their
+            # bytes, and with the encoders' pad off those phases a sample would under-size the bucket
             return
         if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
@@ -16498,10 +16525,20 @@ class DiffusionBackend:
                                 # before any encoder release below: the encode phase's peak on the probe's baseline
                                 peak_probe.mark_encode()
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
+                            releaser_was = releaser_now = False
                             if state.te_releaser is not None:
+                                releaser_was = bool(getattr(state.te_releaser, "released", False))
                                 state.te_releaser.release()
+                                releaser_now = bool(getattr(state.te_releaser, "released", False))
                             # resident encoders stream from the host when the rest of this render does not fit
+                            releases = _encoder_releases(state.pipe)
                             te_residency.after_encode(state.pipe, te_residency_need, logger = logger)
+                            _note_encoder_release(
+                                peak_probe,
+                                _encoder_releases(state.pipe) > releases,
+                                releaser_was,
+                                releaser_now,
+                            )
                             if whole_tier is not None and not whole_release:
                                 # pinned after the encode, released before the decode
                                 release = pin_denoiser_for_call(

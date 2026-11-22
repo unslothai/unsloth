@@ -261,3 +261,95 @@ def test_the_render_marks_the_encode_before_any_encoder_release():
     mark = src.index("peak_probe.mark_encode()", start)
     assert mark < src.index("state.te_releaser.release()", start)
     assert mark < src.index("te_residency.after_encode(state.pipe", start)
+
+
+# ------------------------------------------------------------------------------- encoder release during the render
+
+
+def _record_with(tmp_path, monkeypatch, **probe_attrs):
+    """One completed render through _record_peak_probe on an empty store; returns the stored whole-render peak."""
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+    import core.inference.diffusion_measured_peaks as mp
+
+    monkeypatch.setenv(mp.LEARNED_PEAKS_FILE_ENV, str(tmp_path / "peaks.json"))
+    for env in (mp.LEARNED_PEAKS_ENV, mp.PHASE_PEAKS_ENV, dm.ENCODER_PAD_PHASE_ENV):
+        monkeypatch.delenv(env, raising = False)
+    mp._cache.update(path = None, mtime = None, data = None)
+    monkeypatch.setattr(mp, "current_device_name", lambda: "NVIDIA L4")
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    monkeypatch.setattr(diffusion, "_attention_scaling_known", lambda target, engaged = None: True)
+    key = dict(family = "qwen-image-2.1", quant = "torchao:Int8Tensor", speed_mode = "default")
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = (key["family"], key["quant"], "default"))
+    state = types.SimpleNamespace(pipe = pipe, speed_mode = "default")
+    probe = types.SimpleNamespace(
+        device = "cuda:0",
+        failed_captures = 0,
+        conditioning_hits = 0,
+        # Qwen-Image-2.1 at 16 GiB: denoiser window 619, legacy encoder share 3416, encode 300, phase window 1246
+        window_pad = 619 + 3416,
+        encoder_pad = (3416, 1246),
+        encode_peak = 300,
+        phase_peaks = {},
+        finish = lambda: 1771,
+        **probe_attrs,
+    )
+    diffusion._record_peak_probe(
+        state, probe, width = 1024, height = 1024, batch_size = 1, workflow = "txt2img"
+    )
+    return mp.lookup(**key, width = 1024, height = 1024)
+
+
+def test_a_render_whose_resident_encoders_were_released_records_nothing(tmp_path, monkeypatch):
+    """After the encode reading, te_residency streamed resident encoder groups: the denoise and decode ran net of
+    their bytes, so with the encoders' pad off those phases the sample would under-size later loads (Codex P2)."""
+    # the control records the encode-phase scale (max(1771, 300 + 1246) + 619 = 2390)
+    assert _record_with(tmp_path / "kept", monkeypatch) == 2390
+    assert _record_with(tmp_path / "released", monkeypatch, encoder_released = True) is None
+
+
+def test_note_encoder_release_marks_the_probe():
+    from core.inference.diffusion import _note_encoder_release
+
+    probe = types.SimpleNamespace(encode_peak = 300)
+    _note_encoder_release(probe, False, False, False)  # the residency check kept them
+    assert not getattr(probe, "encoder_released", False) and probe.encode_peak == 300
+    _note_encoder_release(probe, True, False, False)
+    assert probe.encoder_released is True
+    # a whole-encoder release (unified memory) keeps the whole-render pad: no encode phase is reported
+    whole = types.SimpleNamespace(encode_peak = 300)
+    _note_encoder_release(whole, False, False, True)
+    assert whole.encode_peak is None and not getattr(whole, "encoder_released", False)
+    already = types.SimpleNamespace(
+        encode_peak = 300
+    )  # released before the probe started: baseline excludes it
+    _note_encoder_release(already, False, True, True)
+    assert already.encode_peak == 300
+    _note_encoder_release(None, True, False, True)  # no probe: no-op
+
+
+def test_the_release_count_reads_the_residency_check(monkeypatch):
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_te_residency as te_residency
+
+    pipe = types.SimpleNamespace()
+    assert diffusion._encoder_releases(pipe) == 0  # no check installed
+    residency = types.SimpleNamespace(releases = 0)
+    monkeypatch.setattr(te_residency, "of", lambda p: residency if p is pipe else None)
+    before = diffusion._encoder_releases(pipe)
+    residency.releases += 1  # what EncoderResidency.release does when it streams groups
+    assert diffusion._encoder_releases(pipe) > before
+
+
+def test_the_render_notes_an_encoder_release_after_the_residency_check():
+    import inspect
+
+    import core.inference.diffusion as diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend.generate)
+    start = src.index("def _enter_denoise_phase(")
+    count = src.index("releases = _encoder_releases(state.pipe)", start)
+    check = src.index("te_residency.after_encode(state.pipe", start)
+    note = src.index("_note_encoder_release(", start)
+    assert src.index("state.te_releaser.release()", start) < count < check < note
