@@ -781,6 +781,8 @@ class AnthropicStreamEmitter:
             self._prev_text = ""
             if event.get("new_pass"):
                 self._reset_turn()
+                if self._text_block_open or self._thinking_block_open:
+                    return [self._close_block()]
             return []
         return []
 

@@ -6176,6 +6176,44 @@ class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
         assert self._reduced(monkeypatch, streams) == expected
         assert self._norm(self._streamed(monkeypatch, streams)) == self._norm(expected)
 
+    def test_call_only_final_answer_retry_keeps_both_traces(self, monkeypatch):
+        """#18802: the final pass answers with only a call, so it is re-asked without tools; that
+        retry is its own turn and its trace must not land in the answer text."""
+        call = "<|tool_call_start|>[get_weather(city='LA')]<|tool_call_end|>"
+        streams = [
+            [self._tool_call_sse("call_1", "SF"), "data: [DONE]\n"],
+            [
+                self._sse({"reasoning_content": "check LA too"}),
+                self._sse({"content": call}),
+                "data: [DONE]\n",
+            ],
+            [
+                self._sse({"reasoning_content": "answer now"}),
+                self._sse({"content": "Sunny."}),
+                "data: [DONE]\n",
+            ],
+        ]
+        monkeypatch.setattr(
+            self,
+            "_generator",
+            lambda mp, st, prov: self._backend(mp, st).generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "weather?"}],
+                tools = self.TOOLS,
+                max_tool_iterations = 1,
+                reasoning_provenance = prov,
+            ),
+        )
+        expected = [
+            ("tool_use", "get_weather"),
+            ("thinking", "check LA too"),
+            ("thinking", "answer now"),
+            ("text", "Sunny."),
+        ]
+        assert self._reduced(monkeypatch, [list(x) for x in streams]) == expected
+        assert self._norm(self._streamed(monkeypatch, [list(x) for x in streams])) == self._norm(
+            expected
+        )
+
 
 class TestALiteralTagAfterBlankSpaceIsNotDuplicated:
     """A blank lead before a literal think tag is emitted once, not again by the literal-text fallback."""
