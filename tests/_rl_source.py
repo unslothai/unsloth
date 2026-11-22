@@ -18,6 +18,7 @@ SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.p
 WRAPPER_NAMES = (
     "_module_returns_logits",
     "_grpo_hidden_states_wrap_target",
+    "_forward_supports_unsloth_return_hidden_states",
     "_model_supports_unsloth_return_hidden_states",
     "_drop_forward_kwargs_consumed_positionally",
     "_get_num_logits_to_keep",
@@ -31,7 +32,10 @@ WRAPPER_NAMES = (
     "_grpo_hidden_states_reproduce_logits",
 )
 
-OPTIONAL_NAMES = ("_note_grpo_hidden_states_success",)
+OPTIONAL_NAMES = (
+    "_note_grpo_hidden_states_success",
+    "_forward_supports_unsloth_return_hidden_states",
+)
 
 CONSTANT_NAMES = (
     "_UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER",

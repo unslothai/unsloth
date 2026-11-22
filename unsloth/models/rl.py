@@ -1982,6 +1982,15 @@ def _grpo_hidden_states_wrap_target(model):
     return model
 
 
+def _forward_supports_unsloth_return_hidden_states(module):
+    # The fast CausalLM forwards (llama.py's CausalLM_fast_forward, mistral.py) carry the marker on the function, so it
+    # holds only while that forward is the one installed; a bound method reads its function's attributes.
+    forward = getattr(module, "forward", None)
+    if forward is None or getattr(forward, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
+        return False
+    return bool(getattr(forward, _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False))
+
+
 def _model_supports_unsloth_return_hidden_states(model):
     target_model = _grpo_hidden_states_wrap_target(model)
     for candidate in (model, target_model):
@@ -1991,7 +2000,8 @@ def _model_supports_unsloth_return_hidden_states(model):
             return True
         if getattr(type(candidate), _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER, False):
             return True
-    return False
+    # Only the module whose forward the wrapper would replace: an adapter's forward delegates to it.
+    return target_model is not None and _forward_supports_unsloth_return_hidden_states(target_model)
 
 
 def _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs):

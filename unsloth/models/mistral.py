@@ -486,6 +486,10 @@ def MistralForCausalLM_fast_forward(
     )
 
 
+# Honours UNSLOTH_RETURN_HIDDEN_STATES itself, so GRPO's hidden-state fallback wrapper must not wrap it.
+MistralForCausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = True
+
+
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
 def patch_mistral_nemo_attention(function):
     function = function.replace(

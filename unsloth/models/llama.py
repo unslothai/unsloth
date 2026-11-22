@@ -2334,6 +2334,9 @@ def CausalLM_fast_forward(fast_forward_inference):
             attentions = outputs.attentions,
         )
 
+    # The UNSLOTH_RETURN_HIDDEN_STATES branch above hands back the head's own input, so GRPO's
+    # hidden-state fallback wrapper (unsloth/models/rl.py) must not wrap this forward.
+    _CausalLM_fast_forward.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = True
     return _CausalLM_fast_forward
 
 
