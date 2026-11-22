@@ -19389,7 +19389,6 @@ class LlamaCppBackend:
         proc = self._process
         device_lost_seen = False
         metal_poison = {"draft": False}
-        # Read once: a stage note must never be what stops the drain.
         stage_pid = getattr(proc, "pid", None)
         launched = getattr(self, "_process_env", None)
         weights_seen = stage_pid is None or not _log_shows_load_stages(
