@@ -323,3 +323,29 @@ def test_guard_adds_the_cache_to_the_tiled_need_too():
     assert held.needed_mib == plain.needed_mib + 3000
     if plain.tiled_needed_mib is not None:
         assert held.tiled_needed_mib == plain.tiled_needed_mib + 3000
+
+
+def test_a_kv_gguf_whose_card_tags_the_gated_kv_repo_takes_its_companions_from_the_9b(monkeypatch):
+    """QuantStack's KV GGUFs tag black-forest-labs/FLUX.2-klein-9b-kv (gated, no mirror); text encoder, VAE, scheduler
+    and config are the 9B's bytes, so the load needs no KV grant. The pipeline class still follows the file."""
+    from core.inference import diffusion as d
+
+    assert df.companion_base(KV_REPO) == "black-forest-labs/FLUX.2-klein-9B"
+    assert (
+        df.companion_base("black-forest-labs/FLUX.2-klein-9B")
+        == "black-forest-labs/FLUX.2-klein-9B"
+    )
+    assert df.companion_base(None) is None
+    # trusted: a direct pipeline load of the KV repo, and a card that tags it, are accepted
+    assert d._is_trusted_diffusion_repo(KV_REPO)
+    monkeypatch.setattr(d, "_hf_base_model", lambda repo_id, token: KV_REPO)
+    monkeypatch.setattr(d, "_remember_companion_base", lambda repo_id, base: None)
+    fam = _klein()
+    gguf = "Flux-2-Klein-9B-KV-Q8_0.gguf"
+    base = d._resolve_base_repo("QuantStack/FLUX.2-Klein-9B-KV-GGUF", None, fam, None, gguf)
+    assert base == "black-forest-labs/FLUX.2-klein-9B"
+    assert df.mirror_repo(base) == "unsloth/FLUX.2-klein-9B"
+    assert (
+        df.family_pipeline_class(fam, base, "QuantStack/FLUX.2-Klein-9B-KV-GGUF", gguf)
+        == "Flux2KleinKVPipeline"
+    )

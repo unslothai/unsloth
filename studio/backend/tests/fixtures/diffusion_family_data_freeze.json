@@ -5031,6 +5031,7 @@
    "black-forest-labs/flux.2-dev",
    "black-forest-labs/flux.2-klein-4b",
    "black-forest-labs/flux.2-klein-9b",
+   "black-forest-labs/flux.2-klein-9b-kv",
    "black-forest-labs/flux.2-klein-base-4b",
    "black-forest-labs/flux.2-klein-base-9b",
    "circlestone-labs/anima-base-v1.0-diffusers",

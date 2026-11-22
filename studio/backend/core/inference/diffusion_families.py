@@ -632,6 +632,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 hosted_plain = True,
             ),
             preview_factors = "flux2",
+            # The KV checkpoint is no base or variant here (its GGUFs take the 9B's companions), but its own repo
+            # loads as a pipeline and its quantised files tag it as their base.
+            trusted_repos = ("black-forest-labs/flux.2-klein-9b-kv",),
             auto_static_skip = (
                 (
                     "black-forest-labs/flux.2-klein-base-4b",
@@ -2181,6 +2184,19 @@ def named_variant_base(fam: "DiffusionFamily", *names: Optional[str]) -> Optiona
         if plain and plain in identity:
             return None
     return None
+
+
+# A gated base whose every component but the denoiser is byte-identical to another base's (LFS sha256). A GGUF or
+# single file of it brings its own denoiser, so it takes the rest from that base, whose ungated mirror needs no grant.
+_COMPANION_BASES: dict[str, str] = {
+    "black-forest-labs/flux.2-klein-9b-kv": "black-forest-labs/FLUX.2-klein-9B",
+}
+
+
+def companion_base(base: Optional[str]) -> Optional[str]:
+    """The base a GGUF / single file of ``base`` reads its non-denoiser components from; ``base`` itself unless
+    listed in ``_COMPANION_BASES``."""
+    return _COMPANION_BASES.get((base or "").strip().lower(), base)
 
 
 def canonical_base(repo_id: Optional[str]) -> str:
