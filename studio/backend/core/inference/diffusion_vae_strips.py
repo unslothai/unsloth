@@ -608,9 +608,12 @@ def _up_rows(
 # path: LPIPS 7e-5 bf16, 1e-6 fp16 T4; PSNR vs fp32 -0.04 to -0.28 dB). Measured on the FLUX.1 / Z-Image / FLUX.2 VAEs
 # (strip decode, cuDNN 9.24), 1024 / 2048 px: T4 fp16 1.11-1.14x, A100 1.06-1.12x, L4 1.05-1.11x, RTX PRO 6000
 # 1.07-1.13x per decode. ``UNSLOTH_VAE_UPSAMPLE_FOLD``: ``0`` off, ``1`` on any device (CUDA, ROCm, MPS, CPU); unset:
-# the measured CUDA cards only (MIOpen / MPS transposed convs unmeasured).
+# the measured CUDA cards and the measured ROCm archs only (MPS transposed convs unmeasured).
 UPSAMPLE_FOLD_ENV = "UNSLOTH_VAE_UPSAMPLE_FOLD"
 _FOLD_CAPS = frozenset({(7, 5), (8, 0), (8, 9), (12, 0)})
+# gfx1151 (Radeon 8060S, MIOpen): FLUX.2 VAE whole-map strip decode, fold vs the 2x path, LPIPS 3e-5: Linux ROCm 7.13
+# 2.71 -> 2.56 s at 1024 px, 12.28 -> 11.41 s at 2048 px; Windows ROCm 7.14 2.86 -> 2.70 s, 12.74 -> 11.82 s.
+_FOLD_ROCM_ARCHS = frozenset({"gfx1151"})
 # Output elements up to which one transposed conv covers the whole map (the measured shape: FLUX.1 1024 px's last
 # upsample is 2^28); larger maps fold strip by strip (bounded workspace, one copy into the output).
 FOLD_FULL_MAX_ELEMS = 1 << 28
@@ -635,9 +638,12 @@ def _fold_on(x: Any) -> bool:
     if mode == "force":
         return True
     torch = fused._torch()
-    if not x.is_cuda or is_rocm_torch(torch):
+    if not x.is_cuda:
         return False
     try:
+        if is_rocm_torch(torch):
+            arch = str(getattr(torch.cuda.get_device_properties(x.device), "gcnArchName", "") or "")
+            return arch.split(":")[0] in _FOLD_ROCM_ARCHS
         return tuple(torch.cuda.get_device_capability(x.device)) in _FOLD_CAPS
     except Exception:  # noqa: BLE001
         return False
