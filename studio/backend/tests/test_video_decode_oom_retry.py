@@ -54,8 +54,10 @@ def _vae():
     return vae
 
 
-def _stack(monkeypatch):
+def _stack(monkeypatch, pair = False):
     monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    if not pair:  # these pin the one-frame untiled path; two frames per call has its own tests
+        monkeypatch.setenv(U.PAIR_FRAMES_ENV, "0")
     vae = _vae()
     pipe = types.SimpleNamespace(vae = vae, video_processor = VideoProcessor(vae_scale_factor = 8))
     assert U.install_untiled_decode(pipe, FAMILY)
@@ -219,3 +221,20 @@ def test_video_speed_layer_gets_the_logger():
         if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "run_speed_layer"
     ]
     assert calls and all(any(k.arg == "logger" for k in c.keywords) for c in calls)
+
+
+def test_pair_frames_oom_retries_one_frame_untiled(monkeypatch):
+    """An OOM in the two-frames-per-call decode (through the OOM scope) falls back to the one-frame untiled loop,
+    not to tiles, and its output is the stock untiled decode's."""
+    pipe, vae, fired = _stack(monkeypatch, pair = True)
+    out = _render(pipe, Z)
+    stats = _gate_stats(vae)
+    assert fired == [True]
+    assert stats["paired"] == 0 and stats["untiled"] == 1 and stats["tiled"] == 0
+    ref = _vae()
+    ref.disable_tiling()
+    with torch.inference_mode():
+        want = ref.decode(Z, return_dict = False)[0]
+    assert torch.equal(out, want)
+    _render(pipe, Z)  # never paired again at this size
+    assert stats["paired"] == 0 and stats["untiled"] == 2
