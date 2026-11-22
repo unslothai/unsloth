@@ -21,7 +21,7 @@ from typing import Callable, Generator, Optional
 
 from loggers import get_logger
 
-from core.inference.llama_cpp import _has_answer_artifact
+from core.inference.llama_cpp import _FINAL_ANSWER_TOOL_LIMIT_MESSAGE, _has_answer_artifact
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
@@ -1322,6 +1322,9 @@ def run_safetensors_tool_loop(
         if final_attempt_done:
             if content_text:
                 yield {"type": "content", "text": content_text}
+            elif tool_calls:
+                # Only another call, already without tools: an empty bubble is not actionable.
+                yield {"type": "content", "text": _FINAL_ANSWER_TOOL_LIMIT_MESSAGE}
             yield {"type": "status", "text": ""}
             return
 

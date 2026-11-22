@@ -395,3 +395,25 @@ def test_a_call_only_answer_with_no_budget_left_says_so(monkeypatch):
     assert len(payloads) == 2
     shown = _route_shown(events)
     assert "tool call limit" in shown and "tool_call_start" not in shown, shown
+
+
+def test_safetensors_loop_runs_lfm_calls_and_explains_a_call_only_final_turn():
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    calls = []
+
+    def _gen(_messages):
+        yield CALL
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "Research LFM2.5."}],
+            tools = [{"type": "function", "function": {"name": "web_fetch"}}],
+            execute_tool = lambda name, arguments, **_: calls.append((name, arguments)) or "RESULT",
+            max_tool_iterations = 1,
+        )
+    )
+    assert calls == [("web_fetch", {"url": "https://example.com/lfm"})]
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert contents and "tool call limit" in contents[-1] and "tool_call_start" not in contents[-1]
