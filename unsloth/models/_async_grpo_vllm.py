@@ -9,12 +9,15 @@ __all__ = [
     "UnslothAsyncVLLMServer",
 ]
 
+import copy
 import hmac
 import itertools
 import json
 import logging
 import os
 import secrets
+import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -56,25 +59,40 @@ def _tensor_request_builder():
 
 def _host_snapshot(tensors, dtype = None):
     """Copies `tensors` to host memory with one device-to-host copy per dtype, so the version keeps its values
-    after the optimizer steps the live weights. Returns name -> view of a flat host buffer."""
+    after the optimizer steps the live weights. Returns name -> view of a fresh flat host buffer. Built outside
+    inference mode: vLLM scales LoRA B in place on the engine thread, which an inference tensor refuses."""
     import torch
+    with torch.inference_mode(False), torch.no_grad():
+        groups = {}
+        for name, tensor in tensors.items():
+            tensor = tensor.detach()
+            if dtype is not None and tensor.is_floating_point():
+                tensor = tensor.to(dtype)
+            groups.setdefault((tensor.device, tensor.dtype), []).append((name, tensor))
+        out = {}
+        for (device, _), items in groups.items():
+            # torch.cat already allocates a fresh buffer, so a CPU group needs no second copy.
+            flat = torch.cat([tensor.reshape(-1) for _, tensor in items])
+            if device.type != "cpu":
+                flat = flat.to("cpu")
+            offset = 0
+            for name, tensor in items:
+                size = tensor.numel()
+                out[name] = flat[offset : offset + size].view(tensor.shape)
+                offset += size
+        return {name: out[name] for name in tensors}
 
-    groups = {}
-    for name, tensor in tensors.items():
-        tensor = tensor.detach()
-        if dtype is not None and tensor.is_floating_point():
-            tensor = tensor.to(dtype)
-        groups.setdefault((tensor.device, tensor.dtype), []).append((name, tensor))
-    out = {}
-    for (device, _), items in groups.items():
-        flat = torch.cat([tensor.reshape(-1) for _, tensor in items])
-        flat = flat.to("cpu") if device.type != "cpu" else flat.clone()
-        offset = 0
-        for name, tensor in items:
-            size = tensor.numel()
-            out[name] = flat[offset : offset + size].view(tensor.shape)
-            offset += size
-    return {name: out[name] for name in tensors}
+
+def _upload_copy(lora):
+    """The request handed to `add_lora`. vLLM's tensor load keeps a same-dtype tensor's storage and scales LoRA B
+    in place, so a staged request goes up as a copy and the retained snapshot keeps the values TRL saved: a
+    restore or a rollback then serves them exactly once scaled, as a reload of TRL's files does."""
+    tensors = getattr(lora, "lora_tensors", None)
+    if not tensors:
+        return lora
+    upload = copy.copy(lora)
+    upload.lora_tensors = _host_snapshot(tensors)
+    return upload
 
 
 def _pause_on_sync():
@@ -170,10 +188,13 @@ class _Engine:
         self.newest = None
         self.lora_holds = {}
         self.inplace = _inplace_lora()
-        self.tensor_sync = _tensor_sync()
-        # (path, LoRARequest) snapshotted by `stage` for the next load of that path.
+        # Tensor hand-off only through the shared slot: with distinct ids vLLM can evict a version and reload it
+        # lazily from the request a rollout names, and each tensor load scales B in place; files re-read cleanly.
+        self.tensor_sync = _tensor_sync() and self.inplace
+        # (path, LoRARequest) snapshotted by `stage` for the next load of that path; guarded by `cv`.
         self.staged = None
-        self.slot_id = None
+        # Allocated once here: the trainer thread stages under this id while the engine thread loads it.
+        self.slot_id = next(_LORA_IDS) if self.inplace else None
         self.slot_version = 0
         self.aborted = None
         self.stats = {
@@ -217,6 +238,7 @@ class _Engine:
     def stop(self):
         with self.cv:
             self.stopping = True
+            self.staged = None
             self.cv.notify()
         if threading.current_thread() is not self.thread:
             self.thread.join(timeout = 60)
@@ -278,6 +300,7 @@ class _Engine:
         self._fail_active(RuntimeError("Unsloth: the in-process vLLM server stopped."))
         with self.cv:
             pending, self.pending = self.pending, []
+            self.staged = None
         for item in pending:
             item[-1].set_exception(RuntimeError("Unsloth: the in-process vLLM server stopped."))
         for name in list(self.loras):
@@ -350,38 +373,39 @@ class _Engine:
                 self._maybe_remove(lora_id)
 
     # Called from the trainer thread while TRL saves the adapter; the engine keeps stepping.
-    def stage_id(self):
-        if not self.inplace:
-            return next(_LORA_IDS)
-        if self.slot_id is None:
-            self.slot_id = next(_LORA_IDS)
-        return self.slot_id
-
     def stage(self, path, lora):
-        self.staged = (path, lora)
+        with self.cv:
+            if self.stopping or not self.tensor_sync:
+                return False
+            self.staged = (path, lora)
+            return True
 
-    def _take_staged(self, path):
-        staged, self.staged = self.staged, None
-        if staged is None or staged[0] != path:
+    def discard_staged(self):
+        # A newer save of the owning model supersedes any pending snapshot, also when it falls back to files.
+        with self.cv:
+            self.staged = None
+
+    def _staged_for(self, path):
+        # One read of path and request together, under the lock the trainer thread publishes with.
+        with self.cv:
+            staged = self.staged
+        if staged is None or staged[0] != path or staged[1].lora_int_id != self.slot_id:
             return None
-        self.stats["tensor_syncs"] += 1
-        return staged[1]
+        return staged
 
-    def _load(self, path, lora_id):
-        lora = self._take_staged(path)
-        if lora is not None and lora.lora_int_id == lora_id:
-            return lora
-        return self.load_lora(path, lora_request_id = lora_id)
+    def _consume(self, staged):
+        # Only after vLLM accepted it: an unrelated load or a failed one leaves the version for its own load.
+        with self.cv:
+            if self.staged is staged:
+                self.staged = None
+        self.stats["tensor_syncs"] += 1
 
     # Commands (run on the engine thread through `call`).
     def add_adapter(self, name, path):
         if self.inplace:
             return self._overwrite_slot(name, path)
-        staged = self.staged
-        lora_id = (
-            staged[1].lora_int_id if staged is not None and staged[0] == path else next(_LORA_IDS)
-        )
-        lora = self._load(path, lora_id)
+        lora_id = next(_LORA_IDS)
+        lora = self.load_lora(path, lora_request_id = lora_id)
         # Load now, while the trainer waits on this sync, not lazily on the first request.
         self.engine.add_lora(lora)
         self.loras[name] = lora
@@ -395,19 +419,23 @@ class _Engine:
         if loaded:
             self.engine.remove_lora(self.slot_id)
         try:
-            self.engine.add_lora(lora)
+            self.engine.add_lora(_upload_copy(lora))
         except BaseException:
             if loaded and previous is not None:
                 # Requests in flight still name the slot: put the previous version back.
-                self.engine.add_lora(previous)
+                self.engine.add_lora(_upload_copy(previous))
             raise
         self.slot_version += 1
 
     def _overwrite_slot(self, name, path):
-        if self.slot_id is None:
-            self.slot_id = next(_LORA_IDS)
-        lora = self._load(path, self.slot_id)
+        staged = self._staged_for(path)
+        if staged is not None:
+            lora = staged[1]
+        else:
+            lora = self.load_lora(path, lora_request_id = self.slot_id)
         self._reload_slot(lora, self.loras.get(self.newest) if self.newest is not None else None)
+        if staged is not None:
+            self._consume(staged)
         self.loras[name] = lora
         self.newest = name
         self.lora_holds.setdefault(self.slot_id, [False, 0])[0] = False
@@ -589,7 +617,10 @@ class UnslothAsyncVLLMServer:
             self._model = weakref.ref(model)
         except TypeError:
             self._model = lambda: None
+        # Private per-server directory (mkdtemp, mode 0700) for the one adapter_config.json the tensor request
+        # needs; never a path derived from TRL's output directory, which other users may be able to write.
         self._tensor_dir = None
+        self._tensor_lock = threading.Lock()
         self.engine = _Engine(llm, load_lora, sampling_params)
         self.stopped = False
         self._token = secrets.token_urlsafe(32)
@@ -675,6 +706,7 @@ class UnslothAsyncVLLMServer:
             ("engine_max_batch", "max_batch"),
             ("syncs_total", "syncs"),
             ("sync_steps_total", "sync_steps"),
+            ("tensor_syncs_total", "tensor_syncs"),
         ):
             lines.append(f"unsloth:async_grpo_{name}{{{labels}}} {float(stats[key])}")
         return 200, "\n".join(lines) + "\n"
@@ -743,12 +775,22 @@ class UnslothAsyncVLLMServer:
         }
         return {"id": output.request_id, "object": "text_completion", "choices": [choice]}
 
+    def discard_staged(self, model):
+        """A save of `model` that writes TRL's files: those files are newer than any pending snapshot."""
+        if model is self._model():
+            self.engine.discard_staged()
+
     def stage_adapter(self, model, adapter_name, dest_dir):
         """Snapshot the adapter TRL is about to save to `dest_dir` for its next `/v1/load_lora_adapter`, so the
         sync skips the safetensors round trip (PEFT's save also probes the Hub for the base config each time).
         False: nothing staged, TRL saves the files as usual."""
         engine = self.engine
-        if self.stopped or not engine.tensor_sync or model is not self._model():
+        if self.stopped or model is not self._model():
+            return False
+        # This save is the newest version: drop an older pending snapshot first, so a decline below leaves
+        # TRL's fresh files as the only source.
+        engine.discard_staged()
+        if not engine.tensor_sync or not isinstance(dest_dir, str):
             return False
         if adapter_name != "default" or set(getattr(model, "peft_config", None) or ()) != {
             "default"
@@ -757,14 +799,16 @@ class UnslothAsyncVLLMServer:
         build = _tensor_request_builder()
         if build is None:
             return False
-        if self._tensor_dir is None:
-            # Holds only adapter_config.json, written once; dot-prefixed so TRL's adapter namespace ignores it.
-            self._tensor_dir = os.path.join(os.path.dirname(dest_dir), ".unsloth-live-adapter")
         import torch
 
         dtype = getattr(getattr(self.vllm_config, "lora_config", None), "lora_dtype", None)
         try:
-            lora = build(model, self._tensor_dir, True, engine.stage_id())
+            with self._tensor_lock:
+                if self.stopped:
+                    return False
+                if self._tensor_dir is None:
+                    self._tensor_dir = tempfile.mkdtemp(prefix = "unsloth-async-grpo-lora-")
+                lora = build(model, self._tensor_dir, True, engine.slot_id)
             if lora is None or not getattr(lora, "lora_tensors", None):
                 return False
             # What a load from TRL's files gives vLLM: the values at save time, cast to the LoRA dtype.
@@ -775,8 +819,7 @@ class UnslothAsyncVLLMServer:
             logger.info(f"Unsloth: syncing the adapter through files instead of tensors: {error}")
             engine.tensor_sync = False
             return False
-        engine.stage(dest_dir, lora)
-        return True
+        return engine.stage(dest_dir, lora)
 
     def abort_all(self):
         if not self.stopped:
@@ -786,8 +829,14 @@ class UnslothAsyncVLLMServer:
         if self.stopped:
             return
         self.stopped = True
-        self.engine.stop()
-        self._shutdown()
+        try:
+            self.engine.stop()
+            self._shutdown()
+        finally:
+            with self._tensor_lock:
+                tensor_dir, self._tensor_dir = self._tensor_dir, None
+            if tensor_dir is not None:
+                shutil.rmtree(tensor_dir, ignore_errors = True)
 
 
 def _keep_awake(llm):
