@@ -1,24 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reference-image preprocessing for FLUX.2 edits on the GPU, byte-identical to the CPU path.
+"""GPU FLUX.2 edit-reference preprocessing (Lanczos resize + crop + normalise), byte-identical to the CPU path.
 
-The FLUX.2 pipelines prepare each condition image on the CPU: a Pillow Lanczos resize to about 1 MP when the image is
-larger (`Flux2ImageProcessor._resize_to_target_area`), then `preprocess(..., resize_mode="crop")` (a centre crop to a
-multiple of 16, numpy `/ 255`, `2 x - 1`). For a 1-4 MP reference that is 28-35 ms per image on one core.
-
-`install(pipe)` swaps those two calls on the pipeline's own image processor instance:
-- `_resize_to_target_area` returns a `DeferredResize` (the source image plus the size Pillow would produce) instead of
-  resizing; any attribute other than `size` / `width` / `height` materialises the Pillow resize, so other callers see
-  a normal image.
-- `preprocess` for one image with `resize_mode="crop"` uploads the uint8 pixels once, runs the Lanczos resize and the
-  crop in Triton (Pillow's fixed-point coefficients and rounding, `diffusion_lanczos_triton`), and maps codes through
-  a 256-entry table computed with diffusers' own ops. The result is `torch.equal` to the CPU tensor, same strides.
-Everything else (lists, other resize modes, crops coordinates, a failed probe, any GPU error) runs the stock method.
-
-The first GPU call per device runs a probe against Pillow on a fixed image; a mismatch keeps that device on the CPU
-path for the process. NVIDIA CUDA only (the kernel uses CUDA integer semantics and is not validated on ROCm).
-`UNSLOTH_DIFFUSION_GPU_REF_PREPROCESS=0` turns it off.
+`install(pipe)` patches the pipe's image processor; a per-device probe against Pillow gates it. NVIDIA CUDA only
+(kernel not validated on ROCm). `UNSLOTH_DIFFUSION_GPU_REF_PREPROCESS=0` turns it off.
 """
 
 from __future__ import annotations
@@ -30,7 +16,6 @@ from typing import Any, Optional
 
 ENV = "UNSLOTH_DIFFUSION_GPU_REF_PREPROCESS"
 _MARK = "_unsloth_gpu_ref_preprocess"
-# Engagement counters: GPU-prepared images, stock fallbacks after the GPU path was tried, probe results per device.
 STATS = {"gpu": 0, "fallback": 0}
 _PROBED: dict = {}
 _TABLES: dict = {}
@@ -53,10 +38,7 @@ def _cuda_ok() -> bool:
 
 
 class DeferredResize:
-    """What the patched `_resize_to_target_area` returns: the source image plus the size Pillow would produce.
-
-    The pipeline reads only `.size` before handing it to `preprocess`. Anything else resizes on the CPU exactly as the
-    stock method would and forwards to that image."""
+    """Source image plus Pillow's target size; any attribute but `.size` materialises the CPU resize."""
 
     def __init__(self, image: Any, width: int, height: int):
         self.source = image
@@ -84,7 +66,6 @@ def _target_size(image: Any, target_area: int) -> tuple:
 
 
 def _table(device):
-    """uint8 code -> diffusers' normalised float32: np.float32 array / 255.0, then torch 2.0 * x - 1.0."""
     import numpy as np
     import torch
 
@@ -100,8 +81,6 @@ def _table(device):
 def _gpu_preprocess(
     proc: Any, image: Any, height: Optional[int], width: Optional[int], device
 ) -> Any:
-    """`Flux2ImageProcessor.preprocess(image, height, width, resize_mode="crop")` for one RGB image (or a
-    DeferredResize of one) on `device`: float32 [1, 3, H, W] with the CPU path's strides."""
     import numpy as np
     import torch
 
@@ -126,7 +105,7 @@ def _gpu_preprocess(
         out = lanczos_resize(px, h1, w1, crop = (top, left, height, width))
     else:
         out = px[top : top + height, left : left + width]
-    f = _table(device)[out.long()]  # [H, W, 3] float32
+    f = _table(device)[out.long()]
     return f.unsqueeze(0).permute(0, 3, 1, 2)
 
 
@@ -145,7 +124,6 @@ class _SizeOnly:
 
 
 def _probe(proc: Any, stock_area, stock_pre, device) -> bool:
-    """One resize + crop against the stock CPU path on a fixed noise image; True when torch.equal with equal strides."""
     import numpy as np
     import torch
     from PIL import Image
@@ -162,7 +140,6 @@ def _probe(proc: Any, stock_area, stock_pre, device) -> bool:
 
 
 def _config_ok(proc: Any) -> bool:
-    """The stock PIL branch this path reproduces: resize (crop), RGB, normalise to [-1, 1], nothing else."""
     c = getattr(proc, "config", None)
     try:
         return bool(
@@ -182,7 +159,6 @@ def _device_of(pipe: Any):
 
 
 def install(pipe: Any, logger: Any = None) -> bool:
-    """Patch `pipe.image_processor` (a Flux2ImageProcessor) in place. True when installed."""
     if not enabled() or not _cuda_ok():
         return False
     proc = getattr(pipe, "image_processor", None)

@@ -41,8 +41,7 @@ def _coefficients(source: int, target: int, device: torch.device):
             weights.append(
                 _sinc(distance) * _sinc(distance / 3.0) if -3.0 <= distance < 3.0 else 0.0
             )
-        # Keep sequential double accumulation, including on Python versions
-        # whose sum() uses compensated summation.
+        # Sequential sum: Python 3.12+ sum() uses compensated summation.
         total = 0.0
         for weight in weights:
             total += weight
@@ -61,8 +60,7 @@ def _coefficients(source: int, target: int, device: torch.device):
 def _normalization(
     mean: tuple[float, float, float], std: tuple[float, float, float], device: torch.device
 ):
-    # Precompute float32 values to preserve rounding without fused multiply-add
-    # or approximate division in the kernel. Each RGB channel has its own table.
+    # Precomputed float32 values avoid FMA / approximate division in the kernel.
     values = np.arange(256, dtype = np.float32)[None, :] / 255.0
     values = (values - np.asarray(mean, dtype = np.float32)[:, None]) / np.asarray(
         std, dtype = np.float32
@@ -179,17 +177,9 @@ def lanczos_resize(
     mean: tuple[float, float, float] | None = None,
     std: tuple[float, float, float] | None = None,
 ) -> torch.Tensor:
-    """Resize CUDA uint8 HWC/NHWC RGB to ``height x width``, preserving layout.
+    """Resize CUDA uint8 HWC/NHWC RGB to ``height x width`` matching Pillow's Lanczos rounding.
 
-    By default, return uint8 pixels matching Pillow's two-pass Lanczos rounding.
-    Optional ``crop=(top, left, height, width)`` selects an in-bounds rectangle
-    in the resized image. Providing both RGB ``mean`` and ``std`` fuses
-    ``(pixel / 255 - mean) / std`` and returns float32 instead.
-
-    Batched inputs share resize, crop, and normalization parameters. The input
-    may have padded batch/row strides. The contiguous output owns its
-    storage; the input is borrowed only by the horizontal pass. Operations run
-    on the current PyTorch CUDA stream.
+    ``crop=(top, left, h, w)`` crops the resized image; ``mean`` + ``std`` fuse normalisation (float32 out).
     """
     if not image.is_cuda or torch.version.hip is not None:
         raise ValueError("Lanczos RGB preprocessing requires a CUDA tensor")

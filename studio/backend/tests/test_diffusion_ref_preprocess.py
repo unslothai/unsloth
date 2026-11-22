@@ -85,8 +85,8 @@ def test_deferred_resize_matches_pillow():
     stock = proc._resize_to_target_area(img, 1024 * 1024)
     d = rp.DeferredResize(img, w, h)
     assert d.size == stock.size and (d.width, d.height) == stock.size
-    assert d._resized is None  # size alone does not resize
-    assert d.mode == "RGB" and d._resized is not None  # any other attribute materialises
+    assert d._resized is None
+    assert d.mode == "RGB" and d._resized is not None
     assert np.array_equal(np.asarray(d.materialize()), np.asarray(stock))
 
 
@@ -96,7 +96,7 @@ def test_installed_without_device_is_stock(monkeypatch):
     pipe = _Pipe(device = None)
     stock_proc = flux2_ip.Flux2ImageProcessor(vae_scale_factor = 16)
     assert rp.install(pipe) is True
-    assert rp.install(pipe) is False  # idempotent
+    assert rp.install(pipe) is False
     for w, h in ((1500, 900), (640, 480)):
         img = _img(w, h, w)
         got = _stock_chain(pipe.image_processor, img)
