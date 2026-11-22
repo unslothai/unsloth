@@ -1329,3 +1329,68 @@ def test_host_snapshot_is_one_copy_per_dtype_and_keeps_order():
     assert torch.equal(out["a"], torch.arange(3, dtype = torch.float32))
     cast = server_module._host_snapshot(tensors, torch.bfloat16)
     assert all(t.dtype == torch.bfloat16 for t in cast.values())
+
+
+def test_trl_lora_sync_hands_the_adapter_over_as_tensors(monkeypatch, tmp_path):
+    # TRL's own `_sync_weight_lora` with rl.py's wrapper around TRL's `save_lora_adapter`: no adapter files are
+    # written, and the load serves the snapshot taken at the save.
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("requests")
+    module, sync_weight_lora = _trl_sync_weight_lora()
+    try:
+        from accelerate.state import PartialState
+        try:
+            from trl.generation.async_vllm_client import AsyncVLLMClient as VLLMClient
+            timeout = {"timeout": 10}
+        except ImportError:
+            from trl.experimental.async_grpo.vllm_client import VLLMClient
+            timeout = {"server_timeout": 10}
+    except Exception:
+        pytest.skip("TRL AsyncGRPO client not installed")
+    PartialState()
+    spec = importlib.util.spec_from_file_location(
+        "_async_grpo_patch_tests", Path(__file__).with_name("test_async_grpo_patch.py")
+    )
+    patch_tests = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(patch_tests)
+    rl = patch_tests._load()
+    server, llm, model, built = _tensor_served(monkeypatch)
+    rl["_ASYNC_GRPO_TENSOR_SERVERS"][model] = server
+    trl_saves = []
+    monkeypatch.setattr(
+        module, "save_lora_adapter", rl["_async_grpo_tensor_save"](lambda *a: trl_saves.append(a))
+    )
+    seen = _recording(llm.llm_engine)
+
+    class _Worker:
+        def update_model_version(self, version):
+            pass
+
+    trainer = types.SimpleNamespace(
+        model_version = 1,
+        _lora_dir = str(tmp_path),
+        _lora_name = "trl-policy",
+        _adapter_name = "default",
+        model = model,
+        accelerator = types.SimpleNamespace(
+            is_main_process = True,
+            num_processes = 1,
+            wait_for_everyone = lambda: None,
+            unwrap_model = lambda m: m,
+        ),
+        args = types.SimpleNamespace(max_staleness = 4),
+        vllm_client = VLLMClient(server.url, **timeout),
+        rollout_worker = _Worker(),
+    )
+    try:
+        saved = model.weight.clone()
+        sync_weight_lora(trainer, time.time())
+        assert trainer.model_version == 2 and trl_saves == []
+        assert not (tmp_path / "trl-policy-v2").exists(), "TRL's adapter files were written"
+        assert server.engine.stats["tensor_syncs"] == 1 and model.file_loads == []
+        model.weight.add_(1.0)
+        _complete(server, [1], model = "trl-policy-v2")
+        (tensor,) = seen[-1][1].lora_tensors.values()
+        assert torch.equal(tensor, saved.to(torch.bfloat16))
+    finally:
+        server.stop()

@@ -5689,9 +5689,10 @@ def _async_grpo_tensor_save(save_lora_adapter):
     # the tensors instead. Other servers and multi-process runs save the files as before.
     @functools.wraps(save_lora_adapter)
     def wrapper(model, accelerator, adapter_name, dest_dir, *args, **kwargs):
-        server = (
-            _ASYNC_GRPO_TENSOR_SERVERS.get(model) if isinstance(model, torch.nn.Module) else None
-        )
+        try:
+            server = _ASYNC_GRPO_TENSOR_SERVERS.get(model)
+        except TypeError:  # not weak-referenceable, so never registered
+            server = None
         if (
             server is not None
             and not args
@@ -6065,7 +6066,10 @@ def patch_trl_async_grpo():
             raise
         if server is not None:
             self._unsloth_vllm_server = server
-            _ASYNC_GRPO_TENSOR_SERVERS[model] = server
+            try:
+                _ASYNC_GRPO_TENSOR_SERVERS[model] = server
+            except TypeError:  # not weak-referenceable: TRL's files then carry every sync
+                pass
             weakref.finalize(self, server.stop)
         if masked_loss is not None:
             self.compute_loss = types.MethodType(masked_loss, self)
