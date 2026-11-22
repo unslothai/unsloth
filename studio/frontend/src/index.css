@@ -5961,7 +5961,6 @@ html.dark .translate-page .hub-tab-toggle-pill {
 	overflow-anchor: none;
 }
 
-/* Windows browsers rubber-band a scroller at its end, which bounced the thread under a still composer. */
 :root.client-windows .aui-thread-viewport {
 	overscroll-behavior-y: none;
 }
