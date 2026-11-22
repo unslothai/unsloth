@@ -1594,9 +1594,9 @@ def _wrap_generate(model):
                 return _generate(*args, **kwargs)
             _GENERATE_DEPTH[0] += 1
             try:
-                stream = _generate_streams_blocks(target)
+                stream, resident = _generate_gather_plan(target)
                 with (
-                    native_fsdp2_unsharded(target, stream_blocks = stream),
+                    native_fsdp2_unsharded(target, stream_blocks = stream, resident_blocks = resident),
                     torch.no_grad(),
                     _eager_decode_scope(stream),
                 ):
@@ -2464,8 +2464,9 @@ _GENERATE_GATHER_MODES = ("auto", "all", "block")
 
 def _generate_gather_mode():
     """UNSLOTH_FSDP2_GENERATE_GATHER: "all" gathers every unit for the whole generate (no collective
-    per decode step), "block" gathers one decoder block at a time, "auto" (default) gathers all only
-    when every rank has the free device memory for it."""
+    per decode step), "block" gathers one decoder block at a time, "auto" (default) gathers all
+    when every rank has the free device memory for it, else keeps as many decoder blocks gathered
+    as fit (the same blocks on every rank) and streams only the rest."""
     value = os.environ.get("UNSLOTH_FSDP2_GENERATE_GATHER", "auto").strip().lower() or "auto"
     if value in ("layer", "blocks", "stream"):
         value = "block"
@@ -2506,37 +2507,90 @@ def _synchronized_empty_cache():
     torch.cuda.empty_cache()
 
 
+def _generate_resident_override():
+    """UNSLOTH_FSDP2_GENERATE_RESIDENT=N: decoder blocks kept gathered for a streamed generate. Under
+    "block" exactly N (default 0: every block streams); under "auto" at most N (0 = stream every block
+    whenever the whole gather does not fit, the behaviour before partial residency). Unset = None."""
+    value = os.environ.get("UNSLOTH_FSDP2_GENERATE_RESIDENT", "").strip()
+    if not value:
+        return None
+    try:
+        n = int(value)
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise ValueError(
+            f"Unsloth: UNSLOTH_FSDP2_GENERATE_RESIDENT={value} must be a non-negative integer."
+        )
+    return n
+
+
+_GENERATE_PLAN_STATS = {"generates": 0, "resident_blocks": 0, "streamed_blocks": 0}
+
+
 def _generate_streams_blocks(model):
-    """Collective on CUDA in "auto" mode: True when generate should gather decoder blocks one at a
-    time. Gathering every unit at once needs the whole model's weights on each rank next to its
+    """True when generate should gather decoder blocks one at a time (see _generate_gather_plan)."""
+    return _generate_gather_plan(model)[0]
+
+
+def _generate_gather_plan(model):
+    """(stream, resident): stream = generate gathers decoder blocks one at a time; resident = how many of
+    them (the lowest indices) stay gathered for the whole call anyway. Collective on CUDA in "auto"
+    mode. Gathering every unit at once needs the whole model's weights on each rank next to its
     shards (a 12B 4-bit model after training on 2x 16 GB ran out of memory there), so "auto" streams
-    unless every rank has the free memory for the whole gather."""
+    unless every rank has the free memory for the whole gather; when streaming it keeps the longest
+    prefix of blocks gathered that fits on every rank (one all-reduce of one flag per prefix length,
+    so every rank picks the same set), and only the rest pays an all-gather per decode step."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not is_native_fsdp2(model):
-        return False
+        return False, 0
     mode = _generate_gather_mode()
+    override = _generate_resident_override()
     if mode != "auto":
-        return mode == "block"
+        return mode == "block", (override or 0) if mode == "block" else 0
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
-    if not units or not _stream_block_lists(model, units):
-        return False
+    block_lists = _stream_block_lists(model, units) if units else []
+    if not units or not block_lists:
+        return False, 0
     groups = _unit_param_groups(units[0])
     mesh_info = getattr(groups[0], "mesh_info", None) if groups else None
     device = getattr(groups[0], "device", None) if groups else None
     if device is None or torch.device(device).type != "cuda":
-        return False  # host memory: keep the single gather
+        return False, 0  # host memory: keep the single gather
     import torch.distributed as dist
 
     if not dist.is_available() or not dist.is_initialized():
-        return False
+        return False, 0
     sizes = [_unit_gathered_bytes(unit) for unit in units]
-    need = (
-        sum(sizes) + max(sizes) + (1 << 30)
-    )  # gathered weights + one all-gather buffer + decode scratch
+    scratch = 1 << 30  # decode scratch
+    need = sum(sizes) + max(sizes) + scratch  # gathered weights + one all-gather buffer + scratch
+    blocks = {}
+    for _, found in block_lists:
+        blocks.update(found)
+    block_ids = {id(unit) for unit in blocks.values()}
+    fixed = sum(size for unit, size in zip(units, sizes) if id(unit) not in block_ids)
+    block_sizes = [_unit_gathered_bytes(blocks[i]) for i in sorted(blocks)]
+    # Largest prefix tried: all blocks but one (all of them is the whole gather above), or the override.
+    top = len(block_sizes) - 1 if override is None else min(override, len(block_sizes) - 1)
+    # Prefix k stays gathered; the streamed rest needs two block buffers (FSDP2 may prefetch the next).
+    needs = [
+        fixed + sum(block_sizes[:k]) + 2 * max(block_sizes[k:]) + scratch for k in range(top + 1)
+    ]
     _synchronized_empty_cache()  # follows the last step's zero_grad() with no host sync in between
     free = torch.cuda.mem_get_info(device)[0]
-    fits = _agree_over_ranks(dist, device, [free >= need], getattr(mesh_info, "mesh", None))[0]
-    return not fits
+    flags = _agree_over_ranks(
+        dist,
+        device,
+        [free >= need] + [free >= n for n in needs],
+        getattr(mesh_info, "mesh", None),
+    )
+    if flags[0]:
+        return False, 0
+    resident = 0
+    for k in range(top + 1):
+        if flags[k + 1]:
+            resident = k
+    return True, resident
 
 
 def _publish_gathered_device(layer):
@@ -2637,11 +2691,16 @@ def _reshard_after_forward_on(unit):
 
 
 @contextlib.contextmanager
-def native_fsdp2_unsharded(model, stream_blocks = False):
+def native_fsdp2_unsharded(
+    model,
+    stream_blocks = False,
+    resident_blocks = 0,
+):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
     for code that reads weights without calling the blocks (Unsloth's decode loop, `PeftModel.generate`,
     which skips the root's hooks, merges). Resharded on exit. A no-op for a model not sharded natively.
-    stream_blocks (generate): decoder-block units stay sharded and are gathered one at a time."""
+    stream_blocks (generate): decoder-block units stay sharded and are gathered one at a time, except
+    the first `resident_blocks` of them, which are gathered up front like every other unit."""
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not is_native_fsdp2(model):
         yield model
@@ -2665,12 +2724,21 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
         _rebind_swapped_modules(root, units)
         _lazy_init_root(root, units)
         if stream_blocks:
+            keep = max(0, int(resident_blocks or 0))
             for layers, blocks in _stream_block_lists(model, units):
                 if layers.__dict__.get("_unsloth_block_swap", None) is not None:
+                    continue
+                order = sorted(blocks)
+                kept, keep = order[:keep], keep - min(keep, len(order))
+                blocks = {i: blocks[i] for i in order[len(kept) :]}
+                _GENERATE_PLAN_STATS["resident_blocks"] += len(kept)
+                _GENERATE_PLAN_STATS["streamed_blocks"] += len(blocks)
+                if not blocks:
                     continue
                 streams.append(layers)
                 layers.__dict__["_unsloth_block_swap"] = _GenerateBlockStream(blocks)
                 streamed.update(id(unit) for unit in blocks.values())
+            _GENERATE_PLAN_STATS["generates"] += 1
         # Streamed blocks may still be gathered (a forward that kept them); reshard them first.
         for unit in units:
             if id(unit) in streamed:
