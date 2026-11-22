@@ -509,6 +509,32 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
+def _refuse_network_share_adapter_base(model_name, peft_config):
+    """On Windows a Hub adapter's UNC base would probe a host the repo chose (SMB, NTLM leak).
+    Local adapter folders are the user's own and are left alone."""
+    base = getattr(peft_config, "base_model_name_or_path", None)
+    if not isinstance(base, str) or not base or os.path.isdir(model_name):
+        return
+    try:
+        from unsloth_zoo.vision_utils import _is_network_share
+    except ImportError:  # an older unsloth_zoo: plain UNC paths only
+
+        def _is_network_share(path):
+            p = path.replace("\\", "/")
+            host = p[2:].split("/", 1)[0].lower()
+            return (
+                os.name == "nt"
+                and p.startswith("//")
+                and host not in ("", ".", "?", "localhost", "127.0.0.1", "wsl$", "wsl.localhost")
+            )
+
+    if _is_network_share(base):
+        raise ValueError(
+            f"Unsloth: The adapter {model_name} names a base model on a network share ({base!r}). "
+            "Refusing to load it: download the base model and load the adapter from a local folder instead."
+        )
+
+
 def _adapter_file_shapes(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
@@ -1752,6 +1778,8 @@ class FastLanguageModel(FastLlamaModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        if peft_config is not None:
+            _refuse_network_share_adapter_base(model_name, peft_config)
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -2755,6 +2783,8 @@ class FastModel(FastBaseModel):
             )
             raise RuntimeError(combined_error) from _cause
 
+        if peft_config is not None:
+            _refuse_network_share_adapter_base(model_name, peft_config)
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
