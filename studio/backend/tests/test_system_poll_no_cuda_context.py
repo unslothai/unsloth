@@ -620,8 +620,7 @@ def test_context_free_free_excludes_the_reserved_framebuffer(monkeypatch):
 
 
 def test_context_free_accepts_reserved_framebuffer_on_16gb_card(monkeypatch):
-    # RTX 5070 Ti 16 GB (#18732): nvidia-smi reports 16303 MiB (15.92 GiB) while torch
-    # get_device_properties(0).total_memory reports ~15878.56 MiB (424.44 MiB driver carve-out, ~2.7%).
+    # RTX 5070 Ti (#18732): nvidia-smi 16303 MiB, torch total_memory 15878.56 MiB.
     mib = 1 << 20
     torch_total_bytes = int(15878.56 * mib)
     _nvidia_smi_reading(
