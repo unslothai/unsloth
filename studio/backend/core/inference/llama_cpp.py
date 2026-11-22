@@ -43414,7 +43414,6 @@ class LlamaCppBackend:
                         logger.info("Final answer was only a tool call; retrying without tools")
                         stream_payload.pop("tools", None)
                         stream_payload.pop("tool_choice", None)
-                        # Dropping the tools alone left LFM2.5-24B calling again 2/4; with this note 0/6.
                         # Appended to the last turn, not a new one: Ministral counts a user turn after a tool result as two in a row.
                         _last_t = (
                             stream_payload["messages"][-1] if stream_payload["messages"] else None
