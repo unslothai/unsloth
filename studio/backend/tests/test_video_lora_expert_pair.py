@@ -232,7 +232,8 @@ def test_the_lora_listing_route_carries_the_preset(monkeypatch):
 
 
 def _wan22_unipc():
-    from diffusers import UniPCMultistepScheduler
+    # The shard that runs without diffusers skips the scheduler cases instead of erroring.
+    UniPCMultistepScheduler = pytest.importorskip("diffusers").UniPCMultistepScheduler
 
     # Wan-AI/Wan2.2-T2V-A14B-Diffusers scheduler/scheduler_config.json
     return UniPCMultistepScheduler(
