@@ -303,3 +303,15 @@ def test_fastmodel_keeps_inkling2_eager_unless_told_otherwise():
         r'os\.environ\["UNSLOTH_COMPILE_DISABLE"\] = "partial"',
         body,
     )
+
+
+@pytest.mark.parametrize("loop", [True, False])
+def test_fast_inference_switches_inkling2_to_unsloth_inference(loop):
+    # No vLLM release registers Inkling 2 (0.34.0 has Inkling v1 only and pins transformers < 5.23), so
+    # fast_inference = True must fall back before a vLLM engine is built, for Mini and for Small.
+    from unsloth.models.loader import _vllm_unsupported_model_types
+    from unsloth_zoo.hf_utils import get_transformers_model_type
+
+    model_types = get_transformers_model_type(_tiny(loop).config)
+    assert _vllm_unsupported_model_types(model_types)
+    assert _vllm_unsupported_model_types(["llama"]) == []

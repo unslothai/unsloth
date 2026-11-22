@@ -124,7 +124,9 @@ SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
-VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
+# Inkling 2 (Mini = inkling2_loop, Small = inkling2): no vLLM release registers it (0.34.0 has only Inkling v1
+# and needs transformers < 5.23, Inkling 2 needs 5.24), and the zoo has no weight layout for its looped layers.
+VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss", "inkling2", "inkling2_loop")
 # model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
 _VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
 # vLLM 0.31 has no attention backend for these below sm80: TRITON_ATTN needs 96 KB shared memory
