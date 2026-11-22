@@ -220,6 +220,8 @@ def test_usage_counts_both_attempts(monkeypatch):
 
     assert metadata["usage"]["completion_tokens"] == 3_200
     assert metadata["finish_reason"] == "stop"
+    # The context meter shows what the window holds now: the retry's prompt and answer only.
+    assert metadata["usage"]["context_tokens"] == 100 + 200
 
 
 def test_the_callers_messages_are_left_as_they_were(monkeypatch):

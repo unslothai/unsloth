@@ -2364,6 +2364,11 @@ _GPU_OOM_HEADROOM_MAX_STRIKES = 3
 def _merge_attempt_metadata(first: dict, last: dict) -> dict:
     """Usage and timings of both attempts, with the last attempt's finish reason."""
     usage = dict(last.get("usage") or {})
+    # The context meter reads this; the window holds only the last request, not both.
+    if "context_tokens" not in usage and usage.get("prompt_tokens"):
+        usage["context_tokens"] = int(usage["prompt_tokens"]) + int(
+            usage.get("completion_tokens") or 0
+        )
     for key in ("completion_tokens", "total_tokens"):
         spent = (first.get("usage") or {}).get(key)
         if spent:
