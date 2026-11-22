@@ -21,6 +21,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from autograd_fork import fork_can_backward
+from real_accelerator import has_real_accelerator
 
 import unsloth  # noqa: F401
 from unsloth import context_parallel as cp
@@ -229,16 +231,18 @@ LIGHTNING_CASES = {
 
 
 def _spawn(fn, world, *args):
-    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof.
+    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof. A real GPU host
+    # needs no spoof, and once this process ran a backward there, forked children refuse autograd.
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
+    start_method = "fork" if not has_real_accelerator() or fork_can_backward() else "spawn"
     with tempfile.TemporaryDirectory() as d:
         mp.start_processes(
             _entry,
             args = (world, os.path.join(d, "init"), fn, args),
             nprocs = world,
             join = True,
-            start_method = "fork",
+            start_method = start_method,
         )
 
 

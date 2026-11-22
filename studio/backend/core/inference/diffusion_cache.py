@@ -48,6 +48,23 @@ def _auto_static_skip_table() -> dict:
 
 AUTO_STATIC_SKIP: dict = _auto_static_skip_table()
 
+
+# Per-tier measured step masks (``FamilyProfile.auto_static_skip_masks``): {repo: {tier: {steps: mask}}}. A mask
+# replaces the interval at exactly its own step count, where it measured better than the interval.
+def _auto_static_skip_masks_table() -> dict:
+    from .family_profile import profile_table
+
+    table: dict = {}
+    for rows in profile_table("auto_static_skip_masks").values():
+        for repo, entries in rows:
+            tiers = table.setdefault(repo.strip().lower(), {})
+            for tier, mask in entries:
+                tiers.setdefault(tier, {})[len(mask)] = mask
+    return table
+
+
+AUTO_STATIC_SKIP_MASKS: dict = _auto_static_skip_masks_table()
+
 AUTO_STATIC_SKIP_TIERS = (_TIER_MAX,)
 
 # Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
@@ -110,10 +127,29 @@ def auto_static_skip_plan(
         steps_ok = False
     if not every or not steps_ok:
         return None
-    return {
+    plan = {
         "every": int(every),
         "min_steps": max(AUTO_STATIC_MIN_STEPS, int(entry.get("steps") or 0)),
     }
+    masks = auto_static_skip_masks(identifiers, _TIER_MAX)
+    if masks:
+        plan["masks"] = masks
+    return plan
+
+
+def auto_static_skip_masks(identifiers: Any, tier: str) -> dict:
+    """``{steps: mask}`` measured for the first identifier naming a listed checkpoint on ``tier``, else {}."""
+    from .diffusion_families import canonical_base
+
+    if isinstance(identifiers, str) or identifiers is None:
+        identifiers = (identifiers,)
+    for identifier in identifiers:
+        if not identifier:
+            continue
+        key = canonical_base(str(identifier)).strip().lower()
+        if key in AUTO_STATIC_SKIP:
+            return dict(AUTO_STATIC_SKIP_MASKS.get(key, {}).get(tier, {}))
+    return {}
 
 
 def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:

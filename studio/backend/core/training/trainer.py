@@ -3869,6 +3869,8 @@ class UnslothTrainer:
                     tokenizer = self.tokenizer,
                     is_vlm = self.is_vlm,
                     format_type = format_type,
+                    # Eval rows without their own question column score the training prompt; per-row questions stay.
+                    vlm_fallback_instruction = dataset_info.get("vlm_instruction"),
                     dataset_name = dataset_source,
                     dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,

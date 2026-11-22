@@ -148,3 +148,20 @@ def test_trainer_keeps_the_budget_with_block_swap():
     assert "gc_budget = enable_budgeted_checkpointing(transformer, device)" in src
     retry = src[src.index("def _retry_fully_checkpointed") :]
     assert "reset_block_swaps(transformer)" in retry[: retry.index("replay.replay(")]
+
+
+def test_reserve_follows_the_free_vram_not_the_card(monkeypatch):
+    """A 96 GB card with 16 GiB free (another process holds the rest) plans like a dedicated 24 GB card: the 12%
+    headroom is of what this run can use, so it does not swap blocks that fit."""
+    made = []
+    _install_fake_zoo(monkeypatch, made)
+    shared = bs.install_dit_block_swap(
+        _Model(4), "cuda:0", "auto", tokens = 16, free_bytes = 16 * GIB, total_bytes = 96 * GIB
+    )
+    dedicated = bs.install_dit_block_swap(
+        _Model(4), "cuda:0", "auto", tokens = 16, free_bytes = 16 * GIB, total_bytes = 24 * GIB
+    )
+    assert shared["reserve_gib"] == dedicated["reserve_gib"]
+    assert shared["swapped_blocks"] == dedicated["swapped_blocks"]
+    # Still never below the fixed floor.
+    assert shared["reserve_gib"] >= 3.0

@@ -7,7 +7,11 @@ UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off.
 
 Denoise-phase-sized streamed placements use expandable segments for the whole load (``engage_streamed``): fixed
 segments cached ~1.9 GiB of churn (FLUX.3 Klein int8, L4 6 GiB), evicting resident blocks every render.
-UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE=0 turns it off."""
+UNSLOTH_DIFFUSION_STREAMED_EXPANDABLE=0 turns it off.
+
+Video loads hold the same engagement (owner ``"video"``) for every CUDA placement: fixed segments added 1.0 to
+1.6 GiB of denoise reservation on Wan2.2-TI2V-5B (L4, 1280x704 at 49 / 121 frames).
+UNSLOTH_VIDEO_DENOISE_EXPANDABLE=0 turns that off alone."""
 
 from __future__ import annotations
 
@@ -30,6 +34,8 @@ _usable: Optional[bool] = None
 _restore: Optional[str] = None
 # settings restored by release_streamed; None = not engaged
 _streamed: Optional[str] = None
+# owners of the streamed engagement; the last release restores the settings
+_owners: set = set()
 STATS = {"engaged": 0, "skipped": 0, "streamed": 0}
 
 
@@ -193,9 +199,9 @@ def streamed_enabled() -> bool:
     )
 
 
-def engage_streamed() -> bool:
-    """Expandable segments until ``release_streamed`` (Linux CUDA, native allocator). True if engaged."""
-    global _usable, _streamed
+def engage_streamed(owner: str = "image") -> bool:
+    """Expandable segments until ``owner`` calls ``release_streamed`` (Linux CUDA, native allocator). True if engaged."""
+    global _usable, _streamed, _owners
     if not streamed_enabled():
         return False
     torch = _torch()
@@ -203,6 +209,7 @@ def engage_streamed() -> bool:
         return False
     with _lock:
         if _streamed is not None:
+            _owners.add(owner)
             return True
         if _usable is None:
             _usable = _decide(torch)
@@ -217,16 +224,20 @@ def engage_streamed() -> bool:
             _usable = False
             return False
         _streamed = live
+        _owners = {owner}
         STATS["streamed"] += 1
     return True
 
 
-def release_streamed() -> bool:
+def release_streamed(owner: str = "image") -> bool:
     global _usable, _streamed
     torch = _torch()
     with _lock:
-        if _streamed is None or torch is None or _depth > 0:
+        if _streamed is None or torch is None or _depth > 0 or owner not in _owners:
             return False
+        _owners.discard(owner)
+        if _owners:
+            return True
         try:
             _put_back(torch, _streamed)
         except Exception:  # noqa: BLE001

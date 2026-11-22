@@ -25,6 +25,7 @@ import itertools
 import json
 import logging
 import math
+import mmap
 import os
 import re
 import struct
@@ -1010,6 +1011,30 @@ def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
     return "error" in line_lower or "fail" in line_lower or "warn" in line_lower
 
 
+def _log_shows_load_stages(argv, environ) -> bool:
+    """True when llama-server logs at trace verbosity or above, the only levels that mark the load stages."""
+    verbosity = None
+    args = [str(a) for a in argv] if isinstance(argv, (list, tuple)) else []
+    for i, arg in enumerate(args):
+        flag, (_name, eq, value) = _flag_name(arg), arg.partition("=")
+        if flag == "--log-disable":
+            return False
+        if flag in ("-v", "--verbose", "--log-verbose"):
+            verbosity = sys.maxsize
+        elif flag in ("-lv", "--verbosity", "--log-verbosity"):
+            value = value if eq else (args[i + 1] if i + 1 < len(args) else "")
+            try:
+                verbosity = int(value)
+            except ValueError:
+                pass
+    if verbosity is None:
+        try:
+            verbosity = int((environ or {}).get("LLAMA_ARG_LOG_VERBOSITY", ""))
+        except (TypeError, ValueError):
+            return False
+    return verbosity >= _LOAD_STAGE_MIN_VERBOSITY
+
+
 def _trace_verbosity_args(caps: dict, extra_args: Optional[Iterable[str]], environ) -> list[str]:
     """``--verbosity 4`` when the build hides load lines at its default and the user chose none."""
     if not caps.get("supports_trace_verbosity"):
@@ -1055,6 +1080,18 @@ _FIT_DEVICE_RE = re.compile(
     r"common_params_fit_impl:\s+-\s+(?P<device>[A-Za-z]+\d+)\s+\(.*?\):\s+(?P<layers>\d+)\s+layers?"
     r"\s*(?:\(\s*(?P<overflow>\d+)\s+overflowing\s*\))?\s*,\s*\d+\s+MiB used"
 )
+# The first weight read; from verbosity 5 each --fit probe (no_alloc, nothing read) prints it too.
+_LOAD_TENSORS_MARK = "load_tensors: loading model tensors"
+# Start of the --fit search; b8864 and older prefix its lines llama_params_fit_impl.
+_FIT_START_MARKS = (
+    "fitting params to device memory",
+    "common_params_fit_impl:",
+    "llama_params_fit_impl:",
+)
+# Every way the search ends prints one: success at trace (4), failure and error as warning and error.
+_FIT_END_MARKS = ("common_fit_params:", "llama_params_fit:")
+# llama.cpp defaults to info (3), which hides both ends of the search and the weight-load line.
+_LOAD_STAGE_MIN_VERBOSITY = 4
 # The MoE-only fill: printed for a model with experts, whose GPU layers then hold only their dense weights.
 _FIT_DENSE_ONLY_MARK = "filling dense-only layers back-to-front"
 # From here the per-device lines carry an explicit "(N overflowing)" count.
@@ -2549,6 +2586,19 @@ _ANSWER_PIVOT = re.compile(
     r"[\W_]*(?:\w+[\W_]+){1,}\w",
     re.I,
 )
+
+
+# LFM2 / LFM2.5 tool-call opener, one special token in their vocabularies.
+_LFM_CALL_OPENER = "<|tool_call_start|>"
+
+
+def _with_banned_token(logit_bias, token_id: int):
+    """``logit_bias`` (llama-server takes a ``[[id, bias]]`` list or an ``{id: bias}`` object) plus a ban on ``token_id``."""
+    if isinstance(logit_bias, dict) and logit_bias:
+        return {**logit_bias, str(token_id): False}
+    if isinstance(logit_bias, list) and logit_bias:
+        return [*logit_bias, [token_id, False]]
+    return [[token_id, False]]
 
 
 def _gguf_active_tool_names(active_tools: list[dict]) -> list[str]:
@@ -5293,6 +5343,58 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     return False
 
 
+# q8_0 banded kernel registration string (survives strip); only llama.cpp#399 builds have it.
+_INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E")
+_GGML_GPU_LIB_GLOBS = {
+    "cuda": ("libggml-cuda.so*", "ggml-cuda.dll"),
+    "hip": ("libggml-hip.so*", "ggml-hip.dll"),
+}
+
+
+@functools.lru_cache(maxsize = 16)
+def _lib_matches(path: str, _mtime_ns: int, _size: int, pattern: "re.Pattern[bytes]") -> bool:
+    try:
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as data:
+            return pattern.search(data) is not None
+    except (OSError, ValueError):
+        return False
+
+
+def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
+    """Whether the ggml CUDA / HIP library beside llama-server has the quantized banded kernel; fails closed."""
+    for pattern in _GGML_GPU_LIB_GLOBS.get(backend, ()):
+        try:
+            candidates = sorted(lib_dir.glob(pattern))
+        except OSError:
+            continue
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                st = resolved.stat()
+            except OSError:
+                continue
+            if resolved.is_file() and _lib_matches(
+                str(resolved), st.st_mtime_ns, st.st_size, _INKLING2_BANDED_QUANT_KV_RE
+            ):
+                return True
+    return False
+
+
+class _Inkling2BandedSupport(NamedTuple):
+    """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask;
+    tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA)."""
+
+    backend: Optional[str] = None
+    quant_kv: bool = False
+    tile_kv: bool = False
+
+
+# Unknown build prices as pre-#399.
+_INKLING2_BANDED_LEGACY = _Inkling2BandedSupport()
+# Backends with a FLASH_ATTN_EXT_BANDED kernel; Metal, Vulkan and SYCL take the dense bias.
+_INKLING2_BANDED_BACKENDS = frozenset({"cuda", "hip", "cpu"})
+
+
 def _swa_full_from_args_or_env(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -5705,6 +5807,14 @@ _LOOP_SLOT_ARCHS = frozenset({"inkling2_loop"})
 _LOOP_VISIT_ARCHS = frozenset({"inkling2"})
 # Both GGUF layouts of Inkling 2 run the same relative-bias attention graph.
 _INKLING2_ARCHS = frozenset({"inkling2", "inkling2_loop"})
+
+
+def _dspark_default_draft_n_max(architecture: Optional[str]) -> int:
+    """DSpark draft depth when nothing names one. Inkling 2 drafts 2: on B200 it decodes 1.15-1.28x vs 1.04-1.13x
+    at 3 (both Studio sampling defaults, UD-Q4_K_XL and UD-IQ1_S), since the third token is rarely accepted."""
+    return 2 if architecture in _INKLING2_ARCHS else 3
+
+
 # Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
 _SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 
@@ -7539,6 +7649,38 @@ def _moe_spill_batch_ubatch(
     return n_batch, _MOE_SPILL_N_UBATCH
 
 
+# Inkling 2 with every expert on the GPU: prompt processing is bound by the MoE GEMM tile,
+# so a larger micro-batch gives each expert more rows. B200 llama-bench, ub 512 -> 1024:
+# +21% at 4K, +14% at 32K (2048 loses ground at 32K, 4096 loses outright). KLD vs ub 512 is
+# 0.002, rounding-order noise. Costs ~225 MiB + 1.2 MiB per 1K context of compute buffer.
+_INKLING_RESIDENT_N_UBATCH = 1024
+# Free VRAM the raised launch must still leave, on top of the occupancy cap.
+_INKLING_UBATCH_MIN_FREE_MIB = 256
+# "on" = raise without the headroom gate, "off" = never raise, else auto.
+_INKLING_UBATCH_ENV = "UNSLOTH_INKLING_UBATCH"
+
+
+def _inkling_resident_batch_ubatch(
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    *,
+    architecture: Optional[str],
+    experts_resident: bool,
+    user_named_batch: bool,
+) -> tuple[Optional[int], Optional[int]]:
+    """The raised pair for an all-GPU Inkling 2 load; a user-set batch always wins."""
+    if user_named_batch or not experts_resident or architecture not in _INKLING2_ARCHS:
+        return n_batch, n_ubatch
+    current = _DEFAULT_LLAMA_N_UBATCH if n_ubatch is None else int(n_ubatch)
+    if current >= _INKLING_RESIDENT_N_UBATCH:
+        return n_batch, n_ubatch
+    # llama.cpp caps the micro-batch at the batch, so keep batch >= micro-batch.
+    batch = _DEFAULT_LLAMA_N_BATCH if n_batch is None else int(n_batch)
+    if batch < _INKLING_RESIDENT_N_UBATCH:
+        n_batch = _INKLING_RESIDENT_N_UBATCH
+    return n_batch, _INKLING_RESIDENT_N_UBATCH
+
+
 def _override_targets_host(value: str) -> bool:
     """Whether an ``--override-tensor`` value sends any tensor to host memory
     (``CPU``, ``CPU_REPACK``, ``CUDA_Host``, ...), not only to GPUs."""
@@ -8807,7 +8949,9 @@ class LlamaCppBackend:
         self._gguf_split_index: Optional[int] = None
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
-        self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
+        self._load_rss_hwm = (None, 0)  # ((pid, stage), peak bytes) for load_progress
+        # (pid, "fit" | "placed" | "weights", read baseline, RSS baseline), set by _drain_stdout.
+        self._load_stage = None
         self._stats_logger = None  # vLLM-style engine-stats poller, set on load
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
@@ -8937,6 +9081,8 @@ class LlamaCppBackend:
         self._vocab_size: Optional[int] = None
         # Set from reserves_micro_batch_outputs() by the callers that know the binary.
         self._reserves_micro_batch_outputs: bool = False
+        # None resolves the installed build on first use.
+        self._inkling2_banded_support: Optional[_Inkling2BandedSupport] = None
         self._resumes_thoughts: bool = True
         # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
@@ -9143,6 +9289,39 @@ class LlamaCppBackend:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._port}"
+
+    def _final_pass_call_opener_id(self) -> Optional[int]:
+        """Single-token LFM call opener id to ban on the tool_choice "none" final pass (#18802), else None."""
+        template = (
+            getattr(self, "_chat_template_override", None)
+            or getattr(self, "_chat_template", None)
+            or ""
+        )
+        if _LFM_CALL_OPENER not in template:
+            return None
+        cached = getattr(self, "_final_pass_opener_cache", None)
+        if cached is not None and cached[0] is template:
+            return cached[1]
+        token_id: Optional[int] = None
+        try:
+            with httpx.Client(
+                timeout = httpx.Timeout(10.0),
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                r = client.post(
+                    f"{self.base_url}/tokenize",
+                    json = {"content": _LFM_CALL_OPENER, "add_special": False, "parse_special": True},
+                )
+            tokens = r.json().get("tokens") if r.status_code == 200 else None
+            if isinstance(tokens, list) and len(tokens) == 1 and isinstance(tokens[0], int):
+                token_id = tokens[0]
+        except Exception as exc:  # noqa: BLE001 -- the ban is an aid; the answer pass runs without it
+            logger.debug("Could not look up the LFM call opener token: %s", exc)
+            return None
+        self._final_pass_opener_cache = (template, token_id)
+        return token_id
 
     @property
     def _auth_headers(self) -> "Optional[dict[str, str]]":
@@ -9580,11 +9759,13 @@ class LlamaCppBackend:
 
         ``bytes_loaded`` is the larger of the bytes read and Linux file-backed RSS; never a working set,
         which counts buffers allocated before any read. The total includes projector, drafter and adapters.
+        At trace verbosity (Studio's default) both counters start at the first weight read, and a --fit
+        search before it reports phase "fit" with no bytes: its probes only re-read the GGUF header.
 
         Shape::
 
             {
-                "phase": "mmap" | "ready",
+                "phase": "fit" | "mmap" | "ready",
                 "bytes_loaded": int,   # as above, never decreasing
                 "bytes_total":  int,   # weight files the server loads
                 "fraction": float,     # bytes_loaded / bytes_total, 0..1
@@ -9605,16 +9786,23 @@ class LlamaCppBackend:
             launched[1] if launched is not None and launched[0] is proc else None,
         )
 
+        stage = getattr(self, "_load_stage", None)
+        if stage is None or stage[0] != pid:
+            stage = (pid, None, 0, 0)
+        if stage[1] in ("fit", "placed") and not self._healthy:
+            return {"phase": "fit", "bytes_loaded": 0, "bytes_total": bytes_total, "fraction": 0.0}
+
         rss = LlamaCppBackend._read_rss_bytes(pid)
         read = LlamaCppBackend._read_load_bytes(pid)
         if rss is None and read is None:
             return None
-        bytes_loaded = max(rss or 0, read or 0)
+        bytes_loaded = max((rss or 0) - stage[3], (read or 0) - stage[2], 0)
 
         # RSS drops once -ngl offloads to VRAM; keep a high-water mark so progress never regresses.
-        hwm_pid, hwm = getattr(self, "_load_rss_hwm", (None, 0))
-        hwm = bytes_loaded if hwm_pid != pid else max(hwm, bytes_loaded)
-        self._load_rss_hwm = (pid, hwm)
+        # Per stage too: a raw figure from before the baseline must not hold the bar up after it.
+        hwm_key, hwm = getattr(self, "_load_rss_hwm", (None, 0))
+        hwm = bytes_loaded if hwm_key != stage[:2] else max(hwm, bytes_loaded)
+        self._load_rss_hwm = (stage[:2], hwm)
         bytes_loaded = hwm
 
         phase = "ready" if self._healthy else "mmap"
@@ -10784,6 +10972,52 @@ class LlamaCppBackend:
         except Exception:
             return False
         return build is not None and build < cls._OUTPUT_ROWS_CAPPED_BUILD
+
+    @classmethod
+    def inkling2_banded_support(cls, binary: Optional[str] = None) -> "_Inkling2BandedSupport":
+        try:
+            binary = binary or cls._find_llama_server_binary()
+            if not binary:
+                return _INKLING2_BANDED_LEGACY
+            if cls._build_has_metal(binary):
+                return _Inkling2BandedSupport("metal", False)
+            backends = cls._installed_ggml_backends(binary)
+            backend = next(
+                (b for b in ("cuda", "hip", "vulkan", "sycl") if b in backends),
+                "cpu" if "cpu" in backends else None,
+            )
+            quant_kv = backend in ("cuda", "hip") and _gpu_lib_has_banded_quant_kv(
+                _llama_lib_dir(binary), backend
+            )
+            tile_kv = backend == "cuda" and quant_kv and cls._inkling2_cuda_tile_kv(binary)
+            return _Inkling2BandedSupport(backend, quant_kv, tile_kv)
+        except Exception as exc:  # noqa: BLE001 -- an unreadable build prices as legacy
+            logger.debug("Inkling 2 banded probe failed: %s", exc)
+            return _INKLING2_BANDED_LEGACY
+
+    # turing_mma_available: the banded MMA kernel, and its in-tile q8_0 / q4_0 dequant, need sm_75.
+    _INKLING2_BANDED_TILE_MIN_SM = 75
+
+    @classmethod
+    def _inkling2_cuda_tile_kv(cls, binary: Optional[str]) -> bool:
+        """Every visible card, and the arch the bundle runs on it, is Turing+; unknown: False."""
+        caps = cls._cuda_compute_caps()
+        if not caps:
+            return False
+        sms = cls._installed_llama_cuda_sms(binary)
+        floor = cls._INKLING2_BANDED_TILE_MIN_SM
+        for sm in caps.values():
+            # ggml_cuda_highest_compiled_arch: the highest compiled arch <= the card runs.
+            ran = max((s for s in sms if s <= sm), default = 0) if sms else sm
+            if ran < floor:
+                return False
+        return True
+
+    def _inkling2_banded(self) -> "_Inkling2BandedSupport":
+        support = getattr(self, "_inkling2_banded_support", _INKLING2_BANDED_LEGACY)
+        if support is None:
+            support = self._inkling2_banded_support = self.inkling2_banded_support()
+        return support
 
     # ggml-org/llama.cpp#23089 added continuation inside an unfinished reasoning block.
     _THOUGHT_CONTINUATION_BUILD = 9200
@@ -18808,6 +19042,16 @@ class LlamaCppBackend:
     _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
     _INKLING2_REL_INDEX_BYTES = 4
     _INKLING2_BANDED_MIN_UBATCH = 33
+    # #399: iq4_nl has no f16 converter; Turing+ CUDA dequantizes q8_0/q4_0 in-tile, else f16 copy.
+    _INKLING2_BANDED_QUANT_TYPES = frozenset({"q8_0", "q4_0", "q4_1", "q5_0", "q5_1"})
+    _INKLING2_BANDED_TILE_TYPES = frozenset({"q8_0", "q4_0"})
+    # Prompt graphs regrow the banded buffer past the reserve; fit to B200 Inkling-2-Mini at exit.
+    # #399 shared-mask reserve grows 4 B/cell per ub token and leads above ~600K cells.
+    _INKLING2_BANDED_RUNTIME_BYTES = 15
+    _INKLING2_RUNTIME_BYTES_PER_UB = 800 * 1024
+    _INKLING2_BANDED_SHARED_BYTES = 2
+    _INKLING2_BANDED_SHARED_RESERVE_BYTES = 4
+    _INKLING2_SHARED_RUNTIME_BYTES_PER_UB = 1200 * 1024
 
     def _compute_activation_width(self) -> int:
         """Widest dense, expert or recurrent block plus per-layer embeddings, floored at 12 * n_embd."""
@@ -19043,18 +19287,44 @@ class LlamaCppBackend:
             # Both paths allocate the mask, and 8192 has too little headroom to absorb a split.
             return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
         if getattr(self, "_architecture", None) in _INKLING2_ARCHS:
-            # Sliding layers' smaller bias reuses this allocation; no dequant copy on either path.
+            # Sliding layers' smaller bias reuses this allocation.
             n_head = self._inkling2_bias_heads()
             head_dim = getattr(self, "_kv_key_length", None) or 128
+            kv_type = (cache_type_kv or "f16").strip().lower()
+            build = self._inkling2_banded()
+            quantized = _kv_bytes_per_elem(kv_type) < 2.0
+            if quantized:
+                type_ok = build.quant_kv and kv_type in self._INKLING2_BANDED_QUANT_TYPES
+            else:
+                type_ok = kv_type in ("f16", "bf16", "f32")
             banded = (
                 flash_attn
-                and (cache_type_kv or "f16").strip().lower() in ("f16", "bf16", "f32")
+                and type_ok
+                # Metal, Vulkan and SYCL have no banded kernel; unknown keeps the CUDA pricing.
+                and (build.backend is None or build.backend in _INKLING2_BANDED_BACKENDS)
                 and head_dim in (64, 128)
                 and ub >= self._INKLING2_BANDED_MIN_UBATCH
             )
             if banded:
-                per_tok = self._INKLING2_BANDED_BYTES * ub + split_extra
-                return int(per_tok * n_ctx + 4 * n_head * ub * ub)
+                block = 4 * n_head * ub * ub
+                if not build.quant_kv:
+                    reserve = (self._INKLING2_BANDED_BYTES * ub + split_extra) * n_ctx + block
+                    regrown = (
+                        (self._INKLING2_BANDED_RUNTIME_BYTES * ub + split_extra) * n_ctx
+                        + block
+                        + self._INKLING2_RUNTIME_BYTES_PER_UB * ub
+                    )
+                    return int(max(reserve, regrown))
+                copy = 0
+                if quantized and not (
+                    build.tile_kv and kv_type in self._INKLING2_BANDED_TILE_TYPES
+                ):
+                    copy = self._attention_dequant_width() * 2
+                reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx
+                regrown = (
+                    self._INKLING2_BANDED_SHARED_BYTES * ub + split_extra
+                ) * n_ctx + self._INKLING2_SHARED_RUNTIME_BYTES_PER_UB * ub
+                return int(max(reserve, regrown) + copy * n_ctx + block)
             per_tok = (
                 mask_rate
                 + split_extra
@@ -19502,6 +19772,30 @@ class LlamaCppBackend:
 
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
+    def _note_load_stage(self, pid: int, line: str) -> bool:
+        """Tracks "fit", "placed", then "weights" with both byte counters as the baseline; a weight-load
+        line inside the search is a probe's. True once weights are being read."""
+        stage = getattr(self, "_load_stage", None)
+        name = stage[1] if stage is not None and stage[0] == pid else None
+        if any(mark in line for mark in _FIT_START_MARKS):
+            # A second search (a drafter placed beside its target) starts after the first ended.
+            if name in (None, "placed"):
+                self._load_stage = (pid, "fit", 0, 0)
+            return False
+        if name == "fit":
+            if any(mark in line for mark in _FIT_END_MARKS):
+                self._load_stage = (pid, "placed", 0, 0)
+            return False
+        if _LOAD_TENSORS_MARK in line:
+            self._load_stage = (
+                pid,
+                "weights",
+                LlamaCppBackend._read_load_bytes(pid) or 0,
+                LlamaCppBackend._read_rss_bytes(pid) or 0,
+            )
+            return True
+        return False
+
     def _drain_stdout(self):
         """Drains llama-server stdout in a background thread so a full ~4 KB Windows pipe cannot block it; tees each line to _llama_log_fh when set."""
         startup_len: Optional[int] = None
@@ -19510,6 +19804,12 @@ class LlamaCppBackend:
         proc = self._process
         device_lost_seen = False
         metal_poison = {"draft": False}
+        stage_pid = getattr(proc, "pid", None)
+        launched = getattr(self, "_process_env", None)
+        weights_seen = stage_pid is None or not _log_shows_load_stages(
+            getattr(proc, "args", None),
+            launched[1] if launched is not None and launched[0] is proc else os.environ,
+        )
         try:
             for line in proc.stdout:
                 line = line.rstrip()
@@ -19521,6 +19821,8 @@ class LlamaCppBackend:
                         head = _STDOUT_HEAD_MAX if startup_len is None else startup_len
                         head = min(head, _STDOUT_HEAD_MAX, len(lines))
                         del lines[head : len(lines) - _STDOUT_TAIL_KEEP]
+                    if not weights_seen and startup_len is None:
+                        weights_seen = self._note_load_stage(stage_pid, line)
                     # Only readiness lines wake the probe; waking per tensor-load line spins startup.
                     line_lower = line.lower()
                     ready = "server is listening" in line_lower or "model loaded" in line_lower
@@ -25490,6 +25792,8 @@ class LlamaCppBackend:
 
             server_caps = _launch_caps(binary)
             self._reserves_micro_batch_outputs = self.reserves_micro_batch_outputs(binary)
+            if self._architecture in _INKLING2_ARCHS:
+                self._inkling2_banded_support = self.inkling2_banded_support(binary)
             self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside self._lock so /unload, /cancel, /status aren't blocked.
@@ -26229,11 +26533,15 @@ class LlamaCppBackend:
                         # Callers pass the ACTIVE fraction so the ranking matches the
                         # budget the fit then tests, else mixed totals mis-order.
                         idx, free = g
-                        return _vram_usable_mib(
-                            free,
-                            total_by_idx.get(idx, 0),
-                            frac,
-                            sysmem_fallback = _sysmem_fallback,
+                        # --fit off never passes --fit-target, so the headroom must shrink our plan.
+                        return (
+                            _vram_usable_mib(
+                                free,
+                                total_by_idx.get(idx, 0),
+                                frac,
+                                sysmem_fallback = _sysmem_fallback,
+                            )
+                            - _oom_headroom_mib
                         )
 
                     def _gpu_rank(
@@ -26258,6 +26566,12 @@ class LlamaCppBackend:
                         effective_ctx = self._context_length
                     else:
                         effective_ctx = 0
+                    # An OOM recovery never plans a bigger Auto context than the load that crashed.
+                    _oom_ctx_cap = self._gpu_oom_ctx_cap(intent) if requested_ctx <= 0 else None
+                    if _oom_ctx_cap:
+                        effective_ctx = (
+                            min(effective_ctx, _oom_ctx_cap) if effective_ctx > 0 else _oom_ctx_cap
+                        )
                     original_ctx = effective_ctx
                     # Default UI ceiling to the native context length;
                     # GPU/VRAM-fit logic below may shrink it on limited HW.
@@ -26412,7 +26726,9 @@ class LlamaCppBackend:
                     if _mtp_eff_n_max is None:
                         # _detected_gpus, not gpus: manual empties gpus but still uses the GPU draft depth.
                         _mtp_eff_n_max = (
-                            3 if _mtp_effective == "dspark" else (2 if _detected_gpus else 3)
+                            _dspark_default_draft_n_max(getattr(self, "_architecture", None))
+                            if _mtp_effective == "dspark"
+                            else (2 if _detected_gpus else 3)
                         )
                     # Size the drafter the launch loads: extras --model-draft (last wins), else Unsloth mtp_draft_path, else env. A wrong one under-reserves and OOMs.
                     _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
@@ -27047,6 +27363,25 @@ class LlamaCppBackend:
                                 _mm_pin_deferred = True
                             else:
                                 _apply_mmproj_cpu_pin(_mm_floor_ctx)
+
+                    # An OOM recovery adds no drafter the crashed load did not run.
+                    if (
+                        _mtp_will_engage
+                        and self._gpu_oom_dropped_drafter(intent)
+                        and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                        and not _user_mtp_via_extras
+                        and not _user_draft_via_extras
+                        and not _extra_args_set_spec_type(extra_args)
+                        and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                    ):
+                        _spec_dropped_no_vram = True
+                        _mtp_will_engage = False
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
+                        logger.info(
+                            "Auto: no drafter for this out-of-memory recovery, as the load "
+                            "that crashed ran without one."
+                        )
 
                     # Auto drops the drafter rather than trade context or --fit offload for it, priced over
                     # the same subsets the placement loop walks. Skipped under tensor parallelism.
@@ -28636,6 +28971,8 @@ class LlamaCppBackend:
                             ) -> Optional[tuple[int, list[int]]]:
                                 """Largest 256-aligned context the cards hold; footprint grows monotonically with context, and a missing native length (0 sentinel) would search nothing"""
                                 _native = self._context_length or _reduce_ctx
+                                if _oom_ctx_cap:
+                                    _native = min(_native, _oom_ctx_cap)
                                 _lo = max(1, min(_FIT_MIN_CTX, _native) // 256)
                                 _hi = _native // 256
                                 _best = None
@@ -28963,6 +29300,129 @@ class LlamaCppBackend:
                                 100 * (_share_before or 0.0),
                                 100 * (_share_after or 0.0),
                             )
+
+                    # Inkling 2 with every expert on the GPU: raise the micro-batch to 1024 for
+                    # prompt processing (see _INKLING_RESIDENT_N_UBATCH). After the spill raise,
+                    # which wins when experts sit in host RAM. Only a pinned all-GPU placement
+                    # (--fit off) counts as resident; the raise is repriced on the chosen cards
+                    # as the placement priced the default micro-batch, and kept only when the
+                    # launch stays under the occupancy cap with 256 MiB still free.
+                    _inkling_ub_switch = _moe_switch(_INKLING_UBATCH_ENV)
+                    _inkling_resident = bool(
+                        gpus
+                        and not use_fit
+                        and not tensor_parallel
+                        and self._moe_spill_batch_restore is None
+                        and not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                        and not intent.cpu_fallback
+                        and not _device_selection_is_cpu(extra_args, os.environ)
+                        and not _expert_spill_places_tensors_on_cpu(extra_args, os.environ)
+                        and (not is_vulkan_backend or _inkling_ub_switch == "on")
+                        and self._discrete_gpu_for_expert_spill(
+                            gpu_indices, _detected_gpus, _shared_gpu_ids
+                        )
+                    )
+                    _ink_n_batch, _ink_n_ubatch = _inkling_resident_batch_ubatch(
+                        n_batch,
+                        n_ubatch,
+                        architecture = getattr(self, "_architecture", None),
+                        experts_resident = _inkling_resident,
+                        user_named_batch = _user_named_batch,
+                    )
+                    if _ink_n_ubatch != n_ubatch and _inkling_ub_switch != "off":
+                        _ink_on = [g for g in gpus if gpu_indices is None or g[0] in gpu_indices]
+                        _ink_n = max(1, len(_ink_on))
+
+                        def _ink_footprint_mib(cb_delta: int) -> float:
+                            # The placement's footprint (_auto_fit) on the chosen cards; the KV
+                            # and context-linear compute terms read _effective_ubatch.
+                            return (
+                                model_size_fit
+                                + cb_delta
+                                + (_ink_n - 1) * _pipeline_overhead_bytes
+                                - _discrete_host_only(_ink_on)
+                                + _kv_bytes(effective_ctx)
+                                + _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                                + _cc_bytes(effective_ctx, _ink_n)
+                            ) / (1024 * 1024)
+
+                        _ink_before_mib = _ink_footprint_mib(0)
+                        _pre_raise = (
+                            n_batch,
+                            n_ubatch,
+                            _effective_ubatch,
+                            _compute_buffer_pipeline,
+                            _compute_buffer_tensor,
+                        )
+                        n_batch, n_ubatch = _ink_n_batch, _ink_n_ubatch
+                        _effective_ubatch = _ubatch_for_slots(n_parallel)
+                        _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = False,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _compute_buffer_tensor = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = True,
+                        ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                        _ink_need_mib = _ink_footprint_mib(_compute_buffer_pipeline - _pre_raise[3])
+                        # Compute buffer, its context-linear term and the SWA window.
+                        _ink_cost_mib = _ink_need_mib - _ink_before_mib
+                        _ink_budget_mib = _pool_budget_mib(_ink_on, _pin_fraction)
+                        _ink_free_mib = sum(max(0.0, float(f)) for _i, f in _ink_on)
+                        _ink_fits = bool(
+                            _ink_on
+                            and effective_ctx > 0
+                            and self._can_estimate_kv()
+                            and _ink_need_mib <= _ink_budget_mib
+                            and _ink_free_mib - _ink_need_mib >= _INKLING_UBATCH_MIN_FREE_MIB
+                            and (
+                                _ink_n == 1
+                                or self._every_gpu_holds_reserve(
+                                    [_gpu_usable(g, _pin_fraction) for g in _ink_on],
+                                    _pipeline_overhead_bytes
+                                    + _cc_bytes(effective_ctx, _ink_n) // _ink_n,
+                                )
+                            )
+                        )
+                        _ink_from = (
+                            _pre_raise[1] if _pre_raise[1] is not None else _DEFAULT_LLAMA_N_UBATCH
+                        )
+                        # A context below the target caps the micro-batch: nothing to gain.
+                        _ink_grows = int(_effective_ubatch or 0) > int(
+                            _pre_raise[2] or _DEFAULT_LLAMA_N_UBATCH
+                        )
+                        if _ink_grows and (_ink_fits or _inkling_ub_switch == "on"):
+                            logger.info(
+                                "Inkling 2 on GPU: raising --ubatch-size %s -> %s for faster "
+                                "prompt processing (+%.0f MiB compute buffer).",
+                                _ink_from,
+                                _effective_ubatch,
+                                _ink_cost_mib,
+                            )
+                            # A CPU replay hands back the pair as it was (see the spill raise).
+                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
+                        else:
+                            (
+                                n_batch,
+                                n_ubatch,
+                                _effective_ubatch,
+                                _compute_buffer_pipeline,
+                                _compute_buffer_tensor,
+                            ) = _pre_raise
+                            if _ink_grows:
+                                logger.info(
+                                    "Inkling 2 on GPU: keeping --ubatch-size %s; %s (+%.0f MiB "
+                                    "compute buffer) would need %.0f MiB of a %.0f MiB GPU budget "
+                                    "and %d MiB must stay free.",
+                                    _ink_from,
+                                    _ink_n_ubatch,
+                                    _ink_cost_mib,
+                                    _ink_need_mib,
+                                    _ink_budget_mib,
+                                    _INKLING_UBATCH_MIN_FREE_MIB,
+                                )
 
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,
@@ -34966,7 +35426,11 @@ class LlamaCppBackend:
                     "Manual mode if the load runs out of VRAM.",
                     (self._get_gguf_size_bytes(dspark_draft_path) or 0) / 1e9,
                 )
-            draft_n_max = int(spec_draft_n_max) if spec_draft_n_max is not None else 3
+            draft_n_max = (
+                int(spec_draft_n_max)
+                if spec_draft_n_max is not None
+                else _dspark_default_draft_n_max(getattr(self, "_architecture", None))
+            )
             if spec_draft_n_max is not None:
                 self._spec_draft_n_max = draft_n_max
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
@@ -38687,6 +39151,12 @@ class LlamaCppBackend:
         strikes = prior[1] + 1 if prior is not None and prior[0] == key else 1
         strikes = min(strikes, _GPU_OOM_HEADROOM_MAX_STRIKES)
         self._gpu_oom_strikes = (key, strikes)
+        # The crashed child's total context caps the recovery's Auto context.
+        self._gpu_oom_crashed_ctx = getattr(self, "_kv_cache_context_total", None) or None
+        # And whether it ran a drafter model (a recovery adds none it lacked).
+        self._gpu_oom_crashed_drafter = str(
+            getattr(self, "_speculative_type", None) or ""
+        ).startswith("draft-")
         try:
             logger.warning(
                 f"llama-server for '{self._model_identifier}' ran out of GPU memory; "
@@ -38702,6 +39172,20 @@ class LlamaCppBackend:
         if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
             return 0.0
         return prior[1] * _GPU_OOM_HEADROOM_STEP_MIB
+
+    def _gpu_oom_ctx_cap(self, intent) -> Optional[int]:
+        """Total context of the load that ran out of GPU memory, for a reload of it; None otherwise."""
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
+            return None
+        return getattr(self, "_gpu_oom_crashed_ctx", None)
+
+    def _gpu_oom_dropped_drafter(self, intent) -> bool:
+        """Whether a reload of the load that ran out of GPU memory must run without a drafter."""
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
+            return False
+        return getattr(self, "_gpu_oom_crashed_drafter", True) is False
 
     def _metal_oom_is_terminal(self, intent) -> bool:
         """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
@@ -42621,9 +43105,14 @@ class LlamaCppBackend:
                 raise
 
         # ── Tool iteration cap reached -- synthesize final answer ──
+        # LFM2 / LFM2.5 write a call as content under tool_choice "none" (#18802): ban its opener on this pass.
+        _final_opener_id = self._final_pass_call_opener_id() if _last_sent_tools else None
         # Cap reached with no final text: nudge the final streaming pass to answer rather than request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
-            if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):
+            # Banned opener: nudge as a user turn; in the tool result LFM writes almost nothing.
+            if _final_opener_id is not None or not _attach_internal_feedback_to_tool_result(
+                BUDGET_EXHAUSTED_NUDGE
+            ):
                 # Ride the trailing user turn (over-cap notice or promoted image): two in a row break Gemma.
                 if conversation[-1].get("role") == "user":
                     conversation[-1] = {
@@ -42784,6 +43273,8 @@ class LlamaCppBackend:
         if _final_tools:
             stream_payload["tools"] = llama_grammar_tools(_final_tools)
             stream_payload["tool_choice"] = "none"
+            if _final_opener_id is not None:
+                stream_payload["logit_bias"] = _with_banned_token(logit_bias, _final_opener_id)
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
         if thinking_budget_tokens is not None:

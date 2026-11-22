@@ -42,7 +42,7 @@ def test_untiled_stats_per_clip(monkeypatch):
     monkeypatch.setattr(U, "wide_tile_plan", lambda *a, **k: None)
     assert pipe.vae.decode(Z) == ("tiled",)
     delta = U.decode_stats_delta(before, U.untiled_decode_stats(pipe))
-    assert delta == {"untiled": 1, "tiled": 1, "wide": 0, "oom_fallback": 0}
+    assert delta == {"untiled": 1, "tiled": 1, "wide": 0, "oom_fallback": 0, "paired": 0}
     U.untiled_decode_stats(pipe)["untiled"] = 99
     assert U.untiled_decode_stats(pipe)["untiled"] == 1
 
@@ -140,7 +140,7 @@ def test_video_render_engagement_recorded(monkeypatch):
     video._record_render_engagement(vae_pipe, vae_pipe, before, log)
     rec = video._render_engagement(vae_pipe)
     assert rec == {
-        "vae_decode": {"untiled": 1, "tiled": 0, "wide": 0, "oom_fallback": 0},
+        "vae_decode": {"untiled": 1, "tiled": 0, "wide": 0, "oom_fallback": 0, "paired": 0},
         "fbcache": None,
     }
     assert lines and "untiled': 1" in lines[0]

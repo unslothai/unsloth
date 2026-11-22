@@ -17,6 +17,7 @@ import subprocess
 import sys
 import sysconfig
 import textwrap
+import types
 import time
 import zipfile
 
@@ -2571,3 +2572,146 @@ def test_a_sandboxed_run_gets_the_configured_memory_limit(monkeypatch, env, save
     ):
         lines = dict(line.split(" ", 1) for line in out.splitlines() if line.startswith("AS "))
         assert int(lines["AS"]) == expected * 1024**3, out
+
+
+_OVER_THE_LIMIT = (
+    "import os, time\n"
+    "held = []\n"
+    "for _ in range(12):\n"
+    "    held.append(os.urandom(256 * 1024 * 1024))\n"
+    "time.sleep(5)\n"
+    "print('SURVIVED', len(held))\n"
+)
+
+
+def test_a_sandboxed_run_over_the_memory_limit_does_not_survive(monkeypatch):
+    """RLIMIT_AS on Linux, the job memory limit on Windows, the watchdog on macOS: 3 GiB never fits in 1."""
+    from utils import sandbox_memory_limit
+
+    monkeypatch.setenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, "1")
+    out = tools._python_exec(_OVER_THE_LIMIT, None, 120, _SESSION)
+    assert "SURVIVED" not in out, out
+    if sys.platform == "darwin":
+        assert "1 GB sandbox memory limit" in out, out
+    else:
+        assert "MemoryError" in out, out
+
+
+def test_a_sandboxed_run_under_the_memory_limit_is_left_alone(monkeypatch):
+    from utils import sandbox_memory_limit
+
+    monkeypatch.setenv(sandbox_memory_limit.MEMORY_LIMIT_ENV, "4")
+    code = "import os\nheld = os.urandom(64 * 1024 * 1024)\nprint('SURVIVED', len(held))"
+    out = tools._python_exec(code, None, 120, _SESSION)
+    assert "SURVIVED 67108864" in out, out
+    assert "sandbox memory limit" not in out
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "the watchdog is the POSIX path")
+def test_the_memory_watchdog_stops_a_tree_over_the_limit():
+    child = "import os, time; held = os.urandom(300 * 1024 * 1024); time.sleep(60)"
+    grandparent = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {child!r}])"
+    proc = subprocess.Popen([sys.executable, "-c", grandparent], start_new_session = True)
+    try:
+        pgid = tools._capture_process_group(proc)
+        tools._memory_watchdog(proc, 100 * 1024 * 1024, pgid, 0.1)
+        assert proc.wait(timeout = 20) != 0
+        assert tools._memory_exceeded_note(proc).startswith("Stopped: this call used more than")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "the watchdog is the POSIX path")
+def test_the_memory_watchdog_also_stops_a_child_in_its_own_session(tmp_path):
+    import psutil
+
+    pid_file = tmp_path / "child.pid"
+    child = "import os, time; held = os.urandom(300 * 1024 * 1024); time.sleep(60)"
+    parent = (
+        "import subprocess, sys, pathlib\n"
+        f"p = subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session = True)\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid))\n"
+        "p.wait()\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", parent], start_new_session = True)
+    try:
+        tools._memory_watchdog(proc, 100 * 1024 * 1024, tools._capture_process_group(proc), 0.1)
+        proc.wait(timeout = 20)
+        child_pid = int(pid_file.read_text())
+        deadline = time.time() + 10
+        while psutil.pid_exists(child_pid) and time.time() < deadline:
+            if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
+                break
+            time.sleep(0.1)
+        assert not psutil.pid_exists(child_pid) or (
+            psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+        )
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        if pid_file.exists():
+            try:
+                psutil.Process(int(pid_file.read_text())).kill()
+            except psutil.Error:
+                pass
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "the watchdog is the POSIX path")
+def test_the_memory_watchdog_leaves_a_small_tree_alone():
+    proc = subprocess.Popen([sys.executable, "-c", "print(1)"], start_new_session = True)
+    tools._memory_watchdog(proc, 1024**3, tools._capture_process_group(proc), 0.05)
+    assert proc.wait(timeout = 20) == 0
+    assert tools._memory_exceeded_note(proc) == ""
+
+
+@pytest.mark.parametrize("pgid_kind", ["windows-job-refused", "windows-tree"])
+def test_windows_falls_back_to_the_watchdog_without_a_job_memory_limit(monkeypatch, pgid_kind):
+    class _RefusingJob:
+        def set_memory_limit(self, limit_bytes):
+            return False
+
+    started = []
+
+    class _Thread:
+        def __init__(self, target, args, daemon):
+            started.append((target, args))
+
+        def start(self):
+            pass
+
+    pgid = (
+        ("windows-job", _RefusingJob())
+        if pgid_kind == "windows-job-refused"
+        else ("windows-tree", 1, None)
+    )
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools.os, "name", "nt")
+    monkeypatch.setattr(tools.sandbox_memory_limit, "memory_limit_bytes", lambda: 1024**3)
+    monkeypatch.setattr(tools.threading, "Thread", _Thread)
+    tools._cap_tool_memory(object(), pgid, True)
+    assert [target for target, _ in started] == [tools._memory_watchdog]
+
+
+def test_the_windows_watchdog_counts_committed_memory(monkeypatch):
+    class _Process:
+        pid = 1
+
+        def memory_info(self):
+            return types.SimpleNamespace(rss = 50 * 1024**2, vms = 3 * 1024**3)
+
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    assert tools._tree_memory_bytes([_Process()]) == 3 * 1024**3
+    monkeypatch.setattr(tools.sys, "platform", "linux")
+    assert tools._tree_memory_bytes([_Process()]) == 50 * 1024**2
+
+
+def test_a_memory_watchdog_kill_is_not_a_finished_run():
+    class _Proc:
+        pass
+
+    proc = _Proc()
+    assert tools._completion_reason(proc, False, None) == "finished"
+    proc._unsloth_memory_exceeded = 1024**3
+    assert tools._completion_reason(proc, False, None) == "cancelled"
+    assert tools._completion_reason(proc, True, None) == "timed_out"

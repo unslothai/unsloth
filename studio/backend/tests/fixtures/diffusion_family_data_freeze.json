@@ -106,7 +106,10 @@
    "Qwen/Qwen-Image-Layered": null
   },
   "sdxl": {
-   "stabilityai/stable-diffusion-xl-base-1.0": null
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
+    "steps": 25
+   }
   },
   "wan2.1-t2v-1.3b": {
    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": null
@@ -4567,6 +4570,10 @@
     "max": 3,
     "steps": 25
    },
+   "stabilityai/stable-diffusion-xl-base-1.0": {
+    "max": 2,
+    "steps": 25
+   },
    "wan-ai/wan2.2-ti2v-5b-diffusers": {
     "default": 2,
     "max": 3,
@@ -5031,6 +5038,7 @@
    "black-forest-labs/flux.2-dev",
    "black-forest-labs/flux.2-klein-4b",
    "black-forest-labs/flux.2-klein-9b",
+   "black-forest-labs/flux.2-klein-9b-kv",
    "black-forest-labs/flux.2-klein-base-4b",
    "black-forest-labs/flux.2-klein-base-9b",
    "circlestone-labs/anima-base-v1.0-diffusers",
@@ -5060,6 +5068,8 @@
    "tongyi-mai/z-image-turbo"
   ],
   "trusted_video_repos": [
+   "fastvideo/fastwan2.1-t2v-1.3b-diffusers",
+   "fastvideo/fastwan2.2-ti2v-5b-fullattn-diffusers",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
    "lightricks/ltx-2",

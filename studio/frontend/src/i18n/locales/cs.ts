@@ -1817,6 +1817,7 @@ export const cs = {
       memoryLabel: "Limit paměti",
       memoryDescription:
         "Maximum paměti, které si může vyhradit jedno volání nástroje Python nebo Terminál v sandboxu. Platí od dalšího volání. Výchozí hodnota je {defaultSize} GB.",
+      memoryAuto: "Automaticky",
       memoryLocked: "Nastaveno proměnnou UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Zadejte celé číslo od {min} do {max}.",
       restored: "Přístup byl odebrán ze složek (počet: {count}).",
@@ -6258,7 +6259,7 @@ export const cs = {
     checking: "Kontrola...",
     installPrompt: "Chcete-li nainstalovat Unsloth, klikněte na Začít.",
     getStarted: "Začít",
-    chatOnly: "Pouze chat (GGUF): menší instalace, bez trénování",
+    chatOnly: "Pouze chat: menší instalace, bez trénování",
     installLocation: "Umístění instalace:",
     changeLocation: "Změnit",
     useDefaultLocation: "Použít výchozí",
