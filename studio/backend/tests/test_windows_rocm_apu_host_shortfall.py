@@ -147,3 +147,20 @@ def test_failed_verification_keeps_host_guard(apu_preflight):
         )
         == "host shortfall"
     )
+
+
+def test_a_load_that_fits_never_runs_the_verifier(apu_preflight):
+    """The verifier spawns WDDM counter reads; a load the free reading already holds skips it."""
+    backend, argv = apu_preflight
+    probes = []
+    backend._windows_rocm_apu_carve_out_credit = lambda *a, **kw: (probes.append(True), 0)[1]
+    assert (
+        backend._launch_host_shortfall_message(
+            argv,
+            [(0, 90 * 1024, 96 * 1024)],
+            env = {},
+            avail_mib = 20_000,
+        )
+        is None
+    )
+    assert not probes
