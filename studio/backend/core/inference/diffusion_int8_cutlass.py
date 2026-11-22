@@ -137,9 +137,8 @@ def race_points(rows: Any = None) -> tuple:
 
 
 def slot(m: int, entry: dict) -> Optional[int]:
-    """The plan entry's tile for an ``m``-row call: below ``_LARGE_M`` the small race, from ``_HUGE_M`` the huge race
-    when the entry has one (None there keeps today's path), else the race at the call's row bucket, else the nearest
-    large race (the 4096-row one when nothing was recorded)."""
+    """Tile for an m-row call: the small race below _LARGE_M, the huge race from _HUGE_M (None if
+    unrecorded, keeping today's path), else the bucket race or nearest large (4096 if none)."""
     if m < _LARGE_M:
         return entry.get(min(_RACE_M))
     if m >= _HUGE_M and _RACE_M_HUGE in entry:

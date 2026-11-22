@@ -57,10 +57,9 @@ class LevelSaveTools(unreal.ToolsetDefinition):
         if not unreal.EditorLoadingAndSavingUtils.save_map(world, level_path):
             raise RuntimeError(f"Saving the level as {level_path!r} failed; see the editor log")
         if _current_level_path() != level_path:
-            # A level already on disk is copied, not renamed (FEditorFileUtils SaveWorld duplicates it), and
-            # the editor stays on the original with its unsaved changes. Saving dirty map packages now would
-            # write those changes over the original, so open the copy first: loading discards them, and the
-            # copy already has them.
+            # A level on disk is copied, not renamed (FEditorFileUtils SaveWorld duplicates it); the
+            # editor stays on the original with unsaved changes, so saving dirty packages would
+            # overwrite it. Load the copy, which discards them, as the copy already has them.
             unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).load_level(level_path)
         if _current_level_path() != level_path:
             raise RuntimeError(

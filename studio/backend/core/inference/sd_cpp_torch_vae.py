@@ -51,9 +51,8 @@ def enabled() -> bool:
 
 
 def applies(state: Any, *, layers: Optional[int] = None) -> bool:
-    """True when this render should take the latent and decode it here: a CPU server, a FLUX.2 VAE family with
-    its VAE file on disk, a single image per latent, and torch + diffusers present. Import-light: torch is not
-    imported here."""
+    """True when a CPU server's render should decode the latent here: a FLUX.2 VAE family with its
+    file on disk, one image per latent, and torch plus diffusers present; import-light."""
     if not enabled() or layers:
         return False
     if getattr(state, "device", None) != "cpu" or getattr(state, "server", None) is None:
@@ -119,9 +118,8 @@ def decode_bytes(width: int, height: int) -> int:
 
 
 def fits_host_ram(width: int, height: int) -> bool:
-    """True when one image's torch decode leaves the reserve free in host RAM (unknown RAM: True). Images are
-    decoded one at a time, so the batch size does not change the need. Windows fails on commit, not on physical
-    RAM, so its commit headroom caps the reading as in the CPU VAE tiling budget."""
+    """True when one image's torch decode leaves the reserve free in host RAM (unknown RAM: True);
+    batch size does not matter, and Windows caps by commit headroom, not physical RAM."""
     try:
         from core.inference.diffusion_small_host import host_commit_mib, host_ram_mib
         available = host_ram_mib()[1]

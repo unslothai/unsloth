@@ -330,9 +330,8 @@ class _LaunchSeen(Exception):
 
 @pytest.mark.parametrize("world, batch, expected", [(2, 1, 8), (1, 1, 16), (2, 2, 4), (3, 1, 6)])
 def test_epoch_steps_count_the_whole_world(monkeypatch, tmp_path, world, batch, expected):
-    """num_epochs counts passes over the dataset: with N GPUs a micro-step consumes N x train_batch_size images, so
-    16 images for 1 epoch on 2 GPUs at batch 1 is 8 steps (it was 16, consuming 32 images). The resolved count is
-    what the started ranks receive."""
+    """num_epochs counts dataset passes, and a micro-step consumes N x train_batch_size images; 16
+    images for 1 epoch on 2 GPUs at batch 1 is 8 steps, and ranks get the resolved count."""
     from PIL import Image
 
     import core.training.diffusion_dit_trainer as dit

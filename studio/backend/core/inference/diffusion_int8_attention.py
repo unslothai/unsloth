@@ -627,11 +627,10 @@ def _raw_stream(index: int) -> int:
 _PLAN_LIMIT = 512
 RESID_THREADS = 256  # NTR of the quantiser source
 RESID_BLOCKS = 128
-# A plan's calls before SINK_DECIDE_AT record whether a head clipped V (attention sink); it decides at SINK_DECIDE_AT
-# (the bucket's verdict of this load, else a race). Undecided, a plan runs the sink path, which a graph records. A
-# verdict other than the sink path is taken only where no call whose output was used (not a thrown-away graph
-# warm-up) clipped on the sink path: else the plan keeps it for the load, so the first render repeats. The verdict
-# stays the bucket's for the load; the next load races again.
+# Calls before SINK_DECIDE_AT record whether a head clipped V; the plan decides there (bucket
+# verdict or race) and runs the sink path (graphs record it); a non-sink verdict needs no used
+# (non-warm-up) clipping call, else the sink path is kept; the verdict lasts this load, then races
+# again.
 SINK_LEARN_CALLS = 32
 SINK_DECIDE_AT = 48
 # A race verdict is shared per shape, DECIDE_BUCKET token bucket and sinks flag (never across sinks / no sinks).

@@ -97,9 +97,8 @@ def test_sdxl_auto_row_skips_every_other_step_at_25_on_max():
 
 
 def test_skip_survives_diffusers_model_offload_reattach():
-    """Studio installs the skip before placement; model offload then wraps it, and diffusers removes and re-adds
-    its hooks around every call (maybe_free_model_hooks -> enable_model_cpu_offload). The layer must stay in the
-    call path through that cycle."""
+    """Studio installs the skip before placement; diffusers removes and re-adds model offload hooks
+    on every call (maybe_free_model_hooks), so the layer must stay in the call path."""
     hooks = pytest.importorskip("accelerate.hooks")
     pipe = _sdxl_pipe()
     assert (

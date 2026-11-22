@@ -612,10 +612,9 @@ def _prepare_h3_conditioning(
     num_frames: int,
     num_audio_latents: int,
 ):
-    """(caption_embeds, per-clip (video_a, video_b, audio)), or None on a stop request. A warm persistent cache
-    serves both without loading the conditioner or the VAEs; otherwise the misses are encoded and written back.
-
-    The loads and encodes run RNG-isolated, so a warm run and a cold run hand the same training streams on."""
+    """Returns (caption_embeds, per-clip (video_a, video_b, audio)), or None on stop; a warm
+    persistent cache serves both without loading conditioner or VAEs (misses are encoded and
+    written back); loads and encodes are RNG-isolated so warm and cold runs match."""
     import torch
 
     from core.training.diffusion_samples import isolated_sampling

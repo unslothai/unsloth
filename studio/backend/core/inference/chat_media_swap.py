@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in chat image swap: save chat KV, evict chat, load image model, render, unload, reload chat + KV.
-
-Runs between two rounds of one turn, so nothing streams from llama-server while it is down. Every
-failure after the eviction still restores chat."""
+"""Opt-in chat image swap: save chat KV, evict chat, load and render an image, unload, reload chat
+and KV; runs between two rounds of a turn, so nothing streams from llama-server meanwhile, and
+any failure after the eviction still restores chat."""
 
 from __future__ import annotations
 
