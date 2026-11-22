@@ -95,9 +95,8 @@ def raise_if_merging_inkling2(model, save_method):
         f'Unsloth: `save_method = "{save_method}"` (merged and GGUF exports) does not support Inkling 2 yet: its '
         "checkpoint stores the weights under Inkling's own names with the MoE experts packed in NVFP4 / MXFP8, so the "
         "merge cannot place the LoRA weights and would write the base model unchanged.\n"
-        'Save the LoRA adapter instead (`model.save_pretrained(...)` or `save_method = "lora"`). To get merged 16-bit '
-        "weights, load the base with transformers in bfloat16, attach the adapter with "
-        "`peft.PeftModel.from_pretrained`, then `merge_and_unload()` and `save_pretrained(...)`."
+        'Save the LoRA adapter instead (`model.save_pretrained(...)` or `save_method = "lora"`): it reloads with '
+        "Unsloth, and with transformers through `peft.PeftModel.from_pretrained`."
     )
 
 
