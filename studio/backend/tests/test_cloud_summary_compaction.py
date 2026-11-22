@@ -1002,7 +1002,5 @@ def test_studio_max_on_a_custom_responses_connection_keeps_the_old_ceiling(monke
 
     monkeypatch.setattr(ep_mod.ExternalProviderClient, "stream_chat_completion", spy)
     chat = [{"role": "user", "content": "hello"}]
-    _proxy(
-        "custom", chat, max_tokens = None, context_window = 64_000, provider_api_type = "responses"
-    )
+    _proxy("custom", chat, max_tokens = None, context_window = 64_000, provider_api_type = "responses")
     assert seen == {"max_tokens": ri._UNKNOWN_WINDOW_MAX_TOKENS, "api_type": "responses"}
