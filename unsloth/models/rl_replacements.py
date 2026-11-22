@@ -2281,11 +2281,31 @@ def _unsloth_grpo_split_videos_by_sample(batch):
     num_videos = [int(n) for n in num_videos]
     if sum(num_videos) != video_grid_thw.shape[0]:
         return batch
-    rows_per_sample = [
-        int(group.prod(dim = -1).sum()) for group in torch.split(video_grid_thw, num_videos)
-    ]
     split = dict(batch)
-    split["pixel_values_videos"] = list(torch.split(pixel_values_videos, rows_per_sample))
+    video_bank_rows = split.pop("video_bank_rows", None)
+    if video_bank_rows is not None and not isinstance(video_bank_rows, list):
+        # One bank copy per distinct prompt (_unsloth_grpo_video_inputs): each sample gets a view of its rows
+        # and its slice of the index, so the shuffled buffer still references the one copy.
+        video_bank_rows = torch.as_tensor(video_bank_rows).long().reshape(-1, 2)
+        per_sample, per_rows, offset = [], [], 0
+        for count in num_videos:
+            rows = video_bank_rows[offset : offset + count]
+            offset += count
+            ranges = rows.tolist()
+            if not ranges:
+                per_sample.append(pixel_values_videos[:0])
+            elif all(ranges[i][1] == ranges[i + 1][0] for i in range(len(ranges) - 1)):
+                per_sample.append(pixel_values_videos[ranges[0][0] : ranges[-1][1]])
+            else:
+                per_sample.append(torch.cat([pixel_values_videos[a:b] for a, b in ranges], dim = 0))
+            per_rows.append(rows)
+        split["pixel_values_videos"] = per_sample
+        split["video_bank_rows"] = per_rows
+    else:
+        rows_per_sample = [
+            int(group.prod(dim = -1).sum()) for group in torch.split(video_grid_thw, num_videos)
+        ]
+        split["pixel_values_videos"] = list(torch.split(pixel_values_videos, rows_per_sample))
     split["video_grid_thw"] = list(torch.split(video_grid_thw, num_videos))
     second_per_grid_ts = batch.get("second_per_grid_ts", None)
     if second_per_grid_ts is not None:
@@ -2431,17 +2451,31 @@ def _unsloth_grpo_video_inputs(
     video_index = torch.split(torch.arange(video_grid_thw.shape[0]), unique_counts)
     row_ends = video_grid_thw.prod(dim = -1).cumsum(0)
     row_starts = row_ends - video_grid_thw.prod(dim = -1)
-    videos, rows = [], []
-    for u in order:
-        for v in video_index[u].tolist():
-            videos.append(v)
-            rows.append(pixel_values_videos[int(row_starts[v]) : int(row_ends[v])])
+    videos = [v for u in order for v in video_index[u].tolist()]
     device = trainer.accelerator.device
-    out = {
-        "pixel_values_videos": torch.cat(rows, dim = 0).to(device),
-        "video_grid_thw": video_grid_thw[videos].to(device),
-        "num_videos": num_videos,
-    }
+    # GRPO repeats every prompt num_generations times. Keep one copy of each distinct prompt's videos plus the
+    # (start, end) rows of every per-sample video, which the zoo chunker and the buffer split read; a zoo that
+    # cannot read the index gets the flat layout (UNSLOTH_GRPO_VIDEO_BANK=0 forces it).
+    use_bank = len(unique) < len(prompts) and os.environ.get("UNSLOTH_GRPO_VIDEO_BANK", "1") != "0"
+    if use_bank:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_video_bank_supported
+            use_bank = bool(grpo_video_bank_supported())
+        except Exception:
+            use_bank = False
+    if use_bank:
+        out = {
+            "pixel_values_videos": pixel_values_videos.to(device),
+            "video_bank_rows": torch.stack([row_starts[videos], row_ends[videos]], dim = -1).long(),
+        }
+    else:
+        out = {
+            "pixel_values_videos": torch.cat(
+                [pixel_values_videos[int(row_starts[v]) : int(row_ends[v])] for v in videos], dim = 0
+            ).to(device),
+        }
+    out["video_grid_thw"] = video_grid_thw[videos].to(device)
+    out["num_videos"] = num_videos
     if second_per_grid_ts is not None:
         out["second_per_grid_ts"] = second_per_grid_ts[videos].to(device)
     return out
@@ -2452,6 +2486,47 @@ def _unsloth_grpo_unsplit_vision(batch):
     the forward sees the layout the processor produced. TRL's own unsplit merges only
     pixel_values before 1.1.0, and pixel_values plus the grid and position ids from 1.1.0."""
     merged = None
+    bank_rows = batch.get("video_bank_rows", None)
+    videos = batch.get("pixel_values_videos", None)
+    if isinstance(bank_rows, list) and isinstance(videos, list) and len(videos) == len(bank_rows):
+        # Views of the one deduplicated bank (_unsloth_grpo_split_videos_by_sample): hand the step the bank and
+        # its rows instead of a copy per sample, so the buffer of every step still holds one copy.
+        bank = videos[0]._base if len(videos) else None
+        ok = (
+            bank is not None
+            and bank.dim() == 2
+            and bank.is_contiguous()
+            and all(
+                v._base is bank
+                and v.dim() == 2
+                and v.stride() == bank.stride()
+                and (v.storage_offset() - bank.storage_offset()) % bank.stride(0) == 0
+                for v in videos
+            )
+        )
+        merged = dict(batch)
+        if ok:
+            rows = []
+            for v, r in zip(videos, bank_rows):
+                start = (v.storage_offset() - bank.storage_offset()) // bank.stride(0)
+                sizes = (r[:, 1] - r[:, 0]).tolist()
+                if sum(sizes) != v.shape[0]:
+                    ok = False
+                    break
+                ends = torch.tensor(sizes, dtype = torch.long).cumsum(0) + start
+                rows.append(
+                    torch.stack([ends - torch.tensor(sizes, dtype = torch.long), ends], dim = -1)
+                )
+        if ok:
+            merged["pixel_values_videos"] = bank
+            merged["video_bank_rows"] = (
+                torch.cat(rows, dim = 0) if rows else torch.zeros(0, 2, dtype = torch.long)
+            )
+        else:
+            merged["pixel_values_videos"] = torch.cat(videos, dim = 0)
+            merged.pop("video_bank_rows", None)
+        batch = merged
+        merged = None
     for key in (
         "pixel_values",
         "image_grid_thw",
@@ -2688,9 +2763,16 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
         prompt_lengths = [len(ids) for ids in prompt_ids]
     else:
         prompt_lengths = None
+    # Rows stopped by the opt-in rollout tail cut (UNSLOTH_ROLLOUT_TAIL_CUT) count as truncated.
+    tail_cut = None
+    if getattr(trainer, "_unsloth_tail_cut_rows", None):
+        from unsloth.models._rollout_tail_cut import cut_row_flags
+        tail_cut = cut_row_flags(trainer, completion_ids)
     is_truncated = []
     for i, ids in enumerate(completion_ids):
-        if ids[-1] in eos_and_pad:
+        if tail_cut is not None and tail_cut[i]:
+            is_truncated.append(True)
+        elif ids[-1] in eos_and_pad:
             is_truncated.append(False)
         elif limit is None or len(ids) >= limit:
             is_truncated.append(True)
@@ -2756,6 +2838,25 @@ def _unsloth_rollout_scope(trainer):
     return vllm_rollout_scope(llm)
 
 
+def _unsloth_tail_cut_scope(trainer):
+    """Opt-in GRPO rollout tail cut around a colocated vLLM `_generate` (UNSLOTH_ROLLOUT_TAIL_CUT=<k_min>)."""
+    import contextlib
+    import os
+
+    if os.environ.get("UNSLOTH_ROLLOUT_TAIL_CUT", "").strip().lower() in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        trainer._unsloth_tail_cut_rows = None
+        return contextlib.nullcontext()
+    from unsloth.models._rollout_tail_cut import rollout_tail_cut_scope
+
+    return rollout_tail_cut_scope(trainer)
+
+
 def _unsloth_wrap_generate_in_rollout_scope(function):
     """Rename `_generate` and add a `_generate` that runs it inside `_unsloth_rollout_scope`."""
     if "_unsloth_generate_in_scope" in function:
@@ -2766,7 +2867,7 @@ def _unsloth_wrap_generate_in_rollout_scope(function):
     indent = match.group("indent")
     wrapper = (
         f"{indent}def _generate(self, *args, **kwargs):\n"
-        f"{indent}    with _unsloth_rollout_scope(self):\n"
+        f"{indent}    with _unsloth_rollout_scope(self), _unsloth_tail_cut_scope(self):\n"
         f"{indent}        return self._unsloth_generate_in_scope(*args, **kwargs)\n\n"
     )
     start = match.start()
@@ -5889,6 +5990,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_truncated))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_rollout_scope))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_tail_cut_scope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))

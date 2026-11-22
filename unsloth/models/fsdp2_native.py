@@ -2495,6 +2495,17 @@ def _unit_gathered_bytes(unit):
     return total
 
 
+def _synchronized_empty_cache():
+    """`torch.cuda.empty_cache()` after a device synchronize. Under expandable segments every stream owns its own
+    segment and releasing a page waits only on THAT stream, while FSDP2 allocates gathered weights and reduced
+    gradients on its side streams and the default stream reads them. A grad freed by `zero_grad()` (or a weight
+    freed by `reshard()`) while an optimizer / decode kernel reading it is still queued on the default stream
+    (no host sync since the step, e.g. `logging_steps > 1`) could be unmapped under that kernel. Only called
+    where an empty_cache runs anyway, so it adds no per-step sync."""
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
+
 def _generate_streams_blocks(model):
     """Collective on CUDA in "auto" mode: True when generate should gather decoder blocks one at a
     time. Gathering every unit at once needs the whole model's weights on each rank next to its
@@ -2522,7 +2533,7 @@ def _generate_streams_blocks(model):
     need = (
         sum(sizes) + max(sizes) + (1 << 30)
     )  # gathered weights + one all-gather buffer + decode scratch
-    torch.cuda.empty_cache()
+    _synchronized_empty_cache()  # follows the last step's zero_grad() with no host sync in between
     free = torch.cuda.mem_get_info(device)[0]
     fits = _agree_over_ranks(dist, device, [free >= need], getattr(mesh_info, "mesh", None))[0]
     return not fits
@@ -2688,7 +2699,7 @@ def native_fsdp2_unsharded(model, stream_blocks = False):
             if id(unit) in saved:
                 _reshard_after_forward_restore(unit, saved[id(unit)])
         if streams and torch.cuda.is_available():
-            torch.cuda.empty_cache()  # the next whole-root gather needs its buffer in one piece
+            _synchronized_empty_cache()  # the next whole-root gather needs its buffer in one piece
         if errors:
             raise errors[0]
 
