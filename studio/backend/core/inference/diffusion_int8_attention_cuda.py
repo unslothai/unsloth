@@ -45,6 +45,10 @@ KERNEL_SOURCE = r"""
 // (one fused multiply-add per element); the constant times the sum of the tile weights comes off every FLUSH tiles,
 // so the rounding it adds stays a few units of the last place of MAGIC_F per row whatever the key count, against
 // int8 rounding noise of hundreds of units.
+// NATIVE_P (per card) rounds and packs the probabilities with conversion instructions instead (cvt.rni + cvt.pack.sat,
+// one F2IP per two keys on sm89+, against a clamp, an add and the shift-add pack per key): the same bytes for every
+// fp32 input but NaN (round to nearest even, then saturate at 255 = clamp at 255, then round). The scores and the P.V
+// sums keep MAGIC_F: reading the bits as a float is free, and a converted score rounds differently.
 //
 // Method notes (ideas, not code): int8 Q/K with a softmax-invariant K shift and block scales follows SageAttention
 // (arXiv 2410.02367); K scales per accumulator lane group follow SageAttention2 (arXiv 2411.10958); integer
@@ -93,6 +97,9 @@ typedef long long i64;
 #else
 #define SM75 0
 #endif
+#endif
+#ifndef NATIVE_P
+#define NATIVE_P 0  // 1 / 2 = probabilities rounded and packed with conversion instructions instead of MAGIC_F (same bits)
 #endif
 #ifndef FLUSH
 #define FLUSH 16  // tiles between removals of MAGIC_F from the output accumulators (a power of two; 0 = only at the end)
@@ -275,6 +282,35 @@ __device__ __forceinline__ u32 pack4(float a, float b, float c, float d) {
   return (__float_as_uint(a) + (__float_as_uint(b) << 8) + (__float_as_uint(c) << 16) + (__float_as_uint(d) << 24)) -
          (u32)MAGIC_I * 0x01010101u;
 }
+
+#if NATIVE_P == 1
+// 2^x rounded to the nearest integer, ties to even: what adding MAGIC_F rounds to
+__device__ __forceinline__ i32 prob_rn(float x) {
+  i32 y;
+  asm("cvt.rni.s32.f32 %0, %1;" : "=r"(y) : "f"(ex2(x)));
+  return y;
+}
+
+// Four rounded probabilities -> min(p, 255) packed low byte first (the clamp of prob: rounding then saturating
+// at 255 gives what clamping at 255 then rounding gives, ties included)
+__device__ __forceinline__ u32 pack4_sat(i32 a, i32 b, i32 c, i32 d) {
+  u32 hi, y;
+  asm("cvt.pack.sat.u8.s32.b32 %0, %1, %2, %3;" : "=r"(hi) : "r"(d), "r"(c), "r"(0u));
+  asm("cvt.pack.sat.u8.s32.b32 %0, %1, %2, %3;" : "=r"(y) : "r"(b), "r"(a), "r"(hi));
+  return y;
+}
+#elif NATIVE_P == 2
+// 2^x rounded to the nearest integer, ties to even, saturated to [0, 255]
+__device__ __forceinline__ u32 prob_rn(float x) {
+  unsigned short y;
+  asm("cvt.rni.sat.u8.f32 %0, %1;" : "=h"(y) : "f"(ex2(x)));
+  return (u32)y;
+}
+
+__device__ __forceinline__ u32 pack4_sat(u32 a, u32 b, u32 c, u32 d) {
+  return __byte_perm(__byte_perm(a, b, 0x0040), __byte_perm(c, d, 0x0040), 0x5410);
+}
+#endif
 
 __device__ __forceinline__ u32 bytesum(u32 w, u32 acc) {
   u32 y;
@@ -670,6 +706,16 @@ extern "C" __global__ void unsloth_i8attn(
 #pragma unroll
         for (int h = 0; h < 2; ++h) {
           const int na = 4 * kb + 2 * h, nb = na + 1;
+#if NATIVE_P
+          const u32 p0 = pack4_sat(prob_rn(fmaf(__int_as_float(c[na][0]), fa, oa)),
+                                   prob_rn(fmaf(__int_as_float(c[na][1]), fa, oa)),
+                                   prob_rn(fmaf(__int_as_float(c[nb][0]), fa, oa)),
+                                   prob_rn(fmaf(__int_as_float(c[nb][1]), fa, oa)));
+          const u32 p1 = pack4_sat(prob_rn(fmaf(__int_as_float(c[na][2]), fb, ob)),
+                                   prob_rn(fmaf(__int_as_float(c[na][3]), fb, ob)),
+                                   prob_rn(fmaf(__int_as_float(c[nb][2]), fb, ob)),
+                                   prob_rn(fmaf(__int_as_float(c[nb][3]), fb, ob)));
+#else
           const u32 p0 = pack4(prob(fmaf(__int_as_float(c[na][0]), fa, oa)) + MAGIC_F,
                                 prob(fmaf(__int_as_float(c[na][1]), fa, oa)) + MAGIC_F,
                                 prob(fmaf(__int_as_float(c[nb][0]), fa, oa)) + MAGIC_F,
@@ -678,6 +724,7 @@ extern "C" __global__ void unsloth_i8attn(
                                 prob(fmaf(__int_as_float(c[na][3]), fb, ob)) + MAGIC_F,
                                 prob(fmaf(__int_as_float(c[nb][2]), fb, ob)) + MAGIC_F,
                                 prob(fmaf(__int_as_float(c[nb][3]), fb, ob)) + MAGIC_F);
+#endif
           pa[qt][kb][2 * h] = p0;
           pa[qt][kb][2 * h + 1] = p1;
           sum0 = bytesum(p0, sum0);

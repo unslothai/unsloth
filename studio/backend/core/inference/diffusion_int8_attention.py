@@ -81,6 +81,8 @@ LOG2E = 1.4426950408889634
 # sinks: overrides of those orderings for the sink-path kernel only (same bits; ``SINK_ORDER_ENV=0`` drops them).
 # qkw / pvw / spread pick the order the products and the tile copies are issued in (see the kernel source): they
 # move no output bit, so they are per card too.
+# native_p 1 rounds and packs the probabilities with conversion instructions (sm89 on; the same bits, see the kernel
+# source); below sm89 the MAGIC_F path stays.
 # long_keys / long: overrides from that many keys on (select_config). A card runs one block per SM, so a call of a
 # few thousand tokens is a handful of blocks per SM and the last round leaves SMs idle: smaller blocks waste less of
 # it, and bigger ones copy each tile for more rows on long calls.
@@ -113,6 +115,8 @@ KERNEL_CONFIGS: dict = {
             "nq": 1,
             "stages": 2,
             "max_registers": 168,
+            # L4, B 1 H 24, sustained per call: 3.0-4.1% (sink path) and 2.8-3.4% (plain) at 4096-45056 tokens
+            "native_p": 1,
             # L4, B 1 H 24 at 4096 / 4176 / 4608 tokens, sink path with the fold: 1.3-1.9% per call sustained,
             # 1.6-5.2% in short bursts; the plain kernel is not faster with it (0.8% slower sustained at 4096)
             "sinks": {"flush_tail": 1, "qkw": 1, "pvw": 8, "spread": 5},
@@ -138,6 +142,8 @@ KERNEL_CONFIGS: dict = {
             "qkw": 1,
             "pvw": 8,
             "spread": 5,
+            # RTX PRO 6000, B 1 H 24, sustained per call: 1.6-3.0% (sink path) and 0.7-2.5% (plain), 4096-45056 tokens
+            "native_p": 1,
         },
         64: {"bn": 128, "wpc": 4, "nq": 2, "stages": 2, "qreg": 1},
     },
@@ -482,7 +488,7 @@ def kernel_defines(head_dim: int, config: dict) -> dict:
         "STAGES": int(config["stages"]),
         "QREG": int(config.get("qreg", 0)),
     }
-    for name in ("flush", "flush_tail", "sm75", "qkw", "pvw", "spread"):
+    for name in ("flush", "flush_tail", "sm75", "qkw", "pvw", "spread", "native_p"):
         if name in config:
             defines[name.upper()] = int(config[name])
     return defines
