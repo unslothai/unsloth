@@ -2760,6 +2760,85 @@ def _place_gguf_output(src, dst):
         shutil.move(src, dst)
 
 
+def _record_gemma_linear_rope_in_gguf(model_directory, gguf_files):
+    """llama.cpp's Gemma / Gemma 2 converters write no RoPE scaling, so a GGUF of a config with
+    linear scaling ran unscaled. llama.cpp reads `<arch>.rope.scaling.*` for every architecture,
+    so add them to the converter's output; llama-quantize copies them into every quant."""
+    try:
+        with open(os.path.join(model_directory, "config.json"), "r", encoding = "utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        return
+    rope = config.get("rope_parameters") or config.get("rope_scaling") or {}
+    if config.get("model_type") not in ("gemma", "gemma2") or not isinstance(rope, dict):
+        return
+    if (rope.get("rope_type") or rope.get("type")) != "linear" or float(
+        rope.get("factor", 1.0)
+    ) == 1.0:
+        return
+    factor = float(rope["factor"])
+
+    def _copy_with_linear_rope(gguf, path):
+        # The copy gguf-py's gguf_new_metadata.py makes, plus the two keys. Returns the staged
+        # path, or None when there is nothing to add; the reader's map is released on return.
+        reader = gguf.GGUFReader(path, "r")
+        arch = reader.get_field(gguf.Keys.General.ARCHITECTURE).contents()
+        if arch not in ("gemma", "gemma2") or f"{arch}.rope.scaling.type" in reader.fields:
+            return None
+        staged = path + ".rope_scaling.tmp"
+        writer = gguf.GGUFWriter(staged, arch, endianess = reader.endianess)
+        for field in reader.fields.values():
+            if field.name == gguf.Keys.General.ARCHITECTURE or field.name.startswith("GGUF."):
+                continue
+            kind = field.types[0]
+            sub = field.types[-1] if kind == gguf.GGUFValueType.ARRAY else None
+            writer.add_key_value(field.name, field.contents(), kind, sub_type = sub)
+        writer.add_rope_scaling_type(gguf.RopeScalingType.LINEAR)
+        writer.add_rope_scaling_factor(factor)
+        for tensor in reader.tensors:
+            writer.add_tensor_info(
+                tensor.name,
+                tensor.data.shape,
+                tensor.data.dtype,
+                tensor.data.nbytes,
+                tensor.tensor_type,
+            )
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_ti_data_to_file()
+        for tensor in reader.tensors:
+            writer.write_tensor_data(tensor.data, tensor_endianess = reader.endianess)
+        writer.close()
+        return staged
+
+    try:
+        with use_local_gguf():
+            import gguf
+            for path in gguf_files:
+                staged = _copy_with_linear_rope(gguf, path)
+                if staged is not None:
+                    gc.collect()  # Windows cannot replace a file that is still mapped.
+                    os.replace(staged, path)
+    except Exception as error:
+        for path in gguf_files:
+            try:
+                os.remove(path + ".rope_scaling.tmp")
+            except OSError:
+                pass
+        if os.environ.get("UNSLOTH_GGUF_ALLOW_UNSCALED_ROPE", "0") == "1":
+            logger.warning(
+                f"Unsloth: could not record linear RoPE scaling {factor} in the GGUF ({error}); "
+                "it will run unscaled, unlike the trained model."
+            )
+            return
+        raise RuntimeError(
+            f"Unsloth: this Gemma model uses linear RoPE scaling (factor {factor}), which "
+            f"llama.cpp's converter leaves out, and adding it to the GGUF failed: {error}. "
+            "The GGUF would run unscaled, unlike the trained model. Set "
+            "UNSLOTH_GGUF_ALLOW_UNSCALED_ROPE=1 to keep it anyway."
+        ) from error
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -2920,6 +2999,7 @@ def save_to_gguf(
     if conversion_staging is not None:
         shutil.rmtree(conversion_staging, ignore_errors = True)
     is_vlm = is_vlm_update
+    _record_gemma_linear_rope_in_gguf(model_directory, initial_files)
 
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
@@ -6937,6 +7017,50 @@ def _unmerge_flags_on_error(streamed):
         raise
 
 
+def _gemma_rope_the_zoo_export_drops(model):
+    """The linear RoPE factor a Gemma / Gemma 2 rotary trained with, when the installed unsloth_zoo
+    writes the base checkpoint's unscaled RoPE into a merged export instead; else None. The rotary
+    records `scaling_factor` only when it applied linear scaling, the contract the zoo export reads."""
+    try:
+        import importlib
+
+        if getattr(model.config, "model_type", None) not in ("gemma", "gemma2"):
+            return None
+        if hasattr(importlib.import_module("unsloth_zoo.saving_utils"), "_carry_over_rope_scaling"):
+            return None
+        for module in model.modules():
+            if type(module).__name__ == "GemmaFixedRotaryEmbedding":
+                factor = float(getattr(module, "scaling_factor", 1.0))
+                return None if factor == 1.0 else factor
+    except Exception:
+        return None
+    return None
+
+
+def _write_trained_gemma_rope(model, save_directory, factor):
+    """Put the trained linear RoPE and window into a merged config.json, as newer unsloth_zoo does:
+    `rope_parameters` on transformers 5, `rope_scaling` on 4.x."""
+    path = os.path.join(save_directory, "config.json")
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding = "utf-8") as f:
+        data = json.load(f)
+    key = "rope_parameters" if isinstance(data.get("rope_parameters"), dict) else "rope_scaling"
+    config = model.config
+    trained = getattr(config, "rope_parameters", None) or getattr(config, "rope_scaling", None)
+    rope = dict(data.get(key) or {})
+    rope.update(trained if isinstance(trained, dict) else {})
+    rope.update(rope_type = "linear", factor = factor)
+    if "type" in rope:
+        rope["type"] = "linear"
+    data[key] = rope
+    if getattr(config, "max_position_embeddings", None):
+        data["max_position_embeddings"] = config.max_position_embeddings
+    with open(path, "w", encoding = "utf-8") as f:
+        json.dump(data, f, indent = 2, sort_keys = True)
+        f.write("\n")
+
+
 @_model_parallel_refuses_save("save_pretrained_merged")
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
@@ -7157,6 +7281,15 @@ def unsloth_generic_save(
                 "Unsloth: `dtype` needs a newer unsloth_zoo. Update via "
                 "`pip install --upgrade --no-cache-dir unsloth_zoo`."
             )
+        _trained_rope_factor = _gemma_rope_the_zoo_export_drops(model)
+        if _trained_rope_factor is not None and push_to_hub:
+            raise RuntimeError(
+                "Unsloth: this Gemma model trained with linear RoPE scaling "
+                f"(factor {_trained_rope_factor}), which the installed unsloth_zoo leaves out "
+                "of a merged upload, so the uploaded model would not match the trained one. "
+                "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`, or save "
+                "locally with `save_pretrained_merged` and upload that folder."
+            )
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
 
         # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
@@ -7186,6 +7319,8 @@ def unsloth_generic_save(
             )
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
+            if _trained_rope_factor is not None and _is_main_rank():
+                _write_trained_gemma_rope(model, save_directory, _trained_rope_factor)
             _stitch_mtp_head(model, save_directory)
             _release_layout_for_merged_save(model, save_directory, save_method)
         elif "16bit" in save_method and is_main_process:
