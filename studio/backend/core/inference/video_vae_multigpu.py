@@ -7,7 +7,8 @@ Each spatial tile is an independent causal decode over every frame (its own feat
 load card and a per-decode copy of the VAE on the partner card at the same time, then blend on the load card exactly
 as diffusers does: bitwise the stock tiled decode (Kaggle 2x T4, Wan 2.2 TI2V 5B fp32: 832x480x33 129 s -> 65 s).
 Only the stock ``AutoencoderKLWan.tiled_decode`` body is mirrored (checked by AST fingerprint); untiled decodes are
-untouched. ``UNSLOTH_VIDEO_VAE_MULTIGPU=0`` keeps the decode on one card."""
+untouched. Automatic placement (no gpu_ids) lends only an idle card of the same model, like the CFG copy.
+``UNSLOTH_VIDEO_VAE_MULTIGPU=0`` keeps the decode on one card (``force``: any selected card under Automatic too)."""
 
 from __future__ import annotations
 
@@ -85,6 +86,32 @@ def _hooked(vae: Any) -> Optional[str]:
     return None
 
 
+def _automatic_partner(vae: Any, partner: int) -> tuple[Optional[int], str]:
+    """Automatic placement (no gpu_ids) lends only an idle card of the primary's model, sized from nvidia-smi so no
+    CUDA context is opened on a card it may never use (the CFG copy's rule, ``automatic_partner``); an explicit pick of
+    several cards keeps ``partner``. ``UNSLOTH_VIDEO_VAE_MULTIGPU=force`` keeps it under Automatic too."""
+    from .diffusion_multigpu import DeviceProbe, automatic_partner, current_selection, probe_devices
+
+    selection = current_selection()
+    if (
+        selection is None
+        or not selection.automatic
+        or (os.environ.get(ENV) or "").strip().lower() == "force"
+    ):
+        return int(partner), "selected"
+    probes = probe_devices((selection.primary, *selection.secondaries))
+    cards = [
+        probes[o]
+        for o in selection.secondaries
+        if probes.get(o) is not None and probes[o].free_mib is not None
+    ]
+    primary = probes.get(int(selection.primary)) or DeviceProbe(
+        int(selection.primary), "", None, None
+    )
+    pick, why = automatic_partner(primary, cards, need_mib(vae))
+    return pick, f"automatic GPU placement: {why}"
+
+
 def install(
     pipe: Any,
     partner: Optional[int],
@@ -96,6 +123,11 @@ def install(
         return False
     why = eligible(vae)
     if why is not None:
+        if logger is not None:
+            logger.info("video.vae_multigpu: not installed (%s)", why)
+        return False
+    partner, why = _automatic_partner(vae, partner)
+    if partner is None:
         if logger is not None:
             logger.info("video.vae_multigpu: not installed (%s)", why)
         return False

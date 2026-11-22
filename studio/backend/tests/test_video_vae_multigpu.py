@@ -296,3 +296,42 @@ def test_split_tiles_with_the_fused_wan_forwards_on_two_cards():
     # One card repeats bitwise; the partner's cuDNN / Triton picks on its own card can differ by an ulp
     # (Kaggle 2x T4: 4.5e-7 at scale 0.85 in fp32).
     torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 2e-6)
+
+
+@pytest.mark.parametrize(
+    "partner_probe, want",
+    [
+        (("T4", 15360, 15000, 90.0), None),  # computing for another process
+        (("T4", 15360, 9000, 0.0), None),  # another process holds 6 GiB on it
+        (("L4", 23034, 23000, 0.0), None),  # a different card model
+        (("T4", 15360, 15000, 0.0), 1),  # idle, same model: lent
+    ],
+)
+def test_automatic_placement_lends_only_an_idle_same_model_card(monkeypatch, partner_probe, want):
+    # Automatic (no gpu_ids) never slows another process's card or opens a CUDA context on a card it may not use:
+    # the partner is sized from nvidia-smi probes like the CFG copy's, and explicit picks are unchanged.
+    from core.inference import diffusion_multigpu as dm
+
+    name, total, free, util = partner_probe
+    probes = {
+        0: dm.DeviceProbe(0, "T4", 15360, 4000, None),
+        1: dm.DeviceProbe(1, name, total, free, util),
+    }
+    monkeypatch.setattr(dm, "probe_devices", lambda ordinals: {o: probes[o] for o in ordinals})
+    monkeypatch.setattr(dm, "install_compile_recorder", lambda: False)
+    opened = []
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: opened.append(a) or (0, 0))
+    automatic = dm.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
+    pipe = types.SimpleNamespace(vae = _vae())
+    with dm.selection_scope(automatic):
+        installed = vm.install(pipe, 1)
+    assert installed is (want is not None)
+    assert (vm.stats(pipe) or {}).get("partner") == want
+    assert not opened
+    explicit = types.SimpleNamespace(vae = _vae())
+    with dm.selection_scope(dm.MultiGpuSelection(primary = 0, secondaries = (1,))):
+        assert vm.install(explicit, 1) and vm.stats(explicit)["partner"] == 1
+    monkeypatch.setenv(vm.ENV, "force")
+    forced = types.SimpleNamespace(vae = _vae())
+    with dm.selection_scope(automatic):
+        assert vm.install(forced, 1) and vm.stats(forced)["partner"] == 1
