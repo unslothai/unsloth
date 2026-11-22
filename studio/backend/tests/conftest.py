@@ -121,15 +121,23 @@ def _plain_structlog_tracebacks():
         *structlog.get_config()["processors"],
     ]
     renderers = list({id(p): p for p in candidates if isinstance(p, renderer_cls)}.values())
-    previous = [(renderer, renderer.exception_formatter) for renderer in renderers]
-    for renderer in renderers:
-        renderer.exception_formatter = plain
+    # structlog 25.5 added the public property; 24.1 to 25.4 keep the formatter in _exception_formatter.
+    attr = (
+        "exception_formatter"
+        if isinstance(getattr(renderer_cls, "exception_formatter", None), property)
+        else "_exception_formatter"
+    )
+    previous = [
+        (renderer, getattr(renderer, attr)) for renderer in renderers if hasattr(renderer, attr)
+    ]
+    for renderer, _ in previous:
+        setattr(renderer, attr, plain)
 
     try:
         yield
     finally:
         for renderer, formatter in previous:
-            renderer.exception_formatter = formatter
+            setattr(renderer, attr, formatter)
 
 
 @pytest.fixture(autouse = True)
