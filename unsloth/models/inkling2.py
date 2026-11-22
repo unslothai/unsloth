@@ -185,6 +185,7 @@ def inkling2_lora_target_modules(
     attention = True,
     mlp = True,
     vision = False,
+    language = True,
 ):
     """Exact module names for the usual LoRA aliases. Unknown names pass through as PEFT suffixes."""
     if isinstance(target_modules, str) and target_modules != "all-linear":
@@ -194,6 +195,7 @@ def inkling2_lora_target_modules(
     else:
         wanted = [str(x) for x in target_modules]
 
+    language_on = language
     language, vision_layers = [], []
     for name, _ in model.named_modules():
         if re.search(r"(?:^|\.)vision_tower\.layers\.\d+$", name):
@@ -211,7 +213,7 @@ def inkling2_lora_target_modules(
         known = False
         if alias in _ATTENTION_TARGETS:
             known = True
-            if attention:
+            if attention and language_on:
                 for layer in language:
                     for leaf in _ATTENTION_TARGETS[alias]:
                         if f"{layer}.{leaf}" in modules:
@@ -247,9 +249,10 @@ def _unsloth_lora_target_modules(
     attention = True,
     mlp = True,
     vision = False,
+    language = True,
 ):
     return inkling2_lora_target_modules(
-        self, target_modules, attention = attention, mlp = mlp, vision = vision
+        self, target_modules, attention = attention, mlp = mlp, vision = vision, language = language
     )
 
 

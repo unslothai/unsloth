@@ -370,3 +370,38 @@ def test_merged_exports_refuse_inkling2(loop):
         source,
     )
     assert len(sites) == 4, sites
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [["o_proj"], ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]],
+)
+def test_vision_only_training_maps_the_vision_tower(monkeypatch, targets):
+    # finetune_language_layers = False must still run the remap for the vision tower (its leaves are out_proj /
+    # fc1 / fc2), and must not add language attention or the routed experts.
+    import unsloth  # noqa: F401
+    import unsloth.models.vision as vision
+    from unsloth.models.inkling2 import patch_inkling2_model
+
+    monkeypatch.setattr(vision, "clean_gpu_cache", lambda: None)
+    monkeypatch.setattr(
+        vision.FastBaseModel, "post_patch_model", staticmethod(lambda model, **kwargs: model)
+    )
+    model = _tiny(loop = True)
+    assert patch_inkling2_model(model)
+    model.max_seq_length = 64
+    out = vision.FastBaseModel.get_peft_model(
+        model,
+        r = 4,
+        target_modules = targets,
+        finetune_language_layers = False,
+        finetune_vision_layers = True,
+        use_gradient_checkpointing = False,
+    )
+    wrapped = {n.rsplit(".lora_A", 1)[0] for n, _ in out.named_parameters() if ".lora_A." in n}
+    assert wrapped and all("vision_tower" in n for n in wrapped), sorted(wrapped)[:5]
+    leaves = {n.rsplit(".", 1)[-1] for n in wrapped}
+    assert "out_proj" in leaves
+    if len(targets) > 1:
+        assert {"fc1", "fc2"} <= leaves
+    assert not list(out.peft_config["default"].target_parameters or [])

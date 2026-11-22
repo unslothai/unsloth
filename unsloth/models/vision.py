@@ -5730,7 +5730,10 @@ class FastBaseModel:
             finetune_audio_layers = True
         _targets_remapped = False
         _remapped_moe_targets = None
-        if callable(_remap_targets) and finetune_language_layers:
+        # A multimodal remap also serves vision-only requests (the vision tower has its own leaf names).
+        if callable(_remap_targets) and (
+            finetune_language_layers or (_remap_takes_vision and finetune_vision_layers)
+        ):
             _requested_targets = target_modules
             _remap_kwargs = dict(
                 attention = finetune_attention_modules,
@@ -5738,6 +5741,11 @@ class FastBaseModel:
             )
             if _remap_takes_vision:
                 _remap_kwargs["vision"] = finetune_vision_layers
+                try:
+                    if "language" in inspect.signature(_remap_targets).parameters:
+                        _remap_kwargs["language"] = finetune_language_layers
+                except (TypeError, ValueError):
+                    pass
             _remapped = _remap_targets(target_modules, **_remap_kwargs)
             if _remapped is not target_modules:
                 # Routed-expert intent comes from the caller's bare aliases; remapped MLP names are shared-expert only.
@@ -5747,6 +5755,7 @@ class FastBaseModel:
                     name
                     for name in _requested_targets
                     if finetune_mlp_modules
+                    and finetune_language_layers
                     and name in ("gate_proj", "up_proj", "down_proj", "gate_up_proj")
                 ]
                 target_modules = _remapped
