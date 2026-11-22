@@ -3282,9 +3282,15 @@ def _area_reference_extra_mib(pipe: Any, extra_mib: int, verdict: Any, device: A
     need = verdict.tiled_needed_mib if verdict.tiled_needed_mib is not None else verdict.needed_mib
     if need is None:
         return extra_mib
-    # live free memory is already net of the context and other tenants: the fixed overhead is a static-budget term
     short = live_reference_shortfall_mib(pipe, int(need), device)
-    return extra_mib if short is None else min(int(extra_mib), int(short))
+    if short is None:
+        return extra_mib
+    if verdict.budget_mib is not None:
+        from .diffusion_memory import DEFAULT_BASE_OVERHEAD_MIB
+
+        # the guard after the release admits ``need`` plus its fixed overhead against its budget: free that much too
+        short = max(int(short), int(need) + DEFAULT_BASE_OVERHEAD_MIB - int(verdict.budget_mib))
+    return min(int(extra_mib), max(0, int(short)))
 
 
 def _references_unpriced(fam: Any) -> bool:

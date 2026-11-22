@@ -170,9 +170,14 @@ def _v(
     needed = 37_191,
     tiled = 8_519,
     overridden = False,
+    budget = None,
 ):
     return dm.ImageActivationVerdict(
-        action, needed_mib = needed, tiled_needed_mib = tiled, overridden = overridden
+        action,
+        needed_mib = needed,
+        tiled_needed_mib = tiled,
+        overridden = overridden,
+        budget_mib = budget,
     )
 
 
@@ -193,6 +198,9 @@ def _v(
         (_v(dm.ACTIVATION_TILE), None, 14_303, 14_303, 8_519),
         (_v(dm.ACTIVATION_TILE, needed = None, tiled = None), 0, 14_303, 14_303, None),
         (None, 0, 14_303, 14_303, None),
+        # the guard after the release wants need + 2 GiB overhead inside its budget (L4 read 4_700 before the release)
+        (_v(dm.ACTIVATION_REFUSE, budget = 4_700), 4_945, 14_303, 8_519 + 2_048 - 4_700, 8_519),
+        (_v(dm.ACTIVATION_TILE, budget = 30_000), 0, 14_303, 0, 8_519),
     ],
 )
 def test_area_reference_streams_only_the_live_shortfall(
