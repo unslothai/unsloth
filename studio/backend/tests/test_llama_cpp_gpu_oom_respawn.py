@@ -174,3 +174,35 @@ def test_mixed_cards_keep_their_own_margins_plus_the_headroom(tmp_path, monkeypa
         after = h.margins(_spawn_cmd(backend, intent))
     assert len(before) == 2
     assert after == [m + 1024 for m in before]
+
+
+def _planned_ctx_backend(tmp_path):
+    # A Studio-planned load (--fit off): 24 GiB card, a 1 KiB/token KV, a 1M native context.
+    backend, gguf = h.cuda_backend(tmp_path, memory = ((0, 23_857, 24_122),))
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *a, **kw: n_ctx * 32 * 1024
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, **kw: 0
+    backend._context_length = 1048576
+    return backend, gguf
+
+
+def _ctx(cmd):
+    return int(h.last(cmd, "-c"))
+
+
+def test_respawn_of_a_studio_planned_context_shrinks_it_by_the_headroom(tmp_path):
+    # #18757: Auto context with --fit off never passes --fit-target, so the headroom has to
+    # come out of Studio's own budget or the respawn reruns the plan that ran out of memory.
+    backend, gguf = _planned_ctx_backend(tmp_path)
+    intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 0)
+    first = _spawn_cmd(backend, intent)
+    assert h.last(first, "--fit") == "off"
+
+    backend, gguf = _planned_ctx_backend(tmp_path)
+    backend._model_identifier = "test"
+    backend._note_gpu_oom_strike(intent)
+    with llama_cpp._automatic_recovery_load():
+        respawn = _spawn_cmd(backend, intent)
+    assert h.last(respawn, "--fit") == "off"
+    freed_mib = (_ctx(first) - _ctx(respawn)) * 32 / 1024
+    assert freed_mib >= llama_cpp._GPU_OOM_HEADROOM_STEP_MIB * 0.9
