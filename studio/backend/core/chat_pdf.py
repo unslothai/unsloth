@@ -50,7 +50,7 @@ li { margin: 0 0 5pt 0; }
 blockquote { margin: 10pt 0; padding: 0 0 0 12pt; border-left: 2pt solid #93969a; color: #595c60; }
 table { width: 100%; border-collapse: collapse; margin-bottom: 10pt; }
 th, td { overflow-wrap: normal; border: 0.6pt solid #dbdcde; padding: 5pt 7pt; }
-th { background-color: #f4f4f4; font-weight: bold; }
+th { font-weight: bold; }
 details { color: #595c60; margin: 0 0 6pt 0; }
 summary { font-style: italic; }
 a { color: #212327; }
@@ -82,42 +82,60 @@ def render_chat_pdf(
     for name in ("Hellix-Regular.ttf", "Hellix-SemiBold.ttf", "FiraCode-Regular.ttf"):
         archive.add((font_dir.joinpath(name).read_bytes(), name))
     story = pymupdf.Story(html = document, user_css = _PDF_CSS, archive = archive)
-    pre = story.body.find("pre", None, None)
-    block_number = 0
-    while pre is not None:
-        pre.set_id(f"pdf-block-{block_number}")
-        block_number += 1
-        pre = pre.find_next("pre", None, None)
-    code_kinds = {}
-    for tag in ("code", "span"):
-        node = story.body.find(tag, None, None)
-        while node is not None:
-            ancestor = node.parent
-            while ancestor is not None and ancestor.tagname != "pre":
-                ancestor = ancestor.parent
-            if tag == "code" or ancestor is not None:
-                identifier = f"pdf-code-{len(code_kinds)}"
-                node.set_id(identifier)
-                block = ancestor.get_attribute_value("id") if ancestor is not None else None
-                code_kinds[identifier] = block
-            node = node.find_next(tag, None, None)
-    inline_boxes = []
-    block_boxes = {}
+    # Backgrounds are painted beneath the text after layout: Story has no inline backgrounds and repeats
+    # block ones (pre, th) on every later page. set_attribute, not set_id: set_id scans the document per call.
+    fills = {}
 
-    def record_code(position):
-        if position.id in code_kinds:
-            rect = pymupdf.Rect(position.rect) * matrix
-            if rect.width <= 0 or rect.height <= 0:
-                return
-            block = code_kinds[position.id]
-            if block is None:
-                inline_boxes.append((pages, tuple(rect)))
-            else:
-                key = (pages, block)
-                if key in block_boxes:
-                    block_boxes[key].include_rect(rect)
-                else:
-                    block_boxes[key] = rect
+    def each(name):
+        node = story.body.find(name, None, None)
+        while node is not None:
+            yield node
+            node = node.find_next(name, None, None)
+
+    def tag(node, fill):
+        identifier = f"pdf-fill-{len(fills)}"
+        node.set_attribute("id", identifier)
+        fills[identifier] = fill
+
+    for number, pre in enumerate(each("pre")):
+        pre.set_attribute("id", f"pdf-block-{number}")
+    for node in each("th"):
+        tag(node, "th")
+    # A code element reports one box per line, so a block's extent on each page needs no per-span ids.
+    for node in each("code"):
+        block = node.parent
+        while block is not None and block.tagname != "pre":
+            block = block.parent
+        tag(node, block.get_attribute_value("id") if block is not None else "inline")
+    block_boxes = {}
+    boxes = []
+
+    def record_fill(position):
+        kind = fills.get(position.id)
+        if kind is None:
+            return
+        x0, y0, x1, y1 = position.rect
+        if kind == "th":
+            x0, y0, x1, y1 = x0 - 7, y0 - 5, x1 + 7, y1 + 5
+        elif y1 <= y0 or (kind == "inline" and x1 <= x0):
+            return
+        rect = (
+            x0 * scale + where.x0,
+            y0 * scale + where.y0,
+            x1 * scale + where.x0,
+            y1 * scale + where.y0,
+        )
+        if kind in ("th", "inline"):
+            boxes.append((pages, kind, rect))
+        elif (old := block_boxes.get((pages, kind))) is None:
+            block_boxes[pages, kind] = rect
+        else:
+            block_boxes[pages, kind] = (
+                min(old[0], rect[0]),
+                min(old[1], rect[1]),
+                max(old[2], rect[2]),
+                max(old[3], rect[3]),
+            )
 
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
@@ -149,6 +167,10 @@ def render_chat_pdf(
             else:
                 links.append((pages, position.href, rect))
 
+    def record_position(position):
+        record_fill(position)
+        add_link(position)
+
     more = 1
     while more:
         if pages >= MAX_EXPORT_PAGES:
@@ -166,8 +188,7 @@ def render_chat_pdf(
         matrix = pymupdf.Matrix(scale, 0, 0, scale, where.x0, where.y0)
         if pages == 0:
             first_page_scale = scale
-        story.element_positions(record_code)
-        story.element_positions(add_link)
+        story.element_positions(record_position)
         story.draw(device, matrix)
         writer.end_page()
         pages += 1
@@ -175,27 +196,32 @@ def render_chat_pdf(
 
     pdf = pymupdf.open("pdf", buffer.getvalue())
     try:
-        # Paint backgrounds beneath selectable text. Story's inline backgrounds are
-        # unsupported, and padded pre backgrounds can leak onto later pages.
-        for (page_number, _), text_rect in block_boxes.items():
-            rect = pymupdf.Rect(where.x0, text_rect.y0 - 6, where.x1, text_rect.y1 + 6) & where
-            pdf[page_number].draw_rect(
-                rect,
-                color = (0.85, 0.86, 0.87),
-                fill = (0.973, 0.974, 0.978),
-                width = 0.6,
-                radius = 0.12,
-                overlay = False,
-            )
-        for page_number, coordinates in dict.fromkeys(inline_boxes):
-            rect = (pymupdf.Rect(coordinates) + (-2, -1, 2, 1)) & where
-            pdf[page_number].draw_rect(
-                rect,
-                color = None,
-                fill = (0.93, 0.934, 0.94),
-                radius = 0.12,
-                overlay = False,
-            )
+        shapes = {}
+
+        def shape_on(number):
+            if number not in shapes:
+                shapes[number] = pdf[number].new_shape()
+            return shapes[number]
+
+        def corner(rect, points):
+            return min(0.5, points / max(min(rect.width, rect.height), 1))
+
+        for (number, _), coordinates in block_boxes.items():
+            rect = pymupdf.Rect(where.x0, coordinates[1] - 6, where.x1, coordinates[3] + 6) & where
+            shape = shape_on(number)
+            shape.draw_rect(rect, radius = corner(rect, 5))
+            shape.finish(color = (0.85, 0.86, 0.87), fill = (0.973, 0.974, 0.978), width = 0.6)
+        for number, kind, coordinates in dict.fromkeys(boxes):
+            shape = shape_on(number)
+            if kind == "th":
+                shape.draw_rect(pymupdf.Rect(coordinates))
+                shape.finish(color = None, fill = (0.957, 0.957, 0.957))
+            else:
+                rect = (pymupdf.Rect(coordinates) + (-2, -1, 2, 1)) & where
+                shape.draw_rect(rect, radius = corner(rect, 2))
+                shape.finish(color = None, fill = (0.93, 0.934, 0.94))
+        for shape in shapes.values():
+            shape.commit(overlay = False)
         wordmark = pymupdf.Rect(
             where.x0, where.y0, where.x0 + 74 * first_page_scale, where.y0 + 23 * first_page_scale
         )

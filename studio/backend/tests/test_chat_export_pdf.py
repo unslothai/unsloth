@@ -259,9 +259,16 @@ def test_registered_under_api_chat_export():
     assert routes.chat_export_router is chat_export.router
 
 
-def test_finished_code_block_does_not_paint_background_on_later_pages():
+@pytest.mark.parametrize(
+    "block",
+    [
+        "<pre><code>const x = 1;</code></pre>",
+        "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>",
+    ],
+)
+def test_backgrounds_do_not_repeat_on_later_pages(block):
     from core.chat_pdf import render_chat_pdf
-    body = "<pre><code>const x = 1;</code></pre>" + "".join(
+    body = block + "".join(
         '<section class="message"><h3 class="role">Assistant</h3>' "<p>Answer text.</p></section>"
         for _ in range(25)
     )
