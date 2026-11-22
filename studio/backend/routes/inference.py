@@ -17943,15 +17943,13 @@ _MANAGED_ENGINE_QUANTIZATIONS = {
     "awq": ("gptqmodel", "awq"),
     "gptq": ("gptqmodel", "auto_gptq"),
     "auto-round": ("auto_round",),
-    # Transformers has no ModelOpt loader; plain "fp8" stays on Default, which runs it.
-    "modelopt": (),
+    # Plain "fp8" and ModelOpt (unsloth rewrites it to native FP8 / NVFP4) stay on Default.
     "fbgemm_fp8": ("fbgemm_gpu",),
 }
 _OFFERED_ENGINES = ("vllm", "sglang")
 # SGLang registers auto-round too, but only vLLM has been run on it (#7997).
 _OFFERED_ENGINES_FOR = {
     "auto-round": ("vllm",),
-    "modelopt": ("vllm",),
     "fbgemm_fp8": ("vllm",),
 }
 

@@ -3607,7 +3607,6 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
 
 const VLLM_CHECKPOINT_QUANTS: ReadonlySet<string> = new Set([
   "compressed-tensors",
-  "modelopt",
   "fbgemm_fp8",
 ]);
 

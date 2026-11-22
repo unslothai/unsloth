@@ -304,10 +304,11 @@ def test_amd_offers_only_the_checkpoints_vllms_rocm_build_loads(tmp_path):
                 assert engines(metadata) is None, metadata
 
 
-def test_modelopt_and_fbgemm_fp8_are_offered_vllm_and_plain_fp8_stays_on_default():
-    modelopt = {"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"}}
+def test_fbgemm_fp8_is_offered_vllm_and_plain_fp8_and_modelopt_stay_on_default():
+    # Unsloth rewrites ModelOpt FP8 / NVFP4 for the Default engine (unsloth/models/modelopt_*.py).
+    for algo in ("FP8", "NVFP4"):
+        assert offer({"quantization_config": {"quant_method": "modelopt", "quant_algo": algo}}) is None
     fbgemm = {"quantization_config": {"quant_method": "fbgemm_fp8"}}
-    assert offer(modelopt) == {"quantization": "modelopt", "engines": ["vllm"]}
     assert offer(fbgemm) == {"quantization": "fbgemm_fp8", "engines": ["vllm"]}
     assert offer({"quantization_config": {"quant_method": "fp8"}}) is None
 
@@ -322,12 +323,12 @@ def test_fbgemm_fp8_is_not_offered_where_default_can_run_it():
         assert offer({"quantization_config": {"quant_method": "fbgemm_fp8"}}) is None
 
 
-def test_amd_is_not_offered_modelopt_or_fbgemm_fp8(tmp_path):
+def test_amd_is_not_offered_fbgemm_fp8(tmp_path):
     amd = {"vllm": None, "sglang": "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."}
     with (
         patch("core.inference.engine_install.gpu_platform", return_value = "rocm"),
         patch("core.inference.engine_install.support_reason", side_effect = amd.get),
     ):
-        for method in ("modelopt", "fbgemm_fp8"):
+        for method in ("fbgemm_fp8",):
             metadata = {"quantization_config": {"quant_method": method}}
             assert route._managed_engine_offer_for(_config(tmp_path, metadata), None) is None

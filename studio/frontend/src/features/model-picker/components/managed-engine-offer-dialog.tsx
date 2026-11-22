@@ -28,7 +28,6 @@ const QUANTIZATION_NAMES: Record<string, string> = {
   awq: "AWQ",
   gptq: "GPTQ",
   "auto-round": "AutoRound",
-  modelopt: "NVIDIA ModelOpt",
   fbgemm_fp8: "FBGEMM FP8",
 };
 

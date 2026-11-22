@@ -126,14 +126,14 @@ test("the vLLM label for AWQ / GPTQ tags does not depend on tag order or GGUF na
   );
 });
 
-test("ModelOpt and FBGEMM FP8 run on vLLM only; plain fp8 stays on the Default engine", () => {
-  const modelopt = { modelId: "nvidia/Llama-3.3-70B-Instruct-FP4", tags: ["modelopt"], quantMethod: "modelopt", deviceType: "cuda" };
+test("FBGEMM FP8 runs on vLLM only; plain fp8 and ModelOpt stay on the Default engine", () => {
   const fbgemm = { modelId: "meta-llama/Llama-3.1-8B-FP8", tags: ["fbgemm"], quantMethod: "fbgemm_fp8", deviceType: "cuda" };
-  assert.deepEqual(classifyUnslothSupport({ ...modelopt, vllmAvailable: false }), {
-    status: "unsupported",
-    reason: "Detected NVIDIA ModelOpt quantization.",
-  });
-  for (const row of [modelopt, fbgemm]) {
+  // Unsloth rewrites ModelOpt FP8 / NVFP4 checkpoints for the Default engine.
+  assert.equal(
+    classifyUnslothSupport({ modelId: "nvidia/Llama-3.1-8B-Instruct-FP8", quantMethod: "modelopt", deviceType: "cuda" }).status,
+    "supported",
+  );
+  for (const row of [fbgemm]) {
     assert.equal(classifyUnslothSupport({ ...row, vllmAvailable: true }).supportedIn, "vllm", row.quantMethod);
     assert.equal(
       classifyUnslothSupport({ ...row, vllmAvailable: true, vllmPlatform: "rocm" }).supportedIn,

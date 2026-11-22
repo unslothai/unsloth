@@ -189,7 +189,7 @@ test("the chat picker lists FP8 / NVFP4 checkpoints the GPU runs, whatever their
   );
   assert.match(
     picker,
-    /VLLM_CHECKPOINT_QUANTS: ReadonlySet<string> = new Set\(\[\s*"compressed-tensors",\s*"modelopt",\s*"fbgemm_fp8",\s*\]\)/,
+    /VLLM_CHECKPOINT_QUANTS: ReadonlySet<string> = new Set\(\[\s*"compressed-tensors",\s*"fbgemm_fp8",\s*\]\)/,
   );
   assert.match(
     picker,
