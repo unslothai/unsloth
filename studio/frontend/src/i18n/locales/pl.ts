@@ -1501,6 +1501,7 @@ export const pl = {
       voice: "Głos",
       connections: "Połączenia",
       data: "Dane",
+      knowledge: "Bazy wiedzy",
       apiKeys: "API",
       remoteLan: "Zdalnie i LAN",
       agents: "Agenci",

@@ -7,6 +7,8 @@ export interface KnowledgeBase {
   description?: string | null;
   createdAt?: string | null;
   documentCount?: number;
+  /** Absent from servers older than the field. */
+  indexedCount?: number;
 }
 
 export type DocumentStatus = "pending" | "running" | "completed" | "failed";

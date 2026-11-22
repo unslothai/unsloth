@@ -105,8 +105,8 @@ function harness(rows: Array<typeof KB> = [KB]) {
   const uploads: unknown[][] = [];
   const abandoned: unknown[][] = [];
   const errors: string[] = [];
-  const { KnowledgeBaseDialog } = loadWithStubs<{
-    KnowledgeBaseDialog: (props: Record<string, unknown>) => StubElement;
+  const { KnowledgeBaseManager } = loadWithStubs<{
+    KnowledgeBaseManager: (props: Record<string, unknown>) => StubElement;
   }>(
     new URL(
       "../src/features/rag/components/knowledge-base-dialog.tsx",
@@ -155,6 +155,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
       "./document-status-chip": {},
       "./linked-folders-manager": {},
       "./source-drop-policy": { RAG_SOURCE_UPLOAD_ACCEPT: "" },
+      "./source-folder-copy": { embeddedSummary: () => "" },
       "./use-rag-documents": {
         // Like the real hook: a fresh `upload` every render, and unmount abandons running uploads.
         useRagDocuments: () => {
@@ -231,7 +232,12 @@ function harness(rows: Array<typeof KB> = [KB]) {
   function render() {
     current = dialog;
     dialog.begin();
-    tree = KnowledgeBaseDialog(props);
+    // The props KnowledgeBaseDialog passes; the manager's hooks sit at Dialog level, outside the content.
+    tree = KnowledgeBaseManager({
+      ...props,
+      frame: (content: unknown) => (props.open ? content : null),
+      renderHeader: (title: string) => ({ type: "DialogTitle", props: { children: title } }),
+    });
     dialog.flushEffects();
     const view = documentsView();
     if (!view) {

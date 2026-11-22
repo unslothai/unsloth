@@ -16,6 +16,7 @@ export const SETTINGS_TABS = [
   "connections",
   "library",
   "data",
+  "knowledge",
   "api-keys",
   "remote-lan",
   "agents",

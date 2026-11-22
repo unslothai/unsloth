@@ -51,3 +51,11 @@ export function runningPercent(progress: number): number {
   const value = progress <= 1 ? progress * 100 : progress;
   return Math.max(0, Math.min(99, Math.floor(value)));
 }
+
+/** Only while some documents are not embedded yet, so a finished base reads as before. */
+export function embeddedSummary(kb: { documentCount?: number; indexedCount?: number }): string {
+  const total = kb.documentCount ?? 0;
+  const indexed = kb.indexedCount;
+  if (indexed == null || total === 0 || indexed >= total) return "";
+  return ` · ${indexed} of ${total} embedded (${Math.floor((indexed / total) * 100)}%)`;
+}

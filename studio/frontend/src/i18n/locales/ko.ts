@@ -1362,6 +1362,7 @@ export const ko = {
       remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
+      knowledge: "지식 베이스",
       agents: "에이전트",
       debugging: "로그",
       voice: "음성",

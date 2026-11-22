@@ -1482,6 +1482,7 @@ export const fa = {
       voice: "صدا",
       connections: "اتصال‌ها",
       data: "داده",
+      knowledge: "پایگاه‌های دانش",
       apiKeys: "API",
       remoteLan: "دسترسی از راه دور و LAN",
       agents: "عامل‌ها",

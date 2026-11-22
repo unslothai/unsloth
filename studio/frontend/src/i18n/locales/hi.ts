@@ -1366,6 +1366,7 @@ export const hi = {
       remoteLan: "रिमोट और LAN",
       about: "परिचय",
       data: "डेटा",
+      knowledge: "नॉलेज बेस",
       agents: "एजेंट",
       debugging: "लॉग",
       voice: "आवाज़",

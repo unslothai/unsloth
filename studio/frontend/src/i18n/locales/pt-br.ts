@@ -1366,6 +1366,7 @@ export const ptBR = {
       about: "Sobre",
       voice: "Voz",
       data: "Dados",
+      knowledge: "Bases de conhecimento",
       agents: "Agentes",
       debugging: "Registros",
       keyboardShortcuts: "Atalhos",

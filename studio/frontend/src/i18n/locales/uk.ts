@@ -1499,6 +1499,7 @@ export const uk = {
       voice: "Голос",
       connections: "Підключення",
       data: "Дані",
+      knowledge: "Бази знань",
       apiKeys: "API",
       remoteLan: "Віддалений доступ і LAN",
       agents: "Агенти",
