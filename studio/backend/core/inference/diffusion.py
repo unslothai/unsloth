@@ -3274,12 +3274,12 @@ def _guard_condition_pixels(
 
 
 def _area_reference_extra_mib(pipe: Any, extra_mib: int, verdict: Any, device: Any) -> int:
-    """MiB to stream for a ``reference_area`` request: the live shortfall of the activation estimate the guard admits
-    it on (tiled when it tiles), capped at ``extra_mib``; ``extra_mib`` unchanged when refused, overridden or
-    unreadable."""
-    if verdict is None or verdict.action == ACTIVATION_REFUSE or verdict.overridden:
+    """MiB to stream for a ``reference_area`` request: the live shortfall of the guard's activation estimate (tiled when
+    the VAE can tile), capped at ``extra_mib``. ``verdict`` is read before any release, so its action may still be a
+    refusal the streaming then lifts; only its figures are used. ``extra_mib`` unchanged when overridden or unreadable."""
+    if verdict is None or verdict.overridden:
         return extra_mib
-    need = verdict.tiled_needed_mib if verdict.action == ACTIVATION_TILE else verdict.needed_mib
+    need = verdict.tiled_needed_mib if verdict.tiled_needed_mib is not None else verdict.needed_mib
     if need is None:
         return extra_mib
     # live free memory is already net of the context and other tenants: the fixed overhead is a static-budget term

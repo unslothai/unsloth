@@ -179,17 +179,19 @@ def _v(
 @pytest.mark.parametrize(
     "verdict, short, extra, want, asked",
     [
-        # tiles: the tiled estimate is what must fit now; 0 short streams nothing
+        # the tiled estimate is what must fit now; 0 short streams nothing
         (_v(dm.ACTIVATION_TILE), 0, 14_303, 0, 8_519),
         (_v(dm.ACTIVATION_TILE), 4_000, 14_303, 4_000, 8_519),
+        # read before the release: a refusal there (resident groups still held) is priced the same way
+        (_v(dm.ACTIVATION_REFUSE), 4_945, 14_303, 4_945, 8_519),
         # never more than the placement's own shortfall
         (_v(dm.ACTIVATION_TILE), 20_000, 14_303, 14_303, 8_519),
-        # runs untiled: the untiled estimate
-        (_v(dm.ACTIVATION_RUN, needed = 9_000), 100, 5_000, 100, 9_000),
-        # refused, overridden or unreadable: unchanged
-        (_v(dm.ACTIVATION_REFUSE), 0, 14_303, 14_303, None),
+        # no VAE tiling: the untiled estimate
+        (_v(dm.ACTIVATION_RUN, needed = 9_000, tiled = None), 100, 5_000, 100, 9_000),
+        # overridden or unreadable: unchanged
         (_v(dm.ACTIVATION_TILE, overridden = True), 0, 14_303, 14_303, None),
         (_v(dm.ACTIVATION_TILE), None, 14_303, 14_303, 8_519),
+        (_v(dm.ACTIVATION_TILE, needed = None, tiled = None), 0, 14_303, 14_303, None),
         (None, 0, 14_303, 14_303, None),
     ],
 )
