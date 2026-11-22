@@ -159,6 +159,38 @@ test("history refresh leaves the active chat's running repository alone", () => 
   assert.equal(exported, false);
 });
 
+for (const runningAtRead of [true, false]) {
+  test(`${runningAtRead ? "a read begun mid-run leaves" : "an idle read updates"} the finished reply status`, () => {
+    let imported: { messages: { message: { status?: unknown } }[] } | undefined;
+    const view = {
+      threadListItem: () => ({ getState: () => ({ remoteId: "thread-1" }) }),
+      thread: () => ({
+        getState: () => ({ isRunning: false, messages: [] }),
+        export: () => ({
+          messages: [{ parentId: "user-1", message: assistantRuntime("assistant-1", "Final reply") }],
+        }),
+        import: (data: typeof imported) => {
+          imported = data;
+        },
+      }),
+    };
+    const checkpoint = {
+      ...storedAssistant("assistant-1", "Final reply"),
+      metadata: { incomplete: { reason: "interrupted" as const } },
+    };
+    const changed = reconcileOrdinarySavedMessagesInView(view, "thread-1", [checkpoint], {
+      editingMessageId: null,
+      toThreadMessage: () => assert.fail("nothing to append"),
+      runningAtRead,
+    });
+    assert.equal(changed, !runningAtRead);
+    assert.deepEqual(
+      imported?.messages[0].message.status,
+      runningAtRead ? undefined : { type: "incomplete", reason: "error" },
+    );
+  });
+}
+
 test("a running assistant message is not reconciled", () => {
   const runtime = assistantRuntime("assistant-1", "Old checkpoint");
   runtime.status = { type: "running" };

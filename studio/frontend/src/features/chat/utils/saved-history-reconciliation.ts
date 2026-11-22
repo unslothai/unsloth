@@ -206,9 +206,11 @@ export function reconcileOrdinarySavedMessagesInView(
     editingMessageId: string | null;
     toThreadMessage: (record: MessageRecord) => ThreadMessage;
     idsAtRead?: ReadonlySet<string>;
+    // A read begun mid-run predates its final save; the idle-gated watcher re-reads after.
+    runningAtRead?: boolean;
   },
 ): boolean {
-  if (view.threadListItem().getState().remoteId !== threadId) {
+  if (options.runningAtRead || view.threadListItem().getState().remoteId !== threadId) {
     return false;
   }
   try {
