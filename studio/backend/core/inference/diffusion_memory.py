@@ -1371,7 +1371,13 @@ def cuda_reusable_cache_bytes(device: Any = None) -> int:
     if device is not None:
         try:
             import torch
-            index = device if isinstance(device, int) else torch.device(device).index
+            if not isinstance(device, int):
+                parsed = torch.device(device)
+                if parsed.type != "cuda":
+                    return 0  # a CPU / other device holds no CUDA cache: index None would read the current card
+                index = parsed.index
+            else:
+                index = device
         except Exception:  # noqa: BLE001 - unparseable: read the current card
             index = None
     return max(0, cuda_reclaimable_bytes(index) or 0)
