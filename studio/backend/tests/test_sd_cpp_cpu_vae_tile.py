@@ -160,6 +160,7 @@ def test_backend_subtracts_offloaded_weights_and_reserve(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(args_mod, "sd_cpp_vae_tile_size_in_pixels", lambda b: True)
     monkeypatch.delenv(CPU_VAE_TILE_ENV, raising = False)
+    monkeypatch.setattr(diffusion_small_host, "host_commit_mib", lambda: None)
     reserve = diffusion_small_host.host_reserve_mib(32768)
     weights = 5100
 
@@ -175,6 +176,31 @@ def test_backend_subtracts_offloaded_weights_and_reserve(tmp_path, monkeypatch):
     # A latent-unit build keeps 256 px whatever the RAM.
     monkeypatch.setattr(args_mod, "sd_cpp_vae_tile_size_in_pixels", lambda b: False)
     assert with_available(10**7) is None
+
+
+def test_windows_commit_headroom_caps_the_tile(tmp_path, monkeypatch):
+    """Windows: the offloaded weights and the decode buffer are committed memory, so a commit headroom below the
+    physical available RAM (small or no page file) sizes the tile. Elsewhere host_commit_mib() is None."""
+    from core.inference import diffusion_small_host
+
+    files = SimpleNamespace(
+        diffusion_model = _sized(tmp_path, "dit.gguf", 2000),
+        vae = _sized(tmp_path, "vae.st", 100),
+        llm = _sized(tmp_path, "te.gguf", 3000),
+    )
+    monkeypatch.setattr(args_mod, "sd_cpp_vae_tile_size_in_pixels", lambda b: True)
+    monkeypatch.delenv(CPU_VAE_TILE_ENV, raising = False)
+    reserve = diffusion_small_host.host_reserve_mib(32768)
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (32768, 30000))
+
+    def with_commit(commit):
+        monkeypatch.setattr(diffusion_small_host, "host_commit_mib", lambda: commit)
+        return backend_mod._cpu_vae_tile_size(files, "/bin/sd-cli")
+
+    assert with_commit(None) == 1024
+    assert with_commit(10**6) == 1024
+    assert with_commit(5100 + reserve + _need(512)) == 512
+    assert with_commit(0) is None
 
 
 def test_backend_unreadable_host_keeps_256(tmp_path, monkeypatch):
@@ -194,5 +220,87 @@ def test_real_pinned_help_is_pixel_units():
     """The pinned prebuilt's help, when one is on this machine (SD_CLI_PATH)."""
     binary = os.environ.get("SD_CLI_PATH")
     if not binary or not os.path.exists(binary):
-        pytest.skip("no sd-cli binary on this machine")
+        pytest.skip(reason = "no sd-cli binary on this machine (SD_CLI_PATH unset or missing)")
     assert sd_cpp_vae_tile_size_in_pixels(binary) is True
+
+
+class _HoldingServer:
+    """sd-server stand-in whose offloaded weights occupy host RAM until it is stopped."""
+
+    running: list = []
+
+    def __init__(self, binary):
+        self.binary = binary
+        self.started = None
+
+    def is_alive(self):
+        return self in _HoldingServer.running
+
+    def start(self, files, **kwargs):
+        self.started = kwargs
+        _HoldingServer.running.append(self)
+
+    def stop(self):
+        if self in _HoldingServer.running:
+            _HoldingServer.running.remove(self)
+
+
+def test_a_model_switch_sizes_the_tile_after_the_outgoing_server_frees_its_weights(
+    tmp_path, monkeypatch
+):
+    """The first placement of a load runs while the outgoing sd-server still holds its offloaded weights in host RAM.
+    The running server defers the install, so placement runs again after the teardown: the second load of the same
+    model gets the same tile (the same pixels) as the first."""
+    import types
+
+    from core.inference import diffusion_small_host
+    from core.inference.diffusion_families import detect_family
+
+    paths = {
+        "diffusion_model": _sized(tmp_path, "z.gguf", 2000),
+        "vae": _sized(tmp_path, "vae.sft", 100),
+        "llm": _sized(tmp_path, "llm.gguf", 3000),
+    }
+    weights = 5100
+    reserve = diffusion_small_host.host_reserve_mib(32768)
+    fresh = weights + reserve + _need(1024)
+    monkeypatch.setattr(
+        diffusion_small_host,
+        "host_ram_mib",
+        lambda: (32768, fresh - weights * len(_HoldingServer.running)),
+    )
+    monkeypatch.setattr(diffusion_small_host, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(args_mod, "sd_cpp_vae_tile_size_in_pixels", lambda b: True)
+    monkeypatch.delenv(CPU_VAE_TILE_ENV, raising = False)
+    # CPU torch on the Vulkan build: the card is unmeasured, so auto offloads with the model policy.
+    monkeypatch.setattr(backend_mod, "_installed_accelerator_of", lambda binary: "vulkan")
+    monkeypatch.setattr(backend_mod, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(backend_mod, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(backend_mod, "SdCppServer", _HoldingServer)
+    monkeypatch.setattr(
+        backend_mod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+    _HoldingServer.running = []
+    fam = detect_family("z-image")
+    b = backend_mod.SdCppDiffusionBackend()
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(b, "_fetch_assets", lambda *a, **k: dict(paths))
+    tiles = []
+    for token in (1, 2):
+        b._load_token = token
+        b._run_load(
+            repo_id = "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z.gguf",
+            base = fam.base_repo,
+            fam = fam,
+            hf_token = None,
+            _load_token = token,
+        )
+        flags = list(b._state.offload_flags)
+        assert "--vae-on-cpu" in flags
+        tiles.append(
+            flags[flags.index("--vae-tile-size") + 1] if "--vae-tile-size" in flags else None
+        )
+        assert len(_HoldingServer.running) == 1
+    assert tiles == ["1024", "1024"]
