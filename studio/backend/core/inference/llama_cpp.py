@@ -5325,10 +5325,12 @@ def _gpu_lib_has_banded_quant_kv(lib_dir: Path, backend: str) -> bool:
 
 
 class _Inkling2BandedSupport(NamedTuple):
-    """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask."""
+    """backend: ggml GPU backend, None if unknown; quant_kv: quantized banded K/V + shared mask;
+    tile_kv: every visible CUDA card dequantizes q8_0 / q4_0 in the tile (Turing MMA)."""
 
     backend: Optional[str] = None
     quant_kv: bool = False
+    tile_kv: bool = False
 
 
 # Unknown build prices as pre-#399.
@@ -10879,10 +10881,29 @@ class LlamaCppBackend:
             quant_kv = backend in ("cuda", "hip") and _gpu_lib_has_banded_quant_kv(
                 _llama_lib_dir(binary), backend
             )
-            return _Inkling2BandedSupport(backend, quant_kv)
+            tile_kv = backend == "cuda" and quant_kv and cls._inkling2_cuda_tile_kv(binary)
+            return _Inkling2BandedSupport(backend, quant_kv, tile_kv)
         except Exception as exc:  # noqa: BLE001 -- an unreadable build prices as legacy
             logger.debug("Inkling 2 banded probe failed: %s", exc)
             return _INKLING2_BANDED_LEGACY
+
+    # turing_mma_available: the banded MMA kernel, and its in-tile q8_0 / q4_0 dequant, need sm_75.
+    _INKLING2_BANDED_TILE_MIN_SM = 75
+
+    @classmethod
+    def _inkling2_cuda_tile_kv(cls, binary: Optional[str]) -> bool:
+        """Every visible card, and the arch the bundle runs on it, is Turing+; unknown: False."""
+        caps = cls._cuda_compute_caps()
+        if not caps:
+            return False
+        sms = cls._installed_llama_cuda_sms(binary)
+        floor = cls._INKLING2_BANDED_TILE_MIN_SM
+        for sm in caps.values():
+            # ggml_cuda_highest_compiled_arch: the highest compiled arch <= the card runs.
+            ran = max((s for s in sms if s <= sm), default = 0) if sms else sm
+            if ran < floor:
+                return False
+        return True
 
     def _inkling2_banded(self) -> "_Inkling2BandedSupport":
         support = getattr(self, "_inkling2_banded_support", _INKLING2_BANDED_LEGACY)
@@ -18913,7 +18934,7 @@ class LlamaCppBackend:
     _INKLING2_REL_BIAS_BYTES_PER_HEAD = 8
     _INKLING2_REL_INDEX_BYTES = 4
     _INKLING2_BANDED_MIN_UBATCH = 33
-    # #399: iq4_nl has no f16 converter; CUDA dequantizes q8_0/q4_0 in-tile, others use an f16 copy.
+    # #399: iq4_nl has no f16 converter; Turing+ CUDA dequantizes q8_0/q4_0 in-tile, else f16 copy.
     _INKLING2_BANDED_QUANT_TYPES = frozenset({"q8_0", "q4_0", "q4_1", "q5_0", "q5_1"})
     _INKLING2_BANDED_TILE_TYPES = frozenset({"q8_0", "q4_0"})
     # Prompt graphs regrow the banded buffer past the reserve; fit to B200 Inkling-2-Mini at exit.
@@ -19188,7 +19209,7 @@ class LlamaCppBackend:
                     return int(max(reserve, regrown))
                 copy = 0
                 if quantized and not (
-                    build.backend == "cuda" and kv_type in self._INKLING2_BANDED_TILE_TYPES
+                    build.tile_kv and kv_type in self._INKLING2_BANDED_TILE_TYPES
                 ):
                     copy = self._attention_dequant_width() * 2
                 reserve = (self._INKLING2_BANDED_SHARED_RESERVE_BYTES * ub + split_extra) * n_ctx

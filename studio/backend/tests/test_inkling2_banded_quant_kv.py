@@ -31,7 +31,9 @@ from core.inference.llama_cpp import (
 
 MIB = 1024 * 1024
 OLD_CUDA = _Inkling2BandedSupport("cuda", False)
-NEW_CUDA = _Inkling2BandedSupport("cuda", True)
+NEW_CUDA = _Inkling2BandedSupport("cuda", True, True)
+# A #399 build on a pre-Turing (or unknown) card: no banded MMA, so no in-tile dequant.
+NEW_CUDA_PRE_TURING = _Inkling2BandedSupport("cuda", True, False)
 NEW_HIP = _Inkling2BandedSupport("hip", True)
 
 # Registration strings of the banded MMA kernel: #399 instantiates it per K/V tile type.
@@ -137,6 +139,14 @@ class TestBuildDecidesTheQuantizedPath:
         )
         assert extra == (b._attention_dequant_width() * 2 * 65536 if copy else 0)
 
+    @pytest.mark.parametrize("kv", ["q8_0", "q4_0"])
+    def test_pre_turing_cuda_reads_an_f16_copy_of_the_cache(self, kv):
+        b = _inkling2_mini(NEW_CUDA_PRE_TURING)
+        extra = b._compute_buffer_ctx_bytes(262144, 1024, kv) - _inkling2_mini(
+            NEW_CUDA
+        )._compute_buffer_ctx_bytes(262144, 1024, kv)
+        assert extra == b._attention_dequant_width() * 2 * 262144 > 0
+
     def test_iq4_nl_has_no_f16_converter_so_stays_dense(self):
         b = _inkling2_mini(NEW_CUDA)
         assert b._compute_buffer_ctx_bytes(65536, 1024, "iq4_nl") == 1024 * 198 * 65536
@@ -201,6 +211,38 @@ class TestProbe:
             LlamaCppBackend, "_build_has_metal", staticmethod(lambda binary = None: False)
         )
         llama_cpp._lib_matches.cache_clear()
+        self._caps(monkeypatch, {0: 90})
+
+    @staticmethod
+    def _caps(
+        monkeypatch,
+        caps,
+        sms = None,
+    ):
+        monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: caps))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_installed_llama_cuda_sms", staticmethod(lambda binary = None: sms)
+        )
+
+    @pytest.mark.parametrize(
+        "caps,sms,tile",
+        [
+            ({0: 80}, None, True),
+            ({0: 75, 1: 120}, None, True),
+            ({0: 61}, None, False),  # Pascal P40 / GTX 10xx
+            ({0: 70}, None, False),  # Volta: no Turing MMA either
+            ({0: 89, 1: 61}, None, False),  # one old card is enough
+            ({}, None, False),  # unknown fails closed
+            ({0: 86}, frozenset({50, 61}), False),  # PTX-only bundle runs sm_61 code
+            ({0: 86}, frozenset({61, 75, 86}), True),
+        ],
+    )
+    def test_in_tile_dequant_follows_the_compute_capability(
+        self, tmp_path, monkeypatch, caps, sms, tile
+    ):
+        self._caps(monkeypatch, caps, sms)
+        binary = self._install(tmp_path, {"libggml-cuda.so": NEW_KERNEL})
+        assert LlamaCppBackend.inkling2_banded_support(binary) == ("cuda", True, tile)
 
     def test_new_cuda_library(self, tmp_path):
         binary = self._install(
@@ -218,14 +260,14 @@ class TestProbe:
 
     def test_vulkan_build_never_claims_the_quantized_path(self, tmp_path):
         binary = self._install(tmp_path, {"libggml-vulkan.so": NEW_KERNEL})
-        assert LlamaCppBackend.inkling2_banded_support(binary) == ("vulkan", False)
+        assert LlamaCppBackend.inkling2_banded_support(binary) == ("vulkan", False, False)
 
     def test_metal_build(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             LlamaCppBackend, "_build_has_metal", staticmethod(lambda binary = None: True)
         )
         binary = self._install(tmp_path, {"libggml-metal.dylib": b""})
-        assert LlamaCppBackend.inkling2_banded_support(binary) == ("metal", False)
+        assert LlamaCppBackend.inkling2_banded_support(binary) == ("metal", False, False)
 
     def test_static_build_is_unknown(self, tmp_path):
         assert LlamaCppBackend.inkling2_banded_support(self._install(tmp_path, {})) == (
