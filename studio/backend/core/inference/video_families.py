@@ -660,6 +660,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ),
             # ComfyUI's LTX-2.5 templates run the int8-convrot DiT; LPIPS 0.265 = compile floor (FP8 0.366).
             auto_prequant_when_resident = frozenset({"int8"}),
+            # An explicit int8 pick on gfx1151 (ROCm 7.13, 512x320x17, 8 steps, 4 repeats) runs W8A8 read from the
+            # hosted ConvRot file; AUTO keeps bf16 there. Weight-only quantised at load measured 18.89 s/clip.
+            rdna_explicit_w8a8 = (
+                "int8 W8A8 measured 16.17 vs 18.89 s/clip against weight-only int8 on gfx1151 (512x320x17, "
+                "8 steps), LPIPS 0.126 vs 0.138 against bf16"
+            ),
             untiled_vae = _LTX2_VAE_UNTILED,
             # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
             compile_static = True,

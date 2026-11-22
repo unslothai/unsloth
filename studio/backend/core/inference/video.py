@@ -227,6 +227,7 @@ from .diffusion_transformer_quant import (
     explain_unusable_scheme,
     native_int8_act,
     native_offload_host,
+    rdna_video_explicit_w8a8_reason,
     native_quant_host,
     native_quant_scheme,
     NATIVE_OFFLOAD_SCHEMES,
@@ -4125,6 +4126,75 @@ def _finish_cast_writes(pipe: Any) -> None:
         pass
 
 
+def _video_int8_act(target: Any, fam: Any, transformer_quant: Optional[str]) -> bool:
+    """W8A8 for the native int8 build: the host default, or an explicit int8 pick on ROCm RDNA where the family
+    measured W8A8 faster (``rdna_video_explicit_w8a8_reason``). Never raises."""
+    if native_int8_act(target):
+        return True
+    try:
+        return (
+            rdna_video_explicit_w8a8_reason(target, getattr(fam, "name", None), transformer_quant)
+            is not None
+        )
+    except Exception:  # noqa: BLE001 - unanswerable keeps the host default
+        return False
+
+
+def _video_rocm_hosted_scheme(
+    fam: Any, transformer_quant: Optional[str], target: Any
+) -> Optional[str]:
+    """``int8`` when an explicit int8 load on ROCm RDNA builds the W8A8 ConvRot native DiT the family's hosted int8
+    safetensors already holds, resident or offloaded, else None. The load re-checks the file; never raises."""
+    try:
+        from .diffusion_native_hosted import native_hosted_family, native_hosted_pickle
+        from .diffusion_native_quant import int8_rotation_group
+
+        if not native_hosted_family(fam) or native_hosted_pickle(fam):
+            return None
+        if getattr(target, "device", None) != "cuda":
+            return None
+        # ROCm RDNA explicit int8 only: every other host keeps its existing routes (CUDA reads it when offloaded).
+        if (
+            rdna_video_explicit_w8a8_reason(target, getattr(fam, "name", None), transformer_quant)
+            is None
+        ):
+            return None
+        if native_quant_scheme(target, TQ_INT8, family = fam.name) != TQ_INT8:
+            return None
+        if int(int8_rotation_group() or 0) <= 0:
+            return None
+        return TQ_INT8
+    except Exception:  # noqa: BLE001 -- unanswerable: the dense shards and runtime build, as before
+        return None
+
+
+def _video_rocm_hosted_spec(
+    fam: Any,
+    *,
+    target: Any,
+    transformer_quant: Optional[str],
+    plan: Any,
+    kind: str,
+    source_dir: Optional[str],
+) -> Optional[dict]:
+    """Spec of the RESIDENT native W8A8 build an explicit int8 ROCm load reads from the hosted file, else None (an
+    offloaded plan uses ``_video_native_cache_spec``). Never raises."""
+    try:
+        if kind != "pipeline" or getattr(fam, "modular_workflow", None) or plan is None:
+            return None
+        if not plan_keeps_transformer_resident(plan):
+            return None
+        if _video_rocm_hosted_scheme(fam, transformer_quant, target) != TQ_INT8:
+            return None
+        if stored_denoiser_precision(source_dir) is not None:
+            return None
+        from .diffusion_native_cache import native_spec
+
+        return native_spec(TQ_INT8, fam.name, act_int8 = True)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _video_native_cache_spec(
     fam: Any,
     *,
@@ -4163,7 +4233,7 @@ def _video_native_cache_spec(
         return native_spec(
             scheme,
             fam.name,
-            act_int8 = scheme == TQ_INT8 and native_int8_act(target),
+            act_int8 = scheme == TQ_INT8 and _video_int8_act(target, fam, transformer_quant),
         )
     except Exception:  # noqa: BLE001 -- unanswerable: no cache, the dense build runs
         return None
@@ -8145,6 +8215,17 @@ class VideoBackend:
                     hf_token = hf_token,
                 )
                 if scheme is None:
+                    # ROCm seeds no torchao checkpoint; an explicit int8 pick still reads the hosted int8 file.
+                    hosted = _video_rocm_hosted_scheme(fam, transformer_quant, target)
+                    if native_hosted is not None and hosted is not None:
+                        native_hosted.append(hosted)
+                        logger.info(
+                            "video.denoiser_prequant: an explicit %s pick on this ROCm GPU reads the hosted "
+                            "%s checkpoint as native W8A8 Linears instead of quantising the dense denoiser shards",
+                            hosted,
+                            hosted,
+                        )
+                        return DENOISER_SEED_DECLINED
                     return None
                 resident = self._state
                 reclaimable = _pipeline_device_mib(
@@ -10755,16 +10836,35 @@ class VideoBackend:
         )
         self._raise_if_video_load_superseded(_load_token)
         native_from_hosted = False
+        # A resident explicit int8 DiT on ROCm: the hosted file is read as the same native W8A8 build (no cache write).
+        rocm_hosted_spec = (
+            _video_rocm_hosted_spec(
+                fam,
+                target = target,
+                transformer_quant = transformer_quant,
+                plan = plan,
+                kind = kind,
+                source_dir = _base_local_dir or repo_id,
+            )
+            if native_cache_spec is None
+            and _video_native_hosted_planned is not None
+            and kind == "pipeline"
+            and not denoiser_injected
+            and not baked_loras
+            and modelopt_scan is None
+            else None
+        )
+        hosted_read_spec = native_cache_spec if native_cache_spec is not None else rocm_hosted_spec
         if (
             not native_cache_hits
-            and native_cache_spec is not None
+            and hosted_read_spec is not None
             and _video_native_hosted_planned is not None
-            and _video_native_hosted_planned == native_cache_spec.get("scheme")
+            and _video_native_hosted_planned == hosted_read_spec.get("scheme")
         ):
             # The planner staged the hosted int8 file instead of the dense shards: read it as the native build.
             native_cache_hits = _read_native_quant_from_hosted(
                 fam,
-                native_cache_spec,
+                hosted_read_spec,
                 base = fetch_base,
                 source = _base_local_dir or fetch_base,
                 config_kwargs = native_config_kwargs,
@@ -11244,7 +11344,8 @@ class VideoBackend:
         native_kwargs = (
             {
                 "offload": video_offload,
-                "act_int8": native_scheme == TQ_INT8 and native_int8_act(target),
+                "act_int8": native_scheme == TQ_INT8
+                and _video_int8_act(target, fam, transformer_quant),
             }
             if native_scheme is not None
             else {}
@@ -11264,6 +11365,23 @@ class VideoBackend:
                 source_dir = _base_local_dir or repo_id,
             )
             == native_cache_spec
+        ) or (
+            # The resident ROCm read: still resident, still the explicit W8A8 build the file holds.
+            bool(native_cache_hits)
+            and native_from_hosted
+            and rocm_hosted_spec is not None
+            and not video_offload
+            and native_scheme == rocm_hosted_spec.get("scheme")
+            and bool(native_kwargs.get("act_int8"))
+            and _video_rocm_hosted_spec(
+                fam,
+                target = target,
+                transformer_quant = transformer_quant,
+                plan = plan,
+                kind = kind,
+                source_dir = _base_local_dir or repo_id,
+            )
+            == rocm_hosted_spec
         )
         if native_cache_hits and not native_cached:
             # Not the build this load makes after all: put the dense experts back and let the quant below run.
