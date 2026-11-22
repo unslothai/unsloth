@@ -304,6 +304,7 @@ def test_pasted_markup_is_neutralized_and_the_closer_is_kept_for_the_parser():
         (START + "[f(a='b')]" + END) * 20000,
         START + "[f(a='" + "\\'" * 300_000 + "')]" + END,
         (START + "\\'" + END) * 25_000,
+        (START + "'" + END + "'") * 25_000,
     ],
     ids = [
         "openers",
@@ -312,6 +313,7 @@ def test_pasted_markup_is_neutralized_and_the_closer_is_kept_for_the_parser():
         "many_blocks",
         "escapes",
         "unclosed_quote_per_block",
+        "quoted_closer_per_block",
     ],
 )
 def test_a_megabyte_of_adversarial_markup_parses_in_linear_time(text):

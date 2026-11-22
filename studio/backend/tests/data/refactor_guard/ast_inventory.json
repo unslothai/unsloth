@@ -1923,7 +1923,7 @@
       "_lfm_block_close": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, body_start: int, unclosed: dict | None=None"
+        "signature": "text: str, body_start: int, state: dict | None=None"
       },
       "_lfm_block_spans": {
         "decorators": [],

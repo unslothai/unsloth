@@ -310,7 +310,7 @@
       "_last_bare_call_word": "core.inference.tool_call_parser._last_bare_call_word(text: 'str') -> 'int'",
       "_leading_json_value_end": "core.inference.tool_call_parser._leading_json_value_end(text: 'str') -> 'int | None'",
       "_lfm_argument_value": "core.inference.tool_call_parser._lfm_argument_value(src: 'str') -> 'Any'",
-      "_lfm_block_close": "core.inference.tool_call_parser._lfm_block_close(text: 'str', body_start: 'int', unclosed: 'dict | None' = None) -> 'int'",
+      "_lfm_block_close": "core.inference.tool_call_parser._lfm_block_close(text: 'str', body_start: 'int', state: 'dict | None' = None) -> 'int'",
       "_lfm_block_spans": "core.inference.tool_call_parser._lfm_block_spans(text: 'str') -> 'list[tuple[int, int, bool]]'",
       "_lfm_call_list": "core.inference.tool_call_parser._lfm_call_list(body: 'str', *, heal: 'bool' = False) -> \"'list[tuple[str, dict]] | None'\"",
       "_lfm_json_calls": "core.inference.tool_call_parser._lfm_json_calls(body: 'str') -> \"'list[tuple[str, dict]] | None'\"",

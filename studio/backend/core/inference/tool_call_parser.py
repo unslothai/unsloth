@@ -4562,44 +4562,51 @@ def _lfm_string_end(text: str, pos: int, n: int) -> int:
 def _lfm_block_close(
     text: str,
     body_start: int,
-    unclosed: dict | None = None,
+    state: dict | None = None,
 ) -> int:
     """Closer index for the block at ``body_start`` (quoted closers are data; unbalanced quotes: first), or -1.
-    ``unclosed`` maps a quote to where a string first failed to close, so later blocks never rescan past it."""
+    ``state`` is shared across one text's blocks: a quote's first unclosed position, and the characters scanned so
+    far; past a linear budget every later block takes its first closer, so malformed output stays linear."""
     first = text.find(_LFM_CALL_END, body_start)
     if first < 0:
         return -1
     n = len(text)
+    if state is not None and state.get("scanned", 0) > 4 * n + 4096:
+        return first
     j = body_start
+    found = first
     while j < n:
         c = text[j]
         if c in "'\"":
-            if unclosed is not None and c in unclosed and unclosed[c] < j:
-                return first
+            if state is not None and c in state and state[c] < j:
+                break
             end = _lfm_string_end(text, j, n)
             if end < 0:
-                if unclosed is not None:
-                    unclosed[c] = j
-                return first
+                if state is not None:
+                    state[c] = j
+                break
             j = end
             continue
         if text.startswith(_LFM_CALL_END, j):
-            return j
+            found = j
+            break
         j += 1
-    return first
+    if state is not None:
+        state["scanned"] = state.get("scanned", 0) + (j - body_start)
+    return found
 
 
 def _lfm_block_spans(text: str) -> list[tuple[int, int, bool]]:
     """``(start, end, closed)`` per ``<|tool_call_start|>`` block; an unclosed block runs to the end of the text."""
     spans: list[tuple[int, int, bool]] = []
-    unclosed: dict = {}
+    state: dict = {}
     pos = 0
     while True:
         start = text.find(_LFM_CALL_START, pos)
         if start < 0:
             return spans
         body_start = start + len(_LFM_CALL_START)
-        close = _lfm_block_close(text, body_start, unclosed)
+        close = _lfm_block_close(text, body_start, state)
         if close < 0:
             spans.append((start, len(text), False))
             return spans
