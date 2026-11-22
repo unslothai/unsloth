@@ -102,12 +102,25 @@ def _load_route_module(name: str, relative_path: str):
 
 
 class _GpuCacheResetMixin:
-    """Reset module-level GPU caches between tests to prevent state leaks."""
+    """Reset module-level GPU caches around each test to prevent state leaks.
 
-    def tearDown(self):
+    Before as well as after: under xdist a test from another file can run first in the same worker and leave
+    ``_visible_gpu_count`` cached from its own environment, which tearDown alone never clears.
+    """
+
+    @staticmethod
+    def _reset_gpu_caches():
         _hw_module._physical_gpu_count = None
         _hw_module._visible_gpu_count = None
         nvidia._uuid_mask_cache.clear()
+
+    def setUp(self):
+        super().setUp()
+        self._reset_gpu_caches()
+
+    def tearDown(self):
+        self._reset_gpu_caches()
+        super().tearDown()
 
 
 class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):

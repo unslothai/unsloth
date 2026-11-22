@@ -3,8 +3,7 @@
 
 import {
   type FormatFilterModelFormat,
-  hasMlxCardTag,
-  isMlxId,
+  namedOrTaggedMlx,
 } from "../lib/format-filters";
 import type { CachedInventoryRow, LocalInventoryRow } from "../types";
 
@@ -27,13 +26,15 @@ export function inventoryRowFormat(
   if (row.modelFormat === "gguf") {
     return "gguf";
   }
-  const tagged =
-    hasMlxCardTag(row) || (row.kind === "local" && row.source === "omlx");
-  const names =
-    row.kind === "local"
-      ? [row.path, row.title, row.modelId ?? ""]
-      : [row.repoId];
-  const mlx = tagged || names.some((name) => isMlxId(name));
+  const mlx = namedOrTaggedMlx({
+    names:
+      row.kind === "local"
+        ? [row.path, row.title, row.modelId ?? ""]
+        : [row.repoId],
+    tags: row.tags,
+    libraryName: row.libraryName,
+    omlx: row.kind === "local" && row.source === "omlx",
+  });
   return mlx ? "mlx" : row.modelFormat;
 }
 

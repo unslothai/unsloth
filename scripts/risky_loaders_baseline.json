@@ -531,6 +531,14 @@
       "reason": "Loads unsloth/dataprep/raw_text.py and ebooks.py on the CPU backend from a fixed path derived from this package's __file__, with only those two constant names passed and the helper deleted after import, to skip dataprep/__init__ (which needs a GPU device type); never a dataset-provided or downloaded code path."
     },
     {
+      "file": "unsloth/_cpu_init.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Unsloth's own unsloth/utils/run_report.py, loaded by its fixed path next to _cpu_init.py (importing unsloth.utils would pull in the GPU model stack on the CPU route), not external input."
+    },
+    {
       "file": "unsloth/_gpu_init.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",

@@ -232,9 +232,9 @@ pub struct LaunchState {
     pub env_override: Option<&'static str>,
     pub old_webkit_warning: Option<String>,
     pub old_driver_warning: Option<String>,
-    /// Whether this launch's web view paints on the CPU (Linux only). Fixed for the launch:
+    /// Whether this launch's web view paints on the CPU (Linux only). Fixed once setup has run:
     /// "Try GPU again" only takes effect after a restart.
-    pub cpu_painting: bool,
+    cpu_painting: AtomicBool,
     /// WebKitGTK before 2.54, which composites with TextureMapper (Linux only).
     pub legacy_compositor: bool,
     flag_cleared: AtomicBool,
@@ -256,10 +256,16 @@ impl LaunchState {
             env_override,
             old_webkit_warning,
             old_driver_warning,
-            cpu_painting,
+            cpu_painting: AtomicBool::new(cpu_painting),
             legacy_compositor,
             flag_cleared: AtomicBool::new(false),
         }
+    }
+
+    /// WebKit turned compositing off itself, seen only once GTK is up. Returns whether it changed.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn note_cpu_painting(&self) -> bool {
+        !self.cpu_painting.swap(true, Ordering::SeqCst)
     }
 }
 
@@ -300,7 +306,7 @@ fn status(launch: &LaunchState, stored: GpuRendering) -> GpuRenderingStatus {
         env_override: launch.env_override.map(str::to_string),
         old_webkit_warning: launch.old_webkit_warning.clone(),
         old_driver_warning: launch.old_driver_warning.clone(),
-        cpu_painting: launch.cpu_painting,
+        cpu_painting: launch.cpu_painting.load(Ordering::SeqCst),
         legacy_compositor: launch.legacy_compositor,
     }
 }
@@ -524,6 +530,9 @@ mod tests {
             serde_json::to_value(&changed).unwrap()["oldDriverWarning"],
             serde_json::Value::from("580")
         );
+        assert!(quiet.note_cpu_painting());
+        assert!(!quiet.note_cpu_painting());
+        assert!(status(&quiet, GpuRendering::Auto).cpu_painting);
     }
 
     #[cfg(target_os = "macos")]

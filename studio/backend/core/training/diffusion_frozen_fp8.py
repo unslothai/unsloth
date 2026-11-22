@@ -108,11 +108,12 @@ class Fp8BackwardWeights:
         self.hits = 0
         self.misses = 0
 
-    @staticmethod
-    def enabled() -> bool:
-        return (
-            os.environ.get("UNSLOTH_DIFFUSION_FP8_BWD_CACHE", "") or "1"
-        ).strip().lower() not in (
+    ENV = "UNSLOTH_DIFFUSION_FP8_BWD_CACHE"
+    STAT_PREFIX = "fp8_bwd"
+
+    @classmethod
+    def enabled(cls) -> bool:
+        return (os.environ.get(cls.ENV, "") or "1").strip().lower() not in (
             "0",
             "false",
             "off",
@@ -144,12 +145,13 @@ class Fp8BackwardWeights:
         return qcm
 
     def stats(self) -> dict:
+        p = self.STAT_PREFIX
         return {
-            "fp8_bwd_cached_gib": round(self.used / (1 << 30), 3),
-            "fp8_bwd_budget_gib": round(self.budget / (1 << 30), 3),
-            "fp8_bwd_layers": len(self.entries),
-            "fp8_bwd_hits": self.hits,
-            "fp8_bwd_misses": self.misses,
+            f"{p}_cached_gib": round(self.used / (1 << 30), 3),
+            f"{p}_budget_gib": round(self.budget / (1 << 30), 3),
+            f"{p}_layers": len(self.entries),
+            f"{p}_hits": self.hits,
+            f"{p}_misses": self.misses,
         }
 
 
@@ -183,11 +185,11 @@ def fp8_backward_vram_handler(cache: Fp8BackwardWeights = BACKWARD_WEIGHTS, room
     return handle
 
 
-def _define_grad_input_op():
+def _define_grad_input_op(op = "frozen_fp8_grad_input", cached = True):
     # Opaque to the compiler, so the cache lookup runs on every backward and a cache change never recompiles.
-    name = "unsloth_studio::frozen_fp8_grad_input"
+    name = f"unsloth_studio::{op}"
     try:
-        return getattr(torch.ops.unsloth_studio, "frozen_fp8_grad_input")
+        return getattr(torch.ops.unsloth_studio, op)
     except (AttributeError, RuntimeError):
         pass
 
@@ -197,7 +199,7 @@ def _define_grad_input_op():
     def grad_input(gq: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
         # Looked up per call, so a reloaded module still serves its own cache.
         m = sys.modules[module]
-        return m._unit_scaled_mm(gq, m.BACKWARD_WEIGHTS.get(q))
+        return m._unit_scaled_mm(gq, m.BACKWARD_WEIGHTS.get(q) if cached else m._column_major(q))
 
     @grad_input.register_fake
     def _(gq, q):
@@ -208,32 +210,44 @@ def _define_grad_input_op():
 
 try:
     _grad_input_mm = _define_grad_input_op()
+    # A block-swapped weight lives in a ring slot that the next block of the same shape reuses, so its data_ptr is
+    # no identity: the cache would hand back another block's copy. Same tiled transpose, never cached.
+    _grad_input_mm_uncached = _define_grad_input_op("frozen_fp8_grad_input_uncached", cached = False)
 except Exception:  # noqa: BLE001 -- a torch without torch.library.custom_op keeps the inline copy
-    _grad_input_mm = None
+    _grad_input_mm = _grad_input_mm_uncached = None
 
 
 @torch._dynamo.allow_in_graph  # as torchao's float8 matmul: inlining the Function trips a dynamo freevar assert
 class _FrozenFp8MM(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x2d, q, s_row, out_dtype):
+    def forward(
+        ctx,
+        x2d,
+        q,
+        s_row,
+        out_dtype,
+        swapped = False,
+    ):
         xq, sx = _rowwise_quant(x2d)
         y = (_unit_scaled_mm(xq, q.t()).float() * (sx * s_row)).to(out_dtype)
         ctx.save_for_backward(q, s_row)
         ctx.x_dtype = x2d.dtype
+        ctx.swapped = swapped
         return y
 
     @staticmethod
     def backward(ctx, gy):
         if not ctx.needs_input_grad[0]:
-            return None, None, None, None
+            return None, None, None, None, None
         q, s_row = ctx.saved_tensors
         # The weight scale sits on the reduction dim of grad_y @ W, so it folds into grad_y; mat2 must be column-major.
         gq, sg = _rowwise_quant(gy.float() * s_row)
         if BACKWARD_WEIGHTS.active and _grad_input_mm is not None:
-            gx = _grad_input_mm(gq, q).float() * sg
+            op = _grad_input_mm_uncached if ctx.swapped else _grad_input_mm
+            gx = op(gq, q).float() * sg
         else:
             gx = _unit_scaled_mm(gq, q.t().contiguous().t()).float() * sg
-        return gx.to(ctx.x_dtype), None, None, None
+        return gx.to(ctx.x_dtype), None, None, None, None
 
 
 class FrozenFp8Linear(nn.Module):
@@ -258,7 +272,14 @@ class FrozenFp8Linear(nn.Module):
         if torch.is_autocast_enabled(x.device.type):
             x = x.to(torch.get_autocast_dtype(x.device.type))
         shape = x.shape
-        y = _FrozenFp8MM.apply(x.reshape(-1, shape[-1]), self.weight, self.weight_scale, x.dtype)
+        y = _FrozenFp8MM.apply(
+            x.reshape(-1, shape[-1]),
+            self.weight,
+            self.weight_scale,
+            x.dtype,
+            # Set by diffusion_block_swap when the weight streams through a ring slot (data_ptr is not identity).
+            bool(getattr(self, "_studio_swapped_weight", False)),
+        )
         y = y.reshape(*shape[:-1], self.out_features)
         return y if self.bias is None else y + self.bias.to(y.dtype)
 

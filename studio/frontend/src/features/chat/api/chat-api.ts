@@ -755,11 +755,12 @@ export async function getDatasetDownloadProgress(
   return parseJsonOrThrow(response);
 }
 
-export type ModelLoadPhase = "mmap" | "ready" | null;
+export type ModelLoadPhase = "fit" | "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
-  /** Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once healthy, or
-   *  null when no load is in flight. */
+  /** Load phase: "fit" while llama-server's --fit searches for a layer placement (no weights read
+   *  yet), "mmap" while it pages weight shards into RAM, "ready" once healthy, or null when no
+   *  load is in flight. */
   phase: ModelLoadPhase | "starting" | "loading_weights" | "warming_up";
   bytes_loaded: number;
   bytes_total: number;

@@ -3533,6 +3533,8 @@ def create_huggingface_repo(
         card.push_to_hub(save_directory, token = token)
     except:
         if datasets:
+            # The repo already existed: a public one must not receive the (private) dataset names.
+            _refuse_private_push_to_public_repo(save_directory, private, token = token)
             try:
                 from huggingface_hub import metadata_update
                 metadata_update(save_directory, {"datasets": datasets}, overwrite = True, token = token)
@@ -3585,6 +3587,8 @@ def upload_to_huggingface(
         card.push_to_hub(save_directory, token = token)
     except:
         if datasets:
+            # The repo already existed: a public one must not receive the (private) dataset names.
+            _refuse_private_push_to_public_repo(save_directory, private, token = token)
             try:
                 from huggingface_hub import metadata_update
                 metadata_update(save_directory, {"datasets": datasets}, overwrite = True, token = token)

@@ -198,7 +198,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
         no_torch = no_torch,
         shared_base = shared_base,
     )
-    enabled = platform == "macos_arm" and not no_torch
+    enabled = platform == "macos_arm"
     assert len(calls) == int(enabled)
     if platform.startswith("macos"):
         # Slots: no-torch runtime deps, two mac-arm (MLX step + re-resolve), diffusers 11c everywhere,
