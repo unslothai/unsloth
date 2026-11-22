@@ -49,10 +49,13 @@ def _compilable_attention(model, enabled: bool):
     original = config._attn_implementation
     if enabled and original == "sdpa":
         from transformers import AttentionInterface, AttentionMaskInterface
-        from transformers.masking_utils import sdpa_mask
+        from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
 
         AttentionInterface.register("unsloth_decision_sdpa", _encoder_sdpa)
-        AttentionMaskInterface.register("unsloth_decision_sdpa", sdpa_mask)
+        # The registry entry, which carries the fully masked row fix (import_fixes).
+        AttentionMaskInterface.register(
+            "unsloth_decision_sdpa", ALL_MASK_ATTENTION_FUNCTIONS["sdpa"]
+        )
         config._attn_implementation = "unsloth_decision_sdpa"
     try:
         yield

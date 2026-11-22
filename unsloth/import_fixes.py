@@ -2057,23 +2057,23 @@ _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
 def _sdpa_mask_is_patched(masking_utils):
-    """Are the live bindings ours, right now?
+    """Is the live binding ours, right now?
 
-    Asked of the FUNCTIONS rather than of a flag on the module. A module-level
+    Asked of the FUNCTION rather than of a flag on the module. A module-level
     flag outlives what it describes: `importlib.reload(masking_utils)` re-runs
-    the module body in the existing namespace, so `sdpa_mask` and the registry
-    entry go back to upstream while any attribute we added survives. Gating on
-    that flag would then refuse to re-patch a build that is once again
-    vulnerable, which is the opposite of what an idempotence guard is for.
+    the module body in the existing namespace, so the registry entry goes back
+    to upstream while any attribute we added survives. Gating on that flag
+    would then refuse to re-patch a build that is once again vulnerable, which
+    is the opposite of what an idempotence guard is for.
 
-    Both bindings must carry the mark, so a half-installed state re-runs.
+    Only the `"sdpa"` registry entry is ours. The module global `sdpa_mask` is
+    left to upstream on purpose: `eager_mask` builds from it, and eager must
+    keep upstream's fully masked rows (see `fix_transformers_fully_masked_rows`).
     """
     flagged = lambda fn: bool(getattr(fn, _SDPA_MASK_PATCH_FLAG, False))
-    if not flagged(getattr(masking_utils, "sdpa_mask", None)):
-        return False
     interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
     if interface is None:
-        return True
+        return False
     try:
         return flagged(interface["sdpa"])
     except Exception:
@@ -2081,21 +2081,38 @@ def _sdpa_mask_is_patched(masking_utils):
 
 
 def _unmask_rows_attending_to_nothing(mask):
-    """Give a query row that attends to no key uniform attention instead.
+    """Let a query row that attends to no key attend to its own position only.
 
     Separated from the wrapper so it can be tested directly on every dtype the
     mask can arrive as, rather than only through a live transformers.
 
+    Only its own key, not every key: in a left-padded training row the last pad
+    query predicts the first real token, so a pad query opened to every key
+    reads that token and the ones after it and the loss sees them. Its own key
+    is causal and always present, so the row is never empty (no NaN) and
+    carries no information from later tokens. Queries are the last `q_len` keys
+    (no cache: the diagonal; with a cache: past keys first). Same rule as the
+    fast path's `_pad_queries_attend_self` in models/llama.py.
+
     `None` means transformers chose `is_causal` over a materialised mask. A
     FLOATING mask is the eager path, which converts to `finfo(dtype).min` and
-    survives softmax's max-subtraction as uniform attention already, so it
-    neither needs this nor would tolerate a boolean `|`. Bool is the normal sdpa
-    result; int is what a caller who passed an int `attention_mask` gets back,
-    and the correction is right for both.
+    survives softmax's max-subtraction already, so it neither needs this nor
+    would tolerate a boolean `|`. Bool is the normal sdpa result; int is what a
+    caller who passed an int `attention_mask` gets back, and the correction is
+    right for both.
     """
-    if mask is None or mask.is_floating_point():
+    if mask is None or mask.is_floating_point() or mask.dim() < 2:
         return mask
-    return mask | ~mask.any(dim = -1, keepdim = True)
+    import torch
+
+    q_len, kv_len = mask.shape[-2], mask.shape[-1]
+    attends_to_nothing = ~mask.bool().any(dim = -1, keepdim = True)
+    if q_len > kv_len:
+        # No key per query to call its own; any key is still better than NaN.
+        return mask | attends_to_nothing
+    q_idx = torch.arange(q_len, device = mask.device)[:, None] + (kv_len - q_len)
+    own_key = torch.arange(kv_len, device = mask.device)[None, :] == q_idx
+    return mask | (attends_to_nothing & own_key)
 
 
 def _left_padded_probe_mask(torch):
@@ -2198,11 +2215,22 @@ def fix_transformers_fully_masked_rows():
     this: "in order to avoid `nan` propagation (this does not change the final
     result)".
 
-    Self-neutralising: `mask | ~mask.any(-1)` contributes nothing once a row
-    attends to something, so if a future transformers restores the guard this
-    wrapper becomes a no-op rather than permanent damage. The eager path is
-    unaffected either way -- `eager_mask` converts to `finfo(dtype).min` and a
-    uniform-min row survives softmax's max-subtraction as uniform attention.
+    The correction lets such a row attend to its own key only, not to every key
+    (transformers' old `_unmask_unattended`): in a left-padded training row the
+    last pad query's logits predict the first real token, so a pad query that
+    sees every key reads that token and the later ones, and the loss and the
+    gradients of a left-padded batch then depend on future tokens.
+
+    Self-neutralising: the correction contributes nothing once a row attends to
+    something, so if a future transformers restores the guard this wrapper
+    becomes a no-op rather than permanent damage.
+
+    Only the `"sdpa"` registry entry is replaced, never the module global
+    `sdpa_mask`: `eager_mask` reads that global and converts to
+    `finfo(dtype).min`, which needs no correction (no NaN), and eager must keep
+    upstream's rows. With attention sinks (gpt-oss, Inkling) an all-min row puts
+    all of its weight on the sink, so a pad query outputs 0, as flex does; a
+    corrected row would attend to keys instead and change the loss.
     """
     if not _sdpa_mask_leaves_rows_fully_masked():
         return
@@ -2215,8 +2243,14 @@ def fix_transformers_fully_masked_rows():
 
     if _sdpa_mask_is_patched(masking_utils):
         return
-
-    original = masking_utils.sdpa_mask
+    interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+    if interface is None:
+        logger.info("Unsloth: Skipping the fully-masked-row fix (no ALL_MASK_ATTENTION_FUNCTIONS)")
+        return
+    try:
+        original = interface["sdpa"]
+    except Exception:
+        original = masking_utils.sdpa_mask
     original = getattr(original, "__wrapped__", original)
 
     @functools.wraps(original)
@@ -2229,11 +2263,8 @@ def fix_transformers_fully_masked_rows():
     setattr(sdpa_mask, _SDPA_MASK_PATCH_FLAG, True)
 
     try:
-        # Both bindings: eager_mask reads the module global; the interface captured the original.
-        masking_utils.sdpa_mask = sdpa_mask
-        interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
-        if interface is not None:
-            interface.register("sdpa", sdpa_mask)
+        # The registry only: eager_mask reads the module global, which stays upstream's.
+        interface.register("sdpa", sdpa_mask)
         setattr(masking_utils, _SDPA_MASK_PATCH_FLAG, True)
         logger.info(
             "Unsloth: Patching transformers `sdpa_mask` so a left-padded row "
