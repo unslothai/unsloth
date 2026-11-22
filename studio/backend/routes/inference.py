@@ -31149,6 +31149,7 @@ async def _proxy_to_external_provider(
         served = await client.served_context_window(model)
         return min(served, payload.context_window or served) if served else None
 
+    _reply_room = None
     if (
         managed is None
         and provider_type in _WINDOW_ROOM_REPLY_PROVIDERS
@@ -31168,17 +31169,21 @@ async def _proxy_to_external_provider(
                 default = None,
             ) or cached_catalog_model_context(provider_type, model)
         if _reply_window:
-            payload = payload.model_copy(
-                update = {
-                    "max_tokens": _window_room_max_tokens(
-                        _reply_window,
-                        _external_token_counter(payload, _external_fit_tools)(chat_messages),
-                        payload.compaction_threshold
-                        if payload.context_overflow == "truncate_oldest"
-                        else None,
-                    )
-                }
+            _room_threshold = (
+                payload.compaction_threshold
+                if payload.context_overflow == "truncate_oldest"
+                else None
             )
+            _room_payload = payload
+
+            def _reply_room(messages, tools = _external_fit_tools) -> int:
+                return _window_room_max_tokens(
+                    _reply_window,
+                    _external_token_counter(_room_payload, tools)(messages),
+                    _room_threshold,
+                )
+
+            payload = payload.model_copy(update = {"max_tokens": _reply_room(chat_messages)})
         elif _ui_stream_events_enabled(request):
             # Studio's Max with no window to read; an API caller keeps the provider's default.
             payload = payload.model_copy(update = {"max_tokens": _UNKNOWN_WINDOW_MAX_TOKENS})
@@ -31560,6 +31565,7 @@ async def _proxy_to_external_provider(
                     message_fitter = _external_fit_steps if _fit_active else None,
                     overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
                     first_turn_overrides = _first_turn_overrides,
+                    reply_limit = _reply_room,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,

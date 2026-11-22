@@ -1011,3 +1011,32 @@ def test_an_openrouter_api_caller_without_max_tokens_keeps_the_provider_default(
     chat = [{"role": "user", "content": "hello"}]
     _, sent = _proxy("openrouter", chat, max_tokens = None, context_window = 1_000_000)
     assert "max_tokens" not in sent
+
+
+def test_each_tool_loop_round_gets_the_room_its_own_prompt_leaves():
+    from core.inference.external_tool_transport import OAICompatTransport
+
+    sent = []
+
+    class _Client:
+        provider_type = "custom"
+        api_type = "chat_completions"
+
+        async def stream_chat_completion(self, **kwargs):
+            sent.append(kwargs.get("max_tokens"))
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+
+    transport = OAICompatTransport(
+        _Client(),
+        model = "m",
+        max_tokens = 9_000,
+        reply_limit = lambda messages, tools: 10_000 - 1_000 * len(messages),
+    )
+
+    async def run(messages):
+        async for _ in transport._stream_provider(messages, None, None):
+            pass
+
+    asyncio.run(run([{"role": "user", "content": "a"}]))
+    asyncio.run(run([{"role": "user", "content": "a"}] * 3))
+    assert sent == [9_000, 7_000]

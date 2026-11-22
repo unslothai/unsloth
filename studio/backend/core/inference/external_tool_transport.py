@@ -52,18 +52,21 @@ class OAICompatTransport:
         | None = None,
         overflow_refitter: Callable[..., Any] | None = None,
         first_turn_overrides: dict[str, Any] | None = None,
+        reply_limit: Callable[[list[dict[str, Any]], list[dict[str, Any]] | None], int]
+        | None = None,
         **request_kwargs: Any,
     ) -> None:
         """message_fitter may be coroutine or async generator yielding progress lines then
         (messages, max_tokens, line); overflow_refitter same shape, runs once per request when
         provider refuses as too long before output; first_turn_overrides replace kwargs on turn 1
-        only"""
+        only; reply_limit bounds max_tokens by what each round's prompt leaves of the window"""
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message
         self._message_fitter = message_fitter
         self._overflow_refitter = overflow_refitter
         self._first_turn_overrides = dict(first_turn_overrides or {})
+        self._reply_limit = reply_limit
         self._request_kwargs = request_kwargs
         # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
@@ -136,6 +139,11 @@ class OAICompatTransport:
             request_kwargs["max_tokens"] = max_tokens
             if truncation_line:
                 yield truncation_line
+        if self._reply_limit is not None:
+            # Tool results grow the prompt each round; a strict server refuses prompt + reply > window.
+            room = self._reply_limit(messages, tools)
+            current = request_kwargs.get("max_tokens")
+            request_kwargs["max_tokens"] = room if current is None else min(current, room)
         self.sent_messages = messages
 
         def _send(messages: list[dict[str, Any]], request_kwargs: dict[str, Any]):
