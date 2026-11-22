@@ -43402,22 +43402,30 @@ class LlamaCppBackend:
                         logger.info("Final answer was only a tool call; retrying without tools")
                         stream_payload.pop("tools", None)
                         stream_payload.pop("tool_choice", None)
-                        # Dropping the tools alone left LFM2.5-24B calling again 2/4; with this turn 0/4.
-                        _retry_messages = list(stream_payload["messages"])
-                        if _retry_messages and _retry_messages[-1].get("role") == "user":
-                            # Ride the trailing user turn: two in a row break Gemma.
-                            _retry_messages[-1] = {
-                                **_retry_messages[-1],
-                                "content": with_appended_text(
-                                    _retry_messages[-1]["content"],
-                                    f"\n\n{_FINAL_ANSWER_RETRY_NUDGE}",
-                                ),
-                            }
-                        else:
-                            _retry_messages.append(
-                                {"role": "user", "content": _FINAL_ANSWER_RETRY_NUDGE}
-                            )
-                        stream_payload["messages"] = _retry_messages
+                        # Dropping the tools alone left LFM2.5-24B calling again 2/4; with this note 0/6.
+                        # Appended to the last turn, not a new one: Ministral counts a user turn after a tool result as two in a row.
+                        _last_t = (
+                            stream_payload["messages"][-1] if stream_payload["messages"] else None
+                        )
+                        if _last_t is not None and _last_t.get("role") in ("tool", "user"):
+
+                            def _noted(message):
+                                return {
+                                    **message,
+                                    "content": with_appended_text(
+                                        message["content"], f"\n\n{_FINAL_ANSWER_RETRY_NUDGE}"
+                                    ),
+                                }
+
+                            stream_payload["messages"] = [
+                                *stream_payload["messages"][:-1],
+                                _noted(_last_t),
+                            ]
+                            # A respawn refit rebuilds from these, so the note must live there too.
+                            if _refit_tail:
+                                _refit_tail = [*_refit_tail[:-1], _noted(_refit_tail[-1])]
+                            elif conversation and conversation[-1].get("role") == _last_t["role"]:
+                                conversation[-1] = _noted(conversation[-1])
                         # Admission and respawn refits must count the request actually sent.
                         _final_tools = None
                         _next_cap_t = _remaining_output_budget()
