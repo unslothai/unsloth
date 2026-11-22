@@ -523,3 +523,26 @@ def test_the_limit_notice_survives_a_split_call_from_the_retry(monkeypatch):
     assert len(payloads) == 3
     shown = _route_shown(events)
     assert "tool call limit" in shown and "<tool_call>" not in shown, shown
+
+
+def test_safetensors_loop_explains_a_reasoning_then_call_final_turn():
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    def _gen(_messages):
+        yield "<think>Need more detail.</think>" + CALL
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "Research LFM2.5."}],
+            tools = [{"type": "function", "function": {"name": "web_fetch"}}],
+            execute_tool = lambda name, arguments, **_: "RESULT",
+            max_tool_iterations = 1,
+        )
+    )
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert (
+        contents
+        and contents[-1].endswith("or ask again.")
+        and "tool_call_start" not in contents[-1]
+    ), contents

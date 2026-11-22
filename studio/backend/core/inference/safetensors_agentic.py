@@ -1320,11 +1320,16 @@ def run_safetensors_tool_loop(
             return
 
         if final_attempt_done:
+            # Only another call (reasoning aside), already without tools: an empty bubble is not actionable.
+            if (
+                tool_calls
+                and not re.sub(r"<think>.*?</think>", "", content_text, flags = re.DOTALL).strip()
+            ):
+                content_text = (
+                    f"{content_text.rstrip()}\n\n{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}".lstrip()
+                )
             if content_text:
                 yield {"type": "content", "text": content_text}
-            elif tool_calls:
-                # Only another call, already without tools: an empty bubble is not actionable.
-                yield {"type": "content", "text": _FINAL_ANSWER_TOOL_LIMIT_MESSAGE}
             yield {"type": "status", "text": ""}
             return
 
