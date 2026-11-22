@@ -221,3 +221,13 @@ def test_usage_counts_both_attempts(monkeypatch):
 
     assert metadata["usage"]["completion_tokens"] == 3_200
     assert metadata["finish_reason"] == "stop"
+
+
+def test_the_callers_messages_are_left_as_they_were(monkeypatch):
+    backend = _make_backend(monkeypatch, [_thought_cut(), _answer()], [])
+    messages = [{"role": "user", "content": "Create a Flappy Bird game in HTML"}]
+    before = [dict(m) for m in messages]
+
+    list(backend.generate_chat_completion(messages = messages, enable_thinking = True))
+
+    assert messages == before

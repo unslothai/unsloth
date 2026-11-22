@@ -39502,8 +39502,11 @@ class LlamaCppBackend:
             "with thinking off",
             len(reasoning_text),
         )
-        # The image is attached to the original user turn here, before a user turn is added.
-        recovery_messages = self._build_openai_messages(retry_messages, retry_image_b64)
+        # The image is attached to the original user turn here, before a user turn is added. Copies,
+        # so the caller's messages (shared by every choice when n > 1) never see the retry turns.
+        recovery_messages = [
+            dict(m) for m in self._build_openai_messages(retry_messages, retry_image_b64)
+        ]
         append_assistant_turn(
             recovery_messages,
             {
