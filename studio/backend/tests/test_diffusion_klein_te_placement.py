@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 klein text-encoder placement at 8 / 12 / 16 / 24 GiB, from the sizes its INT8 auto load logs; CPU only.
-
-Also the learned-peak scale a resident encoder records: its streaming window goes on the prompt-encode phase only."""
+"""FLUX.3 klein text-encoder placement at 8 / 12 / 16 / 24 GiB, from the sizes its INT8 auto load logs; CPU only."""
 
 from __future__ import annotations
 
@@ -80,7 +78,6 @@ def test_12gb_streaming_tier_keeps_encoder_groups_beside_the_whole_transformer(k
     assert slack == 1228
     assert plan.resident_text_encoder_mib == 11888 - slack - 161 - headroom - 6144 > 0
     assert plan.estimates["flat_resident_text_encoder_mib"] == 0
-    # weights kept plus the measured peak plus the slack never pass free memory
     assert 6144 + 161 + plan.resident_text_encoder_mib + headroom + slack <= 11888
     monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
     off = _plan(12)
@@ -115,15 +112,13 @@ def test_8gb_and_24gb_placements_do_not_move(klein, monkeypatch, gib):
 
 @pytest.mark.parametrize("gib", [12, 16])
 def test_windows_rocm_keeps_the_flat_encoder_room(klein, monkeypatch, gib):
-    """Windows ROCm over-reports free memory (a ceiling blind to other processes): the encoders keep the flat room,
-    exactly the kill-switch placement, and the transformer placement does not move."""
+    """Windows ROCm (free is only a ceiling): the encoders keep the flat room, as with the kill switch."""
     import utils.hardware as hardware
 
     wide = _plan(gib)
     monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
     flat = _plan(gib)
     monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV)
-    # the real gate, reached through utils.hardware
     monkeypatch.setattr(dm, "_free_reading_untrusted", _REAL_FREE_GATE)
     monkeypatch.setattr(hardware, "rocm_windows_free_is_untrusted", lambda: True)
     untrusted = _plan(gib)
@@ -218,15 +213,12 @@ def test_encoder_window_is_the_largest_leaves_not_the_largest_three_times(monkey
 def test_the_encoder_window_pads_the_encode_phase_only():
     from core.inference.diffusion import _padded_peak
 
-    # Qwen-Image-2.1 at 16 GiB with a resident 1.2 GB embedding: raw peak 1771, denoiser window 619, legacy encoder
-    # share 3416 (3 x 1187 less the streamed leaves'), encode phase 300 MiB, phase window 1246
+    # Qwen-Image-2.1 at 16 GiB: peak 1771, denoiser window 619, encoder share 3416, encode 300, phase window 1246
     probe = types.SimpleNamespace(encoder_pad = (3416, 1246), encode_peak = 300)
     pad = 619 + 3416
     assert _padded_peak(probe, 1771, pad) == max(1771, 300 + 1246) + 619 == 2390
-    # an encode-dominated render keeps the window on top of the encode
     probe.encode_peak = 1700
     assert _padded_peak(probe, 1771, pad) == 1700 + 1246 + 619
-    # no encode reading, no share: the whole pad, as before
     assert (
         _padded_peak(types.SimpleNamespace(encoder_pad = (3416, 1246), encode_peak = None), 1771, pad)
         == 1771 + pad
@@ -302,8 +294,7 @@ def _record_with(tmp_path, monkeypatch, **probe_attrs):
 
 
 def test_a_render_whose_resident_encoders_were_released_records_nothing(tmp_path, monkeypatch):
-    """After the encode reading, te_residency streamed resident encoder groups: the denoise and decode ran net of
-    their bytes, so with the encoders' pad off those phases the sample would under-size later loads (Codex P2)."""
+    """A residency release after the encode reading makes the sample unrecordable (it would under-size later loads)."""
     # the control records the encode-phase scale (max(1771, 300 + 1246) + 619 = 2390)
     assert _record_with(tmp_path / "kept", monkeypatch) == 2390
     assert _record_with(tmp_path / "released", monkeypatch, encoder_released = True) is None

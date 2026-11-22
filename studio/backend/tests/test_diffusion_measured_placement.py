@@ -128,8 +128,7 @@ def _wide_te_room(plan, total):
 
 
 def test_l4_class_card_keeps_most_of_the_encoder_resident(q21_pipe, monkeypatch):
-    """An L4 reports 23034 MiB: its 10% reserve leaves the whole encoder ~900 MiB short in the flat room, so the DiT
-    stays resident and the encoders keep what free memory less the resident slack leaves (the whole-DiT fit)."""
+    """An L4 (23034 MiB): the flat room is ~900 MiB short of the encoder; the wider room keeps most of it resident."""
     monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
     budget = 20000
     plan = _flat_plan(budget, 23034)

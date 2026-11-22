@@ -694,9 +694,7 @@ def test_pre_workflow_store_peak_no_longer_sizes_txt2img(qwen_pipe, store):
 
 
 def test_16gb_later_loads_keep_the_wider_encoder_room_over_a_decode_lend(qwen_pipe, monkeypatch):
-    """Colab L4 at a 16 GiB budget (16234 MiB free): the first load keeps what free memory leaves beside the whole
-    DiT; once a render recorded its phases (2392 MiB, decode-dominated) the lend path offered only about 2.1 GB. The
-    wider room, priced on the whole-render peak plus the slack, wins and needs no decode lend."""
+    """Colab L4, 16 GiB budget: after a recorded render the wider room beats the ~2.1 GB decode lend and needs no lend."""
     monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
     free, total = 16234, 16376
     plan = dm.plan_diffusion_memory(

@@ -3389,7 +3389,6 @@ def _start_peak_probe(state: Any) -> Any:
         if probe.device is None:
             return None
         probe.window_pad = window_pad
-        # the encoders' share of the pad goes on the prompt-encode phase only (_padded_peak)
         probe.encoder_pad = encoder_window_pad_mib(pipe)
         probe.failed_captures = cuda_graph.failed_capture_count()
         probe.conditioning_hits = _conditioning_cache_hits(pipe)
@@ -3997,10 +3996,7 @@ def _encoder_releases(pipe: Any) -> int:
 def _note_encoder_release(
     probe: Any, residency_released: bool, releaser_was: bool, releaser_now: bool
 ) -> None:
-    """After the prompt encode: mark ``probe`` when encoders left the card under its baseline. A per-render residency
-    release (``te_residency.after_encode`` streamed resident groups) makes the render unrecordable, as a decode lend's
-    release does; a whole-encoder release (``te_release``, unified memory) keeps the whole-render pad, as before the
-    encode phase was read."""
+    """A per-render residency release makes the render unrecordable; a whole-encoder release keeps the whole-render pad."""
     if probe is None:
         return
     if residency_released:
@@ -4010,10 +4006,8 @@ def _note_encoder_release(
 
 
 def _padded_peak(probe: Any, peak: int, pad: int) -> int:
-    """``peak`` (MiB above the render's start) on the streamed baseline. The denoiser's share of ``pad`` sits beside
-    every phase; the encoders' share only beside the prompt encode they stream in: a resident encoder's window added to
-    the denoise peak (a 1.2 GB embedding x 3 on Qwen3-VL) raised the next load's peak and streamed the encoder whole.
-    No encode reading (or the share off): the whole pad, as before."""
+    """The encoders' pad share goes only on the prompt-encode phase: on the denoise peak (a 1.2 GB embedding x 3 on
+    Qwen3-VL) it raised the next load's peak and streamed the encoder whole. No encode reading: the whole pad."""
     parts = getattr(probe, "encoder_pad", None)
     encode = getattr(probe, "encode_peak", None)
     if not isinstance(parts, tuple) or len(parts) != 2 or encode is None:
@@ -4056,8 +4050,7 @@ def _record_peak_probe(
             # bucket (the placement that lent them already held a sample covering this decode)
             return
         if getattr(probe, "encoder_released", False):
-            # resident encoder groups streamed out after the encode reading: the denoise and decode ran net of their
-            # bytes, and with the encoders' pad off those phases a sample would under-size the bucket
+            # encoders streamed out after the encode reading: a sample would under-size the bucket
             return
         if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
@@ -16522,7 +16515,6 @@ class DiffusionBackend:
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
                             if peak_probe is not None:
-                                # before any encoder release below: the encode phase's peak on the probe's baseline
                                 peak_probe.mark_encode()
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
                             releaser_was = releaser_now = False

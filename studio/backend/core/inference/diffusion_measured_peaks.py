@@ -562,8 +562,7 @@ class PeakProbe:
         self.encodes = 0
 
     def mark_encode(self) -> None:
-        """Read the prompt-encode peak (everything before the denoiser's first forward) without a reset. A second
-        encode (split batch) interleaves phases, so none is reported."""
+        """Prompt-encode peak, without a reset; a second encode (split batch) interleaves phases, so none is reported."""
         if self.device is None or self.base is None:
             return
         self.encodes += 1

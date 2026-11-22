@@ -4030,9 +4030,7 @@ def _streaming_state(module: Any) -> Optional[bool]:
         return None
 
 
-# "0": an image render's learned peak carries the encoders' streaming window as ``depth + 1`` copies of the largest
-# leaf (a 1.2 GB bf16 embedding counts three times) on top of the whole render's peak; unset, the window is the
-# ``depth + 1`` largest leaves (as ``encode_need_mib`` prices it) on the prompt-encode phase only, where they stream.
+# "0": legacy pad of ``depth + 1`` copies of the largest encoder leaf on the whole render's peak.
 ENCODER_PAD_PHASE_ENV = "UNSLOTH_DIFFUSION_ENCODER_PAD_PHASE"
 
 
@@ -4081,8 +4079,7 @@ def _encoder_stream_window_mib(pipe: Any, legacy: bool = True) -> Optional[int]:
                     leaves.append(nbytes)
             window = _window_of(leaves, depth, legacy)
             if state:
-                # some leaves resident: the peak holds the STREAMED leaves' window, a fully streamed encoder the
-                # largest leaves'; pad the difference
+                # partially resident: pad the fully streamed window less the streamed leaves' window
                 streamed = [
                     _group_nbytes(g) for g in groups if not getattr(g, "_unsloth_resident", False)
                 ]
@@ -4094,9 +4091,7 @@ def _encoder_stream_window_mib(pipe: Any, legacy: bool = True) -> Optional[int]:
 
 
 def encoder_window_pad_mib(pipe: Any) -> Optional[tuple[int, int]]:
-    """``(share of stream_window_pad_mib, phase window)`` for the text encoders: an image render's learned peak takes
-    the share off the whole render and adds the window (the ``depth + 1`` largest leaves) to the prompt-encode phase
-    only, the phase the encoders stream in. None when off, unknown or nothing is resident."""
+    """``(share of stream_window_pad_mib, prompt-encode phase window)``; None when off, unknown or nothing is resident."""
     if not encoder_pad_phase_enabled():
         return None
     share = _encoder_stream_window_mib(pipe)
@@ -4233,10 +4228,7 @@ def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: 
 
 STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
 
-# "0": text encoders streamed beside a whole-resident transformer keep only the flat room (planner reserve and base
-# overhead taken off on top of the measured peak; none at all on the streaming tier). Unset, they keep what free memory
-# less the resident slack, the measured peak, the other components and the transformer leaves: the whole-transformer
-# fit, applied to the encoders, so fewer encoder bytes stream on every new prompt.
+# "0": encoders beside a whole-resident transformer keep only the flat room (none on the streaming tier).
 TE_RESIDENT_ROOM_ENV = "UNSLOTH_DIFFUSION_TE_RESIDENT_ROOM"
 
 
@@ -4252,11 +4244,8 @@ def _free_reading_untrusted() -> bool:
 def _resident_te_room_mib(
     memory: Any, encoders_mib: int, dit_mib: int, headroom_mib: int, other_mib: int
 ) -> int:
-    """Encoder MiB that stay resident beside a whole transformer: free memory less the resident slack, the measured
-    whole-render peak, the non-encoder components and the transformer (no planner reserve or base overhead on top: the
-    free reading already has the CUDA context taken off, as for ``_resident_dit_fits``). 0 when off or unreadable, and
-    on Windows ROCm, whose free reading is only a ceiling blind to other processes (``trusted_mem_get_info``): the
-    encoders keep the flat room there."""
+    """Encoder MiB resident beside a whole transformer: free less slack, measured peak, other components and the
+    transformer (no reserve: free already excludes the CUDA context). 0 when off, unreadable or on Windows ROCm."""
     free = getattr(memory, "free_mib", None)
     if free is None or _env_off(TE_RESIDENT_ROOM_ENV) or _free_reading_untrusted():
         return 0
@@ -5257,16 +5246,12 @@ def _refine_plan_from_loaded_weights(
         if (
             whole_beside
             and te_room < encoders
-            # torchao denoisers only (the slack was measured on that route); an encoder cut for an edit's denoise
-            # stays cut: it is sized on the flat room above
+            # torchao only (slack measured there); an edit's encoder cut stays sized on the flat room
             and dense_mib is None
             and not reference_cut
         ):
             wide_te = _resident_te_room_mib(memory, encoders, dit, headroom, priced_other)
-            # A decode lend sized from a learned phase split (the second load onward) yields to the wider room when
-            # that keeps more: it is priced on the whole-render peak plus the slack, so the decode needs no lend.
-            # Its edit price is redone on the whole-render basis, as without a lend; an edit it cannot cover keeps
-            # the lend.
+            # a decode lend yields to the wider room when that keeps more (priced on the whole-render peak + slack)
             unlend = lend > 0 and wide_te > te_room
             ref_update: dict = {}
             if unlend and reference is not None:
@@ -5555,9 +5540,7 @@ _VISION_SUBMODULES = ("visual", "vision_tower", "vision_model")
 
 
 def _vision_group_test(module: Any) -> Optional[Callable[[Any], bool]]:
-    """A test for ``module``'s offload groups that sit under a vision tower (``visual`` / ``vision_tower`` /
-    ``vision_model``): a text-only prompt encode never runs them, so a partial residency places them last. None when
-    the encoder has no such submodule."""
+    """Predicate for offload groups under a vision tower (placed last: text prompts never run them); None if absent."""
     try:
         vision: set = set()
         for name, sub in module.named_modules():
