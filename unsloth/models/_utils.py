@@ -5296,20 +5296,87 @@ def _download_statistics(names):
         try:
             time_limited_stats_check()
         except TimeoutError:
-            raise TimeoutError(
-                "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
-                "Check https://status.huggingface.co/ for more details.\n"
-                "As a temporary measure, use modelscope with the same model name ie:\n"
-                "```\n"
-                "pip install modelscope\n"
-                "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
-                "from unsloth import FastLanguageModel\n"
-                "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
-                "```"
-            )
+            raise TimeoutError(_HF_DOWN_MESSAGE)
         except Exception:
             logger.debug("Unsloth: stats_check failed with an exception.")
             # Do not retry without a time limit: it would freeze offline.
+
+
+_STATISTICS_LIMIT_S = 120
+_HF_DOWN_MESSAGE = (
+    "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
+    "Check https://status.huggingface.co/ for more details.\n"
+    "As a temporary measure, use modelscope with the same model name ie:\n"
+    "```\n"
+    "pip install modelscope\n"
+    "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
+    "from unsloth import FastLanguageModel\n"
+    "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
+    "```"
+)
+
+
+def _statistics_child(names):
+    # Runs in the forked child: the 8.8.8.8 probe (up to 3 s when filtered) and the downloads both stay off the load.
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+    from huggingface_hub import snapshot_download
+
+    if not has_internet():
+        return
+
+    def download(statistics):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+            snapshot_download(
+                f"unslothai/{statistics}",
+                force_download = True,
+                cache_dir = f,
+                local_dir = f,
+            )
+
+    with ThreadPoolExecutor(max_workers = len(names)) as pool:
+        futures = [pool.submit(download, name) for name in names]
+    for future in futures:
+        future.result()
+
+
+def _reap_statistics(proc, limit_s):
+    proc.join(limit_s)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(1.0)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        # The model load already went ahead; a real Hub outage also surfaces from its own requests.
+        logger.warning(_HF_DOWN_MESSAGE)
+    elif proc.exitcode:
+        logger.debug("Unsloth: stats_check failed with an exception.")
+
+
+def _download_statistics_background(names):
+    """Fork the statistics child on the caller's thread (same fork point as the blocking path), then reap it on a
+    daemon thread, so from_pretrained no longer waits on the four Hub round trips. Returns the child, or None when
+    this platform has no fork start method and the caller should use the blocking path."""
+    import multiprocessing as mp
+    import sys
+
+    if sys.platform != "linux" or "fork" not in mp.get_all_start_methods():
+        return None
+    proc = mp.get_context("fork").Process(target = _statistics_child, args = (names,), daemon = True)
+    try:
+        proc.start()
+    except Exception:
+        # e.g. inside a daemonic multiprocessing worker ("daemonic processes are not allowed to have children"):
+        # the blocking path starts its child inside its own try, so statistics never fail the load.
+        return None
+    threading.Thread(
+        target = _reap_statistics,
+        args = (proc, _STATISTICS_LIMIT_S),
+        daemon = True,
+        name = "unsloth-statistics",
+    ).start()
+    return proc
 
 
 def get_statistics(local_files_only = False):
@@ -5363,14 +5430,18 @@ def get_statistics(local_files_only = False):
         vram = 80
     else:
         vram = 96
-    _download_statistics(
-        [
-            _statistics_environment(),
-            "repeat",
-            f"vram-{vram}",
-            f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}",
-        ]
-    )
+    names = [
+        _statistics_environment(),
+        "repeat",
+        f"vram-{vram}",
+        f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}",
+    ]
+    # UNSLOTH_STATISTICS_BLOCKING=1 keeps the old wait (and the raised HF-down TimeoutError) on the load path.
+    if (
+        os.environ.get("UNSLOTH_STATISTICS_BLOCKING", "0") == "1"
+        or _download_statistics_background(names) is None
+    ):
+        _download_statistics(names)
     if disabled:
         enable_progress_bars()
 
@@ -5750,6 +5821,13 @@ def _mark_requested_float32(model, requested):
         model._unsloth_user_float32 = bool(requested)
     except Exception:
         pass
+    # Every from_pretrained return passes here, so this is the opt-in UNSLOTH_MEMORY_REPORT "load" point.
+    if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
+        try:
+            from unsloth.utils.run_report import report_memory
+            report_memory("load", model)
+        except Exception:
+            pass
     return model
 
 
@@ -10197,10 +10275,13 @@ def _microscaling_qat_filter(
         candidates = lambda m, fqn, _c = candidates, _bad = frozenset(bad_widths): (
             _c(m, fqn) and m.out_features not in _bad
         )
+    # Only a trainable bias needs the backward's bias gradient. LoRA freezes the base bias (bias = "none"),
+    # and skipping those layers left Qwen2-style q / k / v projections out of QAT while the export still
+    # quantizes them.
     biased = [
         name
         for name, module in model.named_modules()
-        if not _is_lora_adapter_name(name) and candidates(module, name) and module.bias is not None
+        if not _is_lora_adapter_name(name) and candidates(module, name) and _trainable_bias(module)
     ]
     if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
         warnings.warn(
@@ -10210,8 +10291,13 @@ def _microscaling_qat_filter(
             + (f", ... ({len(biased) - 8} more)" if len(biased) > 8 else ""),
             stacklevel = 3,
         )
-        return lambda m, fqn, _c = candidates: _c(m, fqn) and m.bias is None
+        return lambda m, fqn, _c = candidates: _c(m, fqn) and not _trainable_bias(m)
     return candidates
+
+
+def _trainable_bias(module) -> bool:
+    bias = getattr(module, "bias", None)
+    return isinstance(bias, torch.Tensor) and bias.requires_grad
 
 
 def _mx_autocast_forward(self, x):

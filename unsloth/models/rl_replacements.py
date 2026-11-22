@@ -1730,8 +1730,9 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 
 
 # assistant_only_loss: TRL raises for chat templates it does not know (all Unsloth ones); fall back to Zoo's train_on_responses_only masks.
+# TRL >= 1.18 also passes require_prefix_preservation=False; any keyword arguments are kept as is.
 _SFT_TRAINING_TEMPLATE = re.compile(
-    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\(processing_class\)[ \t]*$",
+    r"^(?P<indent>[ \t]*)self\.chat_template = get_training_chat_template\((?P<call>processing_class(?:,[^()\n]*)?)\)[ \t]*$",
     flags = re.MULTILINE,
 )
 _SFT_STOP_TOKEN_CHECK = re.compile(
@@ -1758,7 +1759,7 @@ def sft_trainer_assistant_mask_fallback(function_name, function):
         i = match.group("indent")
         return (
             f"{i}try:\n"
-            f"{i}    self.chat_template = get_training_chat_template(processing_class)\n"
+            f"{i}    self.chat_template = get_training_chat_template({match.group('call')})\n"
             f"{i}except ValueError:\n"
             # Zoo's text preparation reads the flag; vision datasets and skip_prepare_dataset never reach it.
             f"{i}    if getattr(self, '_is_vision_dataset', False) or (getattr(args, 'dataset_kwargs', None) or {{}}).get('skip_prepare_dataset'): raise\n"
@@ -1807,6 +1808,53 @@ def _unsloth_seq_packing_verify_verdict(model, kind, diff, result, ref, cmask):
             return "skip"
     setattr(model, strikes_attr, strikes + 1)
     return "kill" if diff >= 1.5 else "cap"
+
+
+def _unsloth_seq_packing_moe_noise(model, result, ref, cmask):
+    """True when a failed MoE self-verify looks like top-k routing noise (sparse ~1 nat tail, as two unpacked
+    forwards show on Qwen3-30B-A3B), not a leak, which moves most of a document. UNSLOTH_GRPO_PACKING_MOE_NOISE=0 disables."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_PACKING_MOE_NOISE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    try:
+        config = getattr(model, "config", None)
+        configs = [config]
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            configs.append(get_text_config())
+        keys = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
+        if not any(
+            isinstance(getattr(c, k, None), int) and getattr(c, k) > 1
+            for c in configs
+            if c is not None
+            for k in keys
+        ):
+            return False
+        live = cmask > 0
+        n = int(live.sum())
+        if n < 64:
+            return False
+        d = (result.detach().float() - ref.detach().float()).abs().masked_fill(~live, 0.0)
+        if not bool(d.isfinite().all()):
+            return False
+        if float(d.sum()) > 0.1 * n or int((d >= 0.7).sum()) * 50 > n:
+            return False
+        row_n = live.sum(dim = -1)
+        row_bad = (d >= 0.25).sum(dim = -1)
+        if bool(((row_n >= 8) & (row_bad * 2 >= row_n)).any()):
+            return False
+    except Exception:
+        return False
+    model._unsloth_seq_packing_moe_noise_passes = (
+        int(getattr(model, "_unsloth_seq_packing_moe_noise_passes", 0) or 0) + 1
+    )
+    return True
 
 
 def _unsloth_grpo_packing_leaks(self, unwrapped):
@@ -1882,6 +1930,22 @@ def _unsloth_grpo_packing_leaks(self, unwrapped):
         # children's own, leaving every module in its saved mode.
         for module, training in was_training or ():
             module.train(training)
+        # modules() yields a child shared by two parents once, so a later parent's recursive train() can flip it
+        # again: set every saved flag directly (each module's own train() side effects already ran above).
+        for module, training in was_training or ():
+            module.training = training
+
+
+def _unsloth_grpo_enable_packed_varlen(self, unwrapped):
+    """Install SFT packing's varlen attention wrapper: dense [T, T] block-mask SDPA is ~2x slower than padded."""
+    if os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() in ("0", "false", "no", "off"):
+        return
+    try:
+        from unsloth.utils.packing import _enable_hf_packed_attention
+        _enable_hf_packed_attention(unwrapped, self)
+    except Exception as e:
+        if UNSLOTH_ENABLE_LOGGING:
+            print(f"Unsloth: GRPO packed varlen attention not enabled: {e!r}", flush = True)
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
@@ -1912,9 +1976,10 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
         return
     if blocker is None:
         leaks = _unsloth_grpo_packing_leaks(self, unwrapped)
-        if not mixers and leaks is not True:
-            return
-        if leaks is False and all(_hybrid_varlen_dispatched(m) for m, _ in mixers):
+        if (not mixers and leaks is not True) or (
+            leaks is False and all(_hybrid_varlen_dispatched(m) for m, _ in mixers)
+        ):
+            _unsloth_grpo_enable_packed_varlen(self, unwrapped)
             return
     unwrapped._unsloth_seq_packing_nograd_ok = False
     unwrapped._unsloth_seq_packing_grad_ok = False
@@ -2228,11 +2293,31 @@ def _unsloth_grpo_split_videos_by_sample(batch):
     num_videos = [int(n) for n in num_videos]
     if sum(num_videos) != video_grid_thw.shape[0]:
         return batch
-    rows_per_sample = [
-        int(group.prod(dim = -1).sum()) for group in torch.split(video_grid_thw, num_videos)
-    ]
     split = dict(batch)
-    split["pixel_values_videos"] = list(torch.split(pixel_values_videos, rows_per_sample))
+    video_bank_rows = split.pop("video_bank_rows", None)
+    if video_bank_rows is not None and not isinstance(video_bank_rows, list):
+        # One bank copy per distinct prompt (_unsloth_grpo_video_inputs): each sample gets a view of its rows
+        # and its slice of the index, so the shuffled buffer still references the one copy.
+        video_bank_rows = torch.as_tensor(video_bank_rows).long().reshape(-1, 2)
+        per_sample, per_rows, offset = [], [], 0
+        for count in num_videos:
+            rows = video_bank_rows[offset : offset + count]
+            offset += count
+            ranges = rows.tolist()
+            if not ranges:
+                per_sample.append(pixel_values_videos[:0])
+            elif all(ranges[i][1] == ranges[i + 1][0] for i in range(len(ranges) - 1)):
+                per_sample.append(pixel_values_videos[ranges[0][0] : ranges[-1][1]])
+            else:
+                per_sample.append(torch.cat([pixel_values_videos[a:b] for a, b in ranges], dim = 0))
+            per_rows.append(rows)
+        split["pixel_values_videos"] = per_sample
+        split["video_bank_rows"] = per_rows
+    else:
+        rows_per_sample = [
+            int(group.prod(dim = -1).sum()) for group in torch.split(video_grid_thw, num_videos)
+        ]
+        split["pixel_values_videos"] = list(torch.split(pixel_values_videos, rows_per_sample))
     split["video_grid_thw"] = list(torch.split(video_grid_thw, num_videos))
     second_per_grid_ts = batch.get("second_per_grid_ts", None)
     if second_per_grid_ts is not None:
@@ -2378,17 +2463,31 @@ def _unsloth_grpo_video_inputs(
     video_index = torch.split(torch.arange(video_grid_thw.shape[0]), unique_counts)
     row_ends = video_grid_thw.prod(dim = -1).cumsum(0)
     row_starts = row_ends - video_grid_thw.prod(dim = -1)
-    videos, rows = [], []
-    for u in order:
-        for v in video_index[u].tolist():
-            videos.append(v)
-            rows.append(pixel_values_videos[int(row_starts[v]) : int(row_ends[v])])
+    videos = [v for u in order for v in video_index[u].tolist()]
     device = trainer.accelerator.device
-    out = {
-        "pixel_values_videos": torch.cat(rows, dim = 0).to(device),
-        "video_grid_thw": video_grid_thw[videos].to(device),
-        "num_videos": num_videos,
-    }
+    # GRPO repeats every prompt num_generations times. Keep one copy of each distinct prompt's videos plus the
+    # (start, end) rows of every per-sample video, which the zoo chunker and the buffer split read; a zoo that
+    # cannot read the index gets the flat layout (UNSLOTH_GRPO_VIDEO_BANK=0 forces it).
+    use_bank = len(unique) < len(prompts) and os.environ.get("UNSLOTH_GRPO_VIDEO_BANK", "1") != "0"
+    if use_bank:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_video_bank_supported
+            use_bank = bool(grpo_video_bank_supported())
+        except Exception:
+            use_bank = False
+    if use_bank:
+        out = {
+            "pixel_values_videos": pixel_values_videos.to(device),
+            "video_bank_rows": torch.stack([row_starts[videos], row_ends[videos]], dim = -1).long(),
+        }
+    else:
+        out = {
+            "pixel_values_videos": torch.cat(
+                [pixel_values_videos[int(row_starts[v]) : int(row_ends[v])] for v in videos], dim = 0
+            ).to(device),
+        }
+    out["video_grid_thw"] = video_grid_thw[videos].to(device)
+    out["num_videos"] = num_videos
     if second_per_grid_ts is not None:
         out["second_per_grid_ts"] = second_per_grid_ts[videos].to(device)
     return out
@@ -2399,6 +2498,47 @@ def _unsloth_grpo_unsplit_vision(batch):
     the forward sees the layout the processor produced. TRL's own unsplit merges only
     pixel_values before 1.1.0, and pixel_values plus the grid and position ids from 1.1.0."""
     merged = None
+    bank_rows = batch.get("video_bank_rows", None)
+    videos = batch.get("pixel_values_videos", None)
+    if isinstance(bank_rows, list) and isinstance(videos, list) and len(videos) == len(bank_rows):
+        # Views of the one deduplicated bank (_unsloth_grpo_split_videos_by_sample): hand the step the bank and
+        # its rows instead of a copy per sample, so the buffer of every step still holds one copy.
+        bank = videos[0]._base if len(videos) else None
+        ok = (
+            bank is not None
+            and bank.dim() == 2
+            and bank.is_contiguous()
+            and all(
+                v._base is bank
+                and v.dim() == 2
+                and v.stride() == bank.stride()
+                and (v.storage_offset() - bank.storage_offset()) % bank.stride(0) == 0
+                for v in videos
+            )
+        )
+        merged = dict(batch)
+        if ok:
+            rows = []
+            for v, r in zip(videos, bank_rows):
+                start = (v.storage_offset() - bank.storage_offset()) // bank.stride(0)
+                sizes = (r[:, 1] - r[:, 0]).tolist()
+                if sum(sizes) != v.shape[0]:
+                    ok = False
+                    break
+                ends = torch.tensor(sizes, dtype = torch.long).cumsum(0) + start
+                rows.append(
+                    torch.stack([ends - torch.tensor(sizes, dtype = torch.long), ends], dim = -1)
+                )
+        if ok:
+            merged["pixel_values_videos"] = bank
+            merged["video_bank_rows"] = (
+                torch.cat(rows, dim = 0) if rows else torch.zeros(0, 2, dtype = torch.long)
+            )
+        else:
+            merged["pixel_values_videos"] = torch.cat(videos, dim = 0)
+            merged.pop("video_bank_rows", None)
+        batch = merged
+        merged = None
     for key in (
         "pixel_values",
         "image_grid_thw",
@@ -2635,9 +2775,16 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
         prompt_lengths = [len(ids) for ids in prompt_ids]
     else:
         prompt_lengths = None
+    # Rows stopped by the opt-in rollout tail cut (UNSLOTH_ROLLOUT_TAIL_CUT) count as truncated.
+    tail_cut = None
+    if getattr(trainer, "_unsloth_tail_cut_rows", None):
+        from unsloth.models._rollout_tail_cut import cut_row_flags
+        tail_cut = cut_row_flags(trainer, completion_ids)
     is_truncated = []
     for i, ids in enumerate(completion_ids):
-        if ids[-1] in eos_and_pad:
+        if tail_cut is not None and tail_cut[i]:
+            is_truncated.append(True)
+        elif ids[-1] in eos_and_pad:
             is_truncated.append(False)
         elif limit is None or len(ids) >= limit:
             is_truncated.append(True)
@@ -2682,6 +2829,15 @@ def _unsloth_rollout_scope(trainer):
         return contextlib.nullcontext()
     if getattr(trainer, "rollout_func", None) is not None:
         return contextlib.nullcontext()
+    # An async tool runs on TRL's event-loop thread while _generate blocks on its result. The held fold keeps the
+    # merged-rollout lock, so an async tool that calls a vLLM engine would wait on it forever: fold per call instead.
+    import inspect
+
+    async_tools = any(bool(d) for d in (getattr(trainer, "_async_tool_dicts", None) or ())) or any(
+        inspect.iscoroutinefunction(t) for t in (getattr(trainer, "tools", None) or ())
+    )
+    if async_tools:
+        return contextlib.nullcontext()
     llm = getattr(getattr(trainer, "vllm_generation", None), "llm", None)
     if llm is None:
         llm = getattr(trainer, "llm", None)
@@ -2694,6 +2850,25 @@ def _unsloth_rollout_scope(trainer):
     return vllm_rollout_scope(llm)
 
 
+def _unsloth_tail_cut_scope(trainer):
+    """Opt-in GRPO rollout tail cut around a colocated vLLM `_generate` (UNSLOTH_ROLLOUT_TAIL_CUT=<k_min>)."""
+    import contextlib
+    import os
+
+    if os.environ.get("UNSLOTH_ROLLOUT_TAIL_CUT", "").strip().lower() in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        trainer._unsloth_tail_cut_rows = None
+        return contextlib.nullcontext()
+    from unsloth.models._rollout_tail_cut import rollout_tail_cut_scope
+
+    return rollout_tail_cut_scope(trainer)
+
+
 def _unsloth_wrap_generate_in_rollout_scope(function):
     """Rename `_generate` and add a `_generate` that runs it inside `_unsloth_rollout_scope`."""
     if "_unsloth_generate_in_scope" in function:
@@ -2704,7 +2879,7 @@ def _unsloth_wrap_generate_in_rollout_scope(function):
     indent = match.group("indent")
     wrapper = (
         f"{indent}def _generate(self, *args, **kwargs):\n"
-        f"{indent}    with _unsloth_rollout_scope(self):\n"
+        f"{indent}    with _unsloth_rollout_scope(self), _unsloth_tail_cut_scope(self):\n"
         f"{indent}        return self._unsloth_generate_in_scope(*args, **kwargs)\n\n"
     )
     start = match.start()
@@ -3262,7 +3437,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             + f"{_indent})\n"
             # Aligned generation under vLLM IS: pi_old is the policy the loss scores, so skip that forward.
             + f"{_indent}_unsloth_old_from_new = (not _unsloth_rollout_old) and _unsloth_grpo_old_logps_from_new(self)\n"
-            + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new:\n"
+            # num_iterations > 1, aligned: the first loss pass scores pi_old and keeps it for the later ones.
+            + f"{_indent}_unsloth_old_store = (not _unsloth_rollout_old) and (not _unsloth_old_from_new) and _unsloth_grpo_old_logps_store(self)\n"
+            + f"{_indent}if _unsloth_rollout_old or _unsloth_old_from_new or _unsloth_old_store:\n"
             + f"{_indent}    old_per_token_logps = None\n"
             + f"{_indent}el"
             + function[_old_logps_if.start() + 1 + len(_indent) :]
@@ -3277,6 +3454,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             '            output["sampling_per_token_logps"] = _unsloth_rollout_logps\n'
             "        if _unsloth_old_from_new:\n"
             '            output["unsloth_old_logps_from_new"] = torch.ones(\n'
+            "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
+            "            )\n"
+            "        if _unsloth_old_store:\n"
+            '            output["unsloth_old_logps_store"] = torch.ones(\n'
             "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
             "            )\n",
         )
@@ -3345,6 +3526,34 @@ def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
 
 
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
+
+
+_TOOL_SUFFIX_EOS_TRIM = re.compile(
+    r"\n(?P<indent>[ \t]+)if eos_positions:\n"
+    r"(?P<body>[ \t]+prefix_ids = prefix_ids\[: ?eos_positions\[-1\] \+ 1\])"
+)
+
+
+def trainer__get_tool_suffix_ids(function_name, function):
+    """Trim TRL's dummy tool-call prefix at its last EOS only when whitespace alone follows it.
+
+    unsloth/gemma-4-* (EOS <turn|>) ends tool calls with <|tool_response>, so the last EOS ends the USER turn and
+    every tool suffix would re-inject the dummy assistant tool call into the rollout.
+    """
+    if function_name != "_get_tool_suffix_ids":
+        return function
+    return _TOOL_SUFFIX_EOS_TRIM.sub(
+        lambda m: (
+            f"\n{m.group('indent')}if eos_positions and not self._tokenizer.decode("
+            f"prefix_ids[eos_positions[-1] + 1 :]).strip():\n{m.group('body')}"
+        ),
+        function,
+        count = 1,
+    )
+
+
+RL_FUNCTIONS["grpo_trainer"].append(trainer__get_tool_suffix_ids)
+RL_FUNCTIONS["distillation_trainer"].append(trainer__get_tool_suffix_ids)
 
 
 def _unsloth_vllm_quantized(model):
@@ -3758,10 +3967,102 @@ def _unsloth_vllm_adapter_param_ids(model):
 _UNSLOTH_VLLM_MODULES_TO_SAVE = re.compile(r"\.(?:modules_to_save\.[^.]+|original_module)\.")
 
 
+def _unsloth_vllm_bump_weights_epoch(engine):
+    engine._unsloth_vllm_weights_epoch = getattr(engine, "_unsloth_vllm_weights_epoch", 0) + 1
+
+
+def _unsloth_vllm_watch_weight_resets(engine):
+    """Count weight drops: sleep(level >= 2) and collective_rpc("reload_weights")."""
+    if engine is None or getattr(engine, "_unsloth_vllm_weights_epoch", None) is not None:
+        return
+    engine._unsloth_vllm_weights_epoch = 0
+    sleep = getattr(engine, "sleep", None)
+    if callable(sleep):
+
+        def _unsloth_sleep(*args, **kwargs):
+            level = kwargs.get("level", args[0] if args else 1)
+            if not isinstance(level, int) or level >= 2:
+                _unsloth_vllm_bump_weights_epoch(engine)
+            return sleep(*args, **kwargs)
+
+        engine.sleep = _unsloth_sleep
+    collective_rpc = getattr(engine, "collective_rpc", None)
+    if callable(collective_rpc):
+
+        def _unsloth_collective_rpc(method, *args, **kwargs):
+            if method == "reload_weights":
+                _unsloth_vllm_bump_weights_epoch(engine)
+            return collective_rpc(method, *args, **kwargs)
+
+        engine.collective_rpc = _unsloth_collective_rpc
+
+
+class _UnslothVllmFrozenSync:
+    """Send frozen non-adapter weights once per vLLM name (same param, storage, version); resend
+    after a weight drop or receiver change. UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS = 1 disables."""
+
+    def __init__(
+        self,
+        owner,
+        model,
+        target,
+        engine = None,
+        adapted_ids = (),
+    ):
+        self.state = None
+        self.frozen = {}
+        if os.environ.get("UNSLOTH_VLLM_SYNC_FROZEN_WEIGHTS", "0") == "1":
+            return
+        _unsloth_vllm_watch_weight_resets(engine)
+        epoch = getattr(engine, "_unsloth_vllm_weights_epoch", 0) if engine is not None else 0
+        state = owner.__dict__.get("_unsloth_vllm_frozen_sync")
+        if state is None or state["target"] is not target or state["epoch"] != epoch:
+            state = {
+                "target": target,
+                "epoch": epoch,
+                "sent": {},
+                "syncs": 0,
+                "skipped": 0,
+                "skipped_bytes": 0,
+                "sent_bytes": 0,
+            }
+            owner._unsloth_vllm_frozen_sync = state
+        state["syncs"] += 1
+        self.state = state
+        adapted = set(adapted_ids) | _unsloth_vllm_adapter_param_ids(model)
+        for param in model.parameters():
+            if param.requires_grad or id(param) in adapted:
+                continue
+            self.frozen[(param.data_ptr(), tuple(param.shape), param.dtype)] = param
+
+    def keep(
+        self,
+        name,
+        tensor,
+        param = None,
+    ):
+        if self.state is None:
+            return True
+        nbytes = tensor.numel() * tensor.element_size()
+        frozen = self.frozen.get((tensor.data_ptr(), tuple(tensor.shape), tensor.dtype))
+        if frozen is None or (param is not None and frozen is not param):
+            self.state["sent"].pop(name, None)
+            self.state["sent_bytes"] += nbytes
+            return True
+        key = (id(frozen), frozen.data_ptr(), frozen._version)
+        if self.state["sent"].get(name) == key:
+            self.state["skipped"] += 1
+            self.state["skipped_bytes"] += nbytes
+            return False
+        self.state["sent"][name] = key
+        self.state["sent_bytes"] += nbytes
+        return True
+
+
 @torch.no_grad()
-def _unsloth_vllm_sync_peft_merged(trainer):
-    """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
-    model = trainer.model
+def _unsloth_vllm_iter_peft_merged(model, fix_name = None):
+    """Yield (vLLM name, merged tensor, live param) as TRL's PEFT sync does after merge_adapter, but
+    computed out of place, so the frozen base weights keep their exact bytes."""
     # Plain LoRA: W + sum of deltas in fp32, rounded once. Anything else: PEFT's merge on a copy.
     plain = _unsloth_vllm_plain_lora(model)
     lora_of = {}
@@ -3783,16 +4084,8 @@ def _unsloth_vllm_sync_peft_merged(trainer):
     unserved = tuple(unserved)
     # Structural, not a name match: a base module named q_lora_proj is still a base weight.
     adapter_ids = _unsloth_vllm_adapter_param_ids(model)
-    # TRL 0.18 has no vllm_mode: its in-process engine is the colocated one.
-    mode = getattr(trainer, "vllm_mode", None) or (
-        "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
-    )
-    is_main = getattr(trainer.accelerator, "is_main_process", True)
-    llm_model = None
-    if mode == "colocate":
-        llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
     # TRL < 0.20 sends the names as they are and has no fixer.
-    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None) or (lambda name, **_: name)
+    fix_name = fix_name or (lambda name, **_: name)
     for full_name, param in model.named_parameters():
         if unserved and full_name.startswith(unserved):
             continue
@@ -3811,6 +4104,40 @@ def _unsloth_vllm_sync_peft_merged(trainer):
             tensor = merged_cache.pop(id(param))
         else:
             tensor = param.data
+        yield name, tensor, param
+
+
+@torch.no_grad()
+def _unsloth_vllm_sync_peft_merged(trainer):
+    """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
+    model = trainer.model
+    # TRL 0.18 has no vllm_mode: its in-process engine is the colocated one.
+    mode = getattr(trainer, "vllm_mode", None) or (
+        "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
+    )
+    is_main = getattr(trainer.accelerator, "is_main_process", True)
+    llm_model = None
+    if mode == "colocate":
+        llm_model = trainer.llm.llm_engine.model_executor.driver_worker.model_runner.model
+    adapted_ids = set()
+    if _unsloth_vllm_plain_lora(model):
+        for module in _unsloth_vllm_lora_layers(model):
+            weight = getattr(module.base_layer, "weight", None)
+            if weight is not None:
+                adapted_ids.add(id(weight))
+    else:
+        adapted_ids = set(_unsloth_vllm_tuner_groups(model))
+    frozen_sync = _UnslothVllmFrozenSync(
+        trainer,
+        model,
+        llm_model if mode == "colocate" else trainer.vllm_client,
+        engine = trainer.llm if mode == "colocate" else None,
+        adapted_ids = adapted_ids,
+    )
+    fix_name = getattr(trainer, "_fix_param_name_to_vllm", None)
+    for name, tensor, param in _unsloth_vllm_iter_peft_merged(model, fix_name):
+        if not frozen_sync.keep(name, tensor, param):
+            continue
         if mode == "server":
             if is_main:
                 trainer.vllm_client.update_named_param(name, tensor)
@@ -3821,6 +4148,60 @@ def _unsloth_vllm_sync_peft_merged(trainer):
     elif mode == "colocate":
         trainer.llm.reset_prefix_cache()
     return None
+
+
+def _unsloth_vllm_generation_merges_out_of_place(generation):
+    """TRL >= 0.28 VLLMGeneration: True when the PEFT model is unsharded and mergeable, so the sync
+    can stream merged copies instead of TRL's in-place merge_adapter / unmerge_adapter round trip.
+    Anything else (sharded, quantized, offloaded, unmergeable) keeps TRL's own path."""
+    if os.environ.get("UNSLOTH_VLLM_INPLACE_MERGE", "0") == "1":
+        return False
+    model = getattr(generation, "model", None)
+    if not getattr(model, "peft_config", None):
+        return False
+    state = getattr(getattr(generation, "accelerator", None), "state", None)
+    if state is None or getattr(state, "fsdp_plugin", None) is not None:
+        return False
+    deepspeed_plugin = getattr(state, "deepspeed_plugin", None)
+    if deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3:
+        return False
+    if getattr(getattr(generation, "_dist", None), "is_fsdp", False):
+        return False
+    key = tuple(sorted(_unsloth_vllm_active_adapters(model)))
+    cached = generation.__dict__.get("_unsloth_vllm_out_of_place")
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    ok = (
+        not _unsloth_vllm_quantized(model)
+        and _unsloth_vllm_offloaded(model) is None
+        and not _unsloth_vllm_peft_unsupported(model)
+        and not _unsloth_vllm_shared_targets(model)
+    )
+    generation._unsloth_vllm_out_of_place = (key, ok)
+    return ok
+
+
+def _unsloth_vllm_patch_iter_named_params(generation_cls):
+    """Route VLLMGeneration._iter_named_params through the out-of-place PEFT merge."""
+    original = getattr(generation_cls, "_iter_named_params", None)
+    if original is None or getattr(original, "_unsloth_out_of_place", False):
+        return False
+
+    def _iter_named_params(self):
+        if not _unsloth_vllm_generation_merges_out_of_place(self):
+            yield from original(self)
+            return
+        self._unsloth_vllm_out_of_place_syncs = (
+            getattr(self, "_unsloth_vllm_out_of_place_syncs", 0) + 1
+        )
+        fix_name = getattr(self, "_fix_param_name_to_vllm", None)
+        for name, tensor, _ in _unsloth_vllm_iter_peft_merged(self.model, fix_name):
+            yield name, tensor
+
+    _iter_named_params._unsloth_out_of_place = True
+    _iter_named_params.__wrapped__ = original
+    generation_cls._iter_named_params = _iter_named_params
+    return True
 
 
 def grpo_trainer__move_model_to_vllm(function_name, function):
@@ -4066,6 +4447,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
 
             # Old / ref logps must use the policy pass's scorer, else the ratio starts away from 1 and the KL is biased.
+            # The forwards below run under torch.no_grad() as TRL's do, not inference_mode: the compiled packed
+            # forward under inference_mode is not bit-equal to the loss's grad-mode one (~0.01 nats per token).
             try:
                 if os.environ.get("UNSLOTH_GRPO_LOGPROB_RECOMPUTE", "0") == "1":
                     from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
@@ -4303,14 +4686,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         and not getattr(_pg_cfg, "attention_dropout", 0)
                         and not any(
                             getattr(_pg_cfg, _pg_a, None) is not None
-                            for _pg_a in (
-                                "mamba_d_ssm",
-                                "mamba_d_state",
-                                "mamba_expand",
-                                "num_experts",
-                                "num_local_experts",
-                                "n_routed_experts",
-                                "moe_intermediate_size",
+                            for _pg_a in ("mamba_d_ssm", "mamba_d_state", "mamba_expand")
+                        )
+                        # MoE only where prefix_grouper_hf verified every layer (opt-in, set by the check above).
+                        and (
+                            getattr(unwrapped_model, "_unsloth_prefix_grouper_moe_ok", False)
+                            or not any(
+                                getattr(_pg_cfg, _pg_a, None) is not None
+                                for _pg_a in (
+                                    "num_experts",
+                                    "num_local_experts",
+                                    "n_routed_experts",
+                                    "moe_intermediate_size",
+                                )
                             )
                         )
                     )
@@ -4348,7 +4736,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pg_chunks = max(1, total_rows * multiplier)
 
                         def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
-                            with _get_inference_mode_context_manager(model):
+                            with torch.no_grad():
                                 with torch.amp.autocast(
                                     device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
@@ -4477,7 +4865,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_cstart = (_pk_L - logits_to_keep) - left_pad_tokens_per_prompt  # [rows]
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         _pk_in_packed = True
-                        with _get_inference_mode_context_manager(model):
+                        with torch.no_grad():
                             with torch.amp.autocast(
                                 device_type = DEVICE_TYPE_TORCH,
                                 dtype = self._autocast_dtype,
@@ -4543,7 +4931,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         else:
                             # verify against the per-row forward (ground truth)
                             _pk_ref = torch.zeros_like(_pk_result)
-                            with _get_inference_mode_context_manager(model):
+                            with torch.no_grad():
                                 with torch.amp.autocast(
                                     device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
@@ -4603,7 +4991,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     flush = True,
                                 )
                             # Kernel-noise floor is ~0.25; cross-sample contamination is >= 2.4.
-                            if _pk_diff < 7e-1:
+                            if _pk_diff < 7e-1 or _unsloth_seq_packing_moe_noise(
+                                unwrapped_model, _pk_result, _pk_ref, _pk_cm
+                            ):
                                 unwrapped_model._unsloth_seq_packing_nograd_ok = True
                                 unwrapped_model._unsloth_seq_packing_nograd_strikes = 0
                                 # Widen the trusted shape only when at least 2 completion rows exercised cross-sample packing; a single row proves nothing.
@@ -4690,7 +5080,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 f"shared-prefix vs full-row-packed max|d|={_pg_diff:.4f}",
                                 flush = True,
                             )
-                        if _pg_diff < _pg_tol_ok():
+                        if _pg_diff < _pg_tol_ok() or _unsloth_seq_packing_moe_noise(
+                            unwrapped_model, _pg_a, _pg_b, _pg_cm
+                        ):
                             _pg_v = getattr(
                                 unwrapped_model, "_unsloth_prefix_grouper_nograd_verified", None
                             )
@@ -4750,7 +5142,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 _pk_keep = _pk_len = _pk_flat = _pk_pos = _pk_cmask = None
                 _pk_nz_idx = _pk_within = _pk_cstart = _pk_ctgt = _pk_tgt = _pk_ids = _pk_cm = None
 
-            with _get_inference_mode_context_manager(model):
+            with torch.no_grad():
                 for (
                     input_ids_chunk,
                     attention_mask_chunk,
@@ -5160,6 +5552,31 @@ def _patch_grpo_accumulated_loss_seq_packing_kill(source):
     )
 
 
+_GRPO_SEQ_PACKING_GRAD_TOL = re.compile(r"\bif\s+_pack_diff\s*<\s*7e-1\s*:")
+_GRPO_PREFIX_GROUPER_GRAD_TOL = re.compile(r"\bif\s+_pg_diff\s*<\s*_pg_tol_ok\(\s*\)\s*:")
+
+
+def _patch_grpo_accumulated_loss_moe_noise(source):
+    """Zoo grad self-verifies (packing, PrefixGrouper) also pass MoE routing noise."""
+    if "_unsloth_seq_packing_moe_noise" in source:
+        return source
+    if "_pack_ref" in source and "_pack_cm" in source:
+        source = _GRPO_SEQ_PACKING_GRAD_TOL.sub(
+            "if _pack_diff < 7e-1 or _unsloth_seq_packing_moe_noise("
+            "unwrapped_model, _pack_result, _pack_ref, _pack_cm):",
+            source,
+            count = 1,
+        )
+    if "_pg_a = " in source and "_pg_cm = " in source:
+        source = _GRPO_PREFIX_GROUPER_GRAD_TOL.sub(
+            "if _pg_diff < _pg_tol_ok() or _unsloth_seq_packing_moe_noise("
+            "unwrapped_model, _pg_a, _pg_b, _pg_cm):",
+            source,
+            count = 1,
+        )
+    return source
+
+
 def _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(source):
     """Drop zoo's vLLM skip for gradient PrefixGrouper unless UNSLOTH_GRPO_PREFIX_GROUPER_VLLM=0."""
     if "prefix_seg_info" not in source:
@@ -5335,6 +5752,43 @@ def _unsloth_grpo_old_logps_from_new(trainer):
     if supported:
         trainer._unsloth_old_logps_from_new_batches = (
             getattr(trainer, "_unsloth_old_logps_from_new_batches", 0) + 1
+        )
+    return supported
+
+
+def _unsloth_grpo_old_logps_store(trainer):
+    """num_iterations > 1, generation aligned to an optimizer step: the first loss pass of each micro-batch
+    scores the rollout policy (pi_old), so reuse it. Not with dropout or a zoo that cannot return logps."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY", "1") == "0":
+        return False
+    try:
+        accumulation = int(trainer.args.gradient_accumulation_steps)
+        steps_per_generation = int(trainer.args.steps_per_generation)
+        generate_every = steps_per_generation * int(trainer.num_iterations)
+        if (
+            int(trainer.num_iterations) <= 1
+            or accumulation <= 0
+            or steps_per_generation > accumulation
+            or generate_every % accumulation != 0
+            or accumulation % generate_every == 0
+        ):
+            return False
+    except Exception:
+        return False
+    supported = getattr(trainer, "_unsloth_old_logps_store_ok", None)
+    if supported is None:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_old_logps_store  # noqa: F401
+            from unsloth_zoo.rl_replacements import grpo_policy_is_stochastic
+            supported = not grpo_policy_is_stochastic(getattr(trainer, "model", None))
+        except Exception:
+            supported = False
+        trainer._unsloth_old_logps_store_ok = supported
+    if supported:
+        trainer._unsloth_old_logps_store_batches = (
+            getattr(trainer, "_unsloth_old_logps_store_batches", 0) + 1
         )
     return supported
 
@@ -5530,6 +5984,7 @@ grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_packing_leaks))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_enable_packed_varlen))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_rank_local_forwards))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
@@ -5547,6 +6002,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_truncated))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_rollout_scope))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_tail_cut_scope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
@@ -5557,6 +6013,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_defer_metric
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_from_new))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_old_logps_store))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
@@ -5574,13 +6031,18 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_verify_verdict))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_seq_packing_moe_noise))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_seq_packing_kill(
-        _patch_grpo_accumulated_loss_prefix_grouper_kill(
-            _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
-                _patch_grpo_accumulated_loss_prefix_grouper_gate(
-                    _patch_grpo_accumulated_loss_head_hooks(
-                        _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_moe_noise(
+        _patch_grpo_accumulated_loss_seq_packing_kill(
+            _patch_grpo_accumulated_loss_prefix_grouper_kill(
+                _patch_grpo_accumulated_loss_prefix_grouper_vllm_gate(
+                    _patch_grpo_accumulated_loss_prefix_grouper_gate(
+                        _patch_grpo_accumulated_loss_head_hooks(
+                            _patch_grpo_accumulated_loss_hidden_states_dispatch(
+                                grpo_accumulated_loss
+                            )
+                        )
                     )
                 )
             )
@@ -5667,6 +6129,16 @@ def grpo_trainer_compute_loss(function_name, function):
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
         _old_logps_from_new = inputs.get("unsloth_old_logps_from_new", None) is not None
+        _old_logps_store = inputs.get("unsloth_old_logps_store", None)
+        _store_old_logps = False
+        _stored_old_logps = None
+        if _old_logps_store is not None and inputs.get("old_per_token_logps", None) is None:
+            if not bool(_old_logps_store.any()):
+                raise RuntimeError(
+                    "Unsloth: GRPO lost the old-policy logprobs kept from the first pass over this "
+                    "batch. Set UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 to score them separately."
+                )
+            _store_old_logps = True
         # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _unsloth_grpo_refuse_rank_local_forwards(self, model)
@@ -5767,8 +6239,10 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             if _rollout_logps_as_old:
                 old_logps, sampling_per_token_logps = sampling_per_token_logps, None
-            elif _old_logps_from_new and old_logps is None:
+            elif (_old_logps_from_new or _store_old_logps) and old_logps is None:
                 old_logps = per_token_logps.detach()
+                if _store_old_logps:
+                    _stored_old_logps = old_logps
             (
                 loss,
                 completion_length,
@@ -5894,6 +6368,10 @@ def grpo_trainer_compute_loss(function_name, function):
                 _grpo_accumulated_loss_kwargs["rollout_logps_as_old"] = True
             if _old_logps_from_new:
                 _grpo_accumulated_loss_kwargs["old_logps_from_new"] = True
+            if _store_old_logps:
+                _grpo_accumulated_loss_kwargs["old_logps_from_new"] = True
+                _grpo_accumulated_loss_kwargs["store_old_logps"] = True
+                self.__dict__.pop("_unsloth_grpo_stored_old_logps", None)
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -5950,6 +6428,17 @@ def grpo_trainer_compute_loss(function_name, function):
                     **_vision_inputs,
                     **_grpo_accumulated_loss_kwargs,
                 )
+        if _store_old_logps:
+            if _stored_old_logps is None:
+                _stored_old_logps = self.__dict__.pop("_unsloth_grpo_stored_old_logps", None)
+            if _stored_old_logps is None:
+                raise RuntimeError(
+                    "Unsloth: unsloth_zoo did not return the old-policy logprobs for the later GRPO "
+                    "iterations. Set UNSLOTH_GRPO_OLD_LOGPS_FROM_POLICY=0 or upgrade unsloth_zoo."
+                )
+            inputs["old_per_token_logps"] = _stored_old_logps
+            _old_logps_store.zero_()
+            self._unsloth_old_logps_stored = getattr(self, "_unsloth_old_logps_stored", 0) + 1
         if "train" in self._metrics:
             # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
             mode = "train" if self.model.training else "eval"
@@ -6317,6 +6806,24 @@ def _unsloth_vllm_sync_colocate(generation, vllm_model):
     weights = generation._iter_named_params()
     cap = _vllm_weight_sync_bucket_bytes()
     state = getattr(getattr(generation, "accelerator", None), "state", None)
+    sharded = state is not None and (
+        getattr(state, "deepspeed_plugin", None) is not None
+        or getattr(state, "fsdp_plugin", None) is not None
+    )
+    if not sharded:
+        model = generation.model
+        # Adapted base weights arrive merged (fresh copies, or TRL's in-place merge): always sent.
+        adapted = ()
+        if getattr(model, "peft_config", None) is not None:
+            adapted = _unsloth_vllm_tuner_groups(model)
+        frozen_sync = _UnslothVllmFrozenSync(
+            generation,
+            model,
+            vllm_model,
+            engine = getattr(generation, "llm", None),
+            adapted_ids = adapted,
+        )
+        weights = ((name, param) for name, param in weights if frozen_sync.keep(name, param))
     # ZeRO-3 / FSDP yield gathered tensors that are only valid until the next step of the
     # iterator, and PEFT unmerges in place once it is exhausted: holding references is wrong there.
     unsafe = (
@@ -6584,6 +7091,11 @@ def vllm_generation_init_patch():
         setattr(generate, _UNSLOTH_GENERATE_WRAPPED, True)
         vllm_generation.VLLMGeneration.generate = generate
         return True
+
+    # Independent of the patches below: TRL's PEFT branch merges in place (merge_adapter, then
+    # unmerge_adapter), which rounds twice in bf16 / fp16 and drifts the frozen base every sync.
+    if _unsloth_vllm_patch_iter_named_params(vllm_generation.VLLMGeneration):
+        logger.info("Unsloth: Patched trl VLLMGeneration._iter_named_params")
 
     # Snapshot before patching: a HALF-patched VLLMGeneration is worse than none, since _init_vllm plus sync_weights without the generate-side adapter injection means no weight sync AND no LoRA, i.e. base-model rollouts with no error. If one of the three fails, restore all three.
     method_names = ("_init_vllm", "sync_weights", "generate")

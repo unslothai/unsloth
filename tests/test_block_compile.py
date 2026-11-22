@@ -782,6 +782,38 @@ def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
     assert calls  # no host metadata: compiled
 
 
+def test_prefix_grouper_table_keeps_the_stock_forward_on_transformers_layers(monkeypatch):
+    """prefix_grouper_hf passes the table through transformers-native layers too (Qwen3-MoE)."""
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class Qwen3MoeDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    Qwen3MoeDecoderLayer.forward.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+    M._wrap(Qwen3MoeDecoderLayer, {})
+    layer = Qwen3MoeDecoderLayer().train()
+    x = torch.randn(1, 4, 8)
+    layer(x, prefix_seg_info = object())
+    assert calls == []
+    layer(x, prefix_seg_info = None)
+    assert calls  # no table: compiled
+
+
 def test_packed_stock_forward_says_blocks_run_uncompiled(monkeypatch, capsys):
     M = _load()
     monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
@@ -2780,3 +2812,34 @@ def test_opaque_gdn_op_takes_any_fla_return_length(monkeypatch, extra_fwd):
     torch.testing.assert_close(out[0], v.detach() * 0.5)
     out[0].sum().backward()
     assert torch.all(v.grad == 0.5) and torch.all(q.grad == 1) and torch.all(g.grad == 4)
+
+
+def test_block_keeps_checkpointing_under_accelerate_device_map_hooks(monkeypatch):
+    # A model split over GPUs: accelerate's hook calls `_old_forward`, bound at load to transformers' wrapper. After
+    # the block replaced the class forward that wrapper stopped checkpointing (and the block never ran), so every
+    # layer kept its activations: Inkling-2-Mini on 2x T4 grew ~0.45 GB per layer and ran out of memory.
+    hooks = pytest.importorskip("accelerate.hooks")
+    M = _load()
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: fn)
+    cls = _toy_class()
+    stock = cls.forward
+    cls.forward = _like_transformers_5_23(stock)
+    layer, calls = _checkpointed_layer(cls)
+    hooks.add_hook_to_module(layer, hooks.ModelHook())
+    before = cls.forward
+    M._wrap(cls, {})
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    layer(x)
+    assert calls == []  # the stale bound wrapper: no checkpoint
+    holder = torch.nn.Module()
+    holder.layer = layer
+    assert M._rebind_hooked_instances(holder, cls, before) == 1
+    out = layer(x)
+    torch.testing.assert_close(out, layer.proj(x) + x)
+    assert calls == [1]
+    # Unhooked instances and other classes are left alone.
+    plain, plain_calls = _checkpointed_layer(cls)
+    holder.plain = plain
+    assert M._rebind_hooked_instances(holder, cls, before) == 0
+    plain(x)
+    assert plain_calls == [1]

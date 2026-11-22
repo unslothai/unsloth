@@ -14229,8 +14229,18 @@ def _mcp_note_matches(specs: list[dict], by_name: dict, listed: list[str], ctx: 
     if box is None or _mcp_thread_key() is None:
         return
     best = [name for name in _mcp_best(specs) if name not in listed]
-    # Bounded on its own: the exchange sits in the protected tail, past truncation.
-    matches = _mcp_fill([], best, by_name, ctx, _MCP_TOOL_MATCH_SHARE)
+    # The exchange sits in the protected tail with the message, so it only gets the room the listing, the message
+    # and a reply leave (as _whole_doc_budget); else it ate the reply on a near-full window (#18529).
+    room = (
+        ctx
+        - max(1024, ctx // 4)
+        - 512
+        - _text_token_cost(
+            json.dumps([by_name[name] for name in listed], separators = (",", ":")), ctx
+        )
+        - _text_token_cost(_MCP_LISTING_QUERY.get(), ctx)
+    )
+    matches = _mcp_fill([], best, by_name, ctx, min(_MCP_TOOL_MATCH_SHARE, max(0, room) / ctx))
     names = [spec["function"]["name"] for spec in matches]
     names += [name for name in _mcp_ran(by_name) if name not in listed]
     box.update(matches = matches, names = list(dict.fromkeys(names)))
@@ -14320,14 +14330,22 @@ def mcp_loadable_specs(tools) -> list[dict]:
     return _cached_mcp_catalog() if MCP_TOOL_SEARCH_NAME in names else []
 
 
+def mcp_tool_specs(names) -> dict[str, dict]:
+    """The full specs of cached MCP tools by name, from one catalog build however many are asked for."""
+    wanted = {name for name in names if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)}
+    if not wanted:
+        return {}
+    found: dict[str, dict] = {}
+    for spec in _cached_mcp_catalog():
+        name = spec["function"]["name"]
+        if name in wanted:
+            found.setdefault(name, spec)
+    return found
+
+
 def mcp_tool_spec(name) -> dict | None:
     """The full spec of a cached MCP tool, for loading it into a running tool loop."""
-    if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX):
-        return None
-    for spec in _cached_mcp_catalog():
-        if spec["function"]["name"] == name:
-            return spec
-    return None
+    return mcp_tool_specs([name]).get(name) if isinstance(name, str) else None
 
 
 def _mcp_search_text(spec: dict) -> tuple[str, str, str]:
@@ -14831,14 +14849,18 @@ async def get_enabled_mcp_tools(
                 continue
             cache_tools(server["id"], payload)
 
-    listed: list[tuple[dict, list[dict], list[dict]]] = []
-    for server in servers:
-        payload = get_cached_tools(server["id"])
-        if payload is None:
-            continue
-        payload = [public_tool(server, tool) for tool in payload]
-        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
-    return _mcp_listing(listed)
+    def _listing() -> list[dict]:
+        listed: list[tuple[dict, list[dict], list[dict]]] = []
+        for server in servers:
+            payload = get_cached_tools(server["id"])
+            if payload is None:
+                continue
+            payload = [public_tool(server, tool) for tool in payload]
+            listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+        return _mcp_listing(listed)
+
+    # Off the loop: pricing the listing can make several synchronous token-count calls to llama-server.
+    return await asyncio.to_thread(_listing)
 
 
 def mcp_search_argument(name: str, tool: dict) -> str | None:

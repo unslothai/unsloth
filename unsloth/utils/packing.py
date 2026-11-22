@@ -285,23 +285,28 @@ def _mask_padding_free_boundary_labels(batch) -> None:
     batch["labels"] = mask_packed_boundary_labels(labels, batch["packed_seq_lengths"])
 
 
-def _carry_host_lengths(before, after) -> None:
+def _host_lengths(batch):
+    """Host tuple of a CPU `packed_seq_lengths`, read before the move (BatchEncoding.to() moves in place)."""
+    if not isinstance(batch, Mapping):
+        return None
+    src = batch.get("packed_seq_lengths")
+    if not isinstance(src, torch.Tensor) or src.device.type != "cpu":
+        return None
+    try:
+        return tuple(int(x) for x in src.reshape(-1).tolist())
+    except Exception:
+        return None
+
+
+def _carry_host_lengths(host, after) -> None:
     """Attach host `packed_seq_lengths` to the moved device tensor, avoiding a blocking `.tolist()`."""
-    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+    if host is None or not isinstance(after, Mapping):
         return
-    src = before.get("packed_seq_lengths")
     dst = after.get("packed_seq_lengths")
-    if (
-        not isinstance(src, torch.Tensor)
-        or not isinstance(dst, torch.Tensor)
-        or dst is src
-        or src.device.type != "cpu"
-        or dst.device.type == "cpu"
-        or src.numel() != dst.numel()
-    ):
+    if not isinstance(dst, torch.Tensor) or dst.device.type == "cpu" or dst.numel() != len(host):
         return
     try:
-        dst._unsloth_lengths_tuple = tuple(int(x) for x in src.reshape(-1).tolist())
+        dst._unsloth_lengths_tuple = host
     except Exception:
         pass
 
@@ -317,8 +322,9 @@ def _install_host_lengths_carry() -> None:
 
     @wraps(original)
     def send_to_device(tensor, *args, **kwargs):
+        host = _host_lengths(tensor)
         moved = original(tensor, *args, **kwargs)
-        _carry_host_lengths(tensor, moved)
+        _carry_host_lengths(host, moved)
         return moved
 
     send_to_device._unsloth_host_lengths_carry = True

@@ -116,6 +116,13 @@ import {
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
+import {
+  type DiffusionBlockSwapMode,
+  diffusionBlockSwapApplies,
+  diffusionBlockSwapPayload,
+  diffusionBlockSwapSummary,
+} from "./diffusion-block-swap";
+import { useSystemInfo } from "@/hooks/use-system";
 import { diffusionTrainingProgress } from "./diffusion-train-progress";
 import { runningTrainingSelection } from "./diffusion-train-restore";
 import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
@@ -486,6 +493,7 @@ export function DiffusionTrainPanel({
     return ["auto", "nf4", "bf16", "int8", "fp8"];
   }, [reportedFamily?.precision_modes, familyUntrainable]);
   const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
+  const system = useSystemInfo();
   // MiniMax-H3 rejects nonzero save_steps, so the field is hidden for it.
   const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
   // Video families render no previews and REFUSE a nonzero sample_every; an older backend has none at all.
@@ -560,6 +568,14 @@ export function DiffusionTrainPanel({
   const [compileTransformer, setCompileTransformer] = useState<"off" | "on" | "auto">(
     "auto",
   );
+  const [blockSwapMode, setBlockSwapMode] = useState<DiffusionBlockSwapMode>("off");
+  const [blockSwapCount, setBlockSwapCount] = useState(8);
+  const blockSwapApplies = diffusionBlockSwapApplies({
+    supportsBlockSwap: reportedFamily?.supports_block_swap,
+    basePrecision,
+    gradientCheckpointing: gradCheckpoint,
+    system,
+  });
   const settingsDirty = useRef(false);
   // Tracked separately: warmup's control is hidden under "constant", so a stale value is invisible.
   const lrScheduleDirty = useRef(false);
@@ -956,6 +972,7 @@ export function DiffusionTrainPanel({
     Boolean(status?.lora_path) &&
     status.job_id !== dismissedJobId;
   const runProgress = diffusionTrainingProgress(status);
+  const blockSwapSummary = diffusionBlockSwapSummary(status?.block_swap);
 
   const stopRequested = running && stopRequestedLocal;
 
@@ -1386,6 +1403,7 @@ export function DiffusionTrainPanel({
         mixed_precision: precision,
         base_precision: isDiT ? basePrecision : undefined,
         compile_transformer: supportsCompile ? compileTransformer : undefined,
+        block_swap: diffusionBlockSwapPayload(blockSwapApplies, blockSwapMode, blockSwapCount),
         hf_token: hfApiToken(getHfToken()) || undefined,
       });
       toast.success("Preparing training…");
@@ -1437,6 +1455,9 @@ export function DiffusionTrainPanel({
     supportsCheckpoints,
     effectiveBatchSize,
     compileTransformer,
+    blockSwapApplies,
+    blockSwapMode,
+    blockSwapCount,
     poll,
   ]);
 
@@ -1915,6 +1936,33 @@ export function DiffusionTrainPanel({
             </Select>
           </div>
         )}
+        {blockSwapApplies && (
+          <div className={fieldClass}>
+            <FieldLabel hint="Keeps some transformer blocks in system RAM and streams them to the GPU each step, so a bf16 base bigger than your VRAM trains at full bf16 accuracy. Slower than fitting on the card; Auto swaps only as many blocks as needed.">
+              Block swap
+            </FieldLabel>
+            <Select
+              value={blockSwapMode}
+              onValueChange={(v) => setBlockSwapMode(v as DiffusionBlockSwapMode)}
+            >
+              <SelectTrigger className={selectClass} aria-label="Block swap">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="off">Off</SelectItem>
+                <SelectItem value="auto">Auto (as few as fit)</SelectItem>
+                <SelectItem value="count">Fixed number of blocks</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {blockSwapApplies &&
+          blockSwapMode === "count" &&
+          numberField("Blocks to swap", blockSwapCount, setBlockSwapCount, 8, {
+            min: 1,
+            step: 1,
+            hint: "Blocks kept in system RAM. More blocks free more VRAM but each step is slower.",
+          })}
       </div>
     </div>
   );
@@ -2512,6 +2560,11 @@ export function DiffusionTrainPanel({
                   }
                 />
                 </div>
+              )}
+              {blockSwapSummary && (
+                <p className="text-ui-11 leading-snug text-muted-foreground">
+                  Block swap: {blockSwapSummary}
+                </p>
               )}
               {running && (
                 <Button

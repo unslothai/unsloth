@@ -71,22 +71,30 @@ def _head_parameters(model):
     return ids
 
 
+def _first_trainable(stack):
+    for index, layer in enumerate(stack):
+        if any(p.requires_grad for p in layer.parameters()):
+            return index
+    return None
+
+
 def _plan(model, stacks, heads):
     """(stack, k) when the first k layers of one stack, and everything feeding them, hold nothing trainable."""
-    trainable = {id(p) for p in model.parameters() if p.requires_grad}
-    if not trainable:
+    if any(
+        getattr(layer, "_unsloth_pipeline_stand_in", False) for stack in stacks for layer in stack
+    ):
+        # Pipeline parallel: a later stage's first layers are pass-throughs returning the previous stage's
+        # activations (cutting there trains no earlier stage), and a non-last stage exits its forward by raising,
+        # past the hooks' cleanup. Off on every stage and every stack.
         return None
     for stack in stacks:
-        k = None
-        upper = set()
-        for index, layer in enumerate(stack):
-            ids = {id(p) for p in layer.parameters() if p.requires_grad}
-            if ids and k is None:
-                k = index
-            if k is not None:
-                upper.update(ids)
+        # Runs on every training forward: a stack that trains its first layer (adapters everywhere) or
+        # nothing (a frozen vision tower) is settled here, without walking the whole model's parameters.
+        k = _first_trainable(stack)
         if not k:
             continue
+        trainable = {id(p) for p in model.parameters() if p.requires_grad}
+        upper = {id(p) for layer in stack[k:] for p in layer.parameters() if p.requires_grad}
         if not trainable.issubset(upper | heads):
             return None
         # Only checkpointing makes the frozen layers replay; a layer kept out of it (checkpoint_skip_layers) is fine.
@@ -117,8 +125,25 @@ def _detach_inputs(module, args, kwargs):
     }
 
 
+def _input_leaves(args, kwargs):
+    # Nested too: transformers takes attention_mask as a {layer type: mask} mapping.
+    try:
+        from torch.utils._pytree import tree_leaves
+    except Exception:
+        return (*args, *kwargs.values())
+    return tree_leaves((args, kwargs))
+
+
 def _leaf(hidden):
-    return hidden.detach().requires_grad_(True)
+    """Layer k's input: requires grad (reentrant checkpointing needs one), but is not a leaf, so code
+    between layers may still write into it in place (Qwen3-VL DeepStack on transformers 4.57). Subtracting
+    a zero that requires grad is exact for every value (-0.0 and NaN included) and allocates nothing."""
+    hidden = hidden.detach()
+    zero = torch.zeros((), device = hidden.device, dtype = hidden.dtype, requires_grad = True)
+    try:
+        return hidden.sub_(zero)
+    except RuntimeError:  # overlapping or otherwise unwritable memory
+        return hidden.clone().sub_(zero)
 
 
 def install_frozen_prefix_skip(model):
@@ -131,17 +156,20 @@ def install_frozen_prefix_skip(model):
     model_ref = weakref.ref(model)
 
     def _cut_output(module, args, output):
-        state["cut"] = True
+        state["ran"] = True
         if isinstance(output, torch.Tensor):
-            return _leaf(output)
-        if isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
-            return type(output)((_leaf(output[0]), *output[1:]))
-        state["cut"] = False
-        return None
+            output = _leaf(output)
+        elif isinstance(output, (tuple, list)) and output and isinstance(output[0], torch.Tensor):
+            output = type(output)((_leaf(output[0]), *output[1:]))
+        else:
+            return None
+        state["cut"] = True
+        # One cut per forward: a stack run again (looped / recurrent-depth models such as Ouro) feeds
+        # the prefix from trainable layers, so later passes keep their graph and checkpointing.
+        _release(state["active"])
+        return output
 
-    def _restore():
-        active = state["active"]
-        state["active"] = None
+    def _release(active):
         if active is None:
             return
         for handle in active["handles"]:
@@ -149,7 +177,14 @@ def install_frozen_prefix_skip(model):
         for layer, flag in active["flags"]:
             layer.gradient_checkpointing = flag
 
+    def _restore():
+        active = state["active"]
+        state["active"] = None
+        _release(active)
+
     def _pre(module, args, kwargs):
+        if torch.compiler.is_compiling():
+            return None  # inside the caller's torch.compile: hook registration cannot be traced
         _restore()
         if (
             state["disabled"]
@@ -158,8 +193,10 @@ def install_frozen_prefix_skip(model):
             or not torch.is_grad_enabled()
         ):
             return None
-        if any(isinstance(x, torch.Tensor) and x.requires_grad for x in (*args, *kwargs.values())):
-            return None  # the caller wants a gradient at an input (inputs_embeds by keyword or position, ...)
+        if any(
+            isinstance(x, torch.Tensor) and x.requires_grad for x in _input_leaves(args, kwargs)
+        ):
+            return None  # the caller wants a gradient at an input (inputs_embeds, a mask in a mapping, ...)
         outer = model_ref()
         if outer is None:
             return None
@@ -179,15 +216,20 @@ def install_frozen_prefix_skip(model):
             layer.gradient_checkpointing = False
             handles.append(layer.register_forward_pre_hook(_detach_inputs, with_kwargs = True))
         handles.append(stack[k - 1].register_forward_hook(_cut_output))
-        state["cut"] = False
+        state["cut"] = state["ran"] = False
         state["active"] = {"flags": flags, "handles": handles, "k": k}
         return None
 
     def _post(module, args, output):
+        if torch.compiler.is_compiling():
+            return None
         active = state["active"]
         _restore()
         if active is None or output is None:
             return None  # also the always_call run after a forward that raised
+        if not state["ran"]:
+            # The stack never ran (a vision tower on a text-only batch): nothing was skipped.
+            return None
         if not state["cut"]:
             # Layer k would have had an input without grad: its adapters got no gradient this step.
             state["disabled"] = True

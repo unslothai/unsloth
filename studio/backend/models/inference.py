@@ -7851,6 +7851,13 @@ class VideoGenerateRequest(BaseModel):
         description = "Stream a small live preview of the first frame while the clip denoises "
         "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
     )
+    draft_decode: Optional[bool] = Field(
+        None,
+        description = "Wan families only: decode the finished latent with the tiny Wan VAE instead of the full one "
+        "(much faster and lighter, visibly softer; for drafts on CPU, Apple Silicon or small GPUs). Falls back to the "
+        "full decode when the tiny decoder is unavailable. Null = the server default (off unless "
+        "UNSLOTH_VIDEO_DRAFT_DECODE=1).",
+    )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
     # (sizes near its presets and the k * frame_step + frame_offset lattice), which the route checks with

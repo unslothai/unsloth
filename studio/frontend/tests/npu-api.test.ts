@@ -300,13 +300,13 @@ test("Storage deletes an NPU folder by its checkpoint, which the backend resolve
 test("a refused Storage delete surfaces the backend's reason", async () => {
   const { api } = client(() =>
     Response.json(
-      { detail: "Lemonade has no FastFlowLM model for gone:1b." },
+      { detail: "FastFlowLM has no model for gone:1b." },
       { status: 409 },
     ),
   );
   await assert.rejects(
     api.deleteNpuModelByCheckpoint("gone:1b"),
-    /no FastFlowLM model for gone:1b/,
+    /FastFlowLM has no model for gone:1b/,
   );
 });
 

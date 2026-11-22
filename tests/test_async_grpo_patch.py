@@ -35,6 +35,7 @@ NAMES = (
     "_without_instance_bound_methods",
     "_packed_seq_lengths_from_position_ids",
     "_is_unsloth_fast_backbone",
+    "_async_grpo_tree_segment_parents",
     "_forward_tree_unrolled",
     "_unsloth_async_grpo_lm_head",
     "_fast_inference_engine",
