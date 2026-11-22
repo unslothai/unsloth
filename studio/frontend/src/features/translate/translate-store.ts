@@ -519,13 +519,19 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
 
   restore: (entry) => {
     get().stop();
-    if (findTranslateLanguage(entry.target)) get().setTarget(entry.target);
-    get().setFrom(
+    const target = findTranslateLanguage(entry.target) ? entry.target : null;
+    const from =
       entry.from && findTranslateLanguage(entry.from)
         ? entry.from
-        : AUTO_SOURCE,
-    );
-    const shown = resultOf(entry.source, get().prefs);
+        : AUTO_SOURCE;
+    if (target) get().setTarget(target);
+    get().setFrom(from);
+    // Hy-MT2 may refuse the saved languages: the output keeps them, and reads as stale.
+    const shown = {
+      ...resultOf(entry.source, get().prefs),
+      from,
+      ...(target ? { target } : {}),
+    };
     set({
       source: entry.source,
       output: entry.output,

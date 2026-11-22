@@ -46,9 +46,10 @@ type Store = {
   getState: () => Record<string, any>;
   setState: (state: Record<string, unknown>) => void;
 };
-const { useTranslateStore, AUTO_SOURCE } = loadWithStubs<{
+const { useTranslateStore, AUTO_SOURCE, translationIsStale } = loadWithStubs<{
   useTranslateStore: Store;
   AUTO_SOURCE: string;
+  translationIsStale: (state: Record<string, any>) => boolean;
 }>(new URL("../src/features/translate/translate-store.ts", import.meta.url), {
   zustand,
   "./languages": languages,
@@ -188,6 +189,7 @@ test("a full browser storage never wipes the saved history", async () => {
   };
   try {
     state().setSource("Second");
+    state().setSource("Where is the station?");
     await state().translate();
   } finally {
     globalThis.window.localStorage.setItem = setItem;
@@ -260,7 +262,7 @@ test("a typed draft too long for the history keeps the entry it would have repla
   );
 });
 
-test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", () => {
+test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", async () => {
   const gemma = {
     id: "unsloth/gemma-4-E2B-it-GGUF",
     name: "Gemma 4",
@@ -288,6 +290,26 @@ test("Hy-MT2 never keeps a chat-only language; a chat model offers it again", ()
     state().setPrefs({ modelId: "custom", customModel: gemma });
     state().setTarget("hmn");
     assert.equal(state().prefs.target, "hmn");
+    state().setSource("Where is the station?");
+    await state().translate();
+    const entry = state().history[0];
+    assert.equal(entry.target, "hmn");
+    state().setPrefs({ modelId: "hy-mt2-1.8b" });
+    state().restore(entry);
+    assert.notEqual(state().prefs.target, "hmn");
+    // The saved Hmong output is still labelled Hmong, so it reads aloud and moves on as Hmong.
+    assert.equal(state().result.target, "hmn");
+    assert.equal(
+      translationIsStale({
+        result: state().result,
+        source: state().source,
+        prefs: state().prefs,
+      }),
+      true,
+    );
+
+    state().setPrefs({ modelId: "custom", customModel: gemma });
+    state().setTarget("hmn");
     // A Hy-MT2 GGUF picked as a custom model is still Hy-MT2.
     state().setPrefs({
       customModel: { ...gemma, id: "unsloth/Hy-MT2-7B-GGUF" },
