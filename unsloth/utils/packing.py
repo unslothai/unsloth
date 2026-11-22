@@ -1783,8 +1783,13 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             )
             # A call without grad has no backward to replay, so it hands the stash back afterwards: a pending
             # gradient-checkpoint recompute of the packed forward (GRPO's per-row verify runs in between) still
-            # needs those boundaries, as with generate below.
-            saved = None if torch.is_grad_enabled() else [m._unsloth_varlen for m in hybrid_modules]
+            # needs those boundaries, as with generate below. Every mixer holds the same stash, so the first one
+            # tells when there is nothing to hand back (an unpacked call on an empty stash: each decode step).
+            saved = None
+            if not torch.is_grad_enabled() and (
+                varlen is not None or hybrid_modules[0].__dict__.get("_unsloth_varlen") is not None
+            ):
+                saved = [m.__dict__.get("_unsloth_varlen") for m in hybrid_modules]
             for module in hybrid_modules:
                 module._unsloth_varlen = varlen
                 if first_pack:
@@ -1803,7 +1808,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             finally:
                 _PACKED[0] = outer
                 for module, stash in zip(hybrid_modules, saved or ()):
-                    module._unsloth_varlen = stash
+                    module.__dict__["_unsloth_varlen"] = stash
             # Handshake: on the first packed forward every module must have hit its boundary kernels.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
