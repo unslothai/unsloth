@@ -154,6 +154,19 @@ EMPTY_SEARCH_RESULTS = (
     "No results found.",
     "No results found within the website access limits.",
 )
+EMPTY_PAGE_TEXT = "(page returned no readable text)"
+_UNREADABLE_PAGE = re.compile(
+    r"\((?:PDF contains no extractable text[^()]*|PDF content could not be read as text"
+    r"|[^()]*; not readable as text)\)"
+)
+
+
+def is_unreadable_page(text: str) -> bool:
+    """A fetch that succeeded but yielded no text (empty page, image, binary, textless PDF)."""
+    text = text.strip()
+    return text == EMPTY_PAGE_TEXT or bool(_UNREADABLE_PAGE.fullmatch(text))
+
+
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 # While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
@@ -18175,7 +18188,7 @@ def _dense_char_limit(
 
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
-        return "(page returned no readable text)"
+        return EMPTY_PAGE_TEXT
     max_chars = _dense_char_limit(text, max_chars)
     if len(text) > max_chars:
         return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
