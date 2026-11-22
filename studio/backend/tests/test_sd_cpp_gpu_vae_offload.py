@@ -18,9 +18,12 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 from core.inference.sd_cpp_args import (
+    GPU_TE_ENV,
+    GPU_TE_MIN_FREE_MIB,
     GPU_VAE_DECODE_MIB_PER_MPX,
     GPU_VAE_ENV,
     device_backend_flags,
+    gpu_te_fits,
     gpu_vae_tile_size,
     offload_flags,
 )
@@ -98,6 +101,7 @@ def card(monkeypatch):
     from core.inference import diffusion_memory
 
     monkeypatch.delenv(GPU_VAE_ENV, raising = False)
+    monkeypatch.delenv(GPU_TE_ENV, raising = False)
     monkeypatch.setattr(args_mod, "sd_cpp_vae_tile_size_in_pixels", lambda b: True)
     monkeypatch.setattr(diffusion_memory, "_user_budget_reserve_mib", lambda base: 0)
     monkeypatch.setattr(backend_mod, "_cpu_vae_tile_size", lambda files, binary: 768)
@@ -164,11 +168,32 @@ def test_vram_budget_reserve_counts(tmp_path, card, monkeypatch):
     assert _flags(tmp_path)[-2:] == ["--vae-tile-size", "512"]
 
 
-@pytest.mark.parametrize("klass", ["vulkan", "metal", "rocm", None])
+@pytest.mark.parametrize("klass", ["metal", "rocm", "xpu", None])
 def test_other_accelerators_keep_the_cpu_vae(tmp_path, card, klass):
     seen = card(10**6)
     assert "--vae-on-cpu" in _flags(tmp_path, klass = klass)
     assert seen == []
+
+
+def test_off_torch_vulkan_card_keeps_the_vae_on_the_card(tmp_path, card):
+    """An AMD / Intel card torch cannot see auto-offloads on Vulkan; its sysfs reading sizes the decode."""
+    seen = card(CARD_RESERVE_MIB + _need(512))
+    flags = backend_mod._offload_vae_flags(
+        OFFLOAD_MODEL,
+        _files(tmp_path),
+        "/bin/sd-server",
+        "vulkan",
+        None,
+        "AMD Radeon 8060S Graphics",
+    )
+    assert "--vae-on-cpu" not in flags and flags[-2:] == ["--vae-tile-size", "512"]
+    assert seen == [("vulkan", None)]
+
+
+def test_unread_vulkan_card_keeps_the_cpu_vae(tmp_path, card):
+    """Windows AMD / Intel Vulkan: no sysfs reading, so the CPU VAE stays."""
+    card(None, None)
+    assert "--vae-on-cpu" in _flags(tmp_path, klass = "vulkan")
 
 
 def test_latent_unit_build_keeps_the_cpu_vae(tmp_path, card, monkeypatch):
@@ -198,3 +223,58 @@ def test_policies_without_a_cpu_vae_are_untouched(tmp_path, card, policy):
     seen = card(10**6)
     assert _flags(tmp_path, policy) == offload_flags(policy)
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    "free, want",
+    [
+        (None, False),
+        (0, False),
+        (GPU_TE_MIN_FREE_MIB - 1, False),
+        (GPU_TE_MIN_FREE_MIB, True),
+        (10**6, True),
+    ],
+)
+def test_te_follows_free_vram(free, want):
+    assert gpu_te_fits(free, env = {}) is want
+
+
+def test_te_kill_switch():
+    assert gpu_te_fits(10**6, env = {GPU_TE_ENV: "off"}) is False
+
+
+def test_te_flag_shape():
+    flags = offload_flags(OFFLOAD_MODEL, vae_on_cpu = False, vae_tile_size = 1024, te_on_cpu = False)
+    assert (
+        "--clip-on-cpu" not in flags and "--vae-on-cpu" not in flags and "--offload-to-cpu" in flags
+    )
+    assert device_backend_flags("Vulkan0", flags) == [
+        "--backend",
+        "diffusion=Vulkan0,te=Vulkan0,vae=Vulkan0",
+    ]
+
+
+def test_roomy_card_takes_the_text_encoder_too(tmp_path, card):
+    card(CARD_RESERVE_MIB + max(_need(1024), GPU_TE_MIN_FREE_MIB))
+    flags = _flags(tmp_path)
+    assert "--clip-on-cpu" not in flags and "--vae-on-cpu" not in flags
+
+
+def test_small_card_keeps_the_text_encoder_on_the_cpu(tmp_path, card):
+    card(CARD_RESERVE_MIB + _need(512))
+    assert _need(512) < GPU_TE_MIN_FREE_MIB
+    flags = _flags(tmp_path)
+    assert "--clip-on-cpu" in flags and "--vae-on-cpu" not in flags
+
+
+def test_cpu_vae_keeps_the_text_encoder_on_the_cpu(tmp_path, card):
+    card(None, None)
+    flags = _flags(tmp_path)
+    assert "--clip-on-cpu" in flags and "--vae-on-cpu" in flags
+
+
+def test_te_kill_switch_through_the_backend(tmp_path, card, monkeypatch):
+    card(10**6)
+    monkeypatch.setenv(GPU_TE_ENV, "0")
+    flags = _flags(tmp_path)
+    assert "--clip-on-cpu" in flags and "--vae-on-cpu" not in flags

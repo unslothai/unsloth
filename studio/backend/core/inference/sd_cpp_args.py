@@ -983,6 +983,23 @@ def gpu_vae_tile_size(
     return None
 
 
+# The text encoder follows the VAE onto the card when the card has room: its weights stay in host RAM and sd.cpp
+# segments the encoder to the live free VRAM (prefetching the next segment), then evicts it for the denoiser. On a
+# 2 vCPU T4 the 7.7 GB BF16 Qwen3-4B encoder of FLUX.2 klein took the request from 133 to 56 s; with 7.6 GB free it
+# ran in segments at a 6.2 GB peak. Below this much free VRAM (after the card reserve) the encoder stays on the CPU.
+GPU_TE_ENV = "UNSLOTH_SD_CPP_TE_GPU"
+GPU_TE_MIN_FREE_MIB = 6000
+
+
+def gpu_te_fits(free_mib: Optional[int], env: Optional[dict] = None) -> bool:
+    """True when the offload path's text encoder may run on the card: ``free_mib`` (card free after the reserve, None =
+    unread) is at least ``GPU_TE_MIN_FREE_MIB``. ``UNSLOTH_SD_CPP_TE_GPU``: 0 / off keeps it on the CPU."""
+    forced = ((env if env is not None else os.environ).get(GPU_TE_ENV) or "").strip().lower()
+    if forced in ("0", "off", "false", "no") or free_mib is None:
+        return False
+    return int(free_mib) >= GPU_TE_MIN_FREE_MIB
+
+
 def sd_cpp_vae_tile_size_in_pixels(binary: Optional[str]) -> bool:
     """Fails closed."""
     import os
@@ -1010,9 +1027,10 @@ def offload_flags(
     diffusion_fa: bool = False,
     vae_on_cpu: bool = True,
     vae_tile_size: Optional[int] = None,
+    te_on_cpu: bool = True,
 ) -> list[str]:
     """vae_on_cpu=False drops only --vae-on-cpu: families whose VAE cannot run on the CPU path, and an offload load
-    whose card holds the decode (``gpu_vae_tile_size``)."""
+    whose card holds the decode (``gpu_vae_tile_size``). te_on_cpu=False drops --clip-on-cpu (``gpu_te_fits``)."""
     flags: list[str] = []
     fa = diffusion_fa
     tile = vae_tiling
@@ -1020,7 +1038,8 @@ def offload_flags(
         flags.append("--offload-to-cpu")
         fa = True
     if policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
-        flags.append("--clip-on-cpu")
+        if te_on_cpu:
+            flags.append("--clip-on-cpu")
         if vae_on_cpu:
             flags.append("--vae-on-cpu")
         tile = True

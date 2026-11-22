@@ -3297,48 +3297,67 @@ def _cpu_vae_tile_size(files: Any, binary: Optional[str]) -> Optional[int]:
     return size
 
 
-def _gpu_vae_tile_size(
-    files: Any, binary: Optional[str], klass: Optional[str], ordinal: Optional[int]
+# Card classes whose free VRAM Studio can read without torch (nvidia-smi; amdgpu sysfs for a sole AMD Vulkan card).
+_GPU_VAE_CLASSES = ("cuda", "vulkan")
+
+
+def _offload_card_limit_mib(
+    klass: Optional[str], description: Optional[str], ordinal: Optional[int]
 ) -> Optional[int]:
-    """Pixel tile edge for decoding the offload path's VAE on the CUDA card, or None to keep it on the CPU. The card's
-    free VRAM, less the card reserve (or a larger VRAM Budget reserve), must hold the VAE and one tile's decode buffer;
-    the offloaded weights sit in host RAM and sd.cpp evicts the denoiser's card copies for the decode. Other
-    accelerators, builds whose tile size is not in image pixels and an unread card keep the CPU VAE."""
-    if klass != "cuda" or not sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
+    """Free VRAM of the card the offload load renders on, less the card reserve (or a larger VRAM Budget reserve),
+    read without a device context; None when unread."""
+    if klass not in _GPU_VAE_CLASSES:
         return None
-    limit = vae = None
     try:
         from core.inference.diffusion_memory import _user_budget_reserve_mib
-        from core.inference.sd_cpp_multigpu import CARD_RESERVE_MIB, file_mib
+        from core.inference.sd_cpp_multigpu import CARD_RESERVE_MIB
 
-        free, total = _unmeasured_card_free_mib("cuda", None, ordinal)
-        if free is not None:
-            reserve = max(CARD_RESERVE_MIB, int(_user_budget_reserve_mib(total or free) or 0))
-            limit = int(free) - reserve
-        vae = file_mib(getattr(files, "vae", None))
+        free, total = _unmeasured_card_free_mib(klass, description, ordinal)
+        if free is None:
+            return None
+        reserve = max(CARD_RESERVE_MIB, int(_user_budget_reserve_mib(total or free) or 0))
+        return int(free) - reserve
     except Exception as exc:  # noqa: BLE001 -- a failed reading keeps the CPU VAE
         logger.debug("sd_cpp.vae_gpu: card unreadable: %s", exc)
-        limit = None
-    size = sd_cpp_args_mod.gpu_vae_tile_size(limit, vae)
-    logger.info(
-        "sd_cpp.vae_gpu: offload VAE on %s (card free after reserve %s MiB, VAE %s MiB)",
-        f"the card, {size} px tiles" if size else "the CPU",
-        limit,
-        vae,
-    )
-    return size
+        return None
 
 
 def _offload_vae_flags(
-    policy: str, files: Any, binary: Optional[str], klass: Optional[str], ordinal: Optional[int]
+    policy: str,
+    files: Any,
+    binary: Optional[str],
+    klass: Optional[str],
+    ordinal: Optional[int],
+    description: Optional[str] = None,
 ) -> list[str]:
-    """Offload flags with the VAE placed: on the card when it holds the tiled decode, else the CPU with a RAM-sized
+    """Offload flags with the VAE and text encoder placed. Under --offload-to-cpu every weight sits in host RAM and
+    sd.cpp evicts the denoiser's card copies for the decode, so on a CUDA / Vulkan card whose free VRAM Studio reads
+    (an off-torch AMD / Intel card auto-offloads here) the VAE decodes on the card in the largest tile its free VRAM
+    holds, and the text encoder joins it when the card has ``GPU_TE_MIN_FREE_MIB`` free. Otherwise (other
+    accelerators, latent-unit builds, an unread card, too little VRAM) both stay on the CPU, the VAE with a RAM-sized
     tile."""
     if policy not in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
         return offload_flags(policy)
-    gpu_tile = _gpu_vae_tile_size(files, binary, klass, ordinal)
+    limit = vae = gpu_tile = None
+    if klass in _GPU_VAE_CLASSES and sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
+        limit = _offload_card_limit_mib(klass, description, ordinal)
+        try:
+            from core.inference.sd_cpp_multigpu import file_mib
+            vae = file_mib(getattr(files, "vae", None))
+        except Exception:  # noqa: BLE001
+            vae = None
+        gpu_tile = sd_cpp_args_mod.gpu_vae_tile_size(limit, vae)
+    te_gpu = bool(gpu_tile) and sd_cpp_args_mod.gpu_te_fits(limit)
+    logger.info(
+        "sd_cpp.vae_gpu: offload VAE on %s, text encoder on %s (%s card free after reserve %s MiB, VAE %s MiB)",
+        f"the card, {gpu_tile} px tiles" if gpu_tile else "the CPU",
+        "the card" if te_gpu else "the CPU",
+        klass,
+        limit,
+        vae,
+    )
     if gpu_tile:
-        return offload_flags(policy, vae_on_cpu = False, vae_tile_size = gpu_tile)
+        return offload_flags(policy, vae_on_cpu = False, vae_tile_size = gpu_tile, te_on_cpu = not te_gpu)
     return offload_flags(policy, vae_tile_size = _cpu_vae_tile_size(files, binary))
 
 
@@ -4181,6 +4200,7 @@ class SdCppDiffusionBackend:
                         binary,
                         klass or placed,
                         gpu_ordinal,
+                        sd_cpp_listed_device(binary)[1] if binary else None,
                     )
                 )
 
