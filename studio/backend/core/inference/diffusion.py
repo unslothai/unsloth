@@ -235,6 +235,8 @@ from .diffusion_memory import (
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
+    flux3_conditioned_denoise_mib,
+    flux3_prompt_tokens,
     estimate_safetensors_dense_mib,
     file_size_mib,
     largest_streamable_companion_mib,
@@ -3332,6 +3334,50 @@ def _references_unpriced(fam: Any) -> bool:
         getattr(fam, "reference", False)
         and not tuple(getattr(fam, "reference_resolutions", ()) or ())
         and not is_flux3_family(fam)
+    )
+
+
+def _flux3_guard_denoise_mib(
+    fam: Any,
+    state: Any,
+    target: Any,
+    has_source: bool,
+    extra_images: int,
+    width: Any,
+    height: Any,
+    batch: int,
+    prompt_bytes: int = 0,
+) -> Optional[int]:
+    """FLUX.3 edit denoise MiB for the request guard, or None when token pricing does not apply."""
+    if not is_flux3_family(fam) or not has_source or getattr(state, "kind", None) == "gguf":
+        return None
+    quant = str(getattr(state, "transformer_quant", None) or "").lower()
+    if quant and not any(scheme in quant for scheme in ("int8", "fp8")):
+        return None
+    # the quantized rate was measured compiled only (speed "off" loads bf16): an eager quantized fallback stays flat
+    if quant and "compiled" not in tuple(getattr(state, "speed_optims", None) or ()):
+        return None
+    try:
+        import torch
+
+        device = getattr(target, "torch_device", None)
+        if getattr(target, "device", None) != "cuda" or not torch.cuda.is_available():
+            return None
+        capability = tuple(torch.cuda.get_device_capability(device))
+        from .rocm_bf16 import is_rocm_torch
+
+        rocm = is_rocm_torch(torch)
+    except Exception:  # noqa: BLE001 - unknown device keeps the flat estimate
+        return None
+    return flux3_conditioned_denoise_mib(
+        width = width,
+        height = height,
+        references = 1 + max(0, int(extra_images or 0)),
+        batch_size = batch,
+        dense = not quant,
+        capability = capability,
+        rocm = rocm,
+        text_tokens = flux3_prompt_tokens(prompt_bytes),
     )
 
 
@@ -16205,6 +16251,17 @@ class DiffusionBackend:
                     carried_restore, extra_mib = take_deferred_restore(state.pipe, extra_mib)
 
                     # The measured row the placement was sized from: the load's reserve, else the same row the plan read.
+                    guard_flux3_denoise = _flux3_guard_denoise_mib(
+                        fam,
+                        state,
+                        guard_target,
+                        init_pil is not None,
+                        len(ref_extra),
+                        guard_width,
+                        guard_height,
+                        guard_batch,
+                        prompt_bytes = max((len(str(p).encode("utf-8")) for p, _ in jobs), default = 0),
+                    )
                     guard_measured = placement_measured_activation(state.pipe)
                     if guard_measured is None and getattr(state, "calibrated_placement", False):
                         try:
@@ -16236,6 +16293,7 @@ class DiffusionBackend:
                             controlnet = workflow == "controlnet" and control_pil is not None,
                             measured_activation = guard_measured,
                             persistent_mib = guard_kv_mib,
+                            conditioned_denoise_mib = guard_flux3_denoise,
                             logger = logger,
                         )
 
