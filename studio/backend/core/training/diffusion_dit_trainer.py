@@ -4131,11 +4131,9 @@ def _train_dit(
         swap_error = "block_swap needs a GPU with bf16: this one trains the fp16 fallback. Turn block_swap off."
     if swap_error:
         raise ValueError(swap_error)
-    # A swapped fp8 / W8A8 base converts inside install_dit_block_swap (resident Linears streamed onto the card,
-    # swapped ones back to host RAM), so the conversions after the adapter below are skipped.
+    # A swapped fp8 / W8A8 base converts inside install_dit_block_swap; the conversions below are skipped.
     lowp_swap = swap_lowp_mode(base_precision) if swap_request else None
     with report_model_load_progress(on_event):
-        # A swapped base loads on the host: install_dit_block_swap places everything but the swapped blocks.
         transformer = spec.load_transformer(
             fetch_cfg, "cpu" if swap_request else device, weight_dtype, base_precision
         )

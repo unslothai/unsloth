@@ -108,7 +108,6 @@ def _targets(model):
 
 def _lowp(model, mode = "fp8"):
     convert = f8.convert_frozen_fp8 if mode == "fp8" else i8.convert_frozen_int8
-    # CPU stands in for the card: the conversion runs on the host Linear as it is.
     return {
         "mode": mode,
         "targets": _targets(model),
@@ -150,10 +149,8 @@ def test_block_bytes_count_the_converted_codes():
     norm_bias = (64 + 64 + 128) * 2
     assert bf16 == 2 * lin + norm_bias
     assert codes == lin + norm_bias  # 1 byte a code; the scales stay resident
-    # A converted (buffer-held) block counts the same before it is swapped.
     f8.convert_frozen_fp8(model, {"blocks.0.a", "blocks.0.b"})
     assert bs._frozen_bytes(model.blocks[0]) == codes
-    # Model bytes: codes plus the resident fp32 scales.
     m2 = _model()
     ids2 = frozenset(id(m2.get_submodule(n)) for n in _targets(m2))
     full = bs._model_bytes(m2)
@@ -210,7 +207,6 @@ def test_swapped_codes_become_host_params_scales_stay_buffers(monkeypatch, mode)
                 assert isinstance(lin.weight, nn.Parameter) and not lin.weight.requires_grad
                 assert not on_card(lin.weight) and lin.weight.dtype == code_dtype
                 assert "weight" not in lin._buffers and getattr(lin, bs.SWAPPED_WEIGHT_ATTR)
-                # The zoo swapper picks it up (it walks frozen parameters).
                 assert any(p is lin.weight for _, p in blk.named_parameters())
             else:
                 assert "weight" in lin._buffers and on_card(lin.weight)
