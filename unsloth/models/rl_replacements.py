@@ -2762,9 +2762,16 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
         prompt_lengths = [len(ids) for ids in prompt_ids]
     else:
         prompt_lengths = None
+    # Rows stopped by the opt-in rollout tail cut (UNSLOTH_ROLLOUT_TAIL_CUT) count as truncated.
+    tail_cut = None
+    if getattr(trainer, "_unsloth_tail_cut_rows", None):
+        from unsloth.models._rollout_tail_cut import cut_row_flags
+        tail_cut = cut_row_flags(trainer, completion_ids)
     is_truncated = []
     for i, ids in enumerate(completion_ids):
-        if ids[-1] in eos_and_pad:
+        if tail_cut is not None and tail_cut[i]:
+            is_truncated.append(True)
+        elif ids[-1] in eos_and_pad:
             is_truncated.append(False)
         elif limit is None or len(ids) >= limit:
             is_truncated.append(True)
@@ -2830,6 +2837,25 @@ def _unsloth_rollout_scope(trainer):
     return vllm_rollout_scope(llm)
 
 
+def _unsloth_tail_cut_scope(trainer):
+    """Opt-in GRPO rollout tail cut around a colocated vLLM `_generate` (UNSLOTH_ROLLOUT_TAIL_CUT=<k_min>)."""
+    import contextlib
+    import os
+
+    if os.environ.get("UNSLOTH_ROLLOUT_TAIL_CUT", "").strip().lower() in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        trainer._unsloth_tail_cut_rows = None
+        return contextlib.nullcontext()
+    from unsloth.models._rollout_tail_cut import rollout_tail_cut_scope
+
+    return rollout_tail_cut_scope(trainer)
+
+
 def _unsloth_wrap_generate_in_rollout_scope(function):
     """Rename `_generate` and add a `_generate` that runs it inside `_unsloth_rollout_scope`."""
     if "_unsloth_generate_in_scope" in function:
@@ -2840,7 +2866,7 @@ def _unsloth_wrap_generate_in_rollout_scope(function):
     indent = match.group("indent")
     wrapper = (
         f"{indent}def _generate(self, *args, **kwargs):\n"
-        f"{indent}    with _unsloth_rollout_scope(self):\n"
+        f"{indent}    with _unsloth_rollout_scope(self), _unsloth_tail_cut_scope(self):\n"
         f"{indent}        return self._unsloth_generate_in_scope(*args, **kwargs)\n\n"
     )
     start = match.start()
@@ -5963,6 +5989,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_truncated))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_rollout_scope))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_tail_cut_scope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
