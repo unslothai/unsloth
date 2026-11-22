@@ -117,6 +117,7 @@ from .diffusion_device import (
     apply_diffusion_device_ordinal,
     diffusion_device_scope,
     force_float32_rope,
+    install_frame_pad_fix,
     install_rocm_vae_bf16_decode,
     install_vae_sync,
     pin_cuda_ordinal,
@@ -12101,6 +12102,7 @@ class VideoBackend:
                 from .video_vae_untiled import install_untiled_decode
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
+            install_frame_pad_fix(pipe, target, logger = logger)
             if vae_tiling and target.device == "cuda":
                 # Tiled Wan decodes share their spatial tiles with the selection's second card (bitwise the stock tiles).
                 try:
