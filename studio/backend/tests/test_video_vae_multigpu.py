@@ -362,3 +362,42 @@ def test_the_copy_is_built_before_the_source_decode_fills_its_caches(monkeypatch
         ref = vae.tiled_decode(z, return_dict = False)[0]
     assert seen == [False]
     assert torch.equal(out, ref)
+
+
+def test_a_partner_setup_failure_releases_the_caller(monkeypatch):
+    # The worker failing before it reaches the copy (a CUDA error in wait_event, say) must not leave the caller
+    # waiting for a copy that will never exist: it gets the error back and can fall back to one card.
+    import contextlib
+    import threading
+
+    vae = _vae()
+    z = _latents(vae)
+    real_null = contextlib.nullcontext
+
+    class Ctx(types.SimpleNamespace):
+        pass
+
+    def nullcontext(*a, **k):
+        if threading.current_thread().name == "unsloth-vae-split":
+            raise RuntimeError("partner setup failed")
+        return real_null(*a, **k)
+
+    monkeypatch.setattr(
+        vm,
+        "contextlib",
+        Ctx(nullcontext = nullcontext, ExitStack = contextlib.ExitStack, suppress = contextlib.suppress),
+    )
+    box = {}
+
+    def call():
+        try:
+            with torch.no_grad():
+                vm.split_tiled_decode(vae, z, torch.device("cpu"))
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    t = threading.Thread(target = call, daemon = True)
+    t.start()
+    t.join(timeout = 60)
+    assert not t.is_alive(), "the caller hung waiting for the partner's copy"
+    assert "partner setup failed" in str(box.get("error"))

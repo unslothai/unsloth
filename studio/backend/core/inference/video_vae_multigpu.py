@@ -561,6 +561,8 @@ def split_tiled_decode(
                 run(copy, z.to(partner), todo)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
             errors.append(exc)
+        finally:
+            copied.set()  # any exit, setup failures included, must release the caller
 
     worker = threading.Thread(
         target = partner_run, args = (coords[1::2],), name = "unsloth-vae-split", daemon = True
@@ -572,6 +574,10 @@ def split_tiled_decode(
     try:
         try:
             copied.wait()
+            if errors:
+                raise errors[
+                    0
+                ]  # the partner failed before its copy existed: fall back without decoding here
             run(vae, z, coords[0::2])
         finally:
             worker.join()
