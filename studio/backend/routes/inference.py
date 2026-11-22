@@ -48433,7 +48433,18 @@ async def _anthropic_passthrough_stream(
             # Once, before any other event: right after dispatch, or ahead of a pre-dispatch error.
             nonlocal _started
             _started = True
-            return list(emitter.start(message_id, model_name, input_tokens = await input_tokens_task))
+            if not input_tokens_task.done():
+                # The send's pre-header watcher stops at headers, and the response watchers start only
+                # after this; race the count so a cancel or disconnect still reaches upstream promptly.
+                watcher = asyncio.ensure_future(_wait_preheader_cancel(cancel_event, request))
+                try:
+                    await asyncio.wait(
+                        {input_tokens_task, watcher}, return_when = asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    watcher.cancel()
+            input_tokens = input_tokens_task.result() if input_tokens_task.done() else 0
+            return list(emitter.start(message_id, model_name, input_tokens = input_tokens))
 
         # Manage the httpx client, response, AND the aiter_lines() async
         # generator MANUALLY -- no `async with`, no anonymous iterator.

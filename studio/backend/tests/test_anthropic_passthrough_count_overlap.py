@@ -215,3 +215,43 @@ def test_stream_response_announces_dispatch_only_on_request(announce):
         assert items == [inf_mod._LLAMA_STREAM_DISPATCHED, "response"]
     else:
         assert items == ["response"]
+
+
+def test_a_cancel_during_a_slow_count_is_not_held_by_it(monkeypatch):
+    release = threading.Event()
+    cancel = threading.Event()
+
+    def count(*_args, **_kwargs):
+        # A tokenizer stall: the count outlives the upstream headers and the cancel.
+        release.wait(timeout = 30)
+        return 1
+
+    _install_upstream(monkeypatch, on_request = cancel.set)
+
+    async def _run():
+        response = await _anthropic_passthrough_stream(
+            _Request(),
+            cancel,
+            _Backend(count),
+            [{"role": "user", "content": "hello"}],
+            [],
+            0.7,
+            0.95,
+            20,
+            16,
+            "msg_1",
+            "test-model",
+        )
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk)
+        return "".join(chunks)
+
+    try:
+        text = asyncio.run(asyncio.wait_for(_run(), timeout = 10))
+    finally:
+        release.set()
+
+    events = _events(text)
+    assert events[0][0] == "message_start"
+    assert events[0][1]["message"]["usage"]["input_tokens"] == 0
