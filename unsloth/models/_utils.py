@@ -10336,7 +10336,8 @@ def _nvfp4_qat_linear_op():
         weight.use_triton_kernel = triton
         return weight
 
-    name = "unsloth::nvfp4_qat_linear"
+    # Compile caches key on the op name, not its body: bump the version on schema / autograd changes.
+    name = "unsloth::nvfp4_qat_linear_v2"
     forward_schema = (
         "(Tensor x, Tensor weight, Tensor? bias, bool act_per_tensor, bool w_per_tensor, "
         "bool w_swizzled, bool w_triton, ScalarType? mm_dtype) "
@@ -10345,7 +10346,8 @@ def _nvfp4_qat_linear_op():
     backward_schema = (
         "(Tensor grad, Tensor x_qdata, Tensor x_scale, Tensor x_per_tensor_scale, Tensor w_qdata, "
         "Tensor w_scale, Tensor w_per_tensor_scale, ScalarType x_dtype, ScalarType w_dtype, "
-        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype) -> (Tensor, Tensor)"
+        "bool act_per_tensor, bool w_per_tensor, bool w_swizzled, ScalarType? mm_dtype, bool need_x, "
+        "bool need_w) -> (Tensor, Tensor)"
     )
 
     def per_tensor(t, like):
@@ -10402,31 +10404,40 @@ def _nvfp4_qat_linear_op():
         w_per_tensor,
         w_swizzled,
         mm_dtype,
+        need_x,
+        need_w,
     ):
-        x_q = NVFP4Tensor(
-            x_qdata,
-            x_scale,
-            16,
-            x_dtype,
-            per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
-        )
-        x_dq = x_q.dequantize(x_dtype)
-        # Positional: the swizzle flag is `_is_swizzled_scales` in torchao 0.15, `is_swizzled_scales` later.
-        w_q = NVFP4Tensor(
-            w_qdata,
-            w_scale,
-            16,
-            w_dtype,
-            w_per_tensor_scale if w_per_tensor else None,
-            None,
-            w_swizzled,
-        )
-        w_dq = w_q.dequantize(w_dtype)
         if (
             mm_dtype is not None
         ):  # torchao's backward runs under the forward's autocast (custom_bwd)
-            grad, x_dq, w_dq = grad.to(mm_dtype), x_dq.to(mm_dtype), w_dq.to(mm_dtype)
-        return torch.mm(grad, w_dq), torch.mm(grad.t(), x_dq)
+            grad = grad.to(mm_dtype)
+        # Unrequested grads (frozen LoRA base weight, first layer input) return empty and skip their GEMM.
+        grad_x = grad_w = None
+        if need_x:
+            # Positional: the swizzle flag is `_is_swizzled_scales` in torchao 0.15, `is_swizzled_scales` later.
+            w_q = NVFP4Tensor(
+                w_qdata,
+                w_scale,
+                16,
+                w_dtype,
+                w_per_tensor_scale if w_per_tensor else None,
+                None,
+                w_swizzled,
+            )
+            w_dq = w_q.dequantize(w_dtype)
+            grad_x = torch.mm(grad, w_dq if mm_dtype is None else w_dq.to(mm_dtype))
+        if need_w:
+            x_q = NVFP4Tensor(
+                x_qdata,
+                x_scale,
+                16,
+                x_dtype,
+                per_tensor_scale = x_per_tensor_scale if act_per_tensor else None,
+            )
+            x_dq = x_q.dequantize(x_dtype)
+            grad_w = torch.mm(grad.t(), x_dq if mm_dtype is None else x_dq.to(mm_dtype))
+        empty = grad.new_empty(0) if grad_x is None or grad_w is None else None
+        return (empty if grad_x is None else grad_x), (empty if grad_w is None else grad_w)
 
     @backward_op.register_fake
     def _(
@@ -10443,25 +10454,54 @@ def _nvfp4_qat_linear_op():
         w_per_tensor,
         w_swizzled,
         mm_dtype,
+        need_x,
+        need_w,
     ):
         dtype = grad.dtype if mm_dtype is None else mm_dtype
-        N, K = w_qdata.shape[0], w_qdata.shape[1] * 2
+        N, K = grad.shape[1], (w_qdata if need_x else x_qdata).shape[1] * 2
         return (
-            grad.new_empty((grad.shape[0], K), dtype = dtype),
-            grad.new_empty((N, K), dtype = dtype),
+            grad.new_empty((grad.shape[0], K) if need_x else (0,), dtype = dtype),
+            grad.new_empty((N, K) if need_w else (0,), dtype = dtype),
         )
 
     def setup_context(ctx, inputs, output):
         x, weight, bias, act_per_tensor, w_per_tensor, w_swizzled, _, mm_dtype = inputs
-        saved = output[1:]
+        need_x, need_w = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
+        ctx.mark_non_differentiable(*output[1:])
+        # dX needs only the weight payload, dW only the activation payload: save just what is used.
+        saved = list(output[1:])
+        if not (need_x and need_w):
+            empty = output[0].new_empty(0)
+            saved[:3] = saved[:3] if need_w else (empty,) * 3
+            saved[3:] = saved[3:] if need_x else (empty,) * 3
         ctx.save_for_backward(*saved)
-        ctx.mark_non_differentiable(*saved)
-        ctx.args = (x.dtype, weight.dtype, act_per_tensor, w_per_tensor, w_swizzled, mm_dtype)
+        ctx.args = (
+            x.dtype,
+            weight.dtype,
+            act_per_tensor,
+            w_per_tensor,
+            w_swizzled,
+            mm_dtype,
+            need_x,
+            need_w,
+        )
 
     def backward(ctx, grad, *_):
-        grad_x, grad_w = backward_op(grad, *ctx.saved_tensors, *ctx.args)
+        need_x, need_w = ctx.args[-2:]
+        grad_x, grad_w = (
+            backward_op(grad, *ctx.saved_tensors, *ctx.args) if need_x or need_w else (None, None)
+        )
         grad_bias = grad.sum(0) if ctx.needs_input_grad[2] else None
-        return grad_x, grad_w, grad_bias, None, None, None, None, None
+        return (
+            grad_x if need_x else None,
+            grad_w if need_w else None,
+            grad_bias,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
     forward.register_autograd(backward, setup_context = setup_context)
     _NVFP4_QAT_LINEAR.append(forward)

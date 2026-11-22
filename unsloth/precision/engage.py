@@ -81,7 +81,7 @@ LOWP_GEMM_OPS = ("_scaled_mm", "_scaled_mm_v2", "_scaled_grouped_mm", "_scaled_g
 # Dequantize-then-matmul ops (mxfp4_bounded_dense_matmul, fp8 weight dequant, fp8_block_gemv, which upcasts
 # the weight before its dot) are not low-precision GEMMs.
 LOWP_GEMM_CUSTOM_OPS = (
-    "unsloth::nvfp4_qat_linear",
+    "unsloth::nvfp4_qat_linear_v2",
     "unsloth::fp8_block_matmul_triton",
     "unsloth::fp8_block_matmul_torchao",
     "unsloth::fp8_block_small_m_linear",
@@ -155,7 +155,7 @@ def release_lowp_gemm(entered):
 @contextlib.contextmanager
 def count_lowp_gemms():
     """Count low-precision GEMM dispatches: `with count_lowp_gemms() as c: ...; c['_scaled_mm']`, and
-    `c['unsloth::nvfp4_qat_linear']` for opaque custom ops (LOWP_GEMM_CUSTOM_OPS). On torch < 2.9, compiled
+    `c['unsloth::nvfp4_qat_linear_v2']` for opaque custom ops (LOWP_GEMM_CUSTOM_OPS). On torch < 2.9, compiled
     callables run eagerly inside the counter (warned once)."""
     import torch
     from torch.utils._python_dispatch import TorchDispatchMode
