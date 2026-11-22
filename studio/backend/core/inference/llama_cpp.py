@@ -5800,6 +5800,14 @@ _LOOP_SLOT_ARCHS = frozenset({"inkling2_loop"})
 _LOOP_VISIT_ARCHS = frozenset({"inkling2"})
 # Both GGUF layouts of Inkling 2 run the same relative-bias attention graph.
 _INKLING2_ARCHS = frozenset({"inkling2", "inkling2_loop"})
+
+
+def _dspark_default_draft_n_max(architecture: Optional[str]) -> int:
+    """DSpark draft depth when nothing names one. Inkling 2 drafts 2: on B200 it decodes 1.15-1.28x vs 1.04-1.13x
+    at 3 (both Studio sampling defaults, UD-Q4_K_XL and UD-IQ1_S), since the third token is rarely accepted."""
+    return 2 if architecture in _INKLING2_ARCHS else 3
+
+
 # Nemotron-H also zeroes head_count_kv on its MLP/MoE layers; its SSM layers have no FFN.
 _SSM_FFN_FREE_LAYER_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 
@@ -26711,7 +26719,9 @@ class LlamaCppBackend:
                     if _mtp_eff_n_max is None:
                         # _detected_gpus, not gpus: manual empties gpus but still uses the GPU draft depth.
                         _mtp_eff_n_max = (
-                            3 if _mtp_effective == "dspark" else (2 if _detected_gpus else 3)
+                            _dspark_default_draft_n_max(getattr(self, "_architecture", None))
+                            if _mtp_effective == "dspark"
+                            else (2 if _detected_gpus else 3)
                         )
                     # Size the drafter the launch loads: extras --model-draft (last wins), else Unsloth mtp_draft_path, else env. A wrong one under-reserves and OOMs.
                     _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
@@ -35409,7 +35419,11 @@ class LlamaCppBackend:
                     "Manual mode if the load runs out of VRAM.",
                     (self._get_gguf_size_bytes(dspark_draft_path) or 0) / 1e9,
                 )
-            draft_n_max = int(spec_draft_n_max) if spec_draft_n_max is not None else 3
+            draft_n_max = (
+                int(spec_draft_n_max)
+                if spec_draft_n_max is not None
+                else _dspark_default_draft_n_max(getattr(self, "_architecture", None))
+            )
             if spec_draft_n_max is not None:
                 self._spec_draft_n_max = draft_n_max
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
