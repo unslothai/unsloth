@@ -145,7 +145,6 @@ def test_resident_spec_is_the_hosted_w8a8_build(rocm):
     )
     assert spec is not None
     assert spec["scheme"] == "int8" and spec["act_int8"] is True and spec["rot_group"] == 256
-    # An offloaded plan keeps the offload spec, which now also asks for W8A8 on this pick.
     assert (
         V._video_rocm_hosted_spec(
             _fam(),

@@ -4127,8 +4127,7 @@ def _finish_cast_writes(pipe: Any) -> None:
 
 
 def _video_int8_act(target: Any, fam: Any, transformer_quant: Optional[str]) -> bool:
-    """W8A8 for the native int8 build: the host default, or an explicit int8 pick on ROCm RDNA where the family
-    measured W8A8 faster (``rdna_video_explicit_w8a8_reason``). Never raises."""
+    """W8A8 for the native int8 build: host default, or explicit int8 on ROCm RDNA. Never raises."""
     if native_int8_act(target):
         return True
     try:
@@ -4143,8 +4142,7 @@ def _video_int8_act(target: Any, fam: Any, transformer_quant: Optional[str]) -> 
 def _video_rocm_hosted_scheme(
     fam: Any, transformer_quant: Optional[str], target: Any
 ) -> Optional[str]:
-    """``int8`` when an explicit int8 load on ROCm RDNA builds the W8A8 ConvRot native DiT the family's hosted int8
-    safetensors already holds, resident or offloaded, else None. The load re-checks the file; never raises."""
+    """``int8`` when an explicit int8 ROCm RDNA load can read the hosted W8A8 ConvRot file, else None."""
     try:
         from .diffusion_native_hosted import native_hosted_family, native_hosted_pickle
         from .diffusion_native_quant import int8_rotation_group
@@ -4177,8 +4175,7 @@ def _video_rocm_hosted_spec(
     kind: str,
     source_dir: Optional[str],
 ) -> Optional[dict]:
-    """Spec of the RESIDENT native W8A8 build an explicit int8 ROCm load reads from the hosted file, else None (an
-    offloaded plan uses ``_video_native_cache_spec``). Never raises."""
+    """Resident-only spec (offloaded uses ``_video_native_cache_spec``), else None. Never raises."""
     try:
         if kind != "pipeline" or getattr(fam, "modular_workflow", None) or plan is None:
             return None
@@ -11366,7 +11363,6 @@ class VideoBackend:
             )
             == native_cache_spec
         ) or (
-            # The resident ROCm read: still resident, still the explicit W8A8 build the file holds.
             bool(native_cache_hits)
             and native_from_hosted
             and rocm_hosted_spec is not None
