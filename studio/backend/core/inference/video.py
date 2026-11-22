@@ -1844,6 +1844,35 @@ def _ensure_mp4_encoder_available() -> None:
         ) from exc
 
 
+VIDEO_EXPANDABLE_ENV = "UNSLOTH_VIDEO_DENOISE_EXPANDABLE"
+
+
+def _engage_video_expandable(target: Any) -> bool:
+    """Weights placed: run the denoise and decode in expandable allocator segments (diffusion_decode_segments).
+    Fixed segments cached ~1.7 GiB of churn on the Wan 5B denoise (L4, 1280x704x49) and forced an allocator retry."""
+    if os.environ.get(VIDEO_EXPANDABLE_ENV, "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    if not getattr(target, "is_cuda_torch_device", False):
+        return False
+    try:
+        from .diffusion_decode_segments import engage_streamed
+        if not engage_streamed(owner = "video"):
+            return False
+    except Exception as exc:  # noqa: BLE001 - fixed segments, as before
+        logger.debug("video.memory: expandable segments not engaged (%s)", exc)
+        return False
+    logger.info("video.memory: the denoise runs in expandable allocator segments")
+    return True
+
+
+def _release_video_expandable() -> None:
+    try:
+        from .diffusion_decode_segments import release_streamed
+        release_streamed(owner = "video")
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def _video_denoiser_hooked(pipe: Any) -> bool:
     """Whether an offload hook moves one of ``pipe``'s denoisers."""
     for name in ("transformer", "transformer_2"):
@@ -7828,6 +7857,7 @@ class VideoBackend:
             return
         self._precommit_globals = None
         restore_backend_flags(flags)
+        _release_video_expandable()
         from . import diffusion_gguf_compile
         from .diffusion_autoopt.patches import GROUP_VIDEO_FUSED, uninstall_group
 
@@ -11959,6 +11989,8 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_vae_sync(pipe, target, logger = logger)
+            # Placed, not yet compiled or graph-captured: activations from here map expandable segments.
+            _engage_video_expandable(target)
             if _video_denoiser_hooked(pipe):
                 # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split
                 # fell back to a hooked placement: compiled through them, each block splits at the hook's
@@ -16342,6 +16374,7 @@ class VideoBackend:
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
             restore_backend_flags(state.backend_flags)
+            _release_video_expandable()
             _release_rocm_tunableop(getattr(state, "pipe", None))
             # Restore stock GGUF kernels so a later speed=off load is bit-identical.
             from . import diffusion_gguf_compile
