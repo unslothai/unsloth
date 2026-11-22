@@ -2324,8 +2324,9 @@ async def _await_hardware_detection(budget: float) -> bool:
     return True
 
 
-def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
-    """Seqlock read so a half-finished re-detect is never returned; config/env.ts caches the first reply."""
+def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str], bool]]:
+    """Seqlock read so a half-finished re-detect is never returned; config/env.ts caches the first reply.
+    Returns (chat_only, reason, detail, device is MLX)."""
     for _ in range(3):
         if not _hw_module.DETECTION_COMPLETE.is_set():
             return None
@@ -2343,7 +2344,7 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
-            return chat_only, reason, detail
+            return chat_only, reason, detail, device == _hw_module.DeviceType.MLX
     return None
 
 
@@ -2610,6 +2611,8 @@ async def health_check(request: Request, detect_hardware: bool = False):
                 pass
         # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
         authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
+        # Not the reason: no_torch covers a Chat only Mac with and without a working MLX stack.
+        authed["mlx_inference"] = snapshot[3]
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
