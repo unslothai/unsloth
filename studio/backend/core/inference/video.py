@@ -6414,7 +6414,7 @@ class VideoBackend:
         )
         if video_lora.has_active(loras):
             lora_refusal = video_lora.load_refusal(
-                fam, resolve_video_model_kind(gguf_filename, model_kind), transformer_quant
+                fam, resolve_video_model_kind(gguf_filename, model_kind), transformer_quant, loras
             )
             if lora_refusal:
                 raise ValueError(lora_refusal)
@@ -6558,7 +6558,9 @@ class VideoBackend:
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
             baking_loras = video_lora.has_active(kwargs.get("loras"))
             if baking_loras:
-                lora_refusal = video_lora.load_refusal(fam, kind, kwargs.get("transformer_quant"))
+                lora_refusal = video_lora.load_refusal(
+                    fam, kind, kwargs.get("transformer_quant"), kwargs.get("loras")
+                )
                 if lora_refusal:
                     raise ValueError(lora_refusal)
                 # Planned as the load will run: the dense denoiser the adapters merge into.
@@ -8860,7 +8862,7 @@ class VideoBackend:
         baking_loras = video_lora.has_active(loras)
         if baking_loras:
             # Planned as the load runs: the dense denoiser the adapters merge into, never a hosted quantized one.
-            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant)
+            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant, loras)
             if lora_refusal:
                 raise ValueError(lora_refusal)
             transformer_quant = video_lora.dense_transformer_quant(fam, transformer_quant, loras)
@@ -9843,7 +9845,7 @@ class VideoBackend:
         lora_specs = video_lora.active_specs(loras)
         baked_loras: tuple = ()
         if lora_specs:
-            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant)
+            lora_refusal = video_lora.load_refusal(fam, kind, transformer_quant, lora_specs)
             if lora_refusal:
                 raise ValueError(lora_refusal)
             transformer_quant = video_lora.dense_transformer_quant(
@@ -9860,6 +9862,7 @@ class VideoBackend:
                 hf_token = hf_token,
                 cancel_event = self._cancel_event if _load_token is not None else None,
                 local_files_only = local_files_only,
+                expert_pair = bool(getattr(fam, "is_moe", False)),
             )
         from .video_minimax_h3 import is_h3_native
 
@@ -11774,6 +11777,11 @@ class VideoBackend:
             if effective_speed != SPEED_OFF
             else False
         )
+        # LTX-2.x: an all-ones text mask becomes None (same maths, flash instead of a materialised zero bias).
+        ltx2_mask_engaged = False
+        if effective_speed != SPEED_OFF:
+            from .video_ltx2 import install_ltx2_full_mask_drop
+            ltx2_mask_engaged = install_ltx2_full_mask_drop(pipe, logger = logger) > 0
         # Flag read when pipelines first build frequency tables; needed before generation, not placement.
         force_float32_rope(pipe, target, logger = logger)
         # HunyuanVideo-1.5 VAE only: same mask values, so bit-identical, but held off on SPEED_OFF like the trim above.
@@ -11834,6 +11842,8 @@ class VideoBackend:
                     speed_optims += ("hunyuan_attn_trim",)
                 if hv15_mask_engaged:
                     speed_optims += ("hv15_vae_vector_mask",)
+                if ltx2_mask_engaged:
+                    speed_optims += ("ltx2_full_mask_drop",)
                 if wan_fused_engaged:
                     speed_optims += ("wan_fused_adaln",)
         if "compiled" in speed_optims and getattr(target, "device", None) == "cuda":
@@ -12296,32 +12306,41 @@ class VideoBackend:
         target: Any = None,
         component: str = "transformer",
     ) -> int:
-        """Merge the resolved adapters into the dense denoiser in place and record them on ``pipe``."""
-        denoiser = getattr(pipe, component, None)
-        label = f"{getattr(fam, 'label', None) or getattr(fam, 'name', 'video')} denoiser"
-        if denoiser is None:
-            # A modular load_components logs a failed component and carries on, so the cause is in the log above.
-            raise ValueError(
-                f"The {label} did not load (a failed download or read, often a full disk; see the server log), "
-                "so the LoRA has nothing to bake into."
-            )
+        """Merge the resolved adapters into the dense denoiser in place and record them on ``pipe``. A two-expert
+        pair's second file (``path_2``) merges into ``transformer_2``, the low-noise expert."""
+        name = getattr(fam, "label", None) or getattr(fam, "name", "video")
         device = (
             getattr(target, "torch_device", None)
             if getattr(target, "device", None) == "cuda"
             else None
         )
-        merged = video_lora.bake_into_module_(
-            denoiser,
-            [(path, weight) for (_name, path, weight) in baked],
-            device = device,
-            label = label,
+        targets = [(component, f"{name} denoiser", [(e[1], e[2]) for e in baked])]
+        second = [(e[3], e[2]) for e in baked if len(e) > 3 and e[3]]
+        if second:
+            targets.append(("transformer_2", f"{name} low-noise denoiser", second))
+        # A missing expert fails before either merges (the load is then discarded, so no half-baked pair serves).
+        for attr, label, _files in targets:
+            if getattr(pipe, attr, None) is None:
+                # A modular load_components logs a failed component and carries on, so the cause is in the log above.
+                raise ValueError(
+                    f"The {label} did not load (a failed download or read, often a full disk; see the server log), "
+                    "so the LoRA has nothing to bake into."
+                )
+        merged = sum(
+            video_lora.bake_into_module_(getattr(pipe, attr), files, device = device, label = label)
+            for attr, label, files in targets
         )
-        video_lora.mark_baked(pipe, baked, specs)
+        video_lora.mark_baked(pipe, tuple(e[:3] for e in baked), specs)
+        # The publisher's sampler (lightx2v Wan2.2 pairs: first-order Euler on the shift-5 grid). Set in the loaded
+        # scheduler's config, so the later static-shift rebuild (from_config) keeps it; steps / CFG stay request-led.
+        sampler = video_lora.recommended_scheduler(pipe)
+        if sampler:
+            apply_scheduler_overrides(pipe, sampler, logger)
         logger.info(
             "video.lora_bake: %d adapter(s), %d layer(s) merged into the bf16 %s",
             len(baked),
             merged,
-            label,
+            " + ".join(label for _attr, label, _files in targets),
         )
         return merged
 
@@ -14485,6 +14504,11 @@ class VideoBackend:
                     family = fam.name,
                 )
                 default_steps = _h3_pdd_default_steps(fam, state.pipe, default_steps)
+                # A baked step-distilled LoRA's recipe (e.g. 4 steps at CFG 1); explicit values still win.
+                default_steps, default_guidance = video_lora.recommended_params(state.pipe) or (
+                    default_steps,
+                    default_guidance,
+                )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
                 # Guidance-free families ignore CFG and negative prompt on both engines; record the family
@@ -16477,6 +16501,10 @@ class VideoBackend:
             family = fam.name,
         )
         default_steps = _h3_pdd_default_steps(fam, getattr(state, "pipe", None), default_steps)
+        # The same baked-LoRA recipe the generate defaults take, so the UI shows what a blank field runs.
+        default_steps, default_guidance = video_lora.recommended_params(
+            getattr(state, "pipe", None)
+        ) or (default_steps, default_guidance)
         return {
             "loaded": True,
             "repo_id": state.repo_id,

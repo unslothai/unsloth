@@ -4532,13 +4532,14 @@ def _kick_early_probe_prewarm(fam: Any, target: Any) -> bool:
         ordinal = getattr(target, "ordinal", None)
         index = int(ordinal) if ordinal is not None else torch.cuda.current_device()
         rotated = getattr(getattr(fam, "profile", None), "int8_convrot", None) is not None
-        producer = (
-            rotated
-            and not flux_convrot_fused_disabled()
-            and getattr(fam, "transformer_class", None)
-            in ("Flux2Transformer2DModel", "Flux3Transformer2DModel")
+        cls = getattr(fam, "transformer_class", None)
+        fused_on = rotated and not flux_convrot_fused_disabled()
+        producer = fused_on and cls in ("Flux2Transformer2DModel", "Flux3Transformer2DModel")
+        gelu = fused_on and cls == "FluxTransformer2DModel"
+        extra = {"gelu": True} if gelu else {}
+        return start_early_probe_prewarm(
+            index, rotated = rotated, producer = producer, logger = logger, **extra
         )
-        return start_early_probe_prewarm(index, rotated = rotated, producer = producer, logger = logger)
     except Exception:  # noqa: BLE001 - a warm-up only
         return False
 

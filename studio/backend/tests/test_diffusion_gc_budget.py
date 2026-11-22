@@ -62,10 +62,53 @@ def test_kill_switch_keeps_the_old_path(mode, monkeypatch):
     assert model.func is None
 
 
-def test_rocm_keeps_the_old_path(monkeypatch):
+def test_rocm_uses_the_budget_too(monkeypatch):
+    # gfx1151 Linux + Windows: 1.40x / 2.18x bf16 klein LoRA steps, Linux losses bitwise equal to every block checkpointed
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
     monkeypatch.setattr(gb, "_is_rocm", lambda: True)
+    model = _Model()
+    budget = gb.enable_budgeted_checkpointing(model, "cuda")
+    assert isinstance(budget, gb.BudgetedCheckpoint) and model.func is budget
+    monkeypatch.setenv(gb.GC_MODE_ENV, "plain")
     assert gb.enable_budgeted_checkpointing(_Model(), "cuda") is None
+
+
+def test_budget_reads_trusted_free(monkeypatch):
+    # Windows ROCm's WDDM free over-report is capped (utils.hardware.trusted_mem_get_info) before any plan
+    import utils.hardware as hw
+    monkeypatch.setattr(hw, "trusted_mem_get_info", lambda *a, **k: (7, 9))
+    assert gb._mem_get_info() == (7, 9)
+
+
+@pytest.mark.parametrize(
+    "platform, hip, device, capped",
+    [
+        ("win32", "6.4.0", None, True),  # the spawned trainer: detection never ran, a ROCm torch
+        ("win32", None, None, False),  # Windows NVIDIA
+        ("linux", "6.4.0", None, False),  # Linux ROCm: the driver figure is trusted
+        ("win32", "6.4.0", "cuda", False),  # detection ran and did not say ROCm
+    ],
+)
+def test_trainer_child_caps_windows_rocm_free(platform, hip, device, capped, monkeypatch):
+    # The trainer is a spawned process that never runs detect_hardware(), so IS_ROCM stays False there
+    import types
+
+    import utils.hardware.hardware as hwmod
+    import core.training.diffusion_lora_fast as fl
+
+    gib = 1 << 30
+    fake = types.ModuleType("torch")
+    fake.version = types.SimpleNamespace(hip = hip)
+    fake.__version__ = "2.9.1"
+    fake.cuda = types.SimpleNamespace(
+        mem_get_info = lambda *a: (16 * gib, 16 * gib), memory_reserved = lambda *a: 6 * gib
+    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake)
+    monkeypatch.setattr(hwmod.sys, "platform", platform)
+    monkeypatch.setattr(hwmod, "IS_ROCM", False)
+    monkeypatch.setattr(hwmod, "DEVICE", device)
+    want = (10 * gib if capped else 16 * gib, 16 * gib)
+    assert gb._mem_get_info() == want and fl._mem_get_info() == want
 
 
 def _planned(

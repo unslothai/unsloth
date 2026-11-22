@@ -266,9 +266,14 @@ class FrozenFp8Linear(nn.Module):
         return f"in_features={self.in_features}, out_features={self.out_features}, fp8"
 
 
-def convert_frozen_fp8(model: nn.Module, names) -> tuple[int, int]:
+def convert_frozen_fp8(
+    model: nn.Module,
+    names,
+    device = None,
+) -> tuple[int, int]:
     """Swap each frozen nn.Linear in ``names`` for FrozenFp8Linear one at a time (bounds peak memory); a layer that
-    fails stays bf16 rather than raising mid-conversion. Returns (converted, failed)."""
+    fails stays bf16 rather than raising mid-conversion. With ``device``, a host Linear moves there first, so a
+    host-resident base lands as fp8 without ever being whole in bf16 on the device. Returns (converted, failed)."""
     done = failed = 0
     for fqn in sorted(names):
         parent_name, _, child = fqn.rpartition(".")
@@ -276,6 +281,8 @@ def convert_frozen_fp8(model: nn.Module, names) -> tuple[int, int]:
         old = getattr(parent, child)
         if type(old) is not nn.Linear or old.weight.requires_grad:
             continue
+        if device is not None and old.weight.device.type == "cpu":
+            old.to(device)
         try:
             new = FrozenFp8Linear(old)
         except (RuntimeError, ValueError):

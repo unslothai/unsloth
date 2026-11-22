@@ -214,6 +214,7 @@ def test_dmd_sampling_through_the_stock_wan_loop_matches_fp64_oracle(expand_time
 
 def test_dmd_scheduler_reseeds_per_render():
     torch = pytest.importorskip("torch")
+    pytest.importorskip("diffusers")  # make_dmd_scheduler builds on a diffusers scheduler
     from core.inference import video_dmd
 
     sched = video_dmd.make_dmd_scheduler((1000, 757, 522), 7)
@@ -238,6 +239,7 @@ def test_renoise_stream_is_independent_of_the_initial_latent_noise(seed):
     """On CPU / MPS the pipeline draws its initial latent from a CPU generator seeded with the request seed; the
     first re-noise draw must not repeat it (same shape, same dtype)."""
     torch = pytest.importorskip("torch")
+    pytest.importorskip("diffusers")  # make_dmd_scheduler builds on a diffusers scheduler
     from core.inference import video_dmd
 
     shape = (1, 16, 2, 8, 8)
