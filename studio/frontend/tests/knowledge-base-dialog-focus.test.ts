@@ -431,3 +431,25 @@ test("an older list answer never replaces a newer one", async () => {
   await app.settle();
   assert.equal(app.rowCount, 1);
 });
+
+test("a failed progress poll still schedules the next one", async () => {
+  const embedding = { ...KB, documentCount: 2, indexedCount: 1, indexingCount: 1 };
+  const answers = [
+    async () => [embedding],
+    async () => {
+      throw new Error("network");
+    },
+    async () => [{ ...embedding, indexedCount: 2, indexingCount: 0 }],
+  ];
+  let calls = 0;
+  const realTimeout = window.setTimeout;
+  window.setTimeout = ((fn: () => void) => realTimeout(fn, 0)) as typeof window.setTimeout;
+  try {
+    const app = harness([KB], () => (answers[Math.min(calls++, answers.length - 1)])());
+    await app.open(null);
+    for (let i = 0; i < 6 && calls < 3; i++) await app.settle();
+    assert.equal(calls, 3);
+  } finally {
+    window.setTimeout = realTimeout;
+  }
+});

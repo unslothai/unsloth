@@ -155,11 +155,15 @@ export function KnowledgeBaseManager({
 
   const embedding =
     open && view.kind === "list" && kbs.some((kb) => (kb.indexingCount ?? 0) > 0);
+  // Re-armed by each poll's end, not by new rows, so a failed poll still schedules the next.
+  const [pollRound, setPollRound] = useState(0);
   useEffect(() => {
     if (!embedding) return;
-    const timer = window.setTimeout(() => void refresh(true), 3000);
+    const timer = window.setTimeout(() => {
+      void refresh(true).finally(() => setPollRound((n) => n + 1));
+    }, 3000);
     return () => window.clearTimeout(timer);
-  }, [embedding, kbs, refresh]);
+  }, [embedding, pollRound, refresh]);
 
   const wasOpenRef = useRef(false);
   useEffect(() => {
