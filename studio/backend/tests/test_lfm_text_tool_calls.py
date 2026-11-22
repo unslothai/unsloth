@@ -417,3 +417,34 @@ def test_safetensors_loop_runs_lfm_calls_and_explains_a_call_only_final_turn():
     assert calls == [("web_fetch", {"url": "https://example.com/lfm"})]
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert contents and "tool call limit" in contents[-1] and "tool_call_start" not in contents[-1]
+
+
+def test_a_bare_json_call_from_the_retry_still_gets_the_notice(monkeypatch):
+    first = _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({"query": "q"})},
+                }
+            ]
+        }
+    )
+    bare = '{"name": "web_search", "parameters": {"query": "x"}}'
+    streams = [
+        [first, _done()],
+        [_sse({"content": CALL}), _done()],
+        [_sse({"content": bare}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Research LFM2.5."}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert len(payloads) == 3
+    shown = _route_shown(events)
+    assert "tool call limit" in shown and '"parameters"' not in shown, shown

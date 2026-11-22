@@ -39633,6 +39633,15 @@ class LlamaCppBackend:
                 return cleaned
             return cleaned[: len(cleaned) - len(answer)] + kept
 
+        def _answer_is_call_only(answer: str) -> bool:
+            """Only calls, judged as the display strips them: markup and a leading Llama 3 bare-JSON call."""
+            if not auto_heal_tool_calls or not answer.strip():
+                return False
+            kept = _strip_tool_markup(answer, final = True)
+            if _enabled_names_gate:
+                kept = strip_leading_bare_json_call(kept, _enabled_names_gate)
+            return not kept.strip()
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
@@ -43397,8 +43406,7 @@ class LlamaCppBackend:
                         # A continuation prefill would ask the retry to finish the call.
                         and not stream_payload.get("continue_final_message")
                         and _metadata_finish_reason != "length"
-                        and answer_text.strip()
-                        and not _strip_tool_markup(answer_text, final = True).strip()
+                        and _answer_is_call_only(answer_text)
                         and _remaining_output_budget() != 0
                     ):
                         # The answer was only a stripped tool call despite tool_choice "none" (#18802): re-ask once with no tools in the prompt.
@@ -43456,10 +43464,7 @@ class LlamaCppBackend:
                         _continue_final = True
                         yield {"type": "status", "text": "", "new_pass": True}
                     else:
-                        if (
-                            answer_text.strip()
-                            and not _strip_tool_markup(answer_text, final = True).strip()
-                        ):
+                        if _answer_is_call_only(answer_text):
                             # Call-only and not retried (or retried again): an empty bubble is not actionable.
                             _last_emitted = f"{_last_emitted.rstrip()}\n\n{_FINAL_ANSWER_TOOL_LIMIT_MESSAGE}".lstrip()
                             yield {"type": "content", "text": _last_emitted}
