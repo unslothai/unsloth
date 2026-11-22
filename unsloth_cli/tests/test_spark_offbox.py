@@ -787,9 +787,6 @@ def test_merge_module_imports_nothing_heavy() -> None:
     assert not [n for n in imported if n.split(".")[0] in HEAVY | {"safetensors"}]
 
 
-# Runs in every from_pretrained: must never crash a load and is silent off a cabled Spark.
-
-
 def test_provision_paths_follow_studio_home(monkeypatch, tmp_path) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere"))
