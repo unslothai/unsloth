@@ -5350,7 +5350,7 @@ def unsloth_save_pretrained_gguf(
 
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
-    if _defer_to_main_process(is_main_process):
+    if _defer_to_main_process(is_main_process, self):
         return None
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
@@ -5972,11 +5972,22 @@ def _free_merge_if_disk_is_tight(
     return freed
 
 
-def _defer_to_main_process(is_main_process):
+def _is_fsdp1(model):
+    try:  # FSDP1 state dict hooks all-gather on every rank
+        from torch.distributed.fsdp import FullyShardedDataParallel
+        return isinstance(model, torch.nn.Module) and any(
+            isinstance(m, FullyShardedDataParallel) for m in model.modules()
+        )
+    except Exception:
+        return False
+
+
+def _defer_to_main_process(is_main_process, model = None):
     """A non-main rank skips the export, except the FSDP2 writer (any rank of its mesh), which
-    reaches it inside the gather that chose it. A function, not an inline import, so callers that
-    snapshot locals() forward no extra name."""
-    if is_main_process:
+    reaches it inside the gather that chose it, and an FSDP1 `model`, whose state dict every rank
+    must join. A function, not an inline import, so callers that snapshot locals() forward no
+    extra name."""
+    if is_main_process or (model is not None and _is_fsdp1(model)):
         return False
     from .models.fsdp2_save import fsdp2_gather_active
 
@@ -7615,7 +7626,7 @@ def unsloth_generic_save(
         raise_if_merging_inkling2(model, save_method)
         # merged_4bit merges into the live model (no conversion), so every replica must run it.
         in_place = save_method == "merged_4bit"
-        if not in_place and _defer_to_main_process(is_main_process):
+        if not in_place and _defer_to_main_process(is_main_process, model):
             return
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
@@ -7845,12 +7856,8 @@ def _plain_data_parallel_push(model, method, fn, args, kwargs):
 
     if fsdp2_units(model):
         return False
-    try:  # FSDP1 state dict hooks all-gather on every rank
-        from torch.distributed.fsdp import FullyShardedDataParallel
-        if any(isinstance(m, FullyShardedDataParallel) for m in model.modules()):
-            return False
-    except Exception:
-        pass
+    if _is_fsdp1(model):
+        return False
     return method == "push_to_hub" or bool(
         _fsdp2_save_arguments(fn, model, args, kwargs).get("push_to_hub")
     )

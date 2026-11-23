@@ -97,6 +97,18 @@ def _fake_gguf_push(monkeypatch, tmp_path):
     return calls
 
 
+def _as_fsdp1(monkeypatch, model):
+    """Mark `model` FSDP1-wrapped the way the save code detects it, with no process group."""
+    import torch.distributed.fsdp as fsdp
+
+    class FakeFSDP(torch.nn.Module):
+        pass
+
+    monkeypatch.setattr(fsdp, "FullyShardedDataParallel", FakeFSDP)
+    model.add_module("_fsdp1_unit", FakeFSDP())
+    return model
+
+
 def _generic_save(model, directory, **kwargs):
     return unsloth_save.unsloth_generic_save(
         model = model,
@@ -225,6 +237,45 @@ def test_save_pretrained_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, 
     assert out["gguf_files"] == [str(tmp_path / "m.gguf")]
 
 
+def test_save_pretrained_gguf_on_fsdp1_keeps_every_rank(monkeypatch, tmp_path):
+    """FSDP1 state dict hooks all-gather: a rank skipping the export would hang the writer."""
+    monkeypatch.setattr(unsloth_save, "_gguf_remote_code_approved", lambda *a, **k: True)
+    monkeypatch.setattr(
+        unsloth_save, "_preflight_gguf_disk", lambda **kwargs: (kwargs["save_directory"], True)
+    )
+    monkeypatch.setattr(unsloth_save, "_resolve_imatrix_file", lambda *a, **k: None)
+    monkeypatch.setattr(unsloth_save, "fix_tokenizer_bos_token", lambda *a, **k: (False, None))
+    monkeypatch.setattr(unsloth_save, "create_ollama_modelfile", lambda *a, **k: None)
+    from unsloth import tokenizer_utils
+
+    monkeypatch.setattr(tokenizer_utils, "_tokenizer_objects", lambda *a: [])
+    merged, converted = [], []
+
+    import inspect
+
+    real_save = inspect.signature(unsloth_save.unsloth_generic_save)
+    # bind(): the forwarded kwargs must be ones the real merge accepts.
+    monkeypatch.setattr(
+        unsloth_save,
+        "unsloth_generic_save",
+        lambda **kwargs: merged.append(real_save.bind(**kwargs)),
+    )
+    monkeypatch.setattr(
+        unsloth_save,
+        "save_to_gguf",
+        lambda **kwargs: (converted.append(1) or ([str(tmp_path / "m.gguf")], False, False)),
+    )
+    out = unsloth_save.unsloth_save_pretrained_gguf(
+        _as_fsdp1(monkeypatch, _tiny_peft_model()),
+        str(tmp_path / "gguf"),
+        object(),
+        is_main_process = False,
+        quantization_method = "q8_0",
+    )
+    assert len(merged) == 1 and converted == [1]
+    assert out["gguf_files"] == [str(tmp_path / "m.gguf")]
+
+
 def test_push_to_hub_gguf_inside_fsdp2_gather_ignores_the_flag(monkeypatch, tmp_path):
     """An FSDP2 sub-mesh writer with is_main_process=False must still run push_to_hub_gguf."""
     monkeypatch.setattr(fsdp2_save, "fsdp2_gather_active", lambda: True)
@@ -310,3 +361,10 @@ def test_in_place_merges_still_run_on_every_rank(monkeypatch, tmp_path):
         is_main_process = False,
     )
     assert len(calls) == 2
+
+
+def test_peft_merge_on_fsdp1_keeps_every_rank(monkeypatch, tmp_path):
+    calls = _counted_merge(monkeypatch)
+    model = _as_fsdp1(monkeypatch, _tiny_peft_model())
+    _generic_save(model, str(tmp_path / "fsdp1"), is_main_process = False)
+    assert len(calls) == 1
