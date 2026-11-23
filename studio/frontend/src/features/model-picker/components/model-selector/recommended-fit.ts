@@ -445,6 +445,8 @@ export function orderRecommendedRows<
   /** Pinned family keys whose rows stay together instead of interleaving: all of them come before
    *  the next pinned family's, so a GGUF sits right under its own lead row. */
   pinnedTogether?: readonly string[];
+  /** Outranks every other key: "lead" rows come first in list order, "trail" rows last. Omitted = no tiers. */
+  tierOf?: (row: T) => "lead" | "trail" | undefined;
 }): T[] {
   const {
     seeds,
@@ -455,6 +457,7 @@ export function orderRecommendedRows<
     familyOf,
     pinnedFamilies = [],
     pinnedTogether = [],
+    tierOf,
   } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
@@ -502,7 +505,7 @@ export function orderRecommendedRows<
     slotOf.set(i, slot);
     seenPerFamily.set(key, slot + 1);
   });
-  const sortKey = (r: T, i: number) => {
+  const baseKey = (r: T, i: number) => {
     const key = keyOf(r);
     // Pinned families lead, ahead of first-party rows that trend higher.
     const pin = pinIndex.get(key);
@@ -521,6 +524,14 @@ export function orderRecommendedRows<
       firstSeen.get(key) ?? i,
       i,
     ];
+  };
+  // Lead rows keep the curated (catalog) order whatever the dropdown sort, like pinned families.
+  const sortKey = (r: T, i: number) => {
+    if (!tierOf) return baseKey(r, i);
+    const tier = tierOf(r);
+    return tier === "lead"
+      ? [0, 0, 0, 0, 0, i]
+      : [tier === "trail" ? 2 : 1, ...baseKey(r, i)];
   };
   return ordered
     .map((row, i) => ({ row, key: sortKey(row, i) }))
