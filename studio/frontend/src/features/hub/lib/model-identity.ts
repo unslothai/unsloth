@@ -80,6 +80,35 @@ export function ggufVariantsMatch(
   );
 }
 
+// Status names each of two loaded quants of a repo repo:QUANT; settings and loads key on the repo.
+export function withoutNamedQuant(
+  id: string,
+  quant: string | null | undefined,
+): string {
+  return quant && id.toLowerCase().endsWith(`:${quant.toLowerCase()}`)
+    ? id.slice(0, -quant.length - 1)
+    : id;
+}
+
+export function servedCheckpoint(
+  loaded: readonly { quant?: string | null; checkpoint?: string }[],
+  checkpoint: string,
+  variant: string | null | undefined,
+): string {
+  if (!(checkpoint && variant)) {
+    return checkpoint;
+  }
+  const copy = loaded.find(
+    (m) =>
+      m.checkpoint &&
+      m.quant &&
+      m.checkpoint !== checkpoint &&
+      ggufVariantsMatch(m.quant, variant) &&
+      modelIdsMatch(withoutNamedQuant(m.checkpoint, m.quant), checkpoint),
+  );
+  return copy?.checkpoint ?? checkpoint;
+}
+
 // Mirrors core/inference/model_ids.py _looks_like_path.
 const PUBLIC_ID_PATH_PREFIX_RE = /^(?:[/\\]|\.{1,2}[\\/]|~)/;
 const GGUF_SUFFIX_RE = /\.gguf$/i;

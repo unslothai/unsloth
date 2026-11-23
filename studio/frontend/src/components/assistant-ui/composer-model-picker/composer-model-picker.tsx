@@ -71,6 +71,7 @@ import {
   useHfTokenStore,
   useHubInfiniteScroll,
   useHubModelSearch,
+  servedCheckpoint,
   useOnlineStatus,
 } from "@/features/hub";
 import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
@@ -1601,6 +1602,7 @@ export function ComposerModelPicker({
   const activeVariant = pane ? pane.ggufVariant : runtimeVariant;
   const modelLoading = pane ? pane.loading === true : runtimeLoading;
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const servedId = servedCheckpoint(loadedModels, checkpoint ?? "", activeVariant);
   const chatModels = useChatRuntimeStore((s) => s.models);
   const pinned = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
@@ -2178,7 +2180,7 @@ export function ComposerModelPicker({
     device.push(...npuPickerRows(npuModels, true));
     // Local models load by path and two files can share a name, so the checkpoint is the identity.
     const servedAs = (m: (typeof loadedModels)[number]) => m.checkpoint ?? m.id;
-    const selected = (checkpoint ?? "").toLowerCase();
+    const selected = servedId.toLowerCase();
     const loaded = new Map<string, (typeof loadedModels)[number]>();
     for (const m of loadedModels) {
       loaded.set(m.id.toLowerCase(), m);
@@ -2217,8 +2219,6 @@ export function ComposerModelPicker({
           quant: m.quant as string,
           id: servedAs(m),
         })),
-        // Status names each copy repo:QUANT, and the chosen one is the checkpoint.
-        aliases: [...(row.aliases ?? []), ...copies.map(servedAs)],
       };
     });
     for (const m of loadedModels) {
@@ -2307,7 +2307,7 @@ export function ComposerModelPicker({
     npuModels,
     loraModels,
     loadedModels,
-    checkpoint,
+    servedId,
     recommended,
     mlxTaggedHub,
     externalModels,
@@ -3058,7 +3058,7 @@ export function ComposerModelPicker({
   // A Compare pane ejects nothing, and the API page only once its load has settled.
   const canEject = !pane || pane.loaded === true;
   const eject = (row: Row) => {
-    source?.eject(ejectTargetId(row, chosen?.id, checkpoint));
+    source?.eject(ejectTargetId(row, chosen?.id, servedId));
   };
   const loadedQuantsOf = (row: Row): string[] => {
     if (!row.loaded) {
@@ -4830,7 +4830,7 @@ export function ComposerModelPicker({
             ejectTargetId(
               { id: row.id, loadedId: copy.id, loadedCopies: [copy] },
               chosen?.id,
-              checkpoint,
+              servedId,
             ),
           ),
         destructive: true,

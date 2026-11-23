@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
-import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
+import { servedInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { type ApiMonitorEntry, useChatModelRuntime } from "@/features/chat";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
@@ -1095,7 +1095,7 @@ export function ApiMonitorPage(): ReactElement {
       const { unloadedAliases, stillResident } = await unloadResident({
         readResident: async () => {
           const status = await getInferenceStatus();
-          const checkpoint = resolveInferenceCheckpointId(status);
+          const checkpoint = servedInferenceCheckpointId(status);
           if (!checkpoint) {
             return null;
           }

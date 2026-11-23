@@ -79,6 +79,7 @@ import { npuDisplayNameNow } from "@/features/npu/use-npu-display-name";
 import {
   isOllamaModelId,
   modelDisplayName,
+  servedCheckpoint,
 } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
@@ -601,6 +602,11 @@ async function readIdleUnloadArmed(): Promise<boolean> {
     // Preserve the last answer: treating a settings blip as disarmed would discard the pick.
   }
   return lastIdleUnloadArmed;
+}
+
+function servedSelection(): string {
+  const { loadedModels, params, activeGgufVariant } = useChatRuntimeStore.getState();
+  return servedCheckpoint(loadedModels, params.checkpoint, activeGgufVariant);
 }
 
 // A lookup started before a newer status must not write the replaced quant.
@@ -3772,7 +3778,7 @@ export function useChatModelRuntime() {
       async function performUnload(): Promise<void> {
         stopQueuedRuns(stopDecision, Boolean(scope));
         await unloadModel({
-          model_path: checkpoint,
+          model_path: servedSelection(),
           force_cancel_active: stopDecision.forceCancelActive,
         });
         if (!scope) {
@@ -3809,7 +3815,7 @@ export function useChatModelRuntime() {
     const others = useChatRuntimeStore
       .getState()
       .loadedModels.map((m) => m.checkpoint ?? m.id)
-      .filter((id) => id !== checkpoint);
+      .filter((id) => id !== servedSelection());
     const selectedLocal =
       Boolean(checkpoint) && !isExternalModelId(checkpoint);
     const decision = await confirmStopRunningChatsIfNeeded(
