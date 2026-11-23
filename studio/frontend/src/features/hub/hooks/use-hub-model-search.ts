@@ -158,11 +158,7 @@ function makeHfFetch(signal?: AbortSignal): typeof fetch {
     );
 }
 
-/**
- * `firstPageLimit` caps only the first request of an open-ended listing, for the rows its first
- * read uses. Later pages follow the Hub's cursor at the SDK's own page size, so the rows and their
- * order are the same; an SDK `limit` would end the listing instead.
- */
+// `firstPageLimit` caps only the first request; an SDK `limit` would end the listing instead.
 function makeSortFetch(
   sortBy: HfSortKey | undefined,
   direction: HfSortDirection,
@@ -410,7 +406,6 @@ async function* mergedModelIterator(
           listModels({
             hubUrl: getHfEndpoint(),
             search: { query, ...(task ? { task } : {}) },
-            // A first batch reads no more of this listing, counting the repeats it skips.
             fetch: makeSortFetch(
               sortBy,
               direction,
@@ -653,7 +648,6 @@ async function* providerUnslothFirstIterator(
       hubUrl: getHfEndpoint(),
       search,
       additionalFields: ALL_FIELDS,
-      // take() reads a pool from each; its tail continues on the next page.
       fetch: makeSortFetch(
         opts.sortBy,
         opts.sortDirection,

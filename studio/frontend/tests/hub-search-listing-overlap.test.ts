@@ -225,7 +225,6 @@ test("the Unsloth pass asks the Hub for the three rows it reads, unless a filter
   const plain = search.open("coder").next();
   await ticks();
   assert.equal(hub.requests[0].url.searchParams.get("limit"), "3");
-  // The general listing's first page holds a whole batch; later pages continue at 500.
   assert.equal(hub.requests[1].url.searchParams.get("limit"), "192");
   search.controller().abort();
   await assert.rejects(plain, { name: "AbortError" });
@@ -331,7 +330,7 @@ test("channel first pages and the fresh trending pool ask only for the rows they
   const limits = Object.fromEntries(
     hub.requests.map((r) => [r.url.searchParams.get("sort"), r.url.searchParams.get("limit")]),
   );
-  // The newest listing is read past its pool of 100 (first page 192, then 500); the trending one never is.
+  // The newest listing is read past its pool of 100; the trending one never is.
   assert.deepEqual(limits, { createdAt: "192", trendingScore: "100" });
   for (const request of hub.requests) request.release();
   await fresh;

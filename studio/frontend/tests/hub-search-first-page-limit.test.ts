@@ -18,7 +18,6 @@ type Options = NonNullable<
 const range = (n: number, name: (i: number) => string) =>
   Array.from({ length: n }, (_, i) => name(i));
 
-/** Every listing the tests read, longer than one 500-row page where it matters. */
 function rowsFor(url: URL): string[] {
   const author = url.searchParams.get("author");
   const search = url.searchParams.get("search");
@@ -41,7 +40,6 @@ function rowsFor(url: URL): string[] {
     );
   }
   if (author === "unsloth" && search === "qwen") {
-    // Every third is another maker's distill: kept out of the maker's own group.
     return range(260, (i) =>
       i % 3 === 2 ? `unsloth/DeepSeek-Distill-Qwen-${i}` : `unsloth/Qwen-${i}`,
     );
@@ -53,10 +51,7 @@ function rowsFor(url: URL): string[] {
   return range(600, (i) => `any/${sort}-${i}`);
 }
 
-/**
- * A Hub that pages like the real one: `limit` rows from the cursor, and a next link that repeats
- * the request's limit. `pageSize` overrides the rows served per page.
- */
+/** A Hub that pages like the real one: its next link repeats the request's limit. */
 function fakeHub(pageSize?: (requested: number) => number) {
   const requests: URL[] = [];
   const fetchWithTimeout = async (input: string) => {
@@ -110,7 +105,6 @@ function load(hub: ReturnType<typeof fakeHub>) {
         getHfEndpoint: () => "https://huggingface.co",
         useHfEndpoint: () => "https://huggingface.co",
       },
-      // The real SDK, so its own limit and next-link handling is what runs.
       "@huggingface/hub": { listModels, modelInfo },
       "../lib/hf-cache": {
         cachedModelInfo: modelInfo,
@@ -183,7 +177,6 @@ async function drain(iter: AsyncGenerator<unknown>): Promise<string[]> {
   return rows;
 }
 
-/** The rows and order a Hub serving full 500-row pages gives: what the search read before. */
 async function uncapped(query: string, options: Options = {}) {
   const hub = fakeHub(() => 500);
   return drain(load(hub).open(query, options));
@@ -212,9 +205,7 @@ test("a typed search asks for 192 general rows first, then pages on at 500 with 
     "next=500",
   ]);
   assert.deepEqual(rows, await uncapped("coder"));
-  // Unsloth-B is the general listing's only repeat.
   assert.equal(rows.length, 3 + 699);
-  // The next page starts on the row after the first page's last.
   const general = rows.slice(3);
   assert.equal(general[190], "org/Coder-191");
   assert.equal(general[191], "org/Coder-192");
@@ -228,7 +219,6 @@ test("a model maker's listings ask for their pool first and continue past it unc
     "next=500",
   ]);
   assert.deepEqual(limits(hub.requests, "Qwen:"), ["first=100", "next=500"]);
-  // The search's own listings (Unsloth pass, then the general one) are read after the maker groups.
   assert.ok(limits(hub.requests, "unsloth:qwen").includes("first=3"));
   assert.deepEqual(limits(hub.requests, ":qwen"), ["first=192"]);
   assert.deepEqual(rows, await uncapped("qwen"));
@@ -276,10 +266,8 @@ test("listings that already set their size keep it", async () => {
       .filter((url) => url.searchParams.get("sort") === sort)
       .map((url) => url.searchParams.get("limit"));
   assert.deepEqual(bySort("trendingScore"), ["100"]);
-  // The newest listing is read past its pool of 100: its first page holds a whole batch.
   assert.deepEqual(bySort("createdAt"), ["192"]);
 
-  // A plain browse with no query and no channel is unchanged.
   hub.requests.length = 0;
   const browse = load(hub).open("", { sortBy: "likes" });
   await browse.next();
