@@ -77,8 +77,6 @@ class _Response:
 
 
 class _Wire:
-    """llama-server's /props, /input_tokens and /v1/chat/completions, per port."""
-
     def __init__(self):
         self.input_tokens = 200
         self.context_by_port = {}
