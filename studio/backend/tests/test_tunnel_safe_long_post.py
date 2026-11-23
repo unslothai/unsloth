@@ -121,6 +121,7 @@ def test_managed_engine_log_target_survives_load_failure(route, wait):
             asyncio.run(run())
         assert immediate.value.detail == detail
     else:
+
         async def collect():
             return b"".join(await _collect(await run()))
 

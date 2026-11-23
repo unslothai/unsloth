@@ -38,10 +38,10 @@ def engine(tmp_path, monkeypatch, engine_name):
     monkeypatch.setattr(engine_install, "engine_root", lambda: tmp_path)
     runner = managed_engine.ManagedEngine(engine_name)
     runner.adapter = SimpleNamespace(
-        command=lambda *args, **kwargs: pytest.fail("No command was arranged for this test"),
-        progress=lambda _: None,
-        environment=lambda _: {},
-        key_environment=lambda _: {},
+        command = lambda *args, **kwargs: pytest.fail("No command was arranged for this test"),
+        progress = lambda _: None,
+        environment = lambda _: {},
+        key_environment = lambda _: {},
     )
     try:
         yield runner
@@ -100,11 +100,11 @@ def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engin
     info = managed_engine.installed(engine.engine)
     info["host"] = host
     token_path = tmp_path / "token"
-    token_path.write_text(_FILE_TOKEN, encoding="utf-8")
-    env = dict(os.environ, HF_TOKEN=_TOKEN, HF_TOKEN_PATH=str(token_path))
+    token_path.write_text(_FILE_TOKEN, encoding = "utf-8")
+    env = dict(os.environ, HF_TOKEN = _TOKEN, HF_TOKEN_PATH = str(token_path))
 
-    _arrange_process(engine, monkeypatch, host, attempt="first", fail=True)
-    with pytest.raises(RuntimeError, match="Engine failed to start") as failure:
+    _arrange_process(engine, monkeypatch, host, attempt = "first", fail = True)
+    with pytest.raises(RuntimeError, match = "Engine failed to start") as failure:
         engine.start("model", 1024, [0], env)
     failed_path = Path(failure.value.managed_engine_log_path)
     assert engine.process is None and engine._attempt_log is None
@@ -112,7 +112,7 @@ def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engin
     # The orchestrator creates a fresh engine instance for a manual retry.
     retry = managed_engine.ManagedEngine(engine.engine)
     retry.adapter = engine.adapter
-    _arrange_process(retry, monkeypatch, host, attempt="second", fail=False)
+    _arrange_process(retry, monkeypatch, host, attempt = "second", fail = False)
     try:
         retry.start("model", 1024, [0], env)
         assert retry.phase == "ready"
@@ -120,23 +120,25 @@ def test_failed_launch_stays_selectable_after_retry(tmp_path, monkeypatch, engin
         assert live_log is not None
         ready_path = Path(live_log.path)
         assert ready_path != failed_path
-        assert "Managed engine is ready." in ready_path.read_text(encoding="utf-8")
+        assert "Managed engine is ready." in ready_path.read_text(encoding = "utf-8")
     finally:
         assert retry.stop()
 
     assert live_log._stream.closed
     for path, attempt in ((failed_path, "first"), (ready_path, "second")):
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding = "utf-8")
         assert f"stdout {attempt}" in raw and f"stderr {attempt}" in raw
         assert "Managed engine stopped." in raw
         for secret in (engine.key, retry.key, _TOKEN, _FILE_TOKEN, "auth-test-112233"):
             assert secret not in raw
-    assert "Engine exited during startup." in failed_path.read_text(encoding="utf-8")
+    assert "Engine exited during startup." in failed_path.read_text(encoding = "utf-8")
     if host == "wsl":
-        assert "guest received EOF" in ready_path.read_text(encoding="utf-8")
+        assert "guest received EOF" in ready_path.read_text(encoding = "utf-8")
 
     sources = debug_log_sources.list_sources()
-    assert next(source for source in sources if source.family == engine.engine).realpath == str(ready_path)
+    assert next(source for source in sources if source.family == engine.engine).realpath == str(
+        ready_path
+    )
     old_id = debug_log_sources.source_id_for_path(str(failed_path), sources)
     assert debug_log_sources.resolve_source_id(old_id) == failed_path
 
@@ -162,7 +164,6 @@ def test_guest_output_masks_a_registered_project_folder(engine, monkeypatch):
 def test_diagnostic_token_lookup_skips_devices(engine):
     # The null device returns EOF, so this also terminates on a regressed implementation.
     from unittest.mock import patch
-
     with patch.object(Path, "open", side_effect = AssertionError("opened credential device")):
         masked = engine._log_secrets({"HF_TOKEN": _TOKEN, "HF_TOKEN_PATH": os.devnull})
     assert _TOKEN in masked
@@ -173,11 +174,11 @@ def test_spawn_failure_retains_a_closed_redacted_log(engine, monkeypatch):
         raise OSError(f"spawn failed with {_TOKEN}")
 
     monkeypatch.setattr(subprocess, "Popen", fail)
-    _arrange_process(engine, monkeypatch, "native", attempt="first", fail=True)
-    with pytest.raises(OSError, match="spawn failed") as failure:
-        engine.start("model", 1024, [0], dict(os.environ, HF_TOKEN=_TOKEN))
+    _arrange_process(engine, monkeypatch, "native", attempt = "first", fail = True)
+    with pytest.raises(OSError, match = "spawn failed") as failure:
+        engine.start("model", 1024, [0], dict(os.environ, HF_TOKEN = _TOKEN))
     assert engine._attempt_log is None
-    raw = Path(failure.value.managed_engine_log_path).read_text(encoding="utf-8")
+    raw = Path(failure.value.managed_engine_log_path).read_text(encoding = "utf-8")
     assert "Engine startup failed: spawn failed" in raw
     assert _TOKEN not in raw
 
@@ -219,24 +220,26 @@ def test_logging_failure_does_not_prevent_load_or_unload(engine, monkeypatch, fa
             raise ValueError("scrubber failed")
 
         monkeypatch.setattr(engine, "_redact_output", broken_redaction)
-    _arrange_process(engine, monkeypatch, "native", attempt="ready", fail=False)
+    _arrange_process(engine, monkeypatch, "native", attempt = "ready", fail = False)
     engine.start("model", 1024, [0], dict(os.environ))
     assert engine.phase == "ready"
     log = engine._attempt_log
     assert engine.stop()
     if fail_at == "open":
         assert log is None
-        assert not any(source.family == engine.engine for source in debug_log_sources.list_sources())
+        assert not any(
+            source.family == engine.engine for source in debug_log_sources.list_sources()
+        )
     else:
         assert log._stream.closed
-        assert engine.key not in Path(log.path).read_text(encoding="utf-8")
-        assert "stdout ready" not in Path(log.path).read_text(encoding="utf-8")
+        assert engine.key not in Path(log.path).read_text(encoding = "utf-8")
+        assert "stdout ready" not in Path(log.path).read_text(encoding = "utf-8")
 
 
 def test_cancelled_before_spawn_opens_no_file(engine):
     cancel = threading.Event()
     cancel.set()
-    with pytest.raises(RuntimeError, match="cancelled") as failure:
+    with pytest.raises(RuntimeError, match = "cancelled") as failure:
         engine.start("model", 1024, [0], dict(os.environ), cancel)
     assert not hasattr(failure.value, "managed_engine_log_path")
 
@@ -246,8 +249,8 @@ def test_darwin_has_no_managed_engine_logs(monkeypatch, engine_name):
     monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda _: [0])
     monkeypatch.setattr(managed_engine, "_mig_rows", lambda _: [])
     monkeypatch.setattr(engine_install.platform, "system", lambda: "Darwin")
-    with pytest.raises(ValueError, match="require Linux"):
-        managed_engine.validate_load(engine_name, SimpleNamespace(gpu_ids=None))
+    with pytest.raises(ValueError, match = "require Linux"):
+        managed_engine.validate_load(engine_name, SimpleNamespace(gpu_ids = None))
     assert not any(source.family == engine_name for source in debug_log_sources.list_sources())
 
 
@@ -256,7 +259,7 @@ def test_all_retained_attempts_are_resolvable_alongside_existing_sources(engine_
     from utils.paths import studio_root
 
     server = studio_root() / "logs" / "server"
-    server.mkdir(parents=True)
+    server.mkdir(parents = True)
     (server / "server-fixture.log").touch()
     first = None
     for index in range(DEFAULT_KEEP + 1):

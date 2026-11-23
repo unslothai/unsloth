@@ -33,16 +33,16 @@ class ManagedEngineLog:
         subdirectory, pattern = MANAGED_ENGINE_LOG_FAMILIES[engine]
         try:
             directory = studio_root() / subdirectory
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory.mkdir(mode = 0o700, parents = True, exist_ok = True)
             stream = tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="\n",
-                buffering=1,
-                prefix=f"{engine}-{time.time_ns()}-",
-                suffix=".log",
-                dir=directory,
-                delete=False,
+                mode = "w",
+                encoding = "utf-8",
+                newline = "\n",
+                buffering = 1,
+                prefix = f"{engine}-{time.time_ns()}-",
+                suffix = ".log",
+                dir = directory,
+                delete = False,
             )
         except (OSError, ValueError, RuntimeError):
             get_logger(__name__).warning("Could not open the managed %s log", engine)
@@ -52,11 +52,11 @@ class ManagedEngineLog:
         log = cls(path, stream)
         if not log.write_redacted("Starting managed engine."):
             try:
-                path.unlink(missing_ok=True)
+                path.unlink(missing_ok = True)
             except OSError:
                 pass
             return None
-        prune_log_dir(directory, f"{engine}-*.log", protect=path)
+        prune_log_dir(directory, f"{engine}-*.log", protect = path)
         return log
 
     def write_redacted(self, line: str) -> bool:
