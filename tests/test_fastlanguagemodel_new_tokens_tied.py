@@ -36,6 +36,8 @@ class _Captured(Exception):
 
 
 def _lora_config_for(model, monkeypatch, **kwargs):
+    kwargs.setdefault("use_gradient_checkpointing", False)
+
     def capture(model, lora_config, *args, **kwargs):
         raise _Captured(lora_config)
 
@@ -45,7 +47,6 @@ def _lora_config_for(model, monkeypatch, **kwargs):
             model,
             r = 4,
             target_modules = ["q_proj", "v_proj"],
-            use_gradient_checkpointing = False,
             **kwargs,
         )
     return info.value.args[0]
@@ -85,3 +86,20 @@ def test_new_tokens_keep_two_copies_when_untied_or_opted_out(monkeypatch, tie, e
     )
     assert config.ensure_weight_tying is False
     assert _leaves(config.modules_to_save) == {"embed_tokens", "lm_head"}
+
+
+@pytest.mark.parametrize("tie, offloads_head", [(True, False), (False, True)])
+def test_new_tokens_offload_head_only_when_trained_apart(monkeypatch, tie, offloads_head):
+    # A tied head is rebuilt from the embedding's copy, so writing it to disk is wasted work.
+    offloaded = []
+    # Short sequences fall back to plain checkpointing, which never offloads.
+    monkeypatch.setattr(llama_module, "apply_unsloth_gradient_checkpointing", lambda gc, *a: gc)
+    monkeypatch.setattr(
+        llama_module, "offload_input_embeddings", lambda *a, **k: offloaded.append("input")
+    )
+    monkeypatch.setattr(
+        llama_module, "offload_output_embeddings", lambda *a, **k: offloaded.append("output")
+    )
+    _lora_config_for(_tiny_llama(tie = tie), monkeypatch, use_gradient_checkpointing = "unsloth")
+    assert ("output" in offloaded) is offloads_head
+    assert "input" in offloaded

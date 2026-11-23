@@ -5441,6 +5441,9 @@ class FastLlamaModel:
             modules_to_save,
             ensure_weight_tying,
         )
+        if ensure_weight_tying and "lm_head" not in _embedding_leaves(modules_to_save):
+            # PEFT rebuilds the head from the embedding's copy, so there is no second matrix to offload or upcast.
+            train_lm_head = False
 
         # Fixing untrained tokens here is wrong: it can cause reserved tokens to pop out.
 
