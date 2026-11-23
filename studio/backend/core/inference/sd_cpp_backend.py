@@ -6140,6 +6140,19 @@ class SdCppDiffusionBackend:
         sd_cpp_torch_vae.release()
         return self.status()
 
+    def _metal_vae_conv_status(self, state: Any) -> dict[str, Any]:
+        """``metal_vae_conv_direct`` (on Apple Metal only): whether the VAE takes direct conv and why."""
+        from core.inference import sd_cpp_args
+
+        offload = list(state.offload_flags or ())
+        if not sd_cpp_args._runs_on_apple_metal(offload):
+            return {}
+        binary = getattr(state.server, "binary", None) or getattr(self._engine, "binary", None)
+        if state.native_speed == "off":
+            return {"metal_vae_conv_direct": {"enabled": False, "reason": "off: speed mode off"}}
+        on, reason = sd_cpp_args.metal_vae_conv_direct_decision(offload, binary)
+        return {"metal_vae_conv_direct": {"enabled": on, "reason": reason}}
+
     def status(self) -> dict[str, Any]:
         state = self._state
         # A resident sd-server can exit after load; drop stale state so clients reload, not 500 each time.
@@ -6252,6 +6265,7 @@ class SdCppDiffusionBackend:
             "transformer_quant": None,
             "attention_backend": None,
             "transformer_cache": None,
+            **self._metal_vae_conv_status(state),
             "resolved": state.resolved,
             "engine": "sd_cpp",
             "supports_lora": lora_reason is None,
