@@ -205,7 +205,7 @@ class RawTextDataLoader:
                 break
             next_idx = cut(end_idx - stride)
             if next_idx <= start_idx:
-                next_idx = cut(end_idx - stride, 1)
+                next_idx = min(cut(end_idx - stride, 1), end_idx)
             start_idx = next_idx if next_idx > start_idx else end_idx
 
         # Stride 0 with an exact multiple leaves a lone-EOS chunk; end a full window at EOS so EOS keeps context and no token loses its label.

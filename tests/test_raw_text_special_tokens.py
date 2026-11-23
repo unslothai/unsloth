@@ -137,3 +137,22 @@ def test_text_chunks_with_a_strict_decoder(raw_text, byte_tokenizer):
     byte_tokenizer.__class__ = Strict
     loader = raw_text.RawTextDataLoader(byte_tokenizer, chunk_size = 6, stride = 0)
     assert loader.chunk_text("日本語", return_tokenized = False) == ["日本", "語[EOS]"]
+
+
+def test_text_chunks_never_skip_tokens_when_no_character_edge_is_near(raw_text):
+    # Merges that straddle characters ("\xa9\xc3", "\xa9x") leave no clean edge near the cut.
+    alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
+    vocabulary = {symbol: index for index, symbol in enumerate(alphabet)}
+    for symbol in ("\u00a9\u00c3", "\u00a9x", "[EOS]"):
+        vocabulary[symbol] = len(vocabulary)
+    merges = [("\u00a9", "\u00c3"), ("\u00a9", "x")]
+    backend = tokenizers.Tokenizer(tokenizers.models.BPE(vocabulary, merges))
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(
+        add_prefix_space = False, use_regex = False
+    )
+    backend.decoder = tokenizers.decoders.ByteLevel()
+    tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object = backend, eos_token = "[EOS]")
+
+    loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
+    chunks = loader.chunk_text("\u00e9\u00e9\u00e9\u00e9\u00e9xabcdefghi", return_tokenized = False)
+    assert "x" in "".join(chunks)
