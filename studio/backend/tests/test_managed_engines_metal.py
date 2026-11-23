@@ -125,3 +125,17 @@ def test_turboquant_reaches_vllm_metal_as_platform_config():
     )
     assert "--kv-cache-dtype" not in argv
     assert json.loads(argv[argv.index("--additional-config") + 1]) == {"turboquant": True}
+
+
+def test_metal_loads_on_the_apple_gpu_when_studio_sees_none(mac, monkeypatch):
+    # A Mac whose own MLX stack is unusable falls back to CPU and lists no GPU, yet the engine env has MLX.
+    monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids, **_: [])
+    monkeypatch.setattr(managed_engine, "installed", lambda engine: None)
+    request = SimpleNamespace(gpu_ids = [], model_path = "org/model")
+    with pytest.raises(ValueError, match = "Install vLLM"):
+        managed_engine.validate_load("vllm", request)
+    with pytest.raises(ValueError, match = "one GPU"):
+        managed_engine.validate_load("vllm", SimpleNamespace(gpu_ids = [1], model_path = "org/model"))
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
+    with pytest.raises(ValueError, match = "no GPU"):
+        managed_engine.validate_load("vllm", request)

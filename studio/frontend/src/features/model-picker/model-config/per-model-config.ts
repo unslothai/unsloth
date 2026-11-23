@@ -196,6 +196,13 @@ export function isServedByMlx(
   return !NO_MLX_REASONS.has(chatOnlyReason ?? "");
 }
 
+/** vLLM and SGLang refuse a chat template override, and their template editor is read-only, so picking one drops an MLX template. */
+export function engineSelection(
+  engine: NonNullable<PerModelConfig["engine"]>,
+): Partial<PerModelConfig> {
+  return engine === "auto" ? { engine } : { engine, chatTemplateOverride: null };
+}
+
 /** Native-audio checkpoints load on Apple Silicon without MLX; `loadedIsMlx` null means not loaded. */
 export function residentIsServedByMlx(
   isGguf: boolean,

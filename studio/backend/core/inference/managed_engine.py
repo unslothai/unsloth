@@ -108,8 +108,16 @@ def validate_load(engine: str, request) -> list[int]:
     gpu_ids = list(request.gpu_ids or [])
     if len(set(gpu_ids)) != len(gpu_ids) or any(gpu_id < 0 for gpu_id in gpu_ids):
         raise ValueError("Select distinct, non-negative GPU indices.")
-    # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
-    gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
+    if profile(engine)["platform"] == "metal":
+        # The engine env brings its own MLX, so the one Apple GPU is there even when Studio's MLX is not.
+        if gpu_ids not in ([], [0]):
+            raise ValueError("Apple Silicon has one GPU. Select GPU 0.")
+        gpu_ids = [0]
+    elif gpu_ids:
+        gpu_ids = resolve_requested_gpu_ids(gpu_ids)
+    else:
+        # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
+        gpu_ids = resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
         raise ValueError("Unsloth has no GPU it can assign to this engine.")
     from . import wsl_host

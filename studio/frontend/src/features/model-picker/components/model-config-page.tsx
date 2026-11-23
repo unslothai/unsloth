@@ -233,6 +233,7 @@ import {
   isDefaultConfig,
   isReasoningBudgetMessageValid,
   contextPinPatch,
+  engineSelection,
   isServedByMlx,
   NPU_POWER_MODES,
   type NpuPowerMode,
@@ -4504,7 +4505,7 @@ export function ModelConfigPage({
       />
       <div className="space-y-5">
         {!target.isGguf && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
-          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update(engineSelection(engine))} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
         {/* LoRA adapters keep the precision they were trained in, so they get no switch. */}
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (config.engine ?? "auto") === "auto" && (

@@ -15,7 +15,7 @@ const {
   supportsPrecision,
   supportsKvCacheDtype,
 } = await import("../src/features/model-picker/api/engines.ts");
-const { normalizePerModelConfig } = await import(
+const { engineSelection, normalizePerModelConfig } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
@@ -158,4 +158,10 @@ test("Apple Silicon offers TurboQuant instead of an FP8 KV cache, and a saved ch
   for (const dtype of ["turboquant", "fp8", "auto"] as const) {
     assert.equal(normalizePerModelConfig({ engineKvCacheDtype: dtype }).engineKvCacheDtype, dtype);
   }
+});
+
+test("picking vLLM or SGLang drops an MLX chat template, Default keeps it", () => {
+  assert.deepEqual(engineSelection("vllm"), { engine: "vllm", chatTemplateOverride: null });
+  assert.deepEqual(engineSelection("sglang"), { engine: "sglang", chatTemplateOverride: null });
+  assert.deepEqual(engineSelection("auto"), { engine: "auto" });
 });
