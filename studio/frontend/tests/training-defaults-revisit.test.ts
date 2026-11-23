@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Coming back to the Train page must not re-ask for the model defaults it already applied.
-
 import assert from "node:assert/strict";
 import test, { after, beforeEach } from "node:test";
 
@@ -92,7 +90,6 @@ async function pickModel(): Promise<void> {
   useTrainingConfigStore.setState(DATASET);
 }
 
-// What the Train page does when it mounts.
 async function visitTrain(store: Store = useTrainingConfigStore) {
   store.getState().ensureModelDefaultsLoaded();
   const duringMount = store.getState();
