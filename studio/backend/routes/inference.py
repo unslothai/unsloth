@@ -48369,9 +48369,8 @@ async def _anthropic_passthrough_stream(
         or openai_tools
     )
 
-    # count_chat_tokens blocks on HTTP, so off the loop; pass tools and reasoning kwargs so the
-    # count matches the rendered prompt. Started now and awaited only once the upstream request
-    # is sent, so the count overlaps prefill instead of delaying it; message_start still leads.
+    # Off the loop (blocking HTTP), with tools + reasoning kwargs to match the rendered prompt;
+    # awaited only after the upstream send, so it overlaps prefill.
     async def _count_input_tokens() -> int:
         try:
             return await asyncio.to_thread(
@@ -48592,7 +48591,6 @@ async def _anthropic_passthrough_stream(
                 if failed:
                     return
         except Exception as e:
-            # A failure before dispatch still follows message_start.
             if not _started:
                 for line in await _message_start_lines():
                     yield line
