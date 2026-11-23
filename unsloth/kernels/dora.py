@@ -83,8 +83,8 @@ if torch.version.cuda is not None and os.environ.get("UNSLOTH_DORA_TRITON", "1")
 
 
 if triton is not None:
-    # SPLITS and the sizes vary per projection shape: left unspecialized so one compiled variant serves them all.
-    @triton.jit(do_not_specialize = ["M", "N", "K", "SPLITS"])
+    # SPLITS varies per projection shape; unspecialized, so shapes whose sizes share alignment share one variant.
+    @triton.jit(do_not_specialize = ["SPLITS"])
     def _dora_cross_kernel(
         A,
         W,
