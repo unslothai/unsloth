@@ -23,6 +23,7 @@ import functools
 import importlib
 import importlib.util
 import collections
+import contextvars
 import inspect
 import os
 import re
@@ -5700,6 +5701,55 @@ def _dataset_has_images(dataset):
 _ASYNC_GRPO_SERVER_URLS = set()
 
 
+# The in-process server of the trainer whose `_sync_weight_lora` is running, for the adapter hand-off in its save.
+# Scoped to that call, so a save by another trainer (on its own or an external server) or by any other caller of
+# TRL's `save_lora_adapter`, even of the same model, writes the files as before.
+_ASYNC_GRPO_SYNC_SERVER = contextvars.ContextVar("_ASYNC_GRPO_SYNC_SERVER", default = None)
+
+
+def _async_grpo_tensor_save(save_lora_adapter):
+    # TRL writes the adapter to safetensors for vLLM to read back; the in-process engine takes a host snapshot of
+    # the tensors instead. Other servers and multi-process runs save the files as before.
+    @functools.wraps(save_lora_adapter)
+    def wrapper(model, accelerator, adapter_name, dest_dir, *args, **kwargs):
+        server = _ASYNC_GRPO_SYNC_SERVER.get()
+        if server is not None:
+            if (
+                not args
+                and not kwargs
+                and getattr(accelerator, "num_processes", 1) == 1
+                and server.stage_adapter(model, adapter_name, dest_dir)
+            ):
+                return None
+            # These files are newer than any snapshot still pending on the server.
+            server.discard_staged(model)
+        return save_lora_adapter(model, accelerator, adapter_name, dest_dir, *args, **kwargs)
+
+    wrapper._unsloth_tensor_sync = True
+    return wrapper
+
+
+def _async_grpo_tensor_sync_scope(sync_weight_lora):
+    # Hands the save inside this trainer's own sync to its own in-process server, and only while its client
+    # talks to that server.
+    @functools.wraps(sync_weight_lora)
+    def wrapper(self, *args, **kwargs):
+        server = getattr(self, "_unsloth_vllm_server", None)
+        url = getattr(getattr(self, "vllm_client", None), "server_url", None)
+        if server is not None and (
+            not isinstance(url, str) or url.rstrip("/") != str(server.url).rstrip("/")
+        ):
+            server = None
+        token = _ASYNC_GRPO_SYNC_SERVER.set(server)
+        try:
+            return sync_weight_lora(self, *args, **kwargs)
+        finally:
+            _ASYNC_GRPO_SYNC_SERVER.reset(token)
+
+    wrapper._unsloth_tensor_sync = True
+    return wrapper
+
+
 def _start_async_grpo_vllm_server(model):
     from ._async_grpo_vllm import UnslothAsyncVLLMServer
     return UnslothAsyncVLLMServer(model)
@@ -5970,7 +6020,16 @@ def patch_trl_async_grpo():
             _unsloth_async_grpo_lm_head(getattr(async_module, name), flag, tree_attention),
         )
 
+    save_lora_adapter = getattr(async_module, "save_lora_adapter", None)
+    if callable(save_lora_adapter) and not getattr(
+        save_lora_adapter, "_unsloth_tensor_sync", False
+    ):
+        async_module.save_lora_adapter = _async_grpo_tensor_save(save_lora_adapter)
+
     trainer_class = async_module.AsyncGRPOTrainer
+    original_sync = getattr(trainer_class, "_sync_weight_lora", None)
+    if callable(original_sync) and not getattr(original_sync, "_unsloth_tensor_sync", False):
+        trainer_class._sync_weight_lora = _async_grpo_tensor_sync_scope(original_sync)
     original_init = trainer_class.__init__
     original_train = getattr(trainer_class, "train", None)
 
