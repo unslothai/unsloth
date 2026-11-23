@@ -143,3 +143,24 @@ def test_a_compacted_request_writes_and_links_the_transcript(conn, sandbox):
     path = str(sandbox / f"transcript-{THREAD}.md")
     assert compaction_transcript.mention(path) in result["conversation"][0]["content"]
     assert "Noted, 2024 it is." in (sandbox / f"transcript-{THREAD}.md").read_text()
+
+
+def test_a_second_compaction_still_writes_the_whole_branch(conn, sandbox):
+    from core.inference.llama_cpp import _archive_and_recall
+
+    branch = _branch()
+    _save_thread(THREAD, branch)
+    # A later fit in the same run sees only the already-fitted history, not the turns evicted first.
+    already_fitted = [branch[0], branch[-1]]
+    fitted = _with_block(already_fitted)
+
+    _archive_and_recall(
+        fitted,
+        already_fitted,
+        branch_messages = branch,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = True,
+    )
+
+    assert "Noted, 2024 it is." in (sandbox / f"transcript-{THREAD}.md").read_text()

@@ -2257,7 +2257,7 @@ def _archive_and_recall(
         # Every compacted request: the whole branch as a transcript, linked from the block.
         from core.inference import compaction_transcript
 
-        transcript = compaction_transcript.write(thread_id, before)
+        transcript = compaction_transcript.write(thread_id, branch_messages or before)
         if transcript:
             conversation = compaction_transcript.link_in_block(conversation, transcript)
             result["conversation"] = conversation
