@@ -6047,6 +6047,8 @@ class FastLlamaModel:
             restore_use_cache(model)
         except ImportError:
             pass
+        # A "1" leaked by an interrupted GRPO logprob pass would make generate sample hidden states (as vision.py).
+        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         return model
 
     @staticmethod
