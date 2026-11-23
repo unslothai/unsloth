@@ -625,11 +625,13 @@ def _gqa_decode_scores(Qn, Kn, out):
     bsz, n_heads, _, head_dim = Qn.shape
     _, n_kv_heads, cached_len, _ = Kn.shape
     n_groups = n_heads // n_kv_heads
-    torch_matmul(
-        Qn.view(bsz, n_kv_heads, n_groups, head_dim),
-        Kn.transpose(2, 3),
-        out = out.view(bsz, n_kv_heads, n_groups, cached_len),
-    )
+    Qg = Qn.view(bsz, n_kv_heads, n_groups, head_dim)
+    out_g = out.view(bsz, n_kv_heads, n_groups, cached_len)
+    if torch.compiler.is_compiling():
+        # Dynamo graph-breaks on out= into a strided view (the scratch is sliced to cached_len).
+        out_g.copy_(torch_matmul(Qg, Kn.transpose(2, 3)))
+    else:
+        torch_matmul(Qg, Kn.transpose(2, 3), out = out_g)
     return out
 
 
@@ -644,7 +646,9 @@ def _gqa_decode_values(A, Vn, out):
     V = Vn.reshape(bsz * n_kv_heads, cached_len, head_dim)
     O = out.view(bsz * n_kv_heads, n_groups, head_dim)
     aligned = cached_len - cached_len % 8
-    if aligned == 0 or aligned == cached_len:
+    if torch.compiler.is_compiling():
+        O.copy_(torch.bmm(A, V))
+    elif aligned == 0 or aligned == cached_len:
         torch.bmm(A, V, out = O)
     else:
         torch.bmm(A[:, :, :aligned], V[:, :aligned], out = O)
@@ -656,7 +660,8 @@ def _gqa_decode_values(A, Vn, out):
 # cache is large enough to beat SDPA on this card. UNSLOTH_GROUPED_DECODE: "auto" (default) = the
 # measured per-card crossover below, "1" = every batch, "0" = batch 1 only (the old behaviour).
 GROUPED_DECODE = os.environ.get("UNSLOTH_GROUPED_DECODE", "auto")
-# Batched decode attention calls (one per layer per step) that took the grouped route.
+# Batched decode attention calls (one per layer per step) that took the grouped route, counted in
+# eager only: torch.compile'd calls are not counted, a captured CUDA graph counts once at capture.
 GROUPED_DECODE_CALLS = [0]
 # Per card: the smallest bsz * cached_len that takes the grouped route in place of (SDPA GQA without
 # a mask, SDPA GQA with a padding mask, K / V expanded per query head); None = never. Measured end to
@@ -701,7 +706,10 @@ def _grouped_decode_batched(bsz, cached_len, expand, masked, device):
         threshold = _grouped_decode_rule(device)[2 if expand else int(masked)]
         if threshold is None or bsz * cached_len < threshold:
             return False
-    GROUPED_DECODE_CALLS[0] += 1
+    # Count eager calls only: a traced `+= 1` on a module-level int becomes a Dynamo guard on its
+    # value, so every call would fail the guard and recompile the frame at the same shapes.
+    if not torch.compiler.is_compiling():
+        GROUPED_DECODE_CALLS[0] += 1
     return True
 
 

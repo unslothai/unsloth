@@ -434,3 +434,35 @@ def test_grouped_decode_rule_matches_whole_card_names(monkeypatch, name, rule):
     monkeypatch.setattr(llama, "_grouped_decode_rules", {})
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: name)
     assert llama._grouped_decode_rule(torch.device("cuda", 0)) == rule
+
+
+@pytest.mark.parametrize("fullgraph", [False, True], ids = ["default", "fullgraph"])
+def test_batched_grouped_decode_core_compiles_once_at_a_fixed_shape(monkeypatch, fullgraph):
+    # The engagement counter must stay out of Dynamo's guards: a traced `GROUPED_DECODE_CALLS[0] += 1`
+    # guarded on the counter's value, so six identical calls compiled six frames.
+    from torch._dynamo.testing import CompileCounter
+
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "1")
+    torch.manual_seed(3)
+    bsz, kv_len, rows = 3, 13, 32
+    attn = _attention(bsz, torch.float32)
+    attn.paged_attention = torch.randn(rows, 2, bsz, N_KV, HEAD_DIM)
+    attn.paged_attention_K = attn.paged_attention[:, 0]
+    attn.paged_attention_V = attn.paged_attention[:, 1]
+    attn.attention = torch.empty(bsz, N_HEADS, 1, rows)
+    attn.scalar = 1.0 / HEAD_DIM**0.5
+    keep = _keep_mask(bsz, kv_len)
+    Q = torch.randn(bsz, 1, N_HEADS, HEAD_DIM).transpose(1, 2)
+
+    calls = llama.GROUPED_DECODE_CALLS[0]
+    eager = llama._decode_attention_core(attn, Q.clone(), kv_len, keep, bsz, True)[0].clone()
+    assert llama.GROUPED_DECODE_CALLS[0] - calls == 1  # eager calls are still counted
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    core = torch.compile(llama._decode_attention_core, backend = counter, fullgraph = fullgraph)
+    for _ in range(6):
+        out = core(attn, Q.clone(), kv_len, keep, bsz, True)[0]
+        torch.testing.assert_close(out, eager)
+    torch._dynamo.reset()
+    assert counter.frame_count == 1, counter.frame_count
