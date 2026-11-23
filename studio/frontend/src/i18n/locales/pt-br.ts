@@ -705,6 +705,8 @@ export const ptBR = {
     precisionHelp: "Padrão do modelo preserva a precisão armazenada. As outras opções convertem pesos não quantizados ao carregar.",
     kvCache: "Cache KV",
     kvCacheFp8: "FP8 (metade da memória)",
+    kvCacheTurboQuant: "TurboQuant (compactado)",
+    kvCacheTurboQuantHelp: "O TurboQuant compacta o cache de contexto em chaves de cerca de 8 bits e valores de 3 bits, cabendo mais que o dobro de contexto na mesma memória. As respostas podem diferir um pouco das do cache sem compactação.",
     kvCacheHelp: "FP8 armazena o cache de contexto em 8 bits, o que cabe cerca do dobro de contexto na mesma memória. Sem escalas calibradas no checkpoint, as respostas podem ficar um pouco menos precisas.",
     gpuMemory: "Limite de memória da GPU",
     gpuMemoryAuto: "Automático",
@@ -736,6 +738,7 @@ export const ptBR = {
     lastAttempt: "Última tentativa: {time}",
     cancelled: "Instalação cancelada. Você pode tentar novamente.",
     scope: "Chat de texto e imagem em GPUs NVIDIA. O primeiro carregamento pode demorar mais.",
+    scopeMetal: "Chat de texto e imagem no Apple Silicon. O primeiro carregamento pode demorar mais.",
   },
   sandboxSetup: {
     levelTitle: "O sandbox do sistema não está disponível",

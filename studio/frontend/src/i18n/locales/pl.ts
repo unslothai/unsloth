@@ -776,6 +776,8 @@ export const pl = {
       "Domyślna modelu zachowuje zapisaną precyzję. Inne opcje konwertują nieskwantyzowane wagi podczas wczytywania.",
     kvCache: "Pamięć podręczna KV",
     kvCacheFp8: "FP8 (połowa pamięci)",
+    kvCacheTurboQuant: "TurboQuant (skompresowana)",
+    kvCacheTurboQuantHelp: "TurboQuant kompresuje pamięć podręczną kontekstu do około 8-bitowych kluczy i 3-bitowych wartości, dzięki czemu w tej samej pamięci mieści się ponad dwa razy więcej kontekstu. Odpowiedzi mogą się nieznacznie różnić od tych z nieskompresowanej pamięci podręcznej.",
     kvCacheHelp:
       "FP8 przechowuje pamięć podręczną kontekstu w 8 bitach, mieszcząc w tej samej pamięci około dwa razy więcej kontekstu. Bez skalibrowanych współczynników skali w punkcie kontrolnym odpowiedzi mogą być nieco mniej dokładne.",
     gpuMemory: "Limit pamięci GPU",
@@ -816,6 +818,7 @@ export const pl = {
     cancelled: "Anulowano instalację. Możesz spróbować ponownie.",
     scope:
       "Czat tekstowy i z obrazami na procesorach GPU NVIDIA. Pierwsze wczytanie może potrwać dłużej.",
+    scopeMetal: "Czat tekstowy i obrazowy na Apple Silicon. Pierwsze wczytanie może potrwać dłużej.",
   },
   sandboxSetup: {
     levelTitle: "Piaskownica systemu operacyjnego jest niedostępna",

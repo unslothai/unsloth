@@ -743,6 +743,8 @@ export const zhTW = {
       "「模型預設」會保留儲存時的精確度。其他選項會在載入時轉換未量化的權重。",
     kvCache: "KV 快取",
     kvCacheFp8: "FP8（記憶體減半）",
+    kvCacheTurboQuant: "TurboQuant（壓縮）",
+    kvCacheTurboQuantHelp: "TurboQuant 將上下文快取壓縮為約 8 位元的鍵與 3 位元的值，相同記憶體可容納兩倍以上的上下文。回答可能與未壓縮的快取略有不同。",
     kvCacheHelp:
       "FP8 以 8 位元儲存上下文快取，相同記憶體可容納約兩倍的上下文。若檢查點中沒有校準過的縮放係數，回答的準確度可能會略為下降。",
     gpuMemory: "GPU 記憶體上限",
@@ -777,6 +779,7 @@ export const zhTW = {
     lastAttempt: "上次嘗試：{time}",
     cancelled: "已取消安裝。您可以重試。",
     scope: "在 NVIDIA GPU 上進行文字和圖片聊天。第一次載入可能需要較長時間。",
+    scopeMetal: "在 Apple Silicon 上進行文字與圖像聊天。首次載入可能需要較長時間。",
   },
   sandboxSetup: {
     levelTitle: "無法使用作業系統沙箱",

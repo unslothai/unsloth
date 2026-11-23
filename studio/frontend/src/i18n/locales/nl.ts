@@ -776,6 +776,8 @@ export const nl = {
       "Standaard van model behoudt de opgeslagen precisie. Andere opties converteren niet-gekwantiseerde gewichten tijdens het laden.",
     kvCache: "KV-cache",
     kvCacheFp8: "FP8 (half zoveel geheugen)",
+    kvCacheTurboQuant: "TurboQuant (gecomprimeerd)",
+    kvCacheTurboQuantHelp: "TurboQuant comprimeert de contextcache tot sleutels van ongeveer 8 bits en waarden van 3 bits, waardoor meer dan twee keer zoveel context in hetzelfde geheugen past. Antwoorden kunnen iets afwijken van de ongecomprimeerde cache.",
     kvCacheHelp:
       "FP8 slaat de contextcache op in 8 bits, waardoor ongeveer twee keer zoveel context in hetzelfde geheugen past. Zonder gekalibreerde schalen in het checkpoint kunnen antwoorden iets minder nauwkeurig zijn.",
     gpuMemory: "Limiet GPU-geheugen",
@@ -817,6 +819,7 @@ export const nl = {
     cancelled: "Installatie geannuleerd. Je kunt het opnieuw proberen.",
     scope:
       "Tekst- en afbeeldingschat op NVIDIA-GPU's. Het eerste laden kan langer duren.",
+    scopeMetal: "Tekst- en beeldchat op Apple Silicon. Het eerste laden kan langer duren.",
   },
   sandboxSetup: {
     levelTitle: "OS-sandbox is niet beschikbaar",

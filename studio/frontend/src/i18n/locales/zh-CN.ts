@@ -705,6 +705,8 @@ export const zhCN = {
     precisionHelp: "模型默认会保留存储的精度。其他选项会在加载时转换未量化的权重。",
     kvCache: "KV 缓存",
     kvCacheFp8: "FP8（内存减半）",
+    kvCacheTurboQuant: "TurboQuant（压缩）",
+    kvCacheTurboQuantHelp: "TurboQuant 将上下文缓存压缩为约 8 位的键和 3 位的值，相同内存可容纳两倍以上的上下文。回答可能与未压缩的缓存略有不同。",
     kvCacheHelp: "FP8 以 8 位存储上下文缓存，相同内存可容纳约两倍的上下文。如果检查点中没有校准过的缩放因子，回答的准确性可能略有下降。",
     gpuMemory: "GPU 内存上限",
     gpuMemoryAuto: "自动",
@@ -736,6 +738,7 @@ export const zhCN = {
     lastAttempt: "上次尝试：{time}",
     cancelled: "安装已取消。你可以重试。",
     scope: "在 NVIDIA GPU 上进行文本和图像聊天。首次加载可能需要更长时间。",
+    scopeMetal: "在 Apple Silicon 上进行文本和图像聊天。首次加载可能需要更长时间。",
   },
   sandboxSetup: {
     levelTitle: "操作系统沙盒不可用",

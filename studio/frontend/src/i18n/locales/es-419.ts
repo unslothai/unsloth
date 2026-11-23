@@ -776,6 +776,8 @@ export const es419 = {
       "El predeterminado del modelo conserva la precisión almacenada. Las demás opciones convierten los pesos sin cuantizar al cargar.",
     kvCache: "Caché KV",
     kvCacheFp8: "FP8 (la mitad de memoria)",
+    kvCacheTurboQuant: "TurboQuant (comprimida)",
+    kvCacheTurboQuantHelp: "TurboQuant comprime la caché de contexto a claves de unos 8 bits y valores de 3 bits, y cabe más del doble de contexto en la misma memoria. Las respuestas pueden variar un poco respecto de la caché sin comprimir.",
     kvCacheHelp:
       "FP8 guarda la caché de contexto en 8 bits, así que cabe aproximadamente el doble de contexto en la misma memoria. Sin escalas calibradas en el checkpoint, las respuestas pueden ser algo menos precisas.",
     gpuMemory: "Límite de memoria de GPU",
@@ -815,6 +817,7 @@ export const es419 = {
     cancelled: "Instalación cancelada. Puedes volver a intentarlo.",
     scope:
       "Chat de texto e imagen en GPU NVIDIA. La primera carga puede tardar más.",
+    scopeMetal: "Chat de texto e imágenes en Apple Silicon. La primera carga puede tardar más.",
   },
   sandboxSetup: {
     levelTitle: "El sandbox del sistema no está disponible",

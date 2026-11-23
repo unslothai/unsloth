@@ -772,6 +772,8 @@ export const id = {
       "Default model mempertahankan presisi yang tersimpan. Opsi lain mengonversi bobot yang tidak dikuantisasi saat dimuat.",
     kvCache: "Cache KV",
     kvCacheFp8: "FP8 (setengah memori)",
+    kvCacheTurboQuant: "TurboQuant (terkompresi)",
+    kvCacheTurboQuantHelp: "TurboQuant memampatkan cache konteks menjadi kunci sekitar 8-bit dan nilai 3-bit, sehingga lebih dari dua kali konteks muat dalam memori yang sama. Jawaban bisa sedikit berbeda dari cache yang tidak dimampatkan.",
     kvCacheHelp:
       "FP8 menyimpan cache konteks dalam 8 bit, sehingga memuat sekitar dua kali lipat konteks dalam memori yang sama. Tanpa skala terkalibrasi di checkpoint, jawaban dapat sedikit kurang akurat.",
     gpuMemory: "Batas memori GPU",
@@ -810,6 +812,7 @@ export const id = {
     cancelled: "Instalasi dibatalkan. Anda dapat mencoba lagi.",
     scope:
       "Chat teks dan gambar di GPU NVIDIA. Pemuatan pertama mungkin memakan waktu lebih lama.",
+    scopeMetal: "Chat teks dan gambar di Apple Silicon. Pemuatan pertama mungkin memakan waktu lebih lama.",
   },
   sandboxSetup: {
     levelTitle: "Sandbox OS tidak tersedia",

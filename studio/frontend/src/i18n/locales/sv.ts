@@ -735,6 +735,8 @@ export const sv = {
       "Modellens standard behåller lagrad precision. Andra alternativ konverterar okvantiserade vikter vid inläsning.",
     kvCache: "KV-cache",
     kvCacheFp8: "FP8 (halva minnet)",
+    kvCacheTurboQuant: "TurboQuant (komprimerad)",
+    kvCacheTurboQuantHelp: "TurboQuant komprimerar kontextcachen till ungefär 8-bitars nycklar och 3-bitars värden, så att mer än dubbelt så mycket kontext ryms i samma minne. Svaren kan skilja sig något från den okomprimerade cachen.",
     kvCacheHelp:
       "FP8 lagrar kontextcachen med 8 bitar och rymmer ungefär dubbelt så mycket kontext i samma minne. Utan kalibrerade skalor i checkpointen kan svaren bli något mindre exakta.",
     gpuMemory: "GPU-minnesgräns",
@@ -772,6 +774,7 @@ export const sv = {
     cancelled: "Installationen avbröts. Du kan försöka igen.",
     scope:
       "Text- och bildchatt på NVIDIA-GPU:er. Första inläsningen kan ta längre tid.",
+    scopeMetal: "Text- och bildchatt på Apple Silicon. Första inläsningen kan ta längre tid.",
   },
   sandboxSetup: {
     levelTitle: "OS-sandlådan är inte tillgänglig",

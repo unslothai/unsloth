@@ -773,6 +773,8 @@ export const vi = {
       "Mặc định của mô hình giữ nguyên độ chính xác đã lưu. Các tùy chọn khác sẽ chuyển đổi trọng số chưa lượng tử hóa khi nạp.",
     kvCache: "Bộ nhớ đệm KV",
     kvCacheFp8: "FP8 (một nửa bộ nhớ)",
+    kvCacheTurboQuant: "TurboQuant (nén)",
+    kvCacheTurboQuantHelp: "TurboQuant nén bộ nhớ đệm ngữ cảnh thành khóa khoảng 8 bit và giá trị 3 bit, chứa được hơn gấp đôi ngữ cảnh trong cùng dung lượng bộ nhớ. Câu trả lời có thể hơi khác so với bộ nhớ đệm không nén.",
     kvCacheHelp:
       "FP8 lưu bộ nhớ đệm ngữ cảnh ở 8 bit, chứa được khoảng gấp đôi ngữ cảnh trong cùng dung lượng bộ nhớ. Nếu checkpoint không có hệ số tỷ lệ đã hiệu chỉnh, câu trả lời có thể kém chính xác hơn một chút.",
     gpuMemory: "Giới hạn bộ nhớ GPU",
@@ -812,6 +814,7 @@ export const vi = {
     cancelled: "Đã hủy cài đặt. Bạn có thể thử lại.",
     scope:
       "Trò chuyện bằng văn bản và hình ảnh trên GPU NVIDIA. Lần nạp đầu tiên có thể lâu hơn.",
+    scopeMetal: "Trò chuyện văn bản và hình ảnh trên Apple Silicon. Lần tải đầu tiên có thể mất nhiều thời gian hơn.",
   },
   sandboxSetup: {
     levelTitle: "Không có sandbox của hệ điều hành",

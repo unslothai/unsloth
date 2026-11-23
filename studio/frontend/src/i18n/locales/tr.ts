@@ -772,6 +772,8 @@ export const tr = {
       "Model varsayılanı, kayıtlı hassasiyeti korur. Diğer seçenekler, nicelenmemiş ağırlıkları yükleme sırasında dönüştürür.",
     kvCache: "KV önbelleği",
     kvCacheFp8: "FP8 (yarı bellek)",
+    kvCacheTurboQuant: "TurboQuant (sıkıştırılmış)",
+    kvCacheTurboQuantHelp: "TurboQuant bağlam önbelleğini yaklaşık 8 bitlik anahtarlara ve 3 bitlik değerlere sıkıştırarak aynı belleğe iki katından fazla bağlam sığdırır. Yanıtlar sıkıştırılmamış önbellekten biraz farklı olabilir.",
     kvCacheHelp:
       "FP8, bağlam önbelleğini 8 bitte saklar ve aynı bellekte yaklaşık iki kat bağlam sığdırır. Kontrol noktasında kalibre edilmiş ölçekler yoksa yanıtlar biraz daha az doğru olabilir.",
     gpuMemory: "GPU belleği sınırı",
@@ -811,6 +813,7 @@ export const tr = {
     cancelled: "Kurulum iptal edildi. Yeniden deneyebilirsiniz.",
     scope:
       "NVIDIA GPU'larda metin ve görsel sohbeti. İlk yükleme daha uzun sürebilir.",
+    scopeMetal: "Apple Silicon üzerinde metin ve görsel sohbeti. İlk yükleme daha uzun sürebilir.",
   },
   sandboxSetup: {
     levelTitle: "İşletim sistemi korumalı alanı kullanılamıyor",

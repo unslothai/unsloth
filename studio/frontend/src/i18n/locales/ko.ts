@@ -705,6 +705,8 @@ export const ko = {
     precisionHelp: "모델 기본값은 저장된 정밀도를 유지합니다. 다른 옵션은 로드할 때 양자화되지 않은 가중치를 변환합니다.",
     kvCache: "KV 캐시",
     kvCacheFp8: "FP8(메모리 절반)",
+    kvCacheTurboQuant: "TurboQuant (압축)",
+    kvCacheTurboQuantHelp: "TurboQuant는 컨텍스트 캐시를 약 8비트 키와 3비트 값으로 압축해 같은 메모리에 두 배 이상의 컨텍스트를 담습니다. 답변이 압축하지 않은 캐시와 약간 다를 수 있습니다.",
     kvCacheHelp: "FP8은 컨텍스트 캐시를 8비트로 저장하여 같은 메모리에 약 두 배의 컨텍스트를 담습니다. 체크포인트에 보정된 스케일이 없으면 답변의 정확도가 약간 떨어질 수 있습니다.",
     gpuMemory: "GPU 메모리 한도",
     gpuMemoryAuto: "자동",
@@ -736,6 +738,7 @@ export const ko = {
     lastAttempt: "마지막 시도: {time}",
     cancelled: "설치가 취소되었습니다. 다시 시도할 수 있습니다.",
     scope: "NVIDIA GPU에서 텍스트 및 이미지 채팅을 지원합니다. 첫 로드는 시간이 더 걸릴 수 있습니다.",
+    scopeMetal: "Apple Silicon에서 텍스트 및 이미지 채팅. 처음 불러올 때 시간이 더 걸릴 수 있습니다.",
   },
   sandboxSetup: {
     levelTitle: "OS 샌드박스를 사용할 수 없습니다",

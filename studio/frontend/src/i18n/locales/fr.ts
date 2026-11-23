@@ -705,6 +705,8 @@ export const fr = {
     precisionHelp: "La valeur par défaut du modèle conserve la précision stockée. Les autres options convertissent les poids non quantifiés au chargement.",
     kvCache: "Cache KV",
     kvCacheFp8: "FP8 (moitié moins de mémoire)",
+    kvCacheTurboQuant: "TurboQuant (compressé)",
+    kvCacheTurboQuantHelp: "TurboQuant compresse le cache de contexte en clés d’environ 8 bits et en valeurs de 3 bits, ce qui permet de loger plus du double de contexte dans la même mémoire. Les réponses peuvent légèrement différer de celles du cache non compressé.",
     kvCacheHelp: "FP8 stocke le cache de contexte sur 8 bits, ce qui permet de loger environ deux fois plus de contexte dans la même mémoire. Sans échelles calibrées dans le checkpoint, les réponses peuvent être légèrement moins précises.",
     gpuMemory: "Limite de mémoire GPU",
     gpuMemoryAuto: "Automatique",
@@ -736,6 +738,7 @@ export const fr = {
     lastAttempt: "Dernière tentative : {time}",
     cancelled: "Installation annulée. Vous pouvez réessayer.",
     scope: "Chat texte et image sur les GPU NVIDIA. Le premier chargement peut être plus long.",
+    scopeMetal: "Chat texte et image sur Apple Silicon. Le premier chargement peut prendre plus de temps.",
   },
   sandboxSetup: {
     levelTitle: "Le bac à sable du système n'est pas disponible",

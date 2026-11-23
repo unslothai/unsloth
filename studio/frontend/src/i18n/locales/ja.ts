@@ -706,6 +706,8 @@ export const ja = {
     precisionHelp: "モデルのデフォルトでは保存されている精度を維持します。その他のオプションでは、読み込み時に量子化されていない重みを変換します。",
     kvCache: "KV キャッシュ",
     kvCacheFp8: "FP8（メモリ半分）",
+    kvCacheTurboQuant: "TurboQuant（圧縮）",
+    kvCacheTurboQuantHelp: "TurboQuant はコンテキストキャッシュをおよそ 8 ビットのキーと 3 ビットの値に圧縮し、同じメモリに 2 倍以上のコンテキストを収めます。回答は非圧縮のキャッシュとわずかに異なる場合があります。",
     kvCacheHelp: "FP8 はコンテキストキャッシュを 8 ビットで保存し、同じメモリで約 2 倍のコンテキストを扱えます。チェックポイントに較正済みのスケールがない場合、回答の精度がわずかに下がることがあります。",
     gpuMemory: "GPU メモリの上限",
     gpuMemoryAuto: "自動",
@@ -737,6 +739,7 @@ export const ja = {
     lastAttempt: "最後の試行: {time}",
     cancelled: "インストールをキャンセルしました。再試行できます。",
     scope: "NVIDIA GPU でのテキストと画像のチャット。初回の読み込みには時間がかかる場合があります。",
+    scopeMetal: "Apple Silicon でのテキストと画像のチャット。初回の読み込みには時間がかかる場合があります。",
   },
   sandboxSetup: {
     levelTitle: "OS サンドボックスを利用できません",

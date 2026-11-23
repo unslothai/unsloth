@@ -771,6 +771,8 @@ export const cs = {
       "Výchozí nastavení modelu zachová uloženou přesnost. Ostatní možnosti při načítání převedou nekvantizované váhy.",
     kvCache: "Mezipaměť KV",
     kvCacheFp8: "FP8 (poloviční paměť)",
+    kvCacheTurboQuant: "TurboQuant (komprimovaná)",
+    kvCacheTurboQuantHelp: "TurboQuant komprimuje mezipaměť kontextu přibližně na 8bitové klíče a 3bitové hodnoty, takže se do stejné paměti vejde více než dvojnásobný kontext. Odpovědi se mohou mírně lišit od nekomprimované mezipaměti.",
     kvCacheHelp:
       "FP8 ukládá mezipaměť kontextu v 8 bitech, takže se do stejné paměti vejde zhruba dvojnásobný kontext. Bez kalibrovaných měřítek v kontrolním bodě mohou být odpovědi o něco méně přesné.",
     gpuMemory: "Limit paměti GPU",
@@ -811,6 +813,7 @@ export const cs = {
     cancelled: "Instalace byla zrušena. Můžete to zkusit znovu.",
     scope:
       "Textový a obrázkový chat na GPU NVIDIA. První načtení může trvat déle.",
+    scopeMetal: "Textový a obrázkový chat na Apple Silicon. První načtení může trvat déle.",
   },
   sandboxSetup: {
     levelTitle: "Sandbox operačního systému není k dispozici",

@@ -705,6 +705,8 @@ export const de = {
     precisionHelp: "Der Modellstandard behält die gespeicherte Präzision bei. Andere Optionen konvertieren nicht quantisierte Gewichte beim Laden.",
     kvCache: "KV-Cache",
     kvCacheFp8: "FP8 (halber Speicher)",
+    kvCacheTurboQuant: "TurboQuant (komprimiert)",
+    kvCacheTurboQuantHelp: "TurboQuant komprimiert den Kontext-Cache auf etwa 8-Bit-Schlüssel und 3-Bit-Werte und passt so mehr als doppelt so viel Kontext in denselben Speicher. Antworten können leicht vom unkomprimierten Cache abweichen.",
     kvCacheHelp: "FP8 speichert den Kontext-Cache in 8 Bit und passt so etwa doppelt so viel Kontext in denselben Speicher. Ohne kalibrierte Skalen im Checkpoint können Antworten etwas ungenauer sein.",
     gpuMemory: "GPU-Speicherlimit",
     gpuMemoryAuto: "Automatisch",
@@ -736,6 +738,7 @@ export const de = {
     lastAttempt: "Letzter Versuch: {time}",
     cancelled: "Installation abgebrochen. Sie können es erneut versuchen.",
     scope: "Text- und Bild-Chat auf NVIDIA-GPUs. Das erste Laden kann länger dauern.",
+    scopeMetal: "Text- und Bild-Chat auf Apple Silicon. Das erste Laden kann länger dauern.",
   },
   sandboxSetup: {
     levelTitle: "OS-Sandbox ist nicht verfügbar",
