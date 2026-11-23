@@ -31,6 +31,7 @@ from unsloth_cli._inference import (
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
     render_columns,
+    server_load_opts,
     visible_text,
 )
 
@@ -1664,6 +1665,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
+                "use_saved_settings": True,
             },
             None,
         )
@@ -1801,6 +1803,119 @@ def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spelling
     backend.ensure_loaded("c:/models/foo", hf_token = None, max_seq_length = 4096, load_in_4bit = None)
 
     assert loads[0].get("gguf_variant") == "Q8_0"
+
+
+def _untyped_load_payload(
+    monkeypatch,
+    status,
+    model = "unsloth/Qwen3-0.6B-GGUF",
+    llama_extra_args = None,
+):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    loads = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            if status is None:
+                raise OSError("status unavailable")
+            return _FakeStatusResponse(status)
+        loads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    backend.ensure_loaded(
+        model,
+        hf_token = None,
+        max_seq_length = None,
+        load_in_4bit = None,
+        tensor_parallel = None,
+        llama_extra_args = llama_extra_args,
+    )
+    return loads[0]
+
+
+@pytest.mark.parametrize(
+    "status",
+    [None, {**_RESIDENT_Q8, "model_identifier": "unsloth/Qwen3-1.7B-GGUF"}],
+)
+def test_http_backend_cold_load_applies_saved_settings(monkeypatch, status):
+    payload = _untyped_load_payload(monkeypatch, status)
+
+    assert payload["use_saved_settings"] is True
+    assert "max_seq_length" not in payload
+    assert "tensor_parallel" not in payload
+
+
+def test_http_backend_load_keeps_the_resident_context_and_kv_cache(monkeypatch):
+    status = {
+        **_RESIDENT_Q8,
+        "requested_context_length": 65536,
+        "cache_type_kv": "q8_0",
+        "tensor_parallel": False,
+        "requested_parallel_slots": 4,
+        "requested_llama_extra_args": ["--top-k", "20"],
+    }
+
+    payload = _untyped_load_payload(monkeypatch, status)
+
+    assert payload["max_seq_length"] == 65536
+    assert payload["cache_type_kv"] == "q8_0"
+    assert payload["gguf_variant"] == "Q8_0"
+    assert "use_saved_settings" not in payload
+    assert "n_parallel" not in payload
+    assert "llama_extra_args" not in payload
+
+
+def test_http_backend_load_keeps_a_resident_gguf_file_loaded(monkeypatch):
+    model = "/models/Qwen3-0.6B-Q8_0.gguf"
+    status = {
+        **_RESIDENT_Q8,
+        "model_identifier": model,
+        "requested_context_length": 65536,
+        "cache_type_kv": "q8_0",
+    }
+
+    payload = _untyped_load_payload(monkeypatch, status, model = model)
+
+    assert payload["max_seq_length"] == 65536
+    assert payload["cache_type_kv"] == "q8_0"
+    assert "use_saved_settings" not in payload
+    assert "gguf_variant" not in payload
+
+
+@pytest.mark.parametrize(
+    ("extras", "gpu_ids"),
+    [(None, [0, 1]), (["--device", "CUDA1,CUDA0"], None), (["--main-gpu=1"], None)],
+)
+def test_http_backend_load_lets_typed_device_extras_beat_the_resident_gpu_pin(
+    monkeypatch, extras, gpu_ids
+):
+    status = {
+        **_RESIDENT_Q8,
+        "requested_gpu_ids": [0, 1],
+        "tensor_split": [3.0, 1.0],
+        "gpu_memory_mode": "manual",
+    }
+
+    payload = _untyped_load_payload(monkeypatch, status, llama_extra_args = extras)
+
+    assert payload.get("gpu_ids") == gpu_ids
+    assert payload.get("tensor_split") == (gpu_ids and [3.0, 1.0])
+
+
+def test_chat_leaves_untyped_tensor_parallel_to_the_server():
+    class Ctx:
+        def get_parameter_source(self, name):
+            return None
+
+    opts = server_load_opts(Ctx(), {"tensor_parallel": False, "max_seq_length": 0})
+
+    assert opts["tensor_parallel"] is None
 
 
 def test_http_backend_load_drains_the_padded_body(monkeypatch):

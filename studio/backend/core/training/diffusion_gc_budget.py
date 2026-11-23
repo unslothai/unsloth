@@ -9,8 +9,8 @@ card idle. Step 1 measures the first block of each class; afterwards free memory
 recompute (same kernels, same inputs, so loss and gradients are unchanged). An out-of-memory error halves the kept set
 (every block checkpointed once nothing is left) and reruns the step from the same inputs.
 
-``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA (not ROCm); ``plain`` checkpoints every block
-and ``partial`` every Nth, as before.
+``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA and ROCm (unset leaves it off on a discrete
+Windows ROCm card, see rocm_windows_discrete); ``plain`` checkpoints every block and ``partial`` every Nth, as before.
 
 The blocks that stay checkpointed keep their long attention outputs (a selective checkpoint policy), so the backward
 recompute skips those kernels: a few percent of the card buys most of the attention forward. The plan charges every
@@ -39,12 +39,35 @@ def gc_budget_mode() -> str:
     return raw if raw in ("plain", "partial") else "auto"
 
 
-def _is_rocm() -> bool:
+def _mem_get_info() -> tuple[int, int]:
+    """(free, total) for budgets: Studio's trusted reading (Windows ROCm's WDDM free over-report capped), else torch."""
+    try:
+        from utils.hardware import trusted_mem_get_info
+    except ImportError:  # the trainer outside Studio's backend
+        import torch
+        return torch.cuda.mem_get_info()
+    return trusted_mem_get_info()
+
+
+def rocm_windows_discrete(device = "cuda") -> bool:
+    """A discrete (not APU) Radeon card under Windows ROCm. WDDM shows these budgets the whole card as free (blind to
+    other processes) and satisfies an overflow from host RAM instead of raising, so the OOM step-down never fires;
+    the budgets were measured only on a unified-memory gfx1151. Never raises: unknown answers False."""
+    import sys
+
+    if sys.platform != "win32":
+        return False
     try:
         import torch
-        return bool(getattr(torch.version, "hip", None))
+        from core.inference.rocm_bf16 import is_rocm_torch
+
+        if not is_rocm_torch(torch):
+            return False
+        from core.inference.host_pinning import device_is_integrated
+
+        return not device_is_integrated(device)
     except Exception:  # noqa: BLE001
-        return True
+        return False
 
 
 def _owner(function: Any) -> Any:
@@ -99,8 +122,7 @@ def _attention_ops() -> frozenset:
 
 
 def _attention_bytes(args: tuple) -> int:
-    """Bytes an attention kernel's kept outputs hold: the output (query shape, value head size) and an fp32
-    logsumexp per query row."""
+    """Kept output bytes: query shape with value head size, plus fp32 logsumexp per query row."""
     q = args[0] if args else None
     v = args[2] if len(args) > 2 else None
     if getattr(q, "ndim", 0) < 2:
@@ -313,7 +335,7 @@ class BudgetedCheckpoint:
             return 0
         try:
             import torch
-            free, _total = torch.cuda.mem_get_info()
+            free, _total = _mem_get_info()
             avail = int(free) + int(torch.cuda.memory_reserved())
         except Exception:  # noqa: BLE001 -- unknown: cache nothing
             return 0
@@ -469,7 +491,7 @@ def plan_from_device(
         # The optimizer's first step allocates its moments, which every later step carries.
         projected = int(fb_peak) + max(0, torch.cuda.memory_allocated() - int(alloc_before_step))
         projected += max(0, int(held_bytes))
-        free, total = torch.cuda.mem_get_info()
+        free, total = _mem_get_info()
         kept = budget.plan(
             projected, free, torch.cuda.memory_reserved(), total, max_canvas_area = max_canvas_area
         )
@@ -606,7 +628,12 @@ def is_out_of_memory(exc: BaseException) -> bool:
 def enable_budgeted_checkpointing(model: Any, device: str) -> Optional[BudgetedCheckpoint]:
     """Install the budgeted checkpoint on a diffusers model; None when the mode, device or model does not allow it
     (the caller then checkpoints every block as before)."""
-    if gc_budget_mode() != "auto" or device != "cuda" or _is_rocm():
+    if gc_budget_mode() != "auto" or device != "cuda":
+        return None
+    # Off on a discrete Windows ROCm card until measured; UNSLOTH_DIFFUSION_GC_MODE=auto (set explicitly) opts in.
+    if (os.environ.get(GC_MODE_ENV, "") or "").strip().lower() != "auto" and rocm_windows_discrete(
+        device
+    ):
         return None
     enable = getattr(model, "enable_gradient_checkpointing", None)
     if not callable(enable):

@@ -127,6 +127,7 @@ ROOT_FLAGS = {
     "tauri": "allow: desktop app shell, not reachable from the browser gate",
     "render-linux": "allow: Linux desktop renderer, not reachable from the browser gate",
     "client-windows": "allow: Windows desktop shell, not reachable from the browser gate",
+    "data-sidebar-glass-frame": "allow: pinned sidebar under the Windows / Linux desktop titlebar, not reachable from the browser gate",
 }
 
 # Persisted Glass settings (useMaterialStore partialize in material.ts): what measures each.

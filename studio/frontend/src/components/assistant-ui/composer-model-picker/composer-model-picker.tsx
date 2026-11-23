@@ -74,7 +74,11 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
-import { hasMlxCardTag, isMlxId } from "@/features/hub/lib/format-filters";
+import {
+  hasMlxCardTag,
+  isMlxId,
+  localRowIsMlx,
+} from "@/features/hub/lib/format-filters";
 import {
   hfCacheRepoId,
   isStandaloneGgufPath,
@@ -383,7 +387,8 @@ function loraFormat(lora: LoraModelOption): FormatTone {
   if (lora.source !== "local" && lora.exportType !== "merged") {
     return "adapter";
   }
-  return MLX_PATH_SEGMENT.test(lora.id) || isMlxId(lora.id)
+  return MLX_PATH_SEGMENT.test(lora.id) ||
+    localRowIsMlx({ id: lora.id, display_name: lora.name, source: lora.localSource })
     ? "mlx"
     : "checkpoint";
 }
@@ -5331,7 +5336,9 @@ export function ComposerModelPicker({
                       )}
                     >
                       <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
-                        <RowMark row={chosenMark} />
+                        <span className="composer-chip-mark flex shrink-0">
+                          <RowMark row={chosenMark} />
+                        </span>
                       </span>
                       <HugeiconsIcon
                         icon={RemoveCircleIcon}
@@ -5341,7 +5348,9 @@ export function ComposerModelPicker({
                     </span>
                   </Hint>
                 ) : chosenName ? (
-                  <RowMark row={chosenMark} />
+                  <span className="composer-chip-mark flex shrink-0">
+                    <RowMark row={chosenMark} />
+                  </span>
                 ) : null}
                 <span className="unsloth-thinking-label composer-model-chip-name truncate">
                   {chipLabel}
@@ -5408,7 +5417,9 @@ export function ComposerModelPicker({
                   )}
                 >
                   <span className="col-start-1 row-start-1 grid place-items-center group-hover/chip:invisible">
-                    <RowMark row={chosenMark} />
+                    <span className="composer-chip-mark flex shrink-0">
+                      <RowMark row={chosenMark} />
+                    </span>
                   </span>
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -5418,7 +5429,9 @@ export function ComposerModelPicker({
                 </span>
               </Hint>
             ) : chosenName ? (
-              <RowMark row={chosenMark} />
+              <span className="composer-chip-mark flex shrink-0">
+                <RowMark row={chosenMark} />
+              </span>
             ) : null}
             <span className="unsloth-thinking-label composer-model-chip-name truncate">
               {chipLabel}

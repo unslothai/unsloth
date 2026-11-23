@@ -1443,11 +1443,28 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
 
 _FAMILY_RDNA_EXPLICIT_W8A8: dict[str, str] = _profile_table("rdna_explicit_w8a8", quant = True)
 
+# Only archs with measured W8A8 rows (kernels accept all gfx11/12); others stay weight-only. Widen per measurement.
+RDNA_EXPLICIT_W8A8_ARCHS = frozenset({"gfx1151"})
+
+
+def _rdna_explicit_w8a8_arch_measured(target: Any) -> bool:
+    """Whether ``target``'s own card (its ordinal, not the current device) is a measured arch. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, getattr(target, "ordinal", None)) in RDNA_EXPLICIT_W8A8_ARCHS
+    except Exception:  # noqa: BLE001 - an unreadable arch keeps the weight-only build
+        return False
+
 
 def rdna_explicit_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
-    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only)."""
+    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only).
+    Only on the measured archs (``RDNA_EXPLICIT_W8A8_ARCHS``)."""
     reason = _FAMILY_RDNA_EXPLICIT_W8A8.get(str(family or "").strip().lower())
     if reason is None or rdna_explicit_int8_reason(target, family) is None:
+        return None
+    if not _rdna_explicit_w8a8_arch_measured(target):
         return None
     return reason
 
@@ -1466,6 +1483,27 @@ def rdna_explicit_int8_reason(target: Any, family: Optional[str]) -> Optional[st
     if not _rdna_compile_tier_proven(target):
         return None
     return "an explicit int8 request on RDNA is measured compiled"
+
+
+# "0" keeps an explicit int8 video DiT on ROCm weight-only and quantised from the dense shards at load.
+ROCM_VIDEO_HOSTED_INT8_ENV = "UNSLOTH_ROCM_VIDEO_HOSTED_INT8"
+
+
+def rocm_video_hosted_int8_enabled() -> bool:
+    raw = (_os.environ.get(ROCM_VIDEO_HOSTED_INT8_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def rdna_video_explicit_w8a8_reason(
+    target: Any, family: Optional[str], requested: Optional[str]
+) -> Optional[str]:
+    """Why an EXPLICIT int8 video request runs W8A8 on this ROCm RDNA card (the family's ``rdna_explicit_w8a8``),
+    else None. AUTO is never changed. Kill switches UNSLOTH_ROCM_VIDEO_HOSTED_INT8=0, UNSLOTH_NATIVE_INT8_ACT=0."""
+    if normalize_transformer_quant(requested) != TQ_INT8 or not rocm_video_hosted_int8_enabled():
+        return None
+    if not _rocm_cuda(target):
+        return None
+    return rdna_explicit_w8a8_reason(target, family)
 
 
 def select_transformer_quant_scheme(

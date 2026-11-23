@@ -16,8 +16,10 @@ import torch
 import unsloth.models._decode_graphs as G
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
-# The unset default only turns graphs on for NVIDIA CUDA; ROCm keeps them off unless the flag is 1.
-rl_default = pytest.mark.skipif(not G._DEFAULT_OK, reason = "RL default is NVIDIA CUDA only")
+# The unset default turns graphs on for NVIDIA CUDA and gfx1151 ROCm; other ROCm archs need the flag at 1.
+rl_default = pytest.mark.skipif(
+    not G._DEFAULT_OK, reason = "RL default is NVIDIA CUDA / gfx1151 only"
+)
 MODEL = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 PROMPTS = ["Once upon a time there was", "def f(x):"]
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
@@ -56,7 +58,71 @@ def test_rl_default_is_nvidia_cuda_only(runtime):
         runtime.setenv(ENV, "1")
         assert G.enabled() is True
     runtime.setattr(torch.version, "hip", "6.4.0", raising = False)
+    runtime.setattr(G, "_rocm_default_ok", lambda: False)
     assert G._default_ok() is False
+
+
+def test_rl_default_rocm_only_gfx1151_with_skinny_linear(runtime):
+    """ROCm turns the RL default on only for gfx1151 with the skinny decode linear enabled (measured exact
+    and faster there); other HIP archs, or the kill switch, keep it off."""
+    import types
+
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR", raising = False)
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    runtime.setattr(torch.cuda, "is_available", lambda: True)
+    runtime.setattr(torch.cuda, "current_device", lambda: 0)
+    runtime.setattr(torch.cuda, "device_count", lambda: 1)
+    runtime.setattr(S, "triton", types.SimpleNamespace())
+    for arch, want in (
+        ("gfx1151", True),
+        ("gfx1100", False),
+        ("gfx942", False),
+        ("gfx1201", False),
+    ):
+        runtime.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda i, a = arch: types.SimpleNamespace(gcnArchName = a + ":xnack-"),
+        )
+        assert G._default_ok() is want, arch
+        runtime.setenv("UNSLOTH_ROCM_SKINNY_LINEAR", "0")
+        assert G._default_ok() is False
+        runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR")
+    runtime.setattr(S, "triton", None)
+    runtime.setattr(
+        torch.cuda, "get_device_properties", lambda i: types.SimpleNamespace(gcnArchName = "gfx1151")
+    )
+    assert G._default_ok() is False
+    runtime.setattr(torch.version, "hip", None, raising = False)
+    assert G._default_ok() is True
+
+
+def test_rl_default_rocm_needs_every_visible_gpu_measured(runtime):
+    """Decode can run on any visible GPU, not only the one current at import: a gfx1151 beside another arch (either
+    order) keeps the ROCm default off, two gfx1151 keep it on."""
+    import types
+
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR", raising = False)
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    runtime.setattr(torch.cuda, "is_available", lambda: True)
+    runtime.setattr(torch.cuda, "current_device", lambda: 0)
+    runtime.setattr(torch.cuda, "device_count", lambda: 2)
+    runtime.setattr(S, "triton", types.SimpleNamespace())
+    for archs, want in (
+        (("gfx1151", "gfx1151"), True),
+        (("gfx1151", "gfx1100"), False),
+        (("gfx1100", "gfx1151"), False),
+    ):
+        runtime.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda i, a = archs: types.SimpleNamespace(gcnArchName = a[i] + ":xnack-"),
+        )
+        assert G._default_ok() is want, archs
 
 
 def test_rl_scope_is_per_thread(runtime):
@@ -384,3 +450,58 @@ def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
     )
     check("two", two, 24)
     assert _Stats(model)()["captures"] == before["captures"], (before, _Stats(model)())
+
+
+def test_rocm_default_skips_unmeasured_quantized_models(runtime):
+    """gfx1151 graph replay was measured with 16-bit projections only: under the unset default a quantized model
+    there decodes eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=1 or ENABLED still force graphs); NVIDIA is unchanged."""
+
+    class Params4bit(torch.nn.Parameter):
+        pass
+
+    def model(quantized):
+        m = torch.nn.Module()
+        m.config = type("C", (), {"model_type": "qwen3"})()
+        lora = torch.nn.Module()
+        lora.base_layer = torch.nn.Linear(8, 8, bias = False).to(torch.bfloat16)
+        if quantized:
+            w = Params4bit(torch.zeros(32, 1, dtype = torch.uint8), requires_grad = False)
+            w.quant_state = object()
+            lora.base_layer.weight = w
+        m.layers = torch.nn.ModuleList([torch.nn.Module()])
+        m.layers[0].q_proj = lora
+        m.layers[0].o_proj = torch.nn.Linear(8, 8, bias = False).to(torch.float16)
+        return m
+
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    assert G.default_covers(model(False)) is True
+    assert G.default_covers(model(True)) is False
+    runtime.setenv(ENV, "1")
+    assert G.default_covers(model(True)) is True
+    runtime.delenv(ENV)
+    runtime.setattr(G, "ENABLED", True)
+    assert G.default_covers(model(True)) is True
+    runtime.setattr(G, "ENABLED", None)
+    runtime.setattr(torch.version, "hip", None, raising = False)
+    assert G.default_covers(model(True)) is True
+
+
+def test_generate_applies_the_rocm_default_coverage_before_planning():
+    import ast
+    import inspect
+
+    import unsloth.models.llama as L
+
+    body = ast.unparse(ast.parse(textwrap_dedent(inspect.getsource(L.unsloth_fast_generate))))
+    gate = body.index("if graphs and (not _decode_graphs.default_covers(self)):")
+    assert (
+        body.index("graphs = _decode_graphs.enabled()")
+        < gate
+        < body.index("_decode_graphs.plan_call(")
+    )
+    assert "graphs, plan = (False, 'eager')" in body
+
+
+def textwrap_dedent(src):
+    import textwrap
+    return textwrap.dedent(src)

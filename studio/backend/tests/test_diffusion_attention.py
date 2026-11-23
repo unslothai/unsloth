@@ -84,6 +84,7 @@ def test_explicit_backend_dropped_off_nvidia_cuda(monkeypatch):
 
 def test_aiter_honored_on_rocm(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
+    monkeypatch.setattr(att, "_diffusers_aiter_usable", lambda: True)
     assert select_attention_backend(_target(), "aiter", speed_active = False) == "aiter"
 
 

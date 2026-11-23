@@ -54,6 +54,36 @@ def test_owner_chat_loads_beside(role, value, ui_chat, beside, read):
     assert run_as(account, lp.current_load_policy).value == read
 
 
+# A direct media load from a chat's tools key keeps the chat model.
+@pytest.mark.parametrize(
+    "value, mode, keeps, outcome",
+    [
+        ("any", "off", False, False),
+        ("beside_only", "fit", False, True),
+        ("beside_only", "off", True, True),
+        ("beside_only", "off", False, "refused"),
+        ("never", "fit", True, "refused"),
+    ],
+)
+def test_media_load_spares_chat(monkeypatch, value, mode, keeps, outcome):
+    from fastapi import HTTPException
+
+    from core.inference import ensure_model
+
+    monkeypatch.setattr(ensure_model, "media_load_keeps_chat", lambda owner: keeps)
+    account = AccountContext("a", "a", "owner", load_policy = value)
+
+    def decide():
+        return ensure_model.media_load_spares_chat("diffusion", "image", "org/image", mode)
+
+    if outcome == "refused":
+        with pytest.raises(HTTPException) as refused:
+            run_as(account, decide)
+        assert refused.value.status_code == 403 and "org/image" in refused.value.detail
+    else:
+        assert run_as(account, decide) is outcome
+
+
 def test_routes_and_media_switch_do_not_read_the_mcp_caller():
     for name in ("routes/inference.py", "routes/video.py", "core/inference/media_auto_switch.py"):
         assert "studio_mcp" not in (Path(__file__).parents[1] / name).read_text(

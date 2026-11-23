@@ -404,7 +404,16 @@ def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
     for speed in (True, False):
         assert select_attention_backend(rocm, "xformers", speed_active = speed) is None
         assert select_attention_backend(rocm, "auto", speed_active = speed) != "_native_cudnn"
+    # Since #18924 an aiter pick is honoured only where diffusers has a usable local aiter backend; without one it
+    # runs the auto pick. The runner's diffusers decides which, so pin both.
+    import core.inference.diffusion_attention as attention
+
+    monkeypatch.setattr(attention, "_diffusers_aiter_usable", lambda: True)
     assert select_attention_backend(rocm, "aiter", speed_active = True) == "aiter"
+    monkeypatch.setattr(attention, "_diffusers_aiter_usable", lambda: False)
+    assert select_attention_backend(rocm, "aiter", speed_active = True) == select_attention_backend(
+        rocm, "auto", speed_active = True
+    )
 
 
 def _metadata_free_version(name: str) -> str:

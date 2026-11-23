@@ -25,6 +25,14 @@ export function isMcpToolOnly(value: unknown): boolean {
   );
 }
 
+/** A project's own server set, or every server when it inherits (null / absent). */
+export function projectMcpServers<T extends { id: string }>(
+  servers: readonly T[],
+  selected: readonly string[] | null | undefined,
+): readonly T[] {
+  return selected == null ? servers : servers.filter((server) => selected.includes(server.id));
+}
+
 export function mcpImageMappingsEnabled(
   servers: readonly McpServerConfig[],
 ): boolean {

@@ -43,7 +43,11 @@ RANK1 = {"WORLD_SIZE": "2", "RANK": "1", "LOCAL_RANK": "1", "LOCAL_WORLD_SIZE": 
 
 
 def test_each_rank_loads_on_its_own_device(monkeypatch):
+    import unsloth.models.loader_utils as loader_utils
     from unsloth.models.loader_utils import DEVICE_TYPE_TORCH
+
+    # Two cards, one per rank: a single-GPU host would otherwise wrap LOCAL_RANK 1 onto device 0.
+    monkeypatch.setattr(loader_utils, "_visible_device_count", lambda: 2)
     assert _placement(monkeypatch, RANK1) == {"": f"{DEVICE_TYPE_TORCH}:1"}
 
 
