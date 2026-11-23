@@ -19593,13 +19593,11 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         return None
     requested = _model_key(request)
     slot = await _route_to_extra_slot(requested)
-    if slot is None and request.gguf_variant:
-        # Another quant replaces its repo in place: requests name the repo, so a copy beside it is unreachable.
-        slot = await _route_to_extra_slot(request.model_path)
-        if slot is not None or await asyncio.to_thread(_loaded_satisfies, request.model_path):
-            return slot
     if slot is not None:
         return slot
+    # Different GGUF quants of the same HF repo are distinct residents when multi-model
+    # alongside is on (#19072). Bare-repo chat still prefers the primary; explicit
+    # ``repo:QUANT`` (and the load's gguf_variant) routes to the matching slot.
     from utils.multi_model_settings import get_multi_model_enabled
 
     # Off unless enabled in Settings; a kept model left busy when disabled is evicted once idle.

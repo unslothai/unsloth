@@ -924,13 +924,23 @@ def test_training_frees_the_kept_models_before_the_active_one(backends, monkeypa
     assert model_slots.slots == [] and primary.is_active
 
 
-def test_another_quant_of_a_loaded_model_replaces_it_in_place(backends):
-    _, extra = backends
-    primary_quant = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
+def test_another_quant_of_a_loaded_model_replaces_it_in_place_without_alongside(backends):
+    """Switching quants of the same repo (no alongside) still reloads the primary."""
+    primary_quant = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0")
     assert _selected(primary_quant) is None
-    slot_quant = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
-    assert _selected(slot_quant) is extra
-    assert _selected(slot_quant.model_copy(update = {"alongside": False})) is extra
+
+
+def test_another_quant_of_a_loaded_model_keeps_alongside_when_multi_model_is_on(backends):
+    """#19072: UD-Q4 then UD-Q5 of the same parent must open a second slot, not replace."""
+    _, extra = backends
+    other_repo = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
+    assert _selected(other_repo) is extra
+    same_repo_other_quant = LoadRequest(
+        model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True
+    )
+    chosen = _selected(same_repo_other_quant)
+    assert chosen not in (None, extra)
+    assert _selected(same_repo_other_quant.model_copy(update = {"alongside": False})) is None
 
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):
