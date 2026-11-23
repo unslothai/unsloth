@@ -5272,11 +5272,16 @@ def _statistics_environment(statistics = None):
 def _download_statistics(names):
     # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
     # All repos are fetched concurrently in ONE time-limited child: one child per repo, one after another, cost a slow proxy minutes per load (#14366).
+    import multiprocessing as mp
     import tempfile
     from concurrent.futures import ThreadPoolExecutor
     from huggingface_hub import snapshot_download
     from unsloth_zoo.rl_environments import execute_with_time_limit
 
+    # The time-limited child below needs fork; without it (Windows) it never starts, so skip the 8.8.8.8 probe too.
+    if "fork" not in mp.get_all_start_methods():
+        logger.debug("Unsloth: stats_check failed with an exception.")
+        return
     if has_internet():
 
         def download(statistics):
