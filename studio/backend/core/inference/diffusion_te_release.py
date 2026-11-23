@@ -279,6 +279,13 @@ class TextEncoderReleaser:
             ]
             if not keys:
                 continue
+            # Index only the name suffixes a key can ask for, at most _MAX_CANDIDATES each: the file's names come from
+            # the checkpoint's publisher, and every suffix of a name with many dots is quadratic in its length.
+            wanted: set[str] = set()
+            for key in keys:
+                parts = [p for p in key[len(attr) + 1 :].split(".") if p]
+                wanted.update(".".join(parts[i:]) for i in range(len(parts)))
+            longest = max(map(len, wanted), default = 0)
             by_suffix: dict[str, list[tuple[int, str]]] = {}
             for path in _source_files(encoder):
                 try:
@@ -289,9 +296,21 @@ class TextEncoderReleaser:
                 self._source_handles.append(handle)
                 index = len(self._source_handles) - 1
                 for name in names:
-                    parts = name.split(".")
-                    for i in range(len(parts)):
-                        by_suffix.setdefault(".".join(parts[i:]), []).append((index, name))
+                    # Suffixes from the shortest up, stopping past the longest wanted one: bounded per name.
+                    end = len(name)
+                    start = end
+                    while start > 0 and end - start <= longest:
+                        dot = name.rfind(".", 0, start - 1) if start < end else name.rfind(".")
+                        start = dot + 1
+                        suffix = name[start:]
+                        if len(suffix) > longest:
+                            break
+                        if suffix in wanted:
+                            hits = by_suffix.setdefault(suffix, [])
+                            if len(hits) < _MAX_CANDIDATES:
+                                hits.append((index, name))
+                        if dot < 0:
+                            break
             if not by_suffix:
                 continue
             for key in keys:
