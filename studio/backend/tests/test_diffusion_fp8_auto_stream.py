@@ -107,8 +107,12 @@ def test_fp8_without_a_hosted_file_loads_on_the_host(monkeypatch):
         (11.5, (8, 6), "nf4"),
     ],
 )
-def test_pick_auto_precision_fp8_band(free, cap, expected):
-    assert dit._pick_auto_precision(False, "cuda", free, 12.3, cap, True, True) == expected
+def test_pick_auto_precision_fp8_band(monkeypatch, free, cap, expected):
+    # A family measured below 1.5x but not in the fp8-over-bf16 set.
+    monkeypatch.setattr(dit, "_AUTO_FP8_MEASURED", dit._AUTO_FP8_MEASURED | {"measured"})
+    assert (
+        dit._pick_auto_precision(False, "cuda", free, 12.3, cap, True, True, "measured") == expected
+    )
 
 
 def test_auto_fp8_kill_switch(monkeypatch):
@@ -154,8 +158,18 @@ def test_auto_fp8_respects_the_family_train_deny(monkeypatch, family, expected):
         ("wan2.2-ti2v-5b", 1.6, "bf16"),
         ("wan2.2-ti2v-5b", 1.3, "int8"),
         ("wan2.2-ti2v-5b", 1.0, "fp8"),
-        ("flux.1", 1.3, "fp8"),
-        (None, 1.3, "fp8"),
+        ("flux.2-klein", 1.3, "fp8"),
+        ("flux.2-klein", 1.0, "fp8"),
+        ("z-image", 1.3, "fp8"),
+        ("z-image", 1.0, "fp8"),
+        # Unmeasured families keep the int8 / nf4 picks below 1.5x.
+        ("flux.1", 1.3, "int8"),
+        ("flux.1", 1.0, "nf4"),
+        ("flux.2-dev", 1.3, "int8"),
+        ("ltx-2", 1.0, "nf4"),
+        ("krea-2", 1.3, "int8"),
+        (None, 1.3, "int8"),
+        (None, 1.0, "nf4"),
         (None, 1.6, "bf16"),
     ],
 )
@@ -390,3 +404,12 @@ def test_pick_auto_precision_fp8_host_ok_gates_only_the_low_band():
     assert p(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", True, False) == "nf4"
     assert p(False, "cuda", 10.0, 10.0, (8, 9), True, True, "z-image", True, True) == "fp8"
     assert p(False, "cuda", 13.0, 10.0, (8, 9), True, True, "z-image", True, False) == "fp8"
+
+
+@pytest.mark.parametrize(
+    "family", ["flux.1", "flux.2-dev", "flux.3-klein-base", "krea-2", "ltx-2", "ltx-2.5"]
+)
+@pytest.mark.parametrize("ratio, previous", [(1.3, "int8"), (1.0, "nf4")])
+def test_auto_fp8_unmeasured_families_keep_the_previous_pick(monkeypatch, family, ratio, previous):
+    # Auto fp8 below 1.5x was measured only on Z-Image, FLUX.2 klein and Wan; other families keep int8 / nf4.
+    assert _resolve_auto(monkeypatch, family, ratio, 512.0) == previous

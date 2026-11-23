@@ -888,6 +888,9 @@ AUTO_FP8_MIN_FREE_RATIO = 0.9
 # frame into 256 tokens, where fp8's activation quantisation costs more than it saves (0.78x of bf16), so its
 # 1.15x-1.5x band keeps the bf16 block swap / int8 pick.
 _AUTO_FP8_OVER_BF16 = frozenset({"z-image", "flux.2-klein"})
+# Below 1.5x, the families whose fp8 base was measured (held-out loss inside the bf16 seed spread); every other family
+# keeps the int8 / nf4 pick until it is measured.
+_AUTO_FP8_MEASURED = frozenset({"z-image", "flux.2-klein", "wan2.2-ti2v-5b"})
 _AUTO_FP8_NOT_OVER_SWAP = frozenset({"wan2.2-ti2v-5b"})
 
 
@@ -969,9 +972,9 @@ def _pick_auto_precision(
     decision time. ``has_fp8`` is the caller's NVIDIA frozen-fp8 check; fp8 is only picked on sm89+.
     - free > 1.5x dense: compiled bf16, or the frozen fp8 base for the families in _AUTO_FP8_OVER_BF16 when the run
       compiles (``compiled``: the gain was measured compiled against compiled).
-    - 1.15x-1.5x: the frozen fp8 base (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
+    - 1.15x-1.5x: the frozen fp8 base for the families in _AUTO_FP8_MEASURED (about 2x eager int8 and 1.8x the bf16 block swap Auto picked here before, at
       the same held-out loss), else int8, else nf4 without torchao (``_int8_quantize_base`` has no fallback).
-    - AUTO_FP8_MIN_FREE_RATIO-1.15x: the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
+    - AUTO_FP8_MIN_FREE_RATIO-1.15x (_AUTO_FP8_MEASURED families): the fp8 base streams onto the card Linear by Linear (never whole in bf16), so it
       fits where only nf4 did; nf4 trained a worse adapter (held-out MSE above the bare base on Z-Image) 1.75x slower.
       That fp8 load holds the dense bf16 base in host RAM first, where the nf4 load it replaces streams to the card,
       so it also needs ``fp8_host_ok`` (the caller's _auto_swap_host_ram_ok check); without it the band keeps nf4.
@@ -985,10 +988,16 @@ def _pick_auto_precision(
     if free_gb > dense_gb * 1.5:
         return "fp8" if fp8 and compiled and fam in _AUTO_FP8_OVER_BF16 else "bf16"
     if free_gb > dense_gb * 1.15:
-        if fp8 and compiled and fam not in _AUTO_FP8_NOT_OVER_SWAP:
+        if fp8 and compiled and fam in _AUTO_FP8_MEASURED and fam not in _AUTO_FP8_NOT_OVER_SWAP:
             return "fp8"
         return "int8" if has_torchao else "nf4"
-    if fp8 and compiled and fp8_host_ok and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO:
+    if (
+        fp8
+        and compiled
+        and fp8_host_ok
+        and fam in _AUTO_FP8_MEASURED
+        and free_gb > dense_gb * AUTO_FP8_MIN_FREE_RATIO
+    ):
         return "fp8"
     return "nf4"
 
