@@ -375,8 +375,9 @@ def test_adapter_save_reload_round_trip(tmp_path, monkeypatch, loop):
     assert list(cfg["target_parameters"]) == _EXPERTS
     next_loss, next_grads = _step(model, train, ids, am, labels)
 
+    # The model lives on CPU; without torch_device PEFT reads the (spoofed in CI) CUDA probe.
     reloaded = PeftModel.from_pretrained(
-        copy.deepcopy(base), tmp_path / "adapter", is_trainable = True
+        copy.deepcopy(base), tmp_path / "adapter", is_trainable = True, torch_device = "cpu"
     )
     reloaded.train()
     train2 = {_canon(n): p for n, p in reloaded.named_parameters() if p.requires_grad}
