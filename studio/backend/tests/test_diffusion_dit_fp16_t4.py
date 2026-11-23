@@ -784,6 +784,35 @@ def test_scaled_mm_skips_weights_past_fp16_and_honours_the_kill_switch(scaled_mm
     assert f16.scaled_mm_supported("cpu") is False
 
 
+def test_scaled_mm_needs_tensor_cores_and_mm_out_dtype(monkeypatch):
+    """Pascal (sm6x) keeps the fp32 islands; sm75 takes the scaled GEMM when torch.mm(out_dtype=) works."""
+    from core.training import diffusion_dit_fp16 as f16
+
+    monkeypatch.delenv(f16.SCALED_MM_ENV, raising = False)
+    probe = []
+
+    def mm(a, b):
+        probe.append(a.dtype)
+        return a.float() @ b.float()
+
+    monkeypatch.setattr(f16, "_mm_fp32_out", mm)
+    monkeypatch.setattr(
+        torch, "ones", lambda *a, **k: torch.full((16, 16), 1.0, dtype = k.get("dtype"))
+    )
+    for cap, want in (((6, 1), False), ((7, 5), True)):
+        monkeypatch.setattr(f16, "_MM_FP32_OUT_OK", {})
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, cap = cap: cap)
+        assert f16.scaled_mm_supported("cuda") is want
+    assert probe == [torch.float16]
+
+    def no_out_dtype(a, b):
+        raise TypeError("mm() got an unexpected keyword argument 'out_dtype'")
+
+    monkeypatch.setattr(f16, "_mm_fp32_out", no_out_dtype)
+    monkeypatch.setattr(f16, "_MM_FP32_OUT_OK", {})
+    assert f16.scaled_mm_supported("cuda") is False
+
+
 def test_scaled_mm_recomputes_identically_under_gradient_checkpointing(scaled_mm):
     from torch.utils.checkpoint import checkpoint
 

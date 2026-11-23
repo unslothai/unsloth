@@ -100,7 +100,7 @@ def _mm_fp32_out(a, b):
 
 
 def scaled_mm_supported(device_type: str) -> bool:
-    """fp16 x fp16 -> fp32 cuBLAS GEMM (``torch.mm(out_dtype=)``) runs on this device and torch."""
+    """fp16 x fp16 -> fp32 cuBLAS GEMM (``torch.mm(out_dtype=)``) runs on this device and torch, on tensor cores."""
     import os
 
     import torch
@@ -111,6 +111,10 @@ def scaled_mm_supported(device_type: str) -> bool:
         return False
     if device_type not in _MM_FP32_OUT_OK:
         try:
+            # Tensor cores (sm70+) only: on Pascal an fp16 GEMM is no faster than the fp32 one it replaces.
+            if tuple(torch.cuda.get_device_capability()) < (7, 0):
+                _MM_FP32_OUT_OK[device_type] = False
+                return False
             a = torch.ones(16, 16, device = device_type, dtype = torch.float16)
             y = _mm_fp32_out(a, a)
             _MM_FP32_OUT_OK[device_type] = bool(y.dtype == torch.float32 and float(y[0, 0]) == 16.0)
