@@ -176,8 +176,7 @@ class RawTextDataLoader:
                 return [text + eos_token]
 
         def cut(idx, step = -1):
-            # A character can span up to four byte-level tokens, and half of one decodes to U+FFFD on both sides.
-            # Text chunks move such a cut to the nearest character edge in the step direction; token chunks keep it.
+            # Text chunks: move a cut inside a multi-token character (U+FFFD on both sides) to its edge, at most 3 tokens.
             if return_tokenized:
                 return idx
             for at in range(idx, idx + 4 * step, step):
@@ -196,13 +195,12 @@ class RawTextDataLoader:
             bounds.append([start_idx, end_idx])
             if end_idx == num_tokens:
                 break
-            # Without a moved cut this is start_idx + chunk_size - stride; an overlap that cannot advance is dropped.
             next_idx = cut(end_idx - stride)
             start_idx = next_idx if next_idx > start_idx else end_idx
 
         # Stride 0 with an exact multiple leaves a lone-EOS chunk; end a full window at EOS so EOS keeps context and no token loses its label.
         if reserve_eos and len(bounds) > 1 and bounds[-1][0] == len(tokens):
-            # Forward, so the window still fits chunk_size; a character as wide as the window keeps the plain cut.
+            # Forward keeps the window within chunk_size.
             first = cut(num_tokens - chunk_size, 1)
             bounds[-1][0] = first if first < len(tokens) else num_tokens - chunk_size
 

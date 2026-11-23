@@ -85,7 +85,6 @@ def test_raw_file_text_dataset_keeps_chat_role_tokens(raw_text, tokenizer, tmp_p
 
 @pytest.mark.parametrize("stride", [0, 2])
 def test_text_chunks_cut_between_characters_not_inside_one(raw_text, stride):
-    # Byte-level tokens, as GPT-2 / Llama 3 / Qwen use for characters outside their merges.
     alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
     vocabulary = {symbol: index for index, symbol in enumerate(alphabet)}
     vocabulary["[EOS]"] = len(vocabulary)
@@ -106,7 +105,7 @@ def test_text_chunks_cut_between_characters_not_inside_one(raw_text, stride):
     if stride == 0:
         assert "".join(chunks) == text + "[EOS]"
 
-    # The window that gives a lone EOS its context starts on a character too and still fits.
+    # Lone-EOS window also starts on a character edge.
     loader = raw_text.RawTextDataLoader(tokenizer, chunk_size = 6, stride = 4)
     chunks = loader.chunk_text("aébb é語\né", return_tokenized = False)
     assert chunks[-1] == "\né[EOS]" and not any("�" in chunk for chunk in chunks)
