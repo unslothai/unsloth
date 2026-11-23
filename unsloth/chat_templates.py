@@ -617,6 +617,8 @@ phi3_template = \
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<|assistant|>\n' }}"\
+    "{% else %}"\
+        "{{ eos_token }}"\
     "{% endif %}"
 
 # Ollama from https://www.ollama.com/library/phi3
