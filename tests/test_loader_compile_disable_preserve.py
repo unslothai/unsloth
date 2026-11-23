@@ -22,7 +22,6 @@ def _loader_tree():
 def test_explicit_full_disable_is_never_downgraded(monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", value)
     loader_module._set_partial_compile_disable()
-    # zoo's compiler reads only "1" / "partial" as off, so true / yes must land on "1".
     assert os.environ["UNSLOTH_COMPILE_DISABLE"] == "1"
 
 
@@ -45,7 +44,6 @@ def _function_of(node, parents):
 
 
 def test_partial_is_written_only_inside_the_helper():
-    """A direct `os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"` anywhere else is the bug."""
     tree = _loader_tree()
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     writes = [
@@ -68,8 +66,6 @@ def test_partial_is_written_only_inside_the_helper():
 
 
 def test_all_five_model_branches_call_the_helper():
-    """gemma3-on-RDNA, deepseek_v41, csm, DISABLE_COMPILE_MODEL_NAMES and 4.x-T5 each route
-    their partial disable through the helper, so all of them preserve an explicit "1"."""
     calls = [
         node
         for node in ast.walk(_loader_tree())
