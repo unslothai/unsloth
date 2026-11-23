@@ -1076,9 +1076,16 @@ def releasable_pool_bytes(handles: Any, device: Optional[int] = None) -> int:
         pending.append(getattr(h, "fallback_handle", None))
     handles = tuple(nested)
     own = {id(h) for h in handles}
+    try:
+        if device is None:
+            device = int(_torch().cuda.current_device())
+    except Exception:  # noqa: BLE001 - unknown: release nothing
+        return 0
     mine: set = set()
     others: set = set()
     for w in tuple(_LIVE_WRAPPERS):
+        if id(w) not in own and getattr(w, "_unsloth_capture_device", device) not in (None, device):
+            continue  # graph pools are per device: a recording on another card keeps nothing here alive
         tokens = {
             tuple(entry.pool_token)
             for entry in tuple(w.cache.values())
@@ -1093,8 +1100,6 @@ def releasable_pool_bytes(handles: Any, device: Optional[int] = None) -> int:
         for state in h._all_shared()
     }
     try:
-        if device is None:
-            device = int(_torch().cuda.current_device())
         free = 0
         if pools:
             for seg in _allocator_segments():

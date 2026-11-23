@@ -241,6 +241,25 @@ def test_releasable_bytes_skip_a_pool_another_resident_still_records_into(monkey
     assert cg.releasable_pool_bytes((), 1) == 0
 
 
+def test_releasable_bytes_ignore_a_recording_on_another_card(monkeypatch):
+    """Graph pools are per device: a video pipeline's recording on cuda:1 does not keep the image pool on cuda:0."""
+    import weakref
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    image, video = _Wrapper((7, 1)), _Wrapper((7, 1))
+    image._unsloth_capture_device, video._unsloth_capture_device = 0, 1
+    monkeypatch.setattr(cg, "_LIVE_WRAPPERS", weakref.WeakSet([image, video]))
+    _segments(
+        monkeypatch,
+        cg,
+        [{"device": 0, "segment_pool_id": (7, 1), "total_size": 4 * GIB, "allocated_size": GIB}],
+    )
+    assert cg.releasable_pool_bytes((image,), 0) == 3 * GIB
+    video._unsloth_capture_device = 0
+    assert cg.releasable_pool_bytes((image,), 0) == 0
+
+
 def test_releasable_bytes_count_only_the_handles_own_block_pools(monkeypatch):
     import weakref
 
