@@ -712,7 +712,8 @@ test("the Appearance preview composers wrap their prompt, so a lens can mount in
 test("a lens copy drops its blur while its host is moving, instead of falling back to the CSS blur", () => {
 	const lens = readFileSync(new URL("../src/features/chat-background/lens.tsx", import.meta.url), "utf8");
 	assert.match(lens, /if \(fillCopy\) fillCopy\.style\.filter = blur \|\| \(host\.hasAttribute\(GLASS_MOVING_ATTR\) \? "none" : ""\);/);
-	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR, "style"\] \}\);/);
+	assert.match(lens, /motion\.observe\(host, \{ attributes: true, attributeFilter: \[GLASS_MOVING_ATTR, GLASS_SETTLING_ATTR\] \}\);/);
+	assert.match(lens, /for \(let node: HTMLElement \| null = host; node && node !== document\.body; node = node\.parentElement\)\s*motion\.observe\(node, \{ attributes: true, attributeFilter: \["style"\] \}\);/);
 	assert.match(lens, /motion\.disconnect\(\);/);
 });
 
