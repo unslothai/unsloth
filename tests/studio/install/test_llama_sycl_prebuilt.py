@@ -19,7 +19,7 @@ ILP = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ILP
 SPEC.loader.exec_module(ILP)
 
-from backend.utils.prebuilt.runtime_libs import ONEAPI_LIB_DIRS_FILENAME, oneapi_lib_dirs  # noqa: E402
+from backend.utils.prebuilt.runtime_libs import oneapi_lib_dirs  # noqa: E402
 
 SYCL8 = "app-b1-linux-x64-sycl8.tar.gz"
 SYCL9 = "app-b1-linux-x64-sycl9.tar.gz"
@@ -129,18 +129,20 @@ def test_runtime_line_follows_the_newest_venv_libsycl(monkeypatch, tmp_path):
     assert _attempts(_host(), _bundle(((SYCL8, "sycl8"), (SYCL_ANY, None))))[0] == SYCL_ANY
 
 
-def test_recorded_oneapi_dirs_reach_the_binary_env(monkeypatch, tmp_path):
+def test_a_sycl_build_gets_the_active_venv_oneapi_dirs(monkeypatch, tmp_path):
+    lib = _venv_with_libsycl(monkeypatch, tmp_path, "libsycl.so.8")
     bin_dir = tmp_path / "build" / "bin"
     bin_dir.mkdir(parents = True)
-    present = tmp_path / "venv" / "lib"
-    present.mkdir(parents = True)
-    (bin_dir / ONEAPI_LIB_DIRS_FILENAME).write_text(
-        f"{present}{os.pathsep}{tmp_path / 'gone'}\n", encoding = "utf-8"
-    )
-    assert oneapi_lib_dirs(bin_dir) == [str(present)]
-    assert oneapi_lib_dirs(tmp_path) == []
+    assert oneapi_lib_dirs(bin_dir) == []
+    (bin_dir / "libggml-sycl.so").write_bytes(b"")
+    assert oneapi_lib_dirs(bin_dir) == [str(lib)]
     env = ILP.binary_env(bin_dir / "llama-server", tmp_path, _host())
-    assert str(present) in env["LD_LIBRARY_PATH"].split(":")
+    assert str(lib) in env["LD_LIBRARY_PATH"].split(os.pathsep)
+    # A staged update promotes the venv to another path: the dirs follow the live venv.
+    moved = tmp_path / "live"
+    (tmp_path / "venv").rename(moved)
+    monkeypatch.setattr(sys, "prefix", str(moved))
+    assert oneapi_lib_dirs(bin_dir) == [str(moved / "lib")]
 
 
 @pytest.mark.parametrize(
@@ -207,7 +209,7 @@ def _install_sycl_bundle(monkeypatch, tmp_path):
     return ILP.install_from_archives(choice, _host(), install, work), install
 
 
-def test_sycl_install_records_the_venv_oneapi_dirs(monkeypatch, tmp_path):
+def test_sycl_install_resolves_the_venv_oneapi_dirs(monkeypatch, tmp_path):
     lib = _venv_with_libsycl(monkeypatch, tmp_path, "libsycl.so.8")
     (_server, quantize), install = _install_sycl_bundle(monkeypatch, tmp_path)
     bin_dir = install / "build" / "bin"

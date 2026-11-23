@@ -84,8 +84,8 @@ from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     normalize_backend_request,
 )
 from backend.utils.prebuilt.runtime_libs import (
-    ONEAPI_LIB_DIRS_FILENAME,
     oneapi_lib_dirs,
+    venv_oneapi_lib_dirs as oneapi_runtime_lib_dirs,
 )
 
 # Core functions resolve collaborators through this module's globals at call time,
@@ -5410,14 +5410,8 @@ def install_from_archives(
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
         copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True)
-        if choice.install_kind == "linux-sycl":
-            oneapi_dirs = oneapi_runtime_lib_dirs()
-            if not oneapi_dirs:
-                raise PrebuiltFallback("no oneAPI runtime found for the SYCL prebuilt")
-            atomic_write_bytes(
-                overlay_dir / ONEAPI_LIB_DIRS_FILENAME,
-                (os.pathsep.join(oneapi_dirs) + "\n").encode("utf-8"),
-            )
+        if choice.install_kind == "linux-sycl" and not oneapi_runtime_lib_dirs():
+            raise PrebuiltFallback("no oneAPI runtime found for the SYCL prebuilt")
         for _subdir in runtime_subdirs_for_choice(choice):
             _src_subdir = source_dir / _subdir
             if _src_subdir.is_dir():
@@ -6307,11 +6301,6 @@ def scrubbed_environ() -> dict[str, str]:
     for pointer in (*_CREDENTIAL_FILE_POINTER_VARS, *_CI_COMMAND_FILE_VARS):
         env.pop(pointer, None)
     return env
-
-
-def oneapi_runtime_lib_dirs() -> list[str]:
-    venv_lib = Path(sys.prefix) / "lib"
-    return [str(venv_lib)] if any(venv_lib.glob("libsycl.so.*")) else []
 
 
 def oneapi_runtime_line(lib_dirs: Iterable[str]) -> str | None:

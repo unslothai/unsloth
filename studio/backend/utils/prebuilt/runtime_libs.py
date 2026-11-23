@@ -217,13 +217,14 @@ def python_runtime_dirs() -> list[str]:
     return dedupe_existing_dirs(candidates)
 
 
-ONEAPI_LIB_DIRS_FILENAME = "UNSLOTH_ONEAPI_LIB_DIRS"
+def venv_oneapi_lib_dirs() -> list[str]:
+    """The active venv's oneAPI runtime (libsycl, MKL, compiler runtime), shipped by the torch-xpu wheels."""
+    venv_lib = Path(sys.prefix) / "lib"
+    return [str(venv_lib)] if any(venv_lib.glob("libsycl.so.*")) else []
 
 
 def oneapi_lib_dirs(binary_dir: str | Path) -> list[str]:
-    """oneAPI runtime dirs (libsycl, MKL, compiler runtime) the installer recorded for a SYCL build."""
-    try:
-        text = (Path(binary_dir) / ONEAPI_LIB_DIRS_FILENAME).read_text(encoding = "utf-8")
-    except OSError:
+    """oneAPI dirs a SYCL build in ``binary_dir`` needs; resolved per launch, since the venv can move."""
+    if not any(Path(binary_dir).glob("libggml-sycl.so*")):
         return []
-    return [d for d in text.strip().split(os.pathsep) if d and os.path.isdir(d)]
+    return venv_oneapi_lib_dirs()
