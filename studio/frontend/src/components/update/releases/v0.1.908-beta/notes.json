@@ -1,0 +1,34 @@
+{
+  "version": "0.1.908-beta",
+  "title": "Nemotron 3.5 and Muse Spark Open",
+  "date": "2026-10-15",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.908-beta/nemotron.webp",
+      "alt": "NVIDIA Nemotron 3.5",
+      "title": "NVIDIA Nemotron 3.5",
+      "summary": "Bolt runs in 24 GB of memory, and Super VL brings 120B with 12B active."
+    },
+    {
+      "image": "/whats-new/v0.1.908-beta/muse-spark.webp",
+      "alt": "Meta Muse Spark Open",
+      "title": "Meta Muse Spark Open",
+      "summary": "An 816B model with 42.7B active that runs on 256 GB."
+    }
+  ],
+  "changes": [
+    [
+      "Coding agents",
+      "Claude Code and Codex reprocess far less of each prompt on local GGUFs."
+    ],
+    ["Browser use", "Each chat gets its own tab, and Always allow now sticks."],
+    [
+      "Image servers",
+      "Generate images through sd-server, Ollama, Lemonade, and more."
+    ],
+    [
+      "Diffusion LLMs",
+      "Train and chat with LLaDA, Dream, and SDAR on a live denoising canvas."
+    ]
+  ]
+}

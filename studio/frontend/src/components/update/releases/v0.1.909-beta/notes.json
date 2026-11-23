@@ -1,0 +1,34 @@
+{
+  "version": "0.1.909-beta",
+  "title": "DeepSeek-V4.1 and FLUX.3",
+  "date": "2026-10-19",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.909-beta/deepseek.webp",
+      "alt": "DeepSeek-V4.1-Flash",
+      "title": "DeepSeek-V4.1-Flash",
+      "summary": "552B with 16B active, in about 125 GB at 1-bit with its Engram table on SSD."
+    },
+    {
+      "image": "/whats-new/v0.1.909-beta/flux3.webp",
+      "alt": "FLUX.3 Image Klein",
+      "title": "FLUX.3 Image Klein",
+      "summary": "Runs on 24 GB and edits with up to 10 reference images."
+    }
+  ],
+  "changes": [
+    ["MCP", "Run unsloth mcp add to connect Claude Code, Codex, or Cursor."],
+    [
+      "Chat",
+      "Chat models can use the image or video model loaded beside them."
+    ],
+    [
+      "Image editing",
+      "Qwen-Image-Edit-2509 and 2511 edit with up to 3 images at once."
+    ],
+    [
+      "Training",
+      "Preview the tokens your model will learn before training starts."
+    ]
+  ]
+}

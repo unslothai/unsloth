@@ -1,0 +1,25 @@
+{
+  "version": "0.1.921-beta",
+  "title": "Inkling 2 Mini and leaner models",
+  "date": "2026-11-20",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.921-beta/inkling.webp",
+      "alt": "Inkling 2 Mini",
+      "title": "Inkling 2 Mini",
+      "summary": "A 26B model with 5.4B active and a 1M context, the strongest for its size."
+    }
+  ],
+  "changes": [
+    [
+      "Memory",
+      "GGUF image models load with 52 to 66% less RAM on Linux and macOS."
+    ],
+    ["MCP", "MCP chats process 83 to 87% fewer prompt tokens."],
+    [
+      "Images",
+      "MiniMax-H3-Image renders a new prompt in 36.7 s on 8 GB GPUs, down from 82.7 s."
+    ],
+    ["Documents", "Scanned PDFs in chat are read with OCR."]
+  ]
+}

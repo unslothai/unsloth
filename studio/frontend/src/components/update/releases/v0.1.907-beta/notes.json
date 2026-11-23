@@ -1,0 +1,28 @@
+{
+  "version": "0.1.907-beta",
+  "title": "Large performance gains",
+  "date": "2026-10-13",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.907-beta/speed.webp",
+      "alt": "Up to 10x faster UI, 5x faster inference, and 3x more file types",
+      "title": "Faster everywhere",
+      "summary": "The app is up to 10x faster with several chats open, and inference up to 5x faster."
+    }
+  ],
+  "changes": [
+    ["Compaction", "Compaction works with every API connection."],
+    [
+      "Files",
+      "Drag and drop works again on Desktop, with over 3x more file types."
+    ],
+    [
+      "Browser use",
+      "Models can click, drag, and run approved scripts, with per-site rules."
+    ],
+    [
+      "Video",
+      "Generate video with LTX-2.5 and Wan2.2, including image-to-video."
+    ]
+  ]
+}

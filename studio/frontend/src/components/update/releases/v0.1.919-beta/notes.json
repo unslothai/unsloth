@@ -1,0 +1,24 @@
+{
+  "version": "0.1.919-beta",
+  "title": "Translate",
+  "date": "2026-11-17",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.919-beta/translate.webp",
+      "alt": "English text translated to Japanese on the Translate page",
+      "title": "Translate",
+      "summary": "Translate any text into any language, entirely on your device."
+    }
+  ],
+  "changes": [
+    [
+      "Compaction",
+      "Long chats on connected providers are summarized automatically, and /compact works with cloud models."
+    ],
+    [
+      "Engram",
+      "Swap the Engram table for Qwen3.8-Flash-Next and DeepSeek-V4.1."
+    ],
+    ["Training", "Gemma 4 12B trains 1.4 to 2.6x faster."]
+  ]
+}

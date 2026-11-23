@@ -1,0 +1,25 @@
+{
+  "version": "0.1.916-beta",
+  "title": "Floating browser and big speedups",
+  "date": "2026-11-06",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.916-beta/perf.webp",
+      "alt": "2x two-GPU generation, 40% faster loads, 50% fewer tokens",
+      "title": "Faster across the board",
+      "summary": "Two-GPU image and video up to 2x faster, and image and video models load up to 40% faster."
+    }
+  ],
+  "changes": [
+    [
+      "Browser",
+      "Each chat runs its own browser, in a floating window you can move and resize."
+    ],
+    [
+      "Models",
+      "Qwen3.8-Flash Dynamic v3.1 uses 50% fewer tokens and is 15% more accurate."
+    ],
+    ["Memory", "Unified memory offloading works for big models."],
+    ["Chats", "Search and delete chats much faster."]
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "version": "0.1.918-beta",
+  "title": "Computer use and a new model picker",
+  "date": "2026-11-16",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.918-beta/model-picker.webp",
+      "alt": "The model picker open above the chat box",
+      "title": "New model picker",
+      "summary": "Switch models from the chat box, with Favorites, On Device, Discover, and Connected tabs."
+    }
+  ],
+  "changes": [
+    [
+      "Computer use",
+      "Vision models can see your screen and use apps. Off by default, with approvals."
+    ],
+    [
+      "Creative apps",
+      "Connect Unreal Engine, Unity, Godot, and Roblox through MCP."
+    ],
+    [
+      "MiniMax-H3-Image",
+      "GGUF for CPU, Mac, and AMD, plus FP8 and INT8 on NVIDIA."
+    ],
+    ["Connections", "Live connection status and 9 new providers."],
+    [
+      "Projects",
+      "Browse files, search folders, and see Git changes in the new Files tab."
+    ]
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "version": "0.1.905-beta",
+  "title": "Sandboxing and decision models",
+  "date": "2026-10-08",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.905-beta/sandbox.webp",
+      "alt": "Sandbox level set to High in Security settings",
+      "title": "Sandboxed tools",
+      "summary": "Python and terminal tools run in the OS sandbox: Bubblewrap on Linux, Seatbelt on macOS, and MXC on Windows."
+    }
+  ],
+  "changes": [
+    [
+      "Decision models",
+      "Turn any text or vision model into a decision model, with accuracy up from 30% to 80%."
+    ],
+    [
+      "ComfyUI",
+      "Load ComfyUI image and video models, text encoders, and VAEs directly."
+    ],
+    ["Diffusion", "Generate faster and more accurately with INT8 ConvRot."]
+  ]
+}

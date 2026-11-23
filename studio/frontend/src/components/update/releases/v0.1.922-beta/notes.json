@@ -1,0 +1,25 @@
+{
+  "version": "0.1.922-beta",
+  "title": "Theme files and fixes",
+  "date": "2026-11-20",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.922-beta/theme-files.webp",
+      "alt": "Theme files",
+      "title": "Theme files",
+      "summary": "Export your Appearance settings to a file and import someone else's."
+    }
+  ],
+  "changes": [
+    ["Inkling 2 Mini", "Uses less memory and runs faster."],
+    [
+      "Chat",
+      "A reasoning model that runs out of tokens while thinking now offers Retry."
+    ],
+    [
+      "Windows",
+      "Desktop no longer gets stuck on an incomplete install on some AMD PCs."
+    ],
+    ["Training", "AsyncGRPO steps are 1.46x to 2.47x faster on A100."]
+  ]
+}

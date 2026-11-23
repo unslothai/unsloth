@@ -15,6 +15,8 @@
     [
       "Generation",
       "Render Qwen-Image up to twice as fast under a 16 GB VRAM limit."
-    ]
+    ],
+    ["Updates", "App updates finish twice as fast."],
+    ["Models", "DeepSeek-V4.1-Flash gets new Dynamic v3.1 GGUFs."]
   ]
 }

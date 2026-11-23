@@ -1,0 +1,20 @@
+{
+  "version": "0.1.917-beta",
+  "title": "Faster chats and new code blocks",
+  "date": "2026-11-11",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.917-beta/code-blocks.webp",
+      "alt": "A Python code block in a chat reply",
+      "title": "Code blocks and Thinking",
+      "summary": "Expandable panels that scroll on their own, with better syntax highlighting."
+    }
+  ],
+  "changes": [
+    ["Export", "Export a chat to HTML or PDF from the chat menu."],
+    ["Models", "New Qwen3.8-27B Dynamic v3.1 GGUFs."],
+    ["Performance", "Smoother streaming, scrolling, and menus in long chats."],
+    ["Images", "Queue the next image while another one renders."],
+    ["Mac", "Run Claude Code and Codex on MLX models with unsloth start."]
+  ]
+}

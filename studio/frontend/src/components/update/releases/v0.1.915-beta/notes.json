@@ -1,0 +1,19 @@
+{
+  "version": "0.1.915-beta",
+  "title": "Qwen3.8-Flash-Next and browser files",
+  "date": "2026-11-04",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.915-beta/qwen38.webp",
+      "alt": "Qwen3.8-Flash-Next Dynamic v3.1",
+      "title": "Qwen3.8-Flash-Next",
+      "summary": "New Dynamic v3.1 GGUFs add 10 to 15% accuracy."
+    }
+  ],
+  "changes": [
+    ["Browser use", "Models can click, read, and edit HTML, files, and pages."],
+    ["Chat", "Chat context is kept when you switch between GGUF models."],
+    ["Glass", "Glass themes reach pages, menus, the sidebar, and the browser."],
+    ["Training", "FP8 LoRA training uses less GPU memory."]
+  ]
+}

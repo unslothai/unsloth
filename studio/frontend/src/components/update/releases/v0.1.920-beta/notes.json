@@ -1,0 +1,22 @@
+{
+  "version": "0.1.920-beta",
+  "title": "AMD NPU and video LoRA training",
+  "date": "2026-11-19",
+  "features": [
+    {
+      "image": "/whats-new/v0.1.920-beta/amd-npu.webp",
+      "alt": "AMD Ryzen AI NPU support",
+      "title": "AMD NPU support",
+      "summary": "Run on Ryzen AI NPUs, 2 to 4x more efficient per joule per token than GPUs."
+    }
+  ],
+  "changes": [
+    ["Training", "Train LoRAs for LTX-2.5 and MOSS-Image."],
+    ["Diffusion LoRA", "Up to 42% faster per step, and now on T4 GPUs too."],
+    ["Strix Halo", "FLUX.3 Klein up to 28% faster per step on Windows."],
+    [
+      "Scheduled tasks",
+      "Schedule a task inside a chat and get replies right there."
+    ]
+  ]
+}

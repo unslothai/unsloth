@@ -15,6 +15,10 @@
       "Fine-tuning",
       "Train up to four compatible jobs together with multi-LoRA."
     ],
-    ["Startup", "Start Studio about twice as fast on first launch."]
+    ["Startup", "Start Studio about twice as fast on first launch."],
+    [
+      "Browser use",
+      "Let models control the built-in browser from its new tab page."
+    ]
   ]
 }
