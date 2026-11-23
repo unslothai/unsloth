@@ -2360,6 +2360,10 @@ _RESPAWN_REAP_GRACE_S = 1.0
 _GPU_OOM_HEADROOM_STEP_MIB = 1024.0
 _GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
+# Closing a thought the window cut: tokens dropped from its end, and the least room worth answering in.
+_CUT_THOUGHT_BACKTRACK_TOKENS = 8
+_MIN_ANSWER_TOKENS_AFTER_THOUGHT = 64
+
 
 def _merge_attempt_metadata(first: dict, last: dict) -> dict:
     """Usage and timings of both attempts, with the last attempt's finish reason."""
@@ -39444,12 +39448,10 @@ class LlamaCppBackend:
                         "timings": _metadata_timings,
                         "finish_reason": _metadata_finish_reason,
                     }
-                    # A thought that filled the window gets one answer with thinking off, as in the tool loop.
+                    # A thought that filled the window (no EOS) is closed and answered once.
                     _spent = (_metadata_usage or {}).get("completion_tokens") or 0
                     if (
                         _allow_length_recovery
-                        # Without a thinking switch the retry would just think again.
-                        and not getattr(self, "_reasoning_always_on", False)
                         and _metadata_finish_reason == "length"
                         and reasoning_text.strip()
                         and not answer_text.strip()
@@ -39502,10 +39504,26 @@ class LlamaCppBackend:
 
         first_metadata, retry_cap = _length_recovery
         logger.info(
-            "Turn ended inside its reasoning (%d chars, finish_reason length); answering once "
-            "with thinking off",
+            "Turn ended inside its reasoning (%d chars, finish_reason length); closing the "
+            "thought and answering once",
             len(reasoning_text),
         )
+        if not retry_image_b64:
+            closed = yield from self._answer_after_closing_thought(
+                payload,
+                resumed_reasoning + reasoning_text,
+                cumulative,
+                retry_cap,
+                cancel_event,
+                continue_final_message,
+                first_metadata,
+            )
+            if closed:
+                return
+        if getattr(self, "_reasoning_always_on", False):
+            # Without a thinking switch the retry below would just think again.
+            yield first_metadata
+            return
         # Image on the original question; copies, since n > 1 choices share the caller's list.
         recovery_messages = [
             dict(m) for m in self._build_openai_messages(retry_messages, retry_image_b64)
@@ -39564,6 +39582,169 @@ class LlamaCppBackend:
                 raise
             logger.info("Not answering after the thought: %s", e)
             yield first_metadata
+
+    def _llama_post_json(self, path: str, body: dict) -> Optional[dict]:
+        """A small JSON call to llama-server; None on any failure."""
+        try:
+            with httpx.Client(
+                timeout = httpx.Timeout(60.0, connect = 10),
+                headers = self._auth_headers,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client:
+                resp = client.post(f"{self.base_url}{path}", json = body)
+            return resp.json() if resp.status_code == 200 else None
+        except Exception:
+            return None
+
+    def _answer_after_closing_thought(
+        self,
+        payload: dict,
+        thought: str,
+        cumulative: str,
+        max_tokens: Optional[int],
+        cancel_event,
+        continue_final_message: bool,
+        first_metadata: dict,
+    ):
+        """Drop the cut thought's last few tokens, keep its tail, close it with a literal </think>
+        and continue the same turn as raw text, so the model writes its answer next.
+
+        Raw /completion, not the chat API: given the same text as an assistant prefill,
+        llama-server re-renders it through the template and the model starts thinking again.
+        Returns False, having yielded nothing, when it cannot run."""
+        from core.inference.chat_template_helpers import (
+            count_structured_images,
+            count_structured_videos,
+        )
+
+        template = (
+            getattr(self, "_chat_template_override", None)
+            or getattr(self, "_chat_template", None)
+            or ""
+        )
+        if "</think>" not in template or not thought.strip():
+            return False
+        messages = list(payload.get("messages") or [])
+        if continue_final_message and messages:
+            # The resumed partial's thought is already in `thought`.
+            messages = messages[:-1]
+        if any(
+            count_structured_images(m.get("content")) or count_structured_videos(m.get("content"))
+            for m in messages
+            if isinstance(m, dict)
+        ):
+            return False
+        body: dict = {"messages": messages}
+        if payload.get("chat_template_kwargs"):
+            body["chat_template_kwargs"] = payload["chat_template_kwargs"]
+        prompt = (self._llama_post_json("/apply-template", body) or {}).get("prompt")
+        if not isinstance(prompt, str) or not prompt:
+            return False
+        prompt_tokens = (
+            self._llama_post_json("/tokenize", {"content": prompt, "add_special": True}) or {}
+        ).get("tokens")
+        thought_tokens = (
+            self._llama_post_json("/tokenize", {"content": thought.strip(), "add_special": False})
+            or {}
+        ).get("tokens")
+        if not isinstance(prompt_tokens, list) or not isinstance(thought_tokens, list):
+            return False
+        # The cut can land mid-word; the closing tags take a few tokens.
+        thought_tokens = thought_tokens[:-_CUT_THOUGHT_BACKTRACK_TOKENS]
+        free = (self._effective_context_length or 0) - len(prompt_tokens) - 16
+        keep = max(0, min(len(thought_tokens), free // 2))
+        room = free - keep
+        if max_tokens is not None:
+            room = min(room, max_tokens)
+        if room < _MIN_ANSWER_TOKENS_AFTER_THOUGHT:
+            return False
+        tail = ""
+        if keep:
+            tail = (
+                self._llama_post_json("/detokenize", {"tokens": thought_tokens[-keep:]}) or {}
+            ).get("content")
+            if not isinstance(tail, str):
+                return False
+        opener = "" if prompt.rstrip().endswith("<think>") else "<think>\n"
+        request = {
+            "prompt": f"{prompt}{opener}{tail}\n</think>\n\n",
+            "n_predict": room,
+            "stream": True,
+            "cache_prompt": True,
+        }
+        for key in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repeat_penalty",
+            "presence_penalty",
+            "frequency_penalty",
+            "seed",
+            "stop",
+            "logit_bias",
+        ):
+            if payload.get(key) is not None:
+                request[key] = payload[key]
+
+        text = ""
+        final: dict = {}
+        try:
+            with self._open_stream(f"{self.base_url}/completion", request, cancel_event) as (
+                response,
+                first_token_deadline,
+            ):
+                buffer = ""
+                for raw_chunk in self._iter_text_cancellable(
+                    response, cancel_event, first_token_deadline = first_token_deadline
+                ):
+                    buffer += raw_chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        try:
+                            data = json.loads(line[5:])
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(data, dict):
+                            continue
+                        _stream_error = stream_error_from_chunk(data)
+                        if _stream_error is not None:
+                            raise _stream_error
+                        piece = data.get("content")
+                        if isinstance(piece, str) and piece:
+                            text += piece
+                            yield cumulative + text
+                        if data.get("stop"):
+                            final = data
+        except _LlamaStreamCancelled:
+            return True
+        except Exception as e:
+            if cancel_event is not None and cancel_event.is_set():
+                return True
+            if text:
+                raise
+            logger.info("Could not answer after closing the thought: %s", e)
+            return False
+        evaluated = int(final.get("tokens_evaluated") or 0)
+        predicted = int(final.get("tokens_predicted") or 0)
+        yield _merge_attempt_metadata(
+            first_metadata,
+            {
+                "type": "metadata",
+                "usage": {
+                    "prompt_tokens": evaluated,
+                    "completion_tokens": predicted,
+                    "total_tokens": evaluated + predicted,
+                },
+                "timings": final.get("timings"),
+                "finish_reason": "stop" if final.get("stop_type") in ("eos", "word") else "length",
+            },
+        )
+        return True
 
     # ── Tool-calling agentic loop ──────────────────────────────
 

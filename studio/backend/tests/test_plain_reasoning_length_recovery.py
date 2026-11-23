@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A chat without tools whose thought fills the window answers once more with thinking off,
-instead of ending the turn with no answer."""
+"""A chat without tools whose thought fills the window (no EOS) is answered instead of ending with
+no answer: the thought is cut back a few tokens, closed with a literal </think>, trimmed to its tail
+so an answer fits, and the turn continues as raw text. Templates without a </think> tag, image
+chats and a raw attempt that fails before any text fall back to one answer with thinking off."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -177,7 +180,7 @@ def test_the_image_stays_on_the_question_it_came_with(monkeypatch):
     assert isinstance(ask["content"], str)
 
 
-def test_a_model_that_always_thinks_is_not_retried(monkeypatch):
+def test_a_model_that_always_thinks_without_a_think_tag_is_not_retried(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [_thought_cut(), _answer()], payloads)
     backend._reasoning_always_on = True
@@ -232,3 +235,191 @@ def test_the_callers_messages_are_left_as_they_were(monkeypatch):
     list(backend.generate_chat_completion(messages = messages, enable_thinking = True))
 
     assert messages == before
+
+
+# ── Closing the thought with a literal </think> ──
+
+_TEMPLATE = "{% if enable_thinking %}<think>{% endif %}...</think>..."
+_PROMPT = "<|im_start|>user\nCreate a Flappy Bird game in HTML<|im_end|>\n<|im_start|>assistant\n"
+
+
+def _raw_answer(
+    text = _ANSWER,
+    stop_type = "eos",
+    predicted = 5,
+) -> list[str]:
+    final = {
+        "content": text,
+        "stop": True,
+        "stop_type": stop_type,
+        "tokens_evaluated": 300,
+        "tokens_predicted": predicted,
+        "timings": {"predicted_n": predicted, "predicted_ms": 50.0},
+    }
+    return [f"data: {json.dumps(final)}\n"]
+
+
+def _closing_backend(
+    monkeypatch,
+    streams,
+    payloads,
+    *,
+    context = 4096,
+    prompt = _PROMPT,
+    posts = None,
+):
+    """Words stand in for tokens: /tokenize splits on spaces, /detokenize joins."""
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._chat_template = _TEMPLATE
+    backend._effective_context_length = context
+
+    def fake_post(path, body):
+        if posts is not None:
+            posts.append((path, body))
+        if path == "/apply-template":
+            return {"prompt": prompt}
+        if path == "/tokenize":
+            return {"tokens": body["content"].split()}
+        if path == "/detokenize":
+            return {"content": " ".join(body["tokens"])}
+        return None
+
+    monkeypatch.setattr(backend, "_llama_post_json", fake_post)
+    return backend
+
+
+def test_a_cut_thought_is_closed_with_a_literal_tag_and_answered(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(monkeypatch, [_thought_cut(), _raw_answer()], payloads)
+
+    events = _plain(backend)
+
+    raw = payloads[1]
+    assert "messages" not in raw
+    assert raw["prompt"].startswith(_PROMPT + "<think>\n")
+    assert raw["prompt"].endswith("\n</think>\n\n")
+    final = _texts(events)[-1]
+    assert final.startswith("<think>") and final.endswith("</think>" + _ANSWER)
+    assert _finishes(events) == ["stop"]
+
+
+def test_the_thought_is_cut_back_and_only_its_tail_is_kept(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(
+        monkeypatch, [_thought_cut(), _raw_answer()], payloads, context = 1_000
+    )
+
+    _plain(backend)
+
+    words = _LONG_THOUGHT.split()
+    kept = payloads[1]["prompt"][len(_PROMPT + "<think>\n") : -len("\n</think>\n\n")].split()
+    # The last few tokens may stop mid-word, so they go; the rest is the thought's own tail.
+    assert kept == words[:-8][-len(kept) :]
+    assert 0 < len(kept) < len(words) - 8
+
+
+def test_the_closed_request_leaves_room_to_answer(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(
+        monkeypatch, [_thought_cut(), _raw_answer()], payloads, context = 1_000
+    )
+
+    _plain(backend)
+
+    raw = payloads[1]
+    kept = raw["prompt"][len(_PROMPT + "<think>\n") : -len("\n</think>\n\n")].split()
+    assert len(raw["prompt"].split()) + raw["n_predict"] <= 1_000
+    # The thought's tail never takes more of the window than the answer gets.
+    assert raw["n_predict"] >= len(kept)
+
+
+def test_the_answer_gets_only_what_is_left_of_max_tokens(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(
+        monkeypatch, [_thought_cut(completion_tokens = 3_000), _raw_answer()], payloads
+    )
+
+    _plain(backend, max_tokens = 3_200)
+
+    assert payloads[1]["n_predict"] == 200
+
+
+def test_a_template_that_opens_the_thought_itself_gets_no_second_opener(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(
+        monkeypatch, [_thought_cut(), _raw_answer()], payloads, prompt = _PROMPT + "<think>\n"
+    )
+
+    _plain(backend)
+
+    assert payloads[1]["prompt"].count("<think>") == 1
+
+
+def test_a_model_that_always_thinks_is_answered_the_same_way(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(monkeypatch, [_thought_cut(), _raw_answer()], payloads)
+    backend._reasoning_always_on = True
+
+    events = _plain(backend)
+
+    assert len(payloads) == 2 and "prompt" in payloads[1]
+    assert _texts(events)[-1].endswith(_ANSWER)
+
+
+def test_an_answer_cut_again_reports_length(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(
+        monkeypatch, [_thought_cut(), _raw_answer(stop_type = "limit")], payloads
+    )
+
+    events = _plain(backend)
+
+    assert len(payloads) == 2
+    assert _finishes(events) == ["length"]
+
+
+def test_usage_after_closing_counts_both_and_the_meter_only_the_last(monkeypatch):
+    backend = _closing_backend(
+        monkeypatch, [_thought_cut(completion_tokens = 3_000), _raw_answer(predicted = 200)], []
+    )
+
+    [metadata] = [e for e in _plain(backend) if isinstance(e, dict) and e.get("type") == "metadata"]
+
+    assert metadata["usage"]["completion_tokens"] == 3_200
+    assert metadata["usage"]["context_tokens"] == 300 + 200
+
+
+def test_a_template_without_a_think_tag_answers_with_thinking_off(monkeypatch):
+    payloads: list[dict] = []
+    backend = _closing_backend(monkeypatch, [_thought_cut(), _answer()], payloads)
+    backend._chat_template = "<|im_start|>assistant\n"
+
+    _plain(backend)
+
+    assert payloads[1]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_a_raw_attempt_that_fails_first_falls_back_to_thinking_off(monkeypatch):
+    def refused():
+        raise RuntimeError("completion endpoint unavailable")
+        yield  # pragma: no cover
+
+    payloads: list[dict] = []
+    backend = _closing_backend(monkeypatch, [_thought_cut(), refused(), _answer()], payloads)
+
+    events = _plain(backend)
+
+    assert len(payloads) == 3
+    assert payloads[2]["chat_template_kwargs"]["enable_thinking"] is False
+    assert _texts(events)[-1].endswith(_ANSWER)
+
+
+def test_an_image_chat_answers_with_thinking_off(monkeypatch):
+    payloads: list[dict] = []
+    posts: list = []
+    backend = _closing_backend(monkeypatch, [_thought_cut(), _answer()], payloads, posts = posts)
+
+    _plain(backend, image_b64 = "aGVsbG8=")
+
+    assert posts == []
+    assert payloads[1]["chat_template_kwargs"]["enable_thinking"] is False
