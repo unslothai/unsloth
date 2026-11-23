@@ -66,7 +66,6 @@ def test_logged_exception_is_plain_traceback(quiet, capsys):
     assert "Traceback (most recent call last):" in out
     assert "in _raise_inner" in out
     assert "ValueError: boom from the backend" in out
-    # Rich's boxed traceback and locals dump are gone.
     assert "╭" not in out
     assert "locals" not in out.lower()
 
