@@ -297,6 +297,8 @@ from .grouped_linear_lora import register_grouped_linear_lora
 from . import _decode_graphs, _generic_decode_graphs, _flex_decode
 from .loader_utils import (
     _bnb_bits_requested,
+    _kwargs_with_resolved_revision,
+    _resolved_revision,
     vlm_gradient_checkpointing_reentrant,
     set_deepspeed_moe_leaf_modules,
     fsdp2_requested,
@@ -4120,7 +4122,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         _text_key_mapping = None
         if text_only and hasattr(auto_config, "vision_config"):
@@ -4397,7 +4399,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         backfill_fp8_modules_to_convert(
             auto_config,
@@ -4786,7 +4788,7 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
-                    revision = _revision,
+                    revision = _resolved_revision(model_name, _revision, token, local_files_only),
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -4876,7 +4878,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
-                revision = _revision,
+                revision = _resolved_revision(model_name, _revision, token, local_files_only),
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
@@ -4949,7 +4951,7 @@ class FastBaseModel:
                                 device_map = device_map,
                                 token = token,
                                 trust_remote_code = trust_remote_code,
-                                **kwargs,
+                                **_kwargs_with_resolved_revision(model_name, kwargs, token),
                             )
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
@@ -5268,6 +5270,10 @@ class FastBaseModel:
         # Functional load chain (AutoProcessor -> get_auto_processor -> manual VLM fallback); offline is already forced upstream, and the error is surfaced for the retry.
         def _acquire_processor(lfo):
             _err = None  # underlying load failure (used by the entry-point retry)
+            # For the transformers loads only; get_auto_processor and the fallback keep the plain ref.
+            _tok_rev = _resolved_revision(
+                tokenizer_name, _tokenizer_revision, token, lfo, kwargs.get("cache_dir")
+            )
             if (whisper_language and whisper_task) or auto_model.__name__.endswith(
                 "ForConditionalGeneration"
             ):
@@ -5281,7 +5287,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
-                        revision = _tokenizer_revision,
+                        revision = _tok_rev,
                     )
                 except Exception as _e:
                     _tok = None
@@ -5297,7 +5303,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
-                            revision = _tokenizer_revision,
+                            revision = _tok_rev,
                         )
                     except Exception:
                         _tok = None
@@ -5312,7 +5318,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
-                            revision = _tokenizer_revision,
+                            revision = _tok_rev,
                         )
                 except Exception as _e:
                     _err = _e
@@ -5473,7 +5479,10 @@ class FastBaseModel:
         # Inkling 2 wraps its attention Linears: map the usual LoRA names onto them.
         from .inkling2 import patch_inkling2_model
 
-        patch_inkling2_model(model)
+        if patch_inkling2_model(model):
+            # Its language attention is eager only upstream; route it through flex (UNSLOTH_INKLING2_FLEX=0 keeps eager).
+            from .inkling2_flex import enable_inkling2_flex
+            enable_inkling2_flex(model)
 
         if hasattr(model, "config"):
             model.config.update({"unsloth_version": __version__})

@@ -4,7 +4,7 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ROOT_READY, ROOT_WORKSPACE_READY, markRoot } from "./background";
 import { useWallpaperHostFlags } from "./host-flags";
-import { ComposerGlassLenses } from "./lens";
+import { GlassLenses } from "./lens";
 
 const BACKDROP_SAFE = "0.55";
 // Glass over the plain page, with no image: light mode tunes its menus for that.
@@ -39,7 +39,7 @@ export function GlassBackdrop() {
 			<div className="chat-wallpaper-image" data-fade="false">
 				<div className="chat-wallpaper-artwork glass-backdrop" />
 			</div>
-			<ComposerGlassLenses wallpaper={appWallpaper} />
+			<GlassLenses wallpaper={appWallpaper} />
 		</div>
 	);
 }

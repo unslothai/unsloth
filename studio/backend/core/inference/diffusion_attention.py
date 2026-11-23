@@ -3136,8 +3136,12 @@ def _fa4_kernel_runs(
     return not error
 
 
+# Compiled at import: a cold re.match inside a traced region (the MPS prefill check) fails fullgraph tracing.
+_VERSION_RE = re.compile(r"\s*(\d+(?:\.\d+)*)")
+
+
 def _version_tuple(text: str) -> tuple[int, ...]:
-    m = re.match(r"\s*(\d+(?:\.\d+)*)", str(text))
+    m = _VERSION_RE.match(str(text))
     return tuple(int(x) for x in m.group(1).split(".")) if m else ()
 
 

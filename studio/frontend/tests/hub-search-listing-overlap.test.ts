@@ -242,6 +242,34 @@ test("the Unsloth pass asks the Hub for the three rows it reads, unless a filter
   assert.deepEqual(hub.unhandled, []);
 });
 
+test("a newest-first typed search floats every Unsloth match, a popularity sort only three", { timeout: 5_000 }, async (t) => {
+  const hub = fakeHub();
+  t.after(hub.dispose);
+  const search = load(hub);
+  const rowsFor = async (sortBy: SearchModule.HfSortKey) => {
+    hub.requests.length = 0;
+    const iter = search.open("coder", { sortBy });
+    const first = iter.next();
+    await ticks();
+    const limit = hub.requests.find((r) => kind(r) === "unsloth")?.url.searchParams.get("limit");
+    for (const request of hub.requests) request.release();
+    const rows = [nameOf((await first).value)];
+    for await (const row of iter) rows.push(nameOf(row));
+    return { limit, head: rows.slice(0, 4) };
+  };
+  for (const sortBy of ["fresh", "createdAt", "lastModified"] as const) {
+    assert.deepEqual(await rowsFor(sortBy), { limit: "20", head: UNSLOTH }, sortBy);
+  }
+  for (const sortBy of ["downloads", "likes", "trendingScore"] as const) {
+    assert.deepEqual(
+      await rowsFor(sortBy),
+      { limit: "3", head: [...UNSLOTH.slice(0, 3), "org/Coder-1"] },
+      sortBy,
+    );
+  }
+  assert.deepEqual(hub.unhandled, []);
+});
+
 test("a new keystroke aborts both listings and leaves no unhandled rejection", { timeout: 5_000 }, async (t) => {
   const hub = fakeHub();
   t.after(hub.dispose);

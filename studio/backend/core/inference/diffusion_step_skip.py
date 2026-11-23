@@ -184,8 +184,9 @@ def auto_static_settings(
 
 
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """Reuse key: latent shape, prefix-KV mode (an ``extract`` call returns a longer sequence), container."""
-    hidden = kwargs.get("hidden_states", args[0] if args else None)
+    """Reuse key: latent shape, prefix-KV mode (an ``extract`` call returns a longer sequence), container. The latent
+    is the first positional argument, else ``hidden_states`` (DiTs) or ``sample`` (U-Nets) by keyword."""
+    hidden = kwargs.get("hidden_states", kwargs.get("sample", args[0] if args else None))
     if _is_tensor(hidden):
         shape = tuple(hidden.shape)
     elif isinstance(hidden, (list, tuple)) and hidden and all(_is_tensor(h) for h in hidden):

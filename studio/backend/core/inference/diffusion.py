@@ -4364,6 +4364,41 @@ def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool
     return mode is None and bool(cpu_offload)
 
 
+def _rocm_hosted_int8_route_reason(
+    fam: Any,
+    target: Any,
+    transformer_quant: Optional[str],
+    *,
+    kind: str,
+    speed_mode: Optional[str],
+    memory_mode: Optional[str],
+    cpu_offload: bool,
+) -> Optional[str]:
+    """Why this load reads the hosted int8 ConvRot DiT as native W8A8 on ROCm, else None: the load's compiled RDNA
+    int8 gates (``rdna_explicit_int8``: explicit int8, pipeline, no forced offload, compiling speed tier) plus
+    ``rocm_image_hosted_int8_reason``. Never raises."""
+    try:
+        from .diffusion_rocm_hosted_int8 import (
+            rocm_image_hosted_int8_enabled,
+            rocm_image_hosted_int8_reason,
+        )
+
+        if not rocm_image_hosted_int8_enabled() or kind != "pipeline" or fam is None:
+            return None
+        if _memory_request_forces_offload(memory_mode, cpu_offload):
+            return None
+        if speed_mode is not None and normalize_speed_mode(speed_mode) not in (
+            SPEED_DEFAULT,
+            SPEED_MAX,
+        ):
+            return None
+        if not compile_eligible(target, is_gguf = False, family = fam, probe = False):
+            return None
+        return rocm_image_hosted_int8_reason(fam, transformer_quant, target)
+    except Exception:  # noqa: BLE001 - unanswerable keeps the dense shards
+        return None
+
+
 def _pipeline_quant_uncompilable_reason(
     target: Any,
     fam: Any,
@@ -5319,6 +5354,7 @@ class DiffusionBackend:
             content_variant_hint(kwargs.get("repo_id"), kwargs.get("gguf_filename")),
             kwargs.get("repo_id"),
             kwargs.get("display_repo_id"),
+            kwargs.get("_checkpoint_base"),
         ):
             return False
         try:
@@ -6294,6 +6330,12 @@ class DiffusionBackend:
                     kwargs.get("hf_token"),
                     kwargs.get("gguf_filename"),
                 )
+                # base_repo becomes the companion base below: keep the checkpoint's own (klein 9B KV) for load_pipeline.
+                checkpoint_base = _checkpoint_base_of(
+                    kwargs["repo_id"], kwargs.get("base_repo"), kwargs.get("gguf_filename")
+                )
+                if checkpoint_base:
+                    kwargs["_checkpoint_base"] = checkpoint_base
             kwargs["base_repo"] = base
             if getattr(fam, "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME:
                 # Its loader fetches only the files it reads, so the generic estimate / prefetch is skipped.
@@ -7066,7 +7108,22 @@ class DiffusionBackend:
             with diffusion_device_scope(gpu_ordinal):
                 target = self._target_for_ordinal(fam, gpu_ordinal)
                 if not dense_transformer_supported(target):
-                    return None
+                    # ROCm seeds no torchao checkpoint; an explicit int8 RDNA pick still reads the hosted int8 file.
+                    return self._rocm_hosted_int8_seed(
+                        fam,
+                        target,
+                        raw = None if auto else raw,
+                        kind = kind,
+                        speed_mode = speed_mode,
+                        memory_mode = memory_mode,
+                        cpu_offload = cpu_offload,
+                        base = base,
+                        repo_id = repo_id,
+                        fetch_base = fetch_base,
+                        transformer_prequant_path = transformer_prequant_path,
+                        local_files_only = local_files_only,
+                        text_encoder_quant = text_encoder_quant,
+                    )
                 if (
                     _pipeline_quant_uncompilable_reason(target, fam, speed_mode, model_kind = kind)
                     is not None
@@ -7237,6 +7294,100 @@ class DiffusionBackend:
             logger.warning("diffusion.denoiser_prequant_plan_failed: %s", exc)
             return None
 
+    def _rocm_hosted_int8_seed(
+        self,
+        fam: Any,
+        target: Any,
+        *,
+        raw: Optional[str],
+        kind: str,
+        speed_mode: Optional[str],
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+        base: Optional[str],
+        repo_id: Optional[str],
+        fetch_base: Optional[str],
+        transformer_prequant_path: Optional[str],
+        local_files_only: bool,
+        text_encoder_quant: Optional[str],
+    ) -> Optional[str]:
+        """``int8`` when an explicit int8 pick on this ROCm RDNA card seeds its denoiser from the hosted int8 ConvRot
+        file read as native W8A8 Linears (``diffusion_rocm_hosted_int8``), else None (the dense shards are fetched and
+        quantised at load, as before). The same gates as the load's compiled RDNA int8 tier, resident plans only."""
+        try:
+            if (
+                _rocm_hosted_int8_route_reason(
+                    fam,
+                    target,
+                    raw,
+                    kind = kind,
+                    speed_mode = speed_mode,
+                    memory_mode = memory_mode,
+                    cpu_offload = cpu_offload,
+                )
+                is None
+            ):
+                return None
+            source = denoiser_prequant_source(
+                fam,
+                TQ_INT8,
+                base_repo = base,
+                path_override = transformer_prequant_path,
+                local_files_only = local_files_only,
+                cache_dir = hub_cache_dir(),
+            )
+            # Hosted repos only (planning already checked their header against this base); never a local override.
+            if (
+                source is None
+                or getattr(source, "kind", None) != "repo"
+                or _is_local_cache_entry(source)
+            ):
+                return None
+            from .diffusion_prequant import _planning_min_features, hosted_prequant_refusal
+            from .diffusion_rocm_hosted_int8 import rocm_convrot_source
+
+            # The ConvRot names the load resolves, probed with the same base: a mirror holding only the plain int8
+            # file must not let planning drop the dense shards for a file the load then refuses.
+            convrot = rocm_convrot_source(source)
+            if (
+                convrot is None
+                or hosted_prequant_refusal(
+                    convrot,
+                    TQ_INT8,
+                    base = base,
+                    min_features = _planning_min_features(None),
+                    cache_dir = hub_cache_dir(),
+                    local_files_only = local_files_only,
+                )
+                is not None
+            ):
+                return None
+            memory = snapshot_device_memory(target)
+            planned = self._seeded_pipeline_plan(
+                TQ_INT8,
+                target,
+                base or repo_id or "",
+                fam,
+                memory_mode,
+                cpu_offload,
+                repo_id = repo_id or "",
+                base_local_dir = None,
+                fetch_base = fetch_base,
+                device_memory_override = replace(memory, free_mib = memory.total_mib),
+                text_encoder_quant = text_encoder_quant,
+            )
+            if planned is None or not plan_keeps_transformer_resident(planned):
+                return None
+            logger.info(
+                "diffusion.denoiser_prequant: an explicit int8 pick on this ROCm GPU reads the hosted int8 "
+                "ConvRot checkpoint as native W8A8 Linears instead of quantising the dense denoiser shards "
+                "(UNSLOTH_ROCM_IMAGE_HOSTED_INT8=0 keeps the dense shards)"
+            )
+            return TQ_INT8
+        except Exception as exc:  # noqa: BLE001 -- an unanswerable probe keeps the released shards
+            logger.warning("diffusion.rocm_hosted_int8_plan_failed: %s", exc)
+            return None
+
     def _dit_prequant_plan_source(
         self,
         fam: Any,
@@ -7266,6 +7417,16 @@ class DiffusionBackend:
                         hf_token = hf_token,
                         cache_dir = hub_cache_dir(),
                     )
+                    # ROCm seeds only via the hosted ConvRot read: stage that file or none, never one it refuses.
+                    if (
+                        source is not None
+                        and planned == TQ_INT8
+                        and not dense_transformer_supported(
+                            self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+                        )
+                    ):
+                        from .diffusion_rocm_hosted_int8 import rocm_convrot_source
+                        source = rocm_convrot_source(source)
                 return self._prequant_source_hub_entry(source, hf_token, scheme = planned)
             raw = kwargs.get("transformer_quant")
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
@@ -9061,6 +9222,8 @@ class DiffusionBackend:
         _transformer_prefetched: bool = True,
         # Repo the background prefetch staged companions from; direct calls re-derive it below.
         _fetch_base: Optional[str] = None,
+        # The checkpoint's own base when the queued load swapped base_repo for its companion base (klein 9B KV).
+        _checkpoint_base: Optional[str] = None,
         # The scheme the plan settled, or PIPELINE_SEED_DECLINED; None for a direct call, which the pull never scoped.
         _pipeline_prequant_planned: Optional[str] = None,
         _pipeline_prequant_skipped: tuple[str, ...] = (),
@@ -9126,11 +9289,15 @@ class DiffusionBackend:
                 fam.name,
             )
         # A full pipeline is its own base; single-file kinds resolve the companion base repo.
-        base = (
-            repo_id
-            if kind == "pipeline"
-            else _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
-        )
+        if kind == "pipeline":
+            base = repo_id
+        else:
+            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token, gguf_filename)
+            _checkpoint_base = _checkpoint_base or _checkpoint_base_of(
+                repo_id, base_repo, gguf_filename
+            )
+        # The base the checkpoint was named for (klein 9B KV), not the companion ``base``; else base_repo.
+        checkpoint_base = _checkpoint_base or base_repo
         # ``base`` is the upstream id for reports; ``fetch_base`` is the only id handed to downloads.
         fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
         target = self._target_for_ordinal(fam, gpu_ordinal)
@@ -9286,7 +9453,8 @@ class DiffusionBackend:
                 transformer_cls = _family_model_class(diffusers, fam.transformer_class)
                 # A checkpoint of the family that runs another pipeline (klein 9B KV) names it; else the family's.
                 pipeline_cls = _family_model_class(
-                    diffusers, family_pipeline_class(fam, base, base_repo, repo_id, gguf_filename)
+                    diffusers,
+                    family_pipeline_class(fam, base, checkpoint_base, repo_id, gguf_filename),
                 )
 
                 # Decide placement up front (weights still on CPU). Budgets the GGUF; dense is preflighted below.
@@ -9329,6 +9497,26 @@ class DiffusionBackend:
                         if seeded_plan is None
                         else torchao_offload_plan(seeded_plan, pipeline_seed_scheme)
                     )
+                    if (
+                        seeded_placement is not None
+                        and not dense_transformer_supported(target)
+                        and (
+                            not plan_keeps_transformer_resident(seeded_placement)
+                            or _rocm_hosted_int8_route_reason(
+                                fam,
+                                target,
+                                transformer_quant,
+                                kind = kind,
+                                speed_mode = speed_mode,
+                                memory_mode = memory_mode,
+                                cpu_offload = cpu_offload,
+                            )
+                            is None
+                        )
+                    ):
+                        # The ROCm hosted int8 read is the compiled RDNA int8 tier's W8A8 build, resident only: re-asked
+                        # here, since a compile probe recorded after planning can turn that tier off.
+                        seeded_placement = None
                     if seeded_placement is None:
                         # Live free memory can undercut the CAPACITY the plan settled this against.
                         logger.info(
@@ -9573,7 +9761,7 @@ class DiffusionBackend:
                         content_variant_hint(repo_id, gguf_filename),
                         repo_id,
                         display_repo_id,
-                        base_repo,
+                        checkpoint_base,
                     )
                 ):
                     dense_declined = True
@@ -12500,7 +12688,7 @@ class DiffusionBackend:
                         repo_id = repo_id,
                         display_repo_id = display_repo_id,
                         base_repo = base,
-                        checkpoint_base = base_repo,
+                        checkpoint_base = checkpoint_base,
                         device = device,
                         gpu_ordinal = target.ordinal,
                         placed_ordinal = placed_cuda_ordinal(target),
@@ -17703,7 +17891,10 @@ def _resolve_base_repo(
     hf_token: Optional[str],
     gguf_filename: Optional[str] = None,
 ) -> str:
-    """Card base_model tags are attacker-controlled: an untrusted tag falls back to the family default, since from_pretrained would unpickle it."""
+    """Card base_model tags are attacker-controlled: an untrusted tag falls back to the family default, since from_pretrained would unpickle it.
+    The base the caller or the card named, when the companion remap below replaces it, is kept for
+    ``_checkpoint_base_of``."""
+    key = _checkpoint_base_key(repo_id, base_repo, gguf_filename)
     base = (base_repo or "").strip()
     if not base:
         tag = _hf_base_model(repo_id, hf_token)
@@ -17719,11 +17910,44 @@ def _resolve_base_repo(
             # No card tag: only a curated variant the name spells out.
             base = named_variant_base(fam, repo_id, gguf_filename) or ""
     # A KV-style checkpoint's card tags its gated repo; the file holds the denoiser, the rest is another base's bytes.
+    named = base
     base = companion_base(base) or base
+    with _CHECKPOINT_BASES_LOCK:
+        _CHECKPOINT_BASES.pop(key, None)
+        if named and named.lower() != base.lower():
+            _CHECKPOINT_BASES[key] = named
+            while len(_CHECKPOINT_BASES) > 64:
+                _CHECKPOINT_BASES.pop(next(iter(_CHECKPOINT_BASES)))
     # Returns the UPSTREAM id; the swap happens at the fetch sites only.
     resolved = resolve_base_repo(fam, base)
     _remember_companion_base(repo_id, resolved)
     return resolved
+
+
+# (repo_id, base_repo, gguf_filename) -> the base the checkpoint was named for, where the companion remap replaced it.
+_CHECKPOINT_BASES: dict[tuple[str, str, str], str] = {}
+_CHECKPOINT_BASES_LOCK = threading.Lock()
+
+
+def _checkpoint_base_key(
+    repo_id: Any, base_repo: Optional[str], gguf_filename: Optional[str]
+) -> tuple[str, str, str]:
+    return (str(repo_id or ""), (base_repo or "").strip(), str(gguf_filename or ""))
+
+
+def _checkpoint_base_of(
+    repo_id: Any,
+    base_repo: Optional[str],
+    gguf_filename: Optional[str] = None,
+) -> Optional[str]:
+    """The base the caller or the trusted card named for this checkpoint when ``_resolve_base_repo`` swapped it for
+    its companion base (klein 9B KV -> the stock 9B), else None. The companions come from the swapped base, but the
+    checkpoint is still the named model: pipeline pick, workflows and the dense-substitution guard read this."""
+    explicit = (base_repo or "").strip()
+    if explicit and (companion_base(explicit) or explicit).lower() != explicit.lower():
+        return explicit
+    with _CHECKPOINT_BASES_LOCK:
+        return _CHECKPOINT_BASES.get(_checkpoint_base_key(repo_id, base_repo, gguf_filename))
 
 
 def _remember_companion_base(repo_id: str, base: str) -> None:

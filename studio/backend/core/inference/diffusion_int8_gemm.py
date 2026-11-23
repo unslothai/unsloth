@@ -846,6 +846,8 @@ _RACE_SOURCES = {
         "_aligned",
         "_cutlass_tile",
         "_cutlass_plan",
+        # the live race of a new row bucket writes its verdict into the same cache entry _cutlass_plan reads back
+        "_live_row_race",
         "_huge_race_fits",
         "_HUGE_RACE_HEADROOM",
         "_CUT_LARGE_M",
@@ -879,6 +881,7 @@ _RACE_SOURCES = {
         "_LARGE_M",
         "ROW_BUCKET",
         "_MAX_ROW_RACES",
+        "live_race_enabled",
         "row_bucket",
         "large_points",
         "race_points",
@@ -912,6 +915,8 @@ _RACE_SOURCES = {
         "_PROBE_SHAPES",
         "_scale_dtypes",
         "_probe_tile",
+        # the probe's out-of-memory check
+        "_is_oom",
         "probed_tiles",
         # the switches the race and the pick read (their env values are keyed by _cut_cache_key / race_points)
         "mode",

@@ -80,7 +80,7 @@ export const es419 = {
     materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
     materialStrength: "Intensidad del vidrio",
     lens: "Lente de vidrio",
-    lensDescription: "Curva la imagen bajo el cuadro de texto como un vidrio real.",
+    lensDescription: "Curva la imagen bajo cada superficie de vidrio como un vidrio real.",
     lensOff: "Desactivado",
     lensMagnify: "Ampliar",
     lensShrink: "Reducir",
@@ -5356,6 +5356,7 @@ export const es419 = {
     copy: "Copiar traducción",
     copied: "Copiado",
     useAsSource: "Traducir este texto",
+    downloadSubtitles: "Descargar subtítulos",
     stale:
       "El texto o la configuración cambiaron. Vuelve a traducir para actualizar.",
     stopped: "Se detuvo antes del final. Traduce de nuevo para obtener el resto.",

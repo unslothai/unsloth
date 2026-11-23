@@ -2628,6 +2628,17 @@ def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
         return False
 
 
+def _mlx_unsupported_model_type(model_name, hf_token = None):
+    """The ``model_type`` neither mlx-vlm nor mlx-lm builds, or None (also when the config cannot be read)."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from core.inference.mlx_model_support import unsupported_model_type
+        return unsupported_model_type(_read_raw_config_json(model_name, hf_token))
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("MLX architecture support check skipped for %s (%s)", model_name, exc)
+        return None
+
+
 def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
     """A text family only mlx-vlm ships (Raon-1 Mini): unsloth_zoo builds it there, so it is served there."""
     try:
@@ -6913,6 +6924,12 @@ class MLXInferenceBackend:
                 f"orchestrator -- this fallback indicates a transient HF "
                 f"Hub failure during initial detection. Retry the request."
             )
+
+        # Refused from config.json alone, before the weights download, when neither library has the architecture.
+        unsupported = _mlx_unsupported_model_type(route_config, hf_token)
+        if unsupported is not None:
+            from core.inference.mlx_model_support import unsupported_model_type_message
+            raise ValueError(unsupported_model_type_message(unsupported, model_name))
 
         if hf_token:
             import os
