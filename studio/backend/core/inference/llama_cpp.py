@@ -39667,6 +39667,11 @@ class LlamaCppBackend:
             if not isinstance(tail, str):
                 return False
         opener = "" if prompt.rstrip().endswith("<think>") else "<think>\n"
+        logger.info(
+            "Closed the cut thought with </think> (kept its last %d tokens); answering in up to %d",
+            keep,
+            room,
+        )
         request = {
             "prompt": f"{prompt}{opener}{tail}\n</think>\n\n",
             "n_predict": room,
