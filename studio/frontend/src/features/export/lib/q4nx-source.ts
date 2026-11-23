@@ -86,7 +86,6 @@ export function q4nxPacking(
     : "requantized";
 }
 
-/** Whether a file belongs in the short list: one that packs as is, or might for this model. */
 export function q4nxIsFirstChoice(packing: Q4nxPacking): boolean {
   return packing === "direct" || packing === "by-architecture";
 }
