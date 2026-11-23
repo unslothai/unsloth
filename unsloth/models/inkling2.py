@@ -316,13 +316,18 @@ def _unsloth_lora_target_modules(
 
 def _message_input_math(query, norm, scaling, block_states, partial_block_states, loop_layer_idx):
     """`Inkling2LoopMessageAttentionResidual.forward` (transformers 5.24) as plain tensor ops: the eager path the module
-    takes, op for op, so values and gradients are the module's bit for bit. The normalization is a call of the
-    residual's own `norm` module, as in transformers, so its hooks, a replaced norm or a patched norm forward apply to
-    the original forward and to the recomputation alike."""
+    takes, op for op, so values and gradients are the module's bit for bit. ``norm`` is the stock unweighted RMSNorm's
+    eps (inlined, no module call in the recompute), or the residual's own `norm` module when it has hooks or a forward
+    other than the stock one (see _message_norm), so those apply to the original forward and the recomputation alike."""
     import torch
 
     stacked = torch.cat([block_states, partial_block_states.unsqueeze(-2)], dim = -2).float()
-    stacked = norm(stacked)
+    if isinstance(norm, float):
+        stacked = stacked * torch.rsqrt(
+            stacked.square().mean(-1, keepdim = True) + norm
+        )  # unweighted RMSNorm, fp32
+    else:
+        stacked = norm(stacked)
     query_states = query[loop_layer_idx].float().expand(*stacked.shape[:-2], -1, -1)
     attn_weights = torch.matmul(query_states, stacked.transpose(2, 3)) * scaling
     attn_weights = torch.nn.functional.softmax(attn_weights, dim = -1, dtype = torch.float32).to(
@@ -364,6 +369,30 @@ def _weights_offloaded(module):
             except Exception:
                 return True
     return False
+
+
+def _message_norm(norm):
+    """What _message_input_math normalizes with: the stock unweighted RMSNorm (no hooks, no instance or class forward
+    override, no parameters) as its eps, inlined so the recompute stays plain tensor ops; anything else as the module,
+    called like transformers does so its hooks and forward apply."""
+    from torch.nn.modules import module as torch_module
+
+    stock = type(norm).__name__ in (
+        "Inkling2LoopUnweightedRMSNorm",
+        "Inkling2UnweightedRMSNorm",
+    ) and getattr(type(norm).forward, "__module__", "").startswith("transformers.")
+    if (
+        stock
+        and "forward" not in norm.__dict__
+        and not norm._forward_hooks
+        and not norm._forward_pre_hooks
+        and not torch_module._global_forward_hooks
+        and not torch_module._global_forward_pre_hooks
+        and not any(True for _ in norm.parameters())
+        and isinstance(getattr(norm, "eps", None), (int, float))
+    ):
+        return float(norm.eps)
+    return norm
 
 
 def _weak_or_dead(obj):
@@ -464,7 +493,7 @@ class _CheckpointedMessageInput:
         return self._checkpoint(
             _message_input_math,
             mi.query,
-            mi.norm,
+            _message_norm(mi.norm),
             scaling,
             block_states,
             partial_block_states,

@@ -567,6 +567,30 @@ def test_message_checkpoint_calls_the_residuals_norm_module(monkeypatch):
         assert torch.equal(a, b)
 
 
+def test_message_checkpoint_inlines_only_the_stock_norm(monkeypatch):
+    # The stock unweighted norm stays plain tensor ops in the recompute (a module call there gave run-to-run different
+    # gradients on a model split over two GPUs); a hooked or replaced norm is called as a module.
+    m = _inkling2()
+    model = _tiny(loop = True)
+    norm = model.model.language_model.message_input.norm
+    assert m._message_norm(norm) == float(norm.eps)
+    handle = norm.register_forward_hook(lambda *_: None)
+    assert m._message_norm(norm) is norm
+    handle.remove()
+    monkeypatch.setattr(norm, "forward", lambda x: x)
+    assert m._message_norm(norm) is norm
+    monkeypatch.delattr(norm, "forward")
+    assert m._message_norm(norm) == float(norm.eps)
+    # The inlined eps and the module call give the same values bit for bit.
+    x = torch.randn(2, 3, 4, 8, generator = torch.Generator().manual_seed(0))
+    q = torch.randn(1, 3, 1, 8, generator = torch.Generator().manual_seed(1))
+    args = (x[..., :3, :], x[..., 3, :], 0)
+    assert torch.equal(
+        m._message_input_math(q, float(norm.eps), 8**-0.5, *args),
+        m._message_input_math(q, norm, 8**-0.5, *args),
+    )
+
+
 def test_message_checkpoint_follows_a_deepcopy_and_pickles(monkeypatch):
     # The installed forward captured the original residual: a deepcopied model read the original's query.
     import copy
