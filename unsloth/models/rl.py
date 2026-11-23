@@ -1566,6 +1566,25 @@ _DENSE_ROUTER_AUX_LOSS_OFF = (
     "pass\n"
 )
 
+# Reentrant checkpointing runs each layer's first forward under no_grad, so the router logits transformers
+# records there carry no graph: the aux loss is logged but adds no gradient. FastModel MoE loads already
+# checkpoint non-reentrantly (vision.py, _router_aux_loss_on); a model from a plain from_pretrained still gets
+# the config's use_reentrant pin, so undo it when the aux loss is on. Gemma 3n / 4 keep reentrant, as in vision.py.
+_ROUTER_AUX_LOSS_NON_REENTRANT_GC = (
+    "if getattr(self, 'aux_loss_enabled', False) and getattr(getattr(self, 'args', None), 'gradient_checkpointing', False):\n"
+    "    _gc_kwargs = getattr(self.args, 'gradient_checkpointing_kwargs', None)\n"
+    "    _gc_type = str(getattr(getattr(getattr(self, 'model', None), 'config', None), 'model_type', '') or '').lower()\n"
+    "    if (\n"
+    "        isinstance(_gc_kwargs, dict) and _gc_kwargs.get('use_reentrant') is True\n"
+    "        and getattr(self.args, '_unsloth_pinned_reentrant', False)\n"
+    "        and not _gc_type.startswith(('gemma3n', 'gemma4'))\n"
+    "    ):\n"
+    "        _gc_kwargs['use_reentrant'] = False\n"
+    "        if isinstance(getattr(self.args, 'activation_checkpointing_kwargs', None), dict):\n"
+    "            self.args.activation_checkpointing_kwargs['use_reentrant'] = False\n"
+    "pass\n"
+)
+
 # Matches the one assignment of `self.aux_loss_enabled` in GRPOTrainer.__init__, whatever its RHS.
 # Read without importing by tests/version_compat.
 _GRPO_AUX_LOSS_ENABLED_LINE = r"^([ \t]*)self\.aux_loss_enabled = [^\n]+$"
@@ -3433,6 +3452,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     if "model" in call_args:
         RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
+        RLTrainer_post += _ROUTER_AUX_LOSS_NON_REENTRANT_GC
 
     # MoE CausalLMs cache router_aux_loss_coef at init, so a forward that adds its own aux loss reads the checkpoint
     # value. Hand them the trainer's resolved coefficient: TRL 1.7-1.17 also wrote it to the config, TRL >= 1.18 only
@@ -3875,6 +3895,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "        if getattr(self, 'gradient_checkpointing', False):\n"
         "            _gc_kwargs = getattr(self, 'gradient_checkpointing_kwargs', None) or {}\n"
         "            if _gc_kwargs.get('context_fn') is None and not _gc_kwargs.get('debug', False):\n"
+        "                # Remember a pin the user did not ask for: the MoE router aux loss needs it undone.\n"
+        "                self._unsloth_pinned_reentrant = _gc_kwargs.get('use_reentrant') is not True\n"
         "                _gc_kwargs['use_reentrant'] = True\n"
         "                self.gradient_checkpointing_kwargs = _gc_kwargs\n"
         "                if hasattr(self, 'activation_checkpointing_kwargs'):\n"
