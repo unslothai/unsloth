@@ -485,11 +485,11 @@ jobs:
             tests/studio/test_has_lint.py -q
 
       # Render counts, DOM structure and stubbed-IPC flows, not timings: these checks only need the
-      # page to settle, so they run as two parallel groups (a port per check) while the background
-      # lanes run. Each keeps its own bound through timeout(1); --kill-after outlasts the harness's
+      # page to settle, so they run as two groups, one after the other (a port per check), while the
+      # background lanes run. Each keeps its own bound through timeout(1); --kill-after outlasts the harness's
       # own stop (TERM, 10 s, KILL, 10 s) so its Vite server, in a session of its own, is not
       # orphaned. The checks that measure frames, stalls or pacing stay serial, after the lanes.
-      - name: Browser render and structure checks (two parallel groups)
+      - name: Browser render and structure checks (two groups, one after the other)
         working-directory: ${{ github.workspace }}
         timeout-minutes: 25
         run: |
@@ -561,6 +561,12 @@ jobs:
             exit "$group_failed"
           ) > logs/playwright-render-a.log 2>&1 &
           group_pids+=("$!")
+          # One browser at a time: both groups at once, beside the background lanes, overloaded the
+          # runner's 4 vCPUs (30 s Playwright goto/click timeouts on staging). The lanes still
+          # overlap this whole step, which is where the saving comes from.
+          a_rc=0
+          wait "${group_pids[0]}" || a_rc=$?
+          group_pids=()
           (
             group_failed=0 check_pid= port=5700
             trap stop_check EXIT
@@ -588,6 +594,7 @@ jobs:
           group_pids+=("$!")
 
           failed=0
+          [ "$a_rc" = 0 ] || failed=1
           for pid in "${group_pids[@]}"; do
             wait "$pid" || failed=1
           done
