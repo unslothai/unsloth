@@ -33,6 +33,8 @@ SUMMARY_FIRST_LINE_TIMEOUT_S = 300.0
 # Ollama and vLLM send nothing while reading the prompt: the first-line wait grows with it.
 SUMMARY_MIN_PREFILL_TOKENS_PER_S = 50.0
 SUMMARY_TIMEOUT_S = 600.0
+# A steady stream is bounded by max_tokens: the total cap grows with it for slow decoders.
+SUMMARY_MIN_DECODE_TOKENS_PER_S = 2.0
 SUMMARY_MAX_CALLS = 8
 # One tool result or pasted file must not crowd the rest of the transcript out of the summary call.
 _TRANSCRIPT_MESSAGE_CHARS = 12_000
@@ -409,14 +411,23 @@ def summary_first_line_timeout(prompt_tokens: Optional[int]) -> float:
     )
 
 
+def summary_total_timeout(max_tokens: Optional[int]) -> float:
+    return max(SUMMARY_TIMEOUT_S, (max_tokens or 0) / SUMMARY_MIN_DECODE_TOKENS_PER_S)
+
+
 async def collect_summary(
-    stream: AsyncIterator[str], first_line_timeout: Optional[float] = None
+    stream: AsyncIterator[str],
+    first_line_timeout: Optional[float] = None,
+    total_timeout: Optional[float] = None,
 ) -> str:
     """The text of a streamed chat completion. Raises SummaryFailed on an error line, an empty
     reply, first_line_timeout (default SUMMARY_FIRST_LINE_TIMEOUT_S) before the first line or
-    SUMMARY_IDLE_TIMEOUT_S between later ones, or SUMMARY_TIMEOUT_S once the reply has started."""
+    SUMMARY_IDLE_TIMEOUT_S between later ones, or total_timeout (default SUMMARY_TIMEOUT_S) once
+    the reply has started."""
     if first_line_timeout is None:
         first_line_timeout = SUMMARY_FIRST_LINE_TIMEOUT_S
+    if total_timeout is None:
+        total_timeout = SUMMARY_TIMEOUT_S
     parts: list[str] = []
     finish_reason = None
 
@@ -448,7 +459,7 @@ async def collect_summary(
                 def _on_line(data: bool) -> None:
                     nonlocal deadline
                     if data and deadline is None:
-                        deadline = loop.time() + SUMMARY_TIMEOUT_S
+                        deadline = loop.time() + total_timeout
                     limit = loop.time() + SUMMARY_IDLE_TIMEOUT_S
                     scope.reschedule(limit if deadline is None else min(limit, deadline))
 

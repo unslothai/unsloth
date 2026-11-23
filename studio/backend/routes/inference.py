@@ -30351,6 +30351,7 @@ async def _finish_external_compaction(
                     read_timeout = first_line_timeout + cloud_compaction.SUMMARY_IDLE_TIMEOUT_S,
                 ),
                 first_line_timeout = first_line_timeout,
+                total_timeout = cloud_compaction.summary_total_timeout(limit),
             )
 
         try:

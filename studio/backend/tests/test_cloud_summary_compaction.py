@@ -396,6 +396,24 @@ def test_a_summary_still_streaming_past_the_idle_timeout_is_kept(monkeypatch):
     assert record["summary"] == _SUMMARY
 
 
+class _VerySlowlyStreamedSummary(_SlowlyStreamedSummary):
+    gap_s = 0.15
+
+
+def test_a_slow_decoder_gets_a_total_limit_sized_to_the_reply(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MIN_DECODE_TOKENS_PER_S", 1_000.0)
+    thread = _saved_thread("thread-slow-decoder")
+    chunks, summaries, [sent] = _bodies(
+        _VerySlowlyStreamedSummary, thread_id = thread, **_SMALL_TRIGGER
+    )
+    assert summaries and _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["summarized"] is True and not truncation.get("summary_failed")
+    assert cloud_compaction.summary_total_timeout(None) == 0.3
+    assert cloud_compaction.summary_total_timeout(4_096) == pytest.approx(4.096)
+
+
 def test_a_summary_that_never_ends_hits_the_total_limit_and_closes_the_stream(monkeypatch):
     monkeypatch.setattr(cloud_compaction, "SUMMARY_IDLE_TIMEOUT_S", 0.2)
     monkeypatch.setattr(cloud_compaction, "SUMMARY_TIMEOUT_S", 0.5)
