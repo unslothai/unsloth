@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether the installed mlx-vlm / mlx-lm can build a checkpoint's architecture, read from its config.json
-alone, and the message for one neither can: a load refused here never downloads the weights."""
+"""Refuse, from config.json alone, an architecture neither installed mlx-vlm nor mlx-lm can build."""
 
 from __future__ import annotations
 
@@ -14,12 +13,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# What mlx-vlm's get_model_and_args and mlx-lm's _get_classes both raise for a model_type they lack. mlx-vlm
-# appends its last ImportError, "No module named 'mlx_vlm.speculative.drafters.<type>'": that is its model
-# registry's second search package, not a drafter load (#18972).
+# mlx-vlm appends "No module named 'mlx_vlm.speculative.drafters.<type>'": a registry search, not a drafter load (#18972).
 _UPSTREAM_UNSUPPORTED = re.compile(r"Model type ([A-Za-z0-9_.\-]+) not supported")
 
-# Families a released mlx-vlm / mlx-lm cannot build yet, with what to load instead.
 _FAMILY_HINTS = {
     "inkling2_loop": (
         "Inkling 2 Mini cannot run on MLX in Unsloth yet: it needs a newer mlx-vlm than the one installed. "
@@ -46,12 +42,11 @@ def _vlm_builds(config: dict) -> bool:
     resolve = getattr(vlm_utils, "get_model_type", None)
     if resolve is not None:
         model_type = resolve(config)
-    else:  # older mlx-vlm: the remapping alone
+    else:
         raw = str(config["model_type"]).lower()
         model_type = vlm_utils.MODEL_REMAPPING.get(raw, raw)
     if not model_type:
         raise KeyError("model_type")
-    # The two packages get_model_and_args searches, in its order.
     return any(
         find_spec(f"{package}.{model_type}") is not None
         for package in ("mlx_vlm.models", "mlx_vlm.speculative.drafters")
@@ -71,9 +66,7 @@ def _lm_builds(config: dict) -> bool:
 
 
 def unsupported_model_type(config) -> Optional[str]:
-    """The checkpoint's ``model_type`` when neither the installed mlx-vlm nor mlx-lm has a module for it, else None.
-    None also whenever this cannot tell (no config, its own ``model_file``, a library that will not import): the load
-    then goes ahead and the library's own error stands."""
+    """The ``model_type`` neither installed mlx-vlm nor mlx-lm has a module for, else None (also if inconclusive)."""
     if not isinstance(config, dict) or config.get("model_file"):
         return None
     model_type = config.get("model_type")

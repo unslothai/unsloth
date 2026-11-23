@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An MLX checkpoint whose architecture neither mlx-vlm nor mlx-lm builds is refused from config.json, before the
-weights download, with a message naming what to load instead (#18972: mlx-community/Inkling-2-Mini-4bit)."""
+"""Unbuildable MLX architectures are refused from config.json before the weights download (#18972)."""
 
 from __future__ import annotations
 
@@ -29,7 +28,6 @@ _INKLING2_MINI = {
     "vision_config": {"model_type": "inkling2_vision", "hidden_size": 1024},
 }
 
-# The modules each release ships for the Inkling families (mlx-vlm 0.8.0 has Inkling 2 Small only).
 _VLM_0_8_0 = {"mlx_vlm.models.inkling", "mlx_vlm.models.inkling2", "mlx_vlm.models.qwen3_5"}
 _VLM_0_8_0_DRAFTERS = {"mlx_vlm.speculative.drafters.inkling2_dspark"}
 _LM_0_32_2 = {"mlx_lm.models.llama", "mlx_lm.models.qwen3"}
@@ -131,7 +129,6 @@ def test_the_message_names_the_architecture_and_the_gguf_build(monkeypatch):
     assert "unsloth/Inkling-2-Mini-GGUF" in msg
     other = support.unsupported_model_type_message("brand_new_arch")
     assert other.startswith("This model uses the 'brand_new_arch'") and "GGUF" in other
-    # The route passes it through as is rather than wrapping it in its generic refusal.
     for text in (msg, other):
         assert not any(hint.lower() in text.lower() for hint in _NOT_SUPPORTED_HINTS)
 
@@ -142,7 +139,6 @@ def test_the_message_names_the_architecture_and_the_gguf_build(monkeypatch):
         # mlx-vlm 0.8.0, as #18972 reported it
         "Model type inkling2_loop not supported. Error: No module named "
         "'mlx_vlm.speculative.drafters.inkling2_loop'",
-        # mlx-lm
         "Model type inkling2_loop not supported.",
     ],
 )
@@ -152,7 +148,6 @@ def test_the_route_rewrites_the_libraries_own_refusal(raw):
     msg = _maybe_unsupported_message(raw)
     assert "'inkling2_loop' architecture" in msg and "unsloth/Inkling-2-Mini-GGUF" in msg
     assert "No module named" not in msg and "drafters" not in msg
-    # Other load errors keep their own wording.
     assert _maybe_unsupported_message("CUDA out of memory") == "CUDA out of memory"
 
 
