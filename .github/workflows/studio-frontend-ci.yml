@@ -321,7 +321,7 @@ jobs:
           # Pull requests only. Fetch the base commit with an explicit refspec so origin/<base> exists.
           if [ -n "$BASE_REF" ]; then
             git fetch --no-tags --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
-            start_lane dependency_removal <<SH
+            start_lane dependency_removal <<'SH'
           python3 scripts/check_frontend_dep_removal.py --base "origin/$BASE_REF" --enumerate-dead
           python3 tests/studio/test_frontend_dep_removal.py
           SH
@@ -607,8 +607,16 @@ jobs:
         if: ${{ !cancelled() && steps.lanes.outcome == 'success' }}
         working-directory: ${{ github.workspace }}
         timeout-minutes: 15
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           LANES="$RUNNER_TEMP/lanes"
+          # Fail closed: a lane that never registered is a failure, not an empty pass.
+          expected="unit_tests"
+          [ "$EVENT_NAME" = pull_request ] && expected="$expected dependency_removal"
+          for name in $expected; do
+            grep -qx "$name" "$LANES/names" 2>/dev/null || { echo "::error title=$name::the $name lane never started"; exit 1; }
+          done
           show() {
             for name in $(cat "$LANES/names"); do
               echo "::group::$name (exit $(cat "$LANES/$name.rc" 2>/dev/null || echo 'none: still running'))"
@@ -635,10 +643,6 @@ jobs:
           done
           exit "$failed"
 
-      # Keep data settings separate from the shorter checks. Each group owns its cache.
-      # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a
-      # job timeout is a cancellation, which skips the failure-only artifact upload, so a check
-      # hung past it would leave no log anywhere.
       # Hover and pointer checks that assert UI state after a fixed wait: they run alone, as
       # they did before the render groups were parallel, so CPU contention cannot flip them.
       - name: Icon tooltips follow the pointer between neighbours
@@ -656,6 +660,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_nonmodal_menus.py
 
+      # Keep data settings separate from the shorter checks. Each group owns its cache.
+      # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a
+      # job timeout is a cancellation, which skips the failure-only artifact upload, so a check
+      # hung past it would leave no log anywhere.
       - name: Browser smoke groups for data settings and frontend controls
         working-directory: ${{ github.workspace }}
         timeout-minutes: 15
