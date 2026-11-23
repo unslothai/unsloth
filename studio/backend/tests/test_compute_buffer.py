@@ -1621,8 +1621,10 @@ class TestComputeBufferInkling2:
 
     @pytest.mark.parametrize("ctx,ub,slots,measured", _BANDED)
     def test_banded_estimate_tracks_measured_buffer(self, ctx, ub, slots, measured):
+        # These are the load-time reserves; the buffer can regrow past them once the prompt runs.
         est = self._total_mib(self._inkling2_mini(), ctx, ub, "f16", True, slots)
-        assert measured <= est <= measured * 1.2
+        runtime = LlamaCppBackend._INKLING2_RUNTIME_BYTES_PER_UB * ub / MIB
+        assert measured <= est <= measured * 1.2 + runtime
 
     @pytest.mark.parametrize("ctx,ct,fa,measured", _DENSE)
     def test_dense_estimate_stays_above_the_chunked_buffer(self, ctx, ct, fa, measured):

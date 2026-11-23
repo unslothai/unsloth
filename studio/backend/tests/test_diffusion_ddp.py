@@ -661,9 +661,22 @@ def test_the_trainer_checks_the_resume_at_the_planned_gpu_count(monkeypatch, tmp
 
 
 if __name__ == "__main__":
+    import faulthandler
+
+    # Under pytest-timeout (330 s) a stuck rank used to be killed with only the parent's stack in the log. A rank
+    # still running at 240 s now prints every thread's stack and exits non-zero, so _spawn fails and says where.
+    faulthandler.dump_traceback_later(240, exit = True)
     mode, rank, world, store_file, *rest = sys.argv[1:]
     fn = {"grads": _child_grads, "train": _child_train}[mode]
-    fn(int(rank), int(world), store_file, *rest)
+    try:
+        fn(int(rank), int(world), store_file, *rest)
+    finally:
+        import torch.distributed as dist
+
+        # The workers do this in DistContext.close(); a gloo group left alive can stall interpreter shutdown.
+        if dist.is_initialized():
+            dist.destroy_process_group()
+    faulthandler.cancel_dump_traceback_later()
 
 
 def test_worker_ranks_start_in_the_callers_directory(monkeypatch, tmp_path):

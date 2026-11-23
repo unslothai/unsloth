@@ -197,6 +197,8 @@ class DiffusionFamily:
     checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
+    # Area each reference (primary included) is resized to; non-zero makes the guard price every reference at it.
+    reference_area: int = 0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
@@ -707,6 +709,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference" workflow atop
         # text-to-image. Inpaint but no img2img.
         reference = True,
+        reference_area = 1024 * 1024,
+        # References are denoised, never decoded: measured denoise slope x 1.2 margin / 8192 MiB per MP ~= 0.133.
+        condition_pixel_weight = 0.135,
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
