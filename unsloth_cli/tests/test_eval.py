@@ -957,6 +957,56 @@ def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, 
         assert "model" not in vllm_env
 
 
+def _write_lora_header(adapter, modules):
+    # safetensors header only: _adapter_module_names never reads tensor data
+    header = {
+        f"base_model.model.{m}.lora_{ab}.weight": {
+            "dtype": "F32",
+            "shape": [1],
+            "data_offsets": [0, 4],
+        }
+        for m in modules
+        for ab in "AB"
+    }
+    raw = json.dumps(header).encode()
+    (adapter / "adapter_model.safetensors").write_bytes(
+        len(raw).to_bytes(8, "little") + raw + b"\0" * 4
+    )
+
+
+_ATTN = [f"model.layers.{i}.self_attn.{p}" for i in range(2) for p in ("q_proj", "v_proj")]
+
+
+@pytest.mark.parametrize(
+    "patterns, ok",
+    [
+        # PEFT resolves each pattern against the module name, so different suffix keys hit the same module
+        ({"rank_pattern": {"v_proj": 64}, "alpha_pattern": {"self_attn.v_proj": 128}}, True),
+        (
+            {
+                "rank_pattern": {r"layers\.0\.self_attn\.v_proj": 64},
+                "alpha_pattern": {"v_proj": 128},
+            },
+            False,
+        ),
+        ({"rank_pattern": {"v_proj": 64}, "alpha_pattern": {"mlp.v_proj": 128}}, False),
+        # a pattern no module matches leaves every scale at lora_alpha / r
+        ({"rank_pattern": {"down_proj": 64}}, True),
+    ],
+)
+def test_vllm_backend_resolves_lora_patterns_per_module(vllm_env, tmp_path, patterns, ok):
+    adapter = _rank_adapter(tmp_path, r = 16, lora_alpha = 32, **patterns)
+    _write_lora_header(adapter, _ATTN)
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model"] == "vllm"
+    else:
+        assert result.exit_code == 2, result.output
+        assert "rank_pattern / alpha_pattern" in result.output
+        assert "model" not in vllm_env
+
+
 def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "2")
     result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")

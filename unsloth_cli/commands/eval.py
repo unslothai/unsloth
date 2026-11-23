@@ -250,14 +250,46 @@ def _adapter_rank(adapter_dir: str) -> int:
     return max((r for r in ranks if isinstance(r, int)), default = 0)
 
 
+def _adapter_module_names(adapter_dir: str) -> List[str]:
+    """LoRA module names from the adapter_model.safetensors header (no tensor reads)."""
+    file = Path(adapter_dir) / "adapter_model.safetensors"
+    try:
+        with open(file, "rb") as f:
+            header = json.loads(f.read(int.from_bytes(f.read(8), "little")))
+    except (OSError, ValueError):
+        return []
+    names = set()
+    for key in header:
+        name, sep, _ = key.partition(".lora_")
+        if sep:
+            prefix = "base_model.model."
+            names.add(name[len(prefix) :] if name.startswith(prefix) else name)
+    return sorted(names)
+
+
+def _pattern_value(patterns: dict, module: str, default):
+    # PEFT get_pattern_key: first key matching the module name as a dotted suffix (regex allowed)
+    for key in patterns:
+        try:
+            if re.match(rf"(.*\.)?({key})$", module):
+                return patterns[key]
+        except re.error:
+            continue
+    return default
+
+
 def _mixed_lora_scale(adapter_dir: str) -> bool:
     """True when rank_pattern / alpha_pattern give a module a scale other than lora_alpha / r.
 
     vLLM (PEFTHelper) applies that one scale to every module, so such an adapter scores wrong.
+    Patterns are resolved per module like PEFT does, against the module names stored in the
+    adapter weights; without readable weights the pattern keys stand in for module names.
     """
     config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
     ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
     if not isinstance(ranks, dict) or not isinstance(alphas, dict):
+        return False
+    if not ranks and not alphas:
         return False
     norm = math.sqrt if config.get("use_rslora") else float
 
@@ -268,8 +300,12 @@ def _mixed_lora_scale(adapter_dir: str) -> bool:
     default = scale(config.get("r"), config.get("lora_alpha"))
     if default is None:
         return False
-    for key in set(ranks) | set(alphas):
-        module = scale(ranks.get(key, config["r"]), alphas.get(key, config["lora_alpha"]))
+    modules = _adapter_module_names(adapter_dir) or list(dict.fromkeys([*ranks, *alphas]))
+    for name in modules:
+        module = scale(
+            _pattern_value(ranks, name, config["r"]),
+            _pattern_value(alphas, name, config["lora_alpha"]),
+        )
         if module is not None and not math.isclose(module, default):
             return True
     return False
